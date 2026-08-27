@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -33,12 +34,19 @@ class ReceiptSigning(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp(prefix="prismor-sign-"))
         os.environ["PRISMOR_HOME"] = str(self.home)
-        # Fresh module state per test so the key cache doesn't leak across homes.
-        for mod in ("prismor.runtime.enterprise.receipt_signing",
-                    "prismor.runtime.enterprise.identity"):
-            sys.modules.pop(mod, None)
         from prismor.runtime.enterprise import receipt_signing as signing
         self.signing = signing
+        # Fresh key cache per test, so a key generated under one $PRISMOR_HOME
+        # is not served to the next. Dropping the module from sys.modules does
+        # NOT do this: `from prismor.runtime.enterprise import receipt_signing`
+        # finds the submodule still bound on the parent package and hands back
+        # the same object, cache and all — the re-import never happens.
+        for name, blank in (("_CACHED_KEY", None),
+                            ("_CACHED_PUBKEY_B64", None),
+                            ("_LOAD_ATTEMPTED", False)):
+            patcher = mock.patch.object(signing, name, blank)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def _record(self):
         return {

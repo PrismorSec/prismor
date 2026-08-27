@@ -12,6 +12,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -20,17 +21,26 @@ from prismor.runtime.enterprise import workspace_scope as ws  # noqa: E402
 
 
 class EnvScopeOverride(unittest.TestCase):
+    def _patch(self, target, name, value):
+        """Patch for the duration of one test.
+
+        ``ws._identity`` IS ``prismor.runtime.enterprise.identity``: assigning
+        to it directly would leave every later test on this process reading as
+        enrolled to org_1, with a claimed-repo pattern set. See tests/conftest.py.
+        """
+        patcher = mock.patch.object(target, name, value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def setUp(self):
         os.environ.pop("PRISMOR_WORKSPACE_SCOPE", None)
+        self.addCleanup(os.environ.pop, "PRISMOR_WORKSPACE_SCOPE", None)
         self._ident = {"org_id": "org_1", "device_key": "k", "api_base": "https://cp.example"}
-        ws._identity.load_identity = lambda: self._ident
-        ws._identity.revoked_info = lambda: None
-        ws.detect_git_remote = lambda _w: None      # a container: no remote
-        ws.org_managed_patterns = lambda: ["github.com/acme/*"]
-        ws._load_overrides = lambda: {}
-
-    def tearDown(self):
-        os.environ.pop("PRISMOR_WORKSPACE_SCOPE", None)
+        self._patch(ws._identity, "load_identity", lambda: self._ident)
+        self._patch(ws._identity, "revoked_info", lambda: None)
+        self._patch(ws, "detect_git_remote", lambda _w: None)   # a container: no remote
+        self._patch(ws, "org_managed_patterns", lambda: ["github.com/acme/*"])
+        self._patch(ws, "_load_overrides", lambda: {})
 
     def test_repoless_workload_is_local_without_the_override(self):
         # The status quo this exists to fix: silent, total non-reporting.
@@ -65,14 +75,14 @@ class EnvScopeOverride(unittest.TestCase):
     def test_cannot_downgrade_a_repo_the_org_claims(self):
         # The security property: an org-claimed remote outranks the env var, so
         # a deployment cannot opt company code out of governance.
-        ws.detect_git_remote = lambda _w: "github.com/acme/payments"
+        self._patch(ws, "detect_git_remote", lambda _w: "github.com/acme/payments")
         os.environ["PRISMOR_WORKSPACE_SCOPE"] = "personal"
         r = ws.resolve_scope(Path("/srv/agent"))
         self.assertEqual(r["scope"], "managed")
         self.assertEqual(r["reason"], "org_claimed")
 
     def test_unenrolled_stays_local_regardless(self):
-        ws._identity.load_identity = lambda: None
+        self._patch(ws._identity, "load_identity", lambda: None)
         os.environ["PRISMOR_WORKSPACE_SCOPE"] = "managed"
         r = ws.resolve_scope(Path("/srv/agent"))
         self.assertEqual(r["scope"], "local")
@@ -81,7 +91,8 @@ class EnvScopeOverride(unittest.TestCase):
     def test_env_outranks_the_on_disk_override(self):
         # A container's $PRISMOR_HOME is often read-only, so the env var has to
         # win over a stale file written into the image.
-        ws._load_overrides = lambda: {str(Path("/srv/agent").resolve()): "personal"}
+        self._patch(ws, "_load_overrides",
+                    lambda: {str(Path("/srv/agent").resolve()): "personal"})
         os.environ["PRISMOR_WORKSPACE_SCOPE"] = "managed"
         r = ws.resolve_scope(Path("/srv/agent"))
         self.assertEqual(r["scope"], "managed")

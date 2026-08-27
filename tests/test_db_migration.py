@@ -64,15 +64,25 @@ def test_initialize_database_adds_missing_columns(v158_workspace: Path) -> None:
     assert "recommended_version" in cols
 
 
-def test_connect_ro_self_heals(v158_workspace: Path, monkeypatch) -> None:
+def test_connect_ro_self_heals(v158_workspace: Path) -> None:
+    """A read path must heal a stale DB, not just crash-proof itself.
+
+    The upgrade sequence this reproduces: a v1.5.8 install kept its DB in the
+    workspace, ``get_data_dir`` relocates it to $PRISMOR_HOME on first touch,
+    and the schema is still v1.5.8 until something migrates it. Dashboard reads
+    go through ``_connect_ro``, which is where that migration has to happen.
+
+    Note the read paths query $PRISMOR_HOME only (``_state_query_workspaces``),
+    so the DB has to be relocated there before the read for this to test
+    anything — it is not enough to leave it in the workspace.
+    """
     store._MIGRATED_PATHS.clear()
-    monkeypatch.setattr(
-        store, "list_registered_workspaces", lambda: [v158_workspace]
-    )
+    db = store.get_db_path(v158_workspace)      # relocates ws/.prismor -> $PRISMOR_HOME
+    assert "session_id" not in _columns(db, "supply_chain_events")
+
     # Pre-migration DB: read paths must not crash on the missing session_id col.
     stats = store.get_supply_chain_stats(24)
     assert "kpis" in stats
-    db = store.get_db_path(v158_workspace)
     assert "session_id" in _columns(db, "supply_chain_events")
 
 

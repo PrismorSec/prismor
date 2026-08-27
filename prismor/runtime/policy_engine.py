@@ -1406,7 +1406,15 @@ class PolicyEngine:
         # are reported with `contextInert` semantics and an `execTarget` origin,
         # but never block, until the real false-positive rate is known from
         # fleet telemetry. Enable blocking per-category once warmed up.
-        if event_type == "shell" and self.inspect_execution_targets:
+        # Never on a synthetic script line: the block below already walks the
+        # invocation tree, and it does so with a depth budget and with the
+        # nested file recorded as the finding's origin. Running this here too
+        # opens one more file per line — past _MAX_SCRIPT_DEPTH, and reporting
+        # a nested match with no `viaScript`, which then gets stamped with the
+        # OUTERMOST script's name on the way up. Same reason the other
+        # per-command side checks below are `_script_line`-gated.
+        if (event_type == "shell" and self.inspect_execution_targets
+                and not event.get("_script_line")):
             _cmd = field_values.get("command", "")
             if _cmd:
                 try:

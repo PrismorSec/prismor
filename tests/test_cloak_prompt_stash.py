@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -53,8 +56,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 _last_stderr = ""
 
+# userprompt-guard.sh parses its payload with jq and exits silently without it.
+# Skip rather than fail where jq is missing; CI installs it.
+_HAVE_JQ = shutil.which("jq") is not None
+
 
 def run(prompt: str, session: str = "sess-A", env: dict | None = None) -> dict | None:
+    if not _HAVE_JQ:
+        pytest.skip("jq not installed; the cloaking prompt guard parses its payload with it")
     global _last_stderr
     payload = {"prompt": prompt, "cwd": str(_HOME), "session_id": session}
     proc = subprocess.run(["bash", str(_GUARD)], input=json.dumps(payload),

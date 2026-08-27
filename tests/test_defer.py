@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -29,15 +30,22 @@ class DeferResolver(unittest.TestCase):
         self.deferred = deferred
         self.calls = []
 
+    def _patch(self, name, value):
+        """Patch a name on the shared ``deferred`` module for one test only —
+        a bare assignment outlives the test (see tests/conftest.py)."""
+        patcher = mock.patch.object(self.deferred, name, value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _finding(self):
         return {"toolName": "Bash", "evidence_hash": "h1", "ruleId": "r1"}
 
     def test_allow(self):
-        self.deferred._adjudicate = lambda event: "allow"
+        self._patch("_adjudicate", lambda event: "allow")
         self.assertTrue(self.deferred.resolve_defer(self._finding(), {"type": "shell"}, session_id="s"))
 
     def test_deny(self):
-        self.deferred._adjudicate = lambda event: "deny"
+        self._patch("_adjudicate", lambda event: "deny")
         self.assertFalse(self.deferred.resolve_defer(self._finding(), {"type": "shell"}, session_id="s"))
 
     def test_cache_short_circuits_evaluator(self):
@@ -47,7 +55,7 @@ class DeferResolver(unittest.TestCase):
             n["c"] += 1
             return "allow"
 
-        self.deferred._adjudicate = counting
+        self._patch("_adjudicate", counting)
         f, ev = self._finding(), {"type": "shell"}
         self.assertTrue(self.deferred.resolve_defer(f, ev, session_id="s"))
         self.assertTrue(self.deferred.resolve_defer(f, ev, session_id="s"))  # cache hit
@@ -57,7 +65,6 @@ class DeferResolver(unittest.TestCase):
         def boom(event):
             raise RuntimeError("no evaluator")
 
-        self.deferred._adjudicate = self.deferred._adjudicate  # keep real (which catches internally)
         # Force the real _adjudicate to hit its except path via a bad event type.
         self.assertFalse(self.deferred.resolve_defer(self._finding(), None, session_id="s"))
 

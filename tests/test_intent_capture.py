@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -22,6 +23,11 @@ from prismor.runtime import scoped_agent  # noqa: E402
 
 
 class CaptureIntent(unittest.TestCase):
+    def _patch(self, target, name, value):
+        patcher = mock.patch.object(target, name, value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def setUp(self):
         # Scoped rules live under $PRISMOR_HOME/scoped/<sid>.json (keyed by session
         # id in the prismor home, not the workspace) — isolate it so tests don't
@@ -34,8 +40,10 @@ class CaptureIntent(unittest.TestCase):
             self.calls.append({"goal": goal, "tools": list(available_tools)})
             return {"allowed_tools": available_tools, "goal": goal}
 
-        # Patch the names capture_intent imports from scoped_agent.
-        scoped_agent.synthesize_scoped_rules = fake_synth
+        # Patch the names capture_intent imports from scoped_agent. Via
+        # mock.patch.object so the stub cannot outlive the test — scoped_agent
+        # is shared with the runtime (see tests/conftest.py).
+        self._patch(scoped_agent, "synthesize_scoped_rules", fake_synth)
 
     def test_no_goal_is_noop(self):
         self.assertIsNone(intent_mod.capture_intent("", workspace=self.ws, session_id="s1"))
@@ -66,7 +74,7 @@ class CaptureIntent(unittest.TestCase):
         def boom(goal, available_tools, workspace):
             raise RuntimeError("synth exploded")
 
-        scoped_agent.synthesize_scoped_rules = boom
+        self._patch(scoped_agent, "synthesize_scoped_rules", boom)
         # Must swallow and return None, not propagate.
         self.assertIsNone(intent_mod.capture_intent("x", workspace=self.ws, session_id="s3"))
 
