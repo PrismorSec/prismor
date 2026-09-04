@@ -1,0 +1,304 @@
+version: "1.0"
+
+# Prismor governance modes.
+#
+# A mode is a named, immutable template that COMPILES into the primitives the
+# runtime already enforces — it is not a new enforcement path. `prismor mode
+# apply <id>` writes:
+#
+#   .prismor/policy.yaml   settings.default_mode / .egress / .tool_tags /
+#                          .sandbox, plus per-rule `mode:` overlays and any
+#                          `commands:` compiled into a generated rule.
+#   .prismor/agents.yaml   global_deny_tools / global_ask_tools (via
+#                          agents.set_tool_policy).
+#
+# So PolicyEngine.evaluate never learns what a mode is. Add a mode here and it
+# works; there is no code to change.
+#
+# ── Schema ──────────────────────────────────────────────────────────────────
+#   name / intent / scenario   prose shown by `mode list` and `mode explain`
+#   default_mode               observe | enforce — the fallback for rules that
+#                              set no mode of their own
+#   enforce_rules              none | floor | all — which rules get
+#                              `mode: enforce`. `floor` = Prismor's safety floor
+#                              (core rule ids + core block categories), which is
+#                              what `prismor setup --recommended` selects.
+#   enforce_extra              rule ids to enforce on top of the selector
+#   egress / tool_tags / sandbox   written verbatim into settings.*
+#   tools.deny / tools.ask     tool TAGS (Bash, WebFetch, Skill, mcp__srv__tool)
+#   commands.deny / .ask       regexes over the shell command string, compiled
+#                              into one generated rule per action
+#   reward / friction          what `mode explain` prints — the honest trade
+#   residual_risk              what this mode does NOT stop. Never omit it.
+#   friction_index             0-100 operator judgement; coverage is COMPUTED
+#                              from the real enforcing-rule count, not asserted
+
+# settings.update() replaces `egress` wholesale (policy_engine._apply_override),
+# so a mode that sets egress and omits these would silently drop the default
+# cloud-metadata deny list — the classic SSRF pivot. Every mode below that
+# enables egress anchors this in.
+_metadata_deny: &metadata_deny
+  - host: "169.254.169.254"
+    reason: "AWS IMDS — hands out instance credentials (IMDSv1/v2)"
+  - host: "169.254.169.253"
+    reason: "AWS Route 53 resolver — DNS rebinding surface"
+  - host: "metadata.google.internal"
+    reason: "GCP metadata server — hands out service account credentials"
+  - host: "100.100.100.200"
+    reason: "Alibaba Cloud metadata endpoint"
+  - host: "169.254.0.0/16"
+    reason: "link-local block — belt-and-braces catch-all for cloud metadata"
+
+modes:
+
+  # ────────────────────────────────────────────────────────────────────────
+  audit-only:
+    name: "Audit Only"
+    intent: "Baseline telemetry with zero execution risk. Nothing blocks."
+    scenario: >-
+      Onboarding Prismor into a legacy codebase, or watching a new agent
+      (Claude Code, Cursor, Windsurf) for a week to learn what it actually does
+      before deciding what to stop. Findings land in the audit trail; the agent
+      never notices Prismor is there.
+    default_mode: observe
+    enforce_rules: none
+    egress:
+      enabled: false          # unrestricted — no destination check at all
+    tool_tags:
+      enabled: true
+      mode: observe
+      rules:
+        - "untrusted_content then critical_action -> warn"
+    sandbox:
+      enabled: false          # host native, unconfined
+    tools: {}
+    commands: {}
+    reward:
+      - "Full visibility     : every tool call, command, and destination is recorded."
+      - "Zero breakage       : no policy verdict can stop a build or a test run."
+      - "Tag telemetry       : trifecta sequences are logged so you can size the risk."
+    friction:
+      - "Nothing is prevented. This mode is a camera, not a lock."
+    residual_risk: >-
+      Zero real-time mitigation. An agent under prompt injection can exfiltrate
+      secrets over HTTP, run destructive shell commands, or rewrite CI workflow
+      files, and Prismor will faithfully record all of it after the fact.
+      Security here rests entirely on someone reading the audit trail.
+      Prismor's own self-protection rules still enforce — they are not a policy
+      choice — so the agent cannot quietly disable this observation.
+    friction_index: 0
+    recommended_for: "Week-one rollout, legacy repos, measuring before enforcing."
+    not_recommended_for: "Anything touching production credentials or customer data."
+
+  # ────────────────────────────────────────────────────────────────────────
+  dev-safe:
+    name: "Development Safe"
+    intent: "GitHub and package registries only. Everything else is blocked."
+    scenario: >-
+      Everyday feature work, bug fixes, and PR review on GitHub-centric
+      projects. git and gh work, npm/pip resolve, tests run — and an agent that
+      gets injected cannot reach an arbitrary host to post what it read.
+    default_mode: observe
+    enforce_rules: floor
+    egress:
+      enabled: true
+      mode: enforce
+      default: deny
+      allow_private: true
+      resolve: true
+      allow:
+        - "github.com"
+        - "*.github.com"
+        - "api.github.com"
+        - "codeload.github.com"
+        - "objects.githubusercontent.com"
+        - "registry.npmjs.org"
+        - "pypi.org"
+        - "files.pythonhosted.org"
+      deny: *metadata_deny
+    tool_tags:
+      enabled: true
+      mode: enforce
+      rules:
+        - "untrusted_content then critical_action -> block"
+    sandbox:
+      enabled: true
+      mode: enforce
+      network: none
+      read_only_root: true
+      workspace_mount: rw
+    tools: {}
+    commands:
+      deny:
+        - '\bcurl\b'
+        - '\bwget\b'
+        - '\bnc\b|\bnetcat\b|\bncat\b'
+        - '\bsudo\b'
+        - '\bssh\b\s+\S+@'
+      ask:
+        - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
+        - '\b(pip3?|uv)\s+(install|add)\b'
+        - '\bcargo\s+add\b'
+    reward:
+      - "Secret exfiltration : BLOCKED. No route to an arbitrary HTTP endpoint."
+      - "Destructive commands: BLOCKED. rm -rf / and privilege escalation denied."
+      - "Lethal trifecta     : BLOCKED. Untrusted read then critical action stops."
+      - "Supply chain        : GATED. Installs need a human before they run."
+    friction:
+      - "Network isolation   : docs and APIs outside GitHub/npm/PyPI are unreachable."
+      - "Shell capabilities  : curl and wget inside agent scripts will fail."
+      - "Dependency changes  : adding a package prompts for approval."
+    residual_risk: >-
+      Exfiltration through the channels this mode allows. An injected agent can
+      still read .env and paste it into a public GitHub issue or PR comment via
+      api.github.com, which is on the allowlist by design. Dependency confusion
+      through the public registries remains possible — the install gate raises
+      the cost but a human clicking through it is still the whole control.
+    friction_index: 40
+    recommended_for: "Feature branches, PR review, open-source contribution."
+    not_recommended_for: "Debugging third-party webhooks or multi-cloud infra setup."
+
+  # ────────────────────────────────────────────────────────────────────────
+  trusted-workspace:
+    name: "Trusted Workspace"
+    intent: "Broad autonomy. Guardrails only on secrets and package installs."
+    scenario: >-
+      Fast internal work in a closed-source repo you trust: building, running
+      microservices under Docker, executing tests, debugging. The agent gets
+      room to move; the two things it cannot do casually are install packages
+      and read credentials.
+    default_mode: observe
+    enforce_rules: floor
+    enforce_extra:
+      - secret-access
+      - credential-aggregation
+      - credential-staging
+      - claude-credential-access
+      - dependency-confusion
+      - pkg-install-from-url
+      - pkg-suspicious-name
+    egress:
+      enabled: true
+      mode: enforce
+      default: deny
+      allow_private: true     # internal staging APIs and localhost services
+      resolve: true
+      allow:
+        - "github.com"
+        - "*.github.com"
+        - "registry.npmjs.org"
+        - "pypi.org"
+        - "files.pythonhosted.org"
+        - "crates.io"
+        - "proxy.golang.org"
+        - "*.docker.io"
+        - "*.amazonaws.com"
+        - "*.googleapis.com"
+        - "*.azure.com"
+        - "api.anthropic.com"
+        - "api.openai.com"
+      deny: *metadata_deny
+    tool_tags:
+      enabled: true
+      mode: enforce
+      rules:
+        - "private_data with external_comms -> block"
+        - "untrusted_content then critical_action -> block"
+    sandbox:
+      enabled: true
+      mode: observe           # non-root, workspace-scoped; observe so builds run
+      network: bridge
+      read_only_root: false
+      workspace_mount: rw
+    tools: {}
+    commands:
+      deny:
+        - '\bsudo\b'
+        - '\bchmod\s+[ugo+]*s\b'
+        - '\bsu\s+-'
+      ask:
+        - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
+        - '\b(pip3?|uv)\s+(install|add)\b'
+        - '\bcargo\s+add\b'
+        - '\bgem\s+install\b'
+    reward:
+      - "Credential access   : GATED. .env, ~/.aws, and SSH keys need a human."
+      - "Package installs    : GATED. Nothing enters the tree unattended."
+      - "Privilege escalation: BLOCKED. sudo, setuid, and su are denied outright."
+      - "Data boundary       : BLOCKED. Private data cannot leave via external comms."
+    friction:
+      - "Approval prompts    : every dependency change stops for consent."
+      - "Secret reads        : debugging a credential issue needs prismor unlock."
+      - "Egress allowlist    : an unlisted vendor API needs an explicit entry."
+    residual_risk: >-
+      Code this mode lets the agent execute can still do damage. A malicious
+      build script (setup.py, Makefile, npm preinstall) runs with the agent's
+      own reach and can alter workspace state outside the protected secret
+      paths. Indirect injection sitting in internal code comments or a database
+      dump can steer the agent into writing a subtle logic bug or a backdoor,
+      which no destination allowlist detects.
+    friction_index: 25
+    recommended_for: "Trusted internal repos, local microservice and Docker work."
+    not_recommended_for: "Repos that ingest untrusted third-party content or PII."
+
+  # ────────────────────────────────────────────────────────────────────────
+  regulated-airgap:
+    name: "Regulated Airgap"
+    intent: "No network, no shell. File edits in the workspace, each approved."
+    scenario: >-
+      Environments under SOC 2, HIPAA, or the EU AI Act, handling PII, PHI, or
+      core IP. The agent reads and edits files inside the workspace root and
+      does nothing else. Every write is a decision a human signs off on.
+    default_mode: enforce     # no selection: explicit — the full floor blocks
+    enforce_rules: all
+    egress:
+      enabled: true
+      mode: enforce
+      default: deny
+      allow_private: false    # loopback is not a carve-out here
+      resolve: true
+      allow: []
+      deny: *metadata_deny
+    tool_tags:
+      enabled: true
+      mode: enforce
+      rules:
+        - "untrusted_content then critical_action -> block"
+        - "private_data with external_comms -> block"
+        - "untrusted_content with private_data -> block"
+    sandbox:
+      enabled: true
+      mode: enforce
+      network: none
+      read_only_root: true
+      workspace_mount: rw
+      tmpfs:
+        - "/tmp:noexec,nosuid,size=64m"
+    tools:
+      deny:
+        - Bash
+        - WebFetch
+        - WebSearch
+      ask:
+        - Write
+        - Edit
+    commands: {}
+    reward:
+      - "Network egress      : BLOCKED. Nothing leaves the machine, at all."
+      - "Shell execution     : BLOCKED. The Bash tool is denied outright."
+      - "Every file write    : GATED. No edit lands without human approval."
+      - "Audit trail         : Ed25519-signed and hash-chained for evidence."
+    friction:
+      - "No shell            : the agent cannot run tests, builds, or git."
+      - "No documentation    : it cannot look anything up mid-task."
+      - "Approval per write  : a ten-file refactor is ten prompts."
+    residual_risk: >-
+      Friction is itself the risk. A mode this tight is one people route around
+      — the realistic failure is a developer running `prismor uninstall-hooks`
+      to get through an afternoon, which removes every control at once rather
+      than one. And an offline agent is still steerable: poisoned context in a
+      repo file needs no network to work, so local logic manipulation survives
+      the airgap intact.
+    friction_index: 90
+    recommended_for: "Regulated repos, PII/PHI handling, review-only analysis."
+    not_recommended_for: "Any workflow where the agent has to build or test."
