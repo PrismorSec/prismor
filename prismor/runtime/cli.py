@@ -22,6 +22,10 @@ Commands:
   logout        Un-enroll this machine (remove device identity + cached remote policy)
   policy init   Generate a starter policy.yaml for your project
   policy validate  Validate a policy.yaml file
+  mode list     List the governance modes (dev-safe, trusted-workspace, regulated-airgap)
+  mode explain ID  Risk/reward preview for a mode — including what it does NOT stop
+  mode apply ID    Compile a whole security posture into .prismor/policy.yaml
+  mode show     Which mode this workspace runs, and whether it has drifted
   sweep         Scan AI tool configs for leaked secrets
   sweep --redact  Redact secrets and save to encrypted vault
   sweep --clean   Delete residue files (passphrase required)
@@ -2614,6 +2618,69 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         raise SystemExit(2)
 
+    # ── mode subcommands (governance mode templates) ────────────────────
+    if args.command == "mode":
+        from prismor.runtime.modes import (
+            ModeError, apply_mode, active_mode, has_drifted, is_observe_build,
+            compile_mode, get_mode, format_list, format_explain, coverage,
+        )
+        sub = getattr(args, "mode_command", None)
+        try:
+            if sub == "list":
+                print(format_list(workspace))
+                return
+            if sub == "explain":
+                print(format_explain(get_mode(args.mode_id)))
+                return
+            if sub == "show":
+                mode_id = active_mode(workspace)
+                if mode_id is None:
+                    print("No governance mode applied to this workspace.")
+                    print("  prismor mode list   see the modes and what each costs")
+                    return
+                mode = get_mode(mode_id)
+                blocking, total = coverage(mode)
+                print(f"  {_color('Mode', _BOLD)}      {mode_id}  ({mode.get('name', '')})")
+                if is_observe_build(workspace):
+                    print(_color("  Preview", _YELLOW) +
+                          f"   --observe build: nothing blocks. {blocking} of "
+                          f"{total} rules would block without it.")
+                else:
+                    print(f"  Rules     {blocking} of {total} block")
+                print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
+                if has_drifted(workspace):
+                    print(_color("  Drift", _YELLOW) +
+                          "     the policy has been hand-edited since this mode was applied")
+                    print(f"            re-apply with `prismor mode apply {mode_id} --force` to reset")
+                return
+            if sub == "apply":
+                mode = get_mode(args.mode_id)
+                observe = getattr(args, "observe", False)
+                if getattr(args, "dry_run", False):
+                    sys.stdout.write(compile_mode(mode, observe=observe))
+                    return
+                path, notes = apply_mode(
+                    workspace, args.mode_id, force=args.force, observe=observe
+                )
+                label = "Applied (preview)" if observe else "Applied"
+                print(_color(label, _GREEN) + f" mode '{args.mode_id}' → {path}")
+                for note in notes:
+                    print(f"  {_color('·', _DIM)} {note}")
+                print(f"\n  What it does not stop:  prismor mode explain {args.mode_id}")
+                return
+        except ModeError as exc:
+            sys.stderr.write(f"prismor mode: {exc}\n")
+            raise SystemExit(1)
+        sys.stderr.write(
+            "Usage: prismor mode {list|explain|apply|show}\n"
+            "  list             The governance modes, with coverage and friction\n"
+            "  explain <id>     Risk/reward preview — including what the mode does NOT stop\n"
+            "  apply <id>       Compile the mode into .prismor/policy.yaml (--dry-run to preview)\n"
+            "                   --observe compiles the same posture with nothing blocking\n"
+            "  show             Which mode this workspace runs, and whether it has drifted\n"
+        )
+        raise SystemExit(2)
+
     # ── scope subcommands ───────────────────────────────────────────────
     if args.command == "scope":
         from prismor.runtime.scoped_agent import (
@@ -3378,6 +3445,34 @@ def build_parser() -> argparse.ArgumentParser:
     policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
     policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml)")
     policy_test.add_argument("--workspace", help="Workspace path")
+
+    # ── mode (governance mode templates → policy.yaml) ─────────────────
+    mode_parser = subparsers.add_parser(
+        "mode", help="Named governance modes — apply a whole security posture at once")
+    mode_sub = mode_parser.add_subparsers(dest="mode_command")
+
+    mode_list_p = mode_sub.add_parser("list", help="List the available governance modes")
+    mode_list_p.add_argument("--workspace", help="Workspace path")
+
+    mode_explain_p = mode_sub.add_parser(
+        "explain", help="Risk/reward preview for a mode, including its residual risk")
+    mode_explain_p.add_argument("mode_id", help="Mode id (e.g. dev-safe)")
+    mode_explain_p.add_argument("--workspace", help="Workspace path")
+
+    mode_apply_p = mode_sub.add_parser(
+        "apply", help="Compile a mode into .prismor/policy.yaml + .prismor/agents.yaml")
+    mode_apply_p.add_argument("mode_id", help="Mode id (e.g. dev-safe)")
+    mode_apply_p.add_argument("--dry-run", action="store_true",
+                              help="Print the policy that would be written, and write nothing")
+    mode_apply_p.add_argument("--observe", action="store_true",
+                              help="Compile the posture with nothing enforcing — see what it "
+                                   "would block before you let it block")
+    mode_apply_p.add_argument("--force", action="store_true",
+                              help="Overwrite a policy that was not generated by a mode")
+    mode_apply_p.add_argument("--workspace", help="Workspace path")
+
+    mode_show_p = mode_sub.add_parser("show", help="Show the mode this workspace runs, and any drift")
+    mode_show_p.add_argument("--workspace", help="Workspace path")
 
     # ── tags (tool tags + tag-rule expressions) ────────────────────────
     egress_parser = subparsers.add_parser(

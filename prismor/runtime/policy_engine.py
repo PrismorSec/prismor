@@ -1901,6 +1901,9 @@ class PolicyEngine:
                     {f.get("category") for f in findings},
                     _tt_cfg,
                     extra_tags=_extra,
+                    # Scopes the file_read inference: a read inside this
+                    # workspace is ordinary work, not untrusted ingest.
+                    workspace=self.workspace,
                 )
                 if _tags:
                     _rules = compile_tool_tag_rules(_tt_cfg)

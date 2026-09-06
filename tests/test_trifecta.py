@@ -4,6 +4,7 @@ Covers the tagging + per-session ledger (prismor.runtime.trifecta) and the
 forbidden-combination enforcement wired into PolicyEngine.evaluate.
 """
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -45,8 +46,70 @@ def test_builtin_defaults():
 def test_inference_fallback():
     tt = {"defaults_enabled": False}
     assert classify_tool_tags(_ev("w", "file_write"), "file_write", set(), tt) == {CRITICAL}
-    assert classify_tool_tags(_ev("r", "tool_result"), "tool_result", set(), tt) == {UNTRUSTED}
+    assert classify_tool_tags(_ev("mcp__crm__x", "tool_result"), "tool_result", set(), tt) == {UNTRUSTED}
     assert classify_tool_tags(_ev("x", "shell"), "shell", {"destructive_command"}, tt) == {CRITICAL}
+
+
+def test_local_unmapped_tool_result_is_not_untrusted():
+    """Grep/Glob/Task reach policy as `tool_result` (hooks._unmapped_tool_event).
+
+    Tagging those untrusted made the first search in a session complete
+    `untrusted_content then critical_action` on the next shell call.
+    """
+    tt = {"defaults_enabled": False}
+    assert classify_tool_tags(_ev("Grep", "tool_result"), "tool_result", set(), tt) == set()
+    assert classify_tool_tags(_ev("Glob", "tool_result"), "tool_result", set(), tt) == set()
+    # An MCP result over the same event type still carries the tag.
+    ev = _ev("anything", "tool_result", mcp_server="crm")
+    assert classify_tool_tags(ev, "tool_result", set(), tt) == {UNTRUSTED}
+
+
+def test_workspace_read_is_trusted_but_outside_read_is_not(tmp_path):
+    """The read-then-anything cliff: a workspace read must not taint a session."""
+    tt = {"defaults_enabled": False}
+    (tmp_path / "src").mkdir()
+    inside = tmp_path / "src" / "app.py"
+    inside.write_text("x = 1")
+
+    ev_in = _ev("Read", "file_read", path=str(inside))
+    assert classify_tool_tags(ev_in, "file_read", set(), tt, workspace=tmp_path) == set()
+
+    ev_out = _ev("Read", "file_read", path=str(Path.home() / ".ssh" / "id_rsa"))
+    assert classify_tool_tags(ev_out, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
+
+    # Relative paths resolve against the workspace, so they stay trusted.
+    ev_rel = _ev("Read", "file_read", path="src/app.py")
+    assert classify_tool_tags(ev_rel, "file_read", set(), tt, workspace=tmp_path) == set()
+
+    # Traversal out of the workspace is external even when written relatively.
+    ev_esc = _ev("Read", "file_read", path="../../etc/passwd")
+    assert classify_tool_tags(ev_esc, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
+
+    # No workspace to resolve against -> not external (never re-arm the cliff).
+    assert classify_tool_tags(ev_out, "file_read", set(), tt) == set()
+
+    # A sibling directory sharing a name prefix is outside, not inside.
+    sibling = tmp_path.parent / (tmp_path.name + "-other")
+    sibling.mkdir()
+    (sibling / "notes.md").write_text("hi")
+    ev_sib = _ev("Read", "file_read", path=str(sibling / "notes.md"))
+    assert classify_tool_tags(ev_sib, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
+
+    # A symlink inside the workspace pointing out of it is external: both sides
+    # resolve, so the link target is what gets classified.
+    link = tmp_path / "escape.py"
+    try:
+        link.symlink_to(Path("/etc/hosts"))
+    except (OSError, NotImplementedError):
+        return
+    ev_link = _ev("Read", "file_read", path=str(link))
+    assert classify_tool_tags(ev_link, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
+
+
+def test_webfetch_stays_untrusted_after_the_narrowing():
+    """The narrowing must not cost the tools the trifecta rule exists for."""
+    assert classify_tool_tags(_ev("WebFetch", "tool_result"), "tool_result", set(), {}) == {UNTRUSTED}
+    assert classify_tool_tags(_ev("WebSearch", "tool_result"), "tool_result", set(), {}) == {UNTRUSTED}
 
 
 def test_neutral_returns_empty():

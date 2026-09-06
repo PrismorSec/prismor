@@ -54,6 +54,7 @@ prismor
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
 │   ├─ egress <action>        show · report · test · allow · deny · mode — network egress policy
 │   ├─ mirror <action>        on · off · status · passthrough — governed built-ins over MCP
+│   ├─ mode <action>          list · explain · apply · show — whole-posture templates
 │   └─ policy <action>        init · validate · show · edit · test
 │
 ├─ Visibility (audit & forensics)
@@ -132,6 +133,109 @@ Two things the selection does not reach:
 - **Org-managed workspaces** keep the full safety floor. `selection: explicit`
   is honored only for a locally-authored policy on an unmanaged machine, and is
   ignored if it arrives in a signed org bundle.
+
+### Governance modes
+
+Picking six policy axes rule by rule is how a policy ends up subtly wrong. A
+**mode** is a named posture that sets all six at once — enforcement fallback,
+egress allowlist, tool access, tag rules, sandbox ring, and step-up gates — and
+compiles them into the same `.prismor/policy.yaml` and `.prismor/agents.yaml`
+the engine already reads. There is no separate mode enforcement path.
+
+```
+prismor mode list                    # the three, with coverage and friction
+prismor mode explain dev-safe        # the trade — including what it does NOT stop
+prismor mode apply dev-safe          # compile it (--dry-run to preview first)
+prismor mode apply dev-safe --observe # same posture, nothing blocks
+prismor mode show                    # active mode, and whether it has drifted
+```
+
+#### What each mode covers
+
+Coverage and rule counts are **computed from the live ruleset** by `prismor mode
+list`, not hardcoded here — they move as rules are added. Friction is likewise
+**measured**, not estimated: `tests/test_modes.py` runs a benign corpus of
+ordinary developer commands through each compiled mode and pins the declared
+`friction_index` to the share it interrupts. The figures below are from an
+80-rule policy.
+
+| | `dev-safe` | `trusted-workspace` | `regulated-airgap` |
+|---|---|---|---|
+| **Rules blocking** | 25/80 | 27/80 | 80/80 |
+| **Coverage** | 31% | 34% | 100% |
+| **Friction** | 9% | 9% | 90% |
+| **Intended for** | daily development | trusted internal repos | regulated / PII |
+
+Prismor's self-protection rules always enforce in every mode — a mode cannot be
+used as cover for disabling Prismor.
+
+**Axis by axis**
+
+| Axis | `dev-safe` | `trusted-workspace` | `regulated-airgap` |
+|---|---|---|---|
+| `settings.default_mode` | observe | observe | **enforce** |
+| Rule selector | floor + 3 | floor + 7 | all |
+| Egress default | **deny** | **deny** | **deny** |
+| Egress allowlist | JS, Python, Rust, Go, JVM, GitHub, container registries, test binaries, docs, LLM APIs | + cloud provider APIs | **empty** |
+| Private / loopback | allowed | allowed | **blocked** |
+| Tools denied | — | — | Bash, WebFetch, WebSearch |
+| Tools gated (HITL) | — | — | Write, Edit |
+| Commands denied | `sudo` `su` `chmod +s` | `sudo` `chmod +s` `su` | — (no shell at all) |
+| Commands auto-approved | read-only inspection + non-mutating `git` | same | — |
+| Commands gated | npm/pip/cargo install | npm/pip/cargo/gem install | — |
+| Tag rules | 1 (block) | 2 (block) | 3 (block) |
+| Untrusted-content sources | web + MCP ingest | web + MCP ingest | web + MCP ingest |
+| Data boundary | **enforce** | **enforce** | **enforce** |
+| Sandbox ring | enforce, net allowlist, RO root | observe, bridge, RW root | enforce, net none, RO root, noexec tmpfs |
+
+The three extras in `dev-safe` are the supply-chain rules:
+`dependency-confusion`, `pkg-install-from-url`, `pkg-suspicious-name`.
+`trusted-workspace` adds the secret rules on top: `secret-access`,
+`credential-aggregation`, `credential-staging`, `claude-credential-access`.
+
+**Two things worth knowing before you adopt one.**
+
+A rule listed in `enforce_extra` that declares `action: warn` becomes a hard
+block, because `contract.VERDICT_RANK` reads "enforce + a verdict we do not
+understand" as stop. That is why installing from a private index URL is denied
+rather than prompted under both safe modes — deliberate, and stated in each
+mode's residual risk.
+
+`untrusted_content` means *externally sourced*: a web fetch, a search result, an
+MCP tool result, or a file read from outside the workspace root. Reading a file
+in your own repository is not untrusted ingest, and a mode that turns tag
+enforcement on must say so explicitly — `compile_mode` refuses a mode that
+enables `tool_tags` without declaring `tool_tags.inference_enabled`. Inheriting
+the default there tags every workspace read as untrusted, which turns
+`untrusted_content then critical_action -> block` into "read anything, then do
+anything" and denies every call after the session's first read.
+
+#### Previewing a posture
+
+`--observe` compiles any mode with nothing enforcing — same rules, same
+findings, no verdict blocks:
+
+```
+prismor mode apply dev-safe --observe
+```
+
+This answers "what would this posture stop?", which is the question worth asking
+before adopting one. `mode show` reports a preview build as such and never
+claims it is the enforcing article. Tool deny/ask lists are skipped in a preview
+build, because `agents.yaml` has no observe tier and writing them would enforce
+the one axis the flag promises not to.
+
+`mode explain` always prints a **residual risk** paragraph. `dev-safe` allows
+`api.github.com`, so an injected agent can still paste a `.env` into a public
+issue comment; `regulated-airgap` is tight enough that the realistic failure is
+somebody running `uninstall-hooks` to get through the afternoon. A mode that
+claimed no downside would be the one not to trust.
+
+Applying a mode overwrites `.prismor/policy.yaml` (keeping a `.bak`), and
+refuses outright if that file was not generated by a mode — pass `--force` once
+you have looked at what you are replacing. Hand-editing afterwards is fine;
+`mode show` then reports drift rather than claiming a posture the file no
+longer has.
 
 ### Making exceptions
 
