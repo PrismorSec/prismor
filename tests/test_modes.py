@@ -108,6 +108,42 @@ class TestCompile(unittest.TestCase):
             if tags.get("enabled"):
                 self.assertIn("inference_enabled", tags, mode_id)
 
+    def test_enforce_extra_never_restates_a_floor_rule(self):
+        """A floor rule already enforces; listing it again is dead config that
+        overstates how much a mode adds."""
+        floor, _ = modes._floor_rule_ids()
+        for mode_id in ALL_MODES:
+            for rule_id in modes.get_mode(mode_id).get("enforce_extra") or []:
+                self.assertNotIn(
+                    rule_id, floor,
+                    f"{mode_id} lists floor rule {rule_id} as an extra",
+                )
+
+    def test_trusted_workspace_egress_is_a_superset_of_dev_safe(self):
+        """The permissive mode must not be narrower than the strict one.
+
+        Expanding dev-safe's allowlist without touching trusted-workspace's left
+        a Maven or ghcr.io fetch denied under the mode that trusts the repo and
+        allowed under the mode that does not.
+        """
+        import yaml
+        allows = {}
+        for mode_id in ("dev-safe", "trusted-workspace"):
+            compiled = yaml.safe_load(modes.compile_mode(modes.get_mode(mode_id)))
+            allows[mode_id] = set(compiled["settings"]["egress"]["allow"])
+        missing = allows["dev-safe"] - allows["trusted-workspace"]
+        self.assertEqual(missing, set(), f"trusted-workspace is missing {missing}")
+
+    def test_allow_extra_is_folded_and_not_emitted(self):
+        """`allow_extra` is a compile-time convenience; the engine never sees it."""
+        import yaml
+        compiled = yaml.safe_load(
+            modes.compile_mode(modes.get_mode("trusted-workspace"))
+        )
+        egress = compiled["settings"]["egress"]
+        self.assertNotIn("allow_extra", egress)
+        self.assertIn("*.amazonaws.com", egress["allow"])
+
     def test_dropping_a_metadata_deny_fails_the_compile(self):
         mode = modes.get_mode("dev-safe")
         mode["egress"] = {**mode["egress"], "deny": []}

@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -238,32 +237,27 @@ def _is_external_read(event: Dict[str, Any], workspace: Optional[Path]) -> bool:
     trifecta rule, denies every subsequent shell call. Guessing "untrusted"
     whenever the workspace cannot be resolved would reinstate exactly the
     session-ending behaviour this narrowing exists to remove, on the paths where
-    we know the least. Detection of what the read actually touched stays with
-    the secret-access rules, which match on path and never on session history.
+    we know the least — and it would do so for every read, not a rare one.
+    Detection of what the read actually touched stays with the secret-access
+    rules, which match on path and never on session history.
     """
+    from prismor.runtime.paths import is_within
+
     if workspace is None:
         return False
     path = str(event.get("path") or "")
     if not path:
         return False
-    try:
-        root = Path(workspace).resolve()
-        target = Path(path).expanduser()
-        if not target.is_absolute():
-            target = root / target
-        # Prefix comparison rather than Path.is_relative_to: that is 3.9+ and
-        # this package declares >=3.8. The separator guard is what keeps
-        # /srv/apple from reading as inside /srv/app. Both sides are resolved,
-        # so a symlink out of the workspace correctly reads as external.
-        root_str = str(root)
-        target_str = str(target.resolve())
-        return not (
-            target_str == root_str or target_str.startswith(root_str + os.sep)
-        )
-    except (OSError, ValueError):
-        # Unresolvable path (broken symlink, bad bytes): treat as in-workspace
-        # for the same reason as an unknown workspace.
-        return False
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = Path(workspace) / target
+    # `is_within` resolves both sides, so a symlink pointing out of the
+    # workspace correctly reads as external, and a path that does not exist yet
+    # still resolves lexically. It returns False for the genuinely unresolvable
+    # (a symlink loop), which lands here as "external" — the conservative side,
+    # and rare enough that it cannot re-arm the read-then-anything cliff the
+    # way an unknown workspace would.
+    return not is_within(target, workspace)
 
 
 def classify_tool_tags(

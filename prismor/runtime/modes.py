@@ -32,6 +32,7 @@ Two merge hazards this module exists to get right:
 from __future__ import annotations
 
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -73,8 +74,13 @@ def get_mode(mode_id: str) -> Dict[str, Any]:
 
 # ── Rule selection ──────────────────────────────────────────────────────────
 
-def _floor_rule_ids() -> Tuple[List[str], int]:
+@lru_cache(maxsize=1)
+def _floor_rule_ids() -> Tuple[Tuple[str, ...], int]:
     """(safety-floor rule ids, total rule count) from the default policy.
+
+    Cached: this parses the whole 80-rule default policy, and `mode list` alone
+    reaches it once per mode through `coverage`, with `compile_mode` adding two
+    more per compile. The default policy does not change within a process.
 
     The floor is what `prismor setup` badges "recommended": core rule ids plus
     every rule whose category is a core block category. Self-protection rules
@@ -88,12 +94,14 @@ def _floor_rule_ids() -> Tuple[List[str], int]:
     )
     data = yaml.safe_load(_DEFAULT_POLICY_PATH.read_text(encoding="utf-8")) or {}
     rules = data.get("rules") or []
-    floor = [
+    # A tuple, not a list: a cached mutable return is one caller away from
+    # corrupting every later read of the floor.
+    floor = tuple(
         r["id"] for r in rules
         if r.get("id") not in _SELF_PROTECTION_RULE_IDS
         and (r.get("id") in _NON_OVERRIDABLE_RULE_IDS
              or r.get("category") in _CORE_BLOCK_CATEGORIES)
-    ]
+    )
     return floor, len(rules)
 
 
@@ -280,6 +288,16 @@ def compile_mode(mode: Dict[str, Any], observe: bool = False) -> str:
         if observe and isinstance(value, dict) and "mode" in value:
             value = {**value, "mode": "observe"}
         settings[key] = value
+
+    # `egress.allow_extra` folds into `allow`. YAML anchors cannot extend a
+    # sequence, so without this a mode that wants "the shared destination list
+    # plus a few of its own" has to restate the whole list — and two lists
+    # maintained by hand drift apart silently.
+    egress = settings.get("egress")
+    if isinstance(egress, dict) and egress.get("allow_extra"):
+        egress = dict(egress)
+        egress["allow"] = list(egress.get("allow") or []) + list(egress.pop("allow_extra"))
+        settings["egress"] = egress
 
     rules: List[Dict[str, Any]] = [
         {"id": rid, "mode": "observe" if observe else "enforce"}

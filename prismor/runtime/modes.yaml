@@ -53,10 +53,105 @@ version: "1.0"
 # compiles any posture with nothing enforcing, which answers "what would this
 # block?" instead of only "what does Prismor see?".
 
+# Shared axis fragments. Two modes agreeing by copy is two modes that will one
+# day disagree by typo — and the divergence would be silent, since nothing
+# validates one mode's list against another's.
+#
+# Read-only inspection is ~three quarters of what an agent does, and it is the
+# same set whatever posture you are in: looking at a file is looking at a file.
+_readonly_commands: &readonly_commands
+  - '^\s*(ls|pwd|cat|head|tail|stat|file|wc|find|tree|which|du|df)\b'
+  - '^\s*(grep|rg|ag|ack)\b'
+  - '^\s*git\s+(status|log|diff|show|branch|remote|blame|describe|tag)\b'
+  - '^\s*(pytest|jest|vitest|go\s+test|cargo\s+test)\b'
+
+# Privilege escalation is denied in every posture that has a shell at all.
+_privileged_commands: &privileged_commands
+  - '\bsudo\b'
+  - '\bsu\s+-'
+  - '\bchmod\s+[ugo+]*s\b'
+
+# Every install stops for a human. The package managers are the same list
+# everywhere; what differs between modes is which supply-chain RULES also fire.
+_install_gates: &install_gates
+  - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
+  - '\b(pip3?|uv)\s+(install|add)\b'
+  - '\bcargo\s+add\b'
+  - '\bgem\s+install\b'
+
+# settings.data_boundary already ships enabled with a `secret` class set to
+# block on external and untrusted destinations — it is only sitting in observe.
+# Enforcing it is what stops a secret leaving through a tool call. Secrets
+# reaching the MODEL are a different path and belong to cloaking
+# (`prismor cloak add`), which is per-secret enrollment a mode cannot perform.
+_data_boundary_enforce: &data_boundary_enforce
+  enabled: true
+  mode: enforce
+
+# The developer destination surface. trusted-workspace takes this list and adds
+# its cloud APIs through `allow_extra` rather than restating it, so the two can
+# never drift apart and "trusted is a superset" is structural rather than a
+# property two hand-maintained lists have to keep agreeing about.
+_developer_egress: &developer_egress
+  # Source hosting and release artifacts. raw.githubusercontent.com is
+  # deliberately absent: it serves attacker-controlled content from any repo
+  # and is the canonical fetch-and-run payload host, which would undo the
+  # destination control these modes are built on.
+  - "github.com"
+  - "*.github.com"
+  - "api.github.com"
+  - "codeload.github.com"
+  - "objects.githubusercontent.com"
+  # JS / Node
+  - "registry.npmjs.org"
+  - "npmjs.com"
+  - "yarnpkg.com"
+  # Python
+  - "pypi.org"
+  - "files.pythonhosted.org"
+  # Rust
+  - "crates.io"
+  - "static.crates.io"
+  - "index.crates.io"
+  # Go — module proxy plus the checksum database it verifies against
+  - "proxy.golang.org"
+  - "sum.golang.org"
+  - "pkg.go.dev"
+  # JVM
+  - "repo1.maven.org"
+  - "plugins.gradle.org"
+  # Container registries
+  - "docker.io"
+  - "*.docker.io"
+  - "registry-1.docker.io"
+  - "ghcr.io"
+  - "gcr.io"
+  - "quay.io"
+  # Test-time binaries: in-memory databases and headless browsers. A suite that
+  # downloads its own driver fails without these, and the failure looks like a
+  # broken test rather than a policy verdict. storage.googleapis.com is
+  # deliberately absent: any attacker can create a bucket, so it is a
+  # write-capable destination, not a source.
+  - "fastdl.mongodb.org"
+  - "ms-playwright.azureedge.net"
+  # Documentation. User-generated content among these (Stack Overflow) is
+  # correctly classified as untrusted ingest by the tag layer.
+  - "docs.python.org"
+  - "developer.mozilla.org"
+  - "docs.rs"
+  - "go.dev"
+  - "stackoverflow.com"
+  # Model and agent control planes
+  - "api.anthropic.com"
+  - "api.openai.com"
+  - "api.cursor.sh"
+  - "api2.cursor.sh"
+
 # settings.update() replaces `egress` wholesale (policy_engine._apply_override),
 # so a mode that sets egress and omits these would silently drop the default
 # cloud-metadata deny list — the classic SSRF pivot. Every mode below that
-# enables egress anchors this in.
+# enables egress anchors this in, and _check_metadata_deny fails the compile if
+# one ever stops doing so.
 _metadata_deny: &metadata_deny
   - host: "169.254.169.254"
     reason: "AWS IMDS — hands out instance credentials (IMDSv1/v2)"
@@ -97,70 +192,9 @@ modes:
       default: deny
       allow_private: true
       resolve: true
-      allow:
-        # Source hosting and release artifacts. raw.githubusercontent.com is
-        # deliberately absent: it serves attacker-controlled content from any
-        # repo and is the canonical `curl | bash` payload host, which would
-        # undo the destination control this whole mode is built on.
-        - "github.com"
-        - "*.github.com"
-        - "api.github.com"
-        - "codeload.github.com"
-        - "objects.githubusercontent.com"
-        # JS / Node
-        - "registry.npmjs.org"
-        - "npmjs.com"
-        - "yarnpkg.com"
-        # Python
-        - "pypi.org"
-        - "files.pythonhosted.org"
-        # Rust
-        - "crates.io"
-        - "static.crates.io"
-        - "index.crates.io"
-        # Go — module proxy plus the checksum database it verifies against
-        - "proxy.golang.org"
-        - "sum.golang.org"
-        - "pkg.go.dev"
-        # JVM
-        - "repo1.maven.org"
-        - "plugins.gradle.org"
-        # Container registries
-        - "docker.io"
-        - "*.docker.io"
-        - "registry-1.docker.io"
-        - "ghcr.io"
-        - "gcr.io"
-        - "quay.io"
-        # Test-time binaries: in-memory databases and headless browsers. A
-        # suite that downloads its own driver fails without these, and the
-        # failure looks like a broken test rather than a policy verdict.
-        # storage.googleapis.com is deliberately absent: any attacker can
-        # create a bucket, so it is a write-capable destination, not a source.
-        - "fastdl.mongodb.org"
-        - "ms-playwright.azureedge.net"
-        # Documentation. User-generated content among these (Stack Overflow)
-        # is correctly classified as untrusted ingest by the tag layer.
-        - "docs.python.org"
-        - "developer.mozilla.org"
-        - "docs.rs"
-        - "go.dev"
-        - "stackoverflow.com"
-        # Model and agent control planes
-        - "api.anthropic.com"
-        - "api.openai.com"
-        - "api.cursor.sh"
-        - "api2.cursor.sh"
+      allow: *developer_egress
       deny: *metadata_deny
-    # settings.data_boundary ships enabled with a `secret` class already set to
-    # block on external and untrusted destinations — it is only sitting in
-    # observe. Enforcing it is what stops a secret leaving through a tool call.
-    # Secrets reaching the MODEL are a different path and belong to cloaking
-    # (`prismor cloak add`), which is enrollment-based and cannot be switched on
-    # from here; see residual_risk.
-    data_boundary:
-      enabled: true
-      mode: enforce
+    data_boundary: *data_boundary_enforce
     tool_tags:
       enabled: true
       mode: enforce
@@ -185,26 +219,12 @@ modes:
     commands:
       # Privilege escalation only. Denying curl/wget/nc/ssh by name stopped
       # `curl localhost:3000` (loopback, which allow_private permits) and
-      # `ssh git@github.com` (an auth check), while `curl | bash` — the thing
-      # worth stopping — is already caught precisely by the remote-execution
+      # `ssh git@github.com` (an auth check), while the fetch-and-run chain
+      # worth stopping is already caught precisely by the remote-execution
       # floor rule. Destination control belongs to egress, not to a name match.
-      deny:
-        - '\bsudo\b'
-        - '\bsu\s+-'
-        - '\bchmod\s+[ugo+]*s\b'
-      ask:
-        - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
-        - '\b(pip3?|uv)\s+(install|add)\b'
-        - '\bcargo\s+add\b'
-      # Read-only inspection is ~three quarters of what an agent does. These
-      # short-circuit the mode's own generated command rules so a grep for the
-      # word "sudo" is not a security verdict. Scoped to this mode's rules
-      # only — never to the safety floor.
-      allow:
-        - '^\s*(ls|pwd|cat|head|tail|stat|file|wc|find|tree|which|du|df)\b'
-        - '^\s*(grep|rg|ag|ack)\b'
-        - '^\s*git\s+(status|log|diff|show|branch|remote|blame|describe|tag)\b'
-        - '^\s*(pytest|jest|vitest|go\s+test|cargo\s+test)\b'
+      deny: *privileged_commands
+      ask: *install_gates
+      allow: *readonly_commands
     reward:
       - "Secret exfiltration : BLOCKED. No route to a host nobody allowlisted."
       - "Secrets in payloads : BLOCKED. Data boundary stops them leaving a tool call."
@@ -242,10 +262,12 @@ modes:
       and read credentials.
     default_mode: observe
     enforce_rules: floor
+    # The secret rules, plus the same supply-chain set dev-safe enforces.
+    # credential-aggregation and credential-staging are NOT listed: both are
+    # already in the safety floor (category secret_exfiltration), so naming
+    # them here read as "trusted-workspace adds 7" when it adds 5.
     enforce_extra:
       - secret-access
-      - credential-aggregation
-      - credential-staging
       - claude-credential-access
       - dependency-confusion
       - pkg-install-from-url
@@ -256,24 +278,17 @@ modes:
       default: deny
       allow_private: true     # internal staging APIs and localhost services
       resolve: true
-      allow:
-        - "github.com"
-        - "*.github.com"
-        - "registry.npmjs.org"
-        - "pypi.org"
-        - "files.pythonhosted.org"
-        - "crates.io"
-        - "proxy.golang.org"
-        - "*.docker.io"
+      allow: *developer_egress
+      # Cloud provider APIs, on top of the shared developer surface. Deliberately
+      # NOT in the shared list: `*.googleapis.com` subsumes storage.googleapis.com,
+      # a bucket host anyone can write to, which dev-safe excludes on purpose.
+      # Reaching it is defensible only under this mode's repo-trust assumption.
+      allow_extra:
         - "*.amazonaws.com"
         - "*.googleapis.com"
         - "*.azure.com"
-        - "api.anthropic.com"
-        - "api.openai.com"
       deny: *metadata_deny
-    data_boundary:
-      enabled: true
-      mode: enforce
+    data_boundary: *data_boundary_enforce
     tool_tags:
       enabled: true
       mode: enforce
@@ -290,20 +305,9 @@ modes:
       workspace_mount: rw
     tools: {}
     commands:
-      deny:
-        - '\bsudo\b'
-        - '\bchmod\s+[ugo+]*s\b'
-        - '\bsu\s+-'
-      ask:
-        - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
-        - '\b(pip3?|uv)\s+(install|add)\b'
-        - '\bcargo\s+add\b'
-        - '\bgem\s+install\b'
-      allow:
-        - '^\s*(ls|pwd|cat|head|tail|stat|file|wc|find|tree|which|du|df)\b'
-        - '^\s*(grep|rg|ag|ack)\b'
-        - '^\s*git\s+(status|log|diff|show|branch|remote|blame|describe|tag)\b'
-        - '^\s*(pytest|jest|vitest|go\s+test|cargo\s+test)\b'
+      deny: *privileged_commands
+      ask: *install_gates
+      allow: *readonly_commands
     reward:
       - "Credential access   : GATED. .env, ~/.aws, and SSH keys need a human."
       - "Package installs    : GATED. Nothing enters the tree unattended."
@@ -346,9 +350,7 @@ modes:
       resolve: true
       allow: []
       deny: *metadata_deny
-    data_boundary:
-      enabled: true
-      mode: enforce
+    data_boundary: *data_boundary_enforce
     tool_tags:
       enabled: true
       mode: enforce
