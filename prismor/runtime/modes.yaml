@@ -23,15 +23,35 @@ version: "1.0"
 #                              `mode: enforce`. `floor` = Prismor's safety floor
 #                              (core rule ids + core block categories), which is
 #                              what `prismor setup --recommended` selects.
-#   enforce_extra              rule ids to enforce on top of the selector
-#   egress / tool_tags / sandbox   written verbatim into settings.*
+#   enforce_extra              rule ids to enforce on top of the selector. A
+#                              rule that declares `action: warn` becomes a hard
+#                              block once listed here (contract.VERDICT_RANK) —
+#                              say so in residual_risk when you add one.
+#   egress / tool_tags / sandbox / data_boundary
+#                              written verbatim into settings.*
 #   tools.deny / tools.ask     tool TAGS (Bash, WebFetch, Skill, mcp__srv__tool)
 #   commands.deny / .ask       regexes over the shell command string, compiled
 #                              into one generated rule per action
+#   commands.allow             regexes that SUPPRESS this mode's own generated
+#                              command rules, compiled into allowlist entries.
+#                              Scoped to `mode-*-commands` ids only, so it can
+#                              never reach the safety floor.
 #   reward / friction          what `mode explain` prints — the honest trade
 #   residual_risk              what this mode does NOT stop. Never omit it.
-#   friction_index             0-100 operator judgement; coverage is COMPUTED
-#                              from the real enforcing-rule count, not asserted
+#   friction_index             0-100, PINNED to the measured interruption rate
+#                              over the benign corpus in tests/test_modes.py;
+#                              coverage is likewise computed from the real
+#                              enforcing-rule count, not asserted
+#
+# Any mode that sets `tool_tags.enabled: true` MUST also set
+# `tool_tags.inference_enabled` explicitly. Inheriting the default (true)
+# resolves every workspace file read and every unmapped local tool to
+# `untrusted_content`, which turns `untrusted_content then critical_action`
+# into "read anything, then do anything -> block". compile_mode refuses.
+#
+# Observation is a modifier, not a mode: `prismor mode apply <id> --observe`
+# compiles any posture with nothing enforcing, which answers "what would this
+# block?" instead of only "what does Prismor see?".
 
 # settings.update() replaces `egress` wholesale (policy_engine._apply_override),
 # so a mode that sets egress and omits these would silently drop the default
@@ -52,54 +72,25 @@ _metadata_deny: &metadata_deny
 modes:
 
   # ────────────────────────────────────────────────────────────────────────
-  audit-only:
-    name: "Audit Only"
-    intent: "Baseline telemetry with zero execution risk. Nothing blocks."
-    scenario: >-
-      Onboarding Prismor into a legacy codebase, or watching a new agent
-      (Claude Code, Cursor, Windsurf) for a week to learn what it actually does
-      before deciding what to stop. Findings land in the audit trail; the agent
-      never notices Prismor is there.
-    default_mode: observe
-    enforce_rules: none
-    egress:
-      enabled: false          # unrestricted — no destination check at all
-    tool_tags:
-      enabled: true
-      mode: observe
-      rules:
-        - "untrusted_content then critical_action -> warn"
-    sandbox:
-      enabled: false          # host native, unconfined
-    tools: {}
-    commands: {}
-    reward:
-      - "Full visibility     : every tool call, command, and destination is recorded."
-      - "Zero breakage       : no policy verdict can stop a build or a test run."
-      - "Tag telemetry       : trifecta sequences are logged so you can size the risk."
-    friction:
-      - "Nothing is prevented. This mode is a camera, not a lock."
-    residual_risk: >-
-      Zero real-time mitigation. An agent under prompt injection can exfiltrate
-      secrets over HTTP, run destructive shell commands, or rewrite CI workflow
-      files, and Prismor will faithfully record all of it after the fact.
-      Security here rests entirely on someone reading the audit trail.
-      Prismor's own self-protection rules still enforce — they are not a policy
-      choice — so the agent cannot quietly disable this observation.
-    friction_index: 0
-    recommended_for: "Week-one rollout, legacy repos, measuring before enforcing."
-    not_recommended_for: "Anything touching production credentials or customer data."
-
-  # ────────────────────────────────────────────────────────────────────────
   dev-safe:
     name: "Development Safe"
-    intent: "GitHub and package registries only. Everything else is blocked."
+    intent: "Known developer destinations only. Arbitrary hosts are blocked."
     scenario: >-
-      Everyday feature work, bug fixes, and PR review on GitHub-centric
-      projects. git and gh work, npm/pip resolve, tests run — and an agent that
-      gets injected cannot reach an arbitrary host to post what it read.
+      Everyday feature work, bug fixes, and PR review. git and gh work, every
+      major registry resolves, test suites fetch their fixtures and browser
+      binaries, docs are readable — and an agent that gets injected cannot
+      reach a host nobody put on the list to post what it read.
     default_mode: observe
     enforce_rules: floor
+    # Supply-chain rules cost nothing at rest: they only fire on install
+    # commands, which `commands.ask` already stops for a human. Note these three
+    # declare `action: warn` and are promoted to a hard block by
+    # contract.VERDICT_RANK once a mode enforces them — including on a private
+    # index URL. That is deliberate here and called out in residual_risk.
+    enforce_extra:
+      - dependency-confusion
+      - pkg-install-from-url
+      - pkg-suspicious-name
     egress:
       enabled: true
       mode: enforce
@@ -107,56 +98,138 @@ modes:
       allow_private: true
       resolve: true
       allow:
+        # Source hosting and release artifacts. raw.githubusercontent.com is
+        # deliberately absent: it serves attacker-controlled content from any
+        # repo and is the canonical `curl | bash` payload host, which would
+        # undo the destination control this whole mode is built on.
         - "github.com"
         - "*.github.com"
         - "api.github.com"
         - "codeload.github.com"
         - "objects.githubusercontent.com"
+        # JS / Node
         - "registry.npmjs.org"
+        - "npmjs.com"
+        - "yarnpkg.com"
+        # Python
         - "pypi.org"
         - "files.pythonhosted.org"
+        # Rust
+        - "crates.io"
+        - "static.crates.io"
+        - "index.crates.io"
+        # Go — module proxy plus the checksum database it verifies against
+        - "proxy.golang.org"
+        - "sum.golang.org"
+        - "pkg.go.dev"
+        # JVM
+        - "repo1.maven.org"
+        - "plugins.gradle.org"
+        # Container registries
+        - "docker.io"
+        - "*.docker.io"
+        - "registry-1.docker.io"
+        - "ghcr.io"
+        - "gcr.io"
+        - "quay.io"
+        # Test-time binaries: in-memory databases and headless browsers. A
+        # suite that downloads its own driver fails without these, and the
+        # failure looks like a broken test rather than a policy verdict.
+        # storage.googleapis.com is deliberately absent: any attacker can
+        # create a bucket, so it is a write-capable destination, not a source.
+        - "fastdl.mongodb.org"
+        - "ms-playwright.azureedge.net"
+        # Documentation. User-generated content among these (Stack Overflow)
+        # is correctly classified as untrusted ingest by the tag layer.
+        - "docs.python.org"
+        - "developer.mozilla.org"
+        - "docs.rs"
+        - "go.dev"
+        - "stackoverflow.com"
+        # Model and agent control planes
+        - "api.anthropic.com"
+        - "api.openai.com"
+        - "api.cursor.sh"
+        - "api2.cursor.sh"
       deny: *metadata_deny
+    # settings.data_boundary ships enabled with a `secret` class already set to
+    # block on external and untrusted destinations — it is only sitting in
+    # observe. Enforcing it is what stops a secret leaving through a tool call.
+    # Secrets reaching the MODEL are a different path and belong to cloaking
+    # (`prismor cloak add`), which is enrollment-based and cannot be switched on
+    # from here; see residual_risk.
+    data_boundary:
+      enabled: true
+      mode: enforce
     tool_tags:
       enabled: true
       mode: enforce
+      # Declared, never inherited. The default (true) resolves `file_read` and
+      # every unmapped local tool to untrusted_content, which turns the rule
+      # below into "read anything, then do anything -> block" and ends the
+      # session on its first shell call. modes.py fails the compile if a
+      # tag-enforcing mode omits this.
+      inference_enabled: true
       rules:
         - "untrusted_content then critical_action -> block"
     sandbox:
       enabled: true
       mode: enforce
-      network: none
+      # Ring 2. `none` would cut the network this mode's whole egress allowlist
+      # exists to describe, so every install would fail and the allowlist would
+      # never be consulted.
+      network: allowlist
       read_only_root: true
       workspace_mount: rw
     tools: {}
     commands:
+      # Privilege escalation only. Denying curl/wget/nc/ssh by name stopped
+      # `curl localhost:3000` (loopback, which allow_private permits) and
+      # `ssh git@github.com` (an auth check), while `curl | bash` — the thing
+      # worth stopping — is already caught precisely by the remote-execution
+      # floor rule. Destination control belongs to egress, not to a name match.
       deny:
-        - '\bcurl\b'
-        - '\bwget\b'
-        - '\bnc\b|\bnetcat\b|\bncat\b'
         - '\bsudo\b'
-        - '\bssh\b\s+\S+@'
+        - '\bsu\s+-'
+        - '\bchmod\s+[ugo+]*s\b'
       ask:
         - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
         - '\b(pip3?|uv)\s+(install|add)\b'
         - '\bcargo\s+add\b'
+      # Read-only inspection is ~three quarters of what an agent does. These
+      # short-circuit the mode's own generated command rules so a grep for the
+      # word "sudo" is not a security verdict. Scoped to this mode's rules
+      # only — never to the safety floor.
+      allow:
+        - '^\s*(ls|pwd|cat|head|tail|stat|file|wc|find|tree|which|du|df)\b'
+        - '^\s*(grep|rg|ag|ack)\b'
+        - '^\s*git\s+(status|log|diff|show|branch|remote|blame|describe|tag)\b'
+        - '^\s*(pytest|jest|vitest|go\s+test|cargo\s+test)\b'
     reward:
-      - "Secret exfiltration : BLOCKED. No route to an arbitrary HTTP endpoint."
+      - "Secret exfiltration : BLOCKED. No route to a host nobody allowlisted."
+      - "Secrets in payloads : BLOCKED. Data boundary stops them leaving a tool call."
       - "Destructive commands: BLOCKED. rm -rf / and privilege escalation denied."
-      - "Lethal trifecta     : BLOCKED. Untrusted read then critical action stops."
-      - "Supply chain        : GATED. Installs need a human before they run."
+      - "Lethal trifecta     : BLOCKED. Web/MCP ingest then critical action stops."
+      - "Supply chain        : BLOCKED. Confusion, URL installs, and typosquats denied."
+      - "Read-only work      : FREE. Inspection commands never prompt."
     friction:
-      - "Network isolation   : docs and APIs outside GitHub/npm/PyPI are unreachable."
-      - "Shell capabilities  : curl and wget inside agent scripts will fail."
+      - "Network destinations: a vendor API outside the list needs an explicit entry."
+      - "Private registries  : an internal index URL is denied, not prompted."
       - "Dependency changes  : adding a package prompts for approval."
     residual_risk: >-
-      Exfiltration through the channels this mode allows. An injected agent can
-      still read .env and paste it into a public GitHub issue or PR comment via
-      api.github.com, which is on the allowlist by design. Dependency confusion
-      through the public registries remains possible — the install gate raises
-      the cost but a human clicking through it is still the whole control.
-    friction_index: 40
+      Exfiltration through the channels this mode allows, and the list is now
+      wide. An injected agent can still read .env and paste it into a public
+      GitHub issue or PR comment via api.github.com, which is allowlisted by
+      design; the same is true of any container registry or docs host that
+      accepts a request body. This is a control on arbitrary destinations, not
+      a control on trusted ones. Secrets reaching the model's context are also
+      out of scope here — data_boundary screens what leaves through a tool
+      call, while keeping a value out of the transcript needs `prismor cloak
+      add`, which is per-secret enrollment a mode cannot perform for you.
+    # Measured, not judged — see the note on trusted-workspace.
+    friction_index: 9
     recommended_for: "Feature branches, PR review, open-source contribution."
-    not_recommended_for: "Debugging third-party webhooks or multi-cloud infra setup."
+    not_recommended_for: "Repos that install from a private index, or multi-cloud infra setup."
 
   # ────────────────────────────────────────────────────────────────────────
   trusted-workspace:
@@ -198,9 +271,14 @@ modes:
         - "api.anthropic.com"
         - "api.openai.com"
       deny: *metadata_deny
+    data_boundary:
+      enabled: true
+      mode: enforce
     tool_tags:
       enabled: true
       mode: enforce
+      # Declared, never inherited — see the note on dev-safe.
+      inference_enabled: true
       rules:
         - "private_data with external_comms -> block"
         - "untrusted_content then critical_action -> block"
@@ -221,11 +299,17 @@ modes:
         - '\b(pip3?|uv)\s+(install|add)\b'
         - '\bcargo\s+add\b'
         - '\bgem\s+install\b'
+      allow:
+        - '^\s*(ls|pwd|cat|head|tail|stat|file|wc|find|tree|which|du|df)\b'
+        - '^\s*(grep|rg|ag|ack)\b'
+        - '^\s*git\s+(status|log|diff|show|branch|remote|blame|describe|tag)\b'
+        - '^\s*(pytest|jest|vitest|go\s+test|cargo\s+test)\b'
     reward:
       - "Credential access   : GATED. .env, ~/.aws, and SSH keys need a human."
       - "Package installs    : GATED. Nothing enters the tree unattended."
       - "Privilege escalation: BLOCKED. sudo, setuid, and su are denied outright."
-      - "Data boundary       : BLOCKED. Private data cannot leave via external comms."
+      - "Data boundary       : BLOCKED. Secrets and private data cannot leave a tool call."
+      - "Read-only work      : FREE. Inspection commands never prompt."
     friction:
       - "Approval prompts    : every dependency change stops for consent."
       - "Secret reads        : debugging a credential issue needs prismor unlock."
@@ -237,7 +321,10 @@ modes:
       paths. Indirect injection sitting in internal code comments or a database
       dump can steer the agent into writing a subtle logic bug or a backdoor,
       which no destination allowlist detects.
-    friction_index: 25
+    # Measured, not judged: tests/test_modes.py pins this to the interruption
+    # rate over BENIGN_CORPUS. Was 25 by estimate; the corpus says 9, and the
+    # only things it stops are the four package installs.
+    friction_index: 9
     recommended_for: "Trusted internal repos, local microservice and Docker work."
     not_recommended_for: "Repos that ingest untrusted third-party content or PII."
 
@@ -259,9 +346,14 @@ modes:
       resolve: true
       allow: []
       deny: *metadata_deny
+    data_boundary:
+      enabled: true
+      mode: enforce
     tool_tags:
       enabled: true
       mode: enforce
+      # Declared, never inherited — see the note on dev-safe.
+      inference_enabled: true
       rules:
         - "untrusted_content then critical_action -> block"
         - "private_data with external_comms -> block"
