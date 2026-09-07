@@ -15,6 +15,7 @@ where they can intercept and what they can do there:
 | **Mirror** | the agent's own built-ins, served over MCP | yes | yes | yes |
 | **SDK adapters** | in-process framework agents | yes | no | no |
 | **eval-server** | non-Python callers and external proxies | yes | yes | yes |
+| **LLM proxy** | the agent's model traffic, including agents with no hooks | yes | yes | yes |
 | **Inference hook** | a hosted transcript-turn channel | yes | no | no |
 
 Run `prismor surfaces` to see which of these are switched on for each agent
@@ -23,8 +24,16 @@ detected on this machine, and which are possible but off.
 The rest of this page is about the two that govern a coding agent on a
 developer's machine, where the choice is a real decision. For the others:
 adapters ship with each framework (see `docs/frameworks-overview.md`), the
-eval-server is documented in the [decision contract](decision-contract.md), and
-the inference-hook channel in `docs/inference-hook.md`.
+eval-server is documented in the [decision contract](decision-contract.md), the
+LLM proxy in [the LLM proxy page](llm-proxy.md), and the inference-hook channel
+in `docs/inference-hook.md`.
+
+One note on the LLM proxy, because it is the only surface that does not need
+the agent's cooperation: every other row requires something to be hooked,
+wired, or imported. The proxy requires only that model traffic pass through a
+URL you control, which makes it the fallback for an agent that supports none of
+the others — and the reason to reach for it *last* when the agent does, since a
+hook sees tool calls the model never routes through an API.
 
 ## Hooks vs the MCP mirror
 

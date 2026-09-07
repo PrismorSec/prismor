@@ -279,6 +279,19 @@ SURFACES: Tuple[Surface, ...] = (
               "wants Prismor's verdict for traffic it is already carrying.",
     ),
     Surface(
+        id="llm-proxy",
+        title="LLM proxy",
+        kind="gateway",
+        module="prismor.runtime.proxy",
+        normalizer="prismor.runtime.proxy:Screen.tool_event",
+        can_refuse=True, can_rewrite=True, can_redact=True,
+        notes="Sits on the model traffic itself (ANTHROPIC_BASE_URL / "
+              "OPENAI_BASE_URL), so it governs agents with no hook support at "
+              "all. Screens the outbound prompt and every tool_use the model "
+              "proposes, reshaped through the mirror's normalizer so one rule "
+              "table covers a hooked, mirrored and proposed call alike.",
+    ),
+    Surface(
         id="inference-hook",
         title="Inference hook channel",
         kind="service",

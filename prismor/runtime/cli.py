@@ -334,6 +334,21 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
+    # ── proxy: the LLM lane ──────────────────────────────────────────────
+    if args.command == "proxy":
+        from pathlib import Path as _Path
+        from prismor.runtime.proxy import run_proxy
+        run_proxy(
+            host=args.host,
+            port=args.port,
+            mode=args.mode,
+            workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+            config_path=_Path(args.config) if getattr(args, "config", None) else None,
+            session_id=getattr(args, "session_id", "") or "",
+            agent_name=getattr(args, "agent_name", "") or "",
+        )
+        return
+
     # ── inference-hook: Claude Inference Hooks AI-security server + tools ──
     # `inference-hook-server` is the pre-1.40 spelling, kept as an alias.
     if args.command in ("inference-hook", "inference-hook-server"):
@@ -2892,6 +2907,33 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
+
+    # ── proxy: the LLM lane (governs agents that cannot be hooked) ───────
+    _pp = subparsers.add_parser(
+        "proxy",
+        help="Run the Prismor LLM proxy — screen model traffic, and every tool call the model proposes",
+        description="Sits in front of Anthropic/OpenAI-compatible endpoints so an agent Prismor "
+        "cannot hook is still governed: point it at the proxy with ANTHROPIC_BASE_URL or "
+        "OPENAI_BASE_URL. The outbound prompt is screened and cloak-masked; every tool_use in the "
+        "response is reshaped into the same event a Bash hook produces and run through the same "
+        "policy, so a rule that stops a command at the hook layer also stops the model from "
+        "proposing it. Streaming tool calls are held until they can be judged. Virtual keys in "
+        "the config swap a Prismor key for the real provider credential, so agents never hold one.",
+    )
+    _pp.add_argument("--port", type=int, default=7080, help="Port to listen on (default: 7080)")
+    _pp.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    _pp.add_argument("--mode", choices=["observe", "enforce"], default="observe",
+                     help="observe=log only (default), enforce=block policy violations")
+    _pp.add_argument("--workspace", default=None,
+                     help="Workspace for policy + session store (default: $PRISMOR_HOME/surfaces/proxy). "
+                          "Point it at a repo only to enforce that repo's policy - its instruction "
+                          "files then join every evaluation")
+    _pp.add_argument("--config", default=None,
+                     help="Upstreams and virtual keys (default: $PRISMOR_HOME/proxy.json)")
+    _pp.add_argument("--session-id", dest="session_id", default="",
+                     help="Stable session id (default: fresh per process). Env: PRISMOR_SESSION_ID")
+    _pp.add_argument("--agent-name", dest="agent_name", default="",
+                     help="Per-instance agent name (enables the console kill-switch and per-agent policy)")
 
     # ── surfaces: which enforcement surfaces are governing this machine ──
     subparsers.add_parser(
