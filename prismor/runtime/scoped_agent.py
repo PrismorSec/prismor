@@ -444,7 +444,10 @@ def synthesize_scoped_rules(
         rules["allowed_tools"] = [t for t in rules["allowed_tools"] if t in available_set]
         rules["deny_tools"] = [t for t in rules["deny_tools"] if t in available_set]
 
-        return _apply_cloak_invariant(rules, goal)
+        rules = _apply_cloak_invariant(rules, goal)
+        # Provenance: an LLM prediction, not operator intent (issue #257).
+        rules["source"] = "synthesized"
+        return rules
 
     except Exception as exc:
         sys.stderr.write(f"[prismor] scoped agent API error: {exc} — using static fallback.\n")
@@ -559,7 +562,11 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
         "deny_network": deny_network,
     }
     # Cloaked-secret placeholders always require Bash (decloak runs in shell).
-    return _apply_cloak_invariant(rules, goal)
+    rules = _apply_cloak_invariant(rules, goal)
+    # Provenance: this scope is a prediction, not operator intent. Enforcement
+    # softens accordingly — see _scoped_finding (issue #257).
+    rules["source"] = "synthesized"
+    return rules
 
 
 # ── Sidecar persistence ───────────────────────────────────────────────────
@@ -673,6 +680,10 @@ def check_scoped_rules(
     if rules.get("paused", False):
         return None  # prismor paused by human operator via dashboard
 
+    # Absent `source` means a scope written before provenance was recorded (or
+    # by an operator surface): keep the strict, hard-blocking behaviour. Only a
+    # scope explicitly marked as machine-synthesized softens.
+    _synth = str(rules.get("source") or "") == "synthesized"
     event_type = event.get("type", "")
     tool_name = _resolve_tool_name(event)
 
@@ -707,6 +718,7 @@ def check_scoped_rules(
                 session_id,
                 f"Tool '{tool_name}' is explicitly denied for this session",
                 event_type,
+                        _synth,
             )
 
         # "*" in allowed_tools = allow-all-except-denied. The dashboard writes
@@ -738,12 +750,14 @@ def check_scoped_rules(
                         session_id,
                         f"Tool '{tool_name}' is not in scope for this session",
                         event_type,
+                        _synth,
                     )
             else:
                 return _scoped_finding(
                     session_id,
                     f"Tool '{tool_name}' is not in scope for this session",
                     event_type,
+                        _synth,
                 )
 
     # Path check for file events
@@ -756,6 +770,7 @@ def check_scoped_rules(
                     session_id,
                     f"Path '{path}' is outside the scoped paths for this session",
                     event_type,
+                        _synth,
                 )
 
     # Network check
@@ -766,24 +781,49 @@ def check_scoped_rules(
                 session_id,
                 f"Network access denied by scoped rules (url: {url[:100]})",
                 event_type,
+                        _synth,
             )
 
     return None
 
 
-def _scoped_finding(session_id: str, reason: str, event_type: str) -> Dict[str, Any]:
-    """Build a finding dict for a scoped rule violation."""
+def _scoped_finding(
+    session_id: str,
+    reason: str,
+    event_type: str,
+    synthesized: bool = False,
+) -> Dict[str, Any]:
+    """Build a finding dict for a scoped rule violation.
+
+    ``synthesized`` distinguishes a scope an LLM predicted at session start from
+    one an operator authored. Both used to hard-block, which is wrong for the
+    first kind: the signal there is "the synthesizer did not anticipate this
+    tool", not "this call is hostile". When the prediction misses a tool the
+    user's own request implies, the legitimate call is denied along with the
+    attacks — measured as the only cause of blocking a legitimate action in an
+    ~800-trial benchmark (issue #257).
+
+    Synthesized misses therefore escalate (``step_up``) where a surface can ask
+    a human, and degrade to a warning where none exists, rather than failing
+    closed on a guess. Operator-authored denials keep hard-blocking.
+    """
     return {
         "id": f"{session_id}:scoped-agent",
-        "severity": "HIGH",
+        "severity": "MEDIUM" if synthesized else "HIGH",
         "category": "scoped_agent",
         "title": f"[scoped agent] {reason}",
         "evidence": reason,
         "ruleId": "scoped-agent",
-        "action": "block",
-        # Scope denials (IAM / scoped-agent) are explicit operator intent, not
-        # observe-by-default detection — they always enforce.
+        "action": "step_up" if synthesized else "block",
+        # Scope denials are operator intent, not observe-by-default detection —
+        # they always enforce.
         "mode": "enforce",
+        # Provenance, so telemetry and the console can report capability scoping
+        # separately from attack recognition instead of merging the two.
+        "scopeSource": "synthesized" if synthesized else "operator",
+        # Honoured by the step_up path: a surface with no way to ask a human
+        # warns instead of denying, rather than fail-closing on a prediction.
+        "softFailOpen": bool(synthesized),
     }
 
 

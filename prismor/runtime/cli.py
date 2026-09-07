@@ -1723,9 +1723,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                     }) + "\n")
                     return
                 # No inline-approval surface (cursor/windsurf/codex/grok/kiro/
-                # crush/openhands/continue/goose): fail closed.
-                sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
-                raise SystemExit(2)
+                # crush/openhands/continue/goose).
+                if blocking.get("softFailOpen"):
+                    # A machine-synthesized capability scope that did not predict
+                    # this tool. There is nobody to ask, and the finding is a
+                    # prediction miss rather than a detected attack — denying
+                    # here is what made the no-injection utility control fail in
+                    # 2 of 3 benchmark runs (issue #257). Warn and proceed; the
+                    # attack-specific rules still block on their own merits.
+                    sys.stderr.write(
+                        f"[prismor] outside this session's synthesized scope "
+                        f"(no approval surface — allowed, not blocked): {reason}\n"
+                    )
+                else:
+                    sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
+                    raise SystemExit(2)
 
             if (
                 blocking is not None
