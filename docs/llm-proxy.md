@@ -92,6 +92,36 @@ The real credential is read from the environment variable named by
 `fallback` names upstreams to try when the primary fails to connect or returns
 5xx, for buffered requests.
 
+## Workspace
+
+The proxy reads policy and stores its sessions in `$PRISMOR_HOME/surfaces/proxy`
+unless `--workspace` says otherwise. That default is deliberate: this surface is
+a long-lived server governing somebody else's agent, so the directory it was
+launched from is not evidence about the traffic -- but the instruction-file
+scan reads that directory's `CLAUDE.md` / `AGENTS.md` and attributes what it
+finds to every event. Start the proxy inside a security repo whose own docs
+quote the attack strings its rules match and every request is refused with
+`source: project_memory`. It looks like a false positive on the agent; it is a
+true positive on the wrong subject. Pass `--workspace` only to enforce a
+specific repo's policy on purpose.
+
+## Governing n8n (and other hosted builders)
+
+n8n runs its agents inside a container and offers no hook, no MCP client for a
+stdio server, and no SDK to import -- the exact case this surface exists for.
+Point the OpenAI credential's **Base URL** at the proxy and change nothing else
+on the canvas:
+
+```bash
+prismor proxy --mode enforce --host 0.0.0.0            # reachable from the container
+# n8n -> Credentials -> OpenAi account -> Base URL:
+#   http://host.docker.internal:7080/v1
+```
+
+Every turn is then screened, and a tool the model proposes is judged before n8n
+executes it. Bind beyond loopback only on a trusted network, or put TLS in
+front.
+
 ## Modes and failure
 
 `--mode observe` (default) evaluates and logs but never blocks. `--mode enforce`

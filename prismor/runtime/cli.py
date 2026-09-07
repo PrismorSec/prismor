@@ -2924,7 +2924,10 @@ def build_parser() -> argparse.ArgumentParser:
     _pp.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _pp.add_argument("--mode", choices=["observe", "enforce"], default="observe",
                      help="observe=log only (default), enforce=block policy violations")
-    _pp.add_argument("--workspace", default=None, help="Workspace path for policy + session store")
+    _pp.add_argument("--workspace", default=None,
+                     help="Workspace for policy + session store (default: $PRISMOR_HOME/surfaces/proxy). "
+                          "Point it at a repo only to enforce that repo's policy - its instruction "
+                          "files then join every evaluation")
     _pp.add_argument("--config", default=None,
                      help="Upstreams and virtual keys (default: $PRISMOR_HOME/proxy.json)")
     _pp.add_argument("--session-id", dest="session_id", default="",

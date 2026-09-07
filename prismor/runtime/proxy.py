@@ -1037,12 +1037,32 @@ def default_config_path() -> Path:
     return Path(home) / "proxy.json"
 
 
+def default_workspace() -> Path:
+    """Where the proxy reads policy and stores sessions when none is given.
+
+    Deliberately *not* ``Path.cwd()``. The proxy is a long-lived server
+    governing some other agent's traffic, so the directory it happens to be
+    launched from has nothing to do with what it screens - but the
+    instruction-file scan reads that directory's CLAUDE.md / AGENTS.md and
+    attributes what it finds to every event. Start it from a security repo
+    whose own docs quote the attack strings its rules match and every request
+    is refused with ``source: project_memory``, which reads as a false
+    positive on the agent and is not one. A neutral home-owned directory keeps
+    the surface judging only the traffic; ``--workspace`` opts into a repo's
+    policy on purpose.
+    """
+    home = os.environ.get("PRISMOR_HOME") or str(Path.home() / ".prismor")
+    ws = Path(home) / "surfaces" / "proxy"
+    ws.mkdir(parents=True, exist_ok=True)
+    return ws
+
+
 def run_proxy(host: str = "127.0.0.1", port: int = 7080,
               workspace: Optional[Path] = None, mode: str = "observe",
               config_path: Optional[Path] = None,
               session_id: str = "", agent_name: str = "") -> None:
     """Start the LLM proxy (blocking)."""
-    ws = workspace or Path.cwd()
+    ws = workspace or default_workspace()
     config = ProxyConfig.load(config_path if config_path is not None
                               else default_config_path())
     ProxyHandler.config = config

@@ -279,5 +279,20 @@ def test_bad_config_raises():
         ProxyConfig({"keys": ["not", "an", "object"]})
 
 
+def test_default_workspace_is_not_the_launch_directory(monkeypatch, tmp_path):
+    """A repo the proxy merely started in must not join every evaluation.
+
+    Launched from a source checkout, the instruction-file scan reads that
+    repo's CLAUDE.md and attributes it to every request -- which refused
+    benign traffic with source=project_memory until the default moved.
+    """
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    ws = proxy_mod.default_workspace()
+    assert ws != Path.cwd()
+    assert ws == tmp_path / "home" / "surfaces" / "proxy"
+    assert ws.is_dir()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
