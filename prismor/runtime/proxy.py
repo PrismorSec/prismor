@@ -56,6 +56,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import signal
 import ssl
 import sys
 import threading
@@ -268,6 +269,7 @@ class Screen:
         self.session_id = session_id
         self.agent_name = agent_name
         self._events = 0
+        self._unsnapshotted = 0
         # Serialized for the same reason the MCP gateway serializes: the
         # trifecta TagLedger is order-dependent, and concurrent evaluations
         # could let the completing half of a forbidden tag pair through.
@@ -376,8 +378,23 @@ class Screen:
             sys.stderr.write(f"[prismor-proxy] session log error: {exc}\n")
             return
         self._events += 1
+        self._unsnapshotted += 1
         if self._events % SNAPSHOT_EVERY:
             return
+        self.snapshot()
+
+    def snapshot(self) -> None:
+        """Rebuild the session snapshot the console and `prismor sessions` read.
+
+        Called every SNAPSHOT_EVERY events and again when the surface stops. A
+        proxy session is often one chat turn -- the n8n agent that produced a
+        blocked install command logged five events -- so a purely periodic
+        rebuild left short sessions with a session log on disk and no session
+        anywhere an operator looks.
+        """
+        if not self._unsnapshotted:
+            return
+        self._unsnapshotted = 0
         try:
             from prismor.runtime.cli import analyze_events
             from prismor.runtime.store import read_session_events, save_session_snapshot
@@ -1096,10 +1113,25 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
         print("[prismor] auth pass-through (no virtual keys configured)")
     print(f"[prismor] point an agent at it:  ANTHROPIC_BASE_URL={base} claude")
     print(f"[prismor]                        OPENAI_BASE_URL={base}/v1 codex")
+    def _stop(signum, _frame):
+        # SIGTERM is how a container stops, so the flush has to hang off the
+        # signal rather than only off KeyboardInterrupt.
+        raise KeyboardInterrupt
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _stop)
+        except (ValueError, OSError):
+            pass  # not the main thread, or the platform lacks the signal
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[prismor] proxy stopped.")
+    finally:
+        # Sessions here are often a single chat turn, well under the periodic
+        # rebuild, so without this the console never sees them at all.
+        ProxyHandler.screen.snapshot()
 
 
 if __name__ == "__main__":

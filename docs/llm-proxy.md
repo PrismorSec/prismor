@@ -127,6 +127,14 @@ Every turn is then screened, and a tool the model proposes is judged before n8n
 executes it. Bind beyond loopback only on a trusted network, or put TLS in
 front.
 
+## Running it as a service
+
+It is a long-lived server, so it wants a supervisor, a volume for
+`$PRISMOR_HOME`, and somewhere for its findings to go.
+[deploy-docker.md](deploy-docker.md) has an image, a compose file that stands
+it up beside n8n, and the sink and enrollment configuration that make its
+sessions visible in the console.
+
 ## Modes and failure
 
 `--mode observe` (default) evaluates and logs but never blocks. `--mode enforce`

@@ -1,5 +1,33 @@
 ## [Unreleased]
 
+## [1.46.0] — 2026-09-07
+
+### Added
+- **Prismor runs as a container.** `packaging/docker/` carries an image, an
+  entrypoint that enrolls on first boot, and a compose file that stands the
+  proxy up beside n8n with its identity and session store on a volume. The
+  surfaces that front an agent Prismor cannot hook are long-lived servers, so
+  they want a supervisor and a restart policy rather than a shell someone
+  remembers to keep open. `PRISMOR_ENROLL_TOKEN` makes the container a device
+  in the console; `PRISMOR_AGENT_NAME` is what the per-agent kill switch and
+  mode override target; `PRISMOR_WORKSPACE_SCOPE=managed` is required because a
+  container has no git remote to claim and would otherwise resolve as personal
+  and report nothing. Enrollment failure is not fatal — a proxy that refused to
+  start because the control plane was unreachable would take the agent down
+  with it. Docs: `docs/deploy-docker.md`.
+
+### Fixed
+- **A short proxy session never reached the console.** The session snapshot the
+  console and `prismor sessions` read was rebuilt every 25 events — right for
+  amortizing a quadratic re-analysis on a long-lived surface, wrong for a
+  proxy session that is often a single chat turn. A governed n8n agent whose
+  install command was blocked logged five events and produced no session row
+  anywhere an operator looks: findings reached the sinks, but the session they
+  belonged to did not exist. The snapshot is now flushed on shutdown, on
+  SIGTERM as well as SIGINT so a container stop counts, and only when there is
+  something unsnapshotted to write.
+
+
 ## [1.45.3] — 2026-09-07
 
 ### Fixed

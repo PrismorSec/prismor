@@ -356,5 +356,28 @@ def test_unrouted_path_follows_the_credential_the_client_presented():
     assert _provider_for("/v1/models", {}) == "anthropic"  # config default
 
 
+def test_short_session_is_snapshotted_on_shutdown(monkeypatch, tmp_path):
+    """A session shorter than the rebuild interval must still be visible.
+
+    The rebuild is periodic because re-analysing the whole log on every event
+    is quadratic for a long-lived surface. But a proxy session is often one
+    chat turn -- the n8n agent that produced a blocked install command logged
+    five events -- so periodic-only left a session log on disk and no session
+    in `prismor sessions`, the dashboard or the console.
+    """
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="short-session", agent_name="n8n")
+    saved = []
+    monkeypatch.setattr(proxy_mod.Screen, "snapshot",
+                        lambda self: saved.append(self.session_id))
+
+    assert screen._events == 0
+    proxy_mod.Screen._persist(screen, {"type": "prompt", "prompt": "hello"})
+    assert saved == [], "no periodic rebuild is due after one event"
+
+    proxy_mod.Screen.snapshot(screen)
+    assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
