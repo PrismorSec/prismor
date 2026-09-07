@@ -1,6 +1,44 @@
 ## [Unreleased]
 
+## [1.45.0] — 2026-09-07
+
 ### Added
+- **`prismor proxy` — the enforcement surface that needs no cooperation from
+  the agent.** Every other surface requires something to be hooked, wired or
+  imported; this one requires only that model traffic pass through a URL you
+  control, so an agent with no hook protocol, no stdio MCP client and no SDK
+  is still governed. Two things are screened, on opposite sides of the
+  request: the outbound prompt (flattened, evaluated, then cloak-masked, so a
+  live credential the agent pulled into context does not land in a third
+  party's logs), and **the tool calls the model proposed**. A `tool_use` block
+  is not treated as prose — it is reshaped by `mirror.shape_call_event` into
+  the same `shell` / `file_read` / `file_write` / `network` event a Bash hook
+  produces and run through the same `evaluate_tool_call`, so a rule that stops
+  a command at the hook layer also stops the model from *proposing* it, with
+  no second rule to write and no second place for the two to disagree.
+  Streaming is held at the content-block level: a tool call is buffered from
+  `content_block_start` to `content_block_stop`, judged whole, then released
+  verbatim or replaced with a refusal at the same block index — the client
+  never receives a complete tool call that policy denies. Denied calls are
+  replaced rather than deleted, because an agent handed a silent no-op simply
+  tries again. Virtual keys let a client present a Prismor key that the proxy
+  swaps for the real provider credential, so revoking an agent's access is an
+  edit to one file instead of a rotation across every machine that ever ran
+  it. Anthropic and OpenAI dialects share one holdback path; unknown paths
+  forward untouched so provider handshakes keep working.
+
+  ```bash
+  prismor proxy --mode enforce
+  ANTHROPIC_BASE_URL=http://127.0.0.1:7080 claude
+  OPENAI_BASE_URL=http://127.0.0.1:7080/v1 codex
+  ```
+
+  Reach for it when the agent supports nothing else. It is the widest net by
+  deployment and the narrowest by visibility — it sees only what the agent
+  routes through a model API, so where hooks are available, run hooks. Docs:
+  `docs/llm-proxy.md`, including the n8n recipe (a containerised builder with
+  no other interposition point, governed by one credential field).
+
 - **`type: otel` telemetry sink** — findings export over OTLP/HTTP to any
   OpenTelemetry collector, so Prismor's decisions land in the observability
   stack a team already runs (Grafana, Honeycomb, Datadog, an OTel-fed SIEM)
@@ -19,6 +57,151 @@
       endpoint: http://localhost:4318        # /v1/logs appended if absent
       headers: { "Authorization": "Bearer ${OTEL_TOKEN}" }
   ```
+
+- **The contextual layer screens what tools return, by default.** The per-tool
+  normalizers kept only a call's arguments, so a Claude Code `Read` reached
+  the policy engine as `{type: file_read, path}` with the file body dropped —
+  the layer was screening filenames on exactly the events where untrusted text
+  arrives. `normalize_payload` now attaches the tool's own output as
+  `response`, once, for every agent. With that content flowing, the layer is
+  on by default in a new `auto` mode: heuristic pre-screen on every event,
+  escalating only the uncertain zone to the configured model. `auto` never
+  spawns a Claude Code process — measured on a 2-vCPU host, one `claude -p`
+  costs 16s with no hooks and 45s once that host's own agent hooks fire on the
+  subagent's prompt, past the guard's own 30s timeout. `hybrid` keeps the CLI
+  subagent as an explicit opt-in, pinned to Haiku.
+
+- **`WebFetch` is the seventh mirrored built-in, and the mirror wires into
+  Claude Desktop.** Fetching the web was the one built-in the mirror left
+  native everywhere — fine in Claude Code, where hooks already screen it, and
+  not fine in OpenCode, which has no hook protocol at all and whose fetch ran
+  unwatched. Screened on the `Read` precedent rather than the native one:
+  `network` + url pre-call, so egress rules and the cloaked-secret-in-URL
+  check apply unchanged, then `tool_result` post-call so the fetched page goes
+  through the injection scan. http/https only — a mirrored tool runs with
+  Prismor's filesystem access, so honouring `file://` would turn a screened
+  fetch into an unscreened local read. `prismor mirror on --agent
+  claude-desktop` wires the desktop app's machine-wide MCP config; unlike
+  every other host this *adds* a governed toolset rather than replacing the
+  natives, since the app exposes no deny-list, and `on` says so rather than
+  letting the install imply coverage it does not have.
+
+- **Telemetry carries the agent's own `tool_use_id`.** One tool call is
+  screened more than once — before it runs and again on its result — and each
+  pass emits its own record, so with nothing tying them together the console
+  drew one `cat` as four nodes in the session graph. The id is opaque and
+  agent-generated with no user content, so it ships in redacted mode, and it
+  sits outside the chain hash and the signed receipt, so existing verifiers
+  are unaffected.
+
+### Fixed
+- **Prismor installed on Windows and enforced nothing.** Four bugs, each
+  invisible on macOS/Linux, found by running a real Claude Code session on
+  Windows Server 2022. Hooks never fired: agent configs store the dispatcher
+  as a shell string and cmd.exe has no `VAR=value cmd` syntax, so the
+  `PYTHONPATH=... python ...` prefix exited 1 — and hook failure is
+  non-blocking, so Prismor reported installed while screening nothing. Setup
+  now writes a `hook-dispatch.py` shim and the hook is `"<python>" "<shim>"
+  ...`, the one shape sh and cmd.exe agree on. Text I/O without an explicit
+  encoding used cp1252 and crashed setup on its own `default_policy.yaml`
+  (fixed at 31 call sites) and then on its own spinner glyphs (stdout/stderr
+  reconfigured to UTF-8 at the CLI entry point). `fcntl` was imported bare in
+  four modules, so every tool call logged `audit trail error: No module named
+  'fcntl'` — blocks worked but nothing was recorded; `store.py` now owns one
+  guarded import and exposes `file_lock()`. Verified end to end on Windows
+  Server 2022 with Claude Code 2.1.250, and CI now runs `prismor setup` on
+  windows-latest.
+
+- **`action: warn` hard-blocked under the legacy enforce bridge.**
+  `legacy_should_block()` decided purely on a finding's category, never its
+  action, so a rule that explicitly declares `action: warn` blocked whenever
+  its category appeared in `settings.block_categories`. The bundled default
+  policy *is* a legacy policy and 23 of its rules are `action: warn` inside a
+  blocking category — so `npm install -g typescript`, appending to `~/.zshrc`
+  and opening `package-lock.json` were all denied outright under `--mode
+  enforce`. The bridge now filters on `contract.VERDICTS`, matching the
+  semantics `contract.py` already states and `PolicyEngine._resolve_mode`
+  already applied on the modern path.
+
+- **Self-protection rules fired on reads and on remote hosts.** A rule's
+  patterns compile to one alternation applied to every field it names, so
+  `agent-config-tampering`'s bare-path forms — meant for a `file_write` path,
+  and `$`-anchored — were also tested against `command` and matched anything
+  *ending* in that path: `cat`/`ls`/`stat`/`grep` on a settings file were
+  denied and reported as modification. Split into two rules, the shell surface
+  (now requiring a mutating verb, with `tee` added and `[^\n]*` narrowed to
+  `[^\n;&|]*` so the verb governs the path in the same segment) and a new
+  `agent-config-tampering-path` for `file_write`, added to both floor
+  frozensets. Separately, `prismor-self-edit` fired on `ssh`/`docker`/
+  `kubectl`: the `;` inside a remote command's quoted argument satisfied the
+  rule's shell-segment anchor, so administering a remote Prismor was blocked
+  by the local one, with remediation pointing at the wrong machine.
+  `shell_context` grows `is_remote_payload()` and the carve-out is scoped to
+  the rules guarding *this* install's own config — a destructive payload aimed
+  at a remote host still blocks, which a test asserts.
+
+- **A duplicate `finding_id` silently dropped the whole batch.**
+  `persist_runtime_findings` writes the same `"<session>:<rule>-<eventIndex>"`
+  id a re-analysis re-derives, and the insert was a bare `INSERT` inside an
+  `executemany` — so one collision aborted the entire batch and every *other*
+  finding in it was lost, surfacing only as `[prismor] analysis error: UNIQUE
+  constraint failed: findings.finding_id`. Now `INSERT OR IGNORE`, so the
+  surviving row is the runtime one: replacing it would overwrite its `source:
+  runtime` enrichment and reintroduce the vanishing-blocks bug that carve-out
+  exists to prevent.
+
+- **The semantic guard's LLM layer either never ran or hung the caller.** The
+  Claude CLI was only ever looked for at `~/.local/bin/claude`, so an npm
+  install (binary on PATH) silently ran in `heuristic_only` — the one mode
+  that cannot explain a paraphrased attack; resolution is now env override,
+  then native path, then PATH. And the subagent ran with the caller's cwd, so
+  every escalation booted that workspace's MCP servers and hooks, including
+  Prismor's own: `subprocess.run`'s timeout killed the CLI but then blocked in
+  `communicate()` on pipes the MCP grandchildren still held, so the documented
+  30s ceiling was not a ceiling (5s from a neutral directory, still running at
+  120s from the workspace). Now `--strict-mcp-config`, a temp cwd, and
+  `start_new_session` so a timeout kills the process group.
+
+- **The MCP mirror was treated as a gateway fan-out point.** A `--mirror`
+  entry carries no `--config`, so the upstream lookup fell back to
+  `~/.prismor/mcp-gateway.json`; on any box that also runs the gateway, the
+  mirror inherited servers it never fronted and session scope widened on the
+  wrong word — the goal "use cfdocs to look up workers" allowed
+  `mcp__prismor-tools__cfdocs__search`. The existing test only caught this
+  where a real gateway config happened to exist, so it passed in CI and failed
+  on a developer box; the new tests pin both directions with a fake HOME.
+
+- **Cloak's prompt-stash auto-reload never worked on Linux.** `stat -f %m` is
+  the BSD form; on GNU coreutils `-f` means `--file-system`, which prints a
+  filesystem report *and* exits non-zero, so the `||` fallback also ran and
+  the arithmetic aborted the hook under `set -u`. Every `UserPromptSubmit`
+  emitted `line 53: File: unbound variable` and the stash the user was told
+  would auto-load silently never did.
+
+- **Abandoned sessions were reported as adapter format mismatches.**
+  `looks_silent` counted any record, so 10 flagged Claude transcripts holding
+  nothing but bookkeeping (`system`, `attachment`, `ai-title`, `mode`,
+  `queue-operation`) — sessions opened and abandoned before a single tool call
+  — were blamed on the adapter. Adapters now declare their vocabulary via
+  `handles()` and silence is measured against claimed records only, so an
+  `assistant` record that yields no payload still trips it. Transcripts also
+  gained a content-free `skip_reasons` histogram so a reporter can say *which*
+  record shape failed without handing over personal transcripts. The same
+  corpus surfaced a real miss: Claude stores an assembled prompt (pasted text,
+  screenshots) as a content block list rather than a string, and the adapter
+  only handled strings — 540 real prompts in 30 days were dropped, and with
+  them every injection rule that would have fired on them.
+
+- **The proxy judged the directory it started in.** Its workspace defaulted to
+  cwd, so launched from a source checkout — the obvious thing to do while
+  testing it — the instruction-file scan read that repo's `CLAUDE.md` and
+  attached the result to every event. A security repo whose own docs quote the
+  attack strings its rules match therefore refused every request with
+  `source: project_memory`: a benign question to a governed n8n agent came back
+  `Blocked by Prismor [semantic-guard-hybrid]` at score 0.91. It reads as a
+  false positive on the agent and is a true positive on the wrong subject. The
+  default is now `$PRISMOR_HOME/surfaces/proxy`; `--workspace` still opts into
+  a repo's policy for anyone who means it.
 
 ## [1.44.0] — 2026-08-27
 
