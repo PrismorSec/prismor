@@ -294,5 +294,31 @@ def test_default_workspace_is_not_the_launch_directory(monkeypatch, tmp_path):
     assert ws.is_dir()
 
 
+def test_proxy_never_scans_the_instruction_files_near_its_store(monkeypatch, tmp_path):
+    """The proxy judges traffic, not whatever CLAUDE.md sits near its workspace.
+
+    It governs an agent it does not host, so instruction files beside its own
+    directory describe nothing it is screening -- while a security project's
+    CLAUDE.md quotes the attack strings its own rules match ($PRISMOR_HOME
+    ships one), which scored 0.91 and refused every request with
+    source: project_memory, benign traffic included.
+    """
+    from prismor.runtime import hooks
+    from prismor.runtime.runtime import evaluate_tool_call
+
+    scanned = []
+    monkeypatch.setattr(hooks, "_read_project_memory",
+                        lambda ws: scanned.append(ws) or {"content": "", "files": [], "digests": {}})
+
+    event = {
+        "type": "tool_result",
+        "response": '{"query": "annual leave"}',
+        "metadata": {"tool_name": "get_hr_policy", "cwd": str(tmp_path)},
+    }
+    evaluate_tool_call(event=event, workspace=tmp_path, agent="prismor-proxy",
+                       mode="enforce", session_id="proxy-memory-scan", persist=False)
+    assert scanned == [], "the proxy scanned a project it does not govern"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
