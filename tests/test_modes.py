@@ -37,10 +37,10 @@ ALL_MODES = list(modes.load_modes())
 
 class TestCatalog(unittest.TestCase):
     def test_starter_modes(self):
-        # Four graded by how much friction you accept, five by what the agent
-        # does for a living. Order is the order `mode list` prints.
+        # Three graded by how much friction you accept, five by what the
+        # agent does for a living. Order is the order `mode list` prints.
         self.assertEqual(ALL_MODES, [
-            "audit-only", "dev-safe", "trusted-workspace", "regulated-airgap",
+            "audit-only", "dev-safe", "regulated-airgap",
             "ci-agent", "web-research", "regulated-data", "production-ops",
             "oss-maintainer",
         ])
@@ -205,8 +205,8 @@ class TestApply(unittest.TestCase):
         ws = _workspace()
         with _unmanaged():
             modes.apply_mode(ws, "dev-safe")
-            modes.apply_mode(ws, "trusted-workspace")
-        self.assertEqual(modes.active_mode(ws), "trusted-workspace")
+            modes.apply_mode(ws, "ci-agent")
+        self.assertEqual(modes.active_mode(ws), "ci-agent")
 
     def test_drift_is_reported_not_prevented(self):
         ws = _workspace()

@@ -24,14 +24,13 @@ prismor mode show                  # what this workspace is running, and any dri
 
 ## The catalogue
 
-Nine modes along two axes. Four are graded by **how much friction you accept**,
-and are directly comparable — same question, different answers:
+Eight modes along two axes. Three are graded by **how much friction you
+accept**, and are directly comparable — same question, three answers:
 
 | Mode | For | Coverage | Friction |
 |---|---|---|---|
 | `audit-only` | Onboarding, measuring what an agent actually does | 0% | 0% |
-| `dev-safe` | Daily GitHub-centric feature work | 28% | 40% |
-| `trusted-workspace` | Trusted internal repos, broad autonomy | 34% | 25% |
+| `dev-safe` | Daily feature work on a laptop | 34% | 15% |
 | `regulated-airgap` | Regulated repos; no network, no shell | 100% | 90% |
 
 Five are shaped by **what the agent does for a living**. Their coverage numbers
@@ -48,14 +47,14 @@ are not comparable with each other — each is scored against a different job:
 Coverage is computed from the live ruleset, so it tracks the policy instead of
 drifting into a marketing number. `friction_index` is an operator judgement —
 measured against a routine-work control set it has held up within a few points
-(`dev-safe` 40 claimed / 38 measured, `regulated-airgap` 90 / 92).
+(`dev-safe` 20 claimed / 15 measured, `regulated-airgap` 90 / 92).
 
-Reading the trade: `trusted-workspace` has *higher* coverage and *lower*
-friction than `dev-safe`, which is the real shape of the trade rather than a
-scoring artifact. `dev-safe` spends its budget on a narrow egress allowlist,
-which is blunt. `trusted-workspace` spends it on targeted gates around secrets
-and installs — broader protection, less friction, valid only if you actually
-trust what is in the repo.
+Three points, not four: an earlier draft carried a `trusted-workspace` between
+`audit-only` and `regulated-airgap`, and once both were measured on the same
+control set it and `dev-safe` came out identical — 8/8 attacks, 11/13 controls,
+15% friction. Two graded modes where one dominates the other is a choice nobody
+can make correctly, so its seven secret and dependency rules moved into
+`dev-safe` and the mode went.
 
 ## The one thing to get right first
 

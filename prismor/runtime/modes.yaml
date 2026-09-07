@@ -109,7 +109,17 @@ modes:
     # ~/.ssh/id_rsa or .aws/credentials is recorded and allowed. Cheap rule,
     # low false-positive rate, and the mode's whole claim is about secrets.
     enforce_rules: floor
-    enforce_extra: [secret-access]
+    # Cheap rules with a low false-positive rate, and the two things this mode
+    # actually claims to be about. `floor` alone leaves every one of them
+    # observing — a read of ~/.ssh/id_rsa was allowed before they were added.
+    enforce_extra:
+      - secret-access
+      - credential-aggregation
+      - credential-staging
+      - claude-credential-access
+      - dependency-confusion
+      - pkg-install-from-url
+      - pkg-suspicious-name
     egress:
       enabled: true
       mode: enforce
@@ -174,94 +184,9 @@ modes:
     friction_index: 20
     recommended_for: "Feature branches, PR review, open-source contribution."
     not_recommended_for: "Debugging third-party webhooks or multi-cloud infra setup."
-
-  # ────────────────────────────────────────────────────────────────────────
-  trusted-workspace:
-    name: "Trusted Workspace"
-    intent: "Broad autonomy. Guardrails only on secrets and package installs."
-    scenario: >-
-      Fast internal work in a closed-source repo you trust: building, running
-      microservices under Docker, executing tests, debugging. The agent gets
-      room to move; the two things it cannot do casually are install packages
-      and read credentials.
-    default_mode: observe
-    enforce_rules: floor
-    enforce_extra:
-      - secret-access
-      - credential-aggregation
-      - credential-staging
-      - claude-credential-access
-      - dependency-confusion
-      - pkg-install-from-url
-      - pkg-suspicious-name
-    egress:
-      enabled: true
-      mode: enforce
-      default: deny
-      allow_private: true     # internal staging APIs and localhost services
-      resolve: true
-      allow:
-        - "github.com"
-        - "*.github.com"
-        - "registry.npmjs.org"
-        - "pypi.org"
-        - "files.pythonhosted.org"
-        - "crates.io"
-        - "proxy.golang.org"
-        - "*.docker.io"
-        - "*.amazonaws.com"
-        - "*.googleapis.com"
-        - "*.azure.com"
-        - "api.anthropic.com"
-        - "api.openai.com"
-      deny: *metadata_deny
-    tool_tags:
-      enabled: true
-      mode: enforce
-      inference_enabled: false   # or "untrusted_content then critical_action"
-                                 # reads as "no command may follow a read":
-                                 # inference tags every shell/write
-                                 # critical_action and every read
-                                 # untrusted_content. Measured: 2 of 13 routine
-                                 # controls blocked with it on.
-      rules:
-        - "untrusted_content then critical_action -> block"
-    sandbox:
-      enabled: true
-      mode: observe           # non-root, workspace-scoped; observe so builds run
-      network: bridge
-      read_only_root: false
-      workspace_mount: rw
-    tools: {}
-    commands:
-      deny:
-        - '\bsudo\b'
-        - '\bchmod\s+[ugo+]*s\b'
-        - '\bsu\s+-'
-      ask:
-        - '\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b'
-        - '\b(pip3?|uv)\s+(install|add)\b'
-        - '\bcargo\s+add\b'
-        - '\bgem\s+install\b'
-    reward:
-      - "Credential access   : GATED. .env, ~/.aws, and SSH keys need a human."
-      - "Package installs    : GATED. Nothing enters the tree unattended."
-      - "Privilege escalation: BLOCKED. sudo, setuid, and su are denied outright."
-      - "Data boundary       : BLOCKED. Private data cannot leave via external comms."
-    friction:
-      - "Approval prompts    : every dependency change stops for consent."
-      - "Secret reads        : debugging a credential issue needs prismor unlock."
-      - "Egress allowlist    : an unlisted vendor API needs an explicit entry."
-    residual_risk: >-
-      Code this mode lets the agent execute can still do damage. A malicious
-      build script (setup.py, Makefile, npm preinstall) runs with the agent's
-      own reach and can alter workspace state outside the protected secret
-      paths. Indirect injection sitting in internal code comments or a database
-      dump can steer the agent into writing a subtle logic bug or a backdoor,
-      which no destination allowlist detects.
-    friction_index: 25
-    recommended_for: "Trusted internal repos, local microservice and Docker work."
-    not_recommended_for: "Repos that ingest untrusted third-party content or PII."
+    # Building in other ecosystems? Widen the allowlist rather than reaching for
+    # a looser mode: crates.io, static.crates.io, proxy.golang.org, ghcr.io,
+    # *.docker.io are the usual additions.
 
   # ────────────────────────────────────────────────────────────────────────
   regulated-airgap:
