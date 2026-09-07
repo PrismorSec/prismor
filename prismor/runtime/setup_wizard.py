@@ -411,7 +411,7 @@ def _mode_options() -> List[tuple]:
         ]
 
 
-def _step_mode(current: str = "audit-only", total: int = 4, extra_steps: int = 0) -> str:
+def _step_mode(current: str = "dev-safe", total: int = 4, extra_steps: int = 0) -> str:
     """Pick a governance mode — the one screen that decides the whole posture.
 
     Every option shows what it costs as well as what it buys: coverage, the
@@ -929,7 +929,7 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
         lines.append(row(_w("READY TO INSTALL", BOLD)))
         lines.append(row())
         lines.append(row(kv("Project", disp[:30])))
-        lines.append(row(kv("Mode", mode, GRN if mode != "audit-only" else YEL)))
+        lines.append(row(kv("Mode", mode, GRN)))
         if mode == "custom":
             lines.append(row(kv("Blocking", f"{n_on} selected  ({n_rec_on}/{n_rec} recommended)",
                                 GRN if n_on else YEL)))
@@ -1387,7 +1387,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
 def run_non_interactive(
     target: Path,
     *,
-    mode: str = "audit-only",
+    mode: str = "dev-safe",
     agents: Optional[List[str]] = None,
     cloak: bool = False,
     scope: str = "project",
@@ -1531,7 +1531,7 @@ def run_wizard(target: Path) -> None:
                 break
     except Exception:
         rules = _load_rules()
-        mode = "audit-only"
+        mode = "dev-safe"
         agents = ["claude"]
         mirror_agents = []
         cloak = False

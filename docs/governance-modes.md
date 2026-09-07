@@ -25,19 +25,27 @@ prismor mode show                    # what this workspace is running, and any d
 
 ## The three modes
 
-One axis — how much friction you accept — with three points on it. You meet this
-menu once, during `prismor setup`, and every option shows what it costs as well
-as what it buys:
+You meet this menu once, during `prismor setup`, and every option shows what it
+costs as well as what it buys:
 
-| Mode | For | Coverage | Friction |
+| Mode | In one line | Coverage | Friction |
 |---|---|---|---|
-| `audit-only` | Onboarding; measuring what an agent actually does | 0% | 0% |
-| `dev-safe` | Everyday feature work on a laptop | 34% | 20% |
-| `regulated-airgap` | Regulated repos; no network, no shell | 100% | 90% |
+| `dev-safe` | Known destinations only. Read-only commands don't prompt. | 29% | 20% |
+| `trusted-workspace` | Broad autonomy, hard stops on secrets and installs. | 34% | 25% |
+| `regulated-airgap` | No network, no shell, every write approved. | 100% | 90% |
 
 Plus **custom**, which is not a mode: it drops you into the rule-by-rule picker
 that `prismor setup` has always had, for operators who already know the set they
-want.
+want. Selecting nothing there is the old observe install — everything reported,
+nothing blocked — which is still the right way to spend a first week.
+
+Reading the trade: `trusted-workspace` has *higher* coverage than `dev-safe` at
+only slightly more friction, and the two spend their budget in opposite places.
+`dev-safe` spends it on a narrow destination allowlist, which is blunt: an
+unlisted vendor API is simply unreachable. `trusted-workspace` spends it on
+targeted gates around secrets and package installs and lets the agent move
+freely otherwise — broader protection, and valid only if you actually trust
+what is in the repo. That assumption is exactly what its residual risk names.
 
 Coverage is computed from the live ruleset, so it tracks the policy instead of
 drifting into a marketing number. `friction_index` is an operator judgement,
@@ -48,20 +56,23 @@ Three, not eight. An earlier draft carried five more shaped by what the agent
 does for a living — CI runner, web research, production ops. They were good
 policies and the wrong shape for this menu: a choice you make once, before you
 know anything, has to be a line you can place yourself on. Those postures are
-still expressible — a mode is data, and the axes below are all available — they
+still expressible — a mode is data, and every axis below is available — they
 just are not the first question Prismor asks you.
 
 ## The one thing to get right first
 
-**Start at `audit-only` unless you already know your traffic.**
+**Measure before you tighten.**
 
-Every enforcing mode contains guesses — chiefly a list of hosts your work
-"should" reach. Adopting `regulated-airgap` cold, with a guessed allowlist,
-produces an agent that cannot work and a team that turns Prismor off. That
-failure mode is much more common than being under-protected.
+Every mode here contains a guess — chiefly a list of hosts your work "should"
+reach. Adopting `regulated-airgap` cold, with a guessed allowlist, produces an
+agent that cannot work and a team that turns Prismor off. That failure mode is
+much more common than being under-protected.
+
+Pick `custom` and select nothing for the first week: everything is reported,
+nothing is blocked, and the telemetry tells you which mode you actually want.
 
 ```bash
-prismor setup --mode audit-only
+prismor setup --mode custom    # nothing selected: report everything, block nothing
 # ... a week of real work ...
 prismor egress report          # the destinations your agents ACTUALLY contacted
 prismor sessions               # what was screened, and which rules were noisy
@@ -139,7 +150,7 @@ a narrower rule) do the work.
 **The safety floor is not yours to turn off.** Core rules (`rm -rf /`, reverse
 shells, secret exfiltration, privilege escalation, and anything that tampers
 with Prismor's own wiring) enforce regardless of `default_mode`,
-`enabled: false`, or an allowlist — `audit-only` included. A custom rule you
+`enabled: false`, or an allowlist, in every mode. A custom rule you
 give a core category (`destructive_command`, `rce_canary`, …) inherits that
 behaviour, so tune it with `enabled: false` while you measure.
 

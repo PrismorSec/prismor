@@ -36,11 +36,12 @@ ALL_MODES = list(modes.load_modes())
 
 
 class TestCatalog(unittest.TestCase):
-    def test_three_modes_on_one_axis(self):
-        # One axis — how much friction you accept — with three points on it.
+    def test_three_modes(self):
+        # Three, in the order `mode list` and the install screen print them.
         # This is a menu someone meets once during install, so the count is
         # part of the design, not an accident of what got written.
-        self.assertEqual(ALL_MODES, ["audit-only", "dev-safe", "regulated-airgap"])
+        self.assertEqual(ALL_MODES,
+                         ["dev-safe", "trusted-workspace", "regulated-airgap"])
 
     def test_every_mode_states_its_residual_risk(self):
         """A mode that only advertises what it stops is a mode people over-trust."""
@@ -133,16 +134,17 @@ class TestEngineEffect(unittest.TestCase):
             modes.apply_mode(ws, mode_id)
             return PolicyEngine(workspace=ws)
 
-    def test_audit_only_blocks_nothing_but_self_protection(self):
-        """The mode's honest claim is "nothing blocks" — with one exception it
-        does not get to make. Self-protection always enforces, so an agent
-        cannot use audit-only as cover for switching Prismor off."""
+    def test_self_protection_enforces_in_every_mode(self):
+        """No mode gets to switch Prismor off. Whatever a mode selects, the
+        rules that guard Prismor's own wiring still block — otherwise the
+        loosest mode would be a supported way to disable the tool."""
         from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS
-        engine = self._engine("audit-only")
-        self.assertEqual(engine.default_mode, "observe")
-        enforcing = {r.id for r in engine.rules if engine._resolve_mode(r) == "enforce"}
-        self.assertEqual(enforcing - set(_SELF_PROTECTION_RULE_IDS), set())
-        self.assertTrue(enforcing & set(_SELF_PROTECTION_RULE_IDS))
+        for mode_id in ALL_MODES:
+            with self.subTest(mode=mode_id):
+                engine = self._engine(mode_id)
+                enforcing = {r.id for r in engine.rules
+                             if engine._resolve_mode(r) == "enforce"}
+                self.assertTrue(enforcing >= set(_SELF_PROTECTION_RULE_IDS))
 
     def test_dev_safe_enforces_the_floor_and_stops_exfil(self):
         engine = self._engine("dev-safe")
@@ -221,7 +223,8 @@ class TestApply(unittest.TestCase):
 class TestCoverage(unittest.TestCase):
     def test_coverage_is_computed_from_the_real_ruleset(self):
         _, total = modes._floor_rule_ids()
-        self.assertEqual(modes.coverage(modes.get_mode("audit-only")), (0, total))
+        blocking, _ = modes.coverage(modes.get_mode("dev-safe"))
+        self.assertTrue(0 < blocking < total)
         self.assertEqual(modes.coverage(modes.get_mode("regulated-airgap")), (total, total))
         blocking, _ = modes.coverage(modes.get_mode("dev-safe"))
         self.assertTrue(0 < blocking < total)
@@ -297,6 +300,55 @@ class TestOverBlock(unittest.TestCase):
         # mode must not refuse `aws s3 ls` on the strength of the bucket name.
         engine = self._engine("dev-safe")
         self.assertEqual(engine.check_command("aws s3 ls s3://app-artifacts/"), [])
+
+
+class ReadOnlyTests(unittest.TestCase):
+    """dev-safe's second promise: read-only commands do not prompt.
+
+    A `step_up` on `git log` is the kind of thing nobody notices until a user
+    does, and it is what turns "known destinations only" into "everything asks".
+    """
+
+    def _engine(self, mode_id: str) -> PolicyEngine:
+        ws = _workspace()
+        with _unmanaged():
+            modes.apply_mode(ws, mode_id)
+            return PolicyEngine(workspace=ws)
+
+    READ_ONLY = [
+        "git status", "git log --oneline -20", "git diff", "git show HEAD",
+        "ls -la src/", "cat README.md", "grep -rn TODO src/", "rg -n retry src/",
+        "find . -name '*.py'", "wc -l src/app.py", "ps aux", "which python3",
+        "npm ls", "npm view lodash version", "pip list", "pip show requests",
+        "cargo tree", "docker ps", "kubectl get pods", "terraform plan",
+        "pytest --collect-only -q",
+    ]
+
+    def test_dev_safe_does_not_gate_read_only_commands(self):
+        engine = self._engine("dev-safe")
+        for cmd in self.READ_ONLY:
+            with self.subTest(command=cmd):
+                acting = [f for f in engine.check_command(cmd)
+                          if f.get("mode") == "enforce" and not f.get("contextInert")]
+                self.assertEqual(acting, [], cmd)
+
+    def test_trusted_workspace_does_not_gate_read_only_commands(self):
+        engine = self._engine("trusted-workspace")
+        for cmd in self.READ_ONLY:
+            with self.subTest(command=cmd):
+                acting = [f for f in engine.check_command(cmd)
+                          if f.get("mode") == "enforce" and not f.get("contextInert")]
+                self.assertEqual(acting, [], cmd)
+
+    def test_trusted_workspace_hard_stops_secrets_and_installs(self):
+        # Its whole differentiator versus dev-safe: broad autonomy, but these
+        # two do not move without a human.
+        engine = self._engine("trusted-workspace")
+        by_id = {r.id: r for r in engine.rules}
+        for rule_id in ("secret-access", "credential-aggregation",
+                        "dependency-confusion", "pkg-install-from-url"):
+            with self.subTest(rule=rule_id):
+                self.assertEqual(engine._resolve_mode(by_id[rule_id]), "enforce")
 
 
 class HookWiringTests(unittest.TestCase):

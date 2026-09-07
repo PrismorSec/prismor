@@ -156,10 +156,12 @@ customization guide live in **[Governance modes](governance-modes.md)** — one
 page rather than two that drift apart. Coverage and rule counts are computed
 from the live ruleset by `prismor mode list`, never hardcoded.
 
-Three modes on one axis — how much friction you accept: `audit-only`,
-`dev-safe`, `regulated-airgap`. `prismor setup` offers them as its first
-screen, with coverage, friction and residual risk shown per option, plus a
-`custom` entry for the rule-by-rule picker.
+Three modes: `dev-safe` (known destinations only; read-only commands do not
+prompt), `trusted-workspace` (broad autonomy, hard stops on secrets and
+installs) and `regulated-airgap` (no network, no shell, every write approved).
+`prismor setup` offers them as its first screen, with coverage, friction and
+residual risk shown per option, plus a `custom` entry for the rule-by-rule
+picker.
 
 `mode explain` always prints a **residual risk** paragraph — what the mode does
 *not* stop. A mode that claims no downside is a mode nobody should trust.
