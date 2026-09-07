@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [1.45.3] — 2026-09-07
+
+### Fixed
+- **`secret-exfiltration` refused ordinary file writes.** Its alternation of
+  network verbs was unanchored, so the two-letter netcat alternative matched
+  inside any word carrying those letters — `newfunc.py` was enough — and
+  `.env` matched inside `os.environ`. A shell command that mentioned both, as
+  a heredoc writing a Python file easily does, was blocked as piping a secret
+  to an external host, on a floor rule that no policy layer can relax. The
+  secret names and the network verbs are now word-anchored, with `https?://`
+  kept as its own alternative so a bare URL still counts. Every command the
+  rule is meant to stop still blocks, which the new tests pin alongside the
+  ordinary ones it should never have touched.
+
+
 ## [1.45.2] — 2026-09-07
 
 ### Fixed

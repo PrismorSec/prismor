@@ -445,7 +445,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(cat|sed|grep|awk)\b[^\n]*(\.env|id_rsa|id_ed25519|\.npmrc|\.pypirc|\.aws|\.ssh)[^\n]*(curl|wget|nc|scp|ftp|http)'
+      - '\b(cat|sed|grep|awk)\b[^\n]*(\.env\b|id_rsa\b|id_ed25519\b|\.npmrc\b|\.pypirc\b|\.aws\b|\.ssh\b)[^\n]*(\b(curl|wget|nc|scp|ftp)\b|https?://)'
       # scp/rsync/sftp UPLOAD of a secret file to a remote host (secret then user@host:)
       - '\b(scp|rsync|sftp)\b[^\n]*(\.env|id_rsa|id_ed25519|\.npmrc|\.pypirc|credentials|secrets?)\b[^\n]*@'
     action: block
