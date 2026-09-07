@@ -3152,7 +3152,8 @@ def build_parser() -> argparse.ArgumentParser:
                     "outside Prismor's coverage. Host-local and read-only.",
     )
     discover_parser.add_argument(
-        "section", nargs="?", choices=["all", "agents", "mcp", "keys"], default="all",
+        "section", nargs="?", choices=["all", "agents", "mcp", "keys", "webmcp"],
+        default="all",
         help="Limit the report to one inventory (default: all)")
     discover_parser.add_argument("--workspace", help="Workspace path")
     discover_parser.add_argument("--json", action="store_true", help="Machine-readable report")
@@ -4445,6 +4446,9 @@ def _run_discover(args, workspace: Path, repo_root: Path) -> None:
     elif section == "keys":
         discover_cli.discover_keys(workspace, as_json=as_json,
                                    scan_files=scan_files, **fix_kw)
+    elif section == "webmcp":
+        # No fix_kw: nothing can be installed in front of a browser tab.
+        discover_cli.discover_webmcp(workspace, as_json=as_json)
     else:
         discover_cli.discover_all(
             workspace, as_json=as_json, scan_files=scan_files,
