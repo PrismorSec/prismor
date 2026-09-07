@@ -355,10 +355,12 @@ def _step_mode(current: str = "observe", total: int = 4, extra_steps: int = 0) -
     sel = 0 if current == "observe" else 1
 
     while True:
-        # Choosing enforce adds the rule-selection step, so the count has to
-        # follow the highlighted option — otherwise this screen says "1/5" and
-        # the next one says "2/6", which reads like a bug.
-        total = (5 if opts[sel][0] == "enforce" else 4) + extra_steps
+        # Choosing enforce adds the governance-mode and (for custom) the
+        # rule-selection step, so the count has to follow the highlighted
+        # option — otherwise this screen says "1/5" and the next one says
+        # "2/7", which reads like a bug. Assumes custom (the worst case) since
+        # no mode has been picked yet.
+        total = (6 if opts[sel][0] == "enforce" else 4) + extra_steps
         lines = _header_lines(1, total, "ENFORCEMENT MODE")
         for i, (name, desc) in enumerate(opts):
             arrow = _w("▸ ", CYAN) if i == sel else "  "
@@ -376,7 +378,79 @@ def _step_mode(current: str = "observe", total: int = 4, extra_steps: int = 0) -
         elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
 
 
-# ── Step 2 (enforce only): Which rules block ─────────────────────────────────
+# ── Step 2 (enforce only): Governance mode ───────────────────────────────────
+
+def _mode_bar(pct: int, width: int = 16) -> str:
+    filled = max(0, min(width, round(pct / 100 * width)))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _step_governance_mode(current: str = "custom", step: int = 2, total: int = 6):
+    """Pick a named governance posture, or fall through to the rule-by-rule
+    picker this wizard has always had.
+
+    A mode (``prismor/runtime/modes.yaml``) compiles egress, tool access, tag
+    rules and the sandbox together — the same six axes `custom` makes you set
+    one at a time — so offering it here is the difference between "which of
+    77 rules should block" and "which of three postures do you want".
+    """
+    try:
+        from prismor.runtime.modes import load_modes, coverage, format_explain
+    except Exception:
+        return "custom"
+
+    modes = load_modes()
+    ids = list(modes.keys()) + ["custom"]
+    sel = ids.index(current) if current in ids else len(ids) - 1
+    showing_explain = False
+
+    while True:
+        if showing_explain and ids[sel] != "custom":
+            text = format_explain({**modes[ids[sel]], "id": ids[sel]})
+            lines = text.splitlines()
+            lines.append("")
+            lines.append(_control_line([("any key", "back to the list")]))
+            _render(lines)
+            _read_key()
+            showing_explain = False
+            continue
+
+        lines = _header_lines(step, total, "GOVERNANCE MODE")
+        lines.append(f"  {_w('A mode sets egress, tool access, tag rules and the sandbox together.', DIM)}")
+        lines.append(f"  {_w('Pick custom to choose exactly which rules block instead.', DIM)}")
+        lines.append("")
+        for i, mid in enumerate(ids):
+            arrow = _w("▸ ", CYAN) if i == sel else "  "
+            dot   = _w("●", GRN) if i == sel else _w("○", DIM)
+            if mid == "custom":
+                nm = _pad(_w("custom", BOLD) if i == sel else _w("custom", DIM), 20)
+                lines.append(f"  {arrow}{dot}  {nm}{_w('Pick exactly which rules block, rule by rule', DIM)}")
+                continue
+            m = modes[mid]
+            blocking, tot_rules = coverage({**m, "id": mid})
+            pct = round(blocking / tot_rules * 100) if tot_rules else 0
+            friction = int(m.get("friction_index", 0))
+            nm = _pad(_w(mid, BOLD) if i == sel else _w(mid, DIM), 20)
+            lines.append(f"  {arrow}{dot}  {nm}{_w(m.get('intent', ''), DIM)}")
+            lines.append(f"  {'':22}{_w(f'coverage [{_mode_bar(pct)}] {pct:>3}%', DIM)}"
+                         f"   {_w(f'friction [{_mode_bar(friction)}] {friction:>3}%', DIM)}")
+        lines.append("")
+        lines.append(_control_line([
+            ("↑↓", "select"), ("e", "explain"), ("←", "back"), ("enter", "next"),
+        ]))
+        _render(lines)
+
+        key = _read_key()
+        if key == _UP:               sel = (sel - 1) % len(ids)
+        elif key == _DOWN:           sel = (sel + 1) % len(ids)
+        elif key in ("e", "E") and ids[sel] != "custom":
+            showing_explain = True
+        elif key in (_LEFT, "b", "B"): return _BACK
+        elif key in (_ENTER, "\n"):  return ids[sel]
+        elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
+
+
+# ── Step 3 (enforce + custom only): Which rules block ────────────────────────
 
 def _cat_label(cat: str) -> str:
     return (cat or "other").replace("_", " ").upper()
@@ -780,7 +854,7 @@ def _prompt_unlock_password() -> bool:
 
 # ── Confirm ──────────────────────────────────────────────────────────────────
 
-def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", unlock_pw: bool = False, mirror_agents: Optional[List[str]] = None) -> bool:
+def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", unlock_pw: bool = False, mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None) -> bool:
     home = str(Path.home())
     disp = str(target).replace(home, "~")
     n_on = sum(1 for r in rules if r["on"])
@@ -808,7 +882,18 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
         lines.append(row())
         lines.append(row(kv("Project", disp[:30])))
         lines.append(row(kv("Mode", mode, GRN if mode == "enforce" else YEL)))
-        if mode == "enforce":
+        if mode == "enforce" and gov_mode not in (None, "custom"):
+            try:
+                from prismor.runtime.modes import load_modes, coverage
+                m = load_modes().get(gov_mode, {})
+                blocking, tot_rules = coverage({**m, "id": gov_mode})
+                pct = round(blocking / tot_rules * 100) if tot_rules else 0
+                friction = int(m.get("friction_index", 0))
+                lines.append(row(kv("Governance", f"{gov_mode}  ({blocking}/{tot_rules} rules · "
+                                    f"{pct}% coverage · {friction}% friction)", GRN)))
+            except Exception:
+                lines.append(row(kv("Governance", gov_mode, GRN)))
+        elif mode == "enforce":
             lines.append(row(kv("Blocking", f"{n_on} selected  ({n_rec_on}/{n_rec} recommended)",
                                 GRN if n_on else YEL)))
             if n_on == 0:
@@ -993,7 +1078,7 @@ def _install_skill(target: Path):
         return False, str(e)[:40]
 
 
-def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None) -> None:
+def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None) -> None:
     sys.stdout.write(ALT_OFF)
     sys.stdout.write("\033[H\033[J" + HIDE)
     sys.stdout.flush()
@@ -1062,7 +1147,24 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     # hand-flipped enforce hooks keep blocking (see PolicyEngine.is_legacy_policy).
     selected = [r["id"] for r in rules if r["on"]]
     disabled = [r["id"] for r in rules if not r["on"]]
-    if mode == "enforce":
+    if mode == "enforce" and gov_mode not in (None, "custom"):
+        def _write_policy():
+            from prismor.runtime.modes import apply_mode, ModeError
+            try:
+                _, notes = apply_mode(target, gov_mode, force=True)
+                return True, f"mode '{gov_mode}' compiled" + (f" — {notes[-1]}" if notes else "")
+            except ModeError as e:
+                # Most commonly: this mode enforces a Docker sandbox and no
+                # runtime is reachable on this host. Fall back to the same
+                # posture with nothing enforcing rather than leave the
+                # workspace with no policy at all.
+                try:
+                    apply_mode(target, gov_mode, force=True, observe=True)
+                    return True, f"compiled in observe (enforcing build refused: {e})"
+                except ModeError as e2:
+                    return False, str(e2)[:70]
+        _spinner_run(f"Compiling governance mode '{gov_mode}'", _write_policy)
+    elif mode == "enforce":
         def _write_policy():
             d = target / ".prismor"
             d.mkdir(exist_ok=True)
@@ -1289,27 +1391,46 @@ def run_non_interactive(
     _do_install(target, mode, rules, agents, cloak=cloak, scope=scope)
 
 
+def _wizard_steps(mode: str, gov_mode: Optional[str], offer_unlock: bool) -> List[str]:
+    """The ordered, named wizard steps for the current choices.
+
+    "confirm" is always last and unnumbered (it shows "READY TO INSTALL", not
+    a "Step X/Y" of its own). Enforce inserts "governance"; "policy_select"
+    only follows it while no mode is chosen yet, or "custom" was.
+    """
+    names = ["mode"]
+    if mode == "enforce":
+        names.append("governance")
+        if gov_mode in (None, "custom"):
+            names.append("policy_select")
+    names += ["agents", "cloak", "scope"]
+    if offer_unlock:
+        names.append("unlock")
+    names.append("confirm")
+    return names
+
+
 def run_wizard(target: Path) -> None:
     """Run the interactive TUI wizard.
 
-    Four steps in observe mode, five in enforce: choosing to block raises the
-    question of *what* to block, and that answer is the user's to give.
+    Four steps in observe mode. Enforce adds a governance-mode choice, and —
+    only if that choice is "custom" — the rule-by-rule picker on top of it.
     """
     sys.stdout.write(ALT_ON + HIDE)
     sys.stdout.flush()
     _raw_on()
 
     # In observe mode every rule stays enabled (nothing blocks regardless), so
-    # the list is only read for the confirm screen's count. In enforce mode the
-    # selection step below decides which of these actually block.
+    # the list is only read for the confirm screen's count. In enforce mode
+    # either a governance mode or the rule-selection step decides what blocks.
     rules = _load_rules()
     mode = "observe"
+    gov_mode: Optional[str] = None  # None = not chosen yet; "custom" = rule-by-rule
     agents = None
     mirror_agents = []
     cloak = True
     scope = "project"
     unlock_pw = False
-    step = 1
 
     # The unlock window is a local affordance; on an org-managed workspace the
     # org decides whether self-edit is available at all, so don't offer it.
@@ -1319,63 +1440,74 @@ def run_wizard(target: Path) -> None:
     except Exception:
         offer_unlock = True
 
+    idx = 0
+
     try:
         while True:
-            enforcing = mode == "enforce"
-            total = (5 if enforcing else 4) + (1 if offer_unlock else 0)
-            if step == 1:
+            names = _wizard_steps(mode, gov_mode, offer_unlock)
+            idx = min(idx, len(names) - 1)
+            name = names[idx]
+            total = len(names) - 1  # exclude "confirm" from the numbered count
+            n = idx + 1
+
+            if name == "mode":
                 mode = _step_mode(mode, total=total, extra_steps=1 if offer_unlock else 0)
-                step = 2 if mode == "enforce" else 3
-            elif step == 2:
-                result = _step_policy_select(rules, step=2, total=total)
+                idx += 1
+            elif name == "governance":
+                result = _step_governance_mode(gov_mode or "custom", step=n, total=total)
                 if result is _BACK:
-                    step = 1
+                    idx -= 1
+                    continue
+                gov_mode = result
+                idx += 1
+            elif name == "policy_select":
+                result = _step_policy_select(rules, step=n, total=total)
+                if result is _BACK:
+                    idx -= 1
                     continue
                 rules = result
-                step = 3
-            elif step == 3:
-                result = _step_agents(target, step=3 if enforcing else 2, total=total)
+                idx += 1
+            elif name == "agents":
+                result = _step_agents(target, step=n, total=total)
                 if result is _BACK:
-                    step = 2 if enforcing else 1
+                    idx -= 1
                     continue
                 agents = result["agents"]
                 mirror_agents = result["mirror"]
-                step = 4
-            elif step == 4:
-                result = _step_cloak(cloak, step=4 if enforcing else 3, total=total)
+                idx += 1
+            elif name == "cloak":
+                result = _step_cloak(cloak, step=n, total=total)
                 if result is _BACK:
-                    step = 3
+                    idx -= 1
                     continue
                 cloak = result
-                step = 5
-            elif step == 5:
-                result = _step_scope(scope, step=5 if enforcing else 4, total=total)
+                idx += 1
+            elif name == "scope":
+                result = _step_scope(scope, step=n, total=total)
                 if result is _BACK:
-                    step = 4
+                    idx -= 1
                     continue
                 scope = result
-                step = 6
-            elif step == 6:
-                if not offer_unlock:
-                    step = 7
-                    continue
-                result = _step_unlock(unlock_pw, step=total, total=total)
+                idx += 1
+            elif name == "unlock":
+                result = _step_unlock(unlock_pw, step=n, total=total)
                 if result is _BACK:
-                    step = 5
+                    idx -= 1
                     continue
                 unlock_pw = result
-                step = 7
-            elif step == 7:
+                idx += 1
+            elif name == "confirm":
                 result = _step_confirm(target, mode, rules, agents, cloak=cloak,
                                        scope=scope, unlock_pw=unlock_pw,
-                                       mirror_agents=mirror_agents)
+                                       mirror_agents=mirror_agents, gov_mode=gov_mode)
                 if result is _BACK:
-                    step = 6 if offer_unlock else 5
+                    idx -= 1
                     continue
                 break
     except Exception:
         rules = _load_rules()
         mode = "observe"
+        gov_mode = None
         agents = ["claude"]
         mirror_agents = []
         cloak = False
@@ -1384,7 +1516,7 @@ def run_wizard(target: Path) -> None:
 
     _raw_off()
     _do_install(target, mode, rules, agents, cloak=cloak, scope=scope,
-                mirror_agents=mirror_agents)
+                mirror_agents=mirror_agents, gov_mode=gov_mode)
     # After the install output, so the prompt isn't competing with spinners.
     if unlock_pw:
         _prompt_unlock_password()
