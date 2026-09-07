@@ -37,11 +37,22 @@ from typing import Any, Dict, List, Optional, Tuple
 
 _MODES_PATH = Path(__file__).parent / "modes.yaml"
 
-# Cloud-metadata hosts that must survive a mode's egress block. Compared by
-# host only — the reason strings are prose and may be reworded.
-_REQUIRED_DENY_HOSTS = frozenset({
-    "169.254.169.254", "metadata.google.internal", "169.254.0.0/16",
-})
+# Cloud-metadata denies that must survive a mode's egress block, injected into
+# every egress-enabled mode by _with_metadata_deny(). Kept in sync with the
+# `egress.deny` defaults in default_policy.yaml.
+_METADATA_DENY = [
+    {"host": "169.254.169.254",
+     "reason": "AWS IMDS — hands out instance credentials (IMDSv1/v2)"},
+    {"host": "169.254.169.253",
+     "reason": "AWS Route 53 resolver — DNS rebinding surface"},
+    {"host": "metadata.google.internal",
+     "reason": "GCP metadata server — hands out service account credentials"},
+    {"host": "100.100.100.200",
+     "reason": "Alibaba Cloud metadata endpoint"},
+    {"host": "169.254.0.0/16",
+     "reason": "link-local block — belt-and-braces catch-all for cloud metadata"},
+]
+_REQUIRED_DENY_HOSTS = frozenset(e["host"] for e in _METADATA_DENY)
 
 
 class ModeError(ValueError):
@@ -129,27 +140,24 @@ def coverage(mode: Dict[str, Any]) -> Tuple[int, int]:
 
 # ── Compilation ─────────────────────────────────────────────────────────────
 
-def _check_metadata_deny(mode: Dict[str, Any]) -> None:
-    """Refuse to compile an egress-enabled mode that lost the metadata denies.
+def _with_metadata_deny(mode: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``mode``'s egress with the cloud-metadata denies guaranteed present.
 
-    settings.update() replaces `egress` wholesale, so an edit that drops these
-    from modes.yaml would silently reopen the cloud-metadata SSRF pivot on
-    every workspace running that mode. Fail loudly at compile instead.
+    A mode's `egress.deny` REPLACES the default policy's list, so a mode that
+    declares any deny of its own and forgets these silently reopens the
+    cloud-metadata SSRF pivot on every workspace running it. Rather than make
+    each mode restate five entries — which is the kind of duplication that
+    rots — they are injected here, so a mode author cannot get it wrong by
+    omission. `test_every_egress_mode_denies_cloud_metadata` asserts the
+    compiled output, which is the property that actually matters.
     """
-    egress = mode.get("egress") or {}
+    egress = dict(mode.get("egress") or {})
     if not egress.get("enabled"):
-        return
-    hosts = {
-        (e.get("host") if isinstance(e, dict) else e)
-        for e in (egress.get("deny") or [])
-    }
-    missing = _REQUIRED_DENY_HOSTS - hosts
-    if missing:
-        raise ModeError(
-            f"mode '{mode.get('id')}' enables egress but its deny list is missing "
-            f"{sorted(missing)} — settings.egress is replaced wholesale, so these "
-            f"must be carried forward or cloud metadata becomes reachable"
-        )
+        return egress
+    deny = list(egress.get("deny") or [])
+    hosts = {(e.get("host") if isinstance(e, dict) else e) for e in deny}
+    egress["deny"] = [e for e in _METADATA_DENY if e["host"] not in hosts] + deny
+    return egress
 
 
 def _command_rules(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -190,7 +198,6 @@ def compile_mode(mode: Dict[str, Any]) -> str:
     compiler testable without a workspace.
     """
     import yaml
-    _check_metadata_deny(mode)
 
     settings: Dict[str, Any] = {"mode_id": mode["id"], "default_mode": mode.get("default_mode", "observe")}
     # `selection: explicit` says "the rules listed below are the blocking set",
@@ -198,17 +205,30 @@ def compile_mode(mode: Dict[str, Any]) -> str:
     # enforcement in default_mode and must NOT set it, or the floor turns opt-in.
     if str(mode.get("enforce_rules")) != "all":
         settings["selection"] = "explicit"
-    for key in ("egress", "tool_tags", "sandbox"):
+    egress = _with_metadata_deny(mode)
+    if egress:
+        settings["egress"] = egress
+    for key in ("tool_tags", "sandbox"):
         if mode.get(key):
             settings[key] = mode[key]
+    # Any other settings axis a mode declares (data_boundary, semantic_guard,
+    # execution_target_action, …) is written through untouched. The three above
+    # keep their own key because `explain` renders them individually.
+    for key, value in (mode.get("settings") or {}).items():
+        settings[key] = value
 
-    rules: List[Dict[str, Any]] = [
-        {"id": rid, "mode": "enforce"} for rid in enforcing_rule_ids(mode)
-    ]
-    rules.extend(_command_rules(mode))
+    # The selector only ever PROMOTES rules. A mode also needs to demote one
+    # (a broad warn-rule that over-blocks under `default_mode: enforce`) and to
+    # carry rules of its own, so verbatim entries win over the selector's.
+    rules: Dict[str, Dict[str, Any]] = {
+        rid: {"id": rid, "mode": "enforce"} for rid in enforcing_rule_ids(mode)
+    }
+    for rule in mode.get("rules") or []:
+        rules[rule["id"]] = rule
+    rules_out = list(rules.values()) + _command_rules(mode)
 
     body = yaml.dump(
-        {"version": "1.0", "settings": settings, "rules": rules},
+        {"version": "1.0", "settings": settings, "rules": rules_out},
         default_flow_style=False, sort_keys=False, width=100, allow_unicode=True,
     )
     blocking, total = coverage(mode)

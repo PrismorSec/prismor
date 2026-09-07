@@ -130,8 +130,6 @@ packages = [
 "advisories/immunity-feed.json.sig" = "prismor/runtime/data/advisories/immunity-feed.json.sig"
 "keys/public.pub" = "prismor/runtime/data/keys/public.pub"
 "templates/policy-tests-owasp.yaml" = "prismor/runtime/data/templates/policy-tests-owasp.yaml"
-# Use-case policy templates (`prismor policy init --template <name>`).
-"templates/policy" = "prismor/runtime/data/templates/policy"
 "templates/CLAUDE.md.template" = "prismor/runtime/data/templates/CLAUDE.md.template"
 "prismor/runtime/cloaking/hermes-plugin/plugin.yaml" = "prismor/runtime/data/cloaking/hermes-plugin/plugin.yaml"
 "prismor/runtime/cloaking/hermes-plugin/__init__.py" = "prismor/runtime/data/cloaking/hermes-plugin/__init__.py"
@@ -158,7 +156,7 @@ packages = [
 "docs/live-telemetry.md" = "prismor/runtime/data/docs/live-telemetry.md"
 "docs/network-isolation.md" = "prismor/runtime/data/docs/network-isolation.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
-"docs/policy-templates.md" = "prismor/runtime/data/docs/policy-templates.md"
+"docs/governance-modes.md" = "prismor/runtime/data/docs/governance-modes.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"

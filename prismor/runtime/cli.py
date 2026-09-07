@@ -2588,11 +2588,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── policy subcommands ─────────────────────────────────────────────
     if args.command == "policy":
         if args.policy_command == "init":
-            _policy_init(workspace, template=getattr(args, "template", None),
-                         force=getattr(args, "force", False))
-            return
-        if args.policy_command == "templates":
-            _policy_templates(getattr(args, "name", None))
+            _policy_init(workspace, force=getattr(args, "force", False))
             return
         if args.policy_command == "validate":
             _policy_validate(Path(args.file))
@@ -2612,9 +2608,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         # No action given → print usage instead of the cryptic
         # "Unsupported command: policy" (the command IS supported; it needs an action).
         sys.stderr.write(
-            "Usage: prismor policy {init|templates|validate|show|export|edit|test}\n"
-            "  init      Write a starter .prismor/policy.yaml (--template NAME)\n"
-            "  templates List the bundled use-case templates (NAME to print one)\n"
+            "Usage: prismor policy {init|validate|show|export|edit|test}\n"
+            "  init      Write a starter .prismor/policy.yaml\n"
             "  validate  Check a policy file against the schema + floor\n"
             "  show      Print the effective policy for this workspace\n"
             "  export    Print the effective policy as JSON (for non-Python consumers)\n"
@@ -3419,16 +3414,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_init = policy_sub.add_parser("init", help="Create a starter policy.yaml in your workspace")
     policy_init.add_argument("--workspace", help="Workspace path")
-    policy_init.add_argument("--template", help="Start from a bundled use-case template "
-                                                "(see `prismor policy templates`)")
     policy_init.add_argument("--force", action="store_true",
                              help="Overwrite an existing .prismor/policy.yaml")
-
-    policy_templates = policy_sub.add_parser(
-        "templates", help="List the bundled use-case policy templates")
-    policy_templates.add_argument("name", nargs="?",
-                                  help="Print this template's YAML instead of the list")
-    policy_templates.add_argument("--workspace", help="Workspace path")
 
     policy_validate = policy_sub.add_parser("validate", help="Validate a policy YAML file")
     policy_validate.add_argument("file", help="Path to policy.yaml")
@@ -4866,54 +4853,8 @@ def _print_status_overview(workspace: Path) -> None:
     print()
 
 
-def _policy_templates_dir() -> Path:
-    """Directory holding the bundled use-case policy templates."""
-    from prismor.runtime.paths import template_path
-    return template_path("policy")
-
-
-def _policy_template_summary(path: Path) -> str:
-    """The template's own `# summary:` header line, for the listing."""
-    for line in path.read_text(encoding="utf-8").splitlines()[:10]:
-        if line.lower().startswith("# summary:"):
-            return line.split(":", 1)[1].strip()
-    return ""
-
-
-def _policy_templates(name: Optional[str] = None) -> None:
-    """List the bundled templates, or print one of them."""
-    tdir = _policy_templates_dir()
-    available = sorted(tdir.glob("*.yaml")) if tdir.is_dir() else []
-    if not available:
-        sys.stderr.write(f"error: no policy templates found under {tdir}\n")
-        raise SystemExit(1)
-
-    if name:
-        chosen = tdir / f"{name.removesuffix('.yaml')}.yaml"
-        if not chosen.exists():
-            sys.stderr.write(
-                f"error: unknown template '{name}' "
-                f"(available: {', '.join(p.stem for p in available)})\n")
-            raise SystemExit(1)
-        print(chosen.read_text(encoding="utf-8"), end="")
-        return
-
-    width = max(len(p.stem) for p in available)
-    print()
-    print(f"  {_color('PRISMOR', _BOLD)}  policy templates")
-    print(f"  {_color('─' * 62, _DIM)}")
-    print()
-    for path in available:
-        print(f"  {_color(path.stem.ljust(width), _CYAN)}  {_policy_template_summary(path)}")
-    print()
-    print(f"  {_color('prismor policy init --template <name>', _BOLD)}   adopt one")
-    print(f"  {_color('prismor policy templates <name>', _DIM)}        print it first")
-    print()
-
-
-def _policy_init(workspace: Path, template: Optional[str] = None,
-                 force: bool = False) -> None:
-    """Generate a starter policy.yaml, or copy in a bundled use-case template."""
+def _policy_init(workspace: Path, force: bool = False) -> None:
+    """Generate a starter policy.yaml with comments explaining each section."""
     target_dir = workspace / ".prismor"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "policy.yaml"
@@ -4922,36 +4863,16 @@ def _policy_init(workspace: Path, template: Optional[str] = None,
         print("Re-run with --force to overwrite it (the current file is not backed up).")
         raise SystemExit(1)
 
-    if template:
-        source = _policy_templates_dir() / f"{template.removesuffix('.yaml')}.yaml"
-        if not source.exists():
-            sys.stderr.write(f"error: unknown template '{template}'\n")
-            _policy_templates()
-            raise SystemExit(1)
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
-        print(f"Created {target} from template '{source.stem}'")
-        summary = _policy_template_summary(source)
-        if summary:
-            print(f"  {summary}")
-        print("Read the '── Customize ──' section at the bottom before relying on it.")
-        errors = validate_policy(target)
-        if errors:  # a template should never ship invalid, but say so if it does
-            print(_color("INVALID", _RED) + "  bundled template failed validation:")
-            for error in errors:
-                print(f"  - {error}")
-            raise SystemExit(1)
-        return
-
     starter = '''version: "1.0"
 
 # Project-level Prismor policy overrides.
 # Rules here merge with the defaults — override a rule by matching its id,
 # or add new rules with unique ids.
 #
-# Starting from scratch is rarely the fastest route. `prismor policy templates`
-# lists ready-to-adopt policies for common shapes of agent (CI, web research,
-# production ops, regulated data, …); `prismor policy init --template <name>`
-# writes one here instead of this stub.
+# Starting from scratch is rarely the fastest route. `prismor mode list` shows
+# ready-to-adopt postures for common shapes of agent (CI, web research,
+# production ops, regulated data, …); `prismor mode apply <name>` compiles one
+# here instead of this stub.
 #
 # Docs: https://github.com/PrismorSec/prismor
 
