@@ -22,7 +22,7 @@ Commands:
   logout        Un-enroll this machine (remove device identity + cached remote policy)
   policy init   Generate a starter policy.yaml for your project
   policy validate  Validate a policy.yaml file
-  mode list     List the governance modes (audit-only, dev-safe, regulated-airgap)
+  mode list     List the governance modes (dev-safe, trusted-workspace, regulated-airgap)
   mode explain ID  Risk/reward preview for a mode — including what it does NOT stop
   mode apply ID    Compile a whole security posture into .prismor/policy.yaml
   mode show     Which mode this workspace runs, and whether it has drifted
@@ -1934,7 +1934,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             scope = "project"
         non_interactive = getattr(args, "non_interactive", False) or not sys.stdin.isatty()
         if non_interactive:
-            mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "audit-only")
+            mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "observe")
             agents_str = getattr(args, "agents", None)
             agents = [a.strip() for a in agents_str.split(",")] if agents_str else None
             cloak_flag = getattr(args, "cloak", None)
@@ -2603,7 +2603,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── policy subcommands ─────────────────────────────────────────────
     if args.command == "policy":
         if args.policy_command == "init":
-            _policy_init(workspace, force=getattr(args, "force", False))
+            _policy_init(workspace)
             return
         if args.policy_command == "validate":
             _policy_validate(Path(args.file))
@@ -2636,8 +2636,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── mode subcommands (governance mode templates) ────────────────────
     if args.command == "mode":
         from prismor.runtime.modes import (
-            ModeError, apply_mode, active_mode, has_drifted,
+            ModeError, apply_mode, active_mode, has_drifted, is_observe_build,
             compile_mode, get_mode, format_list, format_explain, coverage,
+            sandbox_preflight,
         )
         sub = getattr(args, "mode_command", None)
         try:
@@ -2651,12 +2652,28 @@ def main(argv: Optional[List[str]] = None) -> None:
                 mode_id = active_mode(workspace)
                 if mode_id is None:
                     print("No governance mode applied to this workspace.")
-                    print("  prismor mode list   see the four modes and what each costs")
+                    print("  prismor mode list   see the modes and what each costs")
                     return
                 mode = get_mode(mode_id)
                 blocking, total = coverage(mode)
                 print(f"  {_color('Mode', _BOLD)}      {mode_id}  ({mode.get('name', '')})")
-                print(f"  Rules     {blocking} of {total} block")
+                previewing = is_observe_build(workspace)
+                if previewing:
+                    print(_color("  Preview", _YELLOW) +
+                          f"   --observe build: nothing blocks. {blocking} of "
+                          f"{total} rules would block without it.")
+                else:
+                    print(f"  Rules     {blocking} of {total} block")
+                # Apply-time preflight cannot see a runtime that went away
+                # afterwards, and the symptom (every shell call blocked) does
+                # not name its cause. Report it where someone would look.
+                if not previewing:
+                    problem = sandbox_preflight(mode)
+                    if problem is not None:
+                        print(_color("  Sandbox", _RED) +
+                              f"   unavailable ({problem}) — this mode enforces it, "
+                              f"so every shell command is being blocked")
+                        print("            fix Docker, or re-apply with --observe")
                 print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
                 if has_drifted(workspace):
                     print(_color("  Drift", _YELLOW) +
@@ -2665,11 +2682,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             if sub == "apply":
                 mode = get_mode(args.mode_id)
+                observe = getattr(args, "observe", False)
                 if getattr(args, "dry_run", False):
-                    sys.stdout.write(compile_mode(mode))
+                    sys.stdout.write(compile_mode(mode, observe=observe))
                     return
-                path, notes = apply_mode(workspace, args.mode_id, force=args.force)
-                print(_color("Applied", _GREEN) + f" mode '{args.mode_id}' → {path}")
+                path, notes = apply_mode(
+                    workspace, args.mode_id, force=args.force, observe=observe
+                )
+                label = "Applied (preview)" if observe else "Applied"
+                print(_color(label, _GREEN) + f" mode '{args.mode_id}' → {path}")
                 for note in notes:
                     print(f"  {_color('·', _DIM)} {note}")
                 print(f"\n  What it does not stop:  prismor mode explain {args.mode_id}")
@@ -2679,9 +2700,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise SystemExit(1)
         sys.stderr.write(
             "Usage: prismor mode {list|explain|apply|show}\n"
-            "  list             The four governance modes, with coverage and friction\n"
+            "  list             The governance modes, with coverage and friction\n"
             "  explain <id>     Risk/reward preview — including what the mode does NOT stop\n"
             "  apply <id>       Compile the mode into .prismor/policy.yaml (--dry-run to preview)\n"
+            "                   --observe compiles the same posture with nothing blocking\n"
             "  show             Which mode this workspace runs, and whether it has drifted\n"
         )
         raise SystemExit(2)
@@ -3456,8 +3478,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     policy_init = policy_sub.add_parser("init", help="Create a starter policy.yaml in your workspace")
     policy_init.add_argument("--workspace", help="Workspace path")
-    policy_init.add_argument("--force", action="store_true",
-                             help="Overwrite an existing .prismor/policy.yaml")
 
     policy_validate = policy_sub.add_parser("validate", help="Validate a policy YAML file")
     policy_validate.add_argument("file", help="Path to policy.yaml")
@@ -3498,6 +3518,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode_apply_p.add_argument("mode_id", help="Mode id (e.g. dev-safe)")
     mode_apply_p.add_argument("--dry-run", action="store_true",
                               help="Print the policy that would be written, and write nothing")
+    mode_apply_p.add_argument("--observe", action="store_true",
+                              help="Compile the posture with nothing enforcing — see what it "
+                                   "would block before you let it block")
     mode_apply_p.add_argument("--force", action="store_true",
                               help="Overwrite a policy that was not generated by a mode")
     mode_apply_p.add_argument("--workspace", help="Workspace path")
@@ -3885,13 +3908,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup_parser.add_argument(
         "--mode",
-        choices=["audit-only", "dev-safe", "regulated-airgap", "custom",
-                 "observe", "enforce"],
+        choices=["observe", "enforce"],
         default=None,
-        help="Governance mode (non-interactive only; default: audit-only). "
-             "`custom` picks rules with --recommended / --enforce-rules. "
-             "`observe`/`enforce` are the pre-mode names, still honored. "
-             "See `prismor mode list` for coverage and friction.",
+        help="Enforcement mode (non-interactive only; default: observe)",
     )
     setup_parser.add_argument(
         "--agents",
@@ -4888,10 +4907,10 @@ def _print_status_overview(workspace: Path) -> None:
     # Next-step nudge — one action, picked by current state
     print()
     if not agents_with_hooks:
-        print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode audit-only)")
+        print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode observe)")
     elif mode == "observe":
         print(f"  {_color('Tip:', _DIM)}  observe mode logs only. Switch with:")
-        print(f"        prismor setup --mode dev-safe   (see the trade first: prismor mode list)")
+        print(f"        prismor setup --mode enforce --recommended   (picks the rules that block)")
     elif sessions and sessions[0].get("findingsCount", 0) > 0:
         print(f"  {_color('Next:', _CYAN)} prismor sessions --findings-only")
     else:
@@ -4899,14 +4918,13 @@ def _print_status_overview(workspace: Path) -> None:
     print()
 
 
-def _policy_init(workspace: Path, force: bool = False) -> None:
+def _policy_init(workspace: Path) -> None:
     """Generate a starter policy.yaml with comments explaining each section."""
     target_dir = workspace / ".prismor"
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / "policy.yaml"
-    if target.exists() and not force:
+    if target.exists():
         print(f"Policy already exists at {target}")
-        print("Re-run with --force to overwrite it (the current file is not backed up).")
         raise SystemExit(1)
 
     starter = '''version: "1.0"
@@ -4914,11 +4932,6 @@ def _policy_init(workspace: Path, force: bool = False) -> None:
 # Project-level Prismor policy overrides.
 # Rules here merge with the defaults — override a rule by matching its id,
 # or add new rules with unique ids.
-#
-# Starting from scratch is rarely the fastest route. `prismor mode list` shows
-# ready-to-adopt postures for common shapes of agent (CI, web research,
-# production ops, regulated data, …); `prismor mode apply <name>` compiles one
-# here instead of this stub.
 #
 # Docs: https://github.com/PrismorSec/prismor
 

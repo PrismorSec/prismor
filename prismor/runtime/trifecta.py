@@ -57,7 +57,27 @@ TOOL_TAG_DEFAULTS = [
 DEFAULT_INCOMPATIBLE = [[UNTRUSTED, CRITICAL]]
 
 # Inference fallback: event types → an implied tag.
-_UNTRUSTED_EVENT_TYPES = {"tool_result", "memory", "subagent_spawn", "file_read"}
+#
+# `untrusted_content` means *attacker-influenceable* input, so this set is
+# deliberately narrow. Two event types that look like ingest are handled by
+# their own rules below instead of living here:
+#
+#   file_read    Reading a file inside the workspace is the single most common
+#                thing an agent does (see the corpus in tests/test_modes.py).
+#                Tagging it untrusted made `untrusted_content then
+#                critical_action -> block` fire on read-then-anything, which
+#                ends the session on its first shell call. Only a read from
+#                OUTSIDE the workspace root carries the tag — see
+#                `_is_external_read`.
+#   tool_result  The canonical fall-through for any tool an adapter does not
+#                map (hooks._unmapped_tool_event), which locally means Grep,
+#                Glob, Task, TodoWrite — none of them external ingest. Only an
+#                MCP tool result is attacker-influenceable, so the tag is
+#                scoped to events the normalizer marked with an mcp_server.
+#
+# Neither narrowing loses the tools that matter: WebFetch and WebSearch are
+# tagged by name in TOOL_TAG_DEFAULTS, which resolves before inference runs.
+_UNTRUSTED_EVENT_TYPES = {"memory", "subagent_spawn"}
 _CRITICAL_EVENT_TYPES = {"file_write", "shell"}
 _CRITICAL_FINDING_CATEGORIES = {
     "destructive_command",
@@ -205,12 +225,48 @@ def tool_tags_for_agent(
     return merged
 
 
+def _is_external_read(event: Dict[str, Any], workspace: Optional[Path]) -> bool:
+    """Whether a ``file_read`` reaches outside the workspace it is scoped to.
+
+    A read of the repo the agent was pointed at is ordinary work and carries no
+    ``untrusted_content``; a read of ``~/.ssh/id_rsa``, ``/tmp/downloaded.json``,
+    or another checkout is content nobody in this session vouched for.
+
+    Unknown workspace resolves to *not external*. That is deliberate: this
+    function decides whether to attach a tag that, combined with the default
+    trifecta rule, denies every subsequent shell call. Guessing "untrusted"
+    whenever the workspace cannot be resolved would reinstate exactly the
+    session-ending behaviour this narrowing exists to remove, on the paths where
+    we know the least — and it would do so for every read, not a rare one.
+    Detection of what the read actually touched stays with the secret-access
+    rules, which match on path and never on session history.
+    """
+    from prismor.runtime.paths import is_within
+
+    if workspace is None:
+        return False
+    path = str(event.get("path") or "")
+    if not path:
+        return False
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = Path(workspace) / target
+    # `is_within` resolves both sides, so a symlink pointing out of the
+    # workspace correctly reads as external, and a path that does not exist yet
+    # still resolves lexically. It returns False for the genuinely unresolvable
+    # (a symlink loop), which lands here as "external" — the conservative side,
+    # and rare enough that it cannot re-arm the read-then-anything cliff the
+    # way an unknown workspace would.
+    return not is_within(target, workspace)
+
+
 def classify_tool_tags(
     event: Dict[str, Any],
     event_type: str,
     finding_categories: Optional[set] = None,
     tt_settings: Optional[Dict[str, Any]] = None,
     extra_tags: Optional[Set[str]] = None,
+    workspace: Optional[Path] = None,
 ) -> Set[str]:
     """Return the set of tags for a tool call.
 
@@ -222,8 +278,13 @@ def classify_tool_tags(
     ``extra_tags`` are unioned onto whichever tier wins rather than competing
     with it — they describe the call's *destination* (see :func:`egress_tags`),
     not its identity, so they must not suppress the tool's own tags.
+
+    ``workspace`` scopes the file-read inference: see :func:`_is_external_read`.
+    Omitted, every read counts as in-workspace.
     """
-    base = _classify_base(event, event_type, finding_categories, tt_settings)
+    base = _classify_base(
+        event, event_type, finding_categories, tt_settings, workspace
+    )
     return base | (extra_tags or set())
 
 
@@ -232,6 +293,7 @@ def _classify_base(
     event_type: str,
     finding_categories: Optional[set] = None,
     tt_settings: Optional[Dict[str, Any]] = None,
+    workspace: Optional[Path] = None,
 ) -> Set[str]:
     tt = tt_settings or {}
     tool_name = _tool_name(event)
@@ -274,6 +336,15 @@ def _classify_base(
             tags.add(UNTRUSTED if event.get("response") else CRITICAL)
         elif event_type in _CRITICAL_EVENT_TYPES:
             tags.add(CRITICAL)
+        elif event_type == "file_read":
+            if _is_external_read(event, workspace):
+                tags.add(UNTRUSTED)
+        elif event_type == "tool_result":
+            # Only an MCP result is remote content; a local unmapped tool is
+            # not. The normalizer stamps `mcp_server`, but fall back to the tool
+            # name so a hand-built or adapter-specific event still classifies.
+            if event.get("mcp_server") or tool_name.startswith("mcp__"):
+                tags.add(UNTRUSTED)
         elif event_type in _UNTRUSTED_EVENT_TYPES:
             tags.add(UNTRUSTED)
 

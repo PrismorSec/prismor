@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Union
 
 # Bundled location inside an installed wheel.
 _BUNDLED_DATA = Path(__file__).resolve().parent / "data"
@@ -91,3 +91,20 @@ def skill_manifest_path() -> Path:
 def skill_docs_dir() -> Path:
     """Locate the skill's ``docs/`` directory (reference material it links to)."""
     return _resolve("docs")
+
+
+def is_within(inner: Union[str, Path, None], outer: Union[str, Path, None]) -> bool:
+    """Whether ``inner`` resolves to ``outer`` or somewhere underneath it.
+
+    Both sides are resolved, so a symlink pointing out of ``outer`` correctly
+    reads as outside it. Comparing parent components rather than string
+    prefixes is what keeps ``/srv/apple`` from reading as inside ``/srv/app``.
+    Anything unresolvable is *not* within — callers decide what that means.
+    """
+    if not inner or not outer:
+        return False
+    try:
+        a, b = Path(inner).resolve(), Path(outer).resolve()
+    except (OSError, ValueError):
+        return False
+    return a == b or b in a.parents

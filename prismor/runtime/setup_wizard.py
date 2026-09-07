@@ -347,155 +347,33 @@ def _control_line(items: List[tuple]) -> str:
 
 # ── Step 1: Enforcement Mode ─────────────────────────────────────────────────
 
-def _hook_mode(mode: str) -> str:
-    """observe|enforce for the hook command line, from a mode id or a legacy name."""
-    if mode in ("observe", "enforce"):
-        return mode
-    try:
-        from prismor.runtime import modes as _modes
-        return str(_modes.get_mode(mode).get("default_mode", "observe"))
-    except Exception:
-        # `custom` and anything unrecognized: the rule selection carries the
-        # blocking set, and enforce is what that path has always installed as.
-        return "enforce" if mode == "custom" else "observe"
-
-
-def _is_governance_mode(mode: str) -> bool:
-    """True for a named mode in modes.yaml (not "custom" or a legacy observe)."""
-    try:
-        from prismor.runtime import modes as _modes
-        return mode in _modes.load_modes()
-    except Exception:
-        return False
-
-
-def _mode_options() -> List[tuple]:
-    """The install menu: three governance modes, then rule-by-rule.
-
-    Read from modes.yaml so the menu cannot drift from what `prismor mode`
-    offers, and so adding a mode is still a YAML edit. Falls back to the old
-    observe/enforce pair if the catalogue cannot be read — setup must not be
-    the thing that breaks on a malformed file.
-    """
-    try:
-        from prismor.runtime import modes as _modes
-        out = []
-        for mode_id, mode in _modes.load_modes().items():
-            blocking, total = _modes.coverage({**mode, "id": mode_id})
-            out.append((mode_id, {
-                "name": mode.get("name", mode_id),
-                "intent": mode.get("intent", ""),
-                "coverage": round(blocking / total * 100) if total else 0,
-                "friction": int(mode.get("friction_index", 0)),
-                "blocking": blocking,
-                "total": total,
-                "residual": " ".join((mode.get("residual_risk") or "").split()),
-                "for": mode.get("recommended_for", ""),
-            }))
-        out.append(("custom", {
-            "name": "Custom",
-            "intent": "Choose rule by rule on the next screen.",
-            "coverage": None, "friction": None, "blocking": 0, "total": 0,
-            "residual": "Whatever you leave unselected. Nothing blocks until you pick it.",
-            "for": "Operators who already know which rules they want.",
-        }))
-        return out
-    except Exception:
-        return [
-            ("observe", {"name": "Observe", "intent": "Log and warn, never block",
-                         "coverage": 0, "friction": 0, "blocking": 0, "total": 0,
-                         "residual": "Everything. Nothing is blocked in real time.", "for": ""}),
-            ("custom", {"name": "Custom", "intent": "Choose rule by rule",
-                        "coverage": None, "friction": None, "blocking": 0, "total": 0,
-                        "residual": "", "for": ""}),
-        ]
-
-
-def _step_mode(current: str = "audit-only", total: int = 4, extra_steps: int = 0) -> str:
-    """Pick a governance mode — the one screen that decides the whole posture.
-
-    Every option shows what it costs as well as what it buys: coverage, the
-    friction that coverage is paid for with, and one line of residual risk. A
-    menu that only advertises protection is how someone picks the tightest
-    option and uninstalls a week later.
-    """
-    opts = _mode_options()
-    ids = [o[0] for o in opts]
-    sel = ids.index(current) if current in ids else 0
+def _step_mode(current: str = "observe", total: int = 4, extra_steps: int = 0) -> str:
+    opts = [
+        ("observe", "Log and warn, never block"),
+        ("enforce", "Block dangerous actions in real time"),
+    ]
+    sel = 0 if current == "observe" else 1
 
     while True:
-        # "custom" adds the rule-selection step, so the count has to follow the
-        # highlighted option — otherwise this screen says "1/4" and the next
-        # one says "2/5", which reads like a bug.
-        total = (5 if ids[sel] == "custom" else 4) + extra_steps
-        lines = _header_lines(1, total, "GOVERNANCE MODE")
-        for i, (mode_id, m) in enumerate(opts):
+        # Choosing enforce adds the rule-selection step, so the count has to
+        # follow the highlighted option — otherwise this screen says "1/5" and
+        # the next one says "2/6", which reads like a bug.
+        total = (5 if opts[sel][0] == "enforce" else 4) + extra_steps
+        lines = _header_lines(1, total, "ENFORCEMENT MODE")
+        for i, (name, desc) in enumerate(opts):
             arrow = _w("▸ ", CYAN) if i == sel else "  "
-            dot = _w("●", GRN) if i == sel else _w("○", DIM)
-            nm = _pad(_w(mode_id, BOLD) if i == sel else _w(mode_id, DIM), 20)
-            if m["coverage"] is None:
-                metrics = _w("coverage    —  ·  friction    —", DIM)
-            else:
-                metrics = _w(f"coverage {m['coverage']:>3}%  ·  friction {m['friction']:>3}%", DIM)
-            lines.append(f"  {arrow}{dot}  {nm}{metrics}")
-            lines.append(f"  {'':<24}{_w(m['intent'], DIM)}")
+            dot   = _w("●", GRN) if i == sel else _w("○", DIM)
+            nm    = _pad(_w(name, BOLD) if i == sel else _w(name, DIM), 16)
+            lines.append(f"  {arrow}{dot}  {nm}{_w(desc, DIM)}")
         lines.append("")
-
-        m = opts[sel][1]
-        if m["coverage"] is not None:
-            rules_note = _w(f"{m['blocking']}/{m['total']} rules block", DIM)
-            lines.append(f"  {_pad(_w('coverage', BOLD), 12)}"
-                         f"{_w(_bar(m['coverage']), GRN)} {m['coverage']:>3}%   {rules_note}")
-            lines.append(f"  {_pad(_w('friction', BOLD), 12)}"
-                         f"{_w(_bar(m['friction']), YEL)} {m['friction']:>3}%")
-            lines.append("")
-        if m["residual"]:
-            wrapped = _wrap_plain(m["residual"], _term_width() - 6)
-            lines.append(f"  {_w('DOES NOT STOP', BOLD)}")
-            for chunk in wrapped:
-                lines.append(f"  {_w(chunk, DIM)}")
-            if wrapped and wrapped[-1].endswith("…"):
-                lines.append(f"  {_w(f'in full: prismor mode explain {opts[sel][0]}', DIM)}")
-            lines.append("")
-        if m["for"]:
-            lines.append(f"  {_w('Best for', BOLD)}  {_w(m['for'], DIM)}")
-            lines.append("")
-
         lines.append(_control_line([("↑↓", "select"), ("enter", "next"), ("q", "quit")]))
         _render(lines)
 
         key = _read_key()
         if key == _UP:               sel = (sel - 1) % len(opts)
         elif key == _DOWN:           sel = (sel + 1) % len(opts)
-        elif key in (_ENTER, "\n"):  return ids[sel]
+        elif key in (_ENTER, "\n"):  return opts[sel][0]
         elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
-
-
-def _bar(pct: int, width: int = 24) -> str:
-    filled = max(0, min(width, round(pct / 100 * width)))
-    return "█" * filled + "░" * (width - filled)
-
-
-def _wrap_plain(text: str, width: int, max_lines: int = 3) -> List[str]:
-    """Wrap to at most ``max_lines``, marking a cut rather than stopping mid-word.
-
-    This renders the residual-risk copy, so a silent truncation would end a
-    sentence about what the mode fails to stop halfway through — the one place
-    on this screen where trailing off is worse than saying less.
-    """
-    out, line = [], ""
-    for word in text.split():
-        if line and len(line) + 1 + len(word) > width:
-            out.append(line)
-            line = word
-        else:
-            line = f"{line} {word}".strip()
-    if line:
-        out.append(line)
-    if len(out) > max_lines:
-        out = out[:max_lines]
-        out[-1] = out[-1][:max(0, width - 2)].rstrip(" .,;:") + " …"
-    return out
 
 
 # ── Step 2 (enforce only): Which rules block ─────────────────────────────────
@@ -929,8 +807,8 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
         lines.append(row(_w("READY TO INSTALL", BOLD)))
         lines.append(row())
         lines.append(row(kv("Project", disp[:30])))
-        lines.append(row(kv("Mode", mode, GRN if mode != "audit-only" else YEL)))
-        if mode == "custom":
+        lines.append(row(kv("Mode", mode, GRN if mode == "enforce" else YEL)))
+        if mode == "enforce":
             lines.append(row(kv("Blocking", f"{n_on} selected  ({n_rec_on}/{n_rec} recommended)",
                                 GRN if n_on else YEL)))
             if n_on == 0:
@@ -1184,14 +1062,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     # hand-flipped enforce hooks keep blocking (see PolicyEngine.is_legacy_policy).
     selected = [r["id"] for r in rules if r["on"]]
     disabled = [r["id"] for r in rules if not r["on"]]
-    if _is_governance_mode(mode):
-        def _write_policy():
-            from prismor.runtime import modes as _modes
-            _modes.apply_mode(target, mode, force=True)
-            blocking, total = _modes.coverage(_modes.get_mode(mode))
-            return True, f"{mode} — {blocking}/{total} rules block"
-        _spinner_run("Compiling governance mode", _write_policy)
-    elif mode == "custom":
+    if mode == "enforce":
         def _write_policy():
             d = target / ".prismor"
             d.mkdir(exist_ok=True)
@@ -1210,13 +1081,6 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         _spinner_run("Writing policy overrides", _write_policy)
 
     # 3. Install hooks directly via prismor.runtime.hooks
-    #
-    # `hook-dispatch --mode` takes observe|enforce only, and the hook command
-    # bakes the value in, so a governance mode id here would fail argparse on
-    # every tool call — total loss of coverage, silently. Resolve it to the
-    # mode's own default_mode. Per-rule `mode: enforce` overlays still block
-    # regardless (should_block reads the finding's mode, not this flag).
-    hook_mode = _hook_mode(mode)
     from prismor.runtime.hooks import install_hooks
     for agent in agents:
         def _install_hook(a: str = agent):
@@ -1226,7 +1090,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
                     workspace=target,
                     agent=a,
                     scope=scope,
-                    mode=hook_mode,
+                    mode=mode,
                 )
                 return True, ""
             except Exception as e:
@@ -1387,7 +1251,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
 def run_non_interactive(
     target: Path,
     *,
-    mode: str = "audit-only",
+    mode: str = "observe",
     agents: Optional[List[str]] = None,
     cloak: bool = False,
     scope: str = "project",
@@ -1401,12 +1265,7 @@ def run_non_interactive(
     nothing selected rather than guessing, and says so.
     """
     rules = _load_rules()
-    # `--mode enforce` predates the named modes and meant "let me pick rules",
-    # which is what `custom` is now. Keep it working rather than break every
-    # existing scripted install.
     if mode == "enforce":
-        mode = "custom"
-    if mode == "custom":
         wanted = set(enforce_rules or [])
         unknown = wanted - {r["id"] for r in rules}
         for r in rules:
@@ -1419,19 +1278,7 @@ def run_non_interactive(
     cloak_tag = ", cloak=yes" if cloak else ""
     scope_tag = f", scope={scope}" if scope != "project" else ""
     print(f"[prismor] Non-interactive setup  (mode={mode}, agents={','.join(agents)}{cloak_tag}{scope_tag})")
-    if _is_governance_mode(mode):
-        try:
-            from prismor.runtime import modes as _modes
-            m = _modes.get_mode(mode)
-            blocking, total = _modes.coverage(m)
-            pct = round(blocking / total * 100) if total else 0
-            print(f"[prismor] {blocking}/{total} rules block "
-                  f"(coverage {pct}%, friction {m.get('friction_index', 0)}%).")
-            print(f"[prismor] Does NOT stop: {' '.join((m.get('residual_risk') or '').split())}")
-        except Exception as exc:
-            print(f"[prismor] Could not read mode '{mode}': {exc}")
-            raise SystemExit(1)
-    elif mode == "custom":
+    if mode == "enforce":
         n_on = sum(1 for r in rules if r["on"])
         if n_on == 0:
             print("[prismor] No rules selected — Prismor will detect and report, but block nothing.")
@@ -1474,14 +1321,11 @@ def run_wizard(target: Path) -> None:
 
     try:
         while True:
-            # "custom" is the rule-by-rule path (the old `enforce`); a named
-            # governance mode already states its blocking set, so that screen
-            # would be asking a question the mode has answered.
-            enforcing = mode == "custom"
+            enforcing = mode == "enforce"
             total = (5 if enforcing else 4) + (1 if offer_unlock else 0)
             if step == 1:
                 mode = _step_mode(mode, total=total, extra_steps=1 if offer_unlock else 0)
-                step = 2 if mode == "custom" else 3
+                step = 2 if mode == "enforce" else 3
             elif step == 2:
                 result = _step_policy_select(rules, step=2, total=total)
                 if result is _BACK:
@@ -1531,7 +1375,7 @@ def run_wizard(target: Path) -> None:
                 break
     except Exception:
         rules = _load_rules()
-        mode = "audit-only"
+        mode = "observe"
         agents = ["claude"]
         mirror_agents = []
         cloak = False

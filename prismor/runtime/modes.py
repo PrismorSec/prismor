@@ -32,27 +32,17 @@ Two merge hazards this module exists to get right:
 from __future__ import annotations
 
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 _MODES_PATH = Path(__file__).parent / "modes.yaml"
 
-# Cloud-metadata denies that must survive a mode's egress block, injected into
-# every egress-enabled mode by _with_metadata_deny(). Kept in sync with the
-# `egress.deny` defaults in default_policy.yaml.
-_METADATA_DENY = [
-    {"host": "169.254.169.254",
-     "reason": "AWS IMDS — hands out instance credentials (IMDSv1/v2)"},
-    {"host": "169.254.169.253",
-     "reason": "AWS Route 53 resolver — DNS rebinding surface"},
-    {"host": "metadata.google.internal",
-     "reason": "GCP metadata server — hands out service account credentials"},
-    {"host": "100.100.100.200",
-     "reason": "Alibaba Cloud metadata endpoint"},
-    {"host": "169.254.0.0/16",
-     "reason": "link-local block — belt-and-braces catch-all for cloud metadata"},
-]
-_REQUIRED_DENY_HOSTS = frozenset(e["host"] for e in _METADATA_DENY)
+# Cloud-metadata hosts that must survive a mode's egress block. Compared by
+# host only — the reason strings are prose and may be reworded.
+_REQUIRED_DENY_HOSTS = frozenset({
+    "169.254.169.254", "metadata.google.internal", "169.254.0.0/16",
+})
 
 
 class ModeError(ValueError):
@@ -84,8 +74,13 @@ def get_mode(mode_id: str) -> Dict[str, Any]:
 
 # ── Rule selection ──────────────────────────────────────────────────────────
 
-def _floor_rule_ids() -> Tuple[List[str], int]:
+@lru_cache(maxsize=1)
+def _floor_rule_ids() -> Tuple[Tuple[str, ...], int]:
     """(safety-floor rule ids, total rule count) from the default policy.
+
+    Cached: this parses the whole 80-rule default policy, and `mode list` alone
+    reaches it once per mode through `coverage`, with `compile_mode` adding two
+    more per compile. The default policy does not change within a process.
 
     The floor is what `prismor setup` badges "recommended": core rule ids plus
     every rule whose category is a core block category. Self-protection rules
@@ -99,12 +94,14 @@ def _floor_rule_ids() -> Tuple[List[str], int]:
     )
     data = yaml.safe_load(_DEFAULT_POLICY_PATH.read_text(encoding="utf-8")) or {}
     rules = data.get("rules") or []
-    floor = [
+    # A tuple, not a list: a cached mutable return is one caller away from
+    # corrupting every later read of the floor.
+    floor = tuple(
         r["id"] for r in rules
         if r.get("id") not in _SELF_PROTECTION_RULE_IDS
         and (r.get("id") in _NON_OVERRIDABLE_RULE_IDS
              or r.get("category") in _CORE_BLOCK_CATEGORIES)
-    ]
+    )
     return floor, len(rules)
 
 
@@ -140,24 +137,125 @@ def coverage(mode: Dict[str, Any]) -> Tuple[int, int]:
 
 # ── Compilation ─────────────────────────────────────────────────────────────
 
-def _with_metadata_deny(mode: Dict[str, Any]) -> Dict[str, Any]:
-    """Return ``mode``'s egress with the cloud-metadata denies guaranteed present.
+def _check_metadata_deny(mode: Dict[str, Any]) -> None:
+    """Refuse to compile an egress-enabled mode that lost the metadata denies.
 
-    A mode's `egress.deny` REPLACES the default policy's list, so a mode that
-    declares any deny of its own and forgets these silently reopens the
-    cloud-metadata SSRF pivot on every workspace running it. Rather than make
-    each mode restate five entries — which is the kind of duplication that
-    rots — they are injected here, so a mode author cannot get it wrong by
-    omission. `test_every_egress_mode_denies_cloud_metadata` asserts the
-    compiled output, which is the property that actually matters.
+    settings.update() replaces `egress` wholesale, so an edit that drops these
+    from modes.yaml would silently reopen the cloud-metadata SSRF pivot on
+    every workspace running that mode. Fail loudly at compile instead.
     """
-    egress = dict(mode.get("egress") or {})
+    egress = mode.get("egress") or {}
     if not egress.get("enabled"):
-        return egress
-    deny = list(egress.get("deny") or [])
-    hosts = {(e.get("host") if isinstance(e, dict) else e) for e in deny}
-    egress["deny"] = [e for e in _METADATA_DENY if e["host"] not in hosts] + deny
-    return egress
+        return
+    hosts = {
+        (e.get("host") if isinstance(e, dict) else e)
+        for e in (egress.get("deny") or [])
+    }
+    missing = _REQUIRED_DENY_HOSTS - hosts
+    if missing:
+        raise ModeError(
+            f"mode '{mode.get('id')}' enables egress but its deny list is missing "
+            f"{sorted(missing)} — settings.egress is replaced wholesale, so these "
+            f"must be carried forward or cloud metadata becomes reachable"
+        )
+
+
+def _check_tag_inference_declared(mode: Dict[str, Any]) -> None:
+    """Refuse to compile a tag-enforcing mode that inherits the inference default.
+
+    ``trifecta.classify_tool_tags`` falls back to event-type inference when a
+    tool matches no explicit or built-in tag, and that fallback is enabled by
+    default. Under it a workspace file read resolves to ``untrusted_content``
+    and every shell call to ``critical_action``, so the standard rule
+    ``untrusted_content then critical_action -> block`` denies everything the
+    agent does after its first read — for the rest of the session, since the
+    ledger is monotonic.
+
+    The posture is legitimate either way; inheriting it silently is not. A mode
+    that turns tag enforcement on has to say which one it chose.
+    """
+    tags = mode.get("tool_tags") or {}
+    if not tags.get("enabled"):
+        return
+    if "inference_enabled" not in tags:
+        raise ModeError(
+            f"mode '{mode.get('id')}' enables tool_tags but does not declare "
+            f"tool_tags.inference_enabled — the inherited default tags every "
+            f"workspace read as untrusted_content, which makes a "
+            f"'untrusted_content then critical_action' rule block every call "
+            f"after the first read. Set it explicitly."
+        )
+
+
+def needs_container_runtime(mode: Dict[str, Any]) -> bool:
+    """Whether this mode's shell path depends on a working container runtime.
+
+    True only when all three hold: the sandbox is on, it is *enforcing*, and the
+    mode still lets the agent run a shell. An observing sandbox degrades to a
+    warning when the runtime is missing, and a mode that denies Bash never
+    reaches the sandbox gate at all — `regulated-airgap` is the second case, so
+    it runs fine on a host with no Docker.
+    """
+    sandbox = mode.get("sandbox") or {}
+    if not sandbox.get("enabled"):
+        return False
+    if str(sandbox.get("mode", "observe")).lower() != "enforce":
+        return False
+    denied = {str(t) for t in (mode.get("tools") or {}).get("deny") or []}
+    return "Bash" not in denied
+
+
+def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
+    """Why this mode would not work on this host, or None if it would.
+
+    The failure this guards against is not subtle. `cli.py` blocks the tool call
+    outright when an enforcing sandbox has no runtime behind it, so applying
+    such a mode on a host without Docker leaves an agent whose every shell
+    command dies with ``Prismor sandbox blocked this action``. That is the
+    "developer rips the guardrails out to get through the afternoon" failure the
+    modes exist to avoid, so it is worth refusing at apply time rather than
+    discovering per command.
+    """
+    if not needs_container_runtime(mode):
+        return None
+    from prismor.runtime.sandbox import docker_status
+    status = docker_status()
+    if status.get("cli_found") and status.get("server_reachable"):
+        return None
+    return str(status.get("error") or "Docker is not reachable")
+
+
+def _command_allowlists(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Compile ``commands.allow`` into allowlist entries over this mode's rules.
+
+    Read-only inspection is the bulk of what an agent does, and it reaches
+    policy as the same ``shell`` event as everything else — so a mode's own
+    ``deny``/``ask`` patterns match it whenever the command happens to *mention*
+    something (``grep -rn 'sudo' docs/``). These entries suppress that.
+
+    Deliberately scoped to the ``mode-*-commands`` ids this module generates:
+    an allowlist that could name a floor rule would let a mode switch off
+    protection it does not own, which is precisely what the floor exists to
+    prevent.
+    """
+    patterns = (mode.get("commands") or {}).get("allow") or []
+    if not patterns:
+        return []
+    rule_ids = [
+        f"mode-{mode['id']}-{action}-commands"
+        for action in ("deny", "ask")
+        if (mode.get("commands") or {}).get(action)
+    ]
+    if not rule_ids:
+        return []
+    return [{
+        "id": f"mode-{mode['id']}-readonly-commands",
+        "rule_ids": rule_ids,
+        "patterns": list(patterns),
+        "reason": (
+            f"read-only inspection commands auto-approved by mode {mode['id']}"
+        ),
+    }]
 
 
 def _command_rules(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -190,54 +288,86 @@ def _command_rules(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def compile_mode(mode: Dict[str, Any]) -> str:
+def compile_mode(mode: Dict[str, Any], observe: bool = False) -> str:
     """Render a mode as the text of a complete `.prismor/policy.yaml`.
 
     Pure: takes a mode, returns YAML text, touches no disk. That is what lets
     `mode apply --dry-run` show exactly what would land, and what makes the
     compiler testable without a workspace.
+
+    ``observe`` compiles the same posture with nothing enforcing: every rule
+    overlay and every sub-policy mode drops to observe, so the findings are
+    identical and no verdict blocks. It answers "what would this mode stop?",
+    which is the question someone adopting a posture actually has — and it is a
+    modifier rather than a mode of its own because the answer is only useful
+    relative to a specific posture.
     """
     import yaml
+    _check_metadata_deny(mode)
+    _check_tag_inference_declared(mode)
 
-    settings: Dict[str, Any] = {"mode_id": mode["id"], "default_mode": mode.get("default_mode", "observe")}
+    settings: Dict[str, Any] = {
+        "mode_id": mode["id"],
+        "default_mode": "observe" if observe else mode.get("default_mode", "observe"),
+    }
+    if observe:
+        # Provenance, so `mode show` can say which posture is being previewed
+        # and never reports a dry run as the enforcing article.
+        settings["mode_observe"] = True
     # `selection: explicit` says "the rules listed below are the blocking set",
     # which is only meaningful when the mode names one. An `all` mode carries
     # enforcement in default_mode and must NOT set it, or the floor turns opt-in.
     if str(mode.get("enforce_rules")) != "all":
         settings["selection"] = "explicit"
-    egress = _with_metadata_deny(mode)
-    if egress:
-        settings["egress"] = egress
-    for key in ("tool_tags", "sandbox"):
-        if mode.get(key):
-            settings[key] = mode[key]
-    # Any other settings axis a mode declares (data_boundary, semantic_guard,
-    # execution_target_action, …) is written through untouched. The three above
-    # keep their own key because `explain` renders them individually.
-    for key, value in (mode.get("settings") or {}).items():
+    for key in ("egress", "tool_tags", "sandbox", "data_boundary"):
+        value = mode.get(key)
+        if not value:
+            continue
+        if observe and isinstance(value, dict) and "mode" in value:
+            value = {**value, "mode": "observe"}
         settings[key] = value
 
-    # The selector only ever PROMOTES rules. A mode also needs to demote one
-    # (a broad warn-rule that over-blocks under `default_mode: enforce`) and to
-    # carry rules of its own, so verbatim entries win over the selector's.
-    rules: Dict[str, Dict[str, Any]] = {
-        rid: {"id": rid, "mode": "enforce"} for rid in enforcing_rule_ids(mode)
+    # `egress.allow_extra` folds into `allow`. YAML anchors cannot extend a
+    # sequence, so without this a mode that wants "the shared destination list
+    # plus a few of its own" has to restate the whole list — and two lists
+    # maintained by hand drift apart silently.
+    egress = settings.get("egress")
+    if isinstance(egress, dict) and egress.get("allow_extra"):
+        egress = dict(egress)
+        egress["allow"] = list(egress.get("allow") or []) + list(egress.pop("allow_extra"))
+        settings["egress"] = egress
+
+    rules: List[Dict[str, Any]] = [
+        {"id": rid, "mode": "observe" if observe else "enforce"}
+        for rid in enforcing_rule_ids(mode)
+    ]
+    for rule in _command_rules(mode):
+        rules.append({**rule, "mode": "observe"} if observe else rule)
+
+    document: Dict[str, Any] = {
+        "version": "1.0", "settings": settings, "rules": rules,
     }
-    for rule in mode.get("rules") or []:
-        rules[rule["id"]] = rule
-    rules_out = list(rules.values()) + _command_rules(mode)
+    allowlists = _command_allowlists(mode)
+    if allowlists:
+        document["allowlists"] = allowlists
 
     body = yaml.dump(
-        {"version": "1.0", "settings": settings, "rules": rules_out},
+        document,
         default_flow_style=False, sort_keys=False, width=100, allow_unicode=True,
     )
     blocking, total = coverage(mode)
+    flag = " --observe" if observe else ""
     header = "\n".join([
         f"# Prismor governance mode: {mode['id']} ({mode.get('name', '')})",
-        f"# Generated by `prismor mode apply {mode['id']}` on {date.today().isoformat()}.",
+        f"# Generated by `prismor mode apply {mode['id']}{flag}` on {date.today().isoformat()}.",
         "#",
         f"# {mode.get('intent', '')}",
-        f"# {blocking} of {total} rules block. See the residual risk before you trust it:",
+        (
+            f"# PREVIEW ONLY — nothing blocks. {blocking} of {total} rules would block "
+            f"without --observe."
+            if observe else
+            f"# {blocking} of {total} rules block. See the residual risk before you trust it:"
+        ),
         f"#   prismor mode explain {mode['id']}",
         "#",
         "# Safe to hand-edit — but `prismor mode show` will then report drift, and",
@@ -248,7 +378,7 @@ def compile_mode(mode: Dict[str, Any]) -> str:
 
 
 def apply_mode(
-    workspace: Path, mode_id: str, force: bool = False
+    workspace: Path, mode_id: str, force: bool = False, observe: bool = False
 ) -> Tuple[Path, List[str]]:
     """Write a mode's compiled policy into ``workspace``. Returns (path, notes).
 
@@ -256,10 +386,31 @@ def apply_mode(
     because a hand-written policy is somebody's deliberate work and clobbering
     it silently is how a governance tool loses an argument it should win. A
     ``.bak`` is kept either way.
+
+    ``observe`` writes the preview build of the same posture — see
+    :func:`compile_mode`. Tool denies are skipped in that build: ``agents.yaml``
+    has no observe tier, so writing them would enforce the one axis the flag
+    promises not to.
     """
     mode = get_mode(mode_id)
     policy_path = workspace / ".prismor" / "policy.yaml"
     notes: List[str] = []
+
+    # An --observe build compiles the sandbox to observe, so it needs no
+    # runtime; --force is the operator saying they know and want it anyway
+    # (staging a policy for a host that will have Docker, most legitimately).
+    if not observe and not force:
+        problem = sandbox_preflight(mode)
+        if problem is not None:
+            raise ModeError(
+                f"mode '{mode_id}' enforces a Docker sandbox and this host cannot "
+                f"reach one ({problem}). Every shell command would be blocked, not "
+                f"just sandboxed. Options: start or install Docker; apply with "
+                f"--observe to run the posture without enforcing it; use "
+                f"trusted-workspace, whose sandbox degrades to a warning; or "
+                f"re-run with --force if this policy is being staged for another "
+                f"host."
+            )
 
     if policy_path.exists():
         previous = active_mode(workspace)
@@ -273,16 +424,24 @@ def apply_mode(
         notes.append(f"previous policy backed up to {backup}")
 
     policy_path.parent.mkdir(parents=True, exist_ok=True)
-    policy_path.write_text(compile_mode(mode), encoding="utf-8")
+    policy_path.write_text(compile_mode(mode, observe=observe), encoding="utf-8")
 
     # Tool axis lives in agents.yaml, not the policy — set_tool_policy owns the
     # deny/ask/allow tri-state and keeps the two lists disjoint for us.
-    from prismor.runtime.agents import set_tool_policy
-    tools = mode.get("tools") or {}
-    for action in ("deny", "ask"):
-        for tool in tools.get(action) or []:
-            set_tool_policy(workspace, "global", tool, action)
-            notes.append(f"tool '{tool}' -> {action} (global)")
+    if observe:
+        tools = mode.get("tools") or {}
+        if tools.get("deny") or tools.get("ask"):
+            notes.append(
+                "tool deny/ask list not written (--observe): agents.yaml has no "
+                "observe tier, so those denials would really deny"
+            )
+    else:
+        from prismor.runtime.agents import set_tool_policy
+        tools = mode.get("tools") or {}
+        for action in ("deny", "ask"):
+            for tool in tools.get(action) or []:
+                set_tool_policy(workspace, "global", tool, action)
+                notes.append(f"tool '{tool}' -> {action} (global)")
 
     return policy_path, notes
 
@@ -301,6 +460,19 @@ def active_mode(workspace: Path) -> Optional[str]:
     return str(mode_id) if mode_id else None
 
 
+def is_observe_build(workspace: Path) -> bool:
+    """Whether this workspace holds the preview build of its mode."""
+    import yaml
+    policy_path = workspace / ".prismor" / "policy.yaml"
+    if not policy_path.exists():
+        return False
+    try:
+        raw = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    return bool((raw.get("settings") or {}).get("mode_observe"))
+
+
 def has_drifted(workspace: Path) -> bool:
     """True when the policy claims a mode but no longer matches its compile.
 
@@ -313,7 +485,9 @@ def has_drifted(workspace: Path) -> bool:
     policy_path = workspace / ".prismor" / "policy.yaml"
     try:
         current = policy_path.read_text(encoding="utf-8")
-        expected = compile_mode(get_mode(mode_id))
+        expected = compile_mode(
+            get_mode(mode_id), observe=is_observe_build(workspace)
+        )
     except (OSError, ModeError):
         return False
     # Compare everything below the generated header — the header carries a

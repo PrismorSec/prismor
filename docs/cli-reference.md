@@ -147,23 +147,123 @@ the engine already reads. There is no separate mode enforcement path.
 prismor mode list                    # the three, with coverage and friction
 prismor mode explain dev-safe        # the trade — including what it does NOT stop
 prismor mode apply dev-safe          # compile it (--dry-run to preview first)
+prismor mode apply dev-safe --observe # same posture, nothing blocks
 prismor mode show                    # active mode, and whether it has drifted
 ```
 
 #### What each mode covers
 
-The catalogue, the axis-by-axis table, the residual risk per mode, and the
-customization guide live in **[Governance modes](governance-modes.md)** — one
-page rather than two that drift apart. Coverage and rule counts are computed
-from the live ruleset by `prismor mode list`, never hardcoded.
+Coverage and rule counts are **computed from the live ruleset** by `prismor mode
+list`, not hardcoded here — they move as rules are added. Friction is likewise
+**measured**, not estimated: `tests/test_modes.py` runs a benign corpus of
+ordinary developer commands through each compiled mode and pins the declared
+`friction_index` to the share it interrupts. The figures below are from an
+80-rule policy.
 
-Three modes on one axis — how much friction you accept: `audit-only`,
-`dev-safe`, `regulated-airgap`. `prismor setup` offers them as its first
-screen, with coverage, friction and residual risk shown per option, plus a
-`custom` entry for the rule-by-rule picker.
+| | `dev-safe` | `trusted-workspace` | `regulated-airgap` |
+|---|---|---|---|
+| **Rules blocking** | 25/80 | 27/80 | 80/80 |
+| **Coverage** | 31% | 34% | 100% |
+| **Friction** | 9% | 9% | 90% |
+| **Intended for** | daily development | trusted internal repos | regulated / PII |
 
-`mode explain` always prints a **residual risk** paragraph — what the mode does
-*not* stop. A mode that claims no downside is a mode nobody should trust.
+Prismor's self-protection rules always enforce in every mode — a mode cannot be
+used as cover for disabling Prismor.
+
+**Axis by axis**
+
+| Axis | `dev-safe` | `trusted-workspace` | `regulated-airgap` |
+|---|---|---|---|
+| `settings.default_mode` | observe | observe | **enforce** |
+| Rule selector | floor + 3 | floor + 7 | all |
+| Egress default | **deny** | **deny** | **deny** |
+| Egress allowlist | JS, Python, Rust, Go, JVM, GitHub, container registries, test binaries, docs, LLM APIs | + cloud provider APIs | **empty** |
+| Private / loopback | allowed | allowed | **blocked** |
+| Tools denied | — | — | Bash, WebFetch, WebSearch |
+| Tools gated (HITL) | — | — | Write, Edit |
+| Commands denied | `sudo` `su` `chmod +s` | `sudo` `chmod +s` `su` | — (no shell at all) |
+| Commands auto-approved | read-only inspection + non-mutating `git` | same | — |
+| Commands gated | npm/pip/cargo install | npm/pip/cargo/gem install | — |
+| Tag rules | 1 (block) | 2 (block) | 3 (block) |
+| Untrusted-content sources | web + MCP ingest | web + MCP ingest | web + MCP ingest |
+| Data boundary | **enforce** | **enforce** | **enforce** |
+| Sandbox ring | enforce, net allowlist, RO root | observe, bridge, RW root | enforce, net none, RO root, noexec tmpfs |
+
+The three extras in `dev-safe` are the supply-chain rules:
+`dependency-confusion`, `pkg-install-from-url`, `pkg-suspicious-name`.
+`trusted-workspace` adds the secret rules on top: `secret-access`,
+`credential-aggregation`, `credential-staging`, `claude-credential-access`.
+
+**Two things worth knowing before you adopt one.**
+
+A rule listed in `enforce_extra` that declares `action: warn` becomes a hard
+block, because `contract.VERDICT_RANK` reads "enforce + a verdict we do not
+understand" as stop. That is why installing from a private index URL is denied
+rather than prompted under both safe modes — deliberate, and stated in each
+mode's residual risk.
+
+`untrusted_content` means *externally sourced*: a web fetch, a search result, an
+MCP tool result, or a file read from outside the workspace root. Reading a file
+in your own repository is not untrusted ingest, and a mode that turns tag
+enforcement on must say so explicitly — `compile_mode` refuses a mode that
+enables `tool_tags` without declaring `tool_tags.inference_enabled`. Inheriting
+the default there tags every workspace read as untrusted, which turns
+`untrusted_content then critical_action -> block` into "read anything, then do
+anything" and denies every call after the session's first read.
+
+#### Modes that need a container runtime
+
+`dev-safe` enforces its sandbox, and `cli.py` **blocks** a shell call outright
+when an enforcing sandbox has no runtime behind it — it does not silently run
+unsandboxed. On a host without Docker that means every command fails, so
+`mode apply` preflights and refuses rather than letting you find out one command
+at a time:
+
+```
+$ prismor mode apply dev-safe
+prismor mode: mode 'dev-safe' enforces a Docker sandbox and this host cannot
+reach one (docker CLI not found). Every shell command would be blocked, not just
+sandboxed. Options: start or install Docker; apply with --observe …
+```
+
+`trusted-workspace` sets `sandbox.mode: observe`, so a missing runtime degrades
+to a warning and the mode works anywhere. `regulated-airgap` enforces a sandbox
+but denies the Bash tool, so no shell event ever reaches the sandbox gate and it
+too runs on a host without Docker.
+
+`mode show` re-checks at read time, which is what catches a runtime that
+disappeared *after* the mode was applied.
+
+**Known limitation:** the sandbox gate is wired for the Claude adapter only. On
+other agents the sandbox axis is not applied, even though `mode explain` still
+describes it.
+
+#### Previewing a posture
+
+`--observe` compiles any mode with nothing enforcing — same rules, same
+findings, no verdict blocks:
+
+```
+prismor mode apply dev-safe --observe
+```
+
+This answers "what would this posture stop?", which is the question worth asking
+before adopting one. `mode show` reports a preview build as such and never
+claims it is the enforcing article. Tool deny/ask lists are skipped in a preview
+build, because `agents.yaml` has no observe tier and writing them would enforce
+the one axis the flag promises not to.
+
+`mode explain` always prints a **residual risk** paragraph. `dev-safe` allows
+`api.github.com`, so an injected agent can still paste a `.env` into a public
+issue comment; `regulated-airgap` is tight enough that the realistic failure is
+somebody running `uninstall-hooks` to get through the afternoon. A mode that
+claimed no downside would be the one not to trust.
+
+Applying a mode overwrites `.prismor/policy.yaml` (keeping a `.bak`), and
+refuses outright if that file was not generated by a mode — pass `--force` once
+you have looked at what you are replacing. Hand-editing afterwards is fine;
+`mode show` then reports drift rather than claiming a posture the file no
+longer has.
 
 ### Making exceptions
 
@@ -203,7 +303,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor allow <rule>` | `--pattern`, `--expires`, `--observe`, `--off`, `--yes`, `--reason`, `--list`, `--undo`, `--workspace` | Make an exception to a rule that blocked you, narrowest first. With no `--pattern` it uses the text of the most recent block for that rule. `--observe` keeps the rule but stops it blocking; `--off` disables it for the workspace (needs `--yes`). Refuses self-protection rules, refuses to turn a floor rule off, and refuses everything where an org's signed policy governs. See [Making exceptions](#making-exceptions). |
 | `prismor unlock` | `--for`, `--status`, `--set-password`, `--system-password`, `--forget`, `--workspace` | Open a short window (default 3 minutes) in which the agent may edit Prismor's own policy. Asks for your unlock password; needs a terminal. `--system-password` verifies against your operating-system account instead of storing a Prismor one. |
 | `prismor lock` | — | Close the self-edit window early. |
-| `prismor policy init` | `--force`, `--workspace` | Scaffold an empty `.prismor/policy.yaml`. To start from a working posture instead, use `prismor mode apply` — see [Governance modes](governance-modes.md). |
+| `prismor policy init` | `--workspace` | Scaffold `.prismor/policy.yaml`. |
 | `prismor policy show` | `--workspace` | Print active rules after merging defaults + project overrides. |
 | `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |

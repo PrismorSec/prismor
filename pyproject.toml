@@ -156,7 +156,6 @@ packages = [
 "docs/live-telemetry.md" = "prismor/runtime/data/docs/live-telemetry.md"
 "docs/network-isolation.md" = "prismor/runtime/data/docs/network-isolation.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
-"docs/governance-modes.md" = "prismor/runtime/data/docs/governance-modes.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"
