@@ -148,6 +148,15 @@ other services. On macOS, a launch agent is enough:
 `--agent-name` registers this proxy as a named agent instance, which is what
 gives you the per-agent kill switch and per-agent policy in the console.
 
+## Where the verdicts show up
+
+Each governed turn is a session of its own, under the name the surface reports,
+readable in `prismor dashboard` and — once the machine is enrolled — in the
+console. The session view shows the turn as policy saw it and lets you apply a
+rule for that tool to this session, this agent, or every agent, which is the
+fastest way to tune a policy you are still deciding on. Screenshots and the
+sink configuration are in [deploy-docker.md](deploy-docker.md).
+
 ## What this does not cover
 
 The proxy sees only what the workflow routes through a model API. An n8n node

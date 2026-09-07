@@ -67,6 +67,32 @@ proposed it:
   "title": "Blocks curl | bash, wget | sh fetch-and-execute chains" }
 ```
 
+## Watching it
+
+Whatever else it reports to, the surface keeps a local view. `prismor
+dashboard` serves it from `$PRISMOR_HOME`, so a container's sessions are
+readable without a control plane at all:
+
+```bash
+docker compose exec prismor prismor dashboard --no-open --host 0.0.0.0
+```
+
+A governed n8n agent shows up as its own session, under the agent name the
+surface reports:
+
+![The Prismor dashboard overview, with a prismor-proxy session listed among the recent sessions](deploy-docker/dashboard.png)
+
+Opening it gives the turn as the policy engine saw it — the prompt allowed, the
+shell command the model proposed blocked, and the rule that decided it:
+
+![A proxy session in the dashboard: the LLM request allowed, the proposed Bash call blocked by remote-execution, with per-session and per-agent rule controls](deploy-docker/session.png)
+
+The right-hand panel is the control half. `Block` / `Allow` apply a rule for
+that tool tag to **this session**, **this agent**, or **across agents**, taking
+effect on the next call — including in observe mode, which is the useful shape
+when you are still deciding what the policy should be. `Pause Prismor` and
+`Clear scope` undo, in that order of bluntness.
+
 ## Seeing it in the console
 
 Two environment variables decide whether this container is a device you can
