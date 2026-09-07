@@ -663,6 +663,30 @@ class CompiledRule:
         return None
 
 
+#: Settings whose SHIPPED CONTENT an override must not silently discard:
+#: ``egress`` carries the default cloud-metadata deny entries and
+#: ``data_boundary`` the vendor ``per_domain`` carve-outs. Replacing those
+#: wholesale turns a one-line tightening (``data_boundary: {mode: enforce}``)
+#: into a fleet of false positives, or drops the IMDS deny for anyone who names
+#: a single allowed host. Every other settings key still replaces wholesale —
+#: notably ``sandbox`` and ``tool_tags``, where "unset" is meaningful (a ring
+#: preset derives what the policy did not state).
+_DEEP_MERGE_SETTINGS = frozenset({"egress", "data_boundary"})
+
+
+def _deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge ``over`` into ``base``, recursing into nested mappings.
+
+    Lists replace rather than concatenate: an ``egress.allow`` you write is the
+    allowlist you get.
+    """
+    out = dict(base)
+    for key, value in over.items():
+        prior = out.get(key)
+        out[key] = _deep_merge(prior, value) if isinstance(prior, dict) and isinstance(value, dict) else value
+    return out
+
+
 class AllowlistEntry:
     """A compiled allowlist entry that suppresses findings.
 
@@ -938,7 +962,12 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
-        settings.update(override_settings)
+        for _key, _val in override_settings.items():
+            _prior = settings.get(_key)
+            if _key in _DEEP_MERGE_SETTINGS and isinstance(_prior, dict) and isinstance(_val, dict):
+                settings[_key] = _deep_merge(_prior, _val)
+            else:
+                settings[_key] = _val
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
         default_raw = _load_yaml(_DEFAULT_POLICY_PATH)

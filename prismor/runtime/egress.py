@@ -366,9 +366,23 @@ def _add(seen: Dict[Tuple[str, Optional[int]], Destination], dest: Destination) 
         seen[dest.key()] = dest
 
 
+#: Schemes whose "host" is not a network destination. The authority in
+#: ``s3://my-bucket/key`` is a bucket name, resolved by the SDK against a
+#: provider endpoint (``*.amazonaws.com``) that this same policy already
+#: screens. Treating the bucket as a host makes `aws s3 ls s3://artifacts/`
+#: fail under a deny-by-default policy that explicitly allows AWS — and no
+#: allowlist can fix it, since bucket names are unbounded.
+_NON_NETWORK_SCHEMES = frozenset({
+    "s3", "gs", "gcs", "az", "abfs", "abfss", "wasb", "wasbs", "adl",
+    "file", "data",
+})
+
+
 def _scan_url_text(text: str, seen: Dict, evidence: str) -> None:
     for m in _URL_RE.finditer(text):
         scheme, host, port = m.group(1), m.group(2), m.group(3)
+        if scheme.lower() in _NON_NETWORK_SCHEMES:
+            continue
         host = host.strip("[]")
         _add(seen, Destination(
             host=host,

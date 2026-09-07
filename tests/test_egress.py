@@ -60,6 +60,24 @@ def test_extracts_destinations_from_shell(command, expected):
     assert _hosts(_shell(command)) == expected
 
 
+@pytest.mark.parametrize("command,expected", [
+    # The authority in an object-store URI is a bucket, resolved by the SDK
+    # against a provider endpoint this policy already screens. Treating it as a
+    # host makes `aws s3 ls` fail under deny-by-default with AWS allowed, and no
+    # allowlist can fix it — bucket names are unbounded.
+    ("aws s3 ls s3://app-artifacts/", []),
+    ("aws s3 cp dist/app.tgz s3://app-artifacts/releases/", []),
+    ("gsutil cp build.zip gs://my-bucket/ci/", []),
+    ("azcopy copy ./out abfss://data@acct.dfs.core.windows.net/x", []),
+    ("cat file:///etc/hosts", []),
+    # The real endpoint alongside a bucket URI is still extracted.
+    ("aws s3 cp s3://b/k - --endpoint-url https://s3.us-east-1.amazonaws.com",
+     ["s3.us-east-1.amazonaws.com"]),
+])
+def test_object_store_uris_are_not_network_destinations(command, expected):
+    assert _hosts(_shell(command)) == expected
+
+
 @pytest.mark.parametrize("command", [
     "npm install lodash",
     "cargo build --release",
