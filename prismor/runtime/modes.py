@@ -187,6 +187,44 @@ def _check_tag_inference_declared(mode: Dict[str, Any]) -> None:
         )
 
 
+def needs_container_runtime(mode: Dict[str, Any]) -> bool:
+    """Whether this mode's shell path depends on a working container runtime.
+
+    True only when all three hold: the sandbox is on, it is *enforcing*, and the
+    mode still lets the agent run a shell. An observing sandbox degrades to a
+    warning when the runtime is missing, and a mode that denies Bash never
+    reaches the sandbox gate at all — `regulated-airgap` is the second case, so
+    it runs fine on a host with no Docker.
+    """
+    sandbox = mode.get("sandbox") or {}
+    if not sandbox.get("enabled"):
+        return False
+    if str(sandbox.get("mode", "observe")).lower() != "enforce":
+        return False
+    denied = {str(t) for t in (mode.get("tools") or {}).get("deny") or []}
+    return "Bash" not in denied
+
+
+def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
+    """Why this mode would not work on this host, or None if it would.
+
+    The failure this guards against is not subtle. `cli.py` blocks the tool call
+    outright when an enforcing sandbox has no runtime behind it, so applying
+    such a mode on a host without Docker leaves an agent whose every shell
+    command dies with ``Prismor sandbox blocked this action``. That is the
+    "developer rips the guardrails out to get through the afternoon" failure the
+    modes exist to avoid, so it is worth refusing at apply time rather than
+    discovering per command.
+    """
+    if not needs_container_runtime(mode):
+        return None
+    from prismor.runtime.sandbox import docker_status
+    status = docker_status()
+    if status.get("cli_found") and status.get("server_reachable"):
+        return None
+    return str(status.get("error") or "Docker is not reachable")
+
+
 def _command_allowlists(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Compile ``commands.allow`` into allowlist entries over this mode's rules.
 
@@ -357,6 +395,22 @@ def apply_mode(
     mode = get_mode(mode_id)
     policy_path = workspace / ".prismor" / "policy.yaml"
     notes: List[str] = []
+
+    # An --observe build compiles the sandbox to observe, so it needs no
+    # runtime; --force is the operator saying they know and want it anyway
+    # (staging a policy for a host that will have Docker, most legitimately).
+    if not observe and not force:
+        problem = sandbox_preflight(mode)
+        if problem is not None:
+            raise ModeError(
+                f"mode '{mode_id}' enforces a Docker sandbox and this host cannot "
+                f"reach one ({problem}). Every shell command would be blocked, not "
+                f"just sandboxed. Options: start or install Docker; apply with "
+                f"--observe to run the posture without enforcing it; use "
+                f"trusted-workspace, whose sandbox degrades to a warning; or "
+                f"re-run with --force if this policy is being staged for another "
+                f"host."
+            )
 
     if policy_path.exists():
         previous = active_mode(workspace)

@@ -210,6 +210,33 @@ the default there tags every workspace read as untrusted, which turns
 `untrusted_content then critical_action -> block` into "read anything, then do
 anything" and denies every call after the session's first read.
 
+#### Modes that need a container runtime
+
+`dev-safe` enforces its sandbox, and `cli.py` **blocks** a shell call outright
+when an enforcing sandbox has no runtime behind it — it does not silently run
+unsandboxed. On a host without Docker that means every command fails, so
+`mode apply` preflights and refuses rather than letting you find out one command
+at a time:
+
+```
+$ prismor mode apply dev-safe
+prismor mode: mode 'dev-safe' enforces a Docker sandbox and this host cannot
+reach one (docker CLI not found). Every shell command would be blocked, not just
+sandboxed. Options: start or install Docker; apply with --observe …
+```
+
+`trusted-workspace` sets `sandbox.mode: observe`, so a missing runtime degrades
+to a warning and the mode works anywhere. `regulated-airgap` enforces a sandbox
+but denies the Bash tool, so no shell event ever reaches the sandbox gate and it
+too runs on a host without Docker.
+
+`mode show` re-checks at read time, which is what catches a runtime that
+disappeared *after* the mode was applied.
+
+**Known limitation:** the sandbox gate is wired for the Claude adapter only. On
+other agents the sandbox axis is not applied, even though `mode explain` still
+describes it.
+
 #### Previewing a posture
 
 `--observe` compiles any mode with nothing enforcing — same rules, same

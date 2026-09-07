@@ -2623,6 +2623,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.modes import (
             ModeError, apply_mode, active_mode, has_drifted, is_observe_build,
             compile_mode, get_mode, format_list, format_explain, coverage,
+            sandbox_preflight,
         )
         sub = getattr(args, "mode_command", None)
         try:
@@ -2641,12 +2642,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                 mode = get_mode(mode_id)
                 blocking, total = coverage(mode)
                 print(f"  {_color('Mode', _BOLD)}      {mode_id}  ({mode.get('name', '')})")
-                if is_observe_build(workspace):
+                previewing = is_observe_build(workspace)
+                if previewing:
                     print(_color("  Preview", _YELLOW) +
                           f"   --observe build: nothing blocks. {blocking} of "
                           f"{total} rules would block without it.")
                 else:
                     print(f"  Rules     {blocking} of {total} block")
+                # Apply-time preflight cannot see a runtime that went away
+                # afterwards, and the symptom (every shell call blocked) does
+                # not name its cause. Report it where someone would look.
+                if not previewing:
+                    problem = sandbox_preflight(mode)
+                    if problem is not None:
+                        print(_color("  Sandbox", _RED) +
+                              f"   unavailable ({problem}) — this mode enforces it, "
+                              f"so every shell command is being blocked")
+                        print("            fix Docker, or re-apply with --observe")
                 print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
                 if has_drifted(workspace):
                     print(_color("  Drift", _YELLOW) +

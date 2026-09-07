@@ -32,6 +32,22 @@ def _unmanaged():
     )
 
 
+_DOCKER_OK = {"cli_found": True, "server_reachable": True, "server_version": "27.0"}
+
+
+def _docker_ready():
+    """Decorator: this test assumes a host with a working container runtime.
+
+    Applied at class level so a suite that is about policy compilation does not
+    silently become a test of whether the developer has Docker installed —
+    `apply_mode` refuses an enforcing sandbox it cannot back. Uses ``new=`` so
+    no mock argument is injected into the test methods.
+    """
+    return mock.patch(
+        "prismor.runtime.sandbox.docker_status", new=lambda: dict(_DOCKER_OK)
+    )
+
+
 ALL_MODES = list(modes.load_modes())
 
 
@@ -160,6 +176,7 @@ class TestCompile(unittest.TestCase):
         self.assertNotIn("selection", raw["settings"])
 
 
+@_docker_ready()
 class TestEngineEffect(unittest.TestCase):
     """The compile is only worth anything if the engine reads it back."""
 
@@ -338,6 +355,7 @@ class TestEngineEffect(unittest.TestCase):
         self.assertIn("Write", cfg["global_ask_tools"])
 
 
+@_docker_ready()
 class TestApply(unittest.TestCase):
     def test_refuses_to_clobber_a_hand_written_policy(self):
         ws = _workspace()
@@ -371,6 +389,87 @@ class TestApply(unittest.TestCase):
 
     def test_unmanaged_workspace_has_no_active_mode(self):
         self.assertIsNone(modes.active_mode(_workspace()))
+
+
+def _docker(available):
+    return mock.patch(
+        "prismor.runtime.sandbox.docker_status",
+        return_value=(
+            {"cli_found": True, "server_reachable": True, "server_version": "27.0"}
+            if available else
+            {"cli_found": False, "server_reachable": False,
+             "error": "docker CLI not found"}
+        ),
+    )
+
+
+class TestSandboxPreflight(unittest.TestCase):
+    """An enforcing sandbox with no runtime behind it blocks every shell call
+    (cli.py raises SystemExit(2) rather than degrading), so applying such a mode
+    on a host without Docker produces a wholly broken agent. These pin both that
+    it is caught and — just as important — that it is not over-caught."""
+
+    def test_dev_safe_refuses_to_apply_without_a_runtime(self):
+        with _docker(False), _unmanaged():
+            with self.assertRaises(modes.ModeError) as ctx:
+                modes.apply_mode(_workspace(), "dev-safe")
+        message = str(ctx.exception)
+        self.assertIn("docker", message.lower())
+        # The remedies matter more than the diagnosis.
+        self.assertIn("--observe", message)
+        self.assertIn("trusted-workspace", message)
+
+    def test_dev_safe_applies_when_a_runtime_is_present(self):
+        with _docker(True), _unmanaged():
+            path, _ = modes.apply_mode(_workspace(), "dev-safe")
+        self.assertTrue(path.exists())
+
+    def test_observe_build_needs_no_runtime(self):
+        """--observe compiles the sandbox to observe, so there is nothing to
+        enforce and nothing to require."""
+        with _docker(False), _unmanaged():
+            path, _ = modes.apply_mode(_workspace(), "dev-safe", observe=True)
+        self.assertTrue(path.exists())
+
+    def test_force_stages_a_policy_for_another_host(self):
+        with _docker(False), _unmanaged():
+            path, _ = modes.apply_mode(_workspace(), "dev-safe", force=True)
+        self.assertTrue(path.exists())
+
+    def test_trusted_workspace_is_unaffected(self):
+        """Its sandbox observes, so a missing runtime degrades to a warning."""
+        with _docker(False), _unmanaged():
+            path, _ = modes.apply_mode(_workspace(), "trusted-workspace")
+        self.assertTrue(path.exists())
+        self.assertIsNone(modes.sandbox_preflight(modes.get_mode("trusted-workspace")))
+
+    def test_regulated_airgap_is_unaffected(self):
+        """It enforces a sandbox but denies Bash, so no shell event ever reaches
+        the sandbox gate. Refusing to apply it here would be a false positive."""
+        with _docker(False), _unmanaged():
+            path, _ = modes.apply_mode(_workspace(), "regulated-airgap")
+        self.assertTrue(path.exists())
+        self.assertIsNone(modes.sandbox_preflight(modes.get_mode("regulated-airgap")))
+
+    def test_needs_container_runtime_requires_all_three_conditions(self):
+        base = modes.get_mode("dev-safe")
+        self.assertTrue(modes.needs_container_runtime(base))
+        off = {**base, "sandbox": {**base["sandbox"], "enabled": False}}
+        self.assertFalse(modes.needs_container_runtime(off))
+        observing = {**base, "sandbox": {**base["sandbox"], "mode": "observe"}}
+        self.assertFalse(modes.needs_container_runtime(observing))
+        no_shell = {**base, "tools": {"deny": ["Bash"]}}
+        self.assertFalse(modes.needs_container_runtime(no_shell))
+
+    def test_every_runtime_dependent_mode_says_so_in_its_friction(self):
+        """A dependency this hard belongs in `mode explain`, not in a stack
+        trace after adoption."""
+        for mode_id in ALL_MODES:
+            mode = modes.get_mode(mode_id)
+            if not modes.needs_container_runtime(mode):
+                continue
+            friction = " ".join(mode.get("friction") or []).lower()
+            self.assertIn("docker", friction, mode_id)
 
 
 class TestCoverage(unittest.TestCase):
@@ -413,6 +512,7 @@ BENIGN_CORPUS = [
 ]
 
 
+@_docker_ready()
 class TestMeasuredFriction(unittest.TestCase):
     """`friction_index` is an assertion about developer experience. Measure it."""
 
