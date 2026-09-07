@@ -143,7 +143,7 @@ compiles them into the same `.prismor/policy.yaml` and `.prismor/agents.yaml`
 the engine already reads. There is no separate mode enforcement path.
 
 ```
-prismor mode list                    # the catalogue, with coverage and friction
+prismor mode list                    # the three, with coverage and friction
 prismor mode explain dev-safe        # the trade — including what it does NOT stop
 prismor mode apply dev-safe          # compile it (--dry-run to preview first)
 prismor mode show                    # active mode, and whether it has drifted
@@ -156,10 +156,10 @@ customization guide live in **[Governance modes](governance-modes.md)** — one
 page rather than two that drift apart. Coverage and rule counts are computed
 from the live ruleset by `prismor mode list`, never hardcoded.
 
-Three modes are graded by how much friction you accept (`audit-only`,
-`dev-safe`, `regulated-airgap`) and five by what the agent does for a living
-(`ci-agent`, `web-research`, `regulated-data`, `production-ops`,
-`oss-maintainer`).
+Three modes on one axis — how much friction you accept: `audit-only`,
+`dev-safe`, `regulated-airgap`. `prismor setup` offers them as its first
+screen, with coverage, friction and residual risk shown per option, plus a
+`custom` entry for the rule-by-rule picker.
 
 `mode explain` always prints a **residual risk** paragraph — what the mode does
 *not* stop. A mode that claims no downside is a mode nobody should trust.

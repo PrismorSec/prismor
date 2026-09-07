@@ -22,7 +22,7 @@ Commands:
   logout        Un-enroll this machine (remove device identity + cached remote policy)
   policy init   Generate a starter policy.yaml for your project
   policy validate  Validate a policy.yaml file
-  mode list     List the governance modes (audit-only, dev-safe, trusted-workspace, regulated-airgap)
+  mode list     List the governance modes (audit-only, dev-safe, regulated-airgap)
   mode explain ID  Risk/reward preview for a mode — including what it does NOT stop
   mode apply ID    Compile a whole security posture into .prismor/policy.yaml
   mode show     Which mode this workspace runs, and whether it has drifted
@@ -1919,7 +1919,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             scope = "project"
         non_interactive = getattr(args, "non_interactive", False) or not sys.stdin.isatty()
         if non_interactive:
-            mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "observe")
+            mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "audit-only")
             agents_str = getattr(args, "agents", None)
             agents = [a.strip() for a in agents_str.split(",")] if agents_str else None
             cloak_flag = getattr(args, "cloak", None)
@@ -3843,9 +3843,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup_parser.add_argument(
         "--mode",
-        choices=["observe", "enforce"],
+        choices=["audit-only", "dev-safe", "regulated-airgap", "custom",
+                 "observe", "enforce"],
         default=None,
-        help="Enforcement mode (non-interactive only; default: observe)",
+        help="Governance mode (non-interactive only; default: audit-only). "
+             "`custom` picks rules with --recommended / --enforce-rules. "
+             "`observe`/`enforce` are the pre-mode names, still honored. "
+             "See `prismor mode list` for coverage and friction.",
     )
     setup_parser.add_argument(
         "--agents",
@@ -4842,10 +4846,10 @@ def _print_status_overview(workspace: Path) -> None:
     # Next-step nudge — one action, picked by current state
     print()
     if not agents_with_hooks:
-        print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode observe)")
+        print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode audit-only)")
     elif mode == "observe":
         print(f"  {_color('Tip:', _DIM)}  observe mode logs only. Switch with:")
-        print(f"        prismor setup --mode enforce --recommended   (picks the rules that block)")
+        print(f"        prismor setup --mode dev-safe   (see the trade first: prismor mode list)")
     elif sessions and sessions[0].get("findingsCount", 0) > 0:
         print(f"  {_color('Next:', _CYAN)} prismor sessions --findings-only")
     else:

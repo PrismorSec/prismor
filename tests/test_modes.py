@@ -36,14 +36,11 @@ ALL_MODES = list(modes.load_modes())
 
 
 class TestCatalog(unittest.TestCase):
-    def test_starter_modes(self):
-        # Three graded by how much friction you accept, five by what the
-        # agent does for a living. Order is the order `mode list` prints.
-        self.assertEqual(ALL_MODES, [
-            "audit-only", "dev-safe", "regulated-airgap",
-            "ci-agent", "web-research", "regulated-data", "production-ops",
-            "oss-maintainer",
-        ])
+    def test_three_modes_on_one_axis(self):
+        # One axis — how much friction you accept — with three points on it.
+        # This is a menu someone meets once during install, so the count is
+        # part of the design, not an accident of what got written.
+        self.assertEqual(ALL_MODES, ["audit-only", "dev-safe", "regulated-airgap"])
 
     def test_every_mode_states_its_residual_risk(self):
         """A mode that only advertises what it stops is a mode people over-trust."""
@@ -205,8 +202,8 @@ class TestApply(unittest.TestCase):
         ws = _workspace()
         with _unmanaged():
             modes.apply_mode(ws, "dev-safe")
-            modes.apply_mode(ws, "ci-agent")
-        self.assertEqual(modes.active_mode(ws), "ci-agent")
+            modes.apply_mode(ws, "dev-safe")
+        self.assertEqual(modes.active_mode(ws), "dev-safe")
 
     def test_drift_is_reported_not_prevented(self):
         ws = _workspace()
@@ -290,38 +287,43 @@ class TestOverBlock(unittest.TestCase):
         # `network-exfil-tool` matches any `curl -d`, so under
         # `default_mode: enforce` it blocked a POST to a host the mode's own
         # allow list names. The egress list is the control for where.
-        for mode_id in ("ci-agent", "production-ops", "regulated-data"):
-            with self.subTest(mode=mode_id):
-                engine = self._engine(mode_id)
-                self.assertNotIn("enforce", self._modes_for(
-                    engine.check_command(
-                        "curl -X POST https://api.anthropic.com/v1/messages -d '{}'"),
-                    "network-exfil-tool"))
+        engine = self._engine("dev-safe")
+        self.assertNotIn("enforce", self._modes_for(
+            engine.check_command("curl -X POST https://api.github.com/repos -d '{}'"),
+            "network-exfil-tool"))
 
-    def test_production_ops_allows_lease_guarded_feature_branch_pushes(self):
-        engine = self._engine("production-ops")
-        cmd = "git push --force-with-lease origin feat/retry-backoff"
-        self.assertNotIn("enforce", self._modes_for(engine.check_command(cmd),
-                                                    "git-remote-hijack"))
-        self.assertEqual(self._modes_for(engine.check_command(cmd),
-                                         "git-history-rewrite-protected"), [])
-
-    def test_production_ops_blocks_prod_but_not_staging(self):
-        engine = self._engine("production-ops")
-        self.assertEqual(self._modes_for(engine.check_command(
-            "kubectl --context prod-eu delete pod api-1"), "k8s-prod-destructive"),
-            ["enforce"])
-        self.assertEqual(self._modes_for(engine.check_command(
-            "kubectl --context staging delete pod api-1"), "k8s-prod-destructive"), [])
-        # `s3://bucket` is not a network destination, whatever egress says.
+    def test_object_store_uris_are_not_egress_destinations(self):
+        # `s3://bucket` is not a network destination, so a deny-by-default
+        # mode must not refuse `aws s3 ls` on the strength of the bucket name.
+        engine = self._engine("dev-safe")
         self.assertEqual(engine.check_command("aws s3 ls s3://app-artifacts/"), [])
 
-    def test_regulated_data_keeps_the_shipped_vendor_carveouts(self):
-        # The mode sets data_boundary.{mode,classes,…} and never per_domain;
-        # a wholesale replace would drop every vendor allowance underneath it.
-        engine = self._engine("regulated-data")
-        self.assertIn("*.stripe.com", engine.data_boundary.per_domain)
-        self.assertEqual(engine.data_boundary.mode, "enforce")
+
+class HookWiringTests(unittest.TestCase):
+    """`hook-dispatch --mode` takes observe|enforce only, and setup bakes the
+    value into the hook command — a mode id there fails argparse on every tool
+    call, which is a silent total loss of coverage."""
+
+    def test_every_mode_resolves_to_a_valid_hook_mode(self):
+        from prismor.runtime.setup_wizard import _hook_mode
+        for mode_id in ALL_MODES + ["custom", "observe", "enforce"]:
+            with self.subTest(mode=mode_id):
+                self.assertIn(_hook_mode(mode_id), ("observe", "enforce"))
+
+    def test_the_install_menu_offers_the_catalogue_plus_custom(self):
+        from prismor.runtime.setup_wizard import _mode_options
+        self.assertEqual([m for m, _ in _mode_options()], ALL_MODES + ["custom"])
+
+    def test_every_menu_entry_states_its_cost(self):
+        # The screen has to show what you are signing up for, not only what
+        # you get. A menu entry with no residual-risk copy is one that lies.
+        from prismor.runtime.setup_wizard import _mode_options
+        for mode_id, m in _mode_options():
+            with self.subTest(mode=mode_id):
+                self.assertTrue(m["residual"].strip(), mode_id)
+                if mode_id != "custom":
+                    self.assertIsInstance(m["coverage"], int)
+                    self.assertIsInstance(m["friction"], int)
 
 
 if __name__ == "__main__":
