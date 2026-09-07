@@ -108,6 +108,10 @@ specific repo's policy for anyone who means it.
 
 ## Governing n8n (and other hosted builders)
 
+There is a full walkthrough with screenshots in [n8n.md](n8n.md). The short
+version:
+
+
 n8n runs its agents inside a container and offers no hook, no MCP client for a
 stdio server, and no SDK to import -- the exact case this surface exists for.
 Point the OpenAI credential's **Base URL** at the proxy and change nothing else
