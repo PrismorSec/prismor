@@ -251,42 +251,35 @@ def _hostname_label() -> str:
         return "unknown-host"
 
 
-def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
-           timeout: float = 20.0) -> Dict[str, Any]:
-    """Exchange a one-time enrollment token for a device identity and persist it.
-
-    Calls ``POST {base}/api/devices/enroll`` with the enrollment token and a
-    human-readable label (defaults to the hostname). On success the response
-    carries ``device_id``, ``org_id``, ``user_id`` and ``device_key``; we store
-    them and return the saved record. Raises RuntimeError with a readable
-    message on any failure (network, non-2xx, malformed response).
-    """
-    import urllib.request
-    import urllib.error
-    from prismor.runtime import __version__ as _ver
-
-    base = (base or api_base()).rstrip("/")
-    label = label or _hostname_label()
+def _receipt_pubkey() -> Optional[str]:
     # Register this device's Ed25519 receipt-signing public key so the control
     # plane can verify signed telemetry receipts and pin the key to the device.
     # Best-effort: None when `cryptography` isn't installed; the server treats it
     # as optional and can still pin trusted-on-first-use from the first receipt.
-    receipt_pubkey = None
     try:
         from prismor.runtime.enterprise import receipt_signing as _signing
-        receipt_pubkey = _signing.public_key_b64()
+        return _signing.public_key_b64()
     except Exception:
-        receipt_pubkey = None
-    payload = json.dumps({
-        "token": token,
+        return None
+
+
+def _enroll_request(path: str, payload: Dict[str, Any], base: str, label: str,
+                    timeout: float, extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """POST an enrollment payload, validate the response, persist the identity."""
+    import urllib.request
+    import urllib.error
+    from prismor.runtime import __version__ as _ver
+
+    payload = {
+        **payload,
         "label": label,
         "platform": _platform(),
         "prismor_version": _ver,
-        "receipt_pubkey": receipt_pubkey,
-    }).encode("utf-8")
+        "receipt_pubkey": _receipt_pubkey(),
+    }
     req = urllib.request.Request(
-        f"{base}/api/devices/enroll",
-        data=payload,
+        f"{base}{path}",
+        data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
@@ -312,10 +305,54 @@ def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
         "org_name": body.get("org_name"),
         "label": label,
         "api_base": base,
+        **(extra or {}),
     }
     save_identity(identity)
     clear_revoked()  # a fresh enrollment supersedes any prior revocation
     return identity
+
+
+def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
+           timeout: float = 20.0) -> Dict[str, Any]:
+    """Exchange a one-time enrollment token for a device identity and persist it.
+
+    Calls ``POST {base}/api/devices/enroll`` with the enrollment token and a
+    human-readable label (defaults to the hostname). On success the response
+    carries ``device_id``, ``org_id``, ``user_id`` and ``device_key``; we store
+    them and return the saved record. Raises RuntimeError with a readable
+    message on any failure (network, non-2xx, malformed response).
+    """
+    base = (base or api_base()).rstrip("/")
+    return _enroll_request("/api/devices/enroll", {"token": token}, base,
+                           label or _hostname_label(), timeout)
+
+
+def enroll_aws(org_id: str, base: Optional[str] = None, label: Optional[str] = None,
+               region: Optional[str] = None, timeout: float = 20.0) -> Dict[str, Any]:
+    """Enroll using this workload's AWS IAM role instead of a token.
+
+    Signs ``sts:GetCallerIdentity`` with whatever role credentials the host
+    has (env, container endpoint, IMDSv2, ``~/.aws/credentials``) and posts the
+    *signed request* to ``POST {base}/api/devices/enroll/aws``. The control
+    plane replays it to STS and, if an admin bound that role to ``org_id``,
+    mints a service identity. Credentials never leave the workload.
+    """
+    from urllib.parse import urlparse
+    from prismor.runtime.enterprise import aws_identity as _aws
+
+    base = (base or api_base()).rstrip("/")
+    creds = _aws.resolve_credentials()
+    if not creds:
+        raise RuntimeError(
+            "no AWS credentials found (checked env, container endpoint, IMDSv2, ~/.aws/credentials)"
+        )
+    server_id = urlparse(base).netloc
+    signed = _aws.sign_get_caller_identity(
+        creds, region or os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION"),
+        server_id, org_id,
+    )
+    return _enroll_request("/api/devices/enroll/aws", {"aws": signed}, base,
+                           label or _hostname_label(), timeout, extra={"source": "aws"})
 
 
 def _platform() -> str:

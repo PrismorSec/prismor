@@ -17,7 +17,7 @@ Commands:
   uninstall-hooks Remove IDE hooks
   hook-dispatch Internal: called by IDE hooks (not for direct use)
   dashboard     Open the Prismor web dashboard (local server + browser)
-  enroll TOKEN  Enroll this machine into a Prismor org (central observability + policy)
+  enroll TOKEN  Enroll this machine into a Prismor org (central observability + policy); --aws uses the IAM role
   enroll-status Show this machine's enrollment status
   logout        Un-enroll this machine (remove device identity + cached remote policy)
   policy init   Generate a starter policy.yaml for your project
@@ -427,19 +427,36 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "enroll":
         from prismor.runtime.enterprise import identity as _identity
         token = getattr(args, "token", None) or getattr(args, "token_flag", None)
-        if not token:
+        use_aws = bool(getattr(args, "aws", False))
+        org_id = getattr(args, "org", None) or os.environ.get("PRISMOR_ORG_ID")
+        if use_aws and not org_id:
+            sys.stderr.write(
+                "error: --org <orgId> (or $PRISMOR_ORG_ID) is required with --aws\n"
+                "  Copy it from the console (Admin → Integrations → Cloud workload identity)\n"
+            )
+            raise SystemExit(1)
+        if not use_aws and not token:
             sys.stderr.write(
                 "error: enrollment token required\n"
                 "  Generate one in the Prismor dashboard (Admin → Devices → Enroll)\n"
                 "  then run:  prismor enroll <token>\n"
+                "  On AWS, enroll with the workload's IAM role instead:  prismor enroll --aws --org <orgId>\n"
             )
             raise SystemExit(1)
         try:
-            ident = _identity.enroll(
-                token,
-                base=getattr(args, "api_base", None),
-                label=getattr(args, "label", None),
-            )
+            if use_aws:
+                ident = _identity.enroll_aws(
+                    org_id,
+                    base=getattr(args, "api_base", None),
+                    label=getattr(args, "label", None),
+                    region=getattr(args, "aws_region", None),
+                )
+            else:
+                ident = _identity.enroll(
+                    token,
+                    base=getattr(args, "api_base", None),
+                    label=getattr(args, "label", None),
+                )
         except RuntimeError as exc:
             sys.stderr.write(f"Enrollment failed: {exc}\n")
             raise SystemExit(1)
@@ -3611,6 +3628,10 @@ def build_parser() -> argparse.ArgumentParser:
     enroll_parser.add_argument("--token", dest="token_flag", help="Enrollment token (alternative to positional)")
     enroll_parser.add_argument("--label", help="Human-readable device label (default: hostname)")
     enroll_parser.add_argument("--api-base", help="Control-plane base URL (default: $PRISMOR_API_BASE)")
+    enroll_parser.add_argument("--aws", action="store_true",
+                               help="Enroll with this workload's AWS IAM role (no token); the role must be bound to the org in the console")
+    enroll_parser.add_argument("--org", help="Organization id to enroll into with --aws (default: $PRISMOR_ORG_ID)")
+    enroll_parser.add_argument("--aws-region", help="Use the regional STS endpoint (default: $AWS_REGION, else global)")
 
     enroll_status = subparsers.add_parser("enroll-status", help="Show this machine's enrollment status")
 

@@ -98,6 +98,24 @@ it is a *service identity* — listed, drilled into and revoked exactly like a
 device. Headless `prismor enroll <token>` inside the workload remains
 equivalent if you prefer token exchange over a long-lived key.
 
+### AWS workloads: `prismor enroll --aws`
+
+A workload on AWS (EC2, ECS/EKS task, Lambda) can skip both the token and the
+long-lived key and enroll with the IAM role it already runs as:
+
+```
+prismor enroll --aws --org <orgId>        # role must be bound to the org in the console
+```
+
+The runtime SigV4-signs an `sts:GetCallerIdentity` request with the role's
+credentials and posts the **signed request** — never the credentials — to
+`POST /api/devices/enroll/aws`. The control plane replays it to STS, reads the
+caller's role ARN and, if an admin bound that role (Admin → Integrations →
+Cloud workload identity), mints a service identity with the same payload as a
+token enrollment. The signature covers the control-plane host and the org id
+and expires after five minutes, so a captured request cannot be replayed
+elsewhere. Details: [SSO, provisioning and workload identity](sso-and-provisioning.md).
+
 ## 2. Signed remote policy: verify-before-apply, fail-closed
 
 On the hot path, `remote_policy.check_and_refresh()` (debounced, clamped to
