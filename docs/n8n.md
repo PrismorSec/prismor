@@ -124,6 +124,10 @@ table cover the hook layer and the proxy at once, instead of two.
 
 ## Keep it running
 
+Running both under compose, with a volume for the identity and session store
+and your SIEM wired in, is [deploy-docker.md](deploy-docker.md). By hand, on
+the host:
+
 The proxy is a long-lived server, so run it under whatever supervises your
 other services. On macOS, a launch agent is enough:
 

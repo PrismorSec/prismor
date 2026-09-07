@@ -1,0 +1,47 @@
+# Policy for the containerised surface. Mounted read-only at
+# $PRISMOR_HOME/.prismor/policy.yaml by docker-compose.yml -- that exact path,
+# because the engine reads a workspace's policy from <workspace>/.prismor/.
+#
+# The rules themselves come from Prismor's bundled default policy and, once the
+# container is enrolled, from the signed org policy your admins publish. What
+# belongs here is deployment-local: which mode to run in, and where findings go
+# besides the console.
+version: "1.0"
+
+settings:
+  # Where a finding goes the moment it is produced -- before the block is
+  # returned to the agent, so a SIEM sees denied calls too. Every sink is
+  # best-effort: one that is down warns on stderr and never blocks a tool call.
+  # Delete the ones you do not use; ${VARS} resolve from prismor.env.
+  outputs:
+    # Your own collector, if you already run one.
+    - type: otel
+      endpoint: http://otel-collector:4318      # /v1/logs is appended
+      headers: { "Authorization": "Bearer ${OTEL_TOKEN}" }
+
+    # - type: splunk                            # HTTP Event Collector, OCSF body
+    #   url: https://splunk.example.com:8088/services/collector
+    #   token: ${SPLUNK_HEC_TOKEN}
+    #   sourcetype: prismor:prismor:ocsf
+
+    # - type: datadog
+    #   api_key: ${DD_API_KEY}
+    #   site: datadoghq.com
+
+    # - type: syslog
+    #   host: siem.example.com
+    #   port: 514
+    #   facility: local7
+
+    # - type: webhook                           # anything that takes JSON
+    #   url: https://siem.example.com/ingest
+    #   headers: { "X-API-Key": "${SIEM_TOKEN}" }
+
+    # - type: file                              # format: json | cef | ocsf
+    #   path: /var/lib/prismor/audit.log
+    #   format: ocsf
+
+    # The first-party control-plane sink. Needs no config -- the device key and
+    # endpoint come from enrollment -- and is what puts these findings on the
+    # session view in the Prismor dashboard.
+    - type: prismor

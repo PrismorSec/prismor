@@ -1,0 +1,49 @@
+# n8n with every model call governed by Prismor.
+#
+#   cp prismor.env.example prismor.env   # then edit it
+#   docker compose up -d
+#
+# n8n reaches the proxy at http://prismor:7080/v1 on the compose network. Set
+# that as the Base URL on the OpenAI credential inside n8n -- that one field is
+# the whole integration. See docs/n8n.md.
+services:
+  prismor:
+    build:
+      context: ../..
+      dockerfile: packaging/docker/Dockerfile
+    # image: ghcr.io/prismorsec/prismor:latest   # once published, drop `build`
+    command: ["proxy"]
+    env_file: [prismor.env]
+    volumes:
+      # Device identity, policy and session logs. Losing this volume means a
+      # new device in the console and an audit trail that starts over.
+      - prismor_home:/var/lib/prismor
+      # Policy, including the SIEM sinks. The engine reads a workspace's
+      # policy from <workspace>/.prismor/policy.yaml, so the path matters:
+      # mounted one level up it is silently ignored and no sink ever fires.
+      # Read-only, because the surface reads policy and never edits it.
+      - ./policy.yaml:/var/lib/prismor/.prismor/policy.yaml:ro
+    ports:
+      # Only needed to reach the proxy from the host (a local agent, curl
+      # /health). Containers on this network do not need it published.
+      - "127.0.0.1:7080:7080"
+    restart: unless-stopped
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    depends_on:
+      prismor:
+        condition: service_healthy
+    environment:
+      - N8N_SECURE_COOKIE=false
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_DIAGNOSTICS_ENABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    ports:
+      - "5678:5678"
+    restart: unless-stopped
+
+volumes:
+  prismor_home:
+  n8n_data:
