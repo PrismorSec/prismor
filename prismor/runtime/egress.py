@@ -297,6 +297,19 @@ _SSH_CMDS = frozenset({"ssh", "scp", "sftp", "rsync", "git", "mosh", "autossh"})
 # host + port as separate positional arguments.
 _HOSTPORT_CMDS = frozenset({"nc", "ncat", "netcat", "telnet", "socat", "nmap", "openssl"})
 
+# Commands that routinely carry an email address or a user@host-shaped argument
+# but open no connection, so a `user@host` match inside one is not a
+# destination. `ssh-keygen -C you@example.com` is the common case: the comment
+# flag was being screened as egress to example.com.
+_NO_DESTINATION_CMDS = frozenset({
+    "ssh-keygen", "ssh-add", "gpg", "gpg2", "git-config", "npm", "yarn", "pnpm",
+})
+# `git <sub>` forms that stay on this machine. Clone/fetch/push/pull keep the
+# scan, because user@host there is exactly the remote being contacted.
+_GIT_LOCAL_SUBCOMMANDS = frozenset({
+    "config", "commit", "log", "blame", "shortlog", "tag", "notes", "var",
+})
+
 _IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?'
                           r'(\.[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?)*$')
@@ -439,11 +452,6 @@ def extract_destinations(event: Dict[str, Any]) -> List[Destination]:
     # tokenization would otherwise split apart.
     _scan_url_text(command, seen, command)
 
-    for m in _SCP_RE.finditer(command):
-        host = m.group(1).strip("[]")
-        if _looks_like_host(host):
-            _add(seen, Destination(host, 22, "ssh", "scp", command))
-
     for sub in _SHELL_SEP_RE.split(command):
         tokens = _tokenize(sub)
         while tokens and _ENV_ASSIGN_RE.match(tokens[0]):
@@ -459,6 +467,20 @@ def extract_destinations(event: Dict[str, Any]) -> List[Destination]:
                 continue
             argv0 = tokens[0].rsplit("/", 1)[-1].lower()
         args = tokens[1:]
+
+        # user@host:path, scanned per subcommand so a command that takes an
+        # address but opens no socket is not read as a destination. Scanning
+        # the whole command string made `ssh-keygen -C dev@example.com` an
+        # egress verdict against example.com. Kept broad otherwise — the match
+        # is a real destination for anything that does open a connection,
+        # including senders this list does not enumerate (`mail`, `sendmail`).
+        if argv0 not in _NO_DESTINATION_CMDS and not (
+            argv0 == "git" and args and args[0].lower() in _GIT_LOCAL_SUBCOMMANDS
+        ):
+            for m in _SCP_RE.finditer(sub):
+                host = m.group(1).strip("[]")
+                if _looks_like_host(host):
+                    _add(seen, Destination(host, 22, "ssh", "scp", sub))
 
         if argv0 in _HTTP_CMDS:
             for tok in args:

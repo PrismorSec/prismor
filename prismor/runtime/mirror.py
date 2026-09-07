@@ -801,14 +801,7 @@ def _live_markers() -> List[Dict[str, Any]]:
     return out
 
 
-def _within(inner: str, outer: str) -> bool:
-    if not inner or not outer:
-        return False
-    try:
-        a, b = Path(inner).resolve(), Path(outer).resolve()
-    except OSError:
-        return False
-    return a == b or b in a.parents
+from prismor.runtime.paths import is_within as _within
 
 
 def active_tools(workspace: Path) -> List[str]:
