@@ -113,6 +113,16 @@ def _block_reason(finding: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+# Surfaces whose workspace is a store, not a project the agent works in.
+# The proxy governs an agent it does not host -- often in another container --
+# so the instruction files near ITS OWN directory say nothing about the traffic
+# it is judging, while a CLAUDE.md that quotes attack strings (a security repo's
+# does, and $PRISMOR_HOME ships one) makes every request a block attributed to
+# source: project_memory. Scanning the wrong project is not a weaker check, it
+# is a check on the wrong subject.
+_NO_PROJECT_AGENTS = frozenset({"prismor-proxy"})
+
+
 def evaluate_tool_call(
     *,
     event: Dict[str, Any],
@@ -277,7 +287,8 @@ def evaluate_tool_call(
             # Claude's real SessionStart event — engine.evaluate already ran the
             # content rules above; add the drift check on top.
             findings.extend(check_memory_drift(meta.get("memory_digests") or {}))
-        elif _session_seq == 0 and event.get("type") != "prompt":
+        elif (_session_seq == 0 and event.get("type") != "prompt"
+              and agent not in _NO_PROJECT_AGENTS):
             _mem = _read_project_memory(Path(meta.get("cwd") or workspace))
             if _mem["content"]:
                 _mem_event = {

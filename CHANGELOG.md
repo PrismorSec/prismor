@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [1.45.1] — 2026-09-07
+
+### Fixed
+- **The proxy still refused benign traffic on account of a `CLAUDE.md` it
+  should never have read.** 1.45.0 moved its default workspace off cwd, which
+  was the right diagnosis and an incomplete fix: the new default lives inside
+  `$PRISMOR_HOME`, and $PRISMOR_HOME ships a `CLAUDE.md` of its own -- so the
+  instruction-file scan found the same security-project text one directory up
+  and went on blocking every request at score 0.91 with
+  `source: project_memory`. The scan is now skipped for the proxy entirely.
+  It governs an agent it does not host, so instruction files beside its own
+  store describe the machine it runs on and say nothing about the traffic it
+  is judging; scanning them is not a stricter check, it is a check on the
+  wrong subject.
+
 ## [1.45.0] — 2026-09-07
 
 ### Added

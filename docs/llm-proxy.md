@@ -95,15 +95,16 @@ The real credential is read from the environment variable named by
 ## Workspace
 
 The proxy reads policy and stores its sessions in `$PRISMOR_HOME/surfaces/proxy`
-unless `--workspace` says otherwise. That default is deliberate: this surface is
-a long-lived server governing somebody else's agent, so the directory it was
-launched from is not evidence about the traffic -- but the instruction-file
-scan reads that directory's `CLAUDE.md` / `AGENTS.md` and attributes what it
-finds to every event. Start the proxy inside a security repo whose own docs
-quote the attack strings its rules match and every request is refused with
-`source: project_memory`. It looks like a false positive on the agent; it is a
-true positive on the wrong subject. Pass `--workspace` only to enforce a
-specific repo's policy on purpose.
+unless `--workspace` says otherwise, and it does not scan instruction files
+(`CLAUDE.md`, `AGENTS.md`) near that directory at all. Both follow from what
+this surface is: a long-lived server governing an agent it does not host,
+usually in another container. The files beside its own workspace describe the
+machine it runs on, not the traffic it judges -- and a security project's
+instruction file quotes the attack strings its own rules match, as does the one
+$PRISMOR_HOME ships, so scanning them refused every request with
+`source: project_memory`, benign traffic included. That is not a weaker check;
+it is a check on the wrong subject. `--workspace` still points the proxy at a
+specific repo's policy for anyone who means it.
 
 ## Governing n8n (and other hosted builders)
 
