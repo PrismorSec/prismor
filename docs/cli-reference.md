@@ -55,7 +55,6 @@ prismor
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
 │   ├─ egress <action>        show · report · test · allow · deny · mode — network egress policy
 │   ├─ mirror <action>        on · off · status · passthrough — governed built-ins over MCP
-│   ├─ mode <action>          list · explain · apply · show — whole-posture templates
 │   └─ policy <action>        init · validate · show · edit · test
 │
 ├─ Visibility (audit & forensics)
@@ -135,36 +134,6 @@ Two things the selection does not reach:
   is honored only for a locally-authored policy on an unmanaged machine, and is
   ignored if it arrives in a signed org bundle.
 
-### Governance modes
-
-Picking six policy axes rule by rule is how a policy ends up subtly wrong. A
-**mode** is a named posture that sets all six at once — enforcement fallback,
-egress allowlist, tool access, tag rules, sandbox ring, and step-up gates — and
-compiles them into the same `.prismor/policy.yaml` and `.prismor/agents.yaml`
-the engine already reads. There is no separate mode enforcement path.
-
-```
-prismor mode list                    # the three, with coverage and friction
-prismor mode explain dev-safe        # the trade — including what it does NOT stop
-prismor mode apply dev-safe          # compile it (--dry-run to preview first)
-prismor mode show                    # active mode, and whether it has drifted
-```
-
-#### What each mode covers
-
-The catalogue, the axis-by-axis table, the residual risk per mode, and the
-customization guide live in **[Governance modes](governance-modes.md)** — one
-page rather than two that drift apart. Coverage and rule counts are computed
-from the live ruleset by `prismor mode list`, never hardcoded.
-
-Three modes on one axis — how much friction you accept: `audit-only`,
-`dev-safe`, `regulated-airgap`. `prismor setup` offers them as its first
-screen, with coverage, friction and residual risk shown per option, plus a
-`custom` entry for the rule-by-rule picker.
-
-`mode explain` always prints a **residual risk** paragraph — what the mode does
-*not* stop. A mode that claims no downside is a mode nobody should trust.
-
 ### Making exceptions
 
 When a rule blocks something it should not, the block prints the command that
@@ -203,7 +172,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor allow <rule>` | `--pattern`, `--expires`, `--observe`, `--off`, `--yes`, `--reason`, `--list`, `--undo`, `--workspace` | Make an exception to a rule that blocked you, narrowest first. With no `--pattern` it uses the text of the most recent block for that rule. `--observe` keeps the rule but stops it blocking; `--off` disables it for the workspace (needs `--yes`). Refuses self-protection rules, refuses to turn a floor rule off, and refuses everything where an org's signed policy governs. See [Making exceptions](#making-exceptions). |
 | `prismor unlock` | `--for`, `--status`, `--set-password`, `--system-password`, `--forget`, `--workspace` | Open a short window (default 3 minutes) in which the agent may edit Prismor's own policy. Asks for your unlock password; needs a terminal. `--system-password` verifies against your operating-system account instead of storing a Prismor one. |
 | `prismor lock` | — | Close the self-edit window early. |
-| `prismor policy init` | `--force`, `--workspace` | Scaffold an empty `.prismor/policy.yaml`. To start from a working posture instead, use `prismor mode apply` — see [Governance modes](governance-modes.md). |
+| `prismor policy init` | `--workspace` | Scaffold `.prismor/policy.yaml`. |
 | `prismor policy show` | `--workspace` | Print active rules after merging defaults + project overrides. |
 | `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
