@@ -1,5 +1,74 @@
 ## [Unreleased]
 
+## [1.47.0] — 2026-09-07
+
+### Added
+- **`prismor mode` — three governance postures that compile into the policy
+  the engine already reads.** Configuring Prismor meant setting six
+  independent axes — enforcement fallback, egress allowlist, tool access, tag
+  rules, sandbox ring, step-up gates — each in a different place with its own
+  default. Six chances to get it subtly wrong, and the failure is silent: a
+  policy that *looks* configured but leaves `egress.default: allow` reads the
+  same as one that does not. A mode is a named posture that sets all of them
+  at once and compiles into `.prismor/policy.yaml` plus `.prismor/agents.yaml`
+  — `PolicyEngine.evaluate` never learns modes exist, so there is no second
+  enforcement path to keep in agreement with the first.
+
+  ```bash
+  prismor mode list                    # the three, with coverage and friction
+  prismor mode explain dev-safe        # the trade, including what it does NOT stop
+  prismor mode apply dev-safe          # compile it into .prismor/policy.yaml
+  prismor mode apply dev-safe --observe   # same posture, nothing blocks
+  prismor mode show                    # what this workspace runs, and any drift
+  ```
+
+  | Mode | Assumes | Coverage | Friction |
+  |---|---|---|---|
+  | `dev-safe` | the repo may be hostile | 31% (25/80) | 9% |
+  | `trusted-workspace` | the repo is trusted | 34% (27/80) | 9% |
+  | `regulated-airgap` | nothing is trusted | 100% (80/80) | 90% |
+
+  Coverage and friction are both **computed, never asserted** — coverage from
+  the live ruleset, friction from a benign corpus of ordinary developer
+  commands replayed through each compiled mode in `tests/test_modes.py` — so
+  neither can drift into a marketing number. Every mode states its residual
+  risk, and `mode explain` gives that the last word, because the failure this
+  guards against is somebody adopting a posture they believe is stronger than
+  it is. `dev-safe` enforces a Docker sandbox, so `mode apply` refuses it on a
+  host with no reachable runtime rather than leaving an agent whose every
+  shell command dies. Docs: `docs/cli-reference.md` → Governance modes.
+
+- **`prismor setup` asks which posture you want, not which of 77 rules.**
+  Choosing enforce now opens a GOVERNANCE MODE step showing each mode's
+  coverage and friction bars, with `e` for the full explain screen including
+  residual risk. Picking one skips the rule-by-rule step entirely and compiles
+  the mode at install time; `custom` keeps the per-rule picker the wizard has
+  always had. A mode that needs an enforcing sandbox on a host with no Docker
+  falls back to that mode's observe build rather than installing a policy that
+  would deny every command.
+
+### Fixed
+- **Tag inference turned the trifecta rule into "no command may follow a
+  read".** `untrusted_content` was inferred for every `file_read` and every
+  unmapped `tool_result`, so with tag rules enabled `untrusted_content then
+  critical_action -> block` fired on read-then-anything: read a file, then
+  save a summary, grep, or run the tests — all blocked, on the first shell
+  call of the session. The tag now means attacker-*influenceable* input and is
+  scoped accordingly: only a read from outside the workspace root, and only a
+  `tool_result` the normalizer marked with an `mcp_server`. Nothing that
+  matters is lost — `WebFetch` and `WebSearch` are tagged by name, which
+  resolves before inference runs. An unresolvable workspace reads as *not*
+  external on purpose: guessing "untrusted" where we know the least would
+  reinstate the session-ending cliff on every read.
+
+- **`ssh-keygen -C dev@example.com` was screened as egress to example.com.**
+  The `user@host:path` scan ran over the whole command string, so any command
+  carrying an address-shaped argument produced a destination. It now runs per
+  shell segment and skips commands that take an address but open no socket
+  (`ssh-keygen`, `ssh-add`, `gpg`, the package managers, and the local `git`
+  subcommands). Kept broad otherwise: `git clone`/`fetch`/`push`/`pull` still
+  scan, because there `user@host` is exactly the remote being contacted.
+
 ## [1.46.0] — 2026-09-07
 
 ### Added
