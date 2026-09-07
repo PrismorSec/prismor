@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [1.45.2] — 2026-09-07
+
+### Fixed
+- **An OpenAI client's credential test failed against the proxy.** `/v1/models`
+  is a path both APIs define and neither route table claims, so it went to the
+  default upstream — Anthropic — and an OpenAI SDK got back
+  `401 invalid x-api-key`. n8n calls exactly that path behind its **Test**
+  button, so the credential reported broken settings while every completion
+  through it worked, which is the worst possible first impression of a surface
+  whose whole pitch is that nothing else has to change. An unrouted path now
+  follows the credential the client presented: `anthropic-version` or
+  `x-api-key` means Anthropic, a bearer means OpenAI, and neither still means
+  the configured default. Routed paths are unaffected.
+
+
 ## [1.45.1] — 2026-09-07
 
 ### Fixed

@@ -717,6 +717,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         for prefix, provider in PROVIDER_ROUTES:
             if path.endswith(prefix) or path == prefix:
                 return provider
+        # An unrouted path is one both APIs define -- /v1/models above all,
+        # which is what an SDK calls to verify a credential. Sending it to the
+        # default upstream answers an OpenAI client with Anthropic's 401
+        # ("invalid x-api-key"), so n8n's Test button says the settings are
+        # broken while every actual completion works. The client already told
+        # us who it thinks it is talking to: Anthropic SDKs stamp
+        # anthropic-version (or send x-api-key), OpenAI SDKs send a bearer.
+        if self.headers.get("anthropic-version") or self.headers.get("x-api-key"):
+            return "anthropic"
+        auth = (self.headers.get("authorization") or "").strip().lower()
+        if auth.startswith("bearer "):
+            return "openai"
         return self.config.default_upstream
 
     def _auth(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:

@@ -320,5 +320,41 @@ def test_proxy_never_scans_the_instruction_files_near_its_store(monkeypatch, tmp
     assert scanned == [], "the proxy scanned a project it does not govern"
 
 
+class _FakeHeaders(dict):
+    def get(self, key, default=None):  # HTTPMessage lookups are case-insensitive
+        for k, v in self.items():
+            if k.lower() == key.lower():
+                return v
+        return default
+
+
+def _provider_for(path, headers):
+    """Call ProxyHandler._provider without standing up a server."""
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.path = path
+    handler.headers = _FakeHeaders(headers)
+    handler.config = proxy_mod.ProxyConfig({})
+    return proxy_mod.ProxyHandler._provider(handler)
+
+
+def test_routed_paths_still_win_over_the_credential_shape():
+    assert _provider_for("/v1/chat/completions", {"Authorization": "Bearer sk-x"}) == "openai"
+    assert _provider_for("/v1/messages", {"Authorization": "Bearer oauth"}) == "anthropic"
+
+
+def test_unrouted_path_follows_the_credential_the_client_presented():
+    """/v1/models is what an SDK calls to verify a credential.
+
+    Sending it to the default upstream answered an OpenAI client with
+    Anthropic's 401, so n8n's Test button reported broken settings while every
+    completion through the same credential worked.
+    """
+    assert _provider_for("/v1/models", {"Authorization": "Bearer sk-x"}) == "openai"
+    assert _provider_for("/v1/models", {"x-api-key": "sk-ant-x"}) == "anthropic"
+    assert _provider_for("/v1/models", {"Authorization": "Bearer oauth",
+                                        "anthropic-version": "2023-06-01"}) == "anthropic"
+    assert _provider_for("/v1/models", {}) == "anthropic"  # config default
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
