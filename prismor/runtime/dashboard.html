@@ -1062,13 +1062,51 @@
   @media (max-width:900px){ .session-layout { grid-template-columns:1fr; } }
 
   .flow-card {
-    border:1px solid var(--gray-200); border-radius:14px; background:
-      radial-gradient(circle at 1px 1px, var(--gray-200) 1px, transparent 0) 0 0 / 22px 22px,
-      #fff;
+    border:1px solid var(--gray-200); border-radius:14px; background:var(--surface);
     padding:0; overflow:hidden;
   }
-  .flow-head { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--gray-100); background:#fff; }
+  .flow-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--gray-100); background:var(--surface); }
   .flow-head-title { font-size:12px; font-weight:700; color:var(--gray-800); }
+  /* ── Session tree: turns → lanes → events ── */
+  .tree-toolbar { display:flex; gap:6px; align-items:center; }
+  .tree-btn { font-size:11px; font-weight:600; color:var(--gray-700); background:var(--surface);
+    border:1px solid var(--gray-300); border-radius:7px; padding:4px 9px; cursor:pointer; }
+  .tree-btn:hover { background:var(--gray-50); }
+  .artifacts { margin-top:14px; }
+  .artifacts h4 { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--gray-500); margin:0 0 8px; }
+  .art-phase { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gray-400); }
+  .art-row { margin-bottom:9px; }
+  .art-label { font-size:10px; font-weight:600; color:var(--gray-500); margin-bottom:2px; }
+  .art-val { font-size:11px; color:var(--gray-700); word-break:break-word; }
+  .art-pre { font-family:var(--font-mono); font-size:10.5px; line-height:1.45; color:var(--gray-700);
+    background:var(--gray-50); border:1px solid var(--gray-200); border-radius:7px;
+    padding:7px 9px; margin:0; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .sess-tree { padding:10px 4px 16px; font-size:12px; }
+  .tree-turn { margin-bottom:2px; }
+  .tree-row { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+    background:none; border:0; padding:5px 8px; border-radius:7px; cursor:pointer; color:inherit; }
+  .tree-row:hover { background:var(--gray-50); }
+  .tree-caret { width:12px; flex:none; color:var(--gray-400); transition:transform .12s ease; }
+  .tree-row.collapsed .tree-caret { transform:rotate(-90deg); }
+  .tree-turn-label { font-weight:700; color:var(--gray-800); }
+  .tree-turn-sub { color:var(--gray-500); font-weight:400; margin-left:6px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tree-count { margin-left:auto; flex:none; font-size:10px; font-weight:600; color:var(--gray-600);
+    background:var(--gray-100); border-radius:10px; padding:1px 7px; }
+  .tree-children { margin-left:14px; padding-left:10px; border-left:1px solid var(--gray-200); }
+  .tree-children.hidden { display:none; }
+  .tree-lane-label { font-weight:600; color:var(--gray-700); }
+  .tree-leaf { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
+    background:none; border:0; padding:4px 8px; border-radius:7px; cursor:pointer; color:inherit; }
+  .tree-leaf:hover { background:var(--gray-50); }
+  .tree-leaf.sel { background:var(--gray-100); box-shadow:inset 2px 0 0 var(--gray-800); }
+  .tree-dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--green-500); }
+  .tree-dot.warn { background:#f59e0b; }
+  .tree-dot.block { background:#ef4444; }
+  .tree-id { flex:none; font-family:var(--font-mono); font-size:10px; color:var(--gray-400); }
+  .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
+  .tree-leaf.blocked .tree-text { color:#b91c1c; font-weight:600; }
+  .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); }
   .flow-legend { display:flex; gap:12px; font-size:10px; color:var(--gray-500); }
   .flow-legend span { display:inline-flex; align-items:center; gap:4px; }
   .flow-legend i { width:9px; height:9px; border-radius:3px; display:inline-block; }
@@ -2116,7 +2154,11 @@
     <div>
       <div class="flow-card">
         <div class="flow-head">
-          <span class="flow-head-title">Session flow — click any node for details</span>
+          <span class="flow-head-title">Session — click any row for details</span>
+          <div class="tree-toolbar">
+            <button class="tree-btn" onclick="treeToggleAll(false)">Expand all</button>
+            <button class="tree-btn" onclick="treeToggleAll(true)">Collapse all</button>
+          </div>
           <div class="flow-legend">
             <span><i class="allow"></i>allowed</span>
             <span><i class="warn"></i>warn</span>
@@ -3458,10 +3500,8 @@ function buildPager(containerId, state, loadFn) {
 let _allSessionsCache = [];
 let _sessionViewState = null;
 let _flowSelected = null;
-let _flowResizeObs = null;
 let _flowTrail = [];
 let _flowSelEvent = null;
-const SVGNS = 'http://www.w3.org/2000/svg';
 
 let _agentViewName = null;
 let _backStack = [];
@@ -3717,67 +3757,98 @@ async function sessViewAction(action){
     openSessionView(sid, ws);
   } catch(e){ toast('✗ '+e.message, true); }
 }
+// A session is a tree, not a list. Grouping is turn -> lane -> event: a turn
+// begins at each model request, and lanes keep a hundred shell calls from
+// burying the one file that was written. Every row carries the event's own
+// index, so clicking one still selects it in the detail panel.
+const LANE_LABEL = {
+  prompt:'Prompts', tools:'Tool calls', files:'Files', shell:'Shell',
+  network:'Network', context:'Context', mcp:'MCP', other:'Other',
+};
+const LANE_ORDER = ['prompt','context','tools','shell','files','network','mcp','other'];
+
+function eventLane(ev){
+  const lane = ev.lane || 'other';
+  return LANE_LABEL[lane] ? lane : 'other';
+}
+function eventSummary(ev){
+  const a = ev.artifacts || {};
+  const raw = a.command || a.path || a.url || a.prompt || a.response || a.content
+    || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
+  return String(raw).replace(/\s+/g,' ').trim().slice(0,300);
+}
+function groupTrail(trail){
+  const turns = [];
+  let cur = null;
+  trail.forEach((ev,i)=>{
+    if (!cur || ev.type === 'prompt'){
+      cur = { label:'Turn '+(turns.length+1), sub:'', lanes:new Map(), count:0 };
+      turns.push(cur);
+    }
+    if (ev.type === 'prompt' && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
+    const lane = eventLane(ev);
+    if (!cur.lanes.has(lane)) cur.lanes.set(lane, []);
+    cur.lanes.get(lane).push({ev, i});
+    cur.count++;
+  });
+  turns.forEach(t=>{ if(!t.sub && t.lanes.size) t.sub = eventSummary([...t.lanes.values()][0][0].ev).slice(0,90); });
+  return turns;
+}
+function treeRowEl({cls, caret, label, sub, count, onToggle}){
+  const btn = document.createElement('button');
+  btn.className = 'tree-row '+cls;
+  btn.innerHTML =
+    (caret ? '<svg class="tree-caret" viewBox="0 0 12 12"><path d="M3 4.5 L6 8 L9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' : '<span class="tree-caret"></span>')+
+    '<span class="'+(cls==='turn'?'tree-turn-label':'tree-lane-label')+'">'+safe(label)+'</span>'+
+    (sub ? '<span class="tree-turn-sub">'+safe(sub)+'</span>' : '')+
+    '<span class="tree-count">'+count+'</span>';
+  btn.onclick = onToggle;
+  return btn;
+}
+function treeLeafEl(ev, idx){
+  const v = flowVerdict(ev);
+  const btn = document.createElement('button');
+  btn.className = 'tree-leaf '+(v==='block'?'blocked':'')+'';
+  btn.dataset.idx = idx;
+  btn.onclick = ()=>selectFlowNode(idx);
+  const text = eventSummary(ev);
+  btn.innerHTML =
+    '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
+    '<span class="tree-id">'+safe((ev.toolTag||ev.type||'ev').toString().slice(0,14))+'</span>'+
+    '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
+    '<span class="tree-ts">'+safe(ev.ts||'')+'</span>';
+  return btn;
+}
 function renderSessionFlow(trail){
   const canvas = document.getElementById('sessFlowCanvas');
   _flowTrail = trail;
-  if (!trail.length){ canvas.innerHTML = '<div class="flow-empty">No tool calls recorded for this session yet.</div>'; return; }
-  const wrap = document.createElement('div'); wrap.className='flow-wrap';
-  const svg = document.createElementNS(SVGNS,'svg'); svg.setAttribute('class','flow-edges');
-  const nodes = document.createElement('div'); nodes.className='flow-nodes';
-  wrap.appendChild(svg); wrap.appendChild(nodes);
-  canvas.innerHTML=''; canvas.appendChild(wrap);
-  nodes.appendChild(endpointEl('start','Start'));
-  trail.forEach((ev,i)=>{ nodes.appendChild(flowNodeEl(ev,i)); });
-  nodes.appendChild(endpointEl('end','Now'));
-  const draw = ()=>drawFlowEdges(svg, nodes, trail);
-  requestAnimationFrame(draw);
-  if (_flowResizeObs) _flowResizeObs.disconnect();
-  _flowResizeObs = new ResizeObserver(()=>requestAnimationFrame(draw));
-  _flowResizeObs.observe(wrap);
+  if (!trail.length){ canvas.innerHTML = '<div class="flow-empty">Nothing recorded for this session yet.</div>'; return; }
+  const tree = document.createElement('div'); tree.className='sess-tree';
+  groupTrail(trail).forEach(turn=>{
+    const box = document.createElement('div'); box.className='tree-turn';
+    const kids = document.createElement('div'); kids.className='tree-children';
+    const head = treeRowEl({cls:'turn', caret:true, label:turn.label, sub:turn.sub, count:turn.count,
+      onToggle:(e)=>{ kids.classList.toggle('hidden'); e.currentTarget.classList.toggle('collapsed'); }});
+    box.appendChild(head); box.appendChild(kids);
+    LANE_ORDER.filter(l=>turn.lanes.has(l)).forEach(lane=>{
+      const items = turn.lanes.get(lane);
+      const laneKids = document.createElement('div'); laneKids.className='tree-children';
+      const laneHead = treeRowEl({cls:'lane', caret:true, label:LANE_LABEL[lane], sub:'', count:items.length,
+        onToggle:(e)=>{ laneKids.classList.toggle('hidden'); e.currentTarget.classList.toggle('collapsed'); }});
+      items.forEach(({ev,i})=>laneKids.appendChild(treeLeafEl(ev,i)));
+      kids.appendChild(laneHead); kids.appendChild(laneKids);
+    });
+    tree.appendChild(box);
+  });
+  canvas.innerHTML=''; canvas.appendChild(tree);
 }
-function endpointEl(kind,label){
-  const el=document.createElement('div'); el.className='flow-endpoint '+kind;
-  const icon = kind==='start' ? 'i-play' : 'i-radio';
-  el.innerHTML='<div class="dot"><svg class="icon"><use href="#'+icon+'"/></svg></div><div class="lbl">'+safe(label)+'</div>';
-  return el;
-}
-function flowNodeEl(ev,i){
-  const v = flowVerdict(ev);
-  const el=document.createElement('div');
-  el.className='flow-node '+v+((v==='block'||v==='warn')?' branch':'');
-  el.dataset.idx=i;
-  el.onclick=()=>selectFlowNode(i);
-  const chip = ev.toolTag || ev.type || 'tool';
-  const action = (ev.action||'event').replace(/^[a-z_]+:\s*/i,'');
-  el.innerHTML =
-    '<div class="flow-node-top"><span class="flow-node-chip" title="'+safeAttr(chip)+'">'+safe(chip)+'</span></div>'+
-    '<div class="flow-node-action" title="'+safeAttr(ev.action||'')+'">'+safe(action||'event')+'</div>'+
-    '<div class="flow-node-foot"><span class="flow-node-verdict '+v+'">'+({allow:'allowed',warn:'warn',block:'blocked'})[v]+'</span>'+
-      '<span class="flow-node-ts">'+safe(ev.ts||'')+'</span></div>';
-  return el;
-}
-function drawFlowEdges(svg, nodesEl, trail){
-  const host = svg.parentElement;
-  while(svg.firstChild) svg.removeChild(svg.firstChild);
-  svg.setAttribute('width', host.clientWidth);
-  svg.setAttribute('height', host.scrollHeight);
-  const kids=[...nodesEl.children];
-  const hostRect = host.getBoundingClientRect();
-  const scrollY = host.scrollTop;
-  const anchor=(el)=>{ const r=el.getBoundingClientRect(); return {
-    cx: r.left-hostRect.left + r.width/2, t: r.top-hostRect.top+scrollY, b: r.bottom-hostRect.top+scrollY }; };
-  for(let i=0;i<kids.length-1;i++){
-    const a=anchor(kids[i]), b=anchor(kids[i+1]);
-    const x1=a.cx, y1=a.b, x2=b.cx, y2=b.t, my=(y1+y2)/2;
-    let cls=''; const ev = trail[i];
-    if (ev){ const v=flowVerdict(ev); if(v!=='allow') cls=v; }
-    svg.insertAdjacentHTML('beforeend',
-      '<path class="flow-edge '+cls+'" d="M '+x1+' '+y1+' C '+x1+' '+my+', '+x2+' '+my+', '+x2+' '+y2+'"/>');
-  }
+function treeToggleAll(collapse){
+  document.querySelectorAll('#sessFlowCanvas .tree-children').forEach(el=>el.classList.toggle('hidden', collapse));
+  document.querySelectorAll('#sessFlowCanvas .tree-row').forEach(el=>el.classList.toggle('collapsed', collapse));
 }
 function selectFlowNode(idx){
   _flowSelected = idx;
-  document.querySelectorAll('#sessFlowCanvas .flow-node').forEach(n=>{
+  document.querySelectorAll('#sessFlowCanvas .tree-leaf').forEach(n=>{
     n.classList.toggle('sel', parseInt(n.dataset.idx,10)===idx);
   });
   const ev = (_flowTrail||[])[idx];
@@ -3833,7 +3904,44 @@ function renderNodePanel(ev){
           '</div>'+
         '</div>':'')+
     '</div>';
+  panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
   panel.insertAdjacentHTML('beforeend', nodeActionsHtml(ev));
+}
+
+// What the event actually carried. The log has held this all along -- the
+// prompt text, what a tool returned, the file touched, the instruction files
+// already in context at session start -- and the panel described events
+// without ever showing them.
+const ARTIFACT_FIELDS = [
+  ['prompt','Prompt'], ['command','Command'], ['path','Path'], ['url','URL'],
+  ['response','Tool output'], ['stdout','stdout'], ['stderr','stderr'],
+  ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
+  ['model','Model'], ['provider','Provider'], ['surface','Surface'],
+  ['subagent_type','Subagent'], ['cwd','Working dir'],
+];
+function artifactsHtml(ev){
+  const a = ev.artifacts || {};
+  const rows = ARTIFACT_FIELDS.filter(([k])=>a[k]).map(([k,label])=>{
+    const long = String(a[k]).length > 90 || /\n/.test(String(a[k]));
+    return '<div class="art-row"><div class="art-label">'+safe(label)+'</div>'+
+      (long ? '<pre class="art-pre">'+safe(a[k])+'</pre>'
+            : '<div class="art-val">'+safe(a[k])+'</div>')+'</div>';
+  });
+  if (Array.isArray(a.memory_files) && a.memory_files.length){
+    rows.push('<div class="art-row"><div class="art-label">Instruction files in context</div>'+
+      '<pre class="art-pre">'+safe(a.memory_files.join('\n'))+'</pre></div>');
+  }
+  if (Array.isArray(a.integrity_findings) && a.integrity_findings.length){
+    rows.push('<div class="art-row"><div class="art-label">Integrity</div><pre class="art-pre">'+
+      safe(a.integrity_findings.map(f=>(f.severity||'')+' '+(f.title||'')).join('\n'))+'</pre></div>');
+  }
+  if (a.has_invisible_controls){
+    rows.push('<div class="art-row"><div class="art-label">Warning</div>'+
+      '<div class="art-val" style="color:#b91c1c">Invisible control characters present</div></div>');
+  }
+  if (!rows.length) return '';
+  const phases = (ev.phases||[]).length>1 ? ' <span class="art-phase">pre + post</span>' : '';
+  return '<div class="artifacts"><h4>Artefacts'+phases+'</h4>'+rows.join('')+'</div>';
 }
 
 function nodeActionsHtml(ev){

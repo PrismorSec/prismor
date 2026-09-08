@@ -1131,6 +1131,91 @@ _TYPE_LABEL: Dict[str, str] = {
 }
 
 
+# ── Session trail artefacts ──────────────────────────────────────────────────
+#: How much of any one captured string the trail carries. The session view is a
+#: reading surface, not the audit trail -- the full record is the event log, and
+#: shipping an unbounded stdout to the browser makes the page the slow part.
+_ARTIFACT_CHARS = 4000
+_ARTIFACT_LIST = 40
+
+#: Event type -> the lane it belongs to in the session tree. Anything unmapped
+#: lands in "other" rather than being dropped, so a new event type shows up in
+#: the UI the day it is emitted instead of the day someone updates this table.
+_EVENT_LANES = {
+    "prompt": "prompt",
+    "memory": "context",
+    "shell": "shell",
+    "file_read": "files",
+    "file_write": "files",
+    "network": "network",
+    "tool_result": "tools",
+    "mcp_call": "mcp",
+}
+
+
+def _clip(value: Any, limit: int = _ARTIFACT_CHARS) -> str:
+    """One captured string, bounded, with the truncation made visible."""
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n… [{len(text) - limit} more characters]"
+
+
+def event_lane(event_type: str, meta: Optional[Dict[str, Any]] = None) -> str:
+    """Which lane of the session tree an event belongs to."""
+    if (meta or {}).get("subagent_id"):
+        # A subagent's work is still shown in its own lane's tree; the caller
+        # groups by subagent first, so this only decides the inner lane.
+        pass
+    return _EVENT_LANES.get(str(event_type or ""), "other")
+
+
+def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Everything a session view can show about one event.
+
+    The event log has always held far more than the trail exposed -- the prompt
+    text, a command's stdout and stderr, the path written, the instruction
+    files read at session start -- and the session view rendered a type name
+    and nothing else, so "what did this agent actually do" could only be
+    answered by reading JSONL by hand.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+    out: Dict[str, Any] = {}
+
+    for key in ("prompt", "command", "stdout", "stderr", "response", "content", "path", "url"):
+        value = raw.get(key)
+        if value not in (None, "", [], {}):
+            out[key] = _clip(value)
+
+    for key in ("mcp_server", "mcp_tool"):
+        if raw.get(key):
+            out[key] = str(raw[key])[:200]
+
+    for key in ("model", "provider", "surface", "cwd", "subagent_id", "subagent_type",
+                "agent_name", "tool_name"):
+        if meta.get(key):
+            out[key] = str(meta[key])[:200]
+
+    # SessionStart carries the instruction files that were already in context
+    # before the agent did anything -- the "what was here already" half.
+    files = meta.get("memory_files")
+    if isinstance(files, list) and files:
+        out["memory_files"] = [str(f)[:300] for f in files[:_ARTIFACT_LIST]]
+    findings = raw.get("integrity_findings")
+    if isinstance(findings, list) and findings:
+        out["integrity_findings"] = [
+            {"title": str(f.get("title") or "")[:200], "severity": str(f.get("severity") or "")}
+            for f in findings[:_ARTIFACT_LIST] if isinstance(f, dict)
+        ]
+    if meta.get("has_invisible_controls"):
+        out["has_invisible_controls"] = True
+    if meta.get("truncated"):
+        out["truncated"] = True
+    return out
+
+
 def _relative_time_store(ts: str) -> str:
     """Return a human-readable relative time string from an ISO timestamp."""
     try:
@@ -3289,6 +3374,44 @@ def set_project_rule_states(workspace: Path, disabled_ids: List[str]) -> Dict[st
     return result
 
 
+#: How many trail rows a session view ships after the Pre/Post merge below.
+_TRAIL_ROWS = 250
+
+
+def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Fold a tool call's PreToolUse and PostToolUse rows into one.
+
+    A hooked agent logs both phases of every call, so a session view listing
+    raw events showed each command twice -- an unbroken column of pairs that
+    reads as a rendering bug and buries anything else. One call is one row:
+    the pre-call row carries the verdict (the point of a pre-call check), and
+    the post-call row contributes what came back.
+
+    Events arrive newest-first, so the Post phase is seen before its Pre.
+    """
+    merged: List[Dict[str, Any]] = []
+    pending: Dict[Any, Dict[str, Any]] = {}
+    for ev in events:
+        phase = ev.get("agentEvent") or ""
+        key = (ev.get("type"), ev.get("toolTag"), (ev.get("action") or "")[:200])
+        if phase == "PostToolUse":
+            pending[key] = ev
+            continue
+        if phase == "PreToolUse" and key in pending:
+            post = pending.pop(key)
+            for field in ("stdout", "stderr", "response", "content"):
+                value = (post.get("artifacts") or {}).get(field)
+                if value and field not in (ev.get("artifacts") or {}):
+                    ev.setdefault("artifacts", {})[field] = value
+            ev["phases"] = ["PreToolUse", "PostToolUse"]
+        merged.append(ev)
+    # A Post with no Pre in this window is still something that happened.
+    for leftover in pending.values():
+        merged.append(leftover)
+    merged.sort(key=lambda e: e.get("tsAbs") or "", reverse=True)
+    return merged[:_TRAIL_ROWS]
+
+
 def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any]:
     """Return scoped rules + recent blocked findings for a session."""
     from prismor.runtime.scoped_agent import load_scoped_rules, check_scoped_rules
@@ -3338,7 +3461,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 FROM numbered_events e
                 LEFT JOIN findings f ON f.session_id = e.session_id AND f.event_index = e.rn
                 ORDER BY e.ts DESC
-                LIMIT 60
+                LIMIT 600
                 """,
                 (session_id,),
             ):
@@ -3376,14 +3499,22 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                             "source": "inferred-scoped",
                         }
                         verdict = "blocked"
-                detail = row["command_text"] or row["path_text"] or row["url_text"] or ""
+                artifacts = event_artifacts(raw)
+                # A prompt has no command, path or url, so the trail used to
+                # describe the most informative event in a session as the bare
+                # word "prompt".
+                detail = (row["command_text"] or row["path_text"] or row["url_text"]
+                          or artifacts.get("prompt") or artifacts.get("response") or "")
                 recent_events.append({
                     "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
                     "tsAbs": _absolute_time_store(row["ts"]),
                     "type": row["type"] or "",
                     "agentEvent": row["agent_event"] or "",
+                    "lane": event_lane(row["type"] or "", meta if isinstance(meta, dict) else {}),
+                    "artifacts": artifacts,
                     "toolTag": tool_tag or "",
-                    "action": (f"{row['type']}: {detail}" if detail else (row["type"] or "event")),
+                    "action": (f"{row['type']}: {' '.join(str(detail).split())[:300]}"
+                               if detail else (row["type"] or "event")),
                     "verdict": verdict,
                     "severity": (severity or "low").lower(),
                     "policy": {
@@ -3397,6 +3528,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                         "source": enrichment.get("source") or ("finding" if finding_id else ""),
                     },
                 })
+            recent_events = _merge_tool_phases(recent_events)
             block_keys = {
                 (item.get("title") or "", item.get("evidence") or "", item.get("ts") or "")
                 for item in recent_blocked
