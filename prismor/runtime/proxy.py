@@ -53,9 +53,11 @@ the agent it is supposed to be governing.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
+import re
 import signal
 import ssl
 import sys
@@ -223,6 +225,59 @@ def extract_prompt(body: Dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def prompt_parts(body: Dict[str, Any]) -> Dict[str, str]:
+    """The prompt broken back into the pieces a person recognises.
+
+    ``extract_prompt`` flattens system and messages into one blob because the
+    rules are category rules over combined text. That blob is the right thing
+    to evaluate and the wrong thing to *show*: a reader looking at a session
+    wants the sentence they typed, not their sentence welded to the workflow's
+    system prompt.
+    """
+    system = body.get("system") or body.get("instructions")
+    out: Dict[str, str] = {}
+    if system:
+        out["system"] = _text_of(system)
+    last_user = ""
+    for msg in body.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "")
+        if role == "system" and "system" not in out:
+            out["system"] = _text_of(msg.get("content"))
+        elif role == "user":
+            last_user = _text_of(msg.get("content"))
+    if not last_user and isinstance(body.get("input"), (str, list)):
+        last_user = _text_of(body["input"])
+    if last_user:
+        out["user_message"] = last_user
+    return out
+
+
+def conversation_key(body: Dict[str, Any]) -> str:
+    """A stable id for the conversation this request belongs to.
+
+    A chat UI sends its whole history every turn, so the opening exchange is
+    the one thing that stays constant across a conversation and differs
+    between conversations. Hashing it threads a chatbot's turns into one
+    session instead of dumping every conversation the process ever proxied
+    into a single one keyed on the proxy's pid.
+    """
+    system = ""
+    first_user = ""
+    raw_system = body.get("system") or body.get("instructions")
+    if raw_system:
+        system = _text_of(raw_system)
+    for msg in body.get("messages") or []:
+        if isinstance(msg, dict) and str(msg.get("role") or "") == "user":
+            first_user = _text_of(msg.get("content"))
+            break
+    if not (system or first_user):
+        return ""
+    seed = (system[:2000] + "\x00" + first_user[:2000]).encode("utf-8", "replace")
+    return hashlib.sha256(seed).hexdigest()[:12]
+
+
 def response_tool_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[str, Any]]:
     """``(tool_name, arguments)`` for every tool call in a completed response."""
     calls: List[Tuple[str, Any]] = []
@@ -268,8 +323,11 @@ class Screen:
         self.mode = mode
         self.session_id = session_id
         self.agent_name = agent_name
-        self._events = 0
-        self._unsnapshotted = 0
+        # session id -> [events, unsnapshotted]. A proxy outlives any one
+        # conversation, so counting per process would snapshot on a boundary
+        # that means nothing.
+        self._counts: Dict[str, List[int]] = {}
+        self._conversations: Dict[str, str] = {}
         # Serialized for the same reason the MCP gateway serializes: the
         # trifecta TagLedger is order-dependent, and concurrent evaluations
         # could let the completing half of a forbidden tag pair through.
@@ -277,10 +335,32 @@ class Screen:
 
     # -- events ----------------------------------------------------------
 
-    def _base(self, agent_event: str, subject: Optional[str]) -> Dict[str, Any]:
+    def session_for(self, body: Dict[str, Any], explicit: str = "") -> str:
+        """The session this request belongs to.
+
+        An explicit ``X-Prismor-Session`` header wins -- a caller that knows
+        its own conversation id should say so. Otherwise the conversation is
+        recognised from its opening exchange, so a chatbot's turns land in one
+        session and two chats do not merge into the proxy's lifetime.
+        """
+        if explicit:
+            token = re.sub(r"[^A-Za-z0-9_.:-]", "-", explicit)[:64]
+            return f"{self.session_id}-{token}"
+        key = conversation_key(body)
+        if not key:
+            return self.session_id
+        with self._lock:
+            sid = self._conversations.get(key)
+            if not sid:
+                sid = f"{self.session_id}-{key}"
+                self._conversations[key] = sid
+        return sid
+
+    def _base(self, agent_event: str, subject: Optional[str],
+              session_id: str = "") -> Dict[str, Any]:
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "session_id": self.session_id,
+            "session_id": session_id or self.session_id,
             "agent": PROXY_AGENT,
             "agent_event": agent_event,
             "metadata": {
@@ -291,15 +371,22 @@ class Screen:
         }
 
     def prompt_event(self, provider: str, model: str, prompt: str,
-                     subject: Optional[str]) -> Dict[str, Any]:
-        event = self._base("prompt", subject)
+                     subject: Optional[str], session_id: str = "",
+                     parts: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        event = self._base("prompt", subject, session_id)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": "llm_request"})
+        # The flattened blob is what policy reads; the parts are what a person
+        # reads in the session view.
+        for key, value in (parts or {}).items():
+            if value:
+                event["metadata"][key] = value
         event.update({"type": "prompt", "prompt": prompt})
         return event
 
     def tool_event(self, tool_name: str, arguments: Any, provider: str,
-                   model: str, subject: Optional[str]) -> Dict[str, Any]:
+                   model: str, subject: Optional[str],
+                   session_id: str = "") -> Dict[str, Any]:
         """Shape a model-proposed tool call as the event a hook would produce.
 
         This is the whole reason the surface earns its place. ``shape_call_event``
@@ -309,7 +396,7 @@ class Screen:
         of still lands on the generic payload path rather than being waved
         through.
         """
-        event = self._base("PreToolUse", subject)
+        event = self._base("PreToolUse", subject, session_id)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": tool_name, "proposed": True})
         try:
@@ -358,7 +445,7 @@ class Screen:
                     workspace=self.workspace,
                     agent=PROXY_AGENT,
                     mode=self.mode,
-                    session_id=self.session_id,
+                    session_id=str(event.get("session_id") or self.session_id),
                     agent_name=self.agent_name,
                     subject=resolve_subject(subject),
                     persist=False,
@@ -370,38 +457,46 @@ class Screen:
             return None
 
     def _persist(self, event: Dict[str, Any]) -> None:
-        """Append the event; rebuild the session snapshot every N events."""
+        """Append the event; rebuild that session's snapshot every N events."""
+        sid = str(event.get("session_id") or self.session_id)
         try:
             from prismor.runtime.store import append_session_event
-            append_session_event(self.workspace, self.session_id, event)
+            append_session_event(self.workspace, sid, event)
         except Exception as exc:
             sys.stderr.write(f"[prismor-proxy] session log error: {exc}\n")
             return
-        self._events += 1
-        self._unsnapshotted += 1
-        if self._events % SNAPSHOT_EVERY:
+        counts = self._counts.setdefault(sid, [0, 0])
+        counts[0] += 1
+        counts[1] += 1
+        if counts[0] % SNAPSHOT_EVERY:
             return
-        self.snapshot()
+        self.snapshot(sid)
 
-    def snapshot(self) -> None:
+    def snapshot(self, session_id: str = "") -> None:
         """Rebuild the session snapshot the console and `prismor sessions` read.
 
-        Called every SNAPSHOT_EVERY events and again when the surface stops. A
-        proxy session is often one chat turn -- the n8n agent that produced a
-        blocked install command logged five events -- so a purely periodic
-        rebuild left short sessions with a session log on disk and no session
-        anywhere an operator looks.
+        Called every SNAPSHOT_EVERY events for one session, and for every
+        session the process touched when the surface stops. A conversation is
+        often a handful of events -- the n8n agent that produced a blocked
+        install command logged five -- so a purely periodic rebuild left short
+        sessions with a log on disk and no session anywhere an operator looks.
         """
-        if not self._unsnapshotted:
-            return
-        self._unsnapshotted = 0
+        targets = [session_id] if session_id else list(self._counts)
+        for sid in targets:
+            counts = self._counts.get(sid)
+            if not counts or not counts[1]:
+                continue
+            counts[1] = 0
+            self._snapshot_one(sid)
+
+    def _snapshot_one(self, sid: str) -> None:
         try:
             from prismor.runtime.cli import analyze_events
             from prismor.runtime.store import read_session_events, save_session_snapshot
-            events = read_session_events(self.workspace, self.session_id)
+            events = read_session_events(self.workspace, sid)
             save_session_snapshot(
                 workspace=self.workspace,
-                session_id=self.session_id,
+                session_id=sid,
                 agent=PROXY_AGENT,
                 agent_name=self.agent_name or PROXY_AGENT,
                 source="proxy",
@@ -409,7 +504,7 @@ class Screen:
                 events=events,
                 analysis=analyze_events(events, repo_root=self.workspace,
                                         workspace=self.workspace,
-                                        session_id=self.session_id),
+                                        session_id=sid),
             )
         except Exception as exc:  # best-effort, exactly as the runtime path is
             sys.stderr.write(f"[prismor-proxy] snapshot error: {exc}\n")
@@ -497,11 +592,14 @@ class StreamScreen:
     """
 
     def __init__(self, screen: Screen, provider: str, model: str,
-                 subject: Optional[str]) -> None:
+                 subject: Optional[str], session_id: str = "") -> None:
         self.screen = screen
         self.provider = provider
         self.model = model
         self.subject = subject
+        # The request's conversation, so a streamed tool call lands in the
+        # same session as the prompt that produced it.
+        self.session_id = session_id or screen.session_id
         self.blocked: List[str] = []
         self._pending: List[bytes] = []      # raw SSE lines held back
         self._tool_name: str = ""
@@ -594,7 +692,8 @@ class StreamScreen:
         """Evaluate the completed tool call; release it or replace it."""
         arguments = _loads("".join(self._tool_json) or "{}")
         event = self.screen.tool_event(self._tool_name, arguments,
-                                       self.provider, self.model, self.subject)
+                                       self.provider, self.model, self.subject,
+                                       session_id=self.session_id)
         try:
             decision = self.screen.evaluate(event, self.subject)
         except Exception:
@@ -821,7 +920,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         """
         assert self.screen is not None
         prompt = extract_prompt(body)
-        event = self.screen.prompt_event(provider, model, prompt, subject)
+        # Resolved once per request and reused for the tool calls the response
+        # proposes, so a turn's prompt and its consequences share a session.
+        self._session_id = self.screen.session_for(
+            body, self.headers.get("x-prismor-session") or "")
+        event = self.screen.prompt_event(provider, model, prompt, subject,
+                                         session_id=self._session_id,
+                                         parts=prompt_parts(body))
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -914,7 +1019,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return payload
         blocked: Dict[str, str] = {}
         for tool_name, arguments in response_tool_calls(provider, body):
-            event = self.screen.tool_event(tool_name, arguments, provider, model, subject)
+            event = self.screen.tool_event(tool_name, arguments, provider, model, subject,
+                                           session_id=getattr(self, "_session_id", ""))
             try:
                 decision = self.screen.evaluate(event, subject)
             except Exception:
@@ -943,7 +1049,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
-        stream = StreamScreen(self.screen, provider, model, subject)
+        stream = StreamScreen(self.screen, provider, model, subject,
+                              getattr(self, "_session_id", ""))
         try:
             for frame in _sse_frames(resp):
                 out = stream.feed(frame)

@@ -1193,10 +1193,13 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
         if raw.get(key):
             out[key] = str(raw[key])[:200]
 
-    for key in ("model", "provider", "surface", "cwd", "subagent_id", "subagent_type",
-                "agent_name", "tool_name"):
+    # user_message and system are the prompt taken apart again: what the person
+    # typed, and the instructions the workflow wraps around it.
+    for key in ("user_message", "system", "model", "provider", "surface", "cwd",
+                "subagent_id", "subagent_type", "agent_name", "tool_name"):
         if meta.get(key):
-            out[key] = str(meta[key])[:200]
+            out[key] = (_clip(meta[key]) if key in ("user_message", "system")
+                        else str(meta[key])[:200])
 
     # SessionStart carries the instruction files that were already in context
     # before the agent did anything -- the "what was here already" half.

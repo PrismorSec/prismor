@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+## [1.49.0] — 2026-09-08
+
+### Added
+- **One proxy session per conversation.** The session id was the proxy's own —
+  process start plus pid — so every conversation the surface ever handled piled
+  into a single session, which is a log file rather than a session. A chat UI
+  sends its whole history every turn, so the opening exchange is the one thing
+  constant within a conversation and different between them: hashing it threads
+  a chatbot's turns together and keeps two chats apart. A caller that knows its
+  own id can send `X-Prismor-Session` (sanitized, not trusted verbatim); a
+  request with no conversation falls back to the process session. Snapshots are
+  now per session, and every session the process touched is flushed on
+  shutdown.
+- **The prompt is stored in its parts, not only as a blob.** Policy still reads
+  the flattened system-plus-messages text, because the rules that matter are
+  category rules over combined text — but that blob is the wrong thing to
+  *show*, and the session view was showing it: the message a person typed
+  arrived welded to the workflow's system prompt, with no way to tell which was
+  which. The event now also carries `user_message` and `system`, and the
+  session view leads with what the person actually said.
+
+
 ## [1.48.0] — 2026-09-08
 
 ### Added

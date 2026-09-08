@@ -3913,9 +3913,12 @@ function renderNodePanel(ev){
 // already in context at session start -- and the panel described events
 // without ever showing them.
 const ARTIFACT_FIELDS = [
-  ['prompt','Prompt'], ['command','Command'], ['path','Path'], ['url','URL'],
+  // What the person said comes first; the system prompt the workflow wraps
+  // around it, and the flattened blob policy actually read, come after.
+  ['user_message','User message'], ['command','Command'], ['path','Path'], ['url','URL'],
   ['response','Tool output'], ['stdout','stdout'], ['stderr','stderr'],
   ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
+  ['system','System prompt'], ['prompt','Full prompt evaluated'],
   ['model','Model'], ['provider','Provider'], ['surface','Surface'],
   ['subagent_type','Subagent'], ['cwd','Working dir'],
 ];

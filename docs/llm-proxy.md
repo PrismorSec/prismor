@@ -44,6 +44,25 @@ Denied calls are replaced, not deleted: the turn keeps a text block explaining
 the refusal. An agent handed a silent no-op simply tries again; one told why
 stops.
 
+## One session per conversation
+
+A chat UI sends its whole history every turn, so the opening exchange is the
+one thing constant across a conversation and different between conversations.
+The proxy hashes it and threads a chatbot's turns into one session — without
+that, every conversation the process ever proxied lands in a single session
+keyed on the proxy's pid, which is a log file rather than a session.
+
+A caller that knows its own conversation id can say so with an
+`X-Prismor-Session` header; it is sanitized, not trusted verbatim, and appended
+to the surface's own id. A request with no conversation at all (a bare
+completion, a health probe) falls back to the process session.
+
+The prompt is stored both ways. Policy reads the flattened blob, because the
+rules that matter are category rules over combined text; the session view shows
+the parts — the message the person typed, and the system prompt the workflow
+wrapped around it — because a reader wants the sentence they wrote, not their
+sentence welded to a workflow's instructions.
+
 ## Streaming
 
 Refusing after the client has already read the bytes is not enforcement. Text
