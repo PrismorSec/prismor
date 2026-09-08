@@ -1,5 +1,30 @@
 ## [Unreleased]
 
+## [1.49.2] — 2026-09-08
+
+### Fixed
+- **Long commands painted outside the policy card.** A flex item's `min-width`
+  is `auto`, so an unbroken shell string refused to shrink and the reason text
+  ran past the card's border into the page. Both halves of the row now shrink,
+  and the value wraps on any character, because a command line often has no
+  spaces to break on.
+- **The code block sliced its last line in half.** Its height was a round
+  number rather than a multiple of the line height, so the bottom row was cut
+  through the middle and read as a broken box instead of a scrollable one.
+
+### Changed
+- **Severity reads as one scale.** It ran across four unrelated hues —
+  critical in violet, high in pink, medium in yellow, low in blue — so the most
+  urgent badge looked the calmest. One ramp now: red, orange, amber, grey. The
+  policy card drops its pink fill for a neutral surface with a verdict-coloured
+  edge, so a card is a container and the colour means the verdict.
+- **Lane icons** from [keyline-icons](https://github.com/keyline-icons/keyline-icons)
+  (MIT, 24×24 stroke grid), inlined as a sprite: no request, no dependency.
+- Applied the parts of [ui-skills](https://github.com/ibelick/ui-skills)'
+  baseline that fit plain CSS: tabular figures for timestamps, no invented
+  letter-spacing, and the accent colour used once per view.
+
+
 ## [1.49.1] — 2026-09-08
 
 ### Fixed
