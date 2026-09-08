@@ -233,7 +233,7 @@ modes:
       - "Supply chain        : BLOCKED. Confusion, URL installs, and typosquats denied."
       - "Read-only work      : FREE. Inspection commands never prompt."
     friction:
-      - "Requires Docker     : the sandbox enforces, so no runtime means no shell."
+      - "Wants Docker        : without it the sandbox observes; rules still enforce."
       - "Network destinations: a vendor API outside the list needs an explicit entry."
       - "Private registries  : an internal index URL is denied, not prompted."
       - "Dependency changes  : adding a package prompts for approval."

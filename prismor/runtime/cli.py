@@ -1842,10 +1842,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _sandbox_status = _sandbox.docker_status()
                 _sandbox_ready = bool(_sandbox_status.get("cli_found") and _sandbox_status.get("server_reachable"))
                 if not _sandbox_ready:
+                    # Containment is a layer on top of policy, not the policy.
+                    # Every rule, egress check and tag rule has already run
+                    # against this command by the time we get here, so a missing
+                    # runtime means "not contained", not "not screened".
+                    # Blocking instead — which is what this did — bricked every
+                    # shell command the moment Docker stopped, which is how a
+                    # team ends up uninstalling Prismor to get through the
+                    # afternoon. Skip the sandbox, say so loudly, keep screening.
                     reason = _sandbox_status.get("error") or "Docker is not reachable"
-                    if str(_sandbox_cfg.get("mode", "observe")).lower() == "enforce":
-                        sys.stderr.write(f"Prismor sandbox blocked this action: {reason}\n")
-                        raise SystemExit(2)
                     sys.stderr.write(_color("[prismor] ", _YELLOW) + f"sandbox unavailable; running without sandbox: {reason}\n")
                 else:
                     update = _sandbox.claude_updated_input(
@@ -2664,16 +2669,17 @@ def main(argv: Optional[List[str]] = None) -> None:
                           f"{total} rules would block without it.")
                 else:
                     print(f"  Rules     {blocking} of {total} block")
-                # Apply-time preflight cannot see a runtime that went away
-                # afterwards, and the symptom (every shell call blocked) does
-                # not name its cause. Report it where someone would look.
+                # Apply-time degradation cannot see a runtime that went away
+                # afterwards, so check the live host too. Commands still run and
+                # are still screened — what is missing is container isolation,
+                # and that is what this line has to say, precisely.
                 if not previewing:
                     problem = sandbox_preflight(mode)
                     if problem is not None:
-                        print(_color("  Sandbox", _RED) +
-                              f"   unavailable ({problem}) — this mode enforces it, "
-                              f"so every shell command is being blocked")
-                        print("            fix Docker, or re-apply with --observe")
+                        print(_color("  Sandbox", _YELLOW) +
+                              f"   unavailable ({problem}) — commands run "
+                              f"unsandboxed; rules, egress and tag rules still apply")
+                        print("            start Docker for container isolation")
                 print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
                 if has_drifted(workspace):
                     print(_color("  Drift", _YELLOW) +

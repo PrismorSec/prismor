@@ -1149,20 +1149,20 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     disabled = [r["id"] for r in rules if not r["on"]]
     if mode == "enforce" and gov_mode not in (None, "custom"):
         def _write_policy():
+            # force=True is only "overwrite whatever policy is already here" —
+            # setup is the tool whose job that is. It does not skip the
+            # container-runtime check: apply_mode degrades the sandbox axis on
+            # a host with no Docker and reports it in `notes`.
             from prismor.runtime.modes import apply_mode, ModeError
             try:
                 _, notes = apply_mode(target, gov_mode, force=True)
-                return True, f"mode '{gov_mode}' compiled" + (f" — {notes[-1]}" if notes else "")
             except ModeError as e:
-                # Most commonly: this mode enforces a Docker sandbox and no
-                # runtime is reachable on this host. Fall back to the same
-                # posture with nothing enforcing rather than leave the
-                # workspace with no policy at all.
-                try:
-                    apply_mode(target, gov_mode, force=True, observe=True)
-                    return True, f"compiled in observe (enforcing build refused: {e})"
-                except ModeError as e2:
-                    return False, str(e2)[:70]
+                return False, str(e)[:70]
+            detail = f"mode '{gov_mode}' compiled"
+            degraded = [n for n in notes if "sandbox set to observe" in n]
+            if degraded:
+                detail += " — no Docker here, sandbox observes"
+            return True, detail
         _spinner_run(f"Compiling governance mode '{gov_mode}'", _write_policy)
     elif mode == "enforce":
         def _write_policy():

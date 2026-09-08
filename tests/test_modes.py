@@ -14,6 +14,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime import modes
@@ -40,8 +42,9 @@ def _docker_ready():
 
     Applied at class level so a suite that is about policy compilation does not
     silently become a test of whether the developer has Docker installed —
-    `apply_mode` refuses an enforcing sandbox it cannot back. Uses ``new=`` so
-    no mock argument is injected into the test methods.
+    without it, `apply_mode` degrades the sandbox axis and the compiled output
+    differs from what these tests are asserting. Uses ``new=`` so no mock
+    argument is injected into the test methods.
     """
     return mock.patch(
         "prismor.runtime.sandbox.docker_status", new=lambda: dict(_DOCKER_OK)
@@ -404,20 +407,40 @@ def _docker(available):
 
 
 class TestSandboxPreflight(unittest.TestCase):
-    """An enforcing sandbox with no runtime behind it blocks every shell call
-    (cli.py raises SystemExit(2) rather than degrading), so applying such a mode
-    on a host without Docker produces a wholly broken agent. These pin both that
-    it is caught and — just as important — that it is not over-caught."""
+    """A host with no container runtime loses containment, not the posture.
+    These pin that the sandbox axis degrades on its own, that the rest of the
+    mode still lands, and that the check is not over-applied to modes which
+    never needed a runtime."""
 
-    def test_dev_safe_refuses_to_apply_without_a_runtime(self):
+    def test_dev_safe_applies_with_a_degraded_sandbox_without_a_runtime(self):
+        ws = _workspace()
         with _docker(False), _unmanaged():
-            with self.assertRaises(modes.ModeError) as ctx:
-                modes.apply_mode(_workspace(), "dev-safe")
-        message = str(ctx.exception)
-        self.assertIn("docker", message.lower())
-        # The remedies matter more than the diagnosis.
-        self.assertIn("--observe", message)
-        self.assertIn("trusted-workspace", message)
+            path, notes = modes.apply_mode(ws, "dev-safe")
+        self.assertTrue(path.exists())
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        sandbox = (written.get("settings") or {}).get("sandbox") or {}
+        self.assertEqual(sandbox.get("mode"), "observe")
+        self.assertTrue(any("sandbox set to observe" in n for n in notes), notes)
+        # Degrading containment must not quietly degrade anything else.
+        self.assertNotIn("mode_observe", written.get("settings") or {})
+        enforcing = [r for r in written.get("rules") or []
+                     if r.get("mode") == "enforce"]
+        self.assertTrue(enforcing, "the mode's rules must still enforce")
+        egress = (written.get("settings") or {}).get("egress") or {}
+        self.assertEqual(egress.get("default"), "deny")
+
+    def test_degrading_is_not_gated_on_force(self):
+        """`force` means "overwrite a foreign policy", never "skip the runtime
+        check" — conflating them is what let setup write an enforcing sandbox
+        onto a host with no Docker."""
+        ws = _workspace()
+        with _docker(False), _unmanaged():
+            path, _ = modes.apply_mode(ws, "dev-safe", force=True)
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            ((written.get("settings") or {}).get("sandbox") or {}).get("mode"),
+            "observe",
+        )
 
     def test_dev_safe_applies_when_a_runtime_is_present(self):
         with _docker(True), _unmanaged():
@@ -429,11 +452,6 @@ class TestSandboxPreflight(unittest.TestCase):
         enforce and nothing to require."""
         with _docker(False), _unmanaged():
             path, _ = modes.apply_mode(_workspace(), "dev-safe", observe=True)
-        self.assertTrue(path.exists())
-
-    def test_force_stages_a_policy_for_another_host(self):
-        with _docker(False), _unmanaged():
-            path, _ = modes.apply_mode(_workspace(), "dev-safe", force=True)
         self.assertTrue(path.exists())
 
     def test_trusted_workspace_is_unaffected(self):
