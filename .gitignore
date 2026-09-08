@@ -49,6 +49,7 @@ prismor/runtime/opencode-plugin/
 assets/*
 !assets/readme-demo.gif
 !assets/self-hosted-dashboard.png
+!assets/prismor-modes.png
 experiments/*
 .agents/*node_modules/
 node_modules/
