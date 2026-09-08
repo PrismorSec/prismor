@@ -169,6 +169,23 @@ def test_exit_code_preserved():
           f"true={code_true} false={code_false}")
 
 
+def test_command_with_trailing_comment():
+    # Regression (#381): commands ending in an inline comment (# ...) used to
+    # swallow the trailing '; }' on a single-line brace group, causing EOF syntax errors.
+    out, code = execute_wrapped("echo hello # build step")
+    check("command with trailing comment executes cleanly", code == 0 and "hello" in out,
+          f"code={code} out={out.strip()}")
+
+
+def test_command_with_heredoc():
+    # Regression (#381): commands ending in a heredoc delimiter (EOF) used to have
+    # '; }' appended to the delimiter line, preventing bash from recognizing the end of heredoc.
+    heredoc_cmd = "cat << 'EOF'\nheredoc line\nEOF"
+    out, code = execute_wrapped(heredoc_cmd)
+    check("command ending with heredoc executes cleanly", code == 0 and "heredoc line" in out,
+          f"code={code} out={out.strip()}")
+
+
 # ── B'. decloak.sh placeholder substitution still works ───────────────────
 def test_placeholder_substituted_and_output_scrubbed():
     out, _ = execute_wrapped(f'echo "using {_PLACEHOLDER}"')
@@ -258,6 +275,7 @@ def main() -> int:
         test_scrub_preserves_trailing_and_missing_newline,
         test_grep_output_scrubbed, test_source_echo_scrubbed,
         test_no_secret_in_wrapped_command, test_exit_code_preserved,
+        test_command_with_trailing_comment, test_command_with_heredoc,
         test_placeholder_substituted_and_output_scrubbed,
         test_no_secret_in_wrapped_command_when_placeholder_used,
         test_leading_env_assignment_decloaked_and_scrubbed,
