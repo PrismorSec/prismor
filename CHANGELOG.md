@@ -1,5 +1,36 @@
 ## [Unreleased]
 
+## [1.48.0] — 2026-09-08
+
+### Added
+- **The session view shows what actually happened, not just that something
+  did.** A session is now a tree — turn → lane → event — instead of a flat
+  chain of nodes: a turn begins at each model request, and lanes (Prompts,
+  Tool calls, Shell, Files, Network, Context, MCP) keep two hundred shell
+  calls from burying the one file that was written. Expand all / Collapse all,
+  and every row still opens the same policy panel.
+
+  Each row now carries its artefacts, which the log had held all along and the
+  view had never shown: the full prompt text, what a tool returned, the path
+  touched, the command, the model and provider, and — for a session-start
+  event — the instruction files that were already in context plus any
+  integrity finding against them. A prompt used to render as the word
+  "prompt". Captures are bounded per field, with the truncation made visible,
+  because the session view is a reading surface and the event log remains the
+  record.
+
+### Fixed
+- **Every tool call appeared twice.** A hooked agent logs a `PreToolUse` and a
+  `PostToolUse` for the same call, and the trail listed both — an unbroken
+  column of pairs that reads as a rendering bug. One call is one row now: the
+  pre-call phase carries the verdict, the post-call phase contributes what came
+  back. A post with no pre inside the window still appears, because the call
+  still happened.
+- **A session showed its last 60 events and said nothing about the rest.** For
+  a session with 1458 of them that is the tail of the tail, and with each call
+  double-counted it was really the last 30 calls. The window is 600 events
+  fetched and 250 rows rendered after merging.
+
 ## [1.47.2] — 2026-09-08
 
 ### Changed
