@@ -368,15 +368,60 @@ def test_short_session_is_snapshotted_on_shutdown(monkeypatch, tmp_path):
     screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
                               session_id="short-session", agent_name="n8n")
     saved = []
-    monkeypatch.setattr(proxy_mod.Screen, "snapshot",
-                        lambda self: saved.append(self.session_id))
+    monkeypatch.setattr(proxy_mod.Screen, "_snapshot_one",
+                        lambda self, sid: saved.append(sid))
 
-    assert screen._events == 0
-    proxy_mod.Screen._persist(screen, {"type": "prompt", "prompt": "hello"})
+    screen._persist({"type": "prompt", "prompt": "hello", "session_id": "short-session"})
     assert saved == [], "no periodic rebuild is due after one event"
 
-    proxy_mod.Screen.snapshot(screen)
+    screen.snapshot()
     assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"
+
+
+def test_prompt_parts_separate_what_the_person_said(tmp_path):
+    """The flattened blob is for policy; the parts are for the reader."""
+    body = {"messages": [
+        {"role": "system", "content": "You are an ops assistant with shell access."},
+        {"role": "user", "content": "Install the monitoring agent."},
+    ]}
+    parts = proxy_mod.prompt_parts(body)
+    assert parts["user_message"] == "Install the monitoring agent."
+    assert "ops assistant" in parts["system"]
+    # The blob still carries both, because that is what the rules read.
+    assert "ops assistant" in proxy_mod.extract_prompt(body)
+    assert "monitoring agent" in proxy_mod.extract_prompt(body)
+
+
+def test_one_session_per_conversation_not_per_process(tmp_path):
+    """Two chats through one proxy are two sessions; one chat stays one."""
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="proxy-1", agent_name="n8n")
+    sys_msg = {"role": "system", "content": "You are an HR assistant."}
+    chat_a_turn1 = {"messages": [sys_msg, {"role": "user", "content": "leave policy?"}]}
+    chat_a_turn2 = {"messages": [sys_msg, {"role": "user", "content": "leave policy?"},
+                                 {"role": "assistant", "content": "24 days"},
+                                 {"role": "user", "content": "and carry over?"}]}
+    chat_b = {"messages": [sys_msg, {"role": "user", "content": "wfh policy?"}]}
+
+    a1 = screen.session_for(chat_a_turn1)
+    a2 = screen.session_for(chat_a_turn2)
+    b1 = screen.session_for(chat_b)
+    assert a1 == a2, "a later turn of the same chat must stay in its session"
+    assert a1 != b1, "a different chat must not merge into it"
+    assert a1.startswith("proxy-1-")
+
+
+def test_an_explicit_session_header_wins(tmp_path):
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="proxy-1", agent_name="n8n")
+    sid = screen.session_for({"messages": []}, "n8n chat/42")
+    assert sid == "proxy-1-n8n-chat-42", "the header is sanitized, not trusted verbatim"
+
+
+def test_a_request_with_no_conversation_falls_back_to_the_process(tmp_path):
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="proxy-1", agent_name="n8n")
+    assert screen.session_for({}) == "proxy-1"
 
 
 if __name__ == "__main__":
