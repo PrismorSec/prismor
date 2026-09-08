@@ -179,15 +179,29 @@ settings:
     defaults_enabled: true  # apply built-in tags for well-known tools
     inference_enabled: true # infer tags for uncategorized tools from event type
     meta_tags_enabled: true # honor tags MCP servers self-declare in _meta.prismor.tags
+    influence_enabled: true # require untrusted text to reach the critical call
+    provenance_enabled: true # inherit tags from files another agent wrote
     tags: {}                # explicit tool -> tag | [tags] (merge over defaults)
     rules: []               # tag-rule expressions (policy as code). Grammar:
-                            #   TAG (then|with TAG)* [-> block|warn]
+                            #   TAG (then|with TAG)* [-> block|warn|redact]
                             # `with` = unordered co-occurrence; `then` = ordered
                             # sequence. The call completing the final step is
                             # blocked/warned. Validate with `prismor tags lint`,
                             # dry-run against session logs with `prismor tags test`.
-    incompatible:           # legacy forbidden co-occurrence sets — still honored,
-      - [untrusted_content, critical_action]   # same as "a with b -> block"
+                            # Empty means the built-in defaults apply:
+                            #   critical_action with untrusted_influence -> block
+                            #   untrusted_content then critical_action    -> warn
+    incompatible: []        # legacy forbidden co-occurrence sets — still honored.
+                            # Declaring one REPLACES the defaults above, so
+                            # `[untrusted_content, critical_action]` here blocks
+                            # on the sequence alone, without the influence check.
+    # Tags a call can carry, beyond the ones an org defines:
+    #   untrusted_content    content authored outside the trust boundary
+    #   critical_action      irreversible or externally visible
+    #   untrusted_influence  this call's own arguments reuse untrusted text
+    #   via.artifact         reading a file another session wrote
+    #   from.<agent>         ...which that agent wrote
+    #   data.<class>, dest.<tier>, egress.offlist   (see data boundary / egress)
     # Example:
     #   tags:
     #     mcp__Gmail__read_email: [untrusted_content]
@@ -195,12 +209,11 @@ settings:
     #     mcp__Gmail__send_email: [critical_action]
     #     mcp__db__delete: [critical_action, destructive]
     #   rules:
-    #     - "untrusted_content then critical_action -> block"
+    #     - "critical_action with untrusted_influence -> block"
     #     - "untrusted_content then private_data then external_comms -> block"
+    #     - "via.artifact then critical_action -> warn"
+    #     - "data.secret with via.artifact -> redact"
     #     - "network_read with destructive -> warn"
-    #   incompatible:
-    #     - [untrusted_content, critical_action]
-    #     - [untrusted_content, destructive]
 
   # Score every package-manager install command (npm/pnpm/yarn/bun/pip/uv/
   # cargo/go) against OSV.dev (CVEs + malicious-package IOCs), typosquat

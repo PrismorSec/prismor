@@ -466,9 +466,11 @@ def test_meta_tags_classification_tier():
     # explicit org map beats _meta
     tt = {"tags": {"mcp__crm__read_customers": ["untrusted_content"]}}
     assert classify_tool_tags(ev, "tool_result", set(), tt) == {"untrusted_content"}
-    # disabled -> falls through to inference (tool_result -> untrusted)
+    # disabled -> falls through to inference, which no longer tags an MCP
+    # result for being one (a tab list is not external content); a server that
+    # returns web pages is named in TOOL_TAG_DEFAULTS instead.
     tt2 = {"meta_tags_enabled": False, "defaults_enabled": False}
-    assert classify_tool_tags(ev, "tool_result", set(), tt2) == {"untrusted_content"}
+    assert classify_tool_tags(ev, "tool_result", set(), tt2) == set()
 
 
 # ── generalized migration (migrate_config / migrate_configs) ─────────────────

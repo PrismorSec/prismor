@@ -221,6 +221,65 @@ def tags_list(workspace: Path, last: int = 50) -> None:
     print(_c(f"\ntool_tags: {enabled}, mode={tt.get('mode', 'observe')}", _DIM))
 
 
+# ── subcommand: provenance ───────────────────────────────────────────────────
+
+def tags_provenance(workspace: Path, path: Optional[str] = None) -> None:
+    """Who wrote the artifacts agents are reading, and who has read them.
+
+    The audit half of cross-agent flow control: the causal edges Prismor
+    recorded, whether or not any of them tripped a rule.
+    """
+    from prismor.runtime import provenance
+
+    store = provenance.store_path()
+    try:
+        data = json.loads(store.read_text(encoding="utf-8"))
+        artifacts = data.get("artifacts") or {}
+    except Exception:
+        artifacts = {}
+    if path:
+        key = provenance.resolve(path, workspace)
+        entry = artifacts.get(key)
+        if not entry:
+            print(f"no provenance recorded for {key}")
+            return
+        artifacts = {key: entry}
+    if not artifacts:
+        print("no artifact provenance recorded yet")
+        print(_c("  agents have not written any file another agent then read, "
+                 "or tool_tags is disabled", _DIM))
+        return
+
+    def _ts(entry):
+        return (entry.get("writer") or {}).get("ts", 0)
+
+    for key, entry in sorted(artifacts.items(), key=lambda kv: -_ts(kv[1])):
+        writer = entry.get("writer") or {}
+        readers = entry.get("readers") or []
+        tags = ", ".join(entry.get("tags") or []) or _c("(none)", _DIM)
+        crossed = [r for r in readers if r.get("session") != writer.get("session")]
+        print(_c(key, _BOLD))
+        print(f"  tags     {tags}")
+        print(f"  written  {writer.get('agent', '?')}:{writer.get('session', '?')}"
+              f" via {writer.get('tool') or '?'} {_c(_when(writer.get('ts')), _DIM)}")
+        if not readers:
+            print(_c("  read     (not read back yet)", _DIM))
+        for r in readers:
+            mark = _c(" cross-agent", _YELLOW) if r in crossed else ""
+            print(f"  read     {r.get('agent', '?')}:{r.get('session', '?')}"
+                  f" via {r.get('tool') or '?'} {_c(_when(r.get('ts')), _DIM)}{mark}")
+        print()
+    print(_c(f"{len(artifacts)} artifact(s) — {store}", _DIM))
+
+
+def _when(ts: Any) -> str:
+    if not isinstance(ts, (int, float)) or not ts:
+        return ""
+    import datetime
+
+    return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
 # ── subcommands: set / rm ────────────────────────────────────────────────────
 
 def tags_set(workspace: Path, tool: str, tags: List[str]) -> None:

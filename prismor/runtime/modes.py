@@ -165,12 +165,10 @@ def _check_tag_inference_declared(mode: Dict[str, Any]) -> None:
     """Refuse to compile a tag-enforcing mode that inherits the inference default.
 
     ``trifecta.classify_tool_tags`` falls back to event-type inference when a
-    tool matches no explicit or built-in tag, and that fallback is enabled by
-    default. Under it a workspace file read resolves to ``untrusted_content``
-    and every shell call to ``critical_action``, so the standard rule
-    ``untrusted_content then critical_action -> block`` denies everything the
-    agent does after its first read — for the rest of the session, since the
-    ledger is monotonic.
+    tool matches no explicit or built-in tag. How wide that fallback reaches
+    decides how much of an agent's ordinary work a tag rule touches, so it is
+    part of what a mode *is*: a mode that inherits it silently changes meaning
+    whenever the default does.
 
     The posture is legitimate either way; inheriting it silently is not. A mode
     that turns tag enforcement on has to say which one it chose.
@@ -181,10 +179,10 @@ def _check_tag_inference_declared(mode: Dict[str, Any]) -> None:
     if "inference_enabled" not in tags:
         raise ModeError(
             f"mode '{mode.get('id')}' enables tool_tags but does not declare "
-            f"tool_tags.inference_enabled — the inherited default tags every "
-            f"workspace read as untrusted_content, which makes a "
-            f"'untrusted_content then critical_action' rule block every call "
-            f"after the first read. Set it explicitly."
+            f"tool_tags.inference_enabled — the tagging posture a mode "
+            f"enforces on is part of what the mode is, and inheriting it "
+            f"silently means the mode changes meaning when the default does. "
+            f"Set it explicitly."
         )
 
 

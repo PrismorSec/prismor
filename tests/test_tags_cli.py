@@ -25,10 +25,11 @@ def _ws(tmp_path, tt):
 
 
 def _seed_session(ws, sid, tools):
-    for tool, etype in tools:
+    for tool, etype, *extra in tools:
         append_session_event(ws, sid, {
             "type": etype, "agent_event": "PreToolUse",
-            "metadata": {"tool_name": tool}})
+            "metadata": {"tool_name": tool},
+            **(extra[0] if extra else {})})
 
 
 TT = {
@@ -161,7 +162,9 @@ def test_list_reports_tiers(tmp_path, capsys):
     _seed_session(ws, sid, [
         ("mcp__Gmail__read_email", "tool_result"),  # explicit
         ("WebFetch", "network"),                    # default
-        ("Bash", "shell"),                          # inference
+        # inference: a network call that came back with content. Being a shell
+        # no longer infers anything on its own.
+        ("curl", "network", {"response": "<html>hi</html>"}),
     ])
     tags_cli.tags_list(ws)
     out = capsys.readouterr().out

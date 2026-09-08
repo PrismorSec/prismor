@@ -43,7 +43,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from prismor.runtime.trifecta import DEFAULT_INCOMPATIBLE, _as_list
+from prismor.runtime.trifecta import DEFAULT_RULES, _as_list
 
 ACTIONS = ("block", "warn", "redact")
 CONNECTORS = ("then", "with")
@@ -202,9 +202,9 @@ def _coerce_rule_entry(entry: Any) -> Optional[CompiledRule]:
 def compile_tool_tag_rules(tt: Optional[Dict[str, Any]]) -> List[CompiledRule]:
     """Compile ``settings.tool_tags`` (both ``rules`` and legacy ``incompatible``)
     into one rule list. Invalid DSL entries are skipped (policy loading must not
-    crash the engine); use :func:`lint_rules` to surface them. Falls back to the
-    default red/blue pair only when both lists yield nothing — mirroring
-    ``normalize_incompatible``."""
+    crash the engine); use :func:`lint_rules` to surface them. Falls back to
+    :data:`prismor.runtime.trifecta.DEFAULT_RULES` only when both lists yield
+    nothing."""
     tt = tt or {}
     out: List[CompiledRule] = []
 
@@ -228,8 +228,11 @@ def compile_tool_tag_rules(tt: Optional[Dict[str, Any]]) -> List[CompiledRule]:
                 )
 
     if not out:
-        out = [
-            CompiledRule(steps=[set(s)], action="block", source="default")
-            for s in DEFAULT_INCOMPATIBLE
-        ]
+        for expr in DEFAULT_RULES:
+            try:
+                rule = compile_rule(expr)
+            except ParseError:  # pragma: no cover - constants are linted in CI
+                continue
+            rule.source = "default"
+            out.append(rule)
     return out

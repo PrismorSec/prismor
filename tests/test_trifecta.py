@@ -44,10 +44,23 @@ def test_builtin_defaults():
 
 
 def test_inference_fallback():
+    """Inference is down to two signals: a network response is untrusted, and a
+    call the rules already judged irreversible is critical.
+
+    Everything wider was removed after replaying the default rule over 391 real
+    sessions: it fired on 213 of them, because `grep`/`ls` counted as critical
+    merely by being shell and the agent's own transcripts counted as untrusted
+    merely by sitting outside the workspace.
+    """
     tt = {"defaults_enabled": False}
-    assert classify_tool_tags(_ev("w", "file_write"), "file_write", set(), tt) == {CRITICAL}
-    assert classify_tool_tags(_ev("mcp__crm__x", "tool_result"), "tool_result", set(), tt) == {UNTRUSTED}
     assert classify_tool_tags(_ev("x", "shell"), "shell", {"destructive_command"}, tt) == {CRITICAL}
+    assert classify_tool_tags(_ev("x", "shell"), "shell", {"persistence"}, tt) == {CRITICAL}
+    assert classify_tool_tags(_ev("f", "network", response="<html>"), "network", set(), tt) == {UNTRUSTED}
+
+    # Being a shell, a write, or an unmapped MCP result is not itself a signal.
+    assert classify_tool_tags(_ev("w", "file_write"), "file_write", set(), tt) == set()
+    assert classify_tool_tags(_ev("Bash", "shell"), "shell", set(), tt) == set()
+    assert classify_tool_tags(_ev("mcp__crm__x", "tool_result"), "tool_result", set(), tt) == set()
 
 
 def test_local_unmapped_tool_result_is_not_untrusted():
@@ -59,9 +72,15 @@ def test_local_unmapped_tool_result_is_not_untrusted():
     tt = {"defaults_enabled": False}
     assert classify_tool_tags(_ev("Grep", "tool_result"), "tool_result", set(), tt) == set()
     assert classify_tool_tags(_ev("Glob", "tool_result"), "tool_result", set(), tt) == set()
-    # An MCP result over the same event type still carries the tag.
-    ev = _ev("anything", "tool_result", mcp_server="crm")
-    assert classify_tool_tags(ev, "tool_result", set(), tt) == {UNTRUSTED}
+    # Nor is an MCP result untrusted just for being one: a tab list and a
+    # fetched web page arrive over the same event type, and only one of them is
+    # written by someone outside the trust boundary. The servers that do return
+    # external content are named in TOOL_TAG_DEFAULTS instead.
+    ev = _ev("mcp__chrome__tabs_context", "tool_result", mcp_server="chrome")
+    assert classify_tool_tags(ev, "tool_result", set(), tt) == set()
+    assert classify_tool_tags(
+        _ev("mcp__chrome__get_page_text", "tool_result"), "tool_result", set(), {}
+    ) == {UNTRUSTED}
 
 
 def test_session_start_memory_is_not_untrusted():
@@ -74,73 +93,63 @@ def test_session_start_memory_is_not_untrusted():
     """
     tt = {"defaults_enabled": False}
     assert classify_tool_tags(_ev("memory", "memory"), "memory", set(), tt) == set()
-    # The genuinely untrusted instruction channel keeps its tag.
+    # Spawning a subagent is delegation, not ingest: the charter is written by
+    # the agent, and whatever the subagent then reads is tagged on its own
+    # calls, which share the parent's session id and so the parent's ledger.
     assert classify_tool_tags(
         _ev("Task", "subagent_spawn"), "subagent_spawn", set(), tt
-    ) == {UNTRUSTED}
+    ) == set()
 
 
-def test_real_trifecta_still_blocks_after_the_memory_narrowing(tmp_path):
-    """The narrowing must not cost the control it exists for: fetched web
-    content followed by a shell command is still a completed sequence."""
+def test_real_trifecta_still_blocks_after_the_narrowing(tmp_path):
+    """The narrowings must not cost the control they exist for: fetched web
+    content followed by a destructive command is still a completed sequence."""
     tt = {}
     fetch_tags = classify_tool_tags(_ev("WebFetch", "network"), "network", set(), tt)
     assert fetch_tags == {UNTRUSTED}
-    bash_tags = classify_tool_tags(_ev("Bash", "shell"), "shell", set(), tt)
-    assert bash_tags == {CRITICAL}
+    # A shell call is critical when the rules say what it does is destructive,
+    # not because it is a shell call.
+    rm_tags = classify_tool_tags(
+        _ev("Bash", "shell"), "shell", {"destructive_command"}, tt)
+    assert rm_tags == {CRITICAL}
 
     trifecta_rule = normalize_incompatible([[UNTRUSTED, CRITICAL]])
     ledger = TagLedger(tmp_path, "s-" + uuid.uuid4().hex)
     ledger.record(fetch_tags, 0, "WebFetch")
-    assert ledger.completes(bash_tags, trifecta_rule, 1)
+    assert ledger.completes(rm_tags, trifecta_rule, 1)
 
     # ...whereas a session that only ever read its own memory does not.
     clean = TagLedger(tmp_path, "s-" + uuid.uuid4().hex)
     clean.record(classify_tool_tags(_ev("memory", "memory"), "memory", set(), tt),
                  0, "memory")
-    assert not clean.completes(bash_tags, trifecta_rule, 1)
+    assert not clean.completes(rm_tags, trifecta_rule, 1)
 
 
-def test_workspace_read_is_trusted_but_outside_read_is_not(tmp_path):
-    """The read-then-anything cliff: a workspace read must not taint a session."""
+def test_where_a_file_sits_no_longer_decides_whether_it_is_untrusted(tmp_path):
+    """Location was a poor proxy for provenance, in both directions.
+
+    It over-fired: the agent's own transcripts, scratchpad and sibling
+    checkouts all live outside the workspace, and reading them tainted the
+    session -- between them the single largest source of false blocks in the
+    session-corpus replay. And it under-fired: a file inside the workspace that
+    another agent filled with fetched web content read as trusted.
+
+    Both directions are now answered by who wrote the file rather than where it
+    is: see prismor.runtime.provenance and tests/test_provenance.py.
+    """
     tt = {"defaults_enabled": False}
     (tmp_path / "src").mkdir()
     inside = tmp_path / "src" / "app.py"
     inside.write_text("x = 1")
 
-    ev_in = _ev("Read", "file_read", path=str(inside))
-    assert classify_tool_tags(ev_in, "file_read", set(), tt, workspace=tmp_path) == set()
-
-    ev_out = _ev("Read", "file_read", path=str(Path.home() / ".ssh" / "id_rsa"))
-    assert classify_tool_tags(ev_out, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
-
-    # Relative paths resolve against the workspace, so they stay trusted.
-    ev_rel = _ev("Read", "file_read", path="src/app.py")
-    assert classify_tool_tags(ev_rel, "file_read", set(), tt, workspace=tmp_path) == set()
-
-    # Traversal out of the workspace is external even when written relatively.
-    ev_esc = _ev("Read", "file_read", path="../../etc/passwd")
-    assert classify_tool_tags(ev_esc, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
-
-    # No workspace to resolve against -> not external (never re-arm the cliff).
-    assert classify_tool_tags(ev_out, "file_read", set(), tt) == set()
-
-    # A sibling directory sharing a name prefix is outside, not inside.
-    sibling = tmp_path.parent / (tmp_path.name + "-other")
-    sibling.mkdir()
-    (sibling / "notes.md").write_text("hi")
-    ev_sib = _ev("Read", "file_read", path=str(sibling / "notes.md"))
-    assert classify_tool_tags(ev_sib, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
-
-    # A symlink inside the workspace pointing out of it is external: both sides
-    # resolve, so the link target is what gets classified.
-    link = tmp_path / "escape.py"
-    try:
-        link.symlink_to(Path("/etc/hosts"))
-    except (OSError, NotImplementedError):
-        return
-    ev_link = _ev("Read", "file_read", path=str(link))
-    assert classify_tool_tags(ev_link, "file_read", set(), tt, workspace=tmp_path) == {UNTRUSTED}
+    for path in (
+        str(inside),
+        "src/app.py",
+        str(Path.home() / ".ssh" / "id_rsa"),
+        "../../etc/passwd",
+    ):
+        ev = _ev("Read", "file_read", path=path)
+        assert classify_tool_tags(ev, "file_read", set(), tt) == set()
 
 
 def test_webfetch_stays_untrusted_after_the_narrowing():

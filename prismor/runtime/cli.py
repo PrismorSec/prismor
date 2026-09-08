@@ -2591,6 +2591,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 tags_cli.rules_list(workspace)
             return
+        if tc == "provenance":
+            tags_cli.tags_provenance(workspace, getattr(args, "path", None))
+            return
         if tc == "edit":
             tags_cli.tags_edit(workspace)
             return
@@ -3619,6 +3622,13 @@ def build_parser() -> argparse.ArgumentParser:
     tags_rules_p.add_argument("expr", nargs="?",
                               help='Rule expression (add) or index/text (rm), e.g. "untrusted_content then critical_action -> block"')
     tags_rules_p.add_argument("--workspace", help="Workspace path")
+
+    tags_prov_p = tags_sub.add_parser(
+        "provenance",
+        help="Show which agent wrote the artifacts other agents are reading")
+    tags_prov_p.add_argument(
+        "path", nargs="?",
+        help="Limit to one file (default: every recorded artifact)")
 
     tags_edit_p = tags_sub.add_parser("edit", help="Interactive wizard: tag tools + author rules")
     tags_edit_p.add_argument("--workspace", help="Workspace path")
