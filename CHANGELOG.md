@@ -1,5 +1,45 @@
 ## [Unreleased]
 
+## [1.47.1] — 2026-09-08
+
+### Fixed
+- **Every governance mode blocked the first shell command of every session.**
+  `SessionStart` scans the workspace's own `CLAUDE.md`/`AGENTS.md` and emits a
+  `memory` event, and `memory` counted as `untrusted_content` — so
+  `untrusted_content then critical_action -> block` was armed before the user
+  typed anything, and the first `Bash` call died. Measured on a clean box:
+  `git status`, `ls -la`, `echo hello` and `npm test` were all blocked after a
+  bare `SessionStart`, while each of them passed in a session of its own. A
+  mode applied cleanly and then nothing worked. `memory` is the same content
+  as an in-workspace `file_read`, which the inference set already excludes, so
+  tagging it was inconsistent as well as fatal; its content is still scanned
+  by the prompt-injection rules and checked against the TOFU baseline, since
+  that set only feeds the combination rules. The control the rule exists for
+  is untouched and now pinned by a test: `WebFetch` then `Bash` still blocks.
+
+- **A missing container runtime no longer costs you the whole posture.**
+  `prismor mode apply dev-safe` refused outright on a host with no Docker,
+  leaving the workspace with no policy at all — worse than the posture it
+  declined to install. Containment is one axis of a mode, not the mode: the
+  sandbox axis now degrades to `observe` with a note naming the cause, and the
+  rules, egress allowlist and tag rules land untouched (30 rules enforcing,
+  egress still deny-by-default). At tool-call time an unreachable runtime
+  warns and keeps screening rather than exiting 2, so a stopped Docker daemon
+  no longer bricks every shell command in the session.
+
+  ```
+  Applied mode 'dev-safe' → .prismor/policy.yaml
+    · no container runtime here (docker CLI not found) — sandbox set to
+      observe; rules, egress and tag rules are unaffected.
+  ```
+
+- **`prismor setup` installed an enforcing sandbox onto hosts with no Docker.**
+  The wizard passed `force=True` to overwrite an existing policy, and `force`
+  in `apply_mode` *also* skipped the runtime preflight — so setup wrote
+  exactly the configuration the standalone `mode apply` refused, making the
+  wizard strictly more dangerous than the command it wraps. `force` now means
+  only "overwrite a policy I did not generate".
+
 ## [1.47.0] — 2026-09-07
 
 ### Added
