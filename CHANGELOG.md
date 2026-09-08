@@ -1,5 +1,29 @@
 ## [Unreleased]
 
+## [1.47.2] — 2026-09-08
+
+### Changed
+- **One `NOTE:` wherever a missing Docker skips the sandbox.** `mode apply`,
+  `mode show`, `prismor setup` and the hook path each phrased it differently,
+  and none of them led with the thing the reader needs first — that the
+  sandbox was *skipped*, not that something failed. All four now say so in one
+  wording, and callers key off the `NOTE:` prefix rather than the prose.
+
+  ```
+  · NOTE: Docker is not available here (docker CLI not found) — the sandbox
+    is skipped. Rules, egress and tag rules still enforce; start Docker and
+    re-apply for container isolation.
+  ```
+
+### Fixed
+- **A Docker-less install reported itself as hand-edited drift.** Skipping the
+  sandbox makes the written policy legitimately differ from the catalogue
+  mode's compile, and `has_drifted` compared against the undegraded article —
+  so `mode show` told every such install "the policy has been hand-edited
+  since this mode was applied" the moment it was written. The skip is now
+  stamped as provenance (`settings.mode_sandbox_skipped`, the same shape as
+  `mode_observe`) and drift is computed against what the policy actually is.
+
 ## [1.47.1] — 2026-09-08
 
 ### Fixed

@@ -1159,9 +1159,8 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             except ModeError as e:
                 return False, str(e)[:70]
             detail = f"mode '{gov_mode}' compiled"
-            degraded = [n for n in notes if "sandbox set to observe" in n]
-            if degraded:
-                detail += " — no Docker here, sandbox observes"
+            if any(n.startswith("NOTE:") for n in notes):
+                detail += "  NOTE: Docker not available, sandbox skipped"
             return True, detail
         _spinner_run(f"Compiling governance mode '{gov_mode}'", _write_policy)
     elif mode == "enforce":

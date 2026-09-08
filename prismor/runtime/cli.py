@@ -1851,7 +1851,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # team ends up uninstalling Prismor to get through the
                     # afternoon. Skip the sandbox, say so loudly, keep screening.
                     reason = _sandbox_status.get("error") or "Docker is not reachable"
-                    sys.stderr.write(_color("[prismor] ", _YELLOW) + f"sandbox unavailable; running without sandbox: {reason}\n")
+                    sys.stderr.write(
+                        _color("[prismor] ", _YELLOW)
+                        + f"NOTE: Docker is not available ({reason}) — the sandbox "
+                          f"is skipped for this call. Policy still applies.\n"
+                    )
                 else:
                     update = _sandbox.claude_updated_input(
                         payload=payload,
@@ -2677,9 +2681,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                     problem = sandbox_preflight(mode)
                     if problem is not None:
                         print(_color("  Sandbox", _YELLOW) +
-                              f"   unavailable ({problem}) — commands run "
-                              f"unsandboxed; rules, egress and tag rules still apply")
-                        print("            start Docker for container isolation")
+                              f"   skipped — Docker is not available ({problem})")
+                        print("            commands run unsandboxed; rules, egress "
+                              "and tag rules still apply")
                 print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
                 if has_drifted(workspace):
                     print(_color("  Drift", _YELLOW) +
