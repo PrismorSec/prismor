@@ -3898,12 +3898,22 @@ function groupTrail(trail){
     // settings scopes runs twice per message, and three identical turns read
     // as the person having said it three times.
     const text = ev.type === 'prompt' ? turnKeyOf(ev) : '';
-    const repeat = cur && text && cur.promptText === text;
+    // Same message, or the same conversation one round trip later. Sessions
+    // recorded before the prompt was stored in parts have only the flattened
+    // blob, and a later round trip of one question is that blob with the
+    // history appended -- so a prefix match catches what the user_message key
+    // catches on newer data, instead of leaving old sessions split.
+    const repeat = !!(cur && text && (cur.promptText === text ||
+      (cur.promptText.length > 40 && text.startsWith(cur.promptText))));
     if (!cur || (ev.type === 'prompt' && !repeat)){
       cur = { label:'Turn '+(turns.length+1), sub:'', promptText:text, lanes:new Map(), count:0 };
       turns.push(cur);
     }
-    if (repeat) return;  // already represented by the turn it opened
+    if (repeat){
+      // Keep the longest prompt seen, so the next round trip still matches.
+      if (text.length > cur.promptText.length) cur.promptText = text;
+      return;  // already represented by the turn it opened
+    }
     if (ev.type === 'prompt' && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
     const lane = eventLane(ev);
     if (!cur.lanes.has(lane)) cur.lanes.set(lane, []);

@@ -19,7 +19,10 @@
   prompt therefore split one exchange into a turn per round trip, each headed
   by the same system prompt. A turn is now keyed on the user's own message, and
   rows lead with it rather than the blob, so one question reads as one turn
-  headed by what was asked.
+  headed by what was asked. Sessions recorded before the prompt was stored in
+  parts keep only the flattened blob, and there a later round trip is that blob
+  with history appended — so a prefix match folds them too, rather than leaving
+  every session recorded before this release split.
 - **Browser Back left the dashboard.** Views were swapped in place and the URL
   never changed, so the browser's own Back button exited the app and no view
   could be linked to or reloaded. Each view now writes a hash and `popstate`
