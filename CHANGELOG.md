@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+## [1.49.3] — 2026-09-08
+
+### Fixed
+- **The setup summary printed through its own border.** The box was a fixed 48
+  columns and its row padding floors at zero, so any longer value — a ten-agent
+  list, comfortably — ran straight past the right edge and broke the frame. The
+  box now sizes to its contents within the terminal, and a value that still
+  does not fit wraps under itself on commas rather than escaping or being cut.
+
+### Changed
+- **The governance-mode list is readable.** Each option is a name, a sentence
+  and two bars, printed with no separation, so four options read as one
+  paragraph and the selected row was hard to find. Options are separated, and
+  the bars line up under the description they belong to instead of sitting
+  three columns to its left.
+- **Less prose in the wizard.** The self-edit step explained itself in four
+  lines for a two-option question; it takes two now. The cloaking step dropped
+  a path into Prismor's own source tree — not something the reader can act
+  on — for what the agent actually sees in place of a secret, and its options
+  are short enough to fit a narrow terminal.
+
+
 ## [1.49.2] — 2026-09-08
 
 ### Fixed

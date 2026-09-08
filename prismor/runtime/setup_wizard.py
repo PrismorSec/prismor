@@ -425,6 +425,8 @@ def _step_governance_mode(current: str = "custom", step: int = 2, total: int = 6
             if mid == "custom":
                 nm = _pad(_w("custom", BOLD) if i == sel else _w("custom", DIM), 20)
                 lines.append(f"  {arrow}{dot}  {nm}{_w('Pick exactly which rules block, rule by rule', DIM)}")
+                if i != len(ids) - 1:
+                    lines.append("")
                 continue
             m = modes[mid]
             blocking, tot_rules = coverage({**m, "id": mid})
@@ -432,8 +434,12 @@ def _step_governance_mode(current: str = "custom", step: int = 2, total: int = 6
             friction = int(m.get("friction_index", 0))
             nm = _pad(_w(mid, BOLD) if i == sel else _w(mid, DIM), 20)
             lines.append(f"  {arrow}{dot}  {nm}{_w(m.get('intent', ''), DIM)}")
-            lines.append(f"  {'':22}{_w(f'coverage [{_mode_bar(pct)}] {pct:>3}%', DIM)}"
+            lines.append(f"  {'':25}{_w(f'coverage [{_mode_bar(pct)}] {pct:>3}%', DIM)}"
                          f"   {_w(f'friction [{_mode_bar(friction)}] {friction:>3}%', DIM)}")
+            # A name, a sentence and two bars per option: run together they read
+            # as one paragraph and the selected row is hard to place.
+            if i != len(ids) - 1:
+                lines.append("")
         lines.append("")
         lines.append(_control_line([
             ("↑↓", "select"), ("e", "explain"), ("←", "back"), ("enter", "next"),
@@ -717,15 +723,15 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
 
 def _step_cloak(current: bool = True, step: int = 3, total: int = 4) -> bool:
     opts = [
-        ("yes", "Install cloaking hooks  (recommended — prevents secret leaks to the LLM provider)"),
-        ("no",  "Skip — only runtime policy hooks will be installed"),
+        ("yes", "Install cloaking hooks   recommended"),
+        ("no",  "Skip — runtime policy hooks only"),
     ]
     sel = 0 if current else 1
 
     while True:
         lines = _header_lines(step, total, "SECRET CLOAKING")
-        lines.append(f"  {_w('Prevents real secrets from reaching model context, JSONL transcripts,', DIM)}")
-        lines.append(f"  {_w('or upstream API requests. See prismor/runtime/cloaking/README.md.', DIM)}")
+        lines.append(f"  {_w('Keeps real secrets out of model context, session logs and outbound', DIM)}")
+        lines.append(f"  {_w('API requests — the agent sees @@SECRET:name@@ instead.', DIM)}")
         lines.append("")
         for i, (name, desc) in enumerate(opts):
             arrow = _w("▸ ", CYAN) if i == sel else "  "
@@ -798,10 +804,8 @@ def _step_unlock(current: bool = False, step: int = 6, total: int = 6):
 
     while True:
         lines = _header_lines(step, total, "AGENT SELF-EDIT")
-        lines.append(f"  {_w('Prismor blocks the agent from editing its own policy.', DIM)}")
-        lines.append(f"  {_w('A password lets you hand it that ability for a few minutes:', DIM)}")
-        lines.append(f"  {_w('run `prismor unlock`, and the agent can fix a rule that is', DIM)}")
-        lines.append(f"  {_w('getting in the way. You can always set one up later.', DIM)}")
+        lines.append(f"  {_w('The agent cannot edit its own policy. A password lends it that for', DIM)}")
+        lines.append(f"  {_w('a few minutes via `prismor unlock`. You can set one up any time.', DIM)}")
         lines.append("")
         for i, (name, desc) in enumerate(opts):
             arrow = _w("▸ ", CYAN) if i == sel else "  "
@@ -852,6 +856,26 @@ def _prompt_unlock_password() -> bool:
     return False
 
 
+def _wrap_value(value: str, width: int) -> List[str]:
+    """Wrap a summary value to `width`, breaking on ", " then spaces."""
+    text = str(value or "")
+    if len(text) <= width:
+        return [text]
+    lines: List[str] = []
+    rest = text
+    while len(rest) > width:
+        window = rest[:width + 1]
+        cut = window.rfind(", ")
+        cut = cut + 1 if cut > 0 else window.rfind(" ")
+        if cut <= 0:
+            cut = width
+        lines.append(rest[:cut].rstrip())
+        rest = rest[cut:].lstrip()
+    if rest:
+        lines.append(rest)
+    return lines
+
+
 # ── Confirm ──────────────────────────────────────────────────────────────────
 
 def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", unlock_pw: bool = False, mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None) -> bool:
@@ -862,7 +886,12 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
     n_rec_on = sum(1 for r in rules if r.get("recommended") and r["on"])
     ags  = ", ".join(agents)
     mirror_agents = mirror_agents or []
-    W = 48
+    # Wide enough for the longest value we are about to print, and never wider
+    # than the terminal. A fixed 48 meant a ten-agent list ran straight through
+    # the right border, because the padding below floors at zero.
+    W = max(48, min(_term_width() - 6, max([len(ags), len(disp)], default=0) + 18))
+    KEY_W = 14
+    VAL_W = W - KEY_W - 2
 
     def bdr(l, fill, r):
         return _w(f"  {l}{fill * W}{r}", DIM)
@@ -873,14 +902,26 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
         return _w("  │", DIM) + " " + content + p + " " + _w("│", DIM)
 
     def kv(k: str, v: str, vc: str = WHT) -> str:
-        return f"{_pad(_w(k, DIM), 14)}{_w(v, vc)}"
+        return f"{_pad(_w(k, DIM), KEY_W)}{_w(v, vc)}"
+
+    def kv_rows(k: str, v: str, vc: str = WHT) -> List[str]:
+        """A key and a value that may not fit on one line, as box rows.
+
+        Wraps on commas and spaces so a long agent list continues under itself
+        instead of escaping the box.
+        """
+        chunks = _wrap_value(v, VAL_W)
+        out = [row(kv(k, chunks[0] if chunks else "", vc))]
+        for extra in chunks[1:]:
+            out.append(row(f"{' ' * KEY_W}{_w(extra, vc)}"))
+        return out
 
     while True:
         lines = _header_lines()
         lines.append(bdr("╭", "─", "╮"))
         lines.append(row(_w("READY TO INSTALL", BOLD)))
         lines.append(row())
-        lines.append(row(kv("Project", disp[:30])))
+        lines.extend(kv_rows("Project", disp))
         lines.append(row(kv("Mode", mode, GRN if mode == "enforce" else YEL)))
         if mode == "enforce" and gov_mode not in (None, "custom"):
             try:
@@ -900,10 +941,10 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
                 lines.append(row(_w("nothing blocks — Prismor will only watch", YEL)))
         else:
             lines.append(row(kv("Rules", f"{n_on}/{len(rules)} enabled")))
-        lines.append(row(kv("Agents", ags)))
+        lines.extend(kv_rows("Agents", ags))
         lines.append(row(kv("Surface", "PreToolUse / PostToolUse hooks")))
         if mirror_agents:
-            lines.append(row(kv("MCP mirror", ", ".join(mirror_agents), YEL)))
+            lines.extend(kv_rows("MCP mirror", ", ".join(mirror_agents), YEL))
             lines.append(row(_w("built-ins served by Prismor; next session", DIM)))
         lines.append(row(kv("Cloak", "yes  (secret prevention)" if cloak else "no",
                             GRN if cloak else DIM)))
