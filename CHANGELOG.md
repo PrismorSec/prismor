@@ -1,5 +1,61 @@
 ## [Unreleased]
 
+## [1.49.2] — 2026-09-08
+
+### Fixed
+- **Long commands painted outside the policy card.** A flex item's `min-width`
+  is `auto`, so an unbroken shell string refused to shrink and the reason text
+  ran past the card's border into the page. Both halves of the row now shrink,
+  and the value wraps on any character, because a command line often has no
+  spaces to break on.
+- **The code block sliced its last line in half.** Its height was a round
+  number rather than a multiple of the line height, so the bottom row was cut
+  through the middle and read as a broken box instead of a scrollable one.
+
+- **One question became several turns.** A chat API resends the whole
+  conversation on every round trip, so answering one question — ask, run the
+  tool, send the result back for the wording — produces several model requests,
+  each carrying a longer history than the last. Keying a turn on the flattened
+  prompt therefore split one exchange into a turn per round trip, each headed
+  by the same system prompt. A turn is now keyed on the user's own message, and
+  rows lead with it rather than the blob, so one question reads as one turn
+  headed by what was asked. Sessions recorded before the prompt was stored in
+  parts keep only the flattened blob, and there a later round trip is that blob
+  with history appended — so a prefix match folds them too, rather than leaving
+  every session recorded before this release split.
+- **Browser Back left the dashboard.** Views were swapped in place and the URL
+  never changed, so the browser's own Back button exited the app and no view
+  could be linked to or reloaded. Each view now writes a hash and `popstate`
+  replays it, so Back, Forward and a pasted `#/session/<id>` all work.
+- **A live session could be paused but not opened.** The session list could
+  pause, resume and clear scope on a row, while the only route into the session
+  view itself was the Overview card's five most recent. Every row gets an
+  **Open** control, and the session id is clickable.
+- **A named surface reported zero sessions.** An agent page is keyed on the
+  instance label, which for a hooked agent happens to equal the framework id
+  and for a surface does not: sessions from a proxy started with `--agent-name
+  n8n-hr-agent` are stored under `agent: prismor-proxy`. Filtering on the
+  framework alone therefore matched nothing, so the page showed 0 sessions
+  beside a tool-call count of 3 — the counters were right because the server
+  groups on the label. Both now match on either.
+
+### Changed
+- **The agent list leads with what is running.** It arrived in name order, so
+  an agent last seen two minutes ago sat below a dozen last seen six weeks ago.
+  Sorted by last seen, never-seen agents last, ties by name so the order is
+  stable between refreshes.
+- **Severity reads as one scale.** It ran across four unrelated hues —
+  critical in violet, high in pink, medium in yellow, low in blue — so the most
+  urgent badge looked the calmest. One ramp now: red, orange, amber, grey. The
+  policy card drops its pink fill for a neutral surface with a verdict-coloured
+  edge, so a card is a container and the colour means the verdict.
+- **Lane icons** from [keyline-icons](https://github.com/keyline-icons/keyline-icons)
+  (MIT, 24×24 stroke grid), inlined as a sprite: no request, no dependency.
+- Applied the parts of [ui-skills](https://github.com/ibelick/ui-skills)'
+  baseline that fit plain CSS: tabular figures for timestamps, no invented
+  letter-spacing, and the accent colour used once per view.
+
+
 ## [1.49.1] — 2026-09-08
 
 ### Fixed

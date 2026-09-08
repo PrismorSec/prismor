@@ -188,10 +188,10 @@
     display: inline-block; padding: 1px 6px; border-radius: 4px;
     font-size: 10px; font-weight: 500;
   }
-  .sev-critical { background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; }
-  .sev-high     { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
-  .sev-medium   { background: #fef9c3; color: #92400e; border: 1px solid #fde68a; }
-  .sev-low      { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
+  .sev-critical { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
+  .sev-high     { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+  .sev-medium   { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+  .sev-low      { background: var(--gray-100); color: var(--gray-600); border: 1px solid var(--gray-200); }
 
   /* Risk bar */
   .risk-wrap { display: flex; align-items: center; gap: 6px; }
@@ -354,12 +354,12 @@
     border-radius: 7px; padding: 10px; margin-bottom: 10px;
   }
   .drawer-policy-card {
-    border: 1px solid #f9a8d4; background: #fdf2f8;
-    border-radius: 6px; padding: 8px; margin-top: 8px;
+    border: 1px solid var(--gray-200); background: var(--gray-50);
+    border-left: 3px solid #ef4444;
+    border-radius: 6px; padding: 9px 10px; margin-top: 8px; min-width: 0;
   }
-  .drawer-policy-card.allowed {
-    border-color: #bbf7d0; background: #f0fdf4;
-  }
+  .drawer-policy-card.allowed { border-left-color: #22c55e; }
+  .drawer-policy-card.warned  { border-left-color: #f59e0b; }
   .trail-row {
     display: flex; align-items: flex-start; gap: 8px;
     padding: 7px 0; border-bottom: 1px solid var(--gray-50);
@@ -373,8 +373,13 @@
   .trail-meta { font-size: 10px; color: var(--gray-400); margin-bottom: 2px; display: flex; gap: 5px; flex-wrap: wrap; }
   .drawer-rule-row {
     display: flex; align-items: flex-start; gap: 8px; margin-bottom: 8px;
-    font-size: 11px;
+    font-size: 11px; min-width: 0;
   }
+  /* A flex item's min-width is auto, so an unbroken command string refuses to
+     shrink and paints straight out of the card. Both halves need the override,
+     and the value needs somewhere to wrap: shell text has no spaces to break on. */
+  .drawer-rule-row > * { min-width: 0; }
+  .drawer-rule-row > div { overflow-wrap: anywhere; word-break: break-word; }
   .drawer-rule-label { color: var(--gray-400); min-width: 80px; flex-shrink: 0; }
   .drawer-rule-tags  { display: flex; gap: 4px; flex-wrap: wrap; }
 
@@ -1080,9 +1085,14 @@
   .art-row { margin-bottom:9px; }
   .art-label { font-size:10px; font-weight:600; color:var(--gray-500); margin-bottom:2px; }
   .art-val { font-size:11px; color:var(--gray-700); word-break:break-word; }
-  .art-pre { font-family:var(--font-mono); font-size:10.5px; line-height:1.45; color:var(--gray-700);
+  /* 12 lines exactly: a max-height that is not a multiple of line-height slices
+     the last row in half, which reads as a broken box rather than a scroll. */
+  .art-pre { font-family:var(--font-mono); font-size:10.5px; line-height:1.5; color:var(--gray-700);
     background:var(--gray-50); border:1px solid var(--gray-200); border-radius:7px;
-    padding:7px 9px; margin:0; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+    padding:8px 10px; margin:0; max-height:calc(12 * 1.5 * 10.5px + 16px); overflow:auto;
+    white-space:pre-wrap; overflow-wrap:anywhere; tab-size:2; }
+  .art-pre::-webkit-scrollbar { width:8px; height:8px; }
+  .art-pre::-webkit-scrollbar-thumb { background:var(--gray-300); border-radius:4px; }
   .sess-tree { padding:8px 6px 14px; font-size:12.5px; }
   /* A turn is the unit people scan for, so it gets the separator and the
      breathing room; lanes and rows inside it stay quiet. */
@@ -1092,8 +1102,7 @@
     background:none; border:0; padding:6px 8px; border-radius:8px; cursor:pointer; color:inherit; }
   .tree-row:hover { background:var(--gray-50); }
   .tree-row.turn { padding:7px 8px; }
-  .tree-row.lane .tree-lane-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
-    color:var(--gray-500); }
+  .tree-row.lane .tree-lane-label { font-size:11px; text-transform:uppercase; color:var(--gray-500); }
   .tree-caret { width:12px; flex:none; color:var(--gray-400); transition:transform .12s ease; }
   .tree-row.collapsed .tree-caret { transform:rotate(-90deg); }
   .tree-turn-label { font-weight:700; color:var(--gray-800); }
@@ -1104,6 +1113,12 @@
   .tree-row.turn .tree-count { color:var(--gray-700); }
   .tree-children { margin-left:14px; padding-left:10px; border-left:1px solid var(--gray-200); }
   .tree-children.hidden { display:none; }
+  .sess-id.link { cursor:pointer; }
+  .sess-id.link:hover { text-decoration:underline; }
+  .sess-act-btn.open { border-color:var(--gray-300); color:var(--gray-800); font-weight:600; }
+  .sess-act-btn.open:hover { background:var(--gray-100); }
+  .tree-lane-icon { width:14px; height:14px; flex:none; color:var(--gray-400); }
+  .tree-row.lane:hover .tree-lane-icon { color:var(--gray-600); }
   .tree-lane-label { font-weight:600; color:var(--gray-700); }
   .tree-leaf { display:flex; align-items:center; gap:9px; width:100%; text-align:left;
     background:none; border:0; padding:5px 8px; border-radius:8px; cursor:pointer; color:inherit; }
@@ -1113,11 +1128,11 @@
   .tree-dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--green-500); }
   .tree-dot.warn { background:#f59e0b; }
   .tree-dot.block { background:#ef4444; }
-  .tree-id { flex:none; font-size:10px; font-weight:600; letter-spacing:.02em;
+  .tree-id { flex:none; font-size:10px; font-weight:600;
     color:var(--gray-500); background:var(--gray-100); border-radius:5px; padding:1px 6px; }
   .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
   .tree-leaf.blocked .tree-text { color:#b91c1c; font-weight:600; }
-  .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); }
+  .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); font-variant-numeric:tabular-nums; }
   .flow-legend { display:flex; gap:12px; font-size:10px; color:var(--gray-500); }
   .flow-legend span { display:inline-flex; align-items:center; gap:4px; }
   .flow-legend i { width:9px; height:9px; border-radius:3px; display:inline-block; }
@@ -1658,6 +1673,18 @@
 </style>
 </head>
 <body>
+<svg style="display:none" aria-hidden="true">
+  <!-- Lane icons from keyline-icons (MIT), 24x24 stroke grid. -->
+  <symbol id="kl-context" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5C4 3.3431 5.3431 2 7 2L17 2C18.6569 2 20 3.3431 20 5L20 20.9983C20 21.7895 19.1248 22.2673 18.4592 21.8395L12.8111 18.8514C12.317 18.5338 11.683 18.5338 11.1889 18.8514L5.5408 21.8395C4.8752 22.2673 4 21.7895 4 20.9983Z"/></symbol>
+  <symbol id="kl-files" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H8C5.79086 2 4 3.79086 4 6V18C4 20.2091 5.79086 22 8 22H16C18.2091 22 20 20.2091 20 18V8L14 2ZM14 2V5C14 6.65685 15.3431 8 17 8H20M8 13H12M8 17H16"/></symbol>
+  <symbol id="kl-mcp" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L18 2C19.1046 2 20 2.8954 20 4L20 8C20 9.1046 19.1046 10 18 10L6 10C4.8954 10 4 9.1046 4 8L4 4C4 2.8954 4.8954 2 6 2ZM6 14L18 14C19.1046 14 20 14.8954 20 16L20 20C20 21.1046 19.1046 22 18 22L6 22C4.8954 22 4 21.1046 4 20L4 16C4 14.8954 4.8954 14 6 14Z" fill="none"/> <path d="M9 6C9 6.5523 8.5523 7 8 7C7.4477 7 7 6.5523 7 6C7 5.4477 7.4477 5 8 5C8.5523 5 9 5.4477 9 6ZM13 6C13 6.5523 12.5523 7 12 7C11.4477 7 11 6.5523 11 6C11 5.4477 11.4477 5 12 5C12.5523 5 13 5.4477 13 6ZM9 18C9 18.5523 8.5523 19 8 19C7.4477 19 7 18.5523 7 18C7 17.4477 7.4477 17 8 17C8.5523 17 9 17.4477 9 18ZM13 18C13 18.5523 12.5523 19 12 19C11.4477 19 11 18.5523 11 18C11 17.4477 11.4477 17 12 17C12.5523 17 13 17.4477 13 18Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="kl-network" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12ZM2 12H22M12 2C14.6667 5 16 8.5 16 12C16 15.5 14.6667 19 12 22C9.33333 19 8 15.5 8 12C8 8.5 9.33333 5 12 2Z"/></symbol>
+  <symbol id="kl-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12H5.01M12 12H12.01M19 12H19.01"/></symbol>
+  <symbol id="kl-prompt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 3 C20.6569 3 22 4.3431 22 6 C22 7.6569 20.6569 9 19 9 C17.3431 9 16 7.6569 16 6 C16 4.3431 17.3431 3 19 3 ZM12.668 3.0179 C12.4456 3.006 12.2228 3 12 3 C6.4772 3 2 6.5817 2 11 C2 12.9769 2.915 14.8839 4.5686 16.353 L5 21 L9.5808 18.7624 C10.3721 18.9202 11.1845 19 12 19 C16.8496 19 21.0003 16.2162 21.8466 12.3961" fill="none"/></symbol>
+  <symbol id="kl-shell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5L10.5571 10.6204C10.7899 10.8199 10.7899 11.1801 10.5571 11.3796L4 17M20 19H13"/></symbol>
+  <symbol id="kl-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.682 8.8536L20.2678 7.2678C20.4553 7.0802 20.7097 6.9749 20.9749 6.9749C21.4902 6.9749 21.9211 7.3664 21.9703 7.8794C21.9901 8.0857 22 8.2928 22 8.5C22 12.0899 19.0899 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 4.9101 11.9101 2 15.5 2C15.7072 2 15.9143 2.0099 16.1206 2.0297C16.6336 2.0789 17.0251 2.5098 17.0251 3.0251C17.0251 3.2903 16.9198 3.5447 16.7322 3.7322L15.1464 5.318C14.6776 5.7869 14.4142 6.4227 14.4142 7.0858C14.4142 8.4665 15.5335 9.5858 16.9142 9.5858C17.5773 9.5858 18.2131 9.3224 18.682 8.8536ZM15.3955 14.9992C15.3688 14.9987 15.342 14.9985 15.3152 14.9985C13.9891 14.9985 12.7173 15.5253 11.7797 16.463L7.1213 21.1213C6.5587 21.6839 5.7956 22 5 22C3.3431 22 2 20.6569 2 19C2 18.2044 2.3161 17.4413 2.8787 16.8787L7.537 12.2203C8.4747 11.2827 9.0015 10.0109 9.0015 8.6848C9.0015 8.658 9.0013 8.6312 9.0008 8.6045"/></symbol>
+</svg>
+
 
 <!-- ═══ ICON SPRITE (Lucide, inlined — no external requests) ══════ -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
@@ -2659,6 +2686,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById(tabId)?.classList.add('active');
     const crumb = document.getElementById('breadcrumbLabel');
     if (crumb) crumb.textContent = btn.dataset.label || btn.textContent.trim();
+    recordView({view:'tab', tab: btn.dataset.tab});
 
     if (btn.dataset.tab === 'sessions') {
       // Render from cache instantly, refresh in background
@@ -3523,6 +3551,58 @@ function _pushCurrentView(){
   else if (id === 'page-session' && _sessionViewState){ const sx=_sessionViewState.sessionId, wx=_sessionViewState.workspace; _backStack.push(()=>openSessionView(sx, wx, true)); }
   else { const tb=document.querySelector('.tab-btn.active'); const t=tb?tb.dataset.tab:'sessions'; _backStack.push(()=>document.querySelector('.tab-btn[data-tab="'+t+'"]')?.click()); }
 }
+// ── Browser history ────────────────────────────────────────────────────
+// The in-app Back button walked _backStack while the URL never changed, so
+// the browser's own Back left the dashboard entirely -- and no view could be
+// linked to or reloaded. Each view now writes a hash, and popstate replays it.
+let _restoringView = false;
+
+function currentViewState(){
+  const active = document.querySelector('.page.active');
+  const id = active ? active.id : null;
+  if (id === 'page-session' && _sessionViewState && _sessionViewState.sessionId){
+    return {view:'session', id:_sessionViewState.sessionId, ws:_sessionViewState.workspace || ''};
+  }
+  if (id === 'page-agent' && _agentViewName) return {view:'agent', name:_agentViewName};
+  const tab = document.querySelector('.tab-btn.active');
+  return {view:'tab', tab: tab ? tab.dataset.tab : 'sessions'};
+}
+function hashForView(st){
+  if (st.view === 'session') return '#/session/' + encodeURIComponent(st.id);
+  if (st.view === 'agent')   return '#/agent/'   + encodeURIComponent(st.name);
+  return '#/' + (st.tab || 'sessions');
+}
+function recordView(st, replace){
+  if (_restoringView) return;
+  try {
+    const h = hashForView(st);
+    if (replace || location.hash === h) history.replaceState(st, '', h);
+    else history.pushState(st, '', h);
+  } catch(e){ /* file:// and other historyless contexts */ }
+}
+function parseHash(){
+  const m = /^#\/(session|agent)\/(.+)$/.exec(location.hash || '');
+  if (m) return m[1] === 'session'
+    ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
+    : {view:'agent', name:decodeURIComponent(m[2])};
+  const t = /^#\/([a-z-]+)$/.exec(location.hash || '');
+  return t ? {view:'tab', tab:t[1]} : null;
+}
+function applyViewState(st){
+  if (!st) return;
+  _restoringView = true;
+  try {
+    if (st.view === 'session') openSessionView(st.id, st.ws || '', true);
+    else if (st.view === 'agent') openAgentView(st.name, true);
+    else document.querySelector('.tab-btn[data-tab="' + (st.tab || 'sessions') + '"]')?.click();
+  } finally {
+    // The tab click is synchronous; the view opens are not, but they only
+    // record on entry, which has already happened by here.
+    _restoringView = false;
+  }
+}
+window.addEventListener('popstate', (e)=> applyViewState(e.state || parseHash() || {view:'tab', tab:'sessions'}));
+
 function goBack(){ const fn=_backStack.pop(); if (fn) fn(); else document.querySelector('.tab-btn[data-tab="sessions"]')?.click(); }
 function showSubPage(id){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
@@ -3545,6 +3625,7 @@ async function ensureAllSessions(force){
 
 // ── Agent view ─────────────────────────────────────────────────────────
 async function openAgentView(agentName, isBack){
+  if (!isBack) recordView({view:'agent', name:agentName});
   if (!agentName) return;
   if (!isBack) _pushCurrentView();
   _agentViewName = agentName;
@@ -3574,7 +3655,7 @@ function renderAgentHero(agentName){
   const status = document.getElementById('agentHeroStatus');
   const sub = document.getElementById('agentHeroSub');
   const stats = document.getElementById('agentStats');
-  const sessions = _allSessionsCache.filter(s=>s.agent===agentName);
+  const sessions = _allSessionsCache.filter(s=>sessionBelongsToAgent(s, agentName));
   const findings = sessions.reduce((n,s)=>n+(s.findingsCount||0),0);
   if (a){
     avatar.className = 'agent-avatar' + (a.enabled?'':' blocked');
@@ -3670,8 +3751,16 @@ async function toolPolicySet(agent, tool, action){
     toast('✓ '+tool+' → '+action);
   } catch(e){ toast('✗ '+e.message, true); loadAgents(); }
 }
+// An agent page is keyed on the instance label, which for a hooked agent is
+// the framework id and for a surface is the name it was started with
+// (`--agent-name n8n-hr-agent` on a proxy whose framework is prismor-proxy).
+// Matching only `agent` reported 0 sessions for every named surface, while the
+// call and block counters -- which group on the label server-side -- were right.
+function sessionBelongsToAgent(s, agentName){
+  return s.agent === agentName || s.agentName === agentName;
+}
 function renderAgentSessions(agentName){
-  const rows = _allSessionsCache.filter(s=>s.agent===agentName);
+  const rows = _allSessionsCache.filter(s=>sessionBelongsToAgent(s, agentName));
   const tbody = document.getElementById('agentSessBody');
   document.getElementById('agentSessCount').textContent = fmtNum(rows.length)+' session'+(rows.length===1?'':'s');
   if(!rows.length){ tbody.innerHTML='<tr><td colspan="5" class="empty">No sessions recorded for this agent yet.</td></tr>'; return; }
@@ -3702,6 +3791,7 @@ async function openSessionView(sessionId, workspace, isBack){
   _flowSelected = null;
   const ws = workspace || _serverWorkspace || '';
   _sessionViewState = { sessionId, workspace: ws, agent:'', data:null };
+  if (!isBack) recordView({view:'session', id:sessionId, ws});
   document.getElementById('sessFlowId').textContent = sessionId;
   document.getElementById('sessFlowMeta').innerHTML = '';
   document.getElementById('sessFlowActions').innerHTML = '';
@@ -3784,9 +3874,20 @@ function eventLane(ev){
 }
 function eventSummary(ev){
   const a = ev.artifacts || {};
-  const raw = a.command || a.path || a.url || a.prompt || a.response || a.content
+  // For a prompt, the person's own message beats the flattened blob: a chat
+  // API resends the whole conversation every round trip, so the blob grows by
+  // the previous answer each time and the recognisable part is buried.
+  const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.content
     || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
   return String(raw).replace(/\s+/g,' ').trim().slice(0,300);
+}
+// What makes two prompts the same turn. One user message can produce several
+// model requests -- ask, run the tool, send the result back for the answer --
+// and each carries a longer history than the last, so keying a turn on the
+// full prompt split one exchange into a turn per round trip.
+function turnKeyOf(ev){
+  const a = ev.artifacts || {};
+  return (a.user_message || a.prompt || eventSummary(ev) || '').slice(0, 400);
 }
 function groupTrail(trail){
   const turns = [];
@@ -3796,13 +3897,23 @@ function groupTrail(trail){
     // same prompt arriving twice is one turn: a hook registered in two
     // settings scopes runs twice per message, and three identical turns read
     // as the person having said it three times.
-    const text = ev.type === 'prompt' ? eventSummary(ev) : '';
-    const repeat = cur && text && cur.promptText === text;
+    const text = ev.type === 'prompt' ? turnKeyOf(ev) : '';
+    // Same message, or the same conversation one round trip later. Sessions
+    // recorded before the prompt was stored in parts have only the flattened
+    // blob, and a later round trip of one question is that blob with the
+    // history appended -- so a prefix match catches what the user_message key
+    // catches on newer data, instead of leaving old sessions split.
+    const repeat = !!(cur && text && (cur.promptText === text ||
+      (cur.promptText.length > 40 && text.startsWith(cur.promptText))));
     if (!cur || (ev.type === 'prompt' && !repeat)){
       cur = { label:'Turn '+(turns.length+1), sub:'', promptText:text, lanes:new Map(), count:0 };
       turns.push(cur);
     }
-    if (repeat) return;  // already represented by the turn it opened
+    if (repeat){
+      // Keep the longest prompt seen, so the next round trip still matches.
+      if (text.length > cur.promptText.length) cur.promptText = text;
+      return;  // already represented by the turn it opened
+    }
     if (ev.type === 'prompt' && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
     const lane = eventLane(ev);
     if (!cur.lanes.has(lane)) cur.lanes.set(lane, []);
@@ -3812,11 +3923,12 @@ function groupTrail(trail){
   turns.forEach(t=>{ if(!t.sub && t.lanes.size) t.sub = eventSummary([...t.lanes.values()][0][0].ev).slice(0,90); });
   return turns;
 }
-function treeRowEl({cls, caret, label, sub, count, onToggle}){
+function treeRowEl({cls, caret, label, sub, count, onToggle, lane}){
   const btn = document.createElement('button');
   btn.className = 'tree-row '+cls;
   btn.innerHTML =
     (caret ? '<svg class="tree-caret" viewBox="0 0 12 12"><path d="M3 4.5 L6 8 L9 4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>' : '<span class="tree-caret"></span>')+
+    (lane ? '<svg class="tree-lane-icon" aria-hidden="true"><use href="#kl-'+lane+'"/></svg>' : '')+
     '<span class="'+(cls==='turn'?'tree-turn-label':'tree-lane-label')+'">'+safe(label)+'</span>'+
     (sub ? '<span class="tree-turn-sub">'+safe(sub)+'</span>' : '')+
     '<span class="tree-count">'+count+'</span>';
@@ -3851,7 +3963,7 @@ function renderSessionFlow(trail){
     LANE_ORDER.filter(l=>turn.lanes.has(l)).forEach(lane=>{
       const items = turn.lanes.get(lane);
       const laneKids = document.createElement('div'); laneKids.className='tree-children';
-      const laneHead = treeRowEl({cls:'lane', caret:true, label:LANE_LABEL[lane], sub:'', count:items.length,
+      const laneHead = treeRowEl({cls:'lane', caret:true, label:LANE_LABEL[lane], sub:'', count:items.length, lane,
         onToggle:(e)=>{ laneKids.classList.toggle('hidden'); e.currentTarget.classList.toggle('collapsed'); }});
       items.forEach(({ev,i})=>laneKids.appendChild(treeLeafEl(ev,i)));
       kids.appendChild(laneHead); kids.appendChild(laneKids);
@@ -3910,7 +4022,7 @@ function renderNodePanel(ev){
       '<div class="drawer-rule-row" style="align-items:flex-start;margin-bottom:0"><span class="drawer-rule-label">Action</span>'+
         '<div style="font-size:11px;color:var(--gray-600);line-height:1.5;word-break:break-word">'+safe(ev.action||'')+'</div></div>'+
       ((policy.ruleId||policy.title||policy.evidence||categoryLabel)?
-        '<div class="drawer-policy-card '+(v==='allow'?'allowed':'')+'">'+
+        '<div class="drawer-policy-card '+({allow:'allowed',warn:'warned',block:''})[v]+'">'+
           '<div class="drawer-rule-row"><span class="drawer-rule-label">Policy</span>'+
             '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">'+safe(policy.ruleId||policy.id||'runtime-policy')+'</div>'+
             (categoryLabel?'<div style="font-size:10px;color:var(--gray-500);margin-top:2px">'+safe(categoryLabel)+'</div>':'')+'</div></div>'+
@@ -4460,8 +4572,19 @@ async function loadAgents() {
   }
 }
 
+// Most recently seen first. The API returns the union of the store and the
+// registry in name order, which buried an agent that ran two minutes ago under
+// a dozen that last ran six weeks ago -- and the first screen of a fleet list
+// should be the agents that are actually running.
+function agentsByLastSeen(agents){
+  const seen = (a) => {
+    const t = a && a.last_seen ? Date.parse(a.last_seen) : NaN;
+    return isNaN(t) ? -Infinity : t;   // never seen sorts last, not first
+  };
+  return agents.slice().sort((a, b) => seen(b) - seen(a) || String(a.name||'').localeCompare(String(b.name||'')));
+}
 function renderAgents(data) {
-  const agents = data.agents || [];
+  const agents = agentsByLastSeen(data.agents || []);
   const profiles = data.iam_profiles || [];
   document.getElementById('agentsCount').textContent =
     agents.length + ' agent' + (agents.length === 1 ? '' : 's') + ' registered';
@@ -4624,7 +4747,9 @@ function renderSessionControl(items, workspace) {
     return '<div class="sess-ctrl-row">' +
       '<div>' +
         '<div class="sess-id-wrap">' +
-          '<span class="sess-id" title="' + safeAttr(sessId) + '">' + safe(shortId(sessId, 32)) + '</span>' +
+          '<span class="sess-id link" title="Open session ' + safeAttr(sessId) + '" ' +
+            'onclick="navigateToSession(\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\')">' +
+            safe(shortId(sessId, 32)) + '</span>' +
           '<span id="pill-' + i + '">' + statusPill(s, null) + '</span>' +
           '<span class="agent-pill link" onclick="openAgentView(\'' + safeAttr(s.agent||'') + '\')">' + safe(s.agent||'?') + '</span>' +
         '</div>' +
@@ -4632,6 +4757,7 @@ function renderSessionControl(items, workspace) {
         '<div id="' + detailId + '" class="sess-detail"></div>' +
       '</div>' +
       '<div class="sess-ctrl-btns">' +
+        '<button class="sess-act-btn open" onclick="navigateToSession(\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\')">Open</button>' +
         '<button class="sess-act-btn expand" onclick="toggleSessDetail(\'' + detailId + '\',\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\',' + i + ')">Details ▸</button>' +
         '<button class="sess-act-btn pause" onclick="sessAction(\'' + safeAttr(sessId) + '\',\'pause\',\'' + safeAttr(ws) + '\',' + i + ')">Pause</button>' +
         '<button class="sess-act-btn resume" onclick="sessAction(\'' + safeAttr(sessId) + '\',\'resume\',\'' + safeAttr(ws) + '\',' + i + ')">Resume</button>' +
@@ -5277,7 +5403,15 @@ const _bootTasks = [
     .then(()                  => _loadTick('Policy & controls loaded')),
 ];
 setTimeout(_dismissLoader, 1800);
-Promise.allSettled(_bootTasks).then(_dismissLoader);
+Promise.allSettled(_bootTasks).then(() => {
+  _dismissLoader();
+  // A hash in the address bar is a view someone linked to or reloaded into.
+  // Restore it once the data it needs is loaded; otherwise stamp the current
+  // view so the first Back has somewhere to return to.
+  const wanted = parseHash();
+  if (wanted) applyViewState(wanted);
+  else recordView(currentViewState(), true);
+});
 setInterval(() => {
   loadStats();
   loadSessions();
