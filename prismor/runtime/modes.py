@@ -31,6 +31,7 @@ Two merge hazards this module exists to get right:
 """
 from __future__ import annotations
 
+import copy
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -206,15 +207,14 @@ def needs_container_runtime(mode: Dict[str, Any]) -> bool:
 
 
 def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
-    """Why this mode would not work on this host, or None if it would.
+    """Why this mode's sandbox will not work on this host, or None if it will.
 
-    The failure this guards against is not subtle. `cli.py` blocks the tool call
-    outright when an enforcing sandbox has no runtime behind it, so applying
-    such a mode on a host without Docker leaves an agent whose every shell
-    command dies with ``Prismor sandbox blocked this action``. That is the
-    "developer rips the guardrails out to get through the afternoon" failure the
-    modes exist to avoid, so it is worth refusing at apply time rather than
-    discovering per command.
+    Containment is one axis of a posture, not the posture itself: a mode whose
+    sandbox cannot start still has its rules, its egress allowlist and its tag
+    rules, and all of those work on a host with no Docker. So this reports the
+    problem and :func:`apply_mode` degrades that one axis to ``observe`` — it
+    is not a reason to refuse the whole mode, which would leave the workspace
+    with no policy at all.
     """
     if not needs_container_runtime(mode):
         return None
@@ -223,6 +223,20 @@ def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
     if status.get("cli_found") and status.get("server_reachable"):
         return None
     return str(status.get("error") or "Docker is not reachable")
+
+
+def degrade_sandbox(mode: Dict[str, Any]) -> Dict[str, Any]:
+    """A copy of ``mode`` whose sandbox observes instead of enforcing.
+
+    Used when the host has no container runtime. Every other axis is left
+    exactly as the mode declares it, so what the operator loses is container
+    isolation, not the rules, the egress allowlist or the tag rules.
+    """
+    degraded = copy.deepcopy(mode)
+    sandbox = degraded.get("sandbox") or {}
+    sandbox["mode"] = "observe"
+    degraded["sandbox"] = sandbox
+    return degraded
 
 
 def _command_allowlists(mode: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -396,20 +410,23 @@ def apply_mode(
     policy_path = workspace / ".prismor" / "policy.yaml"
     notes: List[str] = []
 
-    # An --observe build compiles the sandbox to observe, so it needs no
-    # runtime; --force is the operator saying they know and want it anyway
-    # (staging a policy for a host that will have Docker, most legitimately).
-    if not observe and not force:
+    # An --observe build already compiles the sandbox to observe, so it needs no
+    # runtime. Otherwise: if the host cannot reach a container runtime, degrade
+    # that one axis rather than refusing the mode. Refusing left the workspace
+    # with no policy at all — strictly worse than a posture whose rules, egress
+    # allowlist and tag rules all work and whose containment is a warning.
+    #
+    # Deliberately NOT gated on `force`. `force` means "overwrite a policy I did
+    # not generate"; conflating it with "skip the runtime check" is what let
+    # `prismor setup` write an enforcing sandbox onto a host with no Docker.
+    if not observe:
         problem = sandbox_preflight(mode)
         if problem is not None:
-            raise ModeError(
-                f"mode '{mode_id}' enforces a Docker sandbox and this host cannot "
-                f"reach one ({problem}). Every shell command would be blocked, not "
-                f"just sandboxed. Options: start or install Docker; apply with "
-                f"--observe to run the posture without enforcing it; use "
-                f"trusted-workspace, whose sandbox degrades to a warning; or "
-                f"re-run with --force if this policy is being staged for another "
-                f"host."
+            mode = degrade_sandbox(mode)
+            notes.append(
+                f"no container runtime here ({problem}) — sandbox set to "
+                f"observe; rules, egress and tag rules are unaffected. Start "
+                f"Docker and re-apply for container isolation."
             )
 
     if policy_path.exists():

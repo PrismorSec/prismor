@@ -74,10 +74,21 @@ DEFAULT_INCOMPATIBLE = [[UNTRUSTED, CRITICAL]]
 #                Glob, Task, TodoWrite — none of them external ingest. Only an
 #                MCP tool result is attacker-influenceable, so the tag is
 #                scoped to events the normalizer marked with an mcp_server.
+#   memory       The SessionStart scan of the workspace's own instruction
+#                files (CLAUDE.md, AGENTS.md). It fires on EVERY session, so
+#                tagging it untrusted armed `untrusted_content then
+#                critical_action -> block` before the user typed anything and
+#                the first shell call of every session died. It is also the
+#                same content as an in-workspace `file_read`, which is
+#                already excluded above, so tagging it here was inconsistent
+#                as well as fatal. Nothing is lost: the memory event's content
+#                is still scanned by the prompt-injection rules and checked
+#                against the TOFU baseline by memory_guard — this set only
+#                feeds the combination rules.
 #
-# Neither narrowing loses the tools that matter: WebFetch and WebSearch are
-# tagged by name in TOOL_TAG_DEFAULTS, which resolves before inference runs.
-_UNTRUSTED_EVENT_TYPES = {"memory", "subagent_spawn"}
+# None of these narrowings lose the tools that matter: WebFetch and WebSearch
+# are tagged by name in TOOL_TAG_DEFAULTS, which resolves before inference runs.
+_UNTRUSTED_EVENT_TYPES = {"subagent_spawn"}
 _CRITICAL_EVENT_TYPES = {"file_write", "shell"}
 _CRITICAL_FINDING_CATEGORIES = {
     "destructive_command",

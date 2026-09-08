@@ -64,6 +64,43 @@ def test_local_unmapped_tool_result_is_not_untrusted():
     assert classify_tool_tags(ev, "tool_result", set(), tt) == {UNTRUSTED}
 
 
+def test_session_start_memory_is_not_untrusted():
+    """SessionStart scans the workspace's own CLAUDE.md/AGENTS.md and emits a
+    `memory` event. Tagging that untrusted armed `untrusted_content then
+    critical_action -> block` on EVERY session before the user typed anything,
+    so the first shell call always died — the modes installed fine and then
+    nothing worked. It is the same content as an in-workspace `file_read`,
+    which is already trusted.
+    """
+    tt = {"defaults_enabled": False}
+    assert classify_tool_tags(_ev("memory", "memory"), "memory", set(), tt) == set()
+    # The genuinely untrusted instruction channel keeps its tag.
+    assert classify_tool_tags(
+        _ev("Task", "subagent_spawn"), "subagent_spawn", set(), tt
+    ) == {UNTRUSTED}
+
+
+def test_real_trifecta_still_blocks_after_the_memory_narrowing(tmp_path):
+    """The narrowing must not cost the control it exists for: fetched web
+    content followed by a shell command is still a completed sequence."""
+    tt = {}
+    fetch_tags = classify_tool_tags(_ev("WebFetch", "network"), "network", set(), tt)
+    assert fetch_tags == {UNTRUSTED}
+    bash_tags = classify_tool_tags(_ev("Bash", "shell"), "shell", set(), tt)
+    assert bash_tags == {CRITICAL}
+
+    trifecta_rule = normalize_incompatible([[UNTRUSTED, CRITICAL]])
+    ledger = TagLedger(tmp_path, "s-" + uuid.uuid4().hex)
+    ledger.record(fetch_tags, 0, "WebFetch")
+    assert ledger.completes(bash_tags, trifecta_rule, 1)
+
+    # ...whereas a session that only ever read its own memory does not.
+    clean = TagLedger(tmp_path, "s-" + uuid.uuid4().hex)
+    clean.record(classify_tool_tags(_ev("memory", "memory"), "memory", set(), tt),
+                 0, "memory")
+    assert not clean.completes(bash_tags, trifecta_rule, 1)
+
+
 def test_workspace_read_is_trusted_but_outside_read_is_not(tmp_path):
     """The read-then-anything cliff: a workspace read must not taint a session."""
     tt = {"defaults_enabled": False}
