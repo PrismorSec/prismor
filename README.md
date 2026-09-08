@@ -120,6 +120,27 @@ Real workflows with the commands and config that make them work — onboarding a
 
 Full command map: [docs/cli-reference.md](docs/cli-reference.md).
 
+### Governance Modes
+
+`prismor setup` asks you to pick one posture instead of configuring six policy axes by hand. Each compiles into `.prismor/policy.yaml` — enforcement, egress, tool access, tag rules, sandbox and data boundary together.
+
+![Prismor governance modes](assets/prismor-modes.png)
+
+| Mode | For | Coverage | Friction |
+|---|---|---|---|
+| `dev-safe` | Feature work on code you haven't read | 31% | 9% |
+| `trusted-workspace` | Trusted internal repos, local Docker work | 34% | 9% |
+| `regulated-airgap` | PII/PHI, SOC 2, EU AI Act — no network, no shell | 100% | 90% |
+
+```bash
+prismor mode list                            # compare the three
+prismor mode explain dev-safe                # the trade, including what it does NOT stop
+prismor mode apply dev-safe                  # compile it into this workspace
+prismor mode apply regulated-airgap --observe   # what it would block, blocking nothing
+```
+
+Every mode states its residual risk. Full breakdown: [docs/modes.md](docs/modes.md).
+
 ### Observe / Enforce (per-rule, policy-authoritative)
 
 Enforcement is decided **per rule by your policy**, not by a single global switch. Each rule carries a `mode`, and `settings.default_mode` (default `observe`) covers any rule that doesn't set one:
