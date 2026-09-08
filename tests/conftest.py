@@ -46,7 +46,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pytest
 
@@ -192,10 +192,11 @@ def _live_prismor_modules() -> List[types.ModuleType]:
     return found
 
 
-# key -> (module name, attribute path, current value). Functions and methods
-# only: module-level caches are dicts mutated in place, so their identity never
-# changes and they are never mistaken for a patch.
-_SnapKey = Tuple[int, str, str, Any]
+# key -> (module object, module name, attribute name, class attribute name).
+# Functions and methods only: module-level caches are dicts mutated in place,
+# so their identity never changes and they are never mistaken for a patch.
+_SnapKey = Tuple[types.ModuleType, str, str, Optional[str]]
+_MISSING = object()
 
 
 def _snapshot_callables() -> Dict[_SnapKey, Any]:
@@ -208,7 +209,7 @@ def _snapshot_callables() -> Dict[_SnapKey, Any]:
             continue
         for attr, value in items:
             if isinstance(value, (types.FunctionType, types.BuiltinFunctionType)):
-                snap[(id(mod), name, attr, None)] = value
+                snap[(mod, name, attr, None)] = value
             elif inspect.isclass(value) and getattr(value, "__module__", "").startswith("prismor"):
                 try:
                     class_items = list(vars(value).items())
@@ -216,25 +217,37 @@ def _snapshot_callables() -> Dict[_SnapKey, Any]:
                     continue
                 for cattr, cvalue in class_items:
                     if isinstance(cvalue, (types.FunctionType, staticmethod, classmethod)):
-                        snap[(id(mod), name, attr, cattr)] = cvalue
+                        snap[(mod, name, attr, cattr)] = cvalue
     return snap
 
 
-def _restore(key: _SnapKey, original: Any) -> str:
+def _resolve(key: _SnapKey) -> Tuple[Any, Optional[str]]:
     import sys
 
-    _mod_id, mod_name, attr, cattr = key
-    target = next((m for m in _live_prismor_modules() if id(m) == _mod_id), None)
+    mod, mod_name, attr, cattr = key
+    target = sys.modules.get(mod_name, mod)
     if target is None:
-        target = sys.modules.get(mod_name)
+        return None, None
+    if cattr is None:
+        return target, attr
+    cls = inspect.getattr_static(target, attr, None)
+    if cls is None:
+        return None, None
+    return cls, cattr
+
+
+def _restore(key: _SnapKey, original: Any) -> str:
+    _mod, mod_name, attr, cattr = key
+    target, target_attr = _resolve(key)
     label = f"{mod_name}.{attr}" + (f".{cattr}" if cattr else "")
-    if target is None:
+    if target is None or target_attr is None:
         return label
     try:
-        if cattr is None:
-            setattr(target, attr, original)
+        if original is _MISSING:
+            if hasattr(target, target_attr):
+                delattr(target, target_attr)
         else:
-            setattr(getattr(target, attr), cattr, original)
+            setattr(target, target_attr, original)
     except Exception:
         pass
     return label
@@ -302,7 +315,12 @@ def _no_module_state_leaks() -> Any:
         _restore_sys_modules(modules_before)
         after = _snapshot_callables()
         leaked = []
-        for key, current in after.items():
+        for key in set(before) | set(after):
+            target, attr = _resolve(key)
+            if target is None or attr is None:
+                current = _MISSING
+            else:
+                current = inspect.getattr_static(target, attr, _MISSING)
             pristine = before.get(key, _BASELINE.get(key, current))
             if current is not pristine:
                 leaked.append(_restore(key, pristine))

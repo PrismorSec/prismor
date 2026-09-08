@@ -649,6 +649,14 @@ class HttpTest(unittest.TestCase):
         cls.ih = ih
         cls.secret = ih.generate_secret()
         cls.ws = Path(tempfile.mkdtemp(prefix="prismor-ih-http-"))
+        cls._ih_handler = InferenceHookHandler
+        cls._orig_ih_attrs = {
+            "workspace": InferenceHookHandler.workspace,
+            "file_config": InferenceHookHandler.file_config,
+            "cli_overrides": InferenceHookHandler.cli_overrides,
+            "config_error": InferenceHookHandler.config_error,
+            "cache": InferenceHookHandler.cache,
+        }
         InferenceHookHandler.workspace = cls.ws
         InferenceHookHandler.file_config = {"defaults": {"signing_secret": cls.secret, "enqueue_approvals": False}}
         InferenceHookHandler.cli_overrides = {}
@@ -665,6 +673,8 @@ class HttpTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        for k, v in getattr(cls, "_orig_ih_attrs", {}).items():
+            setattr(cls._ih_handler, k, v)
         _restore_env(cls._env)
 
     def _post(self, frame, *, secret=None, path="/v1/inference-hook", headers=None, unsigned=False):
