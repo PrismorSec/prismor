@@ -225,17 +225,33 @@ def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
     return str(status.get("error") or "Docker is not reachable")
 
 
+# One wording for "Docker is missing, so the sandbox is skipped", used by
+# `mode apply`, `mode show`, `prismor setup` and the hook path. Callers key off
+# the NOTE: prefix rather than the prose, so the sentence can be reworded
+# without breaking them.
+SANDBOX_SKIPPED_NOTE = (
+    "NOTE: Docker is not available here ({reason}) — the sandbox is skipped. "
+    "Rules, egress and tag rules still enforce; start Docker and re-apply for "
+    "container isolation."
+)
+
+
 def degrade_sandbox(mode: Dict[str, Any]) -> Dict[str, Any]:
     """A copy of ``mode`` whose sandbox observes instead of enforcing.
 
     Used when the host has no container runtime. Every other axis is left
     exactly as the mode declares it, so what the operator loses is container
     isolation, not the rules, the egress allowlist or the tag rules.
+
+    The copy is flagged so :func:`compile_mode` can stamp the provenance:
+    without it the written policy differs from the mode's own compile and
+    `mode show` reports the degrade as hand-edited drift.
     """
     degraded = copy.deepcopy(mode)
     sandbox = degraded.get("sandbox") or {}
     sandbox["mode"] = "observe"
     degraded["sandbox"] = sandbox
+    degraded["_sandbox_skipped"] = True
     return degraded
 
 
@@ -328,6 +344,11 @@ def compile_mode(mode: Dict[str, Any], observe: bool = False) -> str:
         # Provenance, so `mode show` can say which posture is being previewed
         # and never reports a dry run as the enforcing article.
         settings["mode_observe"] = True
+    if mode.get("_sandbox_skipped"):
+        # Same idea for a host with no container runtime: the file legitimately
+        # differs from this mode's own compile, and without the stamp
+        # `has_drifted` reads that difference as a hand edit.
+        settings["mode_sandbox_skipped"] = True
     # `selection: explicit` says "the rules listed below are the blocking set",
     # which is only meaningful when the mode names one. An `all` mode carries
     # enforcement in default_mode and must NOT set it, or the floor turns opt-in.
@@ -423,11 +444,7 @@ def apply_mode(
         problem = sandbox_preflight(mode)
         if problem is not None:
             mode = degrade_sandbox(mode)
-            notes.append(
-                f"no container runtime here ({problem}) — sandbox set to "
-                f"observe; rules, egress and tag rules are unaffected. Start "
-                f"Docker and re-apply for container isolation."
-            )
+            notes.append(SANDBOX_SKIPPED_NOTE.format(reason=problem))
 
     if policy_path.exists():
         previous = active_mode(workspace)
@@ -490,6 +507,19 @@ def is_observe_build(workspace: Path) -> bool:
     return bool((raw.get("settings") or {}).get("mode_observe"))
 
 
+def is_sandbox_skipped_build(workspace: Path) -> bool:
+    """Whether this policy was compiled on a host with no container runtime."""
+    import yaml
+    policy_path = workspace / ".prismor" / "policy.yaml"
+    if not policy_path.exists():
+        return False
+    try:
+        raw = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return False
+    return bool((raw.get("settings") or {}).get("mode_sandbox_skipped"))
+
+
 def has_drifted(workspace: Path) -> bool:
     """True when the policy claims a mode but no longer matches its compile.
 
@@ -501,10 +531,14 @@ def has_drifted(workspace: Path) -> bool:
         return False
     policy_path = workspace / ".prismor" / "policy.yaml"
     try:
+        mode = get_mode(mode_id)
+        # A policy compiled where Docker was missing legitimately differs from
+        # the catalogue mode. Compare it against what it actually is, or every
+        # such install reports itself hand-edited the moment it is written.
+        if is_sandbox_skipped_build(workspace):
+            mode = degrade_sandbox(mode)
         current = policy_path.read_text(encoding="utf-8")
-        expected = compile_mode(
-            get_mode(mode_id), observe=is_observe_build(workspace)
-        )
+        expected = compile_mode(mode, observe=is_observe_build(workspace))
     except (OSError, ModeError):
         return False
     # Compare everything below the generated header — the header carries a

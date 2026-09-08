@@ -420,7 +420,8 @@ class TestSandboxPreflight(unittest.TestCase):
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
         sandbox = (written.get("settings") or {}).get("sandbox") or {}
         self.assertEqual(sandbox.get("mode"), "observe")
-        self.assertTrue(any("sandbox set to observe" in n for n in notes), notes)
+        self.assertTrue(any(n.startswith("NOTE:") for n in notes), notes)
+        self.assertTrue(any("Docker is not available" in n for n in notes), notes)
         # Degrading containment must not quietly degrade anything else.
         self.assertNotIn("mode_observe", written.get("settings") or {})
         enforcing = [r for r in written.get("rules") or []
@@ -428,6 +429,16 @@ class TestSandboxPreflight(unittest.TestCase):
         self.assertTrue(enforcing, "the mode's rules must still enforce")
         egress = (written.get("settings") or {}).get("egress") or {}
         self.assertEqual(egress.get("default"), "deny")
+
+    def test_a_degraded_install_does_not_report_itself_as_drift(self):
+        """The written policy legitimately differs from the catalogue mode when
+        the sandbox was skipped. Without the provenance stamp `mode show`
+        called every Docker-less install hand-edited the moment it was made."""
+        ws = _workspace()
+        with _docker(False), _unmanaged():
+            modes.apply_mode(ws, "dev-safe")
+            self.assertTrue(modes.is_sandbox_skipped_build(ws))
+            self.assertFalse(modes.has_drifted(ws))
 
     def test_degrading_is_not_gated_on_force(self):
         """`force` means "overwrite a foreign policy", never "skip the runtime
