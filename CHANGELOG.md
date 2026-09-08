@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+## [1.49.1] — 2026-09-08
+
+### Fixed
+- **One prompt became three turns.** Claude Code runs a hook registered in both
+  the user's `settings.json` and the project's, once each, and gives the
+  dispatcher no way to tell the copies apart — so the same message was logged
+  more than once and the session view opened a turn for every copy, reading as
+  if the person had said it three times. Events with the same type and content
+  inside a ten-second window collapse to one, and a repeated prompt no longer
+  opens a turn of its own. A genuine repeat — the agent running `ls` twice,
+  minutes apart — still shows twice.
+
+### Changed
+- **The bundled webfont for code is gone.** Command text and ids now use the
+  platform's own monospace stack rather than a downloaded display face, which
+  was a strong opinion the dashboard did not need and one more render-blocking
+  request on every load. Row chips read in the UI face — they are labels, not
+  code.
+- Session tree spacing, turn separators and lane labels tightened; the selected
+  row now takes the accent colour instead of a flat grey.
+
+
 ## [1.49.0] — 2026-09-08
 
 ### Added
