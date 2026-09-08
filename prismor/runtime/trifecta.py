@@ -133,6 +133,10 @@ _CRITICAL_FINDING_CATEGORIES = {
     # follows their verdict rather than re-implementing the path list.
     "privilege_escalation",
     "persistence",
+    # Classified data on its way to a destination. The data-boundary layer has
+    # already decided both halves -- what the payload is and where it is going
+    # -- so an exfiltration reads as critical without a second opinion here.
+    "data_boundary",
 }
 
 
@@ -169,15 +173,39 @@ def _matches(tool_name: str, matcher: str, match_type: str) -> bool:
 # install` also reach the network, but what they bring back is code the agent
 # runs, which the supply-chain rules already judge, not text it reads and acts
 # on.
+# `http`/`https` are httpie's binaries, but they are also the first word of
+# every URL, and a URL after a separator inside a heredoc is text, not a
+# command. Matching them made a script that merely *contains* URLs read as a
+# fetch, and everything that script printed became untrusted content. curl and
+# wget are what agents actually fetch with; xh and httpie keep the modern
+# clients without the false reads.
 _FETCH_RE = re.compile(
-    r"(?:^|[;&|]\s*|\$\(|`)\s*(?:sudo\s+)?(?:curl|wget|http|https|xh)\b",
+    r"(?:^|[;&|]\s*|\$\(|`)\s*(?:sudo\s+)?(?:curl|wget|xh|httpie)\b",
     re.IGNORECASE,
 )
 
 
 def is_network_fetch(command: str) -> bool:
-    """Whether a shell command pulls content in from the network."""
-    return bool(command) and _FETCH_RE.search(command) is not None
+    """Whether a shell command pulls content in from OUTSIDE this machine.
+
+    A fetch from loopback or a private address is the agent talking to a
+    service it is running -- its own dev server, its own test fixture. That
+    content is not attacker-authored, and treating it as ingest made a session
+    that polls ``http://localhost:5678`` untrusted for the rest of its life.
+    Host classification is ``egress.Destination``, so this agrees with what the
+    egress layer already means by private.
+    """
+    if not command or _FETCH_RE.search(command) is None:
+        return False
+    try:
+        from prismor.runtime.egress import extract_destinations
+
+        dests = extract_destinations({"type": "shell", "command": command})
+        if dests and all(d.is_private for d in dests):
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _tool_name(event: Dict[str, Any]) -> str:
@@ -412,21 +440,92 @@ def content_grams(text: str, limit: int = 200_000) -> Dict[str, str]:
     return out
 
 
+# Keys whose value is a shell command, wherever a payload copy of it appears.
+_COMMAND_KEYS = ("command", "cmd", "script", "shell_command")
+
+
+def acting_text(command: str) -> str:
+    """A shell command with the prose it is merely quoting blanked out.
+
+    An agent that reads a page and then writes a commit message about it has
+    quoted the page, not acted on it -- and quoting is what an agent does with
+    documentation all day. ``shell_context.is_inert_match`` already draws that
+    line for the rule engine: a closed, non-payload quoted span, in a segment
+    with no redirect, under a text-emitting command (``echo``, ``git commit``,
+    ``gh issue``). The same line is the right one here, so it is reused rather
+    than redrawn -- and it keeps the distinction that matters, since ``psql -c
+    "DROP TABLE users"`` is a payload, not prose.
+    """
+    if not command or ('"' not in command and "'" not in command):
+        return command
+    try:
+        from prismor.runtime.shell_context import is_inert_match, quoted_spans
+
+        # `is_inert_match` splits a command on ; | & and not on newlines, so in
+        # a multi-line script the segment around a quote runs on into the next
+        # line and the wrong argv0 decides it. Newlines OUTSIDE quotes are
+        # command separators, so substitute them one for one -- positions are
+        # preserved, and a quoted string that spans lines stays whole.
+        probe = _separate_lines(command)
+        spans = quoted_spans(probe)
+        if not spans:
+            return command
+        chars = list(command)
+        for span_start, span_end, is_payload, is_closed in spans:
+            if is_payload or not is_closed:
+                continue
+            if is_inert_match(probe, span_start, min(span_end + 1, len(probe))):
+                for k in range(span_start, min(span_end + 1, len(chars))):
+                    chars[k] = " "
+        return "".join(chars)
+    except Exception:
+        return command
+
+
+def _separate_lines(command: str) -> str:
+    """``command`` with newlines outside quoted spans replaced by ``;``.
+
+    One character for one character, so every index into the result still
+    points at the same character of the original.
+    """
+    from prismor.runtime.shell_context import quoted_spans
+
+    if "\n" not in command:
+        return command
+    inside = bytearray(len(command))
+    for start, end, _payload, _closed in quoted_spans(command):
+        for k in range(start, min(end + 1, len(command))):
+            inside[k] = 1
+    return "".join(
+        ";" if (ch == "\n" and not inside[i]) else ch
+        for i, ch in enumerate(command)
+    )
+
+
 def call_text(event: Dict[str, Any]) -> str:
     """The text a call is asking for -- what an injected instruction has to
     reach for the injection to have worked.
 
     Arguments only, never the call's own result: a critical call is screened
     before it runs, and its output would say nothing about what steered it.
+    Prose the command merely quotes is blanked first -- see :func:`acting_text`.
     """
     parts: List[str] = []
     for key in ("command", "path", "url", "content", "query", "body"):
         val = event.get(key)
         if val:
-            parts.append(str(val))
+            parts.append(acting_text(str(val)) if key == "command" else str(val))
     raw = (event.get("metadata") or {}).get("raw")
     if isinstance(raw, dict):
         args = raw.get("tool_input") or raw.get("arguments") or raw.get("input")
+        if isinstance(args, dict):
+            # The normalizer's `command` is screened above, but the raw payload
+            # carries the same string unscreened -- so blank the prose here too,
+            # or the quoted commit message walks back in through the copy.
+            args = {
+                k: (acting_text(v) if k in _COMMAND_KEYS and isinstance(v, str) else v)
+                for k, v in args.items()
+            }
         if args:
             try:
                 parts.append(json.dumps(args, sort_keys=True))

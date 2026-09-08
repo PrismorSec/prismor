@@ -160,12 +160,19 @@ rules:
   - "untrusted_content then critical_action -> warn"      # the sequence itself
 ```
 
-Replayed over 423 real development sessions with provenance active, the
-shipped defaults block 4 and warn on 144. The same corpus under the old rule
-blocked 213. The 4 are an upper bound: the replay approximates the critical
-side with a regex, and the real rule engine is narrower still -- it tags
-`psql ... DROP TABLE` critical but not `git push`, `npm publish` or `kubectl
-apply`, so with only the engine's own verdicts the corpus blocks none.
+Replayed over 426 real development sessions with provenance active, the
+shipped defaults block **none** and warn on 4. The same corpus under the old
+rule blocked 213. Widening the replay's idea of a critical action well past
+what the engine actually tags -- counting every `git push`, `psql`, `rm -rf`
+and `sudo` -- raises that to 1, a session where a fetched page happened to
+contain the phrase "git push origin" before the agent pushed its own branch.
+
+Against a suite of twelve cross-agent attacks (SQL through a note, a dropper,
+exfiltration, an authorized_keys append, a remote hijack, a three-hop chain, a
+subagent acting on its parent's read) and ten benign lookalikes, the defaults
+deny 8 attacks and 0 benign runs: precision 1.00, recall 0.67, FPR 0.00. The
+four it does not deny are actions no rule tags critical at all -- see the
+limits below.
 
 The finding names the source, not just the fact:
 
@@ -179,15 +186,27 @@ Forbidden tool combination: 'mcp__prod__execute_sql' completes [critical_action,
 Set `influence_enabled: false` for the older, blunter behaviour (any sequence
 blocks).
 
-Known limits:
+Four things are deliberately not influence, each of which was a false block
+before it was excluded:
 
-- It is a phrase match, so a generic phrase appearing both in a fetched page
-  and in, say, a commit message can produce a false block. Four times in 423
-  sessions, on phrases like "single tool call".
-- It only fires on calls the engine already judges critical. An injected
-  `npm publish` is not blocked, because nothing tags `npm publish` critical.
-  Widening that set widens the blocking surface with it, so tag the tools you
-  actually care about (`tool_tags.tags`) rather than relying on inference.
+| Not influence | Why |
+|---|---|
+| Prose a command quotes | An agent that reads docs and commits a message quoting them has quoted the page, not obeyed it. `git commit -m`, `gh issue --body` and `echo` are prose; `psql -c` and `bash -c` are payloads, and stay in scope. |
+| A fetch from this machine | Polling your own dev server on `localhost` is not reading attacker content. Cloud metadata is excluded from that carve-out. |
+| A URL inside a script | `http`/`https` start every URL as well as httpie, so a heredoc full of links read as a fetch and everything it printed became untrusted. |
+| A write with no trace of the read | A session that read one page does not thereby mark every file it later touches. An artifact carries untrusted content only when its bytes show some. |
+
+Remaining limits:
+
+- It is a phrase match. A generic phrase that appears both in a fetched page
+  and in an ordinary command can still produce a false block; that is the one
+  case left in 426 sessions, and only under a critical set wider than the one
+  that ships.
+- It only fires on calls the engine already judges critical. `npm publish`,
+  `git remote set-url` and `rm -rf` of an arbitrary directory produce no
+  finding at all, so an injected one is not denied. Widening that set widens
+  the blocking surface with it, so tag the tools you care about
+  (`tool_tags.tags`) rather than leaning on inference.
 
 ## Cross-agent flow
 
@@ -256,9 +275,10 @@ Limits, deliberately:
   agent on the device. Carrying edges between machines needs the control plane.
 - **Hooked writes only.** An editor, or an agent Prismor is not installed in
   front of, writes without leaving a record.
-- **Session granularity.** A session that read something untrusted marks
-  everything it writes afterwards, not only the bytes derived from that read.
-  The influence check is what keeps this coarseness from causing false blocks.
+- **Content evidence, not session state.** A write is marked only when what it
+  writes shows some trace of what the session read. That is what keeps a
+  session from poisoning its own config files, and it means a handoff whose
+  content Prismor never saw (a `cp`, a pipe into `tee`) is not marked.
 
 The same handoff with a page that is not hostile goes through untouched, and
 is still recorded:

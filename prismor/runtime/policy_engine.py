@@ -1986,8 +1986,11 @@ class PolicyEngine:
                 # is worth denying, so the sequence tags no longer carry a
                 # block on their own — the default rule requires this tag.
                 _hits: Dict[str, str] = {}
-                if _tags and _tt_cfg.get("influence_enabled", True):
-                    _grams = GramStore(self.workspace, session_id)
+                _grams = (
+                    GramStore(self.workspace, session_id)
+                    if _tt_cfg.get("influence_enabled", True) else None
+                )
+                if _tags and _grams is not None:
                     # Checked before this event's own content is recorded. A
                     # call tagged both untrusted and critical would otherwise
                     # match its own output — a shell result echoes the command
@@ -2109,6 +2112,19 @@ class PolicyEngine:
                     and not (_done is not None and _tt_mode == "enforce")
                 ):
                     _carry = _prov.propagatable(set(_ledger.seen) | set(_tags))
+                    # A session that read one page does not thereby poison
+                    # every file it touches for the rest of its life -- it was
+                    # marking config files it edited for its own reasons, and
+                    # the next session to read one inherited that. An artifact
+                    # carries untrusted content only when its content shows
+                    # some: the same evidence the influence check asks of an
+                    # action, asked of the bytes being written.
+                    if UNTRUSTED in _carry and _grams is not None:
+                        _written = "\n".join(
+                            str(event.get(k) or "") for k in ("content", "command")
+                        )
+                        if not _grams.hits(_written, before=index):
+                            _carry = [t for t in _carry if t != UNTRUSTED]
                     # A download is untrusted on its own account, whatever the
                     # session had read before it. Without this a shell-only
                     # agent -- Codex reaches the web through Bash, never through
