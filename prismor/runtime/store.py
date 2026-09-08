@@ -3381,6 +3381,48 @@ def set_project_rule_states(workspace: Path, disabled_ids: List[str]) -> Dict[st
 _TRAIL_ROWS = 250
 
 
+#: Two hook processes firing for one action land within a second of each other;
+#: a legitimate repeat of the same command is slower than this.
+_DUPLICATE_WINDOW_S = 10.0
+
+
+def _drop_duplicate_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse the same event logged more than once.
+
+    A hook registered in two settings scopes -- the user's and the project's --
+    runs twice for one action, and Claude Code offers no way to tell the copies
+    apart at dispatch time. Left alone, one prompt became three turns in the
+    session view, each identical, which reads as the agent having said the same
+    thing three times.
+
+    Same type and same content within a few seconds is one action. A real
+    repeat (the agent running `ls` twice) is either slower than the window or
+    genuinely worth showing twice.
+    """
+    seen: Dict[Tuple[str, str], float] = {}
+    out: List[Dict[str, Any]] = []
+    for ev in events:
+        key = (str(ev.get("type") or ""), str(ev.get("action") or "")[:400])
+        stamp = _epoch_of(ev.get("_tsRaw"))
+        previous = seen.get(key)
+        if previous is not None and stamp is not None and abs(previous - stamp) <= _DUPLICATE_WINDOW_S:
+            continue
+        if stamp is not None:
+            seen[key] = stamp
+        out.append(ev)
+    return out
+
+
+def _epoch_of(value: Any) -> Optional[float]:
+    if not value:
+        return None
+    from datetime import datetime as _dt
+    try:
+        return _dt.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
 def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Fold a tool call's PreToolUse and PostToolUse rows into one.
 
@@ -3509,6 +3551,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 detail = (row["command_text"] or row["path_text"] or row["url_text"]
                           or artifacts.get("prompt") or artifacts.get("response") or "")
                 recent_events.append({
+                    "_tsRaw": row["ts"],
                     "ts": _relative_time_store(row["ts"]) if row["ts"] else "",
                     "tsAbs": _absolute_time_store(row["ts"]),
                     "type": row["type"] or "",
@@ -3531,7 +3574,9 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                         "source": enrichment.get("source") or ("finding" if finding_id else ""),
                     },
                 })
-            recent_events = _merge_tool_phases(recent_events)
+            recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
+            for item in recent_events:
+                item.pop("_tsRaw", None)
             block_keys = {
                 (item.get("title") or "", item.get("evidence") or "", item.get("ts") or "")
                 for item in recent_blocked

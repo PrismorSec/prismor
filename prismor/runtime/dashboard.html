@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="https://prismor.dev/Prismor_Logo.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
   (function () {
@@ -48,9 +48,11 @@
     --chart-palette-4: #A8D5F7;
     --chart-palette-5: #A7F3D0;
     --chart-palette-6: #FCA5A5;
-    /* Same faces as prismor.dev: Inter for UI, JetBrains Mono for code/ids */
+    /* Inter for UI. Code keeps a monospace stack, but the platform's own --
+       a downloaded display face for command text was a strong opinion the app
+       did not need, and one fewer webfont is one fewer render-blocking load. */
     --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   }
   html[data-theme="dark"] {
     --gray-50: #1a1a1d; --gray-100: #202024; --gray-200: #2c2c33;
@@ -954,7 +956,7 @@
   .drawer-toggle .icon { width: 12px; height: 12px; vertical-align: -1.5px; }
   .scoped-tag .icon { width: 11px; height: 11px; vertical-align: -1.5px; }
 
-  /* ── Monospace surfaces (code, ids, editors) — JetBrains Mono like the site ── */
+  /* ── Monospace surfaces (code, ids, editors) — the platform's own face ── */
   code, .yaml-editor, .sess-id, .sess-drawer-sessid, .event-sess-id,
   td.mono, .finding-cmd, .trigger-detail, .rule-id, .user-id, .adv-pill,
   .policy-meta .path { font-family: var(--font-mono); }
@@ -1081,29 +1083,38 @@
   .art-pre { font-family:var(--font-mono); font-size:10.5px; line-height:1.45; color:var(--gray-700);
     background:var(--gray-50); border:1px solid var(--gray-200); border-radius:7px;
     padding:7px 9px; margin:0; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
-  .sess-tree { padding:10px 4px 16px; font-size:12px; }
-  .tree-turn { margin-bottom:2px; }
+  .sess-tree { padding:8px 6px 14px; font-size:12.5px; }
+  /* A turn is the unit people scan for, so it gets the separator and the
+     breathing room; lanes and rows inside it stay quiet. */
+  .tree-turn { margin-bottom:2px; padding-bottom:2px; }
+  .tree-turn + .tree-turn { border-top:1px solid var(--gray-100); padding-top:4px; }
   .tree-row { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-    background:none; border:0; padding:5px 8px; border-radius:7px; cursor:pointer; color:inherit; }
+    background:none; border:0; padding:6px 8px; border-radius:8px; cursor:pointer; color:inherit; }
   .tree-row:hover { background:var(--gray-50); }
+  .tree-row.turn { padding:7px 8px; }
+  .tree-row.lane .tree-lane-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--gray-500); }
   .tree-caret { width:12px; flex:none; color:var(--gray-400); transition:transform .12s ease; }
   .tree-row.collapsed .tree-caret { transform:rotate(-90deg); }
   .tree-turn-label { font-weight:700; color:var(--gray-800); }
-  .tree-turn-sub { color:var(--gray-500); font-weight:400; margin-left:6px;
+  .tree-turn-sub { color:var(--gray-500); font-weight:400; margin-left:8px; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .tree-count { margin-left:auto; flex:none; font-size:10px; font-weight:600; color:var(--gray-600);
-    background:var(--gray-100); border-radius:10px; padding:1px 7px; }
+  .tree-count { margin-left:auto; flex:none; font-size:10px; font-weight:600; color:var(--gray-500);
+    background:var(--gray-100); border-radius:10px; padding:1px 7px; min-width:20px; text-align:center; }
+  .tree-row.turn .tree-count { color:var(--gray-700); }
   .tree-children { margin-left:14px; padding-left:10px; border-left:1px solid var(--gray-200); }
   .tree-children.hidden { display:none; }
   .tree-lane-label { font-weight:600; color:var(--gray-700); }
-  .tree-leaf { display:flex; align-items:center; gap:8px; width:100%; text-align:left;
-    background:none; border:0; padding:4px 8px; border-radius:7px; cursor:pointer; color:inherit; }
+  .tree-leaf { display:flex; align-items:center; gap:9px; width:100%; text-align:left;
+    background:none; border:0; padding:5px 8px; border-radius:8px; cursor:pointer; color:inherit; }
   .tree-leaf:hover { background:var(--gray-50); }
-  .tree-leaf.sel { background:var(--gray-100); box-shadow:inset 2px 0 0 var(--gray-800); }
+  .tree-leaf.sel { background:var(--gray-100); box-shadow:inset 2px 0 0 var(--accent); }
+  .tree-leaf.sel .tree-text { color:var(--gray-900); font-weight:500; }
   .tree-dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--green-500); }
   .tree-dot.warn { background:#f59e0b; }
   .tree-dot.block { background:#ef4444; }
-  .tree-id { flex:none; font-family:var(--font-mono); font-size:10px; color:var(--gray-400); }
+  .tree-id { flex:none; font-size:10px; font-weight:600; letter-spacing:.02em;
+    color:var(--gray-500); background:var(--gray-100); border-radius:5px; padding:1px 6px; }
   .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
   .tree-leaf.blocked .tree-text { color:#b91c1c; font-weight:600; }
   .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); }
@@ -3781,10 +3792,17 @@ function groupTrail(trail){
   const turns = [];
   let cur = null;
   trail.forEach((ev,i)=>{
-    if (!cur || ev.type === 'prompt'){
-      cur = { label:'Turn '+(turns.length+1), sub:'', lanes:new Map(), count:0 };
+    // A new turn starts at a prompt the agent has not just been given. The
+    // same prompt arriving twice is one turn: a hook registered in two
+    // settings scopes runs twice per message, and three identical turns read
+    // as the person having said it three times.
+    const text = ev.type === 'prompt' ? eventSummary(ev) : '';
+    const repeat = cur && text && cur.promptText === text;
+    if (!cur || (ev.type === 'prompt' && !repeat)){
+      cur = { label:'Turn '+(turns.length+1), sub:'', promptText:text, lanes:new Map(), count:0 };
       turns.push(cur);
     }
+    if (repeat) return;  // already represented by the turn it opened
     if (ev.type === 'prompt' && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
     const lane = eventLane(ev);
     if (!cur.lanes.has(lane)) cur.lanes.set(lane, []);

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime.store import (  # noqa: E402
     _ARTIFACT_CHARS,
+    _drop_duplicate_events,
     _merge_tool_phases,
     event_artifacts,
     event_lane,
@@ -95,6 +96,46 @@ class TestMergeToolPhases(unittest.TestCase):
         merged = _merge_tool_phases(events)
         self.assertEqual(len(merged), 1)
         self.assertNotIn("phases", merged[0])
+
+
+class TestDropDuplicateEvents(unittest.TestCase):
+    """One action logged twice is one row.
+
+    Claude Code runs a hook registered in both the user's settings and the
+    project's, once each, and offers no way to tell the copies apart at
+    dispatch. Left alone, one prompt became three identical turns in the
+    session view -- as if the person had said it three times.
+    """
+
+    def _ev(self, action, ts, type_="prompt"):
+        return {"type": type_, "action": action, "_tsRaw": ts}
+
+    def test_the_same_prompt_from_two_hooks_is_one_row(self):
+        events = [
+            self._ev("prompt: deploy the thing", "2026-01-01T00:00:01+00:00"),
+            self._ev("prompt: deploy the thing", "2026-01-01T00:00:01+00:00"),
+            self._ev("prompt: deploy the thing", "2026-01-01T00:00:02+00:00"),
+        ]
+        self.assertEqual(len(_drop_duplicate_events(events)), 1)
+
+    def test_the_same_command_run_again_later_is_kept(self):
+        """A repeat outside the window is something the agent really did twice."""
+        events = [
+            self._ev("shell: ls", "2026-01-01T00:05:00+00:00", "shell"),
+            self._ev("shell: ls", "2026-01-01T00:00:00+00:00", "shell"),
+        ]
+        self.assertEqual(len(_drop_duplicate_events(events)), 2)
+
+    def test_different_actions_at_the_same_moment_both_survive(self):
+        events = [
+            self._ev("shell: ls", "2026-01-01T00:00:01+00:00", "shell"),
+            self._ev("shell: pwd", "2026-01-01T00:00:01+00:00", "shell"),
+        ]
+        self.assertEqual(len(_drop_duplicate_events(events)), 2)
+
+    def test_an_unparseable_timestamp_never_drops_an_event(self):
+        events = [self._ev("prompt: x", "not-a-time"), self._ev("prompt: x", "not-a-time")]
+        self.assertEqual(len(_drop_duplicate_events(events)), 2)
 
 
 if __name__ == "__main__":
