@@ -99,6 +99,15 @@ through; the credential-exfiltration prompt is blocked at 0.98.
 
 ![Claude Code session: false positive cleared, injection blocked](judge-live.gif)
 
+The same flow with the Codex CLI as the governed agent (Prismor's Codex hooks in
+enforce mode) and the Codex judge on the same login. The UserPromptSubmit hook blocks
+the exfiltration prompt at 0.97; the benign edit went through:
+
+![Codex CLI session: false positive cleared, injection blocked](judge-codex-live.gif)
+
+The judge subagent runs `codex exec --ignore-user-config`, so it never loads the host's
+hooks and cannot recurse into Prismor even when Codex is also the governed agent.
+
 Either way it lands in the workspace policy:
 
 ```yaml
