@@ -3016,9 +3016,10 @@ def build_parser() -> argparse.ArgumentParser:
     _pp = subparsers.add_parser(
         "proxy",
         help="Run the Prismor LLM proxy — screen model traffic, and every tool call the model proposes",
-        description="Sits in front of Anthropic/OpenAI-compatible endpoints so an agent Prismor "
-        "cannot hook is still governed: point it at the proxy with ANTHROPIC_BASE_URL or "
-        "OPENAI_BASE_URL. The outbound prompt is screened and cloak-masked; every tool_use in the "
+        description="Sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so "
+        "an agent Prismor cannot hook is still governed: point it at the proxy with "
+        "ANTHROPIC_BASE_URL, OPENAI_BASE_URL, or the Gen AI SDK's HttpOptions(base_url=...). "
+        "The outbound prompt is screened and cloak-masked; every proposed tool call in the "
         "response is reshaped into the same event a Bash hook produces and run through the same "
         "policy, so a rule that stops a command at the hook layer also stops the model from "
         "proposing it. Streaming tool calls are held until they can be judged. Virtual keys in "
