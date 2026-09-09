@@ -352,7 +352,11 @@ def _strip_prismor_scrub_wrapper(cmd: str) -> str:
 
     The cloaking decloak hook (cloaking/hooks/decloak.sh) rewrites every Bash
     command so its output is scrubbed of secrets:
-        { <orig> ; } 2>&1 | PRISMOR_SECRETS_DIR=<dir> <scrubber>; exit ${PIPESTATUS[0]}
+        {
+        :
+        <orig>
+
+        } 2>&1 | PRISMOR_SECRETS_DIR=<dir> <scrubber>; exit ${PIPESTATUS[0]}
     Recording that wrapper verbatim clutters the dashboard and — because the
     injected PRISMOR_SECRETS_DIR path points at ~/.prismor/secrets — trips
     Prismor's own prismor-vault-access guard, blocking benign commands. Strip
@@ -372,6 +376,11 @@ def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     inner = cmd[:i].strip()
     if inner.startswith("{") and inner.endswith("}"):
         inner = inner[1:-1].strip()
+        # Drop the wrapper's leading `:` guard line, matched exactly so a real
+        # command that merely starts with `:` (`:> file`) is left alone.
+        first, sep, rest = inner.partition("\n")
+        if sep and first.strip() == ":":
+            inner = rest.strip()
         if inner.endswith(";"):
             inner = inner[:-1].strip()
     return inner or cmd

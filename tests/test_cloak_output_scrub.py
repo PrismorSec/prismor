@@ -186,6 +186,23 @@ def test_command_with_heredoc():
           f"code={code} out={out.strip()}")
 
 
+
+def test_command_that_is_only_a_comment():
+    # Regression (#381): a command with nothing but a comment left an empty
+    # brace group `{ }` - a syntax error. Bare bash exits 0 on it, so must we.
+    out, code = execute_wrapped("# just a note")
+    check("comment-only command executes cleanly", code == 0 and out.strip() == "",
+          f"code={code} out={out.strip()}")
+
+
+def test_command_with_trailing_backslash():
+    # Regression (#381): a trailing line continuation joined the closing brace
+    # onto the command, so `}` became an argument and the group never closed.
+    out, code = execute_wrapped("echo a \\")
+    check("command with trailing backslash executes cleanly", code == 0 and "a" in out,
+          f"code={code} out={out.strip()}")
+
+
 # ── B'. decloak.sh placeholder substitution still works ───────────────────
 def test_placeholder_substituted_and_output_scrubbed():
     out, _ = execute_wrapped(f'echo "using {_PLACEHOLDER}"')
@@ -276,6 +293,7 @@ def main() -> int:
         test_grep_output_scrubbed, test_source_echo_scrubbed,
         test_no_secret_in_wrapped_command, test_exit_code_preserved,
         test_command_with_trailing_comment, test_command_with_heredoc,
+        test_command_that_is_only_a_comment, test_command_with_trailing_backslash,
         test_placeholder_substituted_and_output_scrubbed,
         test_no_secret_in_wrapped_command_when_placeholder_used,
         test_leading_env_assignment_decloaked_and_scrubbed,
