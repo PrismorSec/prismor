@@ -87,11 +87,17 @@ scripted installs pass it as a flag:
 
 ```bash
 prismor setup --non-interactive --judge claude                       # Claude Code CLI, your Claude login
-prismor setup --non-interactive --judge codex --judge-model gpt-5-mini   # Codex CLI, your ChatGPT login
+prismor setup --non-interactive --judge codex                        # Codex CLI, your ChatGPT login
 prismor setup --non-interactive --judge api --judge-model gpt-4o-mini    # litellm + provider key
 ```
 
 ![prismor setup picking the Codex CLI as judge, then a 0.55 heuristic score escalating to a 0.92 block](judge-provider.gif)
+
+Live inside `claude --dangerously-skip-permissions` with the Codex judge: a benign
+prompt that trips the authority-claim heuristic (0.67) is cleared and the edit goes
+through; the credential-exfiltration prompt is blocked at 0.98.
+
+![Claude Code session: false positive cleared, injection blocked](judge-live.gif)
 
 Either way it lands in the workspace policy:
 
@@ -106,7 +112,11 @@ settings:
 In the uncertain zone the judge's verdict is final in both directions: it confirms a
 paraphrased attack the regex layer only half-saw, and it clears a benign sentence that
 tripped an authority-claim signal (`[LLM cleared heuristic 0.55]` in the reason). A judge
-that fails to answer leaves the heuristic verdict as it was.
+that fails to answer leaves the heuristic verdict as it was, and says why on stderr.
+CLI verdicts are cached in `$PRISMOR_HOME/judge-cache.json` (keyed on provider, model
+and a hash of the text), so re-analysis of a session's history never re-runs the judge.
+Keep the model at the CLI's default: small models (`gpt-5-mini`) over-warn on benign
+authority phrasing where the default Codex model and Haiku clear it.
 
 Both CLIs spawn a process per escalation (Claude Code ~20s, Codex ~5s), against
 a few hundred milliseconds over an API, which is why the default is heuristics
