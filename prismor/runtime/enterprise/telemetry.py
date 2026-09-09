@@ -82,6 +82,8 @@ def _verdict(finding: Dict[str, Any]) -> str:
         return "blocked"
     if action in ("warn", "warned"):
         return "warned"
+    if action in ("allow", "allowed"):
+        return "allowed"
     return "observed"
 
 
