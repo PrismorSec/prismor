@@ -15,7 +15,7 @@ flowchart TD
     PRE -->|"score &lt; 0.30"| ALLOW1["Allow (no LLM call)"]
     PRE -->|"score ≥ 0.75"| BLOCK1["Block (no LLM call)"]
     PRE -->|"0.30 ≤ score &lt; 0.75"| LLM["Local LLM subagent (uncertain zone only)<br/>Claude Code CLI — no API key, uses your session"]
-    LLM --> MERGE["Merge: take stricter verdict"]
+    LLM --> MERGE["Judge verdict wins (either way)"]
     MERGE -->|"score &lt; 0.45"| ALLOW2["Allow"]
     MERGE -->|"0.45 ≤ score &lt; 0.75"| WARN["Warn (finding emitted)"]
     MERGE -->|"score ≥ 0.75"| BLOCK2["Block (finding emitted)"]
@@ -102,6 +102,11 @@ settings:
     provider: codex        # api | claude | codex
     model: ""              # "" = that CLI's default model
 ```
+
+In the uncertain zone the judge's verdict is final in both directions: it confirms a
+paraphrased attack the regex layer only half-saw, and it clears a benign sentence that
+tripped an authority-claim signal (`[LLM cleared heuristic 0.55]` in the reason). A judge
+that fails to answer leaves the heuristic verdict as it was.
 
 Both CLIs spawn a process per escalation (Claude Code ~20s, Codex ~5s), against
 a few hundred milliseconds over an API, which is why the default is heuristics

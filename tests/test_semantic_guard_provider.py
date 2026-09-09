@@ -129,3 +129,19 @@ def test_setup_writes_judge_when_no_policy_exists(tmp_path):
     _write_judge_setting(tmp_path, "codex", "")
     raw = yaml.safe_load((tmp_path / ".prismor" / "policy.yaml").read_text())
     assert raw["settings"]["semantic_guard"] == {"provider": "codex", "model": ""}
+
+
+def test_judge_clears_a_heuristic_false_positive(no_keys, tmp_path):
+    clean = '{"risk_score": 0.05, "category": "clean", "reason": "routine dev request", "recommended_action": "allow"}'
+    cli = _fake_cli(tmp_path / "claude", f"printf '%s' '{clean}'")
+    res = SemanticGuardV2(cli_path=cli, provider="claude").analyze(UNCERTAIN)
+    assert res.heuristic.risk_score >= 0.30  # it really was in the uncertain zone
+    assert res.escalated and res.final.risk_score == 0.05
+    assert res.final.recommended_action == "allow" and "[LLM cleared" in res.final.reason
+
+
+def test_failed_judge_leaves_heuristic_verdict(no_keys, tmp_path):
+    cli = _fake_cli(tmp_path / "claude", "echo not json")
+    res = SemanticGuardV2(cli_path=cli, provider="claude").analyze(UNCERTAIN)
+    assert res.final.risk_score == res.heuristic.risk_score
+    assert res.final.mode == "hybrid_heuristic_wins"

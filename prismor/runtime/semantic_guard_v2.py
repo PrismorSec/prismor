@@ -430,22 +430,29 @@ class SemanticGuardV2:
             provider=self._provider,
         )
 
-        # Step 5: merge — take higher risk_score, prefer LLM category/reason
-        if llm.risk_score >= h.risk_score:
+        # Step 5: merge. The uncertain zone is exactly where the regex layer
+        # could not decide, so a judge that answered owns the verdict in both
+        # directions: it can confirm a paraphrased attack the heuristics only
+        # half-saw, and it can clear a benign sentence that tripped an
+        # authority-claim signal. A judge that failed (timeout, no login,
+        # unparseable reply) leaves the heuristic verdict untouched.
+        judged = llm.mode in ("local_llm", "api")
+        if judged:
+            cleared = llm.risk_score < h.risk_score
             final = SemanticRisk(
                 risk_score=llm.risk_score,
                 category=llm.category,
-                reason=llm.reason,
+                reason=(f"[LLM cleared heuristic {h.risk_score:.2f}] " if cleared else "") + llm.reason,
                 recommended_action=llm.recommended_action,
                 signals=h.signals,
-                mode="hybrid_local_llm",
+                mode="hybrid_local_llm" if llm.mode == "local_llm" else "hybrid_api",
                 latency_ms=h.latency_ms + llm.latency_ms,
             )
         else:
             final = SemanticRisk(
                 risk_score=h.risk_score,
                 category=h.category,
-                reason=f"[LLM score {llm.risk_score:.2f} lower] " + h.reason,
+                reason=llm.reason if llm.reason.startswith("[") else h.reason,
                 recommended_action=h.recommended_action,
                 signals=h.signals,
                 mode="hybrid_heuristic_wins",
