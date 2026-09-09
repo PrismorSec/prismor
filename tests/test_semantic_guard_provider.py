@@ -145,3 +145,24 @@ def test_failed_judge_leaves_heuristic_verdict(no_keys, tmp_path):
     res = SemanticGuardV2(cli_path=cli, provider="claude").analyze(UNCERTAIN)
     assert res.final.risk_score == res.heuristic.risk_score
     assert res.final.mode == "hybrid_heuristic_wins"
+
+
+def test_skills_audit_never_escalates_to_the_judge(no_keys, tmp_path, monkeypatch):
+    """SessionStart audits every installed SKILL.md; a CLI judge per file would stall the session."""
+    from prismor.runtime import skills_audit
+    from prismor.runtime.policy_engine import PolicyEngine
+    skill = tmp_path / ".claude" / "skills" / "x"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: x\n---\n" + UNCERTAIN + "\n")
+    cli = _fake_cli(tmp_path / "codex", "touch " + str(tmp_path / "judge-called") + "; exit 1")
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(
+        f'version: "1.0"\nsettings:\n  semantic_guard:\n    provider: codex\n    cli_path: {cli}\n'
+    )
+    monkeypatch.setattr(skills_audit, "discover_skill_files", lambda ws: [skill / "SKILL.md"])
+    engine = PolicyEngine(workspace=tmp_path)
+    skills_audit.audit_skills(tmp_path, engine=engine, record=False)
+    assert not (tmp_path / "judge-called").exists()
+    # the same text as a real prompt still reaches the judge
+    engine.evaluate({"type": "prompt", "prompt": UNCERTAIN}, 0, session_id="s")
+    assert (tmp_path / "judge-called").exists()

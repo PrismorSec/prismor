@@ -1759,9 +1759,13 @@ class PolicyEngine:
         # Skipped for synthetic script lines: the guard is LLM-backed, so
         # running it once per line would multiply cost and latency by the
         # length of the script. Script bodies stay on the deterministic path.
+        # Same for bulk scans (the SessionStart skills audit evaluates every
+        # installed SKILL.md): with a CLI judge that is hundreds of process
+        # spawns before the first prompt.
         if (
             self.semantic_guard_config.get("enabled")
             and not event.get("_script_line")
+            and not event.get("_bulk_scan")
             # Set on the CLI subagent: it is a Claude Code session too, so
             # its own hooks would screen the text it was asked to judge.
             and not os.environ.get("PRISMOR_SEMANTIC_SUBAGENT")
