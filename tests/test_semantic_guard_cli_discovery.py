@@ -56,6 +56,7 @@ def test_subagent_runs_isolated_from_the_workspace(monkeypatch, tmp_path):
     """`claude -p` inherits its cwd's project config, so an un-isolated subagent
     boots the workspace's MCP servers and hooks — including Prismor's own — on
     every escalation, and then hangs on pipes the grandchildren hold open."""
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))  # judge cache stays out of ~/.prismor
     fake = tmp_path / "claude"
     fake.write_text("#!/bin/sh\n")
     seen = {}

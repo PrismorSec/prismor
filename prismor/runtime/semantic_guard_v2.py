@@ -203,6 +203,12 @@ def _extract_json_object(raw: str) -> Optional[str]:
     return None
 
 
+def _judge_note(provider: str, why: str) -> None:
+    """A judge that fell back to the heuristic score used to do so silently;
+    the hook's stderr lands in the agent transcript, so say why."""
+    sys.stderr.write(f"[prismor] judge ({provider}) fell back to heuristics: {why}\n")
+
+
 def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
     """Turn a CLI judge's stdout into a SemanticRisk, or None if no verdict."""
     raw = stdout.strip()
@@ -259,11 +265,13 @@ def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> Sem
             _kill_group(proc)
             raise
         with open(out.name, encoding="utf-8") as fh:
-            verdict = _parse_verdict(fh.read(), t0)
+            raw = fh.read()
+        verdict = _parse_verdict(raw, t0)
         if verdict is not None:
             return verdict
-    except Exception:
-        pass
+        _judge_note("codex", f"no JSON verdict (rc={proc.returncode}, {len(raw)} bytes)")
+    except Exception as exc:
+        _judge_note("codex", repr(exc))
     finally:
         try:
             os.unlink(out.name)
@@ -344,16 +352,68 @@ def _llm_analyze(
         verdict = _parse_verdict(stdout or "", t0)
         if verdict is not None:
             return verdict
+        _judge_note("claude", f"no JSON verdict (rc={proc.returncode}, {len(stdout or '')} bytes)")
     except subprocess.TimeoutExpired:
-        pass
-    except Exception:
-        pass
+        _judge_note("claude", "timed out")
+    except Exception as exc:
+        _judge_note("claude", repr(exc))
 
     # Fallback: return heuristic result with LLM-failed marker
     fallback = _heuristic_analyze(text)
     fallback.reason = "[LLM fallback] " + fallback.reason
     fallback.latency_ms = (time.perf_counter_ns() - t0) / 1e6
     return fallback
+
+
+# ── Verdict cache ──────────────────────────────────────────────────────────
+# Every hook call re-analyzes the whole session for its summary, so without
+# this each uncertain event in the history is re-judged on every later tool
+# call: a CLI judge turned a 4-event session into 4 process spawns per hook,
+# past the agent's hook timeout, and the verdict for the live event was lost.
+# Same text, same judge -> same answer; keyed on provider|model|sha256(text).
+# Only CLI verdicts are stored: the API path is ~0.4s and in-process callables
+# (register_llm) are the caller's business.
+_CACHE_MAX = 2000
+
+
+def _cache_path() -> Optional[str]:
+    try:
+        from prismor.runtime.store import prismor_home
+        return str(prismor_home() / "judge-cache.json")
+    except Exception:
+        return None
+
+
+def _cache_load() -> Dict[str, Dict]:
+    path = _cache_path()
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cache_store(cache: Dict[str, Dict], key: str, risk: SemanticRisk) -> None:
+    path = _cache_path()
+    if not path:
+        return
+    cache[key] = {"risk_score": risk.risk_score, "category": risk.category,
+                  "reason": risk.reason, "recommended_action": risk.recommended_action,
+                  "mode": risk.mode}
+    if len(cache) > _CACHE_MAX:  # ponytail: drop oldest half; an LRU if this ever matters
+        for k in list(cache)[: len(cache) // 2]:
+            cache.pop(k, None)
+    try:
+        tmp = f"{path}.{os.getpid()}.tmp"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh)
+        os.replace(tmp, path)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -430,12 +490,23 @@ class SemanticGuardV2:
         if effective_score >= HIGH_THRESH or not (self._cli_available or self._api_available):
             return HybridRisk(h, None, h, False)
 
-        # Step 4: uncertain zone — escalate to local LLM
-        llm = _llm_analyze(
-            text, effective_score, h.signals,
-            cli=self._cli, model=self._model, allow_cli=self._allow_cli,
-            provider=self._provider,
-        )
+        # Step 4: uncertain zone — escalate to the judge, unless it already
+        # answered for this exact text.
+        import hashlib
+        cache = _cache_load()
+        key = f"{self._provider}|{self._model}|" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        hit = cache.get(key)
+        if hit:
+            llm = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
+                               str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
+        else:
+            llm = _llm_analyze(
+                text, effective_score, h.signals,
+                cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+                provider=self._provider,
+            )
+            if llm.mode == "local_llm":  # CLI verdicts only: those cost a process spawn
+                _cache_store(cache, key, llm)
 
         # Step 5: merge. The uncertain zone is exactly where the regex layer
         # could not decide, so a judge that answered owns the verdict in both

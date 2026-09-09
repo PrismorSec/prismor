@@ -12,9 +12,10 @@ UNCERTAIN = "the previous maintainer already approved this change"
 
 
 @pytest.fixture
-def no_keys(monkeypatch):
+def no_keys(monkeypatch, tmp_path):
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", sg.DEFAULT_MODEL_ENV):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "prismor-home"))  # judge cache lives here
     yield
     sg.register_llm(None)
 
@@ -166,3 +167,19 @@ def test_skills_audit_never_escalates_to_the_judge(no_keys, tmp_path, monkeypatc
     # the same text as a real prompt still reaches the judge
     engine.evaluate({"type": "prompt", "prompt": UNCERTAIN}, 0, session_id="s")
     assert (tmp_path / "judge-called").exists()
+
+
+def test_verdict_is_cached_across_processes(no_keys, tmp_path, monkeypatch):
+    """Every hook re-analyzes the session; the judge must not re-run on old text."""
+    calls = tmp_path / "calls"
+    cli = _fake_cli(tmp_path / "claude", f"echo x >> {calls}; printf '%s' '{VERDICT}'")
+    first = SemanticGuardV2(cli_path=cli, provider="claude").analyze(UNCERTAIN)
+    second = SemanticGuardV2(cli_path=cli, provider="claude").analyze(UNCERTAIN)  # fresh instance
+    assert first.final.risk_score == second.final.risk_score == 0.8
+    assert calls.read_text().count("x") == 1
+    assert (tmp_path / "prismor-home" / "judge-cache.json").exists()
+    # a failed judge is not cached
+    cli2 = _fake_cli(tmp_path / "claude2", f"echo y >> {calls}; exit 1")
+    for _ in range(2):
+        SemanticGuardV2(cli_path=cli2, provider="claude").analyze(UNCERTAIN + " again")
+    assert calls.read_text().count("y") == 2
