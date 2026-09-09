@@ -91,6 +91,8 @@ prismor setup --non-interactive --judge codex --judge-model gpt-5-mini   # Codex
 prismor setup --non-interactive --judge api --judge-model gpt-4o-mini    # litellm + provider key
 ```
 
+![prismor setup picking the Codex CLI as judge, then a 0.55 heuristic score escalating to a 0.92 block](judge-provider.gif)
+
 Either way it lands in the workspace policy:
 
 ```yaml
