@@ -908,8 +908,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             if not provider:
                 # Same judge the hooks use here: the workspace policy's choice.
                 try:
-                    from prismor.runtime.policy_engine import PolicyEngine
-                    _sg = PolicyEngine(workspace=Path.cwd()).semantic_guard_config or {}
+                    # Aliased: a bare `PolicyEngine` here would make the name
+                    # local to this whole function and break every other branch.
+                    from prismor.runtime.policy_engine import PolicyEngine as _Engine
+                    _sg = _Engine(workspace=Path.cwd()).semantic_guard_config or {}
                     provider = str(_sg.get("provider") or "")
                     model = model or str(_sg.get("model") or "")
                 except Exception:
