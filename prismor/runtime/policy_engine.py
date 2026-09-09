@@ -938,6 +938,14 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        # semantic_guard is a nested stanza with its own defaults (enabled,
+        # thresholds, fields). A layer that only sets `provider`/`model` must
+        # not replace the whole dict, or the guard silently turns off.
+        if isinstance(override_settings.get("semantic_guard"), dict):
+            override_settings["semantic_guard"] = {
+                **(settings.get("semantic_guard") or {}),
+                **override_settings["semantic_guard"],
+            }
         settings.update(override_settings)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -1997,6 +2005,7 @@ class PolicyEngine:
                     cli_path=cli,
                     model=str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
+                    provider=str(cfg.get("provider") or "").lower(),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard

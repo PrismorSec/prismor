@@ -79,10 +79,33 @@ settings:
 Keep that model small. It runs per uncertain event on the hook path, so a
 frontier model here costs latency on tool calls that a classifier does not need.
 
-To use the local Claude Code CLI as the subagent instead of an API, set
-`mode: hybrid`. It is an explicit opt-in because spawning a Claude Code process
-takes seconds, against a few hundred milliseconds for the same verdict over an
-API. Reinstall hooks if already running:
+### Use a subscription you already pay for
+
+No API key? The judge can run on the login of a coding-agent CLI that is
+already on the machine. `prismor setup` asks this on its **LLM judge** step;
+scripted installs pass it as a flag:
+
+```bash
+prismor setup --non-interactive --judge claude                       # Claude Code CLI, your Claude login
+prismor setup --non-interactive --judge codex --judge-model gpt-5-mini   # Codex CLI, your ChatGPT login
+prismor setup --non-interactive --judge api --judge-model gpt-4o-mini    # litellm + provider key
+```
+
+Either way it lands in the workspace policy:
+
+```yaml
+# .prismor/policy.yaml
+settings:
+  semantic_guard:
+    provider: codex        # api | claude | codex
+    model: ""              # "" = that CLI's default model
+```
+
+Both CLIs spawn a process per escalation (Claude Code ~20s, Codex ~5s), against
+a few hundred milliseconds over an API, which is why the default is heuristics
+only until you choose. The subagent runs isolated from the workspace: no MCP
+servers, no hooks, no project config, so it cannot recurse into Prismor. Reinstall
+hooks if already running:
 
 ```bash
 prismor install-hooks --agent all --mode enforce
@@ -121,8 +144,15 @@ settings:
                             #   heuristic  — regex signals only, no LLM, <1 ms
                             #   api        — every event goes to `model` (no pre-screen)
 
-    cli_path: ""            # path to the Claude CLI binary
+    provider: ""            # api | claude | codex — which login judges the uncertain zone
+                            #   api    — `model` over litellm, needs a provider key
+                            #   claude — Claude Code CLI on its own login (no key)
+                            #   codex  — Codex CLI on its ChatGPT login (no key)
+                            #   ""     — claude CLI when mode is hybrid, else api (historical)
+
+    cli_path: ""            # path to the Claude (or Codex) CLI binary
                             # leave empty to auto-discover: $CLAUDE_CLI → ~/.local/bin/claude → claude on PATH
+                            # ($CODEX_CLI → codex on PATH for provider: codex)
 
     model: ""               # litellm model id used when there is no Claude CLI (or mode: api):
                             # gpt-4o-mini, ollama/llama3, gemini/gemini-2.0-flash, bedrock/..., azure/...

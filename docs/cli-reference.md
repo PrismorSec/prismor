@@ -101,7 +101,7 @@ prismor
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). |
+| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak`, `--judge <claude\|codex\|api>`, `--judge-model` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK`, `PRISMOR_JUDGE`, `PRISMOR_JUDGE_MODEL` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, picks which login judges uncertain events (see [Semantic Guard](semantic-guard.md)), and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). |
 | `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. |
 | `prismor uninstall-hooks` | `--agent <name\|all>`, `--scope` | Removes Prismor hooks for an agent. For `claude`/`all`, this also removes cloaking hooks (`prismor cloak install`) — secrets are no longer protected at the tool boundary until you reinstall with `prismor cloak install`. |
 | `prismor status` | `--workspace`, `--all`, `--days N` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. |

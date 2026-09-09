@@ -116,6 +116,22 @@ CLAUDE_CLI = _default_claude_cli()
 # Claude id (a litellm id like `ollama/llama3` means nothing to `claude --model`).
 CLI_MODEL = "claude-haiku-4-5-20251001"
 
+
+def _default_codex_cli() -> str:
+    """Where the Codex CLI is: $CODEX_CLI, then PATH, then the npm-global path."""
+    override = os.environ.get("CODEX_CLI")
+    if override:
+        return override
+    import shutil
+    return shutil.which("codex") or os.path.expanduser("~/.local/bin/codex")
+
+
+CODEX_CLI = _default_codex_cli()
+
+# Which subscription/backend judges the uncertain zone. "" keeps the historical
+# behaviour (claude CLI when allowed and present, else the litellm API path).
+JUDGE_PROVIDERS = ("api", "claude", "codex")
+
 _PRISMOR_CONTEXT = """\
 You are the Semantic Security Evaluator for Prismor, an AI agent runtime security monitor.
 
@@ -182,6 +198,78 @@ def _extract_json_object(raw: str) -> Optional[str]:
     return None
 
 
+def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
+    """Turn a CLI judge's stdout into a SemanticRisk, or None if no verdict."""
+    raw = stdout.strip()
+    # Strip markdown fences
+    raw = re.sub(r"^```[a-z]*\n?", "", raw)
+    raw = re.sub(r"\n?```$", "", raw)
+    # Extract JSON even if there's surrounding text
+    blob = _extract_json_object(raw)
+    if not blob:
+        return None
+    data = json.loads(blob)
+    # Tolerate a single wrapper key (e.g. {"verdict": {...}}) rather
+    # than discarding the verdict and falling back to heuristic.
+    if isinstance(data, dict) and "risk_score" not in data:
+        nested = [v for v in data.values() if isinstance(v, dict)]
+        if len(nested) == 1 and "risk_score" in nested[0]:
+            data = nested[0]
+    return SemanticRisk(
+        risk_score=float(data.get("risk_score", 0.0)),
+        category=str(data.get("category", "unknown")),
+        reason=str(data.get("reason", "")),
+        recommended_action=str(data.get("recommended_action", "allow")),
+        signals=[],
+        mode="local_llm",
+        latency_ms=(time.perf_counter_ns() - t0) / 1e6,
+    )
+
+
+def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> SemanticRisk:
+    """Judge via the Codex CLI on the host's ChatGPT login.
+
+    Same isolation story as the claude branch: --ephemeral (no session file),
+    --ignore-user-config/--ignore-rules (no hooks, MCP servers or AGENTS.md
+    from the host, so no Prismor-in-Prismor recursion and no hook-trust
+    prompt), read-only sandbox, temp cwd, own process group. The final
+    message is read from -o rather than stdout, which carries progress lines.
+    """
+    argv = [cli, "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
+            "--ignore-rules", "-s", "read-only", "-C", tempfile.gettempdir()]
+    if model and not model.startswith("claude"):
+        argv += ["-m", model]
+    out = tempfile.NamedTemporaryFile(prefix="prismor-judge-", suffix=".txt", delete=False)
+    out.close()
+    try:
+        proc = subprocess.Popen(
+            argv + ["-o", out.name, "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            text=True, cwd=tempfile.gettempdir(), start_new_session=True,
+            env={**os.environ, "PRISMOR_SEMANTIC_SUBAGENT": "1"},
+        )
+        try:
+            proc.communicate(_PRISMOR_CONTEXT + "\n\n" + prompt, timeout=60)
+        except subprocess.TimeoutExpired:
+            _kill_group(proc)
+            raise
+        with open(out.name, encoding="utf-8") as fh:
+            verdict = _parse_verdict(fh.read(), t0)
+        if verdict is not None:
+            return verdict
+    except Exception:
+        pass
+    finally:
+        try:
+            os.unlink(out.name)
+        except OSError:
+            pass
+    fallback = _heuristic_analyze(text)
+    fallback.reason = "[LLM fallback] " + fallback.reason
+    fallback.latency_ms = (time.perf_counter_ns() - t0) / 1e6
+    return fallback
+
+
 def _llm_analyze(
     text: str,
     heuristic_score: float,
@@ -189,12 +277,15 @@ def _llm_analyze(
     cli: str = "",
     model: str = "",
     allow_cli: bool = True,
+    provider: str = "",
 ) -> SemanticRisk:
     """Semantic subagent for the uncertain zone.
 
-    Uses the local Claude Code CLI when present; otherwise any litellm model
-    (``model`` / $PRISMOR_SEMANTIC_MODEL) or a register_llm() callable, so
-    non-Claude-Code hosts and SDK frameworks get the same escalation.
+    ``provider`` picks the judge: ``claude`` runs the Claude Code CLI on the
+    host's own login, ``codex`` runs the Codex CLI on its ChatGPT login, ``api``
+    goes through litellm (``model`` / $PRISMOR_SEMANTIC_MODEL) or a
+    register_llm() callable. "" keeps the historical order: claude CLI when
+    allowed and present, else the API path.
     """
     t0 = time.perf_counter_ns()
 
@@ -203,10 +294,13 @@ def _llm_analyze(
         f"Heuristic signals found: {', '.join(heuristic_signals) if heuristic_signals else 'none'}\n\n"
         f"Text to evaluate:\n\n{text[:3000]}"
     )
-    cli = cli or CLAUDE_CLI
-    if not allow_cli or not os.path.exists(cli):
+    cli = cli or (CODEX_CLI if provider == "codex" else CLAUDE_CLI)
+    if provider == "api" or (provider != "codex" and (not allow_cli or not os.path.exists(cli))):
         from prismor.runtime.semantic_guard import _api_analyze
         return _api_analyze(text, model, system=_PRISMOR_CONTEXT, user=prompt)
+
+    if provider == "codex":
+        return _codex_analyze(text, prompt, cli, model, t0)
 
     try:
         # Run the subagent ISOLATED from the workspace being protected.
@@ -240,29 +334,9 @@ def _llm_analyze(
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             raise
-        raw = (stdout or "").strip()
-        # Strip markdown fences
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-        # Extract JSON even if there's surrounding text
-        blob = _extract_json_object(raw)
-        if blob:
-            data = json.loads(blob)
-            # Tolerate a single wrapper key (e.g. {"verdict": {...}}) rather
-            # than discarding the verdict and falling back to heuristic.
-            if isinstance(data, dict) and "risk_score" not in data:
-                nested = [v for v in data.values() if isinstance(v, dict)]
-                if len(nested) == 1 and "risk_score" in nested[0]:
-                    data = nested[0]
-            return SemanticRisk(
-                risk_score=float(data.get("risk_score", 0.0)),
-                category=str(data.get("category", "unknown")),
-                reason=str(data.get("reason", "")),
-                recommended_action=str(data.get("recommended_action", "allow")),
-                signals=[],
-                mode="local_llm",
-                latency_ms=(time.perf_counter_ns() - t0) / 1e6,
-            )
+        verdict = _parse_verdict(stdout or "", t0)
+        if verdict is not None:
+            return verdict
     except subprocess.TimeoutExpired:
         pass
     except Exception:
@@ -301,18 +375,24 @@ class SemanticGuardV2:
         cli_path: Optional[str] = None,
         model: str = "",
         allow_cli: bool = True,
+        provider: str = "",
     ) -> None:
         from prismor.runtime.semantic_guard import _LLM_FN, default_model
-        self._cli = cli_path or CLAUDE_CLI
+        self._provider = provider if provider in JUDGE_PROVIDERS else ""
+        self._cli = cli_path or (CODEX_CLI if self._provider == "codex" else CLAUDE_CLI)
         # A CLI escalation spawns a whole Claude Code process. Measured on an
         # idle Ubuntu host, pinned to Haiku, MCP already disabled: 22s, against
         # 0.4s for the same verdict over the API. Callers on the hook path pass
         # allow_cli=False so a host with no model configured degrades to
         # heuristic-only instead of stalling the agent on every escalation.
-        self._allow_cli = allow_cli
-        self._cli_available = allow_cli and os.path.exists(self._cli)
-        self._model = model or default_model()
-        self._api_available = bool(self._model) or _LLM_FN is not None
+        # An explicit CLI provider is that opt-in spelled out in policy.
+        self._allow_cli = allow_cli or self._provider in ("claude", "codex")
+        self._cli_available = (self._allow_cli and self._provider != "api"
+                               and os.path.exists(self._cli))
+        # A codex model id is not a litellm id; the CLI is the only path for it.
+        self._model = model or ("" if self._provider == "codex" else default_model())
+        self._api_available = (self._provider != "codex"
+                               and (bool(self._model) or _LLM_FN is not None))
 
     @property
     def mode(self) -> str:
@@ -347,6 +427,7 @@ class SemanticGuardV2:
         llm = _llm_analyze(
             text, effective_score, h.signals,
             cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+            provider=self._provider,
         )
 
         # Step 5: merge — take higher risk_score, prefer LLM category/reason

@@ -1958,6 +1958,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 target, mode=mode, agents=agents, cloak=cloak, scope=scope,
                 enforce_rules=enforce_rules,
                 recommended=bool(getattr(args, "recommended", False)),
+                judge=(getattr(args, "judge", None) or os.environ.get("PRISMOR_JUDGE", ""),
+                       getattr(args, "judge_model", None) or os.environ.get("PRISMOR_JUDGE_MODEL", "")),
             )
         elif getattr(args, "scope", None) == "global":
             # Explicit `--scope global` skips the TUI scope step and guards the
@@ -3960,6 +3962,20 @@ def build_parser() -> argparse.ArgumentParser:
         dest="cloak",
         action="store_false",
         help="Disable secret cloaking (non-interactive only)",
+    )
+    setup_parser.add_argument(
+        "--judge",
+        choices=["claude", "codex", "api"],
+        default=None,
+        help="Which login judges uncertain events in the semantic layer: claude (Claude Code CLI), "
+             "codex (Codex CLI), api (litellm model + provider key). Default: heuristics only "
+             "(non-interactive only; $PRISMOR_JUDGE)",
+    )
+    setup_parser.add_argument(
+        "--judge-model",
+        default=None,
+        metavar="MODEL",
+        help="Model id for --judge; blank = that CLI's default ($PRISMOR_JUDGE_MODEL)",
     )
 
     update_parser = subparsers.add_parser(
