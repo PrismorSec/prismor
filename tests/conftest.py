@@ -193,8 +193,10 @@ def _live_prismor_modules() -> List[types.ModuleType]:
 
 
 # key -> (module object, module name, attribute name, class attribute name).
-# Functions and methods only: module-level caches are dicts mutated in place,
-# so their identity never changes and they are never mistaken for a patch.
+# Functions and methods only: data attributes stay outside the snapshot by
+# design to avoid false positives on in-place mutated caches and dicts. A
+# non-callable replaced by a mock is therefore not tracked by this guard —
+# that is an intentional tradeoff for the leak class in #308.
 _SnapKey = Tuple[types.ModuleType, str, str, Optional[str]]
 _MISSING = object()
 
