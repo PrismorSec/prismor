@@ -938,6 +938,14 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        # semantic_guard is a nested stanza with its own defaults (enabled,
+        # thresholds, fields). A layer that only sets `provider`/`model` must
+        # not replace the whole dict, or the guard silently turns off.
+        if isinstance(override_settings.get("semantic_guard"), dict):
+            override_settings["semantic_guard"] = {
+                **(settings.get("semantic_guard") or {}),
+                **override_settings["semantic_guard"],
+            }
         settings.update(override_settings)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -1751,9 +1759,13 @@ class PolicyEngine:
         # Skipped for synthetic script lines: the guard is LLM-backed, so
         # running it once per line would multiply cost and latency by the
         # length of the script. Script bodies stay on the deterministic path.
+        # Same for bulk scans (the SessionStart skills audit evaluates every
+        # installed SKILL.md): with a CLI judge that is hundreds of process
+        # spawns before the first prompt.
         if (
             self.semantic_guard_config.get("enabled")
             and not event.get("_script_line")
+            and not event.get("_bulk_scan")
             # Set on the CLI subagent: it is a Claude Code session too, so
             # its own hooks would screen the text it was asked to judge.
             and not os.environ.get("PRISMOR_SEMANTIC_SUBAGENT")
@@ -1997,6 +2009,7 @@ class PolicyEngine:
                     cli_path=cli,
                     model=str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
+                    provider=str(cfg.get("provider") or "").lower(),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard

@@ -281,7 +281,14 @@ settings:
                              # hybrid-> also allows the local claude CLI as the
                              #          subagent. Same verdict, ~22s per call,
                              #          so it is an explicit opt-in.
-    cli_path: ""             # override path to claude CLI; "" auto-discovers
+    provider: ""             # which login judges the uncertain zone:
+                             #   api    -> `model` over litellm (needs a key)
+                             #   claude -> Claude Code CLI, your Claude login
+                             #   codex  -> Codex CLI, your ChatGPT login
+                             # "" -> claude CLI in mode hybrid, else api.
+                             # Both CLIs spawn a process per call (~5-20s);
+                             # `prismor setup` asks this ("LLM judge").
+    cli_path: ""             # override path to the claude/codex CLI; "" auto-discovers
     model: ""                # litellm model id for the LLM layer when no claude CLI
                              # (or mode: api), e.g. gpt-4o-mini, ollama/llama3,
                              # gemini/gemini-2.0-flash. "" -> $PRISMOR_SEMANTIC_MODEL,

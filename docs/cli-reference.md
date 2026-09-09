@@ -51,6 +51,7 @@ prismor
 │   ├─ semantic-check         Hybrid LLM prompt-injection guard
 │   ├─ sandbox <action>       status · check · run — Docker command sandbox
 │   ├─ eval-server            HTTP evaluation endpoint for non-Python adapters
+│   ├─ proxy                  LLM policy proxy — screens model traffic and proposed tool calls
 │   ├─ proxy                  LLM proxy — screens model traffic and proposed tool calls
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
 │   ├─ egress <action>        show · report · test · allow · deny · mode — network egress policy
@@ -101,7 +102,7 @@ prismor
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). |
+| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak`, `--judge <claude\|codex\|api>`, `--judge-model` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK`, `PRISMOR_JUDGE`, `PRISMOR_JUDGE_MODEL` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, picks which login judges uncertain events (see [Semantic Guard](semantic-guard.md)), and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). |
 | `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. |
 | `prismor uninstall-hooks` | `--agent <name\|all>`, `--scope` | Removes Prismor hooks for an agent. For `claude`/`all`, this also removes cloaking hooks (`prismor cloak install`) — secrets are no longer protected at the tool boundary until you reinstall with `prismor cloak install`. |
 | `prismor status` | `--workspace`, `--all`, `--days N` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. |
@@ -299,7 +300,7 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor check "<value>"` | `--type <command\|read\|write>`, `--explain`, `--from-log`, `--suggest-allowlist` | Dry-run a command or file path against the active policy. Returns ALLOW / WARN / BLOCK + reason without executing. Exit `2`=block, `1`=warn, `0`=clean. |
-| `prismor semantic-check [TEXT]` | `--mode <hybrid\|heuristic\|api>`, `--json`, `--cli-path` | Run the semantic prompt-injection guard on text or stdin. See [Semantic Guard](semantic-guard.md). |
+| `prismor semantic-check [TEXT]` | `--mode <hybrid\|heuristic\|api>`, `--provider <claude\|codex\|api>`, `--json`, `--cli-path` | Run the semantic prompt-injection guard on text or stdin. See [Semantic Guard](semantic-guard.md). |
 | `prismor allow <rule>` | `--pattern`, `--expires`, `--observe`, `--off`, `--yes`, `--reason`, `--list`, `--undo`, `--workspace` | Make an exception to a rule that blocked you, narrowest first. With no `--pattern` it uses the text of the most recent block for that rule. `--observe` keeps the rule but stops it blocking; `--off` disables it for the workspace (needs `--yes`). Refuses self-protection rules, refuses to turn a floor rule off, and refuses everything where an org's signed policy governs. See [Making exceptions](#making-exceptions). |
 | `prismor unlock` | `--for`, `--status`, `--set-password`, `--system-password`, `--forget`, `--workspace` | Open a short window (default 3 minutes) in which the agent may edit Prismor's own policy. Asks for your unlock password; needs a terminal. `--system-password` verifies against your operating-system account instead of storing a Prismor one. |
 | `prismor lock` | — | Close the self-edit window early. |
@@ -338,6 +339,12 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode observe\|enforce`, `--workspace`, `--config`, `--session-id`, `--agent-name` | Policy proxy for model traffic. Point an agent at it with `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`; the outbound prompt is screened and cloak-masked, and every `tool_use` in the response is evaluated as the tool call it is. See [the LLM proxy](llm-proxy.md). |
+
+### proxy
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode <observe\|enforce>`, `--workspace`, `--config`, `--session-id`, `--agent-name` | The LLM lane: sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so an agent Prismor cannot hook is still governed. Point the client at it with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `genai.Client(http_options=types.HttpOptions(base_url=...))` — nothing else about the agent changes. The outbound prompt is screened and cloak-masked; every proposed tool call (`tool_use` / `tool_calls` / `functionCall`) is reshaped into the event a `Bash` hook produces and run through the same policy; streamed tool calls are held until they can be judged. See [LLM proxy](llm-proxy.md). |
 
 ### inference-hook
 

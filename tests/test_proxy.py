@@ -24,7 +24,10 @@ from prismor.runtime.proxy import (  # noqa: E402
     Screen,
     StreamScreen,
     _strip_blocked_calls,
+    error_body,
     extract_prompt,
+    is_streaming,
+    model_of,
     response_tool_calls,
 )
 from prismor.runtime.runtime import Decision  # noqa: E402
@@ -422,6 +425,101 @@ def test_a_request_with_no_conversation_falls_back_to_the_process(tmp_path):
     screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
                               session_id="proxy-1", agent_name="n8n")
     assert screen.session_for({}) == "proxy-1"
+
+
+# ── Gemini / Google Gen AI dialect ───────────────────────────────────────────
+
+def _gemini_call_frame(name="Bash", args=None):
+    body = {"candidates": [{"content": {"role": "model", "parts": [
+        {"functionCall": {"name": name, "args": args or {}}}]}}]}
+    return f"data: {json.dumps(body)}\n\n".encode()
+
+
+def test_gemini_prompt_flattens_contents_and_system_instruction():
+    body = {"systemInstruction": {"parts": [{"text": "be careful"}]},
+            "contents": [{"role": "user", "parts": [{"text": "hello"}]},
+                         {"role": "user", "parts": [
+                             {"functionResponse": {"name": "Read",
+                                                   "response": {"text": "leaked"}}}]}]}
+    out = extract_prompt(body)
+    assert "be careful" in out and "hello" in out and "leaked" in out
+
+
+def test_gemini_prompt_parts_and_conversation_key_see_contents():
+    """Both walk turns; if they only knew `messages`, a Gemini session would
+    show an empty prompt and every conversation would collapse into one key."""
+    from prismor.runtime.proxy import conversation_key, prompt_parts
+    body = {"systemInstruction": {"parts": [{"text": "sys"}]},
+            "contents": [{"role": "user", "parts": [{"text": "the question"}]}]}
+    parts = prompt_parts(body)
+    assert parts["system"] == "sys" and parts["user_message"] == "the question"
+    assert conversation_key(body)
+    other = {"contents": [{"role": "user", "parts": [{"text": "different"}]}]}
+    assert conversation_key(body) != conversation_key(other)
+
+
+def test_gemini_response_tool_calls():
+    body = {"candidates": [{"content": {"parts": [
+        {"text": "ok"}, {"functionCall": {"name": "Bash", "args": {"command": "ls"}}}]}}]}
+    assert response_tool_calls("google", body) == [("Bash", {"command": "ls"})]
+
+
+def test_gemini_model_and_streaming_come_from_the_path():
+    path = "/v1beta/models/gemini-2.5-pro:streamGenerateContent"
+    assert model_of("google", path, {}) == "gemini-2.5-pro"
+    assert is_streaming("google", path, {}) is True
+    assert is_streaming("google", "/v1beta/models/gemini-2.5-pro:generateContent", {}) is False
+    assert model_of("openai", "/v1/chat/completions", {"model": "gpt-5"}) == "gpt-5"
+    assert is_streaming("openai", "/v1/chat/completions", {"stream": True}) is True
+
+
+def test_gemini_stream_replaces_denied_function_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "google", "gemini-2.5-pro", None)
+    out = stream.feed(_gemini_call_frame(args={"command": "rm -rf /"}))
+
+    assert b"rm -rf" not in out
+    assert b"functionCall" not in out
+    assert b"Blocked by Prismor" in out
+    assert json.loads(out.split(b"data: ", 1)[1])["candidates"][0]["finishReason"] == "STOP"
+
+
+def test_gemini_stream_releases_allowed_function_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "google", "gemini-2.5-pro", None)
+    frame = _gemini_call_frame(args={"command": "ls"})
+    assert stream.feed(frame) == frame
+    assert stream.blocked == []
+
+
+def test_gemini_stream_text_passes_through(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    stream = StreamScreen(screen, "google", "gemini-2.5-pro", None)
+    frame = b'data: {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}\n\n'
+    assert stream.feed(frame) == frame
+
+
+def test_strip_blocked_calls_google_keeps_turn_valid():
+    body = {"candidates": [{"finishReason": "STOP", "content": {"parts": [
+        {"functionCall": {"name": "Bash", "args": {"command": "rm -rf /"}}},
+        {"functionCall": {"name": "Read", "args": {}}}]}}]}
+    out = _strip_blocked_calls("google", body, {"Bash": "Blocked by Prismor: nope"})
+    parts = out["candidates"][0]["content"]["parts"]
+    assert parts[0] == {"text": "Blocked by Prismor: nope"}
+    assert parts[1]["functionCall"]["name"] == "Read"
+    assert out["candidates"][0]["finishReason"] == "STOP"
+
+
+def test_google_error_body_is_the_shape_the_sdk_parses():
+    payload = json.loads(error_body("google", "nope", 403))
+    assert payload["error"]["status"] == "PERMISSION_DENIED"
+    assert payload["error"]["code"] == 403 and payload["error"]["message"] == "nope"
+
+
+def test_google_upstream_default():
+    spec = ProxyConfig().upstream("google")
+    assert spec["base_url"] == "https://generativelanguage.googleapis.com"
+    assert spec["auth_header"] == "x-goog-api-key"
 
 
 if __name__ == "__main__":
