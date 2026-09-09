@@ -305,6 +305,26 @@ def test_remote_upstream_builds_network_event(tmp_path, monkeypatch):
     assert json.loads(pre["outbound_payload"]) == {"q": "hi"}
 
 
+def test_remote_metadata_argument_is_blocked_before_forwarding(tmp_path, monkeypatch):
+    """The MCP server may be allowed while its fetch destination is denied."""
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    remote = FakeUpstream(UpstreamSpec(name="db", url="https://db.example.com/mcp"))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [remote])
+    list_tools(gateway, sent)
+
+    gateway._handle_tools_call_safe("C-metadata", {
+        "name": "db__echo",
+        "arguments": {
+            "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+        },
+    })
+
+    result = sent[-1]["result"]
+    assert result["isError"] is True
+    assert "mcp-arg-metadata-endpoint" in result["content"][0]["text"]
+    assert not any(method == "tools/call" for method, _ in remote.requests)
+
+
 def test_list_changed_invalidates_routes_and_reemits(tmp_path, monkeypatch):
     a = stub("a")
     gateway, sent = make_gateway(tmp_path, monkeypatch, [a])

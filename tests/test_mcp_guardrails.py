@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO))
 
 from prismor.runtime.policy_engine import PolicyEngine  # noqa: E402
 from prismor.runtime.hooks import should_block  # noqa: E402
+from prismor.runtime.runtime import evaluate_tool_call  # noqa: E402
 
 
 def _engine(policy_yaml: str) -> PolicyEngine:
@@ -205,6 +206,45 @@ class McpArgsField(unittest.TestCase):
                               agent_event="PostToolUse")
         f = self.eng.evaluate(ev, index=0, session_id="s1")
         self.assertEqual([x for x in f if x["ruleId"] == "mcp-args-guard"], [])
+
+
+# ── Default policy: MCP argument egress destinations ───────────────────────
+
+class McpArgumentEgress(unittest.TestCase):
+    """Remote MCP destinations are screened in arguments, not server URL."""
+
+    def setUp(self):
+        self.ws = Path(tempfile.mkdtemp(prefix="prismor-mcp-egress-ws-"))
+
+    def _decide(self, arguments: dict):
+        return evaluate_tool_call(
+            event=_remote_mcp_event(
+                "mcp__db__fetch", "https://db.example.com/mcp", arguments),
+            workspace=self.ws,
+            agent="claude",
+            mode="enforce",
+            session_id="mcp-argument-egress",
+            persist=False,
+            register_agent=False,
+        )
+
+    def test_metadata_url_argument_blocks_with_mcp_rule(self):
+        decision = self._decide({
+            "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        })
+        self.assertFalse(decision.allow)
+        self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
+
+    def test_google_metadata_url_argument_blocks_with_mcp_rule(self):
+        decision = self._decide({"url": "http://metadata.google.internal/computeMetadata/v1/"})
+        self.assertFalse(decision.allow)
+        self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
+
+    def test_benign_url_argument_is_allowed(self):
+        self.assertTrue(self._decide({"url": "https://example.com"}).allow)
+
+    def test_descriptive_metadata_text_is_not_treated_as_destination(self):
+        self.assertTrue(self._decide({"message": "The server returned 169.254.169.254"}).allow)
 
 
 # ── End-to-end: Claude hook dispatcher ─────────────────────────────────────
