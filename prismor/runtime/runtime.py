@@ -685,8 +685,27 @@ def _dispatch_telemetry(
 ) -> None:
     """Forward findings to configured sinks before the blocking decision so a
     SIEM sees every event, including blocked ones. Best-effort."""
-    if not (getattr(engine, "outputs", None) and findings):
+    if not getattr(engine, "outputs", None):
         return
+    if not findings:
+        # Full session capture: under the org's full_capture opt-in every
+        # evaluated call ships, not just the flagged ones, so the console's
+        # session trail is the whole trail. Redacted orgs keep the old
+        # findings-only behaviour (they already get per-session call counts
+        # from the heartbeat).
+        try:
+            from prismor.runtime.enterprise import remote_policy as _rp
+            if not _rp.current_full_capture():
+                return
+        except Exception:
+            return
+        findings = [{
+            "action": "allow",
+            "severity": "info",
+            "category": "audit",
+            "ruleId": "audit-allowed",
+            "title": f"{event.get('type') or 'call'} allowed",
+        }]
     try:
         from prismor.runtime.sinks import dispatch as sink_dispatch
         exm = getattr(engine, "active_exemption", None)
