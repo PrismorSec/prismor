@@ -9,6 +9,9 @@ traffic pass through a URL we control::
     ANTHROPIC_BASE_URL=http://127.0.0.1:7080  claude
     OPENAI_BASE_URL=http://127.0.0.1:7080/v1  codex
 
+    # Google Gen AI SDK (Gemini API, Vertex, Gemini Enterprise Agent Platform)
+    genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))
+
 That is the one lever that works on an agent Prismor cannot hook, which is
 most of them.
 
@@ -83,6 +86,25 @@ PROVIDER_ROUTES: Tuple[Tuple[str, str], ...] = (
     ("/v1/complete", "anthropic"),
     ("/v1/chat/completions", "openai"),
     ("/v1/responses", "openai"),
+    # Gemini names the method in the path, not the body, and carries the model
+    # there too: /v1beta/models/gemini-2.5-pro:generateContent. Matching the
+    # suffix covers both the Gemini API and the Vertex
+    # /publishers/google/models/... form with one entry each.
+    (":generateContent", "google"),
+    (":streamGenerateContent", "google"),
+)
+
+#: Substring → provider, for paths that are *routed* but not screened: token
+#: counting, model listing, embeddings, file uploads. The credential sniff in
+#: ``_provider`` cannot help here — a Gemini key is a bare ``x-goog-api-key``
+#: with no bearer and no anthropic-version to go on — so Google's non-generation
+#: paths need naming.
+PROVIDER_PREFIXES: Tuple[Tuple[str, str], ...] = (
+    ("/publishers/google/models", "google"),
+    ("/v1beta/models", "google"),
+    ("/v1beta/cachedContents", "google"),
+    ("/v1beta/files", "google"),
+    ("/v1beta/tunedModels", "google"),
 )
 
 DEFAULT_UPSTREAMS: Dict[str, Dict[str, str]] = {
@@ -92,7 +114,18 @@ DEFAULT_UPSTREAMS: Dict[str, Dict[str, str]] = {
     "openai": {"base_url": "https://api.openai.com",
                "api_key_env": "OPENAI_API_KEY",
                "auth_header": "authorization"},
+    # Vertex / Agent Platform is the same wire format on a regional host, so it
+    # is this upstream with ``base_url`` overridden in proxy.json — e.g.
+    # https://us-central1-aiplatform.googleapis.com — and an OAuth bearer
+    # instead of an API key. No second dialect, no second entry.
+    "google": {"base_url": "https://generativelanguage.googleapis.com",
+               "api_key_env": "GEMINI_API_KEY",
+               "auth_header": "x-goog-api-key"},
 }
+
+#: Credentials we swap out in virtual-key mode. Every provider's key lands in
+#: exactly one of these, so stripping the set is what makes the swap total.
+_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 
 #: Headers we must not relay: hop-by-hop, or ones the upstream will recompute.
 _STRIP_REQUEST_HEADERS = frozenset({
@@ -191,6 +224,11 @@ def _text_of(content: Any) -> str:
     """Flatten a message ``content`` (string, or list of typed blocks) to text."""
     if isinstance(content, str):
         return content
+    # Gemini wraps text in a ``{"parts": [...]}`` object — both in a turn's
+    # ``content`` and in ``systemInstruction``. Unwrap it once, here, so every
+    # caller keeps treating "a thing with text in it" uniformly.
+    if isinstance(content, dict) and isinstance(content.get("parts"), list):
+        return _text_of(content["parts"])
     if isinstance(content, list):
         parts = []
         for block in content:
@@ -201,25 +239,49 @@ def _text_of(content: Any) -> str:
                     parts.append(block["text"])
                 elif block.get("type") == "tool_result":
                     parts.append(_text_of(block.get("content")))
+                elif "functionResponse" in block or "functionCall" in block:
+                    # A Gemini tool result is where an injected instruction
+                    # rides in, exactly as ``tool_result`` is above; it has to
+                    # reach the engine as text or the rule never sees it.
+                    payload = block.get("functionResponse") or block.get("functionCall")
+                    parts.append(json.dumps(payload, default=str))
         return "\n".join(p for p in parts if p)
     return "" if content is None else str(content)
+
+
+def _turns(body: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Conversation turns, whichever field this provider puts them in.
+
+    Anthropic and OpenAI use ``messages``; Gemini uses ``contents`` with the
+    text one level deeper under ``parts``. Normalising here is what keeps
+    ``prompt_parts`` and ``conversation_key`` from each growing a second
+    dialect.
+    """
+    if isinstance(body.get("messages"), list):
+        return [m for m in body["messages"] if isinstance(m, dict)]
+    return [{"role": t.get("role"), "content": t.get("parts")}
+            for t in (body.get("contents") or []) if isinstance(t, dict)]
+
+
+def _system_of(body: Dict[str, Any]) -> Any:
+    return body.get("system") or body.get("instructions") or body.get("systemInstruction")
 
 
 def extract_prompt(body: Dict[str, Any]) -> str:
     """The text going to the model: system prompt plus every message.
 
-    Both provider shapes put the system prompt somewhere different and OpenAI
-    folds it into ``messages``; flattening both to one blob is enough, because
-    the rules that matter here (secret material, data-boundary values, injected
-    instructions riding in a tool_result) are category rules over combined text.
+    Each provider puts the system prompt somewhere different — ``system``,
+    ``instructions``, folded into ``messages``, or ``systemInstruction`` — and
+    flattening all of them to one blob is enough, because the rules that matter
+    here (secret material, data-boundary values, injected instructions riding
+    in a tool result) are category rules over combined text.
     """
     parts: List[str] = []
-    system = body.get("system") or body.get("instructions")
+    system = _system_of(body)
     if system:
         parts.append(_text_of(system))
-    for msg in body.get("messages") or []:
-        if isinstance(msg, dict):
-            parts.append(_text_of(msg.get("content")))
+    for msg in _turns(body):
+        parts.append(_text_of(msg.get("content")))
     if isinstance(body.get("input"), (str, list)):
         parts.append(_text_of(body["input"]))
     return "\n".join(p for p in parts if p)
@@ -234,14 +296,12 @@ def prompt_parts(body: Dict[str, Any]) -> Dict[str, str]:
     wants the sentence they typed, not their sentence welded to the workflow's
     system prompt.
     """
-    system = body.get("system") or body.get("instructions")
+    system = _system_of(body)
     out: Dict[str, str] = {}
     if system:
         out["system"] = _text_of(system)
     last_user = ""
-    for msg in body.get("messages") or []:
-        if not isinstance(msg, dict):
-            continue
+    for msg in _turns(body):
         role = str(msg.get("role") or "")
         if role == "system" and "system" not in out:
             out["system"] = _text_of(msg.get("content"))
@@ -265,11 +325,11 @@ def conversation_key(body: Dict[str, Any]) -> str:
     """
     system = ""
     first_user = ""
-    raw_system = body.get("system") or body.get("instructions")
+    raw_system = _system_of(body)
     if raw_system:
         system = _text_of(raw_system)
-    for msg in body.get("messages") or []:
-        if isinstance(msg, dict) and str(msg.get("role") or "") == "user":
+    for msg in _turns(body):
+        if str(msg.get("role") or "") == "user":
             first_user = _text_of(msg.get("content"))
             break
     if not (system or first_user):
@@ -281,6 +341,14 @@ def conversation_key(body: Dict[str, Any]) -> str:
 def response_tool_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[str, Any]]:
     """``(tool_name, arguments)`` for every tool call in a completed response."""
     calls: List[Tuple[str, Any]] = []
+    if provider == "google":
+        for candidate in body.get("candidates") or []:
+            content = (candidate or {}).get("content") or {}
+            for part in content.get("parts") or []:
+                call = part.get("functionCall") if isinstance(part, dict) else None
+                if isinstance(call, dict):
+                    calls.append((str(call.get("name") or ""), call.get("args") or {}))
+        return calls
     if provider == "anthropic":
         for block in body.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
@@ -305,6 +373,26 @@ def _loads(value: Any) -> Any:
         except Exception:
             return {"_raw": value}
     return value if value is not None else {}
+
+
+def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
+    """The model id for this request.
+
+    Anthropic and OpenAI put it in the body. Gemini puts it in the path
+    (``/v1beta/models/gemini-2.5-pro:generateContent``), so reading only the
+    body would label every Gemini event with an empty model.
+    """
+    if provider != "google":
+        return str((body or {}).get("model") or "")
+    tail = path.rsplit("/", 1)[-1]
+    return tail.split(":", 1)[0] if ":" in tail else tail
+
+
+def is_streaming(provider: str, path: str, body: Optional[Dict[str, Any]]) -> bool:
+    """Gemini streams by *method name*; the others by a ``stream`` body flag."""
+    if provider == "google":
+        return ":streamGenerateContent" in path
+    return bool((body or {}).get("stream"))
 
 
 # ── the screen ───────────────────────────────────────────────────────────────
@@ -552,11 +640,18 @@ def refusal_reason(blocking: Dict[str, Any]) -> str:
     return f"Blocked by Prismor [{rule}]: {detail}"
 
 
-def error_body(provider: str, message: str) -> bytes:
+def error_body(provider: str, message: str, status: int = 403) -> bytes:
     """A refusal the client's own SDK will parse and surface, not choke on."""
     if provider == "anthropic":
         payload = {"type": "error",
                    "error": {"type": "permission_error", "message": message}}
+    elif provider == "google":
+        # google.genai.errors.APIError reads code/message/status off this shape;
+        # anything else surfaces to the caller as an unparsable-response crash
+        # rather than as the policy refusal it is.
+        payload = {"error": {"code": status, "message": message,
+                             "status": "PERMISSION_DENIED" if status == 403
+                             else "UNAUTHENTICATED" if status == 401 else "INTERNAL"}}
     else:
         payload = {"error": {"message": message, "type": "permission_error",
                              "code": "prismor_policy_block"}}
@@ -630,7 +725,29 @@ class StreamScreen:
 
         if self.provider == "anthropic":
             return self._feed_anthropic(chunk, event)
+        if self.provider == "google":
+            return self._feed_google(chunk, event)
         return self._feed_openai(chunk, event)
+
+    def _feed_google(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        """Gemini emits a whole ``functionCall`` part in one SSE frame.
+
+        There is nothing to accumulate — args never arrive in fragments the way
+        Anthropic's ``input_json_delta`` or OpenAI's ``arguments`` do — so the
+        holdback collapses to: judge the frame before forwarding it, and swap it
+        for a refusal if any call in it is denied. Same guarantee, no buffer.
+        """
+        calls = response_tool_calls("google", event)
+        if not calls:
+            return _rewrite_text_delta(chunk, event, self.screen.redact)
+        for tool_name, arguments in calls:
+            reason = self._verdict(tool_name, arguments)
+            if reason is None:
+                continue
+            self.blocked.append(reason)
+            sys.stderr.write(f"[prismor-proxy] {reason} (tool={tool_name})\n")
+            return _sse_text_frames("google", reason)
+        return chunk
 
     def _feed_anthropic(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
         etype = event.get("type")
@@ -688,29 +805,27 @@ class StreamScreen:
             return _rewrite_text_delta(chunk, event, self.screen.redact)
         return chunk
 
-    def _judge(self) -> bytes:
-        """Evaluate the completed tool call; release it or replace it."""
-        arguments = _loads("".join(self._tool_json) or "{}")
-        event = self.screen.tool_event(self._tool_name, arguments,
+    def _verdict(self, tool_name: str, arguments: Any) -> Optional[str]:
+        """The refusal that should replace this call, or None to release it."""
+        event = self.screen.tool_event(tool_name, arguments,
                                        self.provider, self.model, self.subject,
                                        session_id=self.session_id)
         try:
             decision = self.screen.evaluate(event, self.subject)
         except Exception:
-            # enforce-mode engine failure: the held block never ships.
-            self._pending = []
-            self._holding = False
-            reason = "Blocked by Prismor: policy evaluation failed (fail-closed)"
-            self.blocked.append(reason)
-            return _sse_text_frames(self.provider, reason, self._tool_index)
-
-        self.screen.log(decision, self._tool_name)
+            # enforce-mode engine failure: the call never ships.
+            return "Blocked by Prismor: policy evaluation failed (fail-closed)"
+        self.screen.log(decision, tool_name)
         blocking = self.screen.blocking(decision)
+        return None if blocking is None else refusal_reason(blocking)
+
+    def _judge(self) -> bytes:
+        """Evaluate the completed tool call; release it or replace it."""
+        reason = self._verdict(self._tool_name, _loads("".join(self._tool_json) or "{}"))
         held, self._pending = b"".join(self._pending), []
         self._holding = False
-        if blocking is None:
+        if reason is None:
             return held
-        reason = refusal_reason(blocking)
         self.blocked.append(reason)
         sys.stderr.write(f"[prismor-proxy] {reason} (tool={self._tool_name})\n")
         return _sse_text_frames(self.provider, reason, self._tool_index)
@@ -747,6 +862,17 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
         if masked == original:
             return chunk
         delta["content"] = masked
+    elif event.get("candidates"):
+        changed = False
+        for candidate in event["candidates"]:
+            for part in ((candidate or {}).get("content") or {}).get("parts") or []:
+                if not isinstance(part, dict) or not isinstance(part.get("text"), str):
+                    continue
+                masked = redact(part["text"])
+                if masked != part["text"]:
+                    part["text"], changed = masked, True
+        if not changed:
+            return chunk
     else:
         return chunk
     name = b""
@@ -775,6 +901,11 @@ def _sse_text_frames(provider: str, message: str, index: int = 0) -> bytes:
         return b"".join(
             f"event: {name}\ndata: {json.dumps(payload)}\n\n".encode()
             for name, payload in frames)
+    if provider == "google":
+        payload = {"candidates": [{"index": 0, "finishReason": "STOP",
+                                   "content": {"role": "model",
+                                               "parts": [{"text": message}]}}]}
+        return f"data: {json.dumps(payload)}\n\n".encode()
     payload = {"choices": [{"index": 0, "delta": {"content": message},
                             "finish_reason": "stop"}]}
     return f"data: {json.dumps(payload)}\n\n".encode()
@@ -821,7 +952,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _refuse(self, provider: str, message: str, status: int = 403) -> None:
-        body = error_body(provider, message)
+        body = error_body(provider, message, status)
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -833,6 +964,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         for prefix, provider in PROVIDER_ROUTES:
             if path.endswith(prefix) or path == prefix:
                 return provider
+        for fragment, provider in PROVIDER_PREFIXES:
+            if fragment in path:
+                return provider
         # An unrouted path is one both APIs define -- /v1/models above all,
         # which is what an SDK calls to verify a credential. Sending it to the
         # default upstream answers an OpenAI client with Anthropic's 401
@@ -842,6 +976,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # anthropic-version (or send x-api-key), OpenAI SDKs send a bearer.
         if self.headers.get("anthropic-version") or self.headers.get("x-api-key"):
             return "anthropic"
+        if self.headers.get("x-goog-api-key"):
+            return "google"
         auth = (self.headers.get("authorization") or "").strip().lower()
         if auth.startswith("bearer "):
             return "openai"
@@ -857,6 +993,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not self.config.keys:
             return None, None, None
         presented = (self.headers.get("x-api-key")
+                     or self.headers.get("x-goog-api-key")
                      or (self.headers.get("Authorization") or "").removeprefix("Bearer ").strip())
         meta = self.config.resolve_key(presented) if presented else None
         if meta is None:
@@ -872,11 +1009,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
 
+        path, query = urlsplit(self.path).path, urlsplit(self.path).query
         body = _loads_object(raw_body)
         screened = body is not None and any(
-            urlsplit(self.path).path.endswith(p) for p, _ in PROVIDER_ROUTES)
-        model = str((body or {}).get("model") or "")
-        streaming = bool((body or {}).get("stream"))
+            path.endswith(p) or path == p for p, _ in PROVIDER_ROUTES)
+        model = model_of(provider, path, body)
+        streaming = is_streaming(provider, path, body)
+
+        if provider == "google" and streaming and "alt=sse" not in query:
+            # Without alt=sse Gemini answers with one long JSON *array* instead
+            # of SSE frames, which gives the reframer no boundary at which to
+            # hold a functionCall back -- so this response cannot be screened.
+            # Every Gen AI SDK sets alt=sse; a hand-rolled client that does not
+            # must not be the way policy gets bypassed.
+            if self.screen is not None and self.screen.mode == "enforce":
+                self._refuse(provider,
+                             "Blocked by Prismor: :streamGenerateContent without "
+                             "?alt=sse cannot be screened (fail-closed) -- use the "
+                             "Gen AI SDK, or add alt=sse to the request")
+                return
+            sys.stderr.write("[prismor-proxy] google stream without alt=sse: "
+                             "forwarded unscreened (observe)\n")
 
         if screened and self.screen is not None:
             refusal = self._screen_request(provider, model, body, subject)
@@ -958,6 +1111,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if base.path and base.path != "/":
             path = base.path.rstrip("/") + path
         query = urlsplit(self.path).query
+        if self.config.keys and "key=" in query:
+            # Google's other credential form is ?key=<API key>. In virtual-key
+            # mode that would forward the *Prismor* key to Google and leave the
+            # swap in _upstream_headers with nothing to override.
+            query = "&".join(p for p in query.split("&") if not p.startswith("key="))
         try:
             conn.request(self.command, path + (f"?{query}" if query else ""),
                          body=raw_body or None,
@@ -987,12 +1145,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         real_key = os.environ.get(env_name) if env_name else None
         if real_key and self.config.keys:
             # Virtual-key mode: swap the client's Prismor key for the real one.
+            # Every credential header goes, whatever its casing, before the one
+            # this upstream wants goes back -- a surviving header from another
+            # provider's SDK would defeat the swap.
             header = str(spec.get("auth_header") or "authorization").lower()
-            for existing in ("authorization", "x-api-key"):
-                headers.pop(existing, None)
-                headers.pop(existing.title(), None)
-                headers.pop("X-Api-Key", None)
-            headers[header] = real_key if header == "x-api-key" else f"Bearer {real_key}"
+            headers = {k: v for k, v in headers.items()
+                       if k.lower() not in _AUTH_HEADERS}
+            headers[header] = (f"Bearer {real_key}" if header == "authorization"
+                               else real_key)
         headers["Content-Length"] = str(len(raw_body))
         headers["Accept-Encoding"] = "identity"
         return headers
@@ -1118,6 +1278,25 @@ def _mask_in_place(node: Any, redact: Callable[[str], str]) -> None:
 def _strip_blocked_calls(provider: str, body: Dict[str, Any],
                          blocked: Dict[str, str]) -> Dict[str, Any]:
     """Replace denied tool calls with the refusal text, in place."""
+    if provider == "google":
+        for candidate in body.get("candidates") or []:
+            content = (candidate or {}).get("content") or {}
+            parts, kept_call = [], False
+            for part in content.get("parts") or []:
+                call = part.get("functionCall") if isinstance(part, dict) else None
+                name = (call or {}).get("name")
+                if isinstance(call, dict) and name in blocked:
+                    parts.append({"text": blocked[name]})
+                else:
+                    kept_call = kept_call or isinstance(call, dict)
+                    parts.append(part)
+            content["parts"] = parts
+            if not kept_call:
+                # A turn that no longer proposes a call must not still claim it
+                # stopped to make one, or the SDK waits for a tool result that
+                # is never coming.
+                candidate["finishReason"] = "STOP"
+        return body
     if provider == "anthropic":
         content = []
         for block in body.get("content") or []:
@@ -1152,6 +1331,8 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
 def _meter(screen: Screen, body: Dict[str, Any], model: str) -> None:
     """Record token usage against the session. Best-effort, never fatal."""
     usage = body.get("usage")
+    if not isinstance(usage, dict):
+        usage = body.get("usageMetadata")   # Gemini's name for the same thing
     if not isinstance(usage, dict):
         return
     try:
@@ -1220,6 +1401,8 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
         print("[prismor] auth pass-through (no virtual keys configured)")
     print(f"[prismor] point an agent at it:  ANTHROPIC_BASE_URL={base} claude")
     print(f"[prismor]                        OPENAI_BASE_URL={base}/v1 codex")
+    print(f"[prismor]                        genai.Client(http_options="
+          f"types.HttpOptions(base_url='{base}'))")
     def _stop(signum, _frame):
         # SIGTERM is how a container stops, so the flush has to hang off the
         # signal rather than only off KeyboardInterrupt.

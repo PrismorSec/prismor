@@ -51,6 +51,7 @@ prismor
 │   ├─ semantic-check         Hybrid LLM prompt-injection guard
 │   ├─ sandbox <action>       status · check · run — Docker command sandbox
 │   ├─ eval-server            HTTP evaluation endpoint for non-Python adapters
+│   ├─ proxy                  LLM policy proxy — screens model traffic and proposed tool calls
 │   ├─ proxy                  LLM proxy — screens model traffic and proposed tool calls
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
 │   ├─ egress <action>        show · report · test · allow · deny · mode — network egress policy
@@ -338,6 +339,12 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode observe\|enforce`, `--workspace`, `--config`, `--session-id`, `--agent-name` | Policy proxy for model traffic. Point an agent at it with `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`; the outbound prompt is screened and cloak-masked, and every `tool_use` in the response is evaluated as the tool call it is. See [the LLM proxy](llm-proxy.md). |
+
+### proxy
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode <observe\|enforce>`, `--workspace`, `--config`, `--session-id`, `--agent-name` | The LLM lane: sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so an agent Prismor cannot hook is still governed. Point the client at it with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `genai.Client(http_options=types.HttpOptions(base_url=...))` — nothing else about the agent changes. The outbound prompt is screened and cloak-masked; every proposed tool call (`tool_use` / `tool_calls` / `functionCall`) is reshaped into the event a `Bash` hook produces and run through the same policy; streamed tool calls are held until they can be judged. See [LLM proxy](llm-proxy.md). |
 
 ### inference-hook
 

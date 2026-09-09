@@ -13,6 +13,14 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:7080 claude
 OPENAI_BASE_URL=http://127.0.0.1:7080/v1 codex
 ```
 
+```python
+# Google Gen AI SDK -- Gemini API, Vertex, Gemini Enterprise Agent Platform
+from google import genai
+from google.genai import types
+
+client = genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))
+```
+
 `GET /health` reports the surface and mode. Requests on unknown paths are
 forwarded untouched, so provider handshakes and `/v1/models` keep working.
 
@@ -72,8 +80,63 @@ then either released verbatim or replaced with a refusal at the same content
 block index. The client never receives a complete tool call that policy denies.
 The cost is that tool arguments arrive in one burst instead of streaming in.
 
-The same rule covers both provider dialects: Anthropic content blocks and
-OpenAI `tool_calls` deltas are folded into one holdback path.
+The same rule covers every provider dialect: Anthropic content blocks, OpenAI
+`tool_calls` deltas, and Gemini `functionCall` parts are folded into one
+holdback path.
+
+## Google Gen AI
+
+The Gemini API, Vertex, and the Gemini Enterprise Agent Platform all speak one
+wire format, and the SDK documents the hook point itself -- a custom `base_url`
+"for example, API gateway proxy server". One constructor argument; nothing else
+about the agent changes.
+
+Gemini differs from the other two in ways a proxy has to handle rather than
+approximate:
+
+| difference | handling |
+|---|---|
+| the model and the streaming *method* live in the path, not the body | `model_of()` / `is_streaming()` read the path for `google` |
+| a proposed call is a `functionCall` part in `candidates[].content.parts[]` | `response_tool_calls("google", ...)` |
+| a tool result is a `functionResponse` part | flattened into the screened prompt -- that is where an injected instruction rides in |
+| streamed `functionCall` parts arrive **whole** | the holdback collapses to judge-then-forward; no accumulator |
+| refusals must parse as `google.genai.errors.APIError` | `error_body` emits `code` / `message` / `status` |
+| a denied turn must not still claim it stopped to call a tool | `finishReason: STOP` once no call survives |
+
+Gemini's non-generation paths (`:countTokens`, model listing, file uploads) are
+named explicitly rather than left to the credential sniff, because a Gemini key
+is a bare `x-goog-api-key` with no bearer and no `anthropic-version` to go on.
+
+**Vertex and the Agent Platform** are the same format on a regional host, so
+they are the `google` upstream with `base_url` overridden:
+
+```json
+{"upstreams": {"google": {"base_url": "https://us-central1-aiplatform.googleapis.com"}}}
+```
+
+Auth there is an OAuth bearer from ADC rather than an API key; pass-through mode
+relays the client's own `Authorization` header unchanged.
+
+**One limit.** `:streamGenerateContent` without `?alt=sse` answers with a single
+long JSON array instead of SSE frames, which leaves no boundary at which to hold
+a `functionCall` back -- that response cannot be screened. Every Gen AI SDK sets
+`alt=sse`, so this reaches only hand-rolled clients: enforce refuses the request
+rather than forwarding it unscreened, observe forwards and warns on stderr.
+
+**What no proxy reaches.** An agent deployed to Agent Engine runs inside
+Google's cloud; its model traffic never crosses a URL you control. The lever
+there is that the deployed bundle is your own agent code plus its requirements
+-- ship [`prismor[google-adk]`](frameworks-google-adk.md) in it and the
+`before_tool_callback` governs it from the inside. Governance by inclusion, not
+interception.
+
+`examples/gemini-proxy-demo/demo.py` runs the whole path offline -- a stub
+Gemini upstream in the real wire format, the proxy in enforce, and a client that
+talks to it as the SDK would. No API key, no network, no `google-genai` install.
+
+![A proposed Gemini functionCall denied, buffered and streamed](llm-proxy/gemini.png)
+
+The same run as an animation: [gemini.gif](llm-proxy/gemini.gif).
 
 ## Virtual keys
 
@@ -92,6 +155,7 @@ re-plumb credentials first.
 ```json
 {
   "upstreams": {
+    "google": {"base_url": "https://us-central1-aiplatform.googleapis.com"},
     "anthropic": {
       "base_url": "https://api.anthropic.com",
       "api_key_env": "ANTHROPIC_API_KEY",

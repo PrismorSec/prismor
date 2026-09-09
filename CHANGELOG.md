@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Added
+- **The LLM proxy governs Google Gen AI traffic.** `prismor proxy` now routes and screens `:generateContent` / `:streamGenerateContent` — the Gemini API, Vertex, and the Gemini Enterprise Agent Platform — alongside Anthropic and OpenAI, reached the same way the others are: `genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))`. Gemini is a genuinely different dialect and each difference is handled rather than approximated: the model and the streaming *method* live in the path, not the body; a proposed call is a `functionCall` part in `candidates[].content.parts[]` and a tool result a `functionResponse` part, both flattened into the screened text; streamed `functionCall` parts arrive whole, so the holdback collapses to judging a frame before forwarding it. A denied call comes back as a text part carrying the refusal with `finishReason: STOP`, and a refused request in the shape `google.genai.errors.APIError` parses. Vertex and Agent Platform are the same wire format on a regional host — override the `google` upstream's `base_url`. Docs: `docs/llm-proxy.md`; offline demo: `examples/gemini-proxy-demo/demo.py`.
+- `prompt_parts` and `conversation_key` understand Gemini's `contents` / `systemInstruction`. Without this a Gemini session showed an empty prompt in the console and every conversation collapsed into one key, since both walked `messages` only.
+
+### Fixed
+- Virtual-key mode left another provider's credential header in place while swapping, because only `authorization` and `x-api-key` were stripped. Every credential header is now removed before the upstream's own is set, `x-goog-api-key` included, and Google's `?key=` query form is stripped so a Prismor key is never forwarded to Google.
+
+### Known limits
+- `:streamGenerateContent` without `?alt=sse` returns one long JSON array rather than SSE frames, which leaves no boundary at which to hold a `functionCall` back. Every Gen AI SDK sets `alt=sse`; a hand-rolled client that does not is refused in `enforce` and forwarded with a stderr warning in `observe`, rather than being screened by pretence.
+- An agent deployed to Agent Engine runs in Google's cloud and its model traffic never crosses a URL you control, so no proxy can front it. Ship `prismor[google-adk]` inside the deployed bundle instead.
+
 ## [1.49.3] — 2026-09-08
 
 ### Fixed
