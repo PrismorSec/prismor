@@ -289,6 +289,11 @@ settings:
                              # Both CLIs spawn a process per call (~5-20s);
                              # `prismor setup` asks this ("LLM judge").
     cli_path: ""             # override path to the claude/codex CLI; "" auto-discovers
+    judge_instructions: ""   # appended to the judge's system prompt, e.g. what
+                             # counts as benign or hostile in your org. The JSON
+                             # contract and score bands are not editable. Set it
+                             # in the org policy and it applies fleet-wide
+                             # (org layer merges after the project layer).
     model: ""                # litellm model id for the LLM layer when no claude CLI
                              # (or mode: api), e.g. gpt-4o-mini, ollama/llama3,
                              # gemini/gemini-2.0-flash. "" -> $PRISMOR_SEMANTIC_MODEL,

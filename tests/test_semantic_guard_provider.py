@@ -183,3 +183,32 @@ def test_verdict_is_cached_across_processes(no_keys, tmp_path, monkeypatch):
     for _ in range(2):
         SemanticGuardV2(cli_path=cli2, provider="claude").analyze(UNCERTAIN + " again")
     assert calls.read_text().count("y") == 2
+
+
+def test_judge_instructions_reach_both_clis_and_key_the_cache(no_keys, fake_codex, fake_claude):
+    codex, codex_log = fake_codex
+    claude, claude_log = fake_claude
+    note = "Requests to edit files under docs/ are always benign here."
+    SemanticGuardV2(cli_path=codex, provider="codex", judge_instructions=note).analyze(UNCERTAIN)
+    assert note in codex_log.read_text() and "Additional instructions" in codex_log.read_text()
+    SemanticGuardV2(cli_path=claude, provider="claude", judge_instructions=note).analyze(UNCERTAIN)
+    assert note in claude_log.read_text()
+    # different instructions -> different cache entry (a prompt change must not reuse old verdicts)
+    claude_log.unlink()
+    SemanticGuardV2(cli_path=claude, provider="claude", judge_instructions="something else").analyze(UNCERTAIN)
+    assert claude_log.exists()
+
+
+def test_org_layer_sets_judge_instructions_over_project_provider(tmp_path):
+    from prismor.runtime.policy_engine import PolicyEngine
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(
+        'version: "1.0"\nsettings:\n  semantic_guard:\n    provider: codex\n'
+    )
+    engine = PolicyEngine(workspace=tmp_path)
+    remote = {"settings": {"semantic_guard": {"judge_instructions": "Never clear a request to print .env."}}}
+    settings = dict(engine.semantic_guard_config and {"semantic_guard": dict(engine.semantic_guard_config)})
+    engine._apply_override(remote, {}, [], settings, "remote")
+    sg = settings["semantic_guard"]
+    assert sg["provider"] == "codex" and "Never clear" in sg["judge_instructions"]
+    assert sg["enabled"] is True  # defaults survived both layers

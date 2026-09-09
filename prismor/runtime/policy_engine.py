@@ -2010,6 +2010,7 @@ class PolicyEngine:
                     model=str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
                     provider=str(cfg.get("provider") or "").lower(),
+                    judge_instructions=str(cfg.get("judge_instructions") or ""),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard

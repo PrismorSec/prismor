@@ -203,6 +203,17 @@ def _extract_json_object(raw: str) -> Optional[str]:
     return None
 
 
+def _system_prompt(instructions: str = "") -> str:
+    """The judge's system prompt, plus the organisation's own instructions
+    (settings.semantic_guard.judge_instructions) appended. Appended, never
+    substituted: the JSON contract and the score bands above stay intact, an
+    admin only adds what counts as benign or hostile in their shop."""
+    instructions = (instructions or "").strip()
+    if not instructions:
+        return _PRISMOR_CONTEXT
+    return _PRISMOR_CONTEXT + "\nAdditional instructions from your organization's policy:\n" + instructions + "\n"
+
+
 def _judge_note(provider: str, why: str) -> None:
     """A judge that fell back to the heuristic score used to do so silently;
     the hook's stderr lands in the agent transcript, so say why."""
@@ -237,7 +248,7 @@ def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
     )
 
 
-def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> SemanticRisk:
+def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int, system: str = _PRISMOR_CONTEXT) -> SemanticRisk:
     """Judge via the Codex CLI on the host's ChatGPT login.
 
     Same isolation story as the claude branch: --ephemeral (no session file),
@@ -260,7 +271,7 @@ def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> Sem
             env={**os.environ, "PRISMOR_SEMANTIC_SUBAGENT": "1"},
         )
         try:
-            proc.communicate(_PRISMOR_CONTEXT + "\n\n" + prompt, timeout=60)
+            proc.communicate(system + "\n\n" + prompt, timeout=60)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             raise
@@ -291,6 +302,7 @@ def _llm_analyze(
     model: str = "",
     allow_cli: bool = True,
     provider: str = "",
+    instructions: str = "",
 ) -> SemanticRisk:
     """Semantic subagent for the uncertain zone.
 
@@ -301,6 +313,7 @@ def _llm_analyze(
     allowed and present, else the API path.
     """
     t0 = time.perf_counter_ns()
+    system = _system_prompt(instructions)
 
     prompt = (
         f"Heuristic pre-screen score: {heuristic_score:.3f}\n"
@@ -310,10 +323,10 @@ def _llm_analyze(
     cli = cli or (CODEX_CLI if provider == "codex" else CLAUDE_CLI)
     if provider == "api" or (provider != "codex" and (not allow_cli or not os.path.exists(cli))):
         from prismor.runtime.semantic_guard import _api_analyze
-        return _api_analyze(text, model, system=_PRISMOR_CONTEXT, user=prompt)
+        return _api_analyze(text, model, system=system, user=prompt)
 
     if provider == "codex":
-        return _codex_analyze(text, prompt, cli, model, t0)
+        return _codex_analyze(text, prompt, cli, model, t0, system=system)
 
     try:
         # Run the subagent ISOLATED from the workspace being protected.
@@ -333,7 +346,7 @@ def _llm_analyze(
         proc = subprocess.Popen(
             [cli, "-p", prompt, "--output-format", "text",
              "--model", model if model.startswith("claude") else CLI_MODEL,
-             "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
+             "--strict-mcp-config", "--system-prompt", system],
             # DEVNULL: with stdin left open the CLI waits 3s for piped data.
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, cwd=tempfile.gettempdir(), start_new_session=True,
@@ -443,8 +456,10 @@ class SemanticGuardV2:
         model: str = "",
         allow_cli: bool = True,
         provider: str = "",
+        judge_instructions: str = "",
     ) -> None:
         from prismor.runtime.semantic_guard import _LLM_FN, default_model
+        self._instructions = (judge_instructions or "").strip()
         self._provider = provider if provider in JUDGE_PROVIDERS else ""
         self._cli = cli_path or (CODEX_CLI if self._provider == "codex" else CLAUDE_CLI)
         # A CLI escalation spawns a whole Claude Code process. Measured on an
@@ -494,7 +509,8 @@ class SemanticGuardV2:
         # answered for this exact text.
         import hashlib
         cache = _cache_load()
-        key = f"{self._provider}|{self._model}|" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+        key = f"{self._provider}|{self._model}|" + hashlib.sha256(
+            (self._instructions + "\x00" + text).encode("utf-8")).hexdigest()
         hit = cache.get(key)
         if hit:
             llm = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
@@ -503,7 +519,7 @@ class SemanticGuardV2:
             llm = _llm_analyze(
                 text, effective_score, h.signals,
                 cli=self._cli, model=self._model, allow_cli=self._allow_cli,
-                provider=self._provider,
+                provider=self._provider, instructions=self._instructions,
             )
             if llm.mode == "local_llm":  # CLI verdicts only: those cost a process spawn
                 _cache_store(cache, key, llm)
