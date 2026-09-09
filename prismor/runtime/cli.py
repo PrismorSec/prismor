@@ -903,7 +903,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         cli_path = getattr(args, "cli_path", None)
         if mode == "hybrid":
             from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
-            guard = SemanticGuardV2(cli_path=cli_path, model=args.model)
+            provider = getattr(args, "provider", None)
+            model = args.model
+            if not provider:
+                # Same judge the hooks use here: the workspace policy's choice.
+                try:
+                    from prismor.runtime.policy_engine import PolicyEngine
+                    _sg = PolicyEngine(workspace=Path.cwd()).semantic_guard_config or {}
+                    provider = str(_sg.get("provider") or "")
+                    model = model or str(_sg.get("model") or "")
+                except Exception:
+                    provider = ""
+            guard = SemanticGuardV2(cli_path=cli_path, model=model, provider=provider or "")
             result = guard.analyze(text)
             payload = {
                 "mode": guard.mode,
@@ -3107,7 +3118,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="hybrid",
         help="Analysis mode: hybrid (heuristic + local LLM), heuristic-only, or API",
     )
-    sem_parser.add_argument("--cli-path", help="Override the path to the Claude CLI subagent")
+    sem_parser.add_argument("--cli-path", help="Override the path to the Claude/Codex CLI subagent")
+    sem_parser.add_argument(
+        "--provider",
+        choices=["claude", "codex", "api"],
+        help="Which login judges the uncertain zone; default: the workspace policy's "
+             "settings.semantic_guard.provider",
+    )
     sem_parser.add_argument(
         "--model",
         default="",
