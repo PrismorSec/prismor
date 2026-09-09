@@ -162,7 +162,8 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
 
         try:
             findings = engine.evaluate(
-                {"type": "skill_manifest", "content": text, "prompt": text, "path": key},
+                {"type": "skill_manifest", "content": text, "prompt": text, "path": key,
+                 "_bulk_scan": True},
                 idx, session_id="",
             )
         except Exception:

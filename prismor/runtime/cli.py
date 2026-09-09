@@ -903,7 +903,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         cli_path = getattr(args, "cli_path", None)
         if mode == "hybrid":
             from prismor.runtime.semantic_guard_v2 import SemanticGuardV2
-            guard = SemanticGuardV2(cli_path=cli_path, model=args.model)
+            provider = getattr(args, "provider", None)
+            model = args.model
+            if not provider:
+                # Same judge the hooks use here: the workspace policy's choice.
+                try:
+                    # Aliased: a bare `PolicyEngine` here would make the name
+                    # local to this whole function and break every other branch.
+                    from prismor.runtime.policy_engine import PolicyEngine as _Engine
+                    _sg = _Engine(workspace=Path.cwd()).semantic_guard_config or {}
+                    provider = str(_sg.get("provider") or "")
+                    model = model or str(_sg.get("model") or "")
+                except Exception:
+                    provider = ""
+            guard = SemanticGuardV2(cli_path=cli_path, model=model, provider=provider or "")
             result = guard.analyze(text)
             payload = {
                 "mode": guard.mode,
@@ -1958,6 +1971,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 target, mode=mode, agents=agents, cloak=cloak, scope=scope,
                 enforce_rules=enforce_rules,
                 recommended=bool(getattr(args, "recommended", False)),
+                judge=(getattr(args, "judge", None) or os.environ.get("PRISMOR_JUDGE", ""),
+                       getattr(args, "judge_model", None) or os.environ.get("PRISMOR_JUDGE_MODEL", "")),
             )
         elif getattr(args, "scope", None) == "global":
             # Explicit `--scope global` skips the TUI scope step and guards the
@@ -3105,7 +3120,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="hybrid",
         help="Analysis mode: hybrid (heuristic + local LLM), heuristic-only, or API",
     )
-    sem_parser.add_argument("--cli-path", help="Override the path to the Claude CLI subagent")
+    sem_parser.add_argument("--cli-path", help="Override the path to the Claude/Codex CLI subagent")
+    sem_parser.add_argument(
+        "--provider",
+        choices=["claude", "codex", "api"],
+        help="Which login judges the uncertain zone; default: the workspace policy's "
+             "settings.semantic_guard.provider",
+    )
     sem_parser.add_argument(
         "--model",
         default="",
@@ -3960,6 +3981,20 @@ def build_parser() -> argparse.ArgumentParser:
         dest="cloak",
         action="store_false",
         help="Disable secret cloaking (non-interactive only)",
+    )
+    setup_parser.add_argument(
+        "--judge",
+        choices=["claude", "codex", "api"],
+        default=None,
+        help="Which login judges uncertain events in the semantic layer: claude (Claude Code CLI), "
+             "codex (Codex CLI), api (litellm model + provider key). Default: heuristics only "
+             "(non-interactive only; $PRISMOR_JUDGE)",
+    )
+    setup_parser.add_argument(
+        "--judge-model",
+        default=None,
+        metavar="MODEL",
+        help="Model id for --judge; blank = that CLI's default ($PRISMOR_JUDGE_MODEL)",
     )
 
     update_parser = subparsers.add_parser(

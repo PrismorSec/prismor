@@ -10,6 +10,7 @@ running ``bash ~/.prismor/scripts/init.sh``; this module is its pip-installable 
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import re
 import shutil
@@ -754,6 +755,126 @@ def _step_cloak(current: bool = True, step: int = 3, total: int = 4) -> bool:
         elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
 
 
+# ── Step: LLM judge ───────────────────────────────────────────────────────────
+
+_JUDGE_OPTS = [
+    # (provider, label, default model, description)
+    ("",       "Heuristics only",  "",                          "no LLM; regex + structural rules decide (default)"),
+    ("claude", "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s per escalation"),
+    ("codex",  "Codex CLI",        "",                          "your ChatGPT login, no API key; ~5s per escalation"),
+    ("api",    "API key",          "",                          "any litellm model via provider env key; ~0.4s"),
+]
+
+
+def _judge_ready(provider: str) -> str:
+    """One-word readiness hint per provider, from what is on this host."""
+    import shutil
+    if provider == "claude":
+        from prismor.runtime.semantic_guard_v2 import CLAUDE_CLI
+        return "found" if os.path.exists(CLAUDE_CLI) else "not installed"
+    if provider == "codex":
+        from prismor.runtime.semantic_guard_v2 import CODEX_CLI
+        return "found" if os.path.exists(CODEX_CLI) else "not installed"
+    if provider == "api":
+        keys = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")
+                if os.environ.get(k)]
+        return keys[0] if keys else "no key in env"
+    return ""
+
+
+def _read_line(prefill: str) -> str:
+    """Minimal line editor for raw mode: printable chars, backspace, enter."""
+    buf = list(prefill)
+    while True:
+        sys.stdout.write("\r\033[K  " + _w("Model: ", BOLD) + "".join(buf) + SHOW)
+        sys.stdout.flush()
+        key = _read_key()
+        if key in (_ENTER, "\n"):
+            sys.stdout.write(HIDE)
+            return "".join(buf).strip()
+        if key in ("\x7f", "\b"):
+            if buf:
+                buf.pop()
+        elif key == "\x03":
+            _cleanup(); sys.exit(0)
+        elif key == "\x1b":
+            sys.stdout.write(HIDE)
+            return prefill
+        elif len(key) == 1 and key.isprintable():
+            buf.append(key)
+
+
+def _step_judge(current: tuple = ("", ""), step: int = 4, total: int = 5):
+    """Which login judges the uncertain zone of the semantic layer.
+
+    Returns (provider, model); "" provider = heuristics only, no policy write.
+    """
+    sel = next((i for i, o in enumerate(_JUDGE_OPTS) if o[0] == current[0]), 0)
+    while True:
+        lines = _header_lines(step, total, "LLM JUDGE")
+        lines.append(f"  {_w('When the regex layer is unsure (score 0.30-0.75), a small model makes', DIM)}")
+        lines.append(f"  {_w('the call. Pick which login it runs on. Only uncertain events pay for it.', DIM)}")
+        lines.append("")
+        tw = _term_width()
+        for i, (prov, label, _m, desc) in enumerate(_JUDGE_OPTS):
+            arrow = _w("▸ ", CYAN) if i == sel else "  "
+            dot   = _w("●", GRN) if i == sel else _w("○", DIM)
+            nm    = _pad(_w(label, BOLD) if i == sel else _w(label, DIM), 20)
+            ready = _judge_ready(prov)
+            tag = ""
+            if ready:
+                ok = ready in ("found",) or ready.endswith("_KEY")
+                tag = "  " + _w(f"[{ready}]", GRN if ok else YEL)
+            lines.append(f"  {arrow}{dot}  {nm}{_w(desc[:max(tw - 46, 20)], DIM)}{tag}")
+        lines.append("")
+        lines.append(_control_line([
+            ("↑↓", "select"), ("←", "back"), ("enter", "next"), ("q", "quit"),
+        ]))
+        _render(lines)
+
+        key = _read_key()
+        if key == _UP:                  sel = (sel - 1) % len(_JUDGE_OPTS)
+        elif key == _DOWN:              sel = (sel + 1) % len(_JUDGE_OPTS)
+        elif key in (_LEFT, "b", "B"):  return _BACK  # type: ignore[return-value]
+        elif key in (_ENTER, "\n"):
+            prov, _l, default_model, _d = _JUDGE_OPTS[sel]
+            if not prov:
+                return ("", "")
+            sys.stdout.write("\n  " + _w("Model id (enter keeps the default; blank = CLI default)", DIM) + "\n")
+            model = _read_line(current[1] if current[0] == prov and current[1] else default_model)
+            return (prov, model)
+        elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
+
+
+def _write_judge_setting(target: Path, provider: str, model: str) -> None:
+    """Persist settings.semantic_guard.{provider,model} into .prismor/policy.yaml.
+
+    Textual insert under an existing top-level `settings:` (keeps the file's
+    comments); falls back to a YAML round-trip only when the file already has a
+    semantic_guard stanza to merge into.
+    """
+    d = target / ".prismor"
+    d.mkdir(exist_ok=True)
+    path = d / "policy.yaml"
+    block = f"  semantic_guard:\n    provider: {provider}\n    model: {json.dumps(model)}\n"
+    txt = path.read_text(encoding="utf-8") if path.exists() else 'version: "1.0"\n'
+    if "semantic_guard:" in txt:
+        import yaml
+        raw = yaml.safe_load(txt) or {}
+        sg = raw.setdefault("settings", {}).setdefault("semantic_guard", {})
+        sg["provider"], sg["model"] = provider, model
+        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        return
+    lines = txt.splitlines(keepends=True)
+    for i, ln in enumerate(lines):
+        if ln.rstrip() == "settings:":
+            lines.insert(i + 1, block)
+            break
+    else:
+        lines.append(("" if txt.endswith("\n") else "\n") + "settings:\n" + block)
+    path.write_text("".join(lines), encoding="utf-8")
+
+
 # ── Step 4: Install Scope ────────────────────────────────────────────────────
 
 def _step_scope(current: str = "project", step: int = 4, total: int = 4) -> str:
@@ -878,7 +999,7 @@ def _wrap_value(value: str, width: int) -> List[str]:
 
 # ── Confirm ──────────────────────────────────────────────────────────────────
 
-def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", unlock_pw: bool = False, mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None) -> bool:
+def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", unlock_pw: bool = False, mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> bool:
     home = str(Path.home())
     disp = str(target).replace(home, "~")
     n_on = sum(1 for r in rules if r["on"])
@@ -948,6 +1069,8 @@ def _step_confirm(target: Path, mode: str, rules: List[dict], agents: List[str],
             lines.append(row(_w("built-ins served by Prismor; next session", DIM)))
         lines.append(row(kv("Cloak", "yes  (secret prevention)" if cloak else "no",
                             GRN if cloak else DIM)))
+        lines.append(row(kv("LLM judge", f"{judge[0]}  ({judge[1] or 'CLI default'})" if judge[0] else "heuristics only",
+                            GRN if judge[0] else DIM)))
         lines.append(row(kv("Scope", "global (all projects)" if scope == "global" else "workspace only",
                             YEL if scope == "global" else GRN)))
         lines.append(row(kv("Self-edit", "password (3m window)" if unlock_pw else "blocked",
@@ -1119,7 +1242,7 @@ def _install_skill(target: Path):
         return False, str(e)[:40]
 
 
-def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None) -> None:
+def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
     sys.stdout.write(ALT_OFF)
     sys.stdout.write("\033[H\033[J" + HIDE)
     sys.stdout.flush()
@@ -1221,6 +1344,12 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             (d / "policy.yaml").write_text(txt, encoding="utf-8")
             return True, f"{len(disabled)} disabled"
         _spinner_run("Writing policy overrides", _write_policy)
+
+    if judge[0]:
+        def _write_judge():
+            _write_judge_setting(target, judge[0], judge[1])
+            return True, f"{judge[0]} ({judge[1] or 'CLI default'})"
+        _spinner_run("Setting LLM judge", _write_judge)
 
     # 3. Install hooks directly via prismor.runtime.hooks
     from prismor.runtime.hooks import install_hooks
@@ -1399,6 +1528,7 @@ def run_non_interactive(
     scope: str = "project",
     enforce_rules: Optional[List[str]] = None,
     recommended: bool = False,
+    judge: tuple = ("", ""),
 ) -> None:
     """Run install without TUI. Args take precedence over env vars (resolution done by caller).
 
@@ -1428,7 +1558,7 @@ def run_non_interactive(
                   "or run `prismor setup` interactively.")
         else:
             print(f"[prismor] {n_on} rule(s) will block.")
-    _do_install(target, mode, rules, agents, cloak=cloak, scope=scope)
+    _do_install(target, mode, rules, agents, cloak=cloak, scope=scope, judge=judge)
 
 
 def _wizard_steps(mode: str, gov_mode: Optional[str], offer_unlock: bool) -> List[str]:
@@ -1443,7 +1573,7 @@ def _wizard_steps(mode: str, gov_mode: Optional[str], offer_unlock: bool) -> Lis
         names.append("governance")
         if gov_mode in (None, "custom"):
             names.append("policy_select")
-    names += ["agents", "cloak", "scope"]
+    names += ["agents", "cloak", "judge", "scope"]
     if offer_unlock:
         names.append("unlock")
     names.append("confirm")
@@ -1469,6 +1599,7 @@ def run_wizard(target: Path) -> None:
     agents = None
     mirror_agents = []
     cloak = True
+    judge = ("", "")
     scope = "project"
     unlock_pw = False
 
@@ -1522,6 +1653,13 @@ def run_wizard(target: Path) -> None:
                     continue
                 cloak = result
                 idx += 1
+            elif name == "judge":
+                result = _step_judge(judge, step=n, total=total)
+                if result is _BACK:
+                    idx -= 1
+                    continue
+                judge = result
+                idx += 1
             elif name == "scope":
                 result = _step_scope(scope, step=n, total=total)
                 if result is _BACK:
@@ -1539,7 +1677,8 @@ def run_wizard(target: Path) -> None:
             elif name == "confirm":
                 result = _step_confirm(target, mode, rules, agents, cloak=cloak,
                                        scope=scope, unlock_pw=unlock_pw,
-                                       mirror_agents=mirror_agents, gov_mode=gov_mode)
+                                       mirror_agents=mirror_agents, gov_mode=gov_mode,
+                                       judge=judge)
                 if result is _BACK:
                     idx -= 1
                     continue
@@ -1551,12 +1690,13 @@ def run_wizard(target: Path) -> None:
         agents = ["claude"]
         mirror_agents = []
         cloak = False
+        judge = ("", "")
         scope = "project"
         unlock_pw = False
 
     _raw_off()
     _do_install(target, mode, rules, agents, cloak=cloak, scope=scope,
-                mirror_agents=mirror_agents, gov_mode=gov_mode)
+                mirror_agents=mirror_agents, gov_mode=gov_mode, judge=judge)
     # After the install output, so the prompt isn't competing with spinners.
     if unlock_pw:
         _prompt_unlock_password()

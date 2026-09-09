@@ -15,7 +15,7 @@ flowchart TD
     PRE -->|"score &lt; 0.30"| ALLOW1["Allow (no LLM call)"]
     PRE -->|"score ≥ 0.75"| BLOCK1["Block (no LLM call)"]
     PRE -->|"0.30 ≤ score &lt; 0.75"| LLM["Local LLM subagent (uncertain zone only)<br/>Claude Code CLI — no API key, uses your session"]
-    LLM --> MERGE["Merge: take stricter verdict"]
+    LLM --> MERGE["Judge verdict wins (either way)"]
     MERGE -->|"score &lt; 0.45"| ALLOW2["Allow"]
     MERGE -->|"0.45 ≤ score &lt; 0.75"| WARN["Warn (finding emitted)"]
     MERGE -->|"score ≥ 0.75"| BLOCK2["Block (finding emitted)"]
@@ -79,10 +79,59 @@ settings:
 Keep that model small. It runs per uncertain event on the hook path, so a
 frontier model here costs latency on tool calls that a classifier does not need.
 
-To use the local Claude Code CLI as the subagent instead of an API, set
-`mode: hybrid`. It is an explicit opt-in because spawning a Claude Code process
-takes seconds, against a few hundred milliseconds for the same verdict over an
-API. Reinstall hooks if already running:
+### Use a subscription you already pay for
+
+No API key? The judge can run on the login of a coding-agent CLI that is
+already on the machine. `prismor setup` asks this on its **LLM judge** step;
+scripted installs pass it as a flag:
+
+```bash
+prismor setup --non-interactive --judge claude                       # Claude Code CLI, your Claude login
+prismor setup --non-interactive --judge codex                        # Codex CLI, your ChatGPT login
+prismor setup --non-interactive --judge api --judge-model gpt-4o-mini    # litellm + provider key
+```
+
+![prismor setup picking the Codex CLI as judge, then a 0.55 heuristic score escalating to a 0.92 block](judge-provider.gif)
+
+Live inside `claude --dangerously-skip-permissions` with the Codex judge: a benign
+prompt that trips the authority-claim heuristic (0.67) is cleared and the edit goes
+through; the credential-exfiltration prompt is blocked at 0.98.
+
+![Claude Code session: false positive cleared, injection blocked](judge-live.gif)
+
+The same flow with the Codex CLI as the governed agent (Prismor's Codex hooks in
+enforce mode) and the Codex judge on the same login. The UserPromptSubmit hook blocks
+the exfiltration prompt at 0.97; the benign edit went through:
+
+![Codex CLI session: false positive cleared, injection blocked](judge-codex-live.gif)
+
+The judge subagent runs `codex exec --ignore-user-config`, so it never loads the host's
+hooks and cannot recurse into Prismor even when Codex is also the governed agent.
+
+Either way it lands in the workspace policy:
+
+```yaml
+# .prismor/policy.yaml
+settings:
+  semantic_guard:
+    provider: codex        # api | claude | codex
+    model: ""              # "" = that CLI's default model
+```
+
+In the uncertain zone the judge's verdict is final in both directions: it confirms a
+paraphrased attack the regex layer only half-saw, and it clears a benign sentence that
+tripped an authority-claim signal (`[LLM cleared heuristic 0.55]` in the reason). A judge
+that fails to answer leaves the heuristic verdict as it was, and says why on stderr.
+CLI verdicts are cached in `$PRISMOR_HOME/judge-cache.json` (keyed on provider, model
+and a hash of the text), so re-analysis of a session's history never re-runs the judge.
+Keep the model at the CLI's default: small models (`gpt-5-mini`) over-warn on benign
+authority phrasing where the default Codex model and Haiku clear it.
+
+Both CLIs spawn a process per escalation (Claude Code ~20s, Codex ~5s), against
+a few hundred milliseconds over an API, which is why the default is heuristics
+only until you choose. The subagent runs isolated from the workspace: no MCP
+servers, no hooks, no project config, so it cannot recurse into Prismor. Reinstall
+hooks if already running:
 
 ```bash
 prismor install-hooks --agent all --mode enforce
@@ -121,8 +170,15 @@ settings:
                             #   heuristic  — regex signals only, no LLM, <1 ms
                             #   api        — every event goes to `model` (no pre-screen)
 
-    cli_path: ""            # path to the Claude CLI binary
+    provider: ""            # api | claude | codex — which login judges the uncertain zone
+                            #   api    — `model` over litellm, needs a provider key
+                            #   claude — Claude Code CLI on its own login (no key)
+                            #   codex  — Codex CLI on its ChatGPT login (no key)
+                            #   ""     — claude CLI when mode is hybrid, else api (historical)
+
+    cli_path: ""            # path to the Claude (or Codex) CLI binary
                             # leave empty to auto-discover: $CLAUDE_CLI → ~/.local/bin/claude → claude on PATH
+                            # ($CODEX_CLI → codex on PATH for provider: codex)
 
     model: ""               # litellm model id used when there is no Claude CLI (or mode: api):
                             # gpt-4o-mini, ollama/llama3, gemini/gemini-2.0-flash, bedrock/..., azure/...

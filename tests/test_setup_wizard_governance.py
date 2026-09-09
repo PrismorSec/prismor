@@ -25,12 +25,12 @@ class TestWizardSteps(unittest.TestCase):
         steps = setup_wizard._wizard_steps("observe", None, offer_unlock=False)
         self.assertNotIn("governance", steps)
         self.assertNotIn("policy_select", steps)
-        self.assertEqual(steps, ["mode", "agents", "cloak", "scope", "confirm"])
+        self.assertEqual(steps, ["mode", "agents", "cloak", "judge", "scope", "confirm"])
 
     def test_enforce_undecided_assumes_custom(self):
         steps = setup_wizard._wizard_steps("enforce", None, offer_unlock=False)
         self.assertEqual(
-            steps, ["mode", "governance", "policy_select", "agents", "cloak", "scope", "confirm"]
+            steps, ["mode", "governance", "policy_select", "agents", "cloak", "judge", "scope", "confirm"]
         )
 
     def test_enforce_custom_keeps_rule_picker(self):
@@ -42,7 +42,7 @@ class TestWizardSteps(unittest.TestCase):
         steps = setup_wizard._wizard_steps("enforce", mode_id, offer_unlock=True)
         self.assertNotIn("policy_select", steps)
         self.assertEqual(
-            steps, ["mode", "governance", "agents", "cloak", "scope", "unlock", "confirm"]
+            steps, ["mode", "governance", "agents", "cloak", "judge", "scope", "unlock", "confirm"]
         )
 
 
