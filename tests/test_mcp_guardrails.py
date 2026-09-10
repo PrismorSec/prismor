@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import yaml
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -29,6 +30,7 @@ sys.path.insert(0, str(_REPO))
 from prismor.runtime.policy_engine import PolicyEngine  # noqa: E402
 from prismor.runtime.hooks import should_block  # noqa: E402
 from prismor.runtime.runtime import evaluate_tool_call  # noqa: E402
+from prismor.runtime import policy_engine  # noqa: E402
 
 
 def _engine(policy_yaml: str) -> PolicyEngine:
@@ -289,6 +291,42 @@ class McpArgumentEgress(unittest.TestCase):
             with self.subTest(label):
                 self.assertTrue(self._remote(args).allow)
                 self.assertTrue(self._stdio(args).allow)
+
+    def test_console_overlay_can_retune_the_rule(self):
+        # Everything about this rule has to be reachable from the console: it
+        # ships as YAML with no Python behind it, so an admin can observe it,
+        # switch it off, add their own metadata host, or drop one host they
+        # do not run. One pattern per host is what makes that last one work --
+        # `disable_patterns` drops a whole pattern string, so a single
+        # alternation over all the hosts would be all-or-nothing.
+        rules = {r["id"]: r for r in yaml.safe_load(
+            (Path(policy_engine.__file__).parent / "default_policy.yaml").read_text()
+        )["rules"]}
+        gcp_pattern = next(p for p in rules["mcp-arg-metadata-endpoint"]["patterns"]
+                           if "google" in p)
+        aws = {"url": "http://169.254.169.254/latest/meta-data/"}
+        gcp = {"url": "http://metadata.google.internal/computeMetadata/v1/"}
+
+        def under(overlay: str, args: dict):
+            ws = Path(tempfile.mkdtemp(prefix="prismor-mcp-egress-ov-"))
+            (ws / ".prismor").mkdir()
+            (ws / ".prismor" / "policy.yaml").write_text(
+                'version: "1.0"\nsettings:\n  default_mode: enforce\n' + overlay)
+            return evaluate_tool_call(
+                event=_stdio_mcp_event("mcp__db__fetch", args), workspace=ws,
+                agent="claude", mode="enforce", session_id="mcp-egress-overlay",
+                persist=False, register_agent=False)
+
+        rule = "rules:\n  - id: mcp-arg-metadata-endpoint\n"
+        self.assertTrue(under(rule + "    mode: observe\n", aws).allow)
+        self.assertTrue(under(rule + "    enabled: false\n", aws).allow)
+        self.assertFalse(under(
+            rule + "    add_patterns:\n      - 'imds\\.corp\\.internal'\n",
+            {"url": "https://imds.corp.internal/creds"}).allow)
+
+        drop_gcp = rule + "    disable_patterns:\n      - " + json.dumps(gcp_pattern) + "\n"
+        self.assertTrue(under(drop_gcp, gcp).allow)
+        self.assertFalse(under(drop_gcp, aws).allow)   # the other hosts survive
 
     def test_does_not_fire_on_stdio_tool_output(self):
         # Post-call `response` is the tool's OUTPUT. An argument guardrail that

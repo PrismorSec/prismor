@@ -1776,6 +1776,11 @@ rules:
   # Precision comes from requiring a destination-shaped argument *whose
   # value starts with* the metadata host: descriptive prose that merely
   # mentions 169.254.169.254 does not match.
+  #
+  # One pattern per host, like cloud-metadata-ssrf above, rather than one
+  # alternation over all of them — `disable_patterns` drops a whole pattern
+  # string, so folding the hosts together would leave an AWS-only shop no
+  # way to switch off the GCP host from the console.
   - id: mcp-arg-metadata-endpoint
     severity: CRITICAL
     category: reconnaissance
@@ -1783,7 +1788,14 @@ rules:
     event_types: [mcp]
     fields: [mcp_args]
     patterns:
-      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?(?:169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2|2852039166|0xa9fe[:\-]?a9fe|0251\.0376\.0251\.0376|::ffff:a9fe:a9fe|::ffff:169\.254\.169\.254)(?:[/:?#\]"\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?169\.254\.169\.254(?:[/:?#\]"\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?metadata\.google\.internal(?:[/:?#\]"\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?169\.254\.170\.2(?:[/:?#\]"\\]|$)'  # ECS/EKS task credential relay
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?2852039166(?:[/:?#\]"\\]|$)'  # decimal encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?0xa9fe[:\-]?a9fe(?:[/:?#\]"\\]|$)'  # hex encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?0251\.0376\.0251\.0376(?:[/:?#\]"\\]|$)'  # octal octet encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?::ffff:a9fe:a9fe(?:[/:?#\]"\\]|$)'  # IPv6-mapped (short hex)
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?::ffff:169\.254\.169\.254(?:[/:?#\]"\\]|$)'  # IPv6-mapped (dotted decimal)
     action: block
 
   # ── HIGH: PII in agent context ────────────────────────────────────
