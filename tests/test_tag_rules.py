@@ -7,7 +7,7 @@ import pytest
 from prismor.runtime.tag_rules import (
     CompiledRule, ParseError, compile_rule, compile_tool_tag_rules, lint_rules,
 )
-from prismor.runtime.trifecta import UNTRUSTED, CRITICAL, TagLedger
+from prismor.runtime.trifecta import UNTRUSTED, CRITICAL, INFLUENCE, TagLedger
 
 
 # ── parser: valid expressions ─────────────────────────────────────────────────
@@ -114,19 +114,25 @@ def test_legacy_incompatible_compiles_to_single_step_block():
     assert all(r.action == "block" and r.source == "incompatible" for r in rules)
 
 
+DEFAULT_STEPS = [
+    [{CRITICAL, INFLUENCE}],          # block
+    [{UNTRUSTED}, {CRITICAL}],        # warn
+]
+
+
 def test_legacy_single_tag_sets_dropped_like_normalize():
     tt = {"incompatible": [["a"]]}
     rules = compile_tool_tag_rules(tt)
-    # drops <2-tag sets, then falls back to the default red/blue pair
-    assert [r.steps for r in rules] == [[{UNTRUSTED, CRITICAL}]]
+    # drops <2-tag sets, then falls back to the shipped defaults
+    assert [r.steps for r in rules] == DEFAULT_STEPS
     assert rules[0].source == "default"
 
 
 def test_empty_settings_default_pair():
-    rules = compile_tool_tag_rules({})
-    assert [r.steps for r in rules] == [[{UNTRUSTED, CRITICAL}]]
-    rules = compile_tool_tag_rules(None)
-    assert [r.steps for r in rules] == [[{UNTRUSTED, CRITICAL}]]
+    """Declaring nothing blocks on influence and reports the bare sequence."""
+    for rules in (compile_tool_tag_rules({}), compile_tool_tag_rules(None)):
+        assert [r.steps for r in rules] == DEFAULT_STEPS
+        assert [r.action for r in rules] == ["block", "warn"]
 
 
 def test_rules_and_incompatible_merge():

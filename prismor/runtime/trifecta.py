@@ -11,6 +11,12 @@ destroys externally), with one incompatible set ``[untrusted_content,
 critical_action]``. Orgs can define any tags and any N-tag combinations (e.g. a
 three-condition ``[untrusted_content, private_data, external_comms]``).
 
+A third tag, ``untrusted_influence``, marks a critical call whose own
+arguments demonstrably came from untrusted content this session read. It is
+what makes the combination rules usable: "fetched a README, then pushed my own
+branch" is a sequence, not an attack, and only influence separates the two.
+See :class:`GramStore`.
+
 This module owns the swappable *detection* (tagging + per-session ledger);
 ``policy_engine`` owns *enforcement* (emitting the finding). Detection can be
 swapped (strict combination now, risk scoring later) without touching
@@ -19,13 +25,19 @@ enforcement.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 # Default tag vocabulary (the red/blue pair, in PDF language).
 UNTRUSTED = "untrusted_content"
 CRITICAL = "critical_action"
+# Set on a critical call whose arguments carry content the session read from an
+# untrusted source. Sequence alone is far too common to block on; influence is
+# the part that indicates the untrusted content is steering the action.
+INFLUENCE = "untrusted_influence"
 
 # ── Built-in default tagging ──────────────────────────────────────────────────
 # (matcher, match_type, [tags]). Kept in sync with the enterprise premium catalog
@@ -43,6 +55,18 @@ TOOL_TAG_DEFAULTS = [
     ("mcp__*__read_document", "glob", [UNTRUSTED]),
     ("mcp__*__*fetch*", "glob", [UNTRUSTED]),
     ("mcp__*__*scrape*", "glob", [UNTRUSTED]),
+    # Browser surfaces: the page a tab is showing is authored by whoever owns
+    # the site. Tab/window metadata is not, and is deliberately absent here --
+    # tagging it untrusted was a top false-positive source in the session
+    # corpus replay.
+    ("mcp__*__navigate", "glob", [UNTRUSTED]),
+    ("mcp__*__read_page", "glob", [UNTRUSTED]),
+    ("mcp__*__get_page_text", "glob", [UNTRUSTED]),
+    # Inbox-shaped readers beyond the ones above.
+    ("mcp__*__get_message", "glob", [UNTRUSTED]),
+    ("mcp__*__get_thread", "glob", [UNTRUSTED]),
+    ("mcp__*__search_threads", "glob", [UNTRUSTED]),
+    ("mcp__*__list_comments", "glob", [UNTRUSTED]),
     # critical action
     ("mcp__*__send_email", "glob", [CRITICAL]),
     ("mcp__*__post_message", "glob", [CRITICAL]),
@@ -54,47 +78,65 @@ TOOL_TAG_DEFAULTS = [
 ]
 
 # Default incompatible set when the policy declares none (the red/blue rule).
+# Kept for the legacy `incompatible:` surface; DEFAULT_RULES is what a policy
+# that declares nothing actually gets.
 DEFAULT_INCOMPATIBLE = [[UNTRUSTED, CRITICAL]]
 
-# Inference fallback: event types → an implied tag.
+# What an org gets by turning tool_tags on and configuring nothing.
 #
-# `untrusted_content` means *attacker-influenceable* input, so this set is
-# deliberately narrow. Two event types that look like ingest are handled by
-# their own rules below instead of living here:
+# The blocking rule requires INFLUENCE, not merely the sequence. Sequence alone
+# fired on 213 of 391 real development sessions -- read a README, then push a
+# branch -- which is not a control anyone keeps enabled. The same replay with
+# influence required fired once. The sequence itself is still worth seeing, so
+# it stays as a warn.
+DEFAULT_RULES = [
+    f"{CRITICAL} with {INFLUENCE} -> block",
+    f"{UNTRUSTED} then {CRITICAL} -> warn",
+]
+
+# Inference fallback, for tools the tiers above did not name.
 #
-#   file_read    Reading a file inside the workspace is the single most common
-#                thing an agent does (see the corpus in tests/test_modes.py).
-#                Tagging it untrusted made `untrusted_content then
-#                critical_action -> block` fire on read-then-anything, which
-#                ends the session on its first shell call. Only a read from
-#                OUTSIDE the workspace root carries the tag — see
-#                `_is_external_read`.
-#   tool_result  The canonical fall-through for any tool an adapter does not
-#                map (hooks._unmapped_tool_event), which locally means Grep,
-#                Glob, Task, TodoWrite — none of them external ingest. Only an
-#                MCP tool result is attacker-influenceable, so the tag is
-#                scoped to events the normalizer marked with an mcp_server.
-#   memory       The SessionStart scan of the workspace's own instruction
-#                files (CLAUDE.md, AGENTS.md). It fires on EVERY session, so
-#                tagging it untrusted armed `untrusted_content then
-#                critical_action -> block` before the user typed anything and
-#                the first shell call of every session died. It is also the
-#                same content as an in-workspace `file_read`, which is
-#                already excluded above, so tagging it here was inconsistent
-#                as well as fatal. Nothing is lost: the memory event's content
-#                is still scanned by the prompt-injection rules and checked
-#                against the TOFU baseline by memory_guard — this set only
-#                feeds the combination rules.
+# Both halves are deliberately narrow, because a tag here feeds combination
+# rules that deny a call outright. Replaying the default rule over 391 real
+# development sessions showed the wide version firing on 54% of them: reads of
+# the user's own transcripts and scratchpad, subagent spawns and browser tab
+# metadata supplied "untrusted", while `grep`/`ls`/`find` supplied "critical"
+# merely by being shell. None of those is attacker-authored input or an
+# irreversible action, and a control that stops one session in two is a control
+# nobody leaves on.
 #
-# None of these narrowings lose the tools that matter: WebFetch and WebSearch
-# are tagged by name in TOOL_TAG_DEFAULTS, which resolves before inference runs.
-_UNTRUSTED_EVENT_TYPES = {"subagent_spawn"}
-_CRITICAL_EVENT_TYPES = {"file_write", "shell"}
+# What is inferred now:
+#   untrusted   content that came back from off-machine: a network event
+#               carrying a RESPONSE, or a shell command that fetches (curl,
+#               wget) once its output is in hand. Requests going out are not
+#               ingest. The shell half is not optional -- an agent that reaches
+#               the web through Bash rather than a fetch tool is the common
+#               case, not the exotic one, and without it such a session never
+#               becomes untrusted and nothing it writes carries anything.
+#   critical    an action the rule engine already judged irreversible or
+#               externally visible (the categories below). Judgement stays with
+#               the rules, which match on what the command does, not on the
+#               event being a shell at all.
+#
+# Everything else that matters is named in TOOL_TAG_DEFAULTS or by the org, and
+# resolves before inference runs. Content read from a file is handled by
+# provenance instead of by the file's location: see prismor.runtime.provenance,
+# which knows that /tmp/notes.md holds what another agent fetched from the web
+# while ~/.claude/settings.json does not.
 _CRITICAL_FINDING_CATEGORIES = {
     "destructive_command",
     "secret_exfiltration",
     "db_modification",
     "remote_execution",
+    # Writes to /etc/sudoers, shell rc files, launch agents and the like. The
+    # auth-file-write / persistence rules already match these paths, so the tag
+    # follows their verdict rather than re-implementing the path list.
+    "privilege_escalation",
+    "persistence",
+    # Classified data on its way to a destination. The data-boundary layer has
+    # already decided both halves -- what the payload is and where it is going
+    # -- so an exfiltration reads as critical without a second opinion here.
+    "data_boundary",
 }
 
 
@@ -124,6 +166,52 @@ def _matches(tool_name: str, matcher: str, match_type: str) -> bool:
     if any(c in matcher for c in "*?["):
         return fnmatch.fnmatchcase(tool_name, matcher)
     return tool_name == matcher
+
+
+# Commands that pull content off the network. Deliberately a short list of
+# fetchers rather than "anything with a URL in it": `git clone` and `pip
+# install` also reach the network, but what they bring back is code the agent
+# runs, which the supply-chain rules already judge, not text it reads and acts
+# on.
+# `http`/`https` are httpie's binaries, but they are also the first word of
+# every URL, and a URL after a separator inside a heredoc is text, not a
+# command. Matching them made a script that merely *contains* URLs read as a
+# fetch, and everything that script printed became untrusted content. curl and
+# wget are what agents actually fetch with; xh and httpie keep the modern
+# clients without the false reads.
+_FETCH_RE = re.compile(
+    r"(?:^|[;&|]\s*|\$\(|`)\s*(?:sudo\s+)?(?:curl|wget|xh|httpie)\b",
+    re.IGNORECASE,
+)
+
+
+def _all_private(event: Dict[str, Any]) -> bool:
+    """Whether every destination this event names is on this machine/network.
+
+    Host classification is ``egress.Destination``, so this agrees with what the
+    egress layer already means by private. False when nothing resolves, which
+    keeps the caller's default (treat as external) for anything unparseable.
+    """
+    try:
+        from prismor.runtime.egress import extract_destinations
+
+        dests = extract_destinations(event)
+        return bool(dests) and all(d.is_private for d in dests)
+    except Exception:
+        return False
+
+
+def is_network_fetch(command: str) -> bool:
+    """Whether a shell command pulls content in from OUTSIDE this machine.
+
+    A fetch from loopback or a private address is the agent talking to a
+    service it is running -- its own dev server, its own test fixture. That
+    content is not attacker-authored, and treating it as ingest made a session
+    that polls ``http://localhost:5678`` untrusted for the rest of its life.
+    """
+    if not command or _FETCH_RE.search(command) is None:
+        return False
+    return not _all_private({"type": "shell", "command": command})
 
 
 def _tool_name(event: Dict[str, Any]) -> str:
@@ -236,48 +324,12 @@ def tool_tags_for_agent(
     return merged
 
 
-def _is_external_read(event: Dict[str, Any], workspace: Optional[Path]) -> bool:
-    """Whether a ``file_read`` reaches outside the workspace it is scoped to.
-
-    A read of the repo the agent was pointed at is ordinary work and carries no
-    ``untrusted_content``; a read of ``~/.ssh/id_rsa``, ``/tmp/downloaded.json``,
-    or another checkout is content nobody in this session vouched for.
-
-    Unknown workspace resolves to *not external*. That is deliberate: this
-    function decides whether to attach a tag that, combined with the default
-    trifecta rule, denies every subsequent shell call. Guessing "untrusted"
-    whenever the workspace cannot be resolved would reinstate exactly the
-    session-ending behaviour this narrowing exists to remove, on the paths where
-    we know the least — and it would do so for every read, not a rare one.
-    Detection of what the read actually touched stays with the secret-access
-    rules, which match on path and never on session history.
-    """
-    from prismor.runtime.paths import is_within
-
-    if workspace is None:
-        return False
-    path = str(event.get("path") or "")
-    if not path:
-        return False
-    target = Path(path).expanduser()
-    if not target.is_absolute():
-        target = Path(workspace) / target
-    # `is_within` resolves both sides, so a symlink pointing out of the
-    # workspace correctly reads as external, and a path that does not exist yet
-    # still resolves lexically. It returns False for the genuinely unresolvable
-    # (a symlink loop), which lands here as "external" — the conservative side,
-    # and rare enough that it cannot re-arm the read-then-anything cliff the
-    # way an unknown workspace would.
-    return not is_within(target, workspace)
-
-
 def classify_tool_tags(
     event: Dict[str, Any],
     event_type: str,
     finding_categories: Optional[set] = None,
     tt_settings: Optional[Dict[str, Any]] = None,
     extra_tags: Optional[Set[str]] = None,
-    workspace: Optional[Path] = None,
 ) -> Set[str]:
     """Return the set of tags for a tool call.
 
@@ -290,13 +342,40 @@ def classify_tool_tags(
     with it — they describe the call's *destination* (see :func:`egress_tags`),
     not its identity, so they must not suppress the tool's own tags.
 
-    ``workspace`` scopes the file-read inference: see :func:`_is_external_read`.
-    Omitted, every read counts as in-workspace.
     """
-    base = _classify_base(
-        event, event_type, finding_categories, tt_settings, workspace
-    )
+    base = _classify_base(event, event_type, finding_categories, tt_settings)
+    # A read pointed at this machine is the agent reading its own dev server or
+    # test fixture, not ingesting attacker-authored text -- the same call
+    # `is_network_fetch` already makes for `curl http://localhost:5678`. The
+    # tool name cannot tell the two apart, so the URL decides, and it decides
+    # after every tier: dropping the tag inside the defaults tier only sent an
+    # empty set on to inference, which put it straight back.
+    #
+    # An org's explicit `tags:` map is left alone -- naming a tool there is a
+    # deliberate statement about that tool, not a guess this should second-
+    # guess.
+    if (
+        UNTRUSTED in base
+        and event.get("url")
+        and UNTRUSTED not in _org_tags(_tool_name(event), tt_settings or {})
+        and _all_private(event)
+    ):
+        base = base - {UNTRUSTED}
     return base | (extra_tags or set())
+
+
+def _org_tags(tool_name: str, tt: Dict[str, Any]) -> Set[str]:
+    """Tags the org's explicit ``tags:`` map gives this tool, exact or glob."""
+    mapping = tt.get("tags") or {}
+    if not isinstance(mapping, dict):
+        return set()
+    tags: Set[str] = set()
+    if tool_name in mapping:
+        tags |= set(_as_list(mapping[tool_name]))
+    for pat, val in mapping.items():
+        if pat != tool_name and _matches(tool_name, pat, "auto"):
+            tags |= set(_as_list(val))
+    return tags
 
 
 def _classify_base(
@@ -304,20 +383,13 @@ def _classify_base(
     event_type: str,
     finding_categories: Optional[set] = None,
     tt_settings: Optional[Dict[str, Any]] = None,
-    workspace: Optional[Path] = None,
 ) -> Set[str]:
     tt = tt_settings or {}
     tool_name = _tool_name(event)
     tags: Set[str] = set()
 
     # 1. Explicit org/catalog map: {tool_or_glob: tag | [tags]}.
-    mapping = tt.get("tags") or {}
-    if isinstance(mapping, dict):
-        if tool_name in mapping:
-            tags |= set(_as_list(mapping[tool_name]))
-        for pat, val in mapping.items():
-            if pat != tool_name and _matches(tool_name, pat, "auto"):
-                tags |= set(_as_list(val))
+    tags |= _org_tags(tool_name, tt)
     if tags:
         return tags
 
@@ -340,26 +412,275 @@ def _classify_base(
 
     # 3. Inference (best-effort fallback).
     if tt.get("inference_enabled", True):
-        fcats = finding_categories or set()
-        if fcats & _CRITICAL_FINDING_CATEGORIES:
+        if (finding_categories or set()) & _CRITICAL_FINDING_CATEGORIES:
             tags.add(CRITICAL)
-        if event_type == "network":
-            tags.add(UNTRUSTED if event.get("response") else CRITICAL)
-        elif event_type in _CRITICAL_EVENT_TYPES:
-            tags.add(CRITICAL)
-        elif event_type == "file_read":
-            if _is_external_read(event, workspace):
-                tags.add(UNTRUSTED)
-        elif event_type == "tool_result":
-            # Only an MCP result is remote content; a local unmapped tool is
-            # not. The normalizer stamps `mcp_server`, but fall back to the tool
-            # name so a hand-built or adapter-specific event still classifies.
-            if event.get("mcp_server") or tool_name.startswith("mcp__"):
-                tags.add(UNTRUSTED)
-        elif event_type in _UNTRUSTED_EVENT_TYPES:
+        if event.get("response") and (
+            event_type == "network"
+            or (event_type == "shell" and is_network_fetch(str(event.get("command") or "")))
+        ):
             tags.add(UNTRUSTED)
 
     return tags
+
+
+# ── Influence: did the untrusted content actually steer this call? ───────────
+#
+# "Read a page, then run a command" is what a working day looks like; "read a
+# page, then run a command the page dictated" is the attack. The difference is
+# whether text from the untrusted content reappears in the critical call's own
+# arguments.
+#
+# The test is a shared distinctive token 3-gram. Whole-session bag, hashed, so
+# no untrusted text is persisted; the readable phrase is recovered from the
+# call side (which we hold in memory) when reporting. Replayed over 391 real
+# sessions this fired on 1, against 213 for sequence alone, and it still caught
+# the cross-agent handoff attack in the lab -- the injected `DROP TABLE users`
+# reached the database call verbatim, as injected instructions must, since a
+# command the agent alters no longer does what the attacker asked.
+#
+# ponytail: whole-session gram bag, not per-source. Upgrade to per-artifact
+# gram sets if a session needs to say WHICH untrusted source steered the call.
+
+_GRAM_N = 3
+_GRAM_TOKEN = re.compile(r"[A-Za-z0-9_./:@-]{3,}")
+# Tokens too common to make a 3-gram distinctive. Small and deliberately
+# boring: the n-gram does the work, this only trims the noise floor.
+_GRAM_STOP = frozenset("""
+the and for with that this from into out you are not have has was were will
+can use used using run file files line lines error errors true false null none
+http https com www github org net all any new old get set add one two
+""".split())
+
+
+def content_grams(text: str, limit: int = 200_000) -> Dict[str, str]:
+    """Map ``{hash: readable phrase}`` for the distinctive 3-grams in ``text``.
+
+    Hashing keeps the persisted side small and free of untrusted text; the
+    readable half is only ever used for the call being screened.
+    """
+    if not text:
+        return {}
+    toks = [
+        t.lower() for t in _GRAM_TOKEN.findall(text[:limit])
+        if t.lower() not in _GRAM_STOP
+    ]
+    out: Dict[str, str] = {}
+    for i in range(len(toks) - _GRAM_N + 1):
+        phrase = " ".join(toks[i:i + _GRAM_N])
+        out[hashlib.blake2b(phrase.encode("utf-8"), digest_size=5).hexdigest()] = phrase
+    return out
+
+
+# Keys whose value is a shell command, wherever a payload copy of it appears.
+_COMMAND_KEYS = ("command", "cmd", "script", "shell_command")
+
+# Fields a person reads, as opposed to fields a machine executes.
+#
+# This is the same line `acting_text` draws inside a shell command, applied to
+# structured tool arguments, which have no quoting to draw it with. An agent
+# that reads an issue and opens a PR whose body names that issue has quoted the
+# issue; an agent that reads a page and puts the page's SQL in `query` is
+# obeying it. Without the distinction the gate fires on the first, which is
+# what most agent work looks like: replying to a thread, filing a ticket from a
+# report, putting a search result in an issue -- copying text is the task, so
+# the reuse it looks for is present by construction.
+#
+# Measured on the scenario sweep: 8 of 12 benign denials clear with this, and
+# the cross-agent DROP TABLE case still blocks, because its reuse lands in
+# `query`.
+#
+# ponytail: a field-name list, not a per-tool schema. The known miss is a
+# payload that legitimately travels in a prose field -- an injected message
+# posted verbatim to a channel is not denied here (the sequence rule still
+# warns, and data_boundary still screens what is in it). Upgrade to per-tool
+# argument roles if a tool's prose field turns out to be executable.
+_PROSE_KEYS = frozenset({
+    "body", "summary", "description", "comment", "message", "title", "text",
+})
+
+
+def acting_text(command: str) -> str:
+    """A shell command with the prose it is merely quoting blanked out.
+
+    An agent that reads a page and then writes a commit message about it has
+    quoted the page, not acted on it -- and quoting is what an agent does with
+    documentation all day. ``shell_context.is_inert_match`` already draws that
+    line for the rule engine: a closed, non-payload quoted span, in a segment
+    with no redirect, under a text-emitting command (``echo``, ``git commit``,
+    ``gh issue``). The same line is the right one here, so it is reused rather
+    than redrawn -- and it keeps the distinction that matters, since ``psql -c
+    "DROP TABLE users"`` is a payload, not prose.
+    """
+    if not command or ('"' not in command and "'" not in command):
+        return command
+    try:
+        from prismor.runtime.shell_context import is_inert_match, quoted_spans
+
+        # `is_inert_match` splits a command on ; | & and not on newlines, so in
+        # a multi-line script the segment around a quote runs on into the next
+        # line and the wrong argv0 decides it. Newlines OUTSIDE quotes are
+        # command separators, so substitute them one for one -- positions are
+        # preserved, and a quoted string that spans lines stays whole.
+        probe = _separate_lines(command)
+        spans = quoted_spans(probe)
+        if not spans:
+            return command
+        chars = list(command)
+        for span_start, span_end, is_payload, is_closed in spans:
+            if is_payload or not is_closed:
+                continue
+            if is_inert_match(probe, span_start, min(span_end + 1, len(probe))):
+                for k in range(span_start, min(span_end + 1, len(chars))):
+                    chars[k] = " "
+        return "".join(chars)
+    except Exception:
+        return command
+
+
+def _separate_lines(command: str) -> str:
+    """``command`` with newlines outside quoted spans replaced by ``;``.
+
+    One character for one character, so every index into the result still
+    points at the same character of the original.
+    """
+    from prismor.runtime.shell_context import quoted_spans
+
+    if "\n" not in command:
+        return command
+    inside = bytearray(len(command))
+    for start, end, _payload, _closed in quoted_spans(command):
+        for k in range(start, min(end + 1, len(command))):
+            inside[k] = 1
+    return "".join(
+        ";" if (ch == "\n" and not inside[i]) else ch
+        for i, ch in enumerate(command)
+    )
+
+
+def call_text(event: Dict[str, Any]) -> str:
+    """The text a call is asking for -- what an injected instruction has to
+    reach for the injection to have worked.
+
+    Arguments only, never the call's own result: a critical call is screened
+    before it runs, and its output would say nothing about what steered it.
+    Prose is dropped first: quoted spans inside a command via :func:`acting_text`,
+    and whole human-readable fields via :data:`_PROSE_KEYS`.
+    """
+    parts: List[str] = []
+    for key in ("command", "path", "url", "content", "query"):
+        val = event.get(key)
+        if val:
+            parts.append(acting_text(str(val)) if key == "command" else str(val))
+    raw = (event.get("metadata") or {}).get("raw")
+    if isinstance(raw, dict):
+        args = raw.get("tool_input") or raw.get("arguments") or raw.get("input")
+        if isinstance(args, dict):
+            # The normalizer's `command` is screened above, but the raw payload
+            # carries the same string unscreened -- so blank the prose here too,
+            # or the quoted commit message walks back in through the copy. The
+            # prose fields go the same way: dropping `body` from the normalized
+            # side alone would let the raw copy reinstate it.
+            args = {
+                k: (acting_text(v) if k in _COMMAND_KEYS and isinstance(v, str) else v)
+                for k, v in args.items()
+                if k.lower() not in _PROSE_KEYS
+            }
+        if args:
+            try:
+                parts.append(json.dumps(args, sort_keys=True))
+            except Exception:
+                parts.append(str(args))
+    return "\n".join(parts)
+
+
+class GramStore:
+    """Hashed n-grams of the untrusted content one session has read, each
+    remembering which source it arrived from.
+
+    The origin is the reason to keep this rather than a plain set: when a
+    critical call reuses one of these phrases, the store can say the text came
+    from ``claude:s-1a2b -> /repo/plan.md``, which is the causal chain the
+    block is actually about. Only the hash is persisted, so no untrusted text
+    is written to disk; readable phrases come from the call being screened,
+    which is already in memory.
+
+    A sidecar to :class:`TagLedger` rather than a field on it, and loaded only
+    on the two events that need it (untrusted content arriving, a critical call
+    being screened), so the ordinary tool call never pays to read it.
+    """
+
+    _CAP = 5000  # ~60KB on disk; oldest grams drop first
+
+    def __init__(self, workspace: Path, session_id: str) -> None:
+        safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in session_id)
+        from prismor.runtime.store import get_data_dir
+
+        self._path = get_data_dir(workspace) / "trifecta" / f"{safe}.grams.json"
+
+    def add(self, text: str, origin: str = "", index: int = 0) -> None:
+        """Record the grams of untrusted content that arrived from ``origin``."""
+        grams = content_grams(text)
+        if not grams:
+            return
+        from prismor.runtime.store import locked_json_update
+
+        try:
+            with locked_json_update(self._path) as state:
+                known = state.get("grams")
+                if not isinstance(known, dict):
+                    known = {}
+                origins = state.get("origins")
+                if not isinstance(origins, list):
+                    origins = []
+                label = origin or "untrusted content"
+                if label in origins:
+                    oid = origins.index(label)
+                else:
+                    origins.append(label)
+                    oid = len(origins) - 1
+                for h in grams:
+                    known.setdefault(h, [oid, index])
+                if len(known) > self._CAP:
+                    # dicts keep insertion order: drop the oldest grams
+                    known = dict(list(known.items())[-self._CAP:])
+                state["grams"] = known
+                state["origins"] = origins[-64:] if len(origins) > 64 else origins
+        except Exception:
+            pass
+
+    def hits(self, text: str, before: Optional[int] = None) -> Dict[str, str]:
+        """``{phrase: origin}`` for text this call shares with untrusted content.
+
+        Only content recorded at an index strictly below ``before`` counts, the
+        same re-record contract :meth:`TagLedger.completes` follows and for the
+        same reason: an idempotent pre-pass over session history runs before the
+        authoritative decision, so this very event's content is already on disk
+        by the time the call is screened. Without the bound, a tool that both
+        reads untrusted content and acts -- or any post-action event whose
+        result echoes its own arguments -- reports itself as steered by itself.
+        """
+        grams = content_grams(text)
+        if not grams or not self._path.exists():
+            return {}
+        try:
+            state = json.loads(self._path.read_text(encoding="utf-8"))
+            known = state.get("grams") or {}
+            origins = state.get("origins") or []
+        except Exception:
+            return {}
+        out: Dict[str, str] = {}
+        for h, phrase in grams.items():
+            rec = known.get(h)
+            if rec is None:
+                continue
+            oid, idx = (rec if isinstance(rec, list) else [rec, -1])[:2]
+            if before is not None and isinstance(idx, int) and idx >= before:
+                continue
+            out[phrase] = (
+                origins[oid] if isinstance(oid, int) and 0 <= oid < len(origins)
+                else "untrusted content"
+            )
+        return out
 
 
 def _rule_pref(match: Dict[str, Any]) -> tuple:

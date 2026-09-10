@@ -1889,10 +1889,14 @@ class PolicyEngine:
         ):
             try:
                 from prismor.runtime.trifecta import (
-                    classify_tool_tags, egress_tags, TagLedger, tool_tags_for_agent,
+                    call_text, classify_tool_tags, egress_tags, GramStore,
+                    TagLedger, tool_tags_for_agent, CRITICAL, INFLUENCE, UNTRUSTED,
                 )
                 from prismor.runtime.tag_rules import compile_tool_tag_rules
                 _tt_tool = str((event.get("metadata") or {}).get("tool_name") or "")
+                _tt_agent = str(
+                    event.get("agent_name") or event.get("agent") or "agent"
+                )
                 # A policy attached to this agent in the control plane rides in
                 # the bundle as settings.tool_tags.agents[<name>], the same shape
                 # settings.egress.agents uses. Tighten-only — see
@@ -1908,20 +1912,149 @@ class PolicyEngine:
                     egress_tags(findings)
                     if _tt_cfg.get("egress_tags_enabled", True) else set()
                 )
+                # ── Cross-agent provenance ────────────────────────────────
+                # Agents that never message each other still communicate by
+                # writing files each other reads. Reading an artifact inherits
+                # what its writer's session was carrying, which turns the
+                # cross-agent case into the in-session one the rules below
+                # already govern. See prismor.runtime.provenance.
+                _prov = None
+                _prov_cwd = self.workspace
+                _prov_reads: List[str] = []
+                _prov_writes: List[str] = []
+                _prov_chain = ""
+                if _tt_cfg.get("provenance_enabled", True):
+                    from prismor.runtime import provenance as _prov
+                    _prov_cwd = Path(
+                        str((event.get("metadata") or {}).get("cwd") or self.workspace)
+                    )
+                    # One read of the store per call, not one per path
+                    # candidate: a single shell command can name several.
+                    _prov_known = _prov.load()
+                    if event_type == "file_read":
+                        _prov_reads = [str(event.get("path") or "")]
+                    elif event_type == "file_write":
+                        _prov_writes = [str(event.get("path") or "")]
+                    elif event_type == "shell":
+                        _r, _w = _prov.shell_paths(
+                            str(event.get("command") or ""), _prov_cwd
+                        )
+                        _prov_reads, _prov_writes = sorted(_r), sorted(_w)
+                    for _rp in _prov_reads if _prov_known else ():
+                        if not _rp:
+                            continue
+                        _entry = _prov_known.get(_prov.resolve(_rp, _prov_cwd))
+                        _inherit = (
+                            _prov.read_tags(_entry, session_id)
+                            if isinstance(_entry, dict) else set()
+                        )
+                        if not _inherit:
+                            continue
+                        _extra |= _inherit
+                        _wr = _entry.get("writer") or {}
+                        _prov_chain = (
+                            f"{_wr.get('agent', '?')}:{_wr.get('session', '?')}"
+                            f" -> {_rp} -> {_tt_agent}:{session_id}"
+                        )
+                        _prov.record_read(
+                            _rp, agent=_tt_agent, session=session_id,
+                            tool=_tt_tool or event_type, index=index, cwd=_prov_cwd,
+                        )
+                        # The causal edge is worth reporting even when no rule
+                        # fires: one agent acting on another's output is not
+                        # visible anywhere else in the session log.
+                        if _is_pre_action_event(event):
+                            _pf = f"provenance-read-{index}"
+                            findings.append({
+                                "id": f"{session_id}:{_pf}" if session_id else _pf,
+                                "severity": "LOW",
+                                "category": "provenance",
+                                "title": (
+                                    f"Cross-agent read: {_tt_agent} is acting on "
+                                    f"'{Path(_rp).name}', written by "
+                                    f"{_wr.get('agent', '?')}"
+                                ),
+                                "evidence": (
+                                    f"chain: {_prov_chain}; "
+                                    f"inherited {sorted(_inherit)}"
+                                ),
+                                "eventIndex": index,
+                                "ruleId": "cross-agent-flow",
+                                "action": "log",
+                                "mode": "observe",
+                            })
+
                 _tags = classify_tool_tags(
                     event, event_type,
                     {f.get("category") for f in findings},
                     _tt_cfg,
                     extra_tags=_extra,
-                    # Scopes the file_read inference: a read inside this
-                    # workspace is ordinary work, not untrusted ingest.
-                    workspace=self.workspace,
                 )
+
+                # ── Influence ─────────────────────────────────────────────
+                # Reading something untrusted and later doing something
+                # critical is ordinary work; doing the critical thing WITH text
+                # the untrusted content supplied is the attack. Only the second
+                # is worth denying, so the sequence tags no longer carry a
+                # block on their own — the default rule requires this tag.
+                _hits: Dict[str, str] = {}
+                _grams = (
+                    GramStore(self.workspace, session_id)
+                    if _tt_cfg.get("influence_enabled", True) else None
+                )
+                if _grams is not None:
+                    # Checked before this event's own content is recorded. A
+                    # call tagged both untrusted and critical would otherwise
+                    # match its own output — a shell result echoes the command
+                    # that produced it — and report itself as influenced by
+                    # itself.
+                    if CRITICAL in _tags:
+                        # Influence is text reuse, always — a session-wide
+                        # injection flag is not a substitute for it. Treating
+                        # the flag as influence on its own meant one
+                        # prompt_injection finding anywhere in the session
+                        # denied every later critical call for the rest of that
+                        # session, with nothing tying the call to the
+                        # injection. The injected text is in the gram store
+                        # (recorded below), so a call that actually acts on it
+                        # still matches, and says which phrase it reused.
+                        _hits = _grams.hits(call_text(event), before=index)
+                        if _hits:
+                            _tags.add(INFLUENCE)
+                    # Remember where this content came from, so a later call
+                    # that reuses it can name the source rather than just
+                    # asserting the text was seen somewhere. Content the
+                    # semantic guard judged an injection is recorded whether or
+                    # not its source carried the untrusted tag: an injection
+                    # planted in a local fixture is not tagged by tool name or
+                    # by provenance, and dropping it here would be the one way
+                    # the flag above still mattered.
+                    _injected_now = any(
+                        f.get("category") in (
+                            "prompt_injection", "prompt_injection_semantic",
+                        )
+                        for f in findings
+                    )
+                    if (UNTRUSTED in _tags or _injected_now) and event.get("response"):
+                        _grams.add(
+                            str(event.get("response")),
+                            origin=(
+                                _prov_chain
+                                or f"{_tt_tool or event_type}"
+                                + (f" {event.get('url')}" if event.get("url") else "")
+                            ),
+                            index=index,
+                        )
+
+                _ledger = (
+                    TagLedger(self.workspace, session_id)
+                    if (_tags or _prov_writes) else None
+                )
+                _done = None
+                _tt_mode = self.device_mode or str(_tt_cfg.get("mode", "observe")).lower()
                 if _tags:
                     _rules = compile_tool_tag_rules(_tt_cfg)
-                    _ledger = TagLedger(self.workspace, session_id)
                     _done = _ledger.completes_rules(_tags, _rules, index)
-                    _tt_mode = self.device_mode or str(_tt_cfg.get("mode", "observe")).lower()
                     if _done is not None and _done.get("action") == "warn":
                         # A warn rule observes but never blocks — even under a
                         # device-level enforce override.
@@ -1947,7 +2080,14 @@ class PolicyEngine:
                         _pfx = f"{session_id}:{_fid}" if session_id else _fid
                         _tt_finding = {
                             "id": _pfx,
-                            "severity": "CRITICAL",
+                            # A warn rule reports a sequence worth looking at,
+                            # not a denial. Filing that as CRITICAL alongside
+                            # the blocks is how a console teaches people to
+                            # scroll past CRITICALs.
+                            "severity": (
+                                "MEDIUM" if _done.get("action") == "warn"
+                                else "CRITICAL"
+                            ),
                             "category": "lethal_trifecta",
                             "title": (
                                 f"Forbidden tool combination: '{_tt_tool}' completes "
@@ -1956,6 +2096,13 @@ class PolicyEngine:
                             "evidence": (
                                 f"call adds tag(s) {_done['this_call_tags']}; "
                                 f"prior: {_prior or 'n/a'}"
+                                + (f"; via: {_prov_chain}" if _prov_chain else "")
+                                + (
+                                    "; reuses text from "
+                                    + " and ".join(sorted(set(_hits.values())))
+                                    + f": {sorted(_hits)[:3]}"
+                                    if _hits else ""
+                                )
                                 + (f"; rule: {_done['source']}" if _done.get("source") not in ("incompatible", "default") else "")
                             ),
                             "eventIndex": index,
@@ -1979,6 +2126,63 @@ class PolicyEngine:
                     # through (the one-denied-call-poisons-the-ledger bypass).
                     if not (_done is not None and _tt_mode == "enforce"):
                         _ledger.record(_tags, index, _tt_tool)
+
+                # Stamp what this session is carrying onto everything it writes,
+                # so the next agent to read it inherits the same state. The
+                # writing call usually carries no tag of its own — it is the
+                # session's history that matters — so this runs off the ledger,
+                # not off `_tags`. Skipped for a call that is being blocked,
+                # which never runs.
+                if (
+                    _prov is not None
+                    and _prov_writes
+                    and _ledger is not None
+                    and _is_pre_action_event(event)
+                    and not (_done is not None and _tt_mode == "enforce")
+                ):
+                    _carry = _prov.propagatable(set(_ledger.seen) | set(_tags))
+                    # A session that read one page does not thereby poison
+                    # every file it touches for the rest of its life -- it was
+                    # marking config files it edited for its own reasons, and
+                    # the next session to read one inherited that. An artifact
+                    # carries untrusted content only when its content shows
+                    # some: the same evidence the influence check asks of an
+                    # action, asked of the bytes being written.
+                    if UNTRUSTED in _carry and _grams is not None:
+                        _written = "\n".join(
+                            str(event.get(k) or "") for k in ("content", "command")
+                        )
+                        if not _grams.hits(_written, before=index):
+                            _carry = [t for t in _carry if t != UNTRUSTED]
+                    # A download is untrusted on its own account, whatever the
+                    # session had read before it. Without this a shell-only
+                    # agent -- Codex reaches the web through Bash, never through
+                    # a tagged fetch tool -- writes untracked files.
+                    _fetched = (
+                        _prov.fetch_targets(str(event.get("command") or ""), _prov_cwd)
+                        if event_type == "shell" else set()
+                    )
+                    for _wp in _prov_writes:
+                        if not _wp:
+                            continue
+                        _wt = sorted(
+                            set(_carry) | ({UNTRUSTED} if _wp in _fetched else set())
+                        )
+                        # An empty tag set still has to reach the store when
+                        # this session is the one that stamped the file: that
+                        # is how a rewrite clears its own earlier mark. For any
+                        # other file an empty set means "nothing to record",
+                        # and record_write drops it without creating an entry.
+                        _mine = (
+                            (_prov_known.get(_prov.resolve(_wp, _prov_cwd)) or {})
+                            .get("writer") or {}
+                        ).get("session") == session_id
+                        if _wt or _mine:
+                            _prov.record_write(
+                                _wp, _wt, agent=_tt_agent,
+                                session=session_id, tool=_tt_tool or event_type,
+                                index=index, cwd=_prov_cwd,
+                            )
             except Exception:
                 pass
 

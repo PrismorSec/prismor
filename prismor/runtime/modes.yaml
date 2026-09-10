@@ -44,10 +44,9 @@ version: "1.0"
 #                              enforcing-rule count, not asserted
 #
 # Any mode that sets `tool_tags.enabled: true` MUST also set
-# `tool_tags.inference_enabled` explicitly. Inheriting the default (true)
-# resolves every workspace file read and every unmapped local tool to
-# `untrusted_content`, which turns `untrusted_content then critical_action`
-# into "read anything, then do anything -> block". compile_mode refuses.
+# `tool_tags.inference_enabled` explicitly: which tagging posture a mode
+# enforces on is part of what the mode is, and inheriting it silently means the
+# mode changes meaning when the default does. compile_mode refuses otherwise.
 #
 # Observation is a modifier, not a mode: `prismor mode apply <id> --observe`
 # compiles any posture with nothing enforcing, which answers "what would this
@@ -198,14 +197,16 @@ modes:
     tool_tags:
       enabled: true
       mode: enforce
-      # Declared, never inherited. The default (true) resolves `file_read` and
-      # every unmapped local tool to untrusted_content, which turns the rule
-      # below into "read anything, then do anything -> block" and ends the
-      # session on its first shell call. modes.py fails the compile if a
+      # Declared, never inherited: a mode that enforces on tags has to say
+      # which tagging posture it chose. modes.py fails the compile if a
       # tag-enforcing mode omits this.
       inference_enabled: true
       rules:
-        - "untrusted_content then critical_action -> block"
+        # Blocks the injected action, not the sequence. Fetching a changelog
+        # and then pushing your own branch is a sequence; running the command
+        # the fetched page named is influence. See docs/tool-tags.md.
+        - "critical_action with untrusted_influence -> block"
+        - "untrusted_content then critical_action -> warn"
     sandbox:
       enabled: true
       mode: enforce
@@ -297,7 +298,8 @@ modes:
       inference_enabled: true
       rules:
         - "private_data with external_comms -> block"
-        - "untrusted_content then critical_action -> block"
+        - "critical_action with untrusted_influence -> block"
+        - "untrusted_content then critical_action -> warn"
     sandbox:
       enabled: true
       mode: observe           # non-root, workspace-scoped; observe so builds run
@@ -358,6 +360,9 @@ modes:
       # Declared, never inherited — see the note on dev-safe.
       inference_enabled: true
       rules:
+        # The strictest posture keeps the sequence itself blocking: in an
+        # air-gapped workspace there is no ordinary reason to read outside
+        # content and then act externally at all.
         - "untrusted_content then critical_action -> block"
         - "private_data with external_comms -> block"
         - "untrusted_content with private_data -> block"
