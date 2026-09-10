@@ -1,8 +1,5 @@
 """Suite-wide isolation so a leak in one test cannot rewrite another's verdict.
 
-Also wires the bundled framework adapters so they are importable from a
-source checkout without separate package installation.
-
 Two classes of cross-test state used to make ``pytest tests/`` red in ways that
 depended on which files ran before which — so the same test passed alone and
 failed in the suite, and CI signal degraded to "count the failures and hope".
@@ -38,6 +35,25 @@ straight to hook subprocesses) must keep it. Their import-time writes are
 recorded per module by ``pytest_make_collect_report`` and replayed for that
 module's tests, so declaring a home still works — it just no longer escapes into
 the modules collected after it.
+
+Framework adapter imports
+-------------------------
+Make the bundled framework adapters importable from a source checkout.
+
+Installed, ``prismor.langchain`` and friends land inside the same ``prismor/``
+package the runtime ships, so they are ordinary subpackages. In the repo they
+live under ``adapters/<framework>/prismor/<framework>/`` instead — and since
+``prismor/__init__.py`` exists (deliberately: it stops an unrelated installed
+``prismor`` distribution from shadowing the repo-local runtime, see
+PrismorSec/prismor#173), ``prismor`` is a regular package whose ``__path__``
+does not grow when a new sys.path entry appears. Four adapter test modules
+therefore failed at *collection* with ``No module named 'prismor.langchain'``
+unless the extras happened to be pip-installed.
+
+Extending ``__path__`` here fixes all of them in one place, before any test
+module is imported. Each adapter directory also goes on ``sys.path`` so the
+flat ``prismor_<framework>`` implementation modules the shims re-export from
+resolve too. (PrismorSec/prismor#389)
 """
 from __future__ import annotations
 
@@ -210,6 +226,15 @@ def _snapshot_callables() -> Dict[_SnapKey, Any]:
         except Exception:
             continue
         for attr, value in items:
+            if attr.startswith("__") and attr.endswith("__"):
+                # PEP 649 (Python 3.14) gives an annotated module a real
+                # FunctionType ``__annotate__`` that materialises lazily on
+                # first annotation access, i.e. *after* the baseline snapshot.
+                # Skipping module-level dunders here avoids 2 000+ spurious
+                # teardown errors on 3.14+ boxes. The class branch below is
+                # intentionally untouched, so a leaked PolicyEngine.__init__
+                # is still caught.
+                continue
             if isinstance(value, (types.FunctionType, types.BuiltinFunctionType)):
                 snap[(mod, name, attr, None)] = value
             elif inspect.isclass(value) and getattr(value, "__module__", "").startswith("prismor"):
