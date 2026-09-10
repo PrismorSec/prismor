@@ -16,7 +16,10 @@ import hashlib
 import json
 import re
 import shlex
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
