@@ -1990,23 +1990,40 @@ class PolicyEngine:
                     GramStore(self.workspace, session_id)
                     if _tt_cfg.get("influence_enabled", True) else None
                 )
-                if _tags and _grams is not None:
+                if _grams is not None:
                     # Checked before this event's own content is recorded. A
                     # call tagged both untrusted and critical would otherwise
                     # match its own output — a shell result echoes the command
                     # that produced it — and report itself as influenced by
                     # itself.
                     if CRITICAL in _tags:
+                        # Influence is text reuse, always — a session-wide
+                        # injection flag is not a substitute for it. Treating
+                        # the flag as influence on its own meant one
+                        # prompt_injection finding anywhere in the session
+                        # denied every later critical call for the rest of that
+                        # session, with nothing tying the call to the
+                        # injection. The injected text is in the gram store
+                        # (recorded below), so a call that actually acts on it
+                        # still matches, and says which phrase it reused.
                         _hits = _grams.hits(call_text(event), before=index)
-                        if _hits or (
-                            taint is not None
-                            and getattr(taint, "injection_detected", False)
-                        ):
+                        if _hits:
                             _tags.add(INFLUENCE)
-                    if UNTRUSTED in _tags and event.get("response"):
-                        # Remember where this content came from, so a later
-                        # call that reuses it can name the source rather than
-                        # just asserting the text was seen somewhere.
+                    # Remember where this content came from, so a later call
+                    # that reuses it can name the source rather than just
+                    # asserting the text was seen somewhere. Content the
+                    # semantic guard judged an injection is recorded whether or
+                    # not its source carried the untrusted tag: an injection
+                    # planted in a local fixture is not tagged by tool name or
+                    # by provenance, and dropping it here would be the one way
+                    # the flag above still mattered.
+                    _injected_now = any(
+                        f.get("category") in (
+                            "prompt_injection", "prompt_injection_semantic",
+                        )
+                        for f in findings
+                    )
+                    if (UNTRUSTED in _tags or _injected_now) and event.get("response"):
                         _grams.add(
                             str(event.get("response")),
                             origin=(
@@ -2139,7 +2156,16 @@ class PolicyEngine:
                         _wt = sorted(
                             set(_carry) | ({UNTRUSTED} if _wp in _fetched else set())
                         )
-                        if _wt:
+                        # An empty tag set still has to reach the store when
+                        # this session is the one that stamped the file: that
+                        # is how a rewrite clears its own earlier mark. For any
+                        # other file an empty set means "nothing to record",
+                        # and record_write drops it without creating an entry.
+                        _mine = (
+                            (_prov_known.get(_prov.resolve(_wp, _prov_cwd)) or {})
+                            .get("writer") or {}
+                        ).get("session") == session_id
+                        if _wt or _mine:
                             _prov.record_write(
                                 _wp, _wt, agent=_tt_agent,
                                 session=session_id, tool=_tt_tool or event_type,

@@ -185,6 +185,22 @@ _FETCH_RE = re.compile(
 )
 
 
+def _all_private(event: Dict[str, Any]) -> bool:
+    """Whether every destination this event names is on this machine/network.
+
+    Host classification is ``egress.Destination``, so this agrees with what the
+    egress layer already means by private. False when nothing resolves, which
+    keeps the caller's default (treat as external) for anything unparseable.
+    """
+    try:
+        from prismor.runtime.egress import extract_destinations
+
+        dests = extract_destinations(event)
+        return bool(dests) and all(d.is_private for d in dests)
+    except Exception:
+        return False
+
+
 def is_network_fetch(command: str) -> bool:
     """Whether a shell command pulls content in from OUTSIDE this machine.
 
@@ -192,20 +208,10 @@ def is_network_fetch(command: str) -> bool:
     service it is running -- its own dev server, its own test fixture. That
     content is not attacker-authored, and treating it as ingest made a session
     that polls ``http://localhost:5678`` untrusted for the rest of its life.
-    Host classification is ``egress.Destination``, so this agrees with what the
-    egress layer already means by private.
     """
     if not command or _FETCH_RE.search(command) is None:
         return False
-    try:
-        from prismor.runtime.egress import extract_destinations
-
-        dests = extract_destinations({"type": "shell", "command": command})
-        if dests and all(d.is_private for d in dests):
-            return False
-    except Exception:
-        pass
-    return True
+    return not _all_private({"type": "shell", "command": command})
 
 
 def _tool_name(event: Dict[str, Any]) -> str:
@@ -338,7 +344,38 @@ def classify_tool_tags(
 
     """
     base = _classify_base(event, event_type, finding_categories, tt_settings)
+    # A read pointed at this machine is the agent reading its own dev server or
+    # test fixture, not ingesting attacker-authored text -- the same call
+    # `is_network_fetch` already makes for `curl http://localhost:5678`. The
+    # tool name cannot tell the two apart, so the URL decides, and it decides
+    # after every tier: dropping the tag inside the defaults tier only sent an
+    # empty set on to inference, which put it straight back.
+    #
+    # An org's explicit `tags:` map is left alone -- naming a tool there is a
+    # deliberate statement about that tool, not a guess this should second-
+    # guess.
+    if (
+        UNTRUSTED in base
+        and event.get("url")
+        and UNTRUSTED not in _org_tags(_tool_name(event), tt_settings or {})
+        and _all_private(event)
+    ):
+        base = base - {UNTRUSTED}
     return base | (extra_tags or set())
+
+
+def _org_tags(tool_name: str, tt: Dict[str, Any]) -> Set[str]:
+    """Tags the org's explicit ``tags:`` map gives this tool, exact or glob."""
+    mapping = tt.get("tags") or {}
+    if not isinstance(mapping, dict):
+        return set()
+    tags: Set[str] = set()
+    if tool_name in mapping:
+        tags |= set(_as_list(mapping[tool_name]))
+    for pat, val in mapping.items():
+        if pat != tool_name and _matches(tool_name, pat, "auto"):
+            tags |= set(_as_list(val))
+    return tags
 
 
 def _classify_base(
@@ -352,13 +389,7 @@ def _classify_base(
     tags: Set[str] = set()
 
     # 1. Explicit org/catalog map: {tool_or_glob: tag | [tags]}.
-    mapping = tt.get("tags") or {}
-    if isinstance(mapping, dict):
-        if tool_name in mapping:
-            tags |= set(_as_list(mapping[tool_name]))
-        for pat, val in mapping.items():
-            if pat != tool_name and _matches(tool_name, pat, "auto"):
-                tags |= set(_as_list(val))
+    tags |= _org_tags(tool_name, tt)
     if tags:
         return tags
 
@@ -443,6 +474,30 @@ def content_grams(text: str, limit: int = 200_000) -> Dict[str, str]:
 # Keys whose value is a shell command, wherever a payload copy of it appears.
 _COMMAND_KEYS = ("command", "cmd", "script", "shell_command")
 
+# Fields a person reads, as opposed to fields a machine executes.
+#
+# This is the same line `acting_text` draws inside a shell command, applied to
+# structured tool arguments, which have no quoting to draw it with. An agent
+# that reads an issue and opens a PR whose body names that issue has quoted the
+# issue; an agent that reads a page and puts the page's SQL in `query` is
+# obeying it. Without the distinction the gate fires on the first, which is
+# what most agent work looks like: replying to a thread, filing a ticket from a
+# report, putting a search result in an issue -- copying text is the task, so
+# the reuse it looks for is present by construction.
+#
+# Measured on the scenario sweep: 8 of 12 benign denials clear with this, and
+# the cross-agent DROP TABLE case still blocks, because its reuse lands in
+# `query`.
+#
+# ponytail: a field-name list, not a per-tool schema. The known miss is a
+# payload that legitimately travels in a prose field -- an injected message
+# posted verbatim to a channel is not denied here (the sequence rule still
+# warns, and data_boundary still screens what is in it). Upgrade to per-tool
+# argument roles if a tool's prose field turns out to be executable.
+_PROSE_KEYS = frozenset({
+    "body", "summary", "description", "comment", "message", "title", "text",
+})
+
 
 def acting_text(command: str) -> str:
     """A shell command with the prose it is merely quoting blanked out.
@@ -508,10 +563,11 @@ def call_text(event: Dict[str, Any]) -> str:
 
     Arguments only, never the call's own result: a critical call is screened
     before it runs, and its output would say nothing about what steered it.
-    Prose the command merely quotes is blanked first -- see :func:`acting_text`.
+    Prose is dropped first: quoted spans inside a command via :func:`acting_text`,
+    and whole human-readable fields via :data:`_PROSE_KEYS`.
     """
     parts: List[str] = []
-    for key in ("command", "path", "url", "content", "query", "body"):
+    for key in ("command", "path", "url", "content", "query"):
         val = event.get(key)
         if val:
             parts.append(acting_text(str(val)) if key == "command" else str(val))
@@ -521,10 +577,13 @@ def call_text(event: Dict[str, Any]) -> str:
         if isinstance(args, dict):
             # The normalizer's `command` is screened above, but the raw payload
             # carries the same string unscreened -- so blank the prose here too,
-            # or the quoted commit message walks back in through the copy.
+            # or the quoted commit message walks back in through the copy. The
+            # prose fields go the same way: dropping `body` from the normalized
+            # side alone would let the raw copy reinstate it.
             args = {
                 k: (acting_text(v) if k in _COMMAND_KEYS and isinstance(v, str) else v)
                 for k, v in args.items()
+                if k.lower() not in _PROSE_KEYS
             }
         if args:
             try:

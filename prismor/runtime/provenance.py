@@ -100,8 +100,18 @@ def record_write(
 ) -> None:
     """Remember that ``session`` wrote ``path`` while holding ``tags``.
 
-    Tags accumulate rather than replace: a file that once held untrusted
+    Tags accumulate across *different* writers: a file that once held untrusted
     content is not laundered by a second agent appending a line to it.
+
+    A session rewriting a file it wrote itself REPLACES its own contribution
+    instead. Accumulating there meant a file could never come clean: an agent
+    that drafted a note quoting a fetched page, then overwrote it with its own
+    unrelated work, left the file marked untrusted for good -- and every later
+    reader inherited that mark and then had the file's *current, clean* text
+    treated as untrusted content it must not reuse. What a file holds is what
+    was last written to it, so a writer's own later write is the authority on
+    its own earlier one. Another agent's contribution still survives, which is
+    what stops this being a laundering path.
     """
     key = resolve(path, cwd)
     if not key or key in ("/", "."):
@@ -116,7 +126,19 @@ def record_write(
             entry = entries.get(key)
             if not isinstance(entry, dict):
                 entry = {"tags": [], "readers": []}
-            entry["tags"] = sorted(set(entry.get("tags") or []) | set(tags))
+            _prior = (entry.get("writer") or {}).get("session")
+            _keep: Set[str] = (
+                set() if (_prior and _prior == session)
+                else {str(t) for t in entry.get("tags") or []}
+            )
+            entry["tags"] = sorted(_keep | set(tags))
+            if not entry["tags"]:
+                # Nothing left to say about this file. Dropping it keeps an
+                # ordinary write from recording anything at all (the common
+                # case) and lets a same-session rewrite actually clear.
+                entries.pop(key, None)
+                state["artifacts"] = entries
+                return
             entry["writer"] = {
                 "agent": agent, "session": session, "tool": tool,
                 "index": index, "ts": int(time.time()),

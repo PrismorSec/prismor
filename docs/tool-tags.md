@@ -186,15 +186,17 @@ Forbidden tool combination: 'mcp__prod__execute_sql' completes [critical_action,
 Set `influence_enabled: false` for the older, blunter behaviour (any sequence
 blocks).
 
-Four things are deliberately not influence, each of which was a false block
+Six things are deliberately not influence, each of which was a false block
 before it was excluded:
 
 | Not influence | Why |
 |---|---|
 | Prose a command quotes | An agent that reads docs and commits a message quoting them has quoted the page, not obeyed it. `git commit -m`, `gh issue --body` and `echo` are prose; `psql -c` and `bash -c` are payloads, and stay in scope. |
-| A fetch from this machine | Polling your own dev server on `localhost` is not reading attacker content. Cloud metadata is excluded from that carve-out. |
+| A human-readable argument | The same line, drawn for structured tool calls, which have no quoting to draw it with: `body`, `summary`, `description`, `comment`, `message`, `title` and `text` are read by a person; `command`, `query`, `path`, `url` and `content` are acted on by the tool. Replying to a thread that quotes it, filing a ticket from a bug report, putting a search result in an issue — copying text is the task, so reuse is present by construction. |
+| A read from this machine | Polling your own dev server on `localhost` is not reading attacker content, whether it arrives through `curl` or through a browser tool's URL. Cloud metadata is excluded from that carve-out, and an org that names the tool in `tool_tags.tags` overrides it. |
 | A URL inside a script | `http`/`https` start every URL as well as httpie, so a heredoc full of links read as a fetch and everything it printed became untrusted. |
 | A write with no trace of the read | A session that read one page does not thereby mark every file it later touches. An artifact carries untrusted content only when its bytes show some. |
+| A session-wide injection flag | A `prompt_injection` finding anywhere in a session used to make every later critical call count as influenced, with no reused text and no chain tying the two together. Influence is text reuse, always. Injected content is added to the gram store on the finding itself, so a call that does act on it is still denied — and can still name the phrase. |
 
 Remaining limits:
 
@@ -202,6 +204,10 @@ Remaining limits:
   and in an ordinary command can still produce a false block; that is the one
   case left in 426 sessions, and only under a critical set wider than the one
   that ships.
+- A payload that legitimately travels in a prose field is not denied. An
+  injected message posted verbatim to a channel reaches `body`, which the gate
+  does not read. The sequence rule still warns, and `data_boundary` still
+  screens what is in it.
 - It only fires on calls the engine already judges critical. `npm publish`,
   `git remote set-url` and `rm -rf` of an arbitrary directory produce no
   finding at all, so an injected one is not denied. Widening that set widens
@@ -279,6 +285,11 @@ Limits, deliberately:
   writes shows some trace of what the session read. That is what keeps a
   session from poisoning its own config files, and it means a handoff whose
   content Prismor never saw (a `cp`, a pipe into `tee`) is not marked.
+- **A writer owns its own mark.** A session rewriting a file it wrote itself
+  replaces its own tags rather than adding to them, so a file that once quoted
+  a fetched page can come clean. Another agent's contribution survives, which
+  is what stops that being a laundering path. Marks are about what a file
+  holds now, and what it holds is what was last written to it.
 
 The same handoff with a page that is not hostile goes through untouched, and
 is still recorded:
