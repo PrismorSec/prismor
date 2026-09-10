@@ -1,5 +1,7 @@
 """Per-agent transcript adapters."""
 
+from __future__ import annotations
+
 from typing import Dict, List
 
 from prismor.runtime.transcripts.adapters.claude import ClaudeAdapter
