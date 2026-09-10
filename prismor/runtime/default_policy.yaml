@@ -1764,11 +1764,45 @@ rules:
       - '169\.254\.169\.254'
       - 'metadata\.google\.internal'
       - '169\.254\.170\.2'
-      - '2130706433'                       # 169.254.169.254 as decimal integer
+      - '2130706433'                       # 127.0.0.1 as decimal integer
+      - '2852039166'                       # 169.254.169.254 as decimal integer
       - '0xa9fe[:\-]?a9fe'                 # hex encoding
       - '0251\.0376\.0251\.0376'           # octal octet encoding
       - '::ffff:a9fe:a9fe'                 # IPv6-mapped (short hex)
       - '::ffff:169\.254\.169\.254'        # IPv6-mapped (dotted decimal)
+    action: block
+
+  # ── CRITICAL: Cloud metadata endpoint in MCP call arguments ─────────
+  # cloud-metadata-ssrf screens `url`, which on an MCP call is the *server*
+  # endpoint — an allowed server can still be asked to fetch IMDS for you.
+  # The destination lives in the call arguments, so match those instead:
+  # `mcp_args` is the serialized pre-call arguments whatever the transport
+  # (remote servers put them in outbound_payload, local stdio in response),
+  # and is empty post-call, so this never scans tool output.
+  #
+  # Precision comes from requiring a destination-shaped argument *whose
+  # value starts with* the metadata host: descriptive prose that merely
+  # mentions 169.254.169.254 does not match.
+  #
+  # One pattern per host, like cloud-metadata-ssrf above, rather than one
+  # alternation over all of them — `disable_patterns` drops a whole pattern
+  # string, so folding the hosts together would leave an AWS-only shop no
+  # way to switch off the GCP host from the console.
+  - id: mcp-arg-metadata-endpoint
+    severity: CRITICAL
+    category: reconnaissance
+    title: Blocks MCP tool arguments targeting cloud instance metadata endpoints
+    event_types: [mcp]
+    fields: [mcp_args]
+    patterns:
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?169\.254\.169\.254(?:[/:?#\]"\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?metadata\.google\.internal(?:[/:?#\]"\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?169\.254\.170\.2(?:[/:?#\]"\\]|$)'  # ECS/EKS task credential relay
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?2852039166(?:[/:?#\]"\\]|$)'  # decimal encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?0xa9fe[:\-]?a9fe(?:[/:?#\]"\\]|$)'  # hex encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?0251\.0376\.0251\.0376(?:[/:?#\]"\\]|$)'  # octal octet encoding
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?::ffff:a9fe:a9fe(?:[/:?#\]"\\]|$)'  # IPv6-mapped (short hex)
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?::ffff:169\.254\.169\.254(?:[/:?#\]"\\]|$)'  # IPv6-mapped (dotted decimal)
     action: block
 
   # ── HIGH: PII in agent context ────────────────────────────────────
