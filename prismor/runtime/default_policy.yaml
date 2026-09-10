@@ -1525,7 +1525,7 @@ rules:
     fields: [command]
     patterns:
       - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))'
-      - '\bgit\s+push\b[^\n]*--force'
+      - '\bgit\s+push\b[^\n]*--force(?!-with-lease|-if-includes)\b'
     action: warn
 
   # ── HIGH: Package manager registry poisoning ─────────────────────

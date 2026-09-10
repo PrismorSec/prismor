@@ -132,3 +132,26 @@ class TestScrubbableSecretHeuristic(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestForceWithLeaseIsNotForcePush(unittest.TestCase):
+    """--force-with-lease / --force-if-includes are the safe forms git itself
+    recommends; matching them as a force push blocked every rebase-and-push
+    on enforce installs."""
+
+    def setUp(self):
+        self.engine = PolicyEngine()
+
+    def _hijack(self, command):
+        event = {**PRE, "command": command}
+        findings = self.engine.evaluate(event, index=0, session_id="t")
+        return any(f.get("ruleId") == "git-remote-hijack" for f in findings)
+
+    def test_force_with_lease_is_not_flagged(self):
+        self.assertFalse(self._hijack(
+            "git reset --hard origin/main && git push --force-with-lease fork docs/x"))
+        self.assertFalse(self._hijack("git push --force-if-includes origin feature"))
+
+    def test_bare_force_still_flagged(self):
+        self.assertTrue(self._hijack("git push --force origin main"))
+        self.assertTrue(self._hijack("git push origin main --force"))
