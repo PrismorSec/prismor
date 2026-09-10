@@ -56,6 +56,10 @@ _FACILITIES = {
     "local0": 16, "local1": 17, "local2": 18, "local3": 19,
     "local4": 20, "local5": 21, "local6": 22, "local7": 23,
 }
+# Spool depth that forces a control-plane upload even between heartbeat
+# ticks, so a burst of findings is not held back by a quiet minute.
+FLUSH_BATCH = 50
+
 _SEVERITY_TO_SYSLOG = {
     "CRITICAL": 2,  # critical
     "HIGH": 3,      # error
@@ -435,10 +439,27 @@ def _dispatch_prismor(
             "[prismor] ignoring `url` on the prismor sink — telemetry is pinned to the "
             "enrolled control plane (a local url override cannot redirect the device key)\n"
         )
-    upload_telemetry(
-        records,
-        timeout=float(cfg.get("timeout_seconds", 6)),
-    )
+    # Batch by default. One POST per finding was affordable while findings were
+    # rare; under full_capture every evaluated call is a finding (runtime.py
+    # synthesizes `audit-allowed` for the unflagged ones), so that is now one
+    # request per tool call -- hundreds a minute from a busy agent, each one a
+    # serverless invocation and a connection against the pooler.
+    #
+    # The offline spool is already an outbox with at-least-once delivery, so
+    # observed/warned records ride it and ship on the next flush: the
+    # heartbeat's 60s tick, or right here once FLUSH_BATCH have piled up.
+    # Blocked verdicts still upload immediately -- an alert 60s late is not an
+    # alert. Row volume at the control plane is unchanged; this is about
+    # request amplification and keeping the hot path off the network.
+    from prismor.runtime.enterprise import telemetry_spool as _spool
+
+    timeout = float(cfg.get("timeout_seconds", 6))
+    if any(r.get("verdict") == "blocked" for r in records):
+        upload_telemetry(records, timeout=timeout)
+        return
+    _spool.append(records)
+    if _spool.pending_count() >= FLUSH_BATCH:
+        upload_telemetry([], timeout=timeout)
 
 
 def upload_telemetry(
