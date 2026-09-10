@@ -210,16 +210,49 @@ class McpArgsField(unittest.TestCase):
 
 # ── Default policy: MCP argument egress destinations ───────────────────────
 
+# (label, arguments) pairs that all name the same forbidden destination in a
+# destination-shaped argument. Every one must block on both transports.
+_METADATA_ARGS = [
+    ("aws imds path", {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),
+    ("no trailing slash", {"url": "http://169.254.169.254"}),
+    ("no scheme", {"url": "169.254.169.254/latest/meta-data/"}),
+    ("google metadata", {"url": "http://metadata.google.internal/computeMetadata/v1/"}),
+    ("google bare host", {"url": "http://metadata.google.internal"}),
+    ("ecs credential relay", {"url": "http://169.254.170.2/v2/credentials/"}),
+    ("userinfo prefix", {"url": "http://example.com@169.254.169.254/latest/"}),
+    ("ipv6-mapped in brackets", {"url": "http://[::ffff:169.254.169.254]/latest/"}),
+    ("hex-encoded host", {"url": "http://0xa9fea9fe/latest/"}),
+    ("decimal-encoded host", {"url": "http://2852039166/latest/"}),
+    ("uppercase scheme", {"url": "HTTP://169.254.169.254/latest/"}),
+    ("argument named base_url", {"base_url": "http://169.254.169.254/latest/"}),
+    ("argument named target", {"target": "http://169.254.169.254/latest/"}),
+    ("host and path split apart", {"host": "169.254.169.254", "path": "/latest/meta-data/"}),
+    ("nested request object", {"request": {"url": "http://169.254.169.254/latest/"}}),
+]
+
+_BENIGN_ARGS = [
+    ("plain https destination", {"url": "https://example.com"}),
+    ("api destination", {"url": "https://api.github.com/repos/o/r"}),
+    ("prose mentioning imds", {"message": "The server returned 169.254.169.254"}),
+    ("question about imds", {"query": "what is 169.254.169.254 used for"}),
+    ("imds inside a longer url path", {"url": "https://docs.example.com/169.254.169.254"}),
+]
+
+
 class McpArgumentEgress(unittest.TestCase):
-    """Remote MCP destinations are screened in arguments, not server URL."""
+    """An allowed MCP server can still be asked to fetch a denied destination.
+
+    The destination lives in the call arguments, not in the server `url`, and
+    it has to be screened on both transports: a remote server serializes its
+    arguments into ``outbound_payload``, a local stdio server into ``response``.
+    """
 
     def setUp(self):
         self.ws = Path(tempfile.mkdtemp(prefix="prismor-mcp-egress-ws-"))
 
-    def _decide(self, arguments: dict):
+    def _decide(self, event: dict):
         return evaluate_tool_call(
-            event=_remote_mcp_event(
-                "mcp__db__fetch", "https://db.example.com/mcp", arguments),
+            event=event,
             workspace=self.ws,
             agent="claude",
             mode="enforce",
@@ -228,23 +261,43 @@ class McpArgumentEgress(unittest.TestCase):
             register_agent=False,
         )
 
-    def test_metadata_url_argument_blocks_with_mcp_rule(self):
-        decision = self._decide({
-            "url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
-        })
-        self.assertFalse(decision.allow)
-        self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
+    def _remote(self, args: dict):
+        return self._decide(_remote_mcp_event(
+            "mcp__db__fetch", "https://db.example.com/mcp", args))
 
-    def test_google_metadata_url_argument_blocks_with_mcp_rule(self):
-        decision = self._decide({"url": "http://metadata.google.internal/computeMetadata/v1/"})
-        self.assertFalse(decision.allow)
-        self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
+    def _stdio(self, args: dict):
+        return self._decide(_stdio_mcp_event("mcp__db__fetch", args))
 
-    def test_benign_url_argument_is_allowed(self):
-        self.assertTrue(self._decide({"url": "https://example.com"}).allow)
+    def test_metadata_destination_blocks_over_remote_transport(self):
+        for label, args in _METADATA_ARGS:
+            with self.subTest(label):
+                decision = self._remote(args)
+                self.assertFalse(decision.allow)
+                self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
 
-    def test_descriptive_metadata_text_is_not_treated_as_destination(self):
-        self.assertTrue(self._decide({"message": "The server returned 169.254.169.254"}).allow)
+    def test_metadata_destination_blocks_over_stdio_transport(self):
+        # A local stdio MCP server with a fetch tool reaches IMDS just as well
+        # as a remote one; the rule must not depend on the transport.
+        for label, args in _METADATA_ARGS:
+            with self.subTest(label):
+                decision = self._stdio(args)
+                self.assertFalse(decision.allow)
+                self.assertEqual(decision.rule_id, "mcp-arg-metadata-endpoint")
+
+    def test_benign_arguments_are_allowed_on_both_transports(self):
+        for label, args in _BENIGN_ARGS:
+            with self.subTest(label):
+                self.assertTrue(self._remote(args).allow)
+                self.assertTrue(self._stdio(args).allow)
+
+    def test_does_not_fire_on_stdio_tool_output(self):
+        # Post-call `response` is the tool's OUTPUT. An argument guardrail that
+        # matched it would silently start screening tool results too.
+        event = _stdio_mcp_event(
+            "mcp__db__fetch",
+            {"url": "http://169.254.169.254/latest/meta-data/"},
+            agent_event="PostToolUse")
+        self.assertTrue(self._decide(event).allow)
 
 
 # ── End-to-end: Claude hook dispatcher ─────────────────────────────────────

@@ -1757,26 +1757,33 @@ rules:
       - '169\.254\.169\.254'
       - 'metadata\.google\.internal'
       - '169\.254\.170\.2'
-      - '2130706433'                       # 169.254.169.254 as decimal integer
+      - '2130706433'                       # 127.0.0.1 as decimal integer
+      - '2852039166'                       # 169.254.169.254 as decimal integer
       - '0xa9fe[:\-]?a9fe'                 # hex encoding
       - '0251\.0376\.0251\.0376'           # octal octet encoding
       - '::ffff:a9fe:a9fe'                 # IPv6-mapped (short hex)
       - '::ffff:169\.254\.169\.254'        # IPv6-mapped (dotted decimal)
     action: block
 
-  # ── CRITICAL: Cloud metadata endpoint in remote MCP call arguments ───
-  # Remote MCP calls use `url` for the server endpoint and serialize their
-  # tool arguments in `outbound_payload`. Restrict this to a URL-valued
-  # argument so descriptive text that happens to mention an IMDS address is
-  # not treated as an egress destination.
+  # ── CRITICAL: Cloud metadata endpoint in MCP call arguments ─────────
+  # cloud-metadata-ssrf screens `url`, which on an MCP call is the *server*
+  # endpoint — an allowed server can still be asked to fetch IMDS for you.
+  # The destination lives in the call arguments, so match those instead:
+  # `mcp_args` is the serialized pre-call arguments whatever the transport
+  # (remote servers put them in outbound_payload, local stdio in response),
+  # and is empty post-call, so this never scans tool output.
+  #
+  # Precision comes from requiring a destination-shaped argument *whose
+  # value starts with* the metadata host: descriptive prose that merely
+  # mentions 169.254.169.254 does not match.
   - id: mcp-arg-metadata-endpoint
     severity: CRITICAL
     category: reconnaissance
     title: Blocks MCP tool arguments targeting cloud instance metadata endpoints
     event_types: [mcp]
-    fields: [outbound_payload]
+    fields: [mcp_args]
     patterns:
-      - '"(?:url|uri|endpoint)"\s*:\s*"https?://(?:169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2|2130706433|0xa9fe[:\-]?a9fe|0251\.0376\.0251\.0376|::ffff:a9fe:a9fe|::ffff:169\.254\.169\.254)(?:[/:?\\]|$)'
+      - '"[a-z_]*(?:url|uri|endpoint|target|host|hostname|address|addr|link|href|server|origin|domain)"\s*:\s*"(?:[a-z][a-z0-9+.\-]*://)?(?:[^"@/]*@)?\[?(?:169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2|2852039166|0xa9fe[:\-]?a9fe|0251\.0376\.0251\.0376|::ffff:a9fe:a9fe|::ffff:169\.254\.169\.254)(?:[/:?#\]"\\]|$)'
     action: block
 
   # ── HIGH: PII in agent context ────────────────────────────────────
