@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -54,7 +57,17 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         print(f"  FAIL  {name}  {detail}")
 
 
+# The hook scripts are shell and parse their JSON payload with jq, failing
+# closed without it (decloak.sh denies outright). Skip rather than fail on a
+# box that hasn't got it — CI installs jq, so nothing is quietly lost there.
+# scrub-stream.sh degrades gracefully, so the tests that only use run_scrub
+# below still run.
+_HAVE_JQ = shutil.which("jq") is not None
+
+
 def run_hook(script: Path, payload: dict) -> dict | None:
+    if not _HAVE_JQ:
+        pytest.skip("jq not installed; cloaking hooks parse their payload with it")
     proc = subprocess.run(
         ["bash", str(script)],
         input=json.dumps(payload),

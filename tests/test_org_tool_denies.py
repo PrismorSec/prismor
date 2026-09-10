@@ -180,7 +180,7 @@ def test_org_allow_does_not_lift_scoped_network_denial(tmp_path, monkeypatch):
     assert any(f.get("ruleId") == "scoped-agent" for f in d.findings)
 
 
-def test_tool_denies_sig_matches_server_format():
+def test_tool_denies_sig_matches_server_format(monkeypatch):
     # Reproduces lib/tool-policy.ts toolDeniesSig: sorted
     # id:tool:action:scope:scopeId lines -> sha256 -> 16 hex.
     import hashlib
@@ -189,7 +189,9 @@ def test_tool_denies_sig_matches_server_format():
         {"id": "b", "tool": "Bash", "action": "deny", "scope": "org", "scopeId": None},
         {"id": "a", "tool": "WebSearch", "action": "deny", "scope": "agent", "scopeId": "codex"},
     ]
-    rp.verify_and_load = lambda: {"settings": {"tool_denies": denies}}  # type: ignore
+    # Via monkeypatch: a bare assignment here left an org policy denying Bash in
+    # place for the rest of the process, so every later shell event blocked.
+    monkeypatch.setattr(rp, "verify_and_load", lambda: {"settings": {"tool_denies": denies}})
     lines = sorted([
         "b:Bash:deny:org:",
         "a:WebSearch:deny:agent:codex",

@@ -12,6 +12,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
@@ -33,13 +34,25 @@ def _decision(action="step_up"):
 
 
 class ApprovalClient(unittest.TestCase):
+    def _patch(self, target, name, value):
+        """Patch for the duration of one test.
+
+        These stubs land on shared runtime modules — ``approvals._identity`` IS
+        ``prismor.runtime.enterprise.identity`` — so a bare assignment would
+        leave the whole process looking enrolled to a fake org for every test
+        that ran afterwards. See tests/conftest.py.
+        """
+        patcher = mock.patch.object(target, name, value)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def setUp(self):
         os.environ.pop("PRISMOR_APPROVALS", None)
         os.environ["PRISMOR_APPROVAL_POLL"] = "0.01"
         os.environ["PRISMOR_APPROVAL_TIMEOUT"] = "2"
         self._ident = {"device_key": "prism_dev_x", "api_base": "https://cp.example"}
-        approvals._identity.load_identity = lambda: self._ident
-        approvals._identity.revoked_backoff_active = lambda: False
+        self._patch(approvals._identity, "load_identity", lambda: self._ident)
+        self._patch(approvals._identity, "revoked_backoff_active", lambda: False)
         self._posts = []
         self._status_seq = []
 
@@ -50,8 +63,8 @@ class ApprovalClient(unittest.TestCase):
         def fake_status(ident, approval_id, timeout):
             return self._status_seq.pop(0) if self._status_seq else "pending"
 
-        approvals._post_request = fake_post
-        approvals._get_status = fake_status
+        self._patch(approvals, "_post_request", fake_post)
+        self._patch(approvals, "_get_status", fake_status)
 
     def test_not_step_up_returns_false(self):
         self.assertFalse(approvals.await_step_up(_decision(action="block")))
@@ -76,15 +89,16 @@ class ApprovalClient(unittest.TestCase):
         self.assertFalse(approvals.await_step_up(_decision()))
 
     def test_immediate_approved_on_create(self):
-        approvals._post_request = lambda ident, body, timeout: {"id": "a", "status": "approved"}
+        self._patch(approvals, "_post_request",
+                    lambda ident, body, timeout: {"id": "a", "status": "approved"})
         self.assertTrue(approvals.await_step_up(_decision()))
 
     def test_not_enrolled_fails_closed(self):
-        approvals._identity.load_identity = lambda: None
+        self._patch(approvals._identity, "load_identity", lambda: None)
         self.assertFalse(approvals.await_step_up(_decision()))
 
     def test_post_failure_fails_closed(self):
-        approvals._post_request = lambda ident, body, timeout: None
+        self._patch(approvals, "_post_request", lambda ident, body, timeout: None)
         self.assertFalse(approvals.await_step_up(_decision()))
 
 
