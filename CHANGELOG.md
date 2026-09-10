@@ -5,6 +5,18 @@
 - `prompt_parts` and `conversation_key` understand Gemini's `contents` / `systemInstruction`. Without this a Gemini session showed an empty prompt in the console and every conversation collapsed into one key, since both walked `messages` only.
 
 ### Fixed
+- **Cloaked Bash commands broke on trailing comments, heredocs, comment-only
+  commands and trailing line continuations.** Once any secret was registered,
+  `decloak.sh` wrapped *every* Bash command in a single-line brace group
+  (`{ <cmd> ; }`) so its output could be scrubbed. A trailing `# comment`
+  swallowed the closing `; }`; a heredoc delimiter picked up the trailing
+  tokens and stopped terminating the document; a comment-only command left an
+  empty group; a trailing `\` joined `}` onto the command line. Each is a bash
+  syntax error on a command that runs fine unwrapped, so the tool call failed
+  outright. The group is now multiline with the command on a line of its own,
+  guarded by a leading `:` and a blank line before the closing brace, and
+  `_strip_prismor_scrub_wrapper` strips the new shape back off so the dashboard
+  and the policy engine still see the original command. See #381.
 - Virtual-key mode left another provider's credential header in place while swapping, because only `authorization` and `x-api-key` were stripped. Every credential header is now removed before the upstream's own is set, `x-goog-api-key` included, and Google's `?key=` query form is stripped so a Prismor key is never forwarded to Google.
 
 ### Known limits
@@ -31,7 +43,6 @@
   a path into Prismor's own source tree — not something the reader can act
   on — for what the agent actually sees in place of a secret, and its options
   are short enough to fit a narrow terminal.
-
 
 ## [1.49.2] — 2026-09-08
 

@@ -501,6 +501,41 @@ class TestNormalizePayloadClaude(unittest.TestCase):
         self.assertEqual(event["command"], "gh api search/issues")
         self.assertNotIn(".prismor/secrets", event["command"])
 
+    def test_bash_strips_multiline_scrub_wrapper(self):
+        # The wrapper is a multiline brace group with a leading `:` guard line
+        # (see decloak.sh). Both the guard and the braces must come back off,
+        # or the dashboard shows ":\n<cmd>" and policy evaluates the wrapper.
+        wrapped = (
+            "{\n:\ngh api search/issues # look it up\n\n} 2>&1 | "
+            "PRISMOR_SECRETS_DIR=/home/u/.prismor/secrets "
+            "/x/prismor/runtime/cloaking/hooks/scrub-stream.sh; exit ${PIPESTATUS[0]}"
+        )
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess-scrub-multiline",
+            "tool_name": "Bash",
+            "tool_input": {"command": wrapped},
+        }
+        event = normalize_payload(agent="claude", payload=payload, workspace=Path("/tmp"))["event"]
+        self.assertEqual(event["command"], "gh api search/issues # look it up")
+        self.assertNotIn(".prismor/secrets", event["command"])
+
+    def test_bash_keeps_leading_colon_command(self):
+        # `:> file` genuinely starts with `:` - it must survive unwrapping.
+        wrapped = (
+            "{\n:\n:> /tmp/truncate.me\n\n} 2>&1 | "
+            "PRISMOR_SECRETS_DIR=/home/u/.prismor/secrets "
+            "/x/prismor/runtime/cloaking/hooks/scrub-stream.sh; exit ${PIPESTATUS[0]}"
+        )
+        payload = {
+            "hook_event_name": "PreToolUse",
+            "session_id": "sess-scrub-colon",
+            "tool_name": "Bash",
+            "tool_input": {"command": wrapped},
+        }
+        event = normalize_payload(agent="claude", payload=payload, workspace=Path("/tmp"))["event"]
+        self.assertEqual(event["command"], ":> /tmp/truncate.me")
+
     def test_bash_preserves_genuine_vault_access(self):
         # A real command touching the vault must NOT be stripped — the guard
         # still needs to flag it.

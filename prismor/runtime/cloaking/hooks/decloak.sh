@@ -93,7 +93,17 @@ if [[ -n "$placeholders" ]]; then
   # resolve it, so the recorded string holds placeholders and not secrets.
   runner="PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_CMD=$(printf '%q' "$cmd") bash $(printf '%q' "$RESOLVER")"
 else
-  runner="{ $cmd ; }"
+  # Wrapped in a multiline brace group so trailing comments (# ...) or heredocs
+  # (EOF) do not comment out or corrupt the closing brace.
+  # The leading `:` keeps a comment-only command from forming an empty
+  # (invalid) group; the blank line before `}` absorbs a trailing backslash
+  # continuation. Neither touches $? - `:` runs before the command, so the
+  # group still exits with the command's own status.
+  runner="{
+:
+$cmd
+
+}"
 fi
 wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
 
