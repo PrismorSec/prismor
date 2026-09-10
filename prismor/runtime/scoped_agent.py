@@ -758,15 +758,29 @@ def check_scoped_rules(
                     event_type,
                 )
 
-    # Network check
-    if event_type == "network":
-        if rules.get("deny_network", False):
+    # Network check. A shell command reaches the network as readily as WebFetch
+    # does, so deny_network is judged on the destinations inside the command —
+    # curl/wget/ssh/git-push, host:port pairs, any URL — not on the event type.
+    if rules.get("deny_network", False):
+        if event_type == "network":
             url = event.get("url", "")
             return _scoped_finding(
                 session_id,
                 f"Network access denied by scoped rules (url: {url[:100]})",
                 event_type,
             )
+        if event_type == "shell":
+            from .egress import extract_destinations
+
+            dests = extract_destinations(event)
+            if dests:
+                dest = dests[0]
+                where = f"{dest.host}:{dest.port}" if dest.port else dest.host
+                return _scoped_finding(
+                    session_id,
+                    f"Network access denied by scoped rules (host: {where[:100]})",
+                    event_type,
+                )
 
     return None
 
