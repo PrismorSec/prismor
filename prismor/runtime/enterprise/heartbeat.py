@@ -131,8 +131,7 @@ def maybe_flush(now: Optional[float] = None) -> bool:
             counters: Dict[str, Any] = data.get("counters", {}) or {}
             last = float(data.get("last_flush", 0))
             t = time.time() if now is None else now
-            total = sum(int(v.get("count", 0)) for v in counters.values())
-            if total <= 0 or (t - last) < FLUSH_INTERVAL:
+            if (t - last) < FLUSH_INTERVAL:
                 return False
             import uuid
             for key, slot in counters.items():
@@ -166,8 +165,9 @@ def maybe_flush(now: Optional[float] = None) -> bool:
     except (OSError, ValueError):
         return False
 
-    if not records:
-        return False
+    # Always call through, even with no counts of our own: upload_telemetry
+    # drains the telemetry spool, and findings now ride that spool instead of
+    # one POST each. This tick is what ships them.
     try:
         from prismor.runtime.sinks import upload_telemetry
         upload_telemetry(records)

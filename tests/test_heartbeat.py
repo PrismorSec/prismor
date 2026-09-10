@@ -64,8 +64,9 @@ def test_calls_accumulate_and_flush_debounces(monkeypatch):
     assert "agent_name" not in rec  # unnamed instance
     assert rec["redacted"] is True
 
-    # Counter reset — an immediate second flush has nothing to send.
-    assert heartbeat.maybe_flush(now=time.time() + 2 * heartbeat.FLUSH_INTERVAL + 2) is False
+    # Counter reset — the next tick still calls through (it is what drains the
+    # telemetry spool that findings now ride) but has no counts to send.
+    assert heartbeat.maybe_flush(now=time.time() + 2 * heartbeat.FLUSH_INTERVAL + 2) is True
     assert len(sent) == 1
 
 

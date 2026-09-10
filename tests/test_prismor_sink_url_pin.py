@@ -21,7 +21,9 @@ def test_prismor_sink_ignores_local_url(monkeypatch, capsys):
     })
     monkeypatch.setattr(ident, "revoked_backoff_active", lambda: False)
     # Keep record-building trivial and deterministic.
-    monkeypatch.setattr(telem, "build_record", lambda *a, **k: {"ok": True})
+    # verdict "blocked" keeps this on the immediate-upload path; observed
+    # findings are spooled and shipped by the heartbeat flush instead.
+    monkeypatch.setattr(telem, "build_record", lambda *a, **k: {"ok": True, "verdict": "blocked"})
     monkeypatch.setattr(telem, "assert_redacted", lambda rec: None)
 
     # Capture exactly how upload_telemetry is invoked.
