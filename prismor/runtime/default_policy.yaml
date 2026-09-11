@@ -476,7 +476,9 @@ rules:
     category: dos_resource_exhaustion
     title: Blocks fork bombs, while-true loops, /dev/urandom abuse
     event_types: [shell]
-    fields: [command]
+    # `exec`: the words that run. A `yes |` inside a heredoc test fixture or a
+    # commit message is data; the same text in a pipeline is the load.
+    fields: [exec]
     patterns:
       - ':\(\)\s*\{.*\|.*&\s*\}\s*;'
       - 'while\s+true\s*;?\s*do\b'
@@ -748,7 +750,10 @@ rules:
     category: network_isolation
     title: Outbound connection to raw IP address (not a domain)
     event_types: [shell, network]
-    fields: [command, url]
+    # `net_dst`: the destinations the command actually contacts, with loopback
+    # and private ranges already left out. Replayed over 20k events, 2.5k of
+    # this rule's hits were `curl http://127.0.0.1:...` against a local server.
+    fields: [net_dst, url]
     patterns:
       - '\b(curl|wget|http|nc|ncat|socat|ssh|scp|rsync|ftp)\b[^\n]*\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
       - 'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
@@ -1050,7 +1055,10 @@ rules:
     category: security_bypass
     title: Blocks modification/deletion of agent hook configurations
     event_types: [shell]
-    fields: [command]
+    # `writes`: the paths the command writes, one `<verb> <path>` per line, so
+    # the verb-gated patterns below read unchanged -- and `sed -n 55,95p
+    # .prismor/policy.yaml`, a read, no longer trips the `sed` verb.
+    fields: [writes]
     # A mutating verb is required. Reading these files is diagnosis, not
     # tampering — an agent has to be able to explain its own posture.
     #
@@ -1134,8 +1142,13 @@ rules:
       - '(>|rm|mv|cp|truncate|tee)[^\n]*\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
       # The local dashboard's write API (loopback, unauthenticated by design
-      # — it assumes only the human reaches it).
-      - '(curl|wget|http|nc)[^\n]*(127\.0\.0\.1|localhost)[^\n]*/api/(policy|tool-policy|agents|sessions)'
+      # — it assumes only the human reaches it). A write needs a writing
+      # method or a body: a bare GET of /api/sessions is the agent reading the
+      # dashboard, which matched 26 times in one session before this gate.
+      - '\bcurl\b(?=[^\n]*(?:127\.0\.0\.1|localhost)[^\n]*/api/(?:policy|tool-policy|agents|sessions))[^\n]*(?:(?:-X|--request)[= ]*(?:POST|PUT|PATCH|DELETE)\b|\s(?:-d|--data(?:-\w+)?|--json|-F|--form|-T|--upload-file)\b)'
+      - '\bwget\b(?=[^\n]*(?:127\.0\.0\.1|localhost)[^\n]*/api/(?:policy|tool-policy|agents|sessions))[^\n]*(?:--post-(?:data|file)|--method=(?:POST|PUT|PATCH|DELETE)|--body-(?:data|file))\b'
+      - '\bhttps?\s+(?:POST|PUT|PATCH|DELETE)\s+[^\n]*(?:127\.0\.0\.1|localhost)[^\n]*/api/(?:policy|tool-policy|agents|sessions)'
+      - '\bnc\b[^\n]*(?:127\.0\.0\.1|localhost)[^\n]*/api/(?:policy|tool-policy|agents|sessions)'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b'
