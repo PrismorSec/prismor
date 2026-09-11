@@ -67,6 +67,22 @@ from typing import Any, Dict, List, Optional, Tuple
 import pytest
 
 # Framework adapter imports
+# Env vars that OUTRANK $PRISMOR_HOME, cleared before any test runs.
+#
+# Most tests sandbox themselves by copying os.environ and pointing PRISMOR_HOME
+# at a tmpdir. That is not enough: secrets_dir() checks $PRISMOR_SECRETS_DIR
+# first and only falls back to $PRISMOR_HOME/secrets, so on a developer machine
+# that exports it -- `prismor setup` does -- the copied env still points at the
+# real vault, and `tests/test_cli.py::TestCloakEnvImport` writes its fixture
+# secrets straight into it, overwriting any real entry of the same name.
+#
+# CI never sees this because the var is unset there, so the test just fails
+# locally with a confusing FileNotFoundError while the damage is already done.
+# Clear it once, here, rather than in each of the ~10 tests that copy the env.
+for _escape_hatch in ("PRISMOR_SECRETS_DIR",):
+    os.environ.pop(_escape_hatch, None)
+
+
 _ADAPTERS = Path(__file__).resolve().parent.parent / "adapters"
 
 

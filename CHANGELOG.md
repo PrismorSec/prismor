@@ -1,28 +1,32 @@
 ## [Unreleased]
 
+## [1.50.0] — 2026-09-10
+
 ### Added
+- **Full session capture.** Under the org's `full_capture` opt-in the runtime now ships *every* evaluated call, not only the flagged ones, so the console's session trail is the whole trail rather than a list of alarms. Unflagged calls travel as a synthetic `audit-allowed` finding carrying the same privacy-bounded record any finding would. Redacted orgs are unchanged — they keep findings plus the per-session call counts the heartbeat already provided. See #390.
+- **Cross-agent flow governance, gated on influence.** The trifecta gate now follows taint *between* agents via `provenance.json`, so one agent reading untrusted content and handing off to another is governed as one flow instead of two innocent halves. The influence gate is what keeps it usable: on 426 real sessions the default rule fires 0 times, while catching 8 of 12 crafted attacks and 0 of 10 benign look-alikes. See #379.
 - **The LLM proxy governs Google Gen AI traffic.** `prismor proxy` now routes and screens `:generateContent` / `:streamGenerateContent` — the Gemini API, Vertex, and the Gemini Enterprise Agent Platform — alongside Anthropic and OpenAI, reached the same way the others are: `genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))`. Gemini is a genuinely different dialect and each difference is handled rather than approximated: the model and the streaming *method* live in the path, not the body; a proposed call is a `functionCall` part in `candidates[].content.parts[]` and a tool result a `functionResponse` part, both flattened into the screened text; streamed `functionCall` parts arrive whole, so the holdback collapses to judging a frame before forwarding it. A denied call comes back as a text part carrying the refusal with `finishReason: STOP`, and a refused request in the shape `google.genai.errors.APIError` parses. Vertex and Agent Platform are the same wire format on a regional host — override the `google` upstream's `base_url`. Docs: `docs/llm-proxy.md`; offline demo: `examples/gemini-proxy-demo/demo.py`.
 - `prompt_parts` and `conversation_key` understand Gemini's `contents` / `systemInstruction`. Without this a Gemini session showed an empty prompt in the console and every conversation collapsed into one key, since both walked `messages` only.
+- `prismor setup` now picks which login judges uncertain events — claude, codex, or a direct API key — instead of assuming one. See #385.
+
+### Changed
+- **Control-plane telemetry uploads batch through the offline spool.** One POST per finding was affordable while findings were rare; with full session capture above, every evaluated call is a finding, which made it one HTTPS request per tool call on the hot path — hundreds a minute from a busy agent. Observed/warned records now ride the spool that already existed for offline delivery and ship on the next flush: the heartbeat's 60s tick, or immediately once 50 have accumulated. **Blocked verdicts still upload straight away** — an alert 60s late is not an alert. Row volume at the control plane is unchanged; this is request amplification, not table growth. Observed findings may now reach the console up to ~60s later. See #392.
 
 ### Fixed
-- **Cloaked Bash commands broke on trailing comments, heredocs, comment-only
-  commands and trailing line continuations.** Once any secret was registered,
-  `decloak.sh` wrapped *every* Bash command in a single-line brace group
-  (`{ <cmd> ; }`) so its output could be scrubbed. A trailing `# comment`
-  swallowed the closing `; }`; a heredoc delimiter picked up the trailing
-  tokens and stopped terminating the document; a comment-only command left an
-  empty group; a trailing `\` joined `}` onto the command line. Each is a bash
-  syntax error on a command that runs fine unwrapped, so the tool call failed
-  outright. The group is now multiline with the command on a line of its own,
-  guarded by a leading `:` and a blank line before the closing brace, and
-  `_strip_prismor_scrub_wrapper` strips the new shape back off so the dashboard
-  and the policy engine still see the original command. See #381.
+- **`--force-with-lease` was treated as a force push.** The safe form is the one reviewers ask for, and the policy blocked it alongside `--force`. See #395.
+- **`deny_network` leaked through shell commands.** The scope held for network events but not for a `curl` run through Bash, so the same destination was denied or allowed depending on which surface reached it. See #394 / #357.
+- **MCP tool arguments are screened as egress destinations.** A URL passed as a tool argument bypassed egress policy that the equivalent direct call would have hit. See #386 / #307.
+- **Cloaked Bash commands broke on trailing comments, heredocs, comment-only commands and trailing line continuations.** Once any secret was registered, `decloak.sh` wrapped *every* Bash command in a single-line brace group (`{ <cmd> ; }`) so its output could be scrubbed. A trailing `# comment` swallowed the closing `; }`; a heredoc delimiter picked up the trailing tokens and stopped terminating the document; a comment-only command left an empty group; a trailing `\` joined `}` onto the command line. Each is a bash syntax error on a command that runs fine unwrapped, so the tool call failed outright. The group is now multiline with the command on a line of its own, guarded by a leading `:` and a blank line before the closing brace, and `_strip_prismor_scrub_wrapper` strips the new shape back off so the dashboard and the policy engine still see the original command. See #381 / #382.
 - Virtual-key mode left another provider's credential header in place while swapping, because only `authorization` and `x-api-key` were stripped. Every credential header is now removed before the upstream's own is set, `x-goog-api-key` included, and Google's `?key=` query form is stripped so a Prismor key is never forwarded to Google.
+- `prismor scan` imports on Python 3.8–3.10 again — `tomllib` is stdlib only from 3.11. See #361.
+- The transcript readers import on Python 3.8/3.9. See #393.
+- **The test suite no longer leaks policy-engine and module state across files.** A `PolicyEngine` left in a deny-everything state, and modules swapped in `sys.modules`, made ~67 files order-dependent and the suite red at rest. See #328 / #308.
+- **The test suite could write into a developer's real secret vault.** Tests sandbox themselves by copying `os.environ` and pointing `PRISMOR_HOME` at a tmpdir, but `secrets_dir()` checks `$PRISMOR_SECRETS_DIR` first and only then falls back to `$PRISMOR_HOME/secrets`. On a machine that exports it — `prismor setup` does — `tests/test_cli.py::TestCloakEnvImport` imported its fixture `.env` into the real vault, overwriting any live entry with a colliding name. CI never saw it because the var is unset there, so it surfaced only as a confusing local `FileNotFoundError` after the damage was done. `tests/conftest.py` now clears the variable before any test runs.
 
 ### Known limits
 - `:streamGenerateContent` without `?alt=sse` returns one long JSON array rather than SSE frames, which leaves no boundary at which to hold a `functionCall` back. Every Gen AI SDK sets `alt=sse`; a hand-rolled client that does not is refused in `enforce` and forwarded with a stderr warning in `observe`, rather than being screened by pretence.
 - An agent deployed to Agent Engine runs in Google's cloud and its model traffic never crosses a URL you control, so no proxy can front it. Ship `prismor[google-adk]` inside the deployed bundle instead.
-
+- Full session capture raises telemetry row volume roughly in proportion to tool-call count. Batching cuts the request count, not the rows; orgs on full capture should watch `telemetry_events` growth and set a retention window.
 ## [1.49.3] — 2026-09-08
 
 ### Fixed
