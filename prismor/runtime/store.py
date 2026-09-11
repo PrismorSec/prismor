@@ -914,6 +914,10 @@ def persist_runtime_findings(
                     "action": finding.get("action"),
                     "mode": finding.get("mode"),
                     "remediation": finding.get("remediation"),
+                    # Which line of the rule fired. The engine works it out on
+                    # the match path already; dropping it here left every
+                    # blocked row saying only that some rule said no.
+                    "pattern": finding.get("pattern"),
                     "source": "runtime",
                 }),
             ))
@@ -3457,6 +3461,116 @@ def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return merged[:_TRAIL_ROWS]
 
 
+def _attach_matched_patterns(events: List[Dict[str, Any]], workspace: Optional[Path]) -> None:
+    """Quote the pattern that fired and the text it hit.
+
+    A finding names its rule but not the line inside it that matched, which
+    leaves a blocked row saying "policy said no" over a 400-character command.
+    Findings written from now on carry the pattern; older rows are re-derived
+    by re-running the rule over the event's own text -- the stored evidence is
+    truncated, so the full command is what the pattern is matched against.
+    Guards that are code rather than policy rules (the vault, egress and
+    semantic guards) have no pattern to quote and keep none.
+    """
+    blocked = [
+        item for item in events
+        if item.get("verdict") == "blocked" and not (item.get("policy") or {}).get("pattern")
+    ]
+    if not blocked:
+        return
+    try:
+        from prismor.runtime.policy_engine import PolicyEngine
+
+        engine = PolicyEngine(workspace=workspace) if workspace else PolicyEngine()
+        rules = {rule.id: rule for rule in engine.rules}
+    except Exception:
+        return
+    # A finding id carries its rule id with a session prefix and an event index
+    # around it ("<session>:dos-resource-exhaustion-136"), so a row whose
+    # enrichment lost the rule id is still attributable.
+    by_length = sorted(rules, key=len, reverse=True)
+
+    for item in blocked:
+        policy = item.get("policy") or {}
+        raw_id = policy.get("ruleId") or ""
+        rule = rules.get(raw_id) or next(
+            (rules[rid] for rid in by_length if rid and rid in raw_id), None
+        )
+        if not rule:
+            continue
+        artifacts = item.get("artifacts") or {}
+        text = (artifacts.get("command") or artifacts.get("path") or artifacts.get("url")
+                or artifacts.get("prompt") or policy.get("evidence") or "")
+        pattern = rule.matched_pattern(text) if text else None
+        if not pattern:
+            continue
+        policy["pattern"] = pattern
+        try:
+            hit = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        except re.error:
+            hit = None
+        if hit:
+            policy["matched"] = hit.group(0)[:300]
+
+
+def _format_duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s" if seconds < 10 else f"{round(seconds)}s"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m {round(seconds % 60)}s"
+    return f"{minutes // 60}h {minutes % 60}m"
+
+
+def _attach_task_durations(
+    events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
+) -> None:
+    """Tie a background task's notification back to the call that started it.
+
+    The notification only says the work ended, and names its launch by an
+    opaque tool_use_id.  The call itself is already in the trail, so the join
+    gives both the duration and the command a reader can recognise.  A Monitor
+    arms without a PreToolUse hook -- Prismor never sees it start -- so it is
+    timed from its own first event and marked with a leading "+" rather than
+    being timed from someone else's start.
+    """
+    from datetime import datetime
+
+    def _parse(ts: Any) -> Any:
+        try:
+            return datetime.fromisoformat(str(ts))
+        except Exception:
+            return None
+
+    first_seen: Dict[str, Any] = {}
+    for item in reversed(events):  # oldest first, so a task's own first event lands first
+        artifacts = item.get("artifacts") or {}
+        text = artifacts.get("prompt") or artifacts.get("user_message") or ""
+        if "<task-notification>" not in text:
+            continue
+        ended = _parse(item.get("_tsRaw"))
+        task_id = (re.search(r"<task-id>(.*?)</task-id>", text) or [None, ""])[1].strip()
+        use_id = (re.search(r"<tool-use-id>(.*?)</tool-use-id>", text) or [None, ""])[1].strip()
+        call = tool_calls.get(use_id) if use_id else None
+        if call:
+            artifacts["task_launched_by"] = " - ".join(
+                part for part in (call.get("tool"), call.get("detail")) if part
+            )
+            started = _parse(call.get("ts"))
+            if started and ended and ended >= started:
+                artifacts["task_took"] = _format_duration((ended - started).total_seconds())
+        else:
+            artifacts["task_launched_by"] = (
+                "not recorded - a Monitor arms without a tool hook"
+                if not use_id else f"tool call {use_id} is outside this trail"
+            )
+            armed = first_seen.get(task_id)
+            if armed and ended and ended >= armed:
+                artifacts["task_took"] = "+" + _format_duration((ended - armed).total_seconds())
+        if task_id and ended and task_id not in first_seen:
+            first_seen[task_id] = ended
+
+
 def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any]:
     """Return scoped rules + recent blocked findings for a session."""
     from prismor.runtime.scoped_agent import load_scoped_rules, check_scoped_rules
@@ -3464,6 +3578,10 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
 
     recent_blocked: List[Dict[str, Any]] = []
     recent_events: List[Dict[str, Any]] = []
+    # The tool call behind each tool_use_id, so a background task's
+    # notification can say how long the work took and what actually launched
+    # it, instead of quoting an opaque id.
+    tool_calls: Dict[str, Dict[str, str]] = {}
     db = prismor_home() / "prismor.db"
     if db.exists():
         try:
@@ -3517,6 +3635,16 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     raw = {}
                 meta = raw.get("metadata", {}) if isinstance(raw, dict) else {}
                 tool_tag = meta.get("tool_name") if isinstance(meta, dict) else ""
+                hook_payload = meta.get("raw") if isinstance(meta, dict) else None
+                if isinstance(hook_payload, dict) and hook_payload.get("tool_use_id"):
+                    # Rows arrive newest first, so the last write is the call itself.
+                    tool_calls[str(hook_payload["tool_use_id"])] = {
+                        "ts": row["ts"],
+                        "tool": tool_tag or hook_payload.get("tool_name") or "",
+                        "detail": " ".join(
+                            str(row["command_text"] or row["path_text"] or row["url_text"] or "").split()
+                        )[:300],
+                    }
                 finding_id = row["finding_id"]
                 severity = row["severity"]
                 category = row["category"]
@@ -3572,9 +3700,12 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                         "action": enrichment.get("action") or ("block" if verdict == "blocked" else ""),
                         "mode": enrichment.get("mode") or "",
                         "source": enrichment.get("source") or ("finding" if finding_id else ""),
+                        "pattern": enrichment.get("pattern") or "",
                     },
                 })
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
+            _attach_task_durations(recent_events, tool_calls)
+            _attach_matched_patterns(recent_events, workspace)
             for item in recent_events:
                 item.pop("_tsRaw", None)
             block_keys = {

@@ -1573,6 +1573,11 @@ class PolicyEngine:
                     "category": "secret_access",
                     "title": "Access to Prismor plaintext secret vault",
                     "evidence": _truncate(_hit_vault),
+                    # This guard is code, not a regex, so the "pattern" is the
+                    # vault path it looked for -- without it the dashboard can
+                    # only say some rule objected to a 400-character command.
+                    "pattern": (".prismor/secrets"
+                                if ".prismor/secrets" in _hit_vault else _vault),
                     "eventIndex": index,
                     "ruleId": "prismor-vault-access",
                     "action": "block",

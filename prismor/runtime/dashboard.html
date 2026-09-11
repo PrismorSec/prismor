@@ -78,6 +78,7 @@
     --chart-palette-5: #34d399;
     --chart-palette-6: #fb7185;
   }
+  :root { --danger-ink: #b91c1c; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: var(--font-ui);
@@ -698,14 +699,14 @@
   .sess-act-btn {
     font-family: inherit; font-size: 10px; padding: 4px 10px;
     border: 1px solid var(--gray-200); border-radius: 4px;
-    background: #fff; color: var(--gray-700); cursor: pointer; white-space: nowrap;
+    background: var(--surface); color: var(--gray-700); cursor: pointer; white-space: nowrap;
   }
   .sess-act-btn:hover { background: var(--gray-50); }
   .sess-act-btn.pause { color: #b45309; border-color: #fde68a; }
   .sess-act-btn.pause:hover { background: #fffbeb; }
   .sess-act-btn.resume { color: #15803d; border-color: #bbf7d0; }
   .sess-act-btn.resume:hover { background: #f0fdf4; }
-  .sess-act-btn.clear { color: #b91c1c; border-color: #fecaca; }
+  .sess-act-btn.clear { color: var(--danger-ink); border-color: #fecaca; }
   .sess-act-btn.clear:hover { background: #fef2f2; }
   .sess-act-btn.expand { color: var(--gray-500); }
 
@@ -981,7 +982,7 @@
     color:var(--gray-500); background:var(--gray-50); border:1px solid var(--gray-200);
     border-radius:8px; padding:7px 12px; cursor:pointer; transition:all .12s;
   }
-  .view-back:hover { background:#fff; color:var(--gray-800); border-color:var(--gray-300); }
+  .view-back:hover { background:var(--surface); color:var(--gray-800); border-color:var(--gray-300); }
   .view-back .icon { width:13px; height:13px; }
   .crumbs { font-size:11px; color:var(--gray-400); display:flex; align-items:center; gap:6px; }
   .crumbs a { color:var(--gray-500); cursor:pointer; text-decoration:none; }
@@ -1057,7 +1058,7 @@
   .session-hero {
     display:flex; align-items:center; gap:14px; flex-wrap:wrap;
     padding:16px 20px; margin-bottom:16px;
-    border:1px solid var(--gray-200); border-radius:14px; background:#fff;
+    border:1px solid var(--gray-200); border-radius:14px; background:var(--surface);
   }
   .session-hero-main { flex:1; min-width:200px; }
   .session-hero-title { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--gray-400); font-weight:700; }
@@ -1131,7 +1132,7 @@
   .tree-id { flex:none; font-size:10px; font-weight:600;
     color:var(--gray-500); background:var(--gray-100); border-radius:5px; padding:1px 6px; }
   .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
-  .tree-leaf.blocked .tree-text { color:#b91c1c; font-weight:600; }
+  .tree-leaf.blocked .tree-text { color:var(--danger-ink); font-weight:600; }
   .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); font-variant-numeric:tabular-nums; }
   .flow-legend { display:flex; gap:12px; font-size:10px; color:var(--gray-500); }
   .flow-legend span { display:inline-flex; align-items:center; gap:4px; }
@@ -1303,6 +1304,15 @@
     background: rgba(59, 130, 246, 0.14);
     color: #93c5fd;
   }
+  /* The pale pink/amber hairlines these pills carry are drawn for a white
+     card; on the dark hero they glowed brighter than their own labels. */
+  html[data-theme="dark"] .sess-act-btn.clear { border-color: rgba(242,161,161,.32); }
+  html[data-theme="dark"] .sess-act-btn.pause { color:#fbbf24; border-color: rgba(251,191,36,.32); }
+  html[data-theme="dark"] .sess-act-btn.resume { color:#6ee7b7; border-color: rgba(110,231,183,.32); }
+  html[data-theme="dark"] .sess-act-btn.pause:hover,
+  html[data-theme="dark"] .sess-act-btn.clear:hover,
+  html[data-theme="dark"] .sess-act-btn.resume:hover { background: var(--surface-strong); }
+
   html[data-theme="dark"] .drawer-policy-card {
     background: rgba(244, 63, 94, 0.08);
     border-color: rgba(244, 63, 94, 0.3);
@@ -1440,6 +1450,7 @@
      ═══════════════════════════════════════════════════════════════════ */
   :root {
     --sidebar-w: 212px;
+    --topbar-h: 44px;
     --md-primary: #f2542d; --md-primary-d: #d6431f; --md-primary-soft: rgba(242,84,45,.12);
     --accent: #f2542d;
   }
@@ -1470,8 +1481,12 @@
   .tab-nav .tab-lock { margin-left: auto; }
 
   .topbar, .page, .prismor-cta { margin-left: var(--sidebar-w); }
+  /* The shell is the frame, so a page fills the width left of it rather than
+     centring a 1280px column against a fixed sidebar -- which read as a page
+     shoved off to one side on anything wider than a laptop. */
+  .page { max-width: none; }
   .topbar {
-    height: 44px; padding: 0 20px; background: var(--surface);
+    height: var(--topbar-h); padding: 0 20px; background: var(--surface);
     border-bottom: 1px solid var(--gray-200); box-shadow: none;
   }
   .topbar-left { gap: 8px; }
@@ -1510,6 +1525,20 @@
     color: var(--gray-400); border-left: 1px dashed var(--gray-300);
     height: 14px; padding-left: 7px; display: flex; align-items: center;
   }
+
+  /* The session page is a frame, not a document: the hero, the column heads
+     and the detail panel stay put and only the trail scrolls. A 600-event
+     session used to push its own controls -- and the panel showing the row you
+     just clicked -- off the top of the screen. */
+  #page-session.page {
+    display: flex; flex-direction: column; gap: 0;
+    height: calc(100vh - var(--topbar-h)); overflow: hidden;
+  }
+  #page-session .session-layout { flex: 1; min-height: 0; align-items: stretch; }
+  #page-session .session-layout > div { display: flex; flex-direction: column; min-height: 0; }
+  #page-session .flow-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #page-session #sessFlowCanvas { flex: 1; min-height: 0; overflow-y: auto; }
+  #page-session .node-panel { position: static; min-height: 0; overflow-y: auto; }
 
   @media (max-width: 900px) {
     .tab-nav { width: 60px; }
@@ -1563,6 +1592,10 @@
 
     --app-bg: #0b0b0c; --surface: #151517; --surface-muted: #100f11; --surface-strong: #1e1e21;
     --overlay: rgba(0,0,0,0.72);
+
+    /* A blocked row is read, not just spotted: #b91c1c on near-black is the
+       colour of a link nobody can make out. Lighten the ink, keep the hue. */
+    --danger-ink: #f2a1a1;
 
     --accent: #f5f5f6;
     --md-primary: #f5f5f6; --md-primary-d: #ffffff; --md-primary-soft: rgba(255,255,255,0.10);
@@ -1670,6 +1703,12 @@
     background: var(--surface); border-color: var(--gray-200); color: var(--gray-700);
   }
 
+  .match-hit{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+    color:var(--gray-800);background:rgba(220,38,38,.09);border:1px solid rgba(220,38,38,.22);
+    border-radius:4px;padding:4px 6px;word-break:break-all;max-height:120px;overflow:auto}
+  .match-pattern{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+    color:var(--gray-600);background:var(--gray-100);border-radius:4px;padding:4px 6px;word-break:break-all}
+  mark.match-mark{background:rgba(220,38,38,.22);color:inherit;border-radius:2px;padding:0 1px}
 </style>
 </head>
 <body>
@@ -1682,6 +1721,7 @@
   <symbol id="kl-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12H5.01M12 12H12.01M19 12H19.01"/></symbol>
   <symbol id="kl-prompt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 3 C20.6569 3 22 4.3431 22 6 C22 7.6569 20.6569 9 19 9 C17.3431 9 16 7.6569 16 6 C16 4.3431 17.3431 3 19 3 ZM12.668 3.0179 C12.4456 3.006 12.2228 3 12 3 C6.4772 3 2 6.5817 2 11 C2 12.9769 2.915 14.8839 4.5686 16.353 L5 21 L9.5808 18.7624 C10.3721 18.9202 11.1845 19 12 19 C16.8496 19 21.0003 16.2162 21.8466 12.3961" fill="none"/></symbol>
   <symbol id="kl-shell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5L10.5571 10.6204C10.7899 10.8199 10.7899 11.1801 10.5571 11.3796L4 17M20 19H13"/></symbol>
+  <symbol id="kl-task" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2M22 12c0 5.5228-4.4772 10-10 10S2 17.5228 2 12 6.4772 2 12 2s10 4.4772 10 10Z"/></symbol>
   <symbol id="kl-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.682 8.8536L20.2678 7.2678C20.4553 7.0802 20.7097 6.9749 20.9749 6.9749C21.4902 6.9749 21.9211 7.3664 21.9703 7.8794C21.9901 8.0857 22 8.2928 22 8.5C22 12.0899 19.0899 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 4.9101 11.9101 2 15.5 2C15.7072 2 15.9143 2.0099 16.1206 2.0297C16.6336 2.0789 17.0251 2.5098 17.0251 3.0251C17.0251 3.2903 16.9198 3.5447 16.7322 3.7322L15.1464 5.318C14.6776 5.7869 14.4142 6.4227 14.4142 7.0858C14.4142 8.4665 15.5335 9.5858 16.9142 9.5858C17.5773 9.5858 18.2131 9.3224 18.682 8.8536ZM15.3955 14.9992C15.3688 14.9987 15.342 14.9985 15.3152 14.9985C13.9891 14.9985 12.7173 15.5253 11.7797 16.463L7.1213 21.1213C6.5587 21.6839 5.7956 22 5 22C3.3431 22 2 20.6569 2 19C2 18.2044 2.3161 17.4413 2.8787 16.8787L7.537 12.2203C8.4747 11.2827 9.0015 10.0109 9.0015 8.6848C9.0015 8.658 9.0013 8.6312 9.0008 8.6045"/></symbol>
 </svg>
 
@@ -3864,15 +3904,29 @@ async function sessViewAction(action){
 // index, so clicking one still selects it in the detail panel.
 const LANE_LABEL = {
   prompt:'Prompts', tools:'Tool calls', files:'Files', shell:'Shell',
-  network:'Network', context:'Context', mcp:'MCP', other:'Other',
+  network:'Network', context:'Context', mcp:'MCP', task:'Background tasks', other:'Other',
 };
-const LANE_ORDER = ['prompt','context','tools','shell','files','network','mcp','other'];
+const LANE_ORDER = ['prompt','context','task','tools','shell','files','network','mcp','other'];
 
+// A task notification is the harness handing the same turn back to the agent
+// when out-of-band work finishes -- a backgrounded command, a Monitor, a
+// subagent. It arrives on the same hook a person's message does, so without
+// this it reads as the user having typed ten times mid-task.
+function taskNote(ev){
+  const t = (ev.artifacts||{}).user_message || (ev.artifacts||{}).prompt || '';
+  if (ev.type !== 'prompt' || t.indexOf('<task-notification>') === -1) return null;
+  const g = k => (t.match(new RegExp('<'+k+'>([\\s\\S]*?)</'+k+'>'))||[])[1] || '';
+  return { id: g('task-id'), summary: (g('summary') || g('output-file') || 'finished').trim(),
+           took: (ev.artifacts||{}).task_took || '' };
+}
 function eventLane(ev){
+  if (taskNote(ev)) return 'task';
   const lane = ev.lane || 'other';
   return LANE_LABEL[lane] ? lane : 'other';
 }
 function eventSummary(ev){
+  const note = taskNote(ev);
+  if (note) return note.id+(note.took ? ' ('+note.took+')' : '')+' - '+note.summary.replace(/\s+/g,' ').slice(0,200);
   const a = ev.artifacts || {};
   // For a prompt, the person's own message beats the flattened blob: a chat
   // API resends the whole conversation every round trip, so the blob grows by
@@ -3897,7 +3951,8 @@ function groupTrail(trail){
     // same prompt arriving twice is one turn: a hook registered in two
     // settings scopes runs twice per message, and three identical turns read
     // as the person having said it three times.
-    const text = ev.type === 'prompt' ? turnKeyOf(ev) : '';
+    const isTurnStart = ev.type === 'prompt' && !taskNote(ev);
+    const text = isTurnStart ? turnKeyOf(ev) : '';
     // Same message, or the same conversation one round trip later. Sessions
     // recorded before the prompt was stored in parts have only the flattened
     // blob, and a later round trip of one question is that blob with the
@@ -3905,7 +3960,7 @@ function groupTrail(trail){
     // catches on newer data, instead of leaving old sessions split.
     const repeat = !!(cur && text && (cur.promptText === text ||
       (cur.promptText.length > 40 && text.startsWith(cur.promptText))));
-    if (!cur || (ev.type === 'prompt' && !repeat)){
+    if (!cur || (isTurnStart && !repeat)){
       cur = { label:'Turn '+(turns.length+1), sub:'', promptText:text, lanes:new Map(), count:0 };
       turns.push(cur);
     }
@@ -3914,7 +3969,7 @@ function groupTrail(trail){
       if (text.length > cur.promptText.length) cur.promptText = text;
       return;  // already represented by the turn it opened
     }
-    if (ev.type === 'prompt' && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
+    if (isTurnStart && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
     const lane = eventLane(ev);
     if (!cur.lanes.has(lane)) cur.lanes.set(lane, []);
     cur.lanes.get(lane).push({ev, i});
@@ -3944,7 +3999,7 @@ function treeLeafEl(ev, idx){
   const text = eventSummary(ev);
   btn.innerHTML =
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
-    '<span class="tree-id">'+safe((ev.toolTag||ev.type||'ev').toString().slice(0,14))+'</span>'+
+    '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
     '<span class="tree-ts">'+safe(ev.ts||'')+'</span>';
   return btn;
@@ -4027,7 +4082,9 @@ function renderNodePanel(ev){
             '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">'+safe(policy.ruleId||policy.id||'runtime-policy')+'</div>'+
             (categoryLabel?'<div style="font-size:10px;color:var(--gray-500);margin-top:2px">'+safe(categoryLabel)+'</div>':'')+'</div></div>'+
           (policy.title?'<div class="drawer-rule-row"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
-          (policy.evidence?'<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.evidence)+'</div></div>':'')+
+          (policy.matched?'<div class="drawer-rule-row"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
+          (policy.pattern?'<div class="drawer-rule-row"><span class="drawer-rule-label">Pattern</span><div class="match-pattern">'+safe(policy.pattern)+'</div></div>':'')+
+          (policy.evidence?'<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4;word-break:break-word">'+highlightHit(policy.evidence, policy.matched)+'</div></div>':'')+
           '<div class="drawer-rule-row" style="margin-bottom:0"><span class="drawer-rule-label">Mode</span>'+
             '<span class="scoped-tag '+(policy.mode==='enforce'?'tag-deny':'tag-net')+'">'+safe(policy.mode||(v==='block'?'enforce':'observe'))+'</span>'+
             (policy.action?'<span class="scoped-tag '+(policy.action==='block'?'tag-deny':'tag-allow')+'">'+safe(policy.action)+'</span>':'')+
@@ -4050,8 +4107,19 @@ const ARTIFACT_FIELDS = [
   ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
   ['system','System prompt'], ['prompt','Full prompt evaluated'],
   ['model','Model'], ['provider','Provider'], ['surface','Surface'],
+  ['task_took','Took'], ['task_launched_by','Launched by'],
   ['subagent_type','Subagent'], ['cwd','Working dir'],
 ];
+// Which characters tripped the rule. The evidence is the whole command, so
+// without marking the hit a reader is left diffing a 400-character line
+// against a regex by eye.
+function highlightHit(text, hit){
+  const body = String(text||'');
+  if (!hit) return safe(body);
+  const at = body.indexOf(hit);
+  if (at < 0) return safe(body);
+  return safe(body.slice(0, at))+'<mark class="match-mark">'+safe(hit)+'</mark>'+safe(body.slice(at+hit.length));
+}
 function artifactsHtml(ev){
   const a = ev.artifacts || {};
   const rows = ARTIFACT_FIELDS.filter(([k])=>a[k]).map(([k,label])=>{
