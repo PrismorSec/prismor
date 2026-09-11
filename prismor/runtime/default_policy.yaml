@@ -298,16 +298,21 @@ settings:
                              #   api    -> `model` over litellm (needs a key)
                              #   claude -> Claude Code CLI, your Claude login
                              #   codex  -> Codex CLI, your ChatGPT login
+                             #   prismor-> hosted judge on this device's enrollment
+                             #            (judged text is sent to Prismor)
                              # "" -> claude CLI in mode hybrid, else api.
-                             # Both CLIs spawn a process per call (~5-20s);
-                             # `prismor setup` asks this ("LLM judge").
+                             # Both CLIs spawn a process per call (~8-35s);
+                             # `prismor setup` asks this ("LLM judge") and
+                             # pre-selects the CLI already installed.
     cli_path: ""             # override path to the claude/codex CLI; "" auto-discovers
     model: ""                # litellm model id for the LLM layer when no claude CLI
                              # (or mode: api), e.g. gpt-4o-mini, ollama/llama3,
                              # gemini/gemini-2.0-flash. "" -> $PRISMOR_SEMANTIC_MODEL,
                              # else picked from whichever provider key is set.
                              # Keep it small: this runs per uncertain event.
-    low_threshold: 0.30      # heuristic < this  -> allow without LLM
+    low_threshold: 0.30      # heuristic < this  -> allow without LLM. 0 sends every
+                             # ingested text to the judge: fast judges only (api,
+                             # prismor); a CLI judge costs seconds per tool call
     high_threshold: 0.75     # heuristic >= this -> block without LLM
     warn_threshold: 0.45     # final score >= this & < block_threshold -> warn
     block_threshold: 0.75    # final score >= this -> block (matches high_threshold)

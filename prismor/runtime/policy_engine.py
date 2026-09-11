@@ -2227,6 +2227,10 @@ class PolicyEngine:
                     model=str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
                     provider=str(cfg.get("provider") or "").lower(),
+                    # Documented and editable in the console for a long time,
+                    # but never read: the band was always 0.30-0.75.
+                    low_threshold=float(cfg.get("low_threshold", 0.30)),
+                    high_threshold=float(cfg.get("high_threshold", 0.75)),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard

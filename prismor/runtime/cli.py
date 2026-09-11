@@ -3995,10 +3995,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup_parser.add_argument(
         "--judge",
-        choices=["claude", "codex", "api"],
+        choices=["claude", "codex", "api", "prismor"],
         default=None,
         help="Which login judges uncertain events in the semantic layer: claude (Claude Code CLI), "
-             "codex (Codex CLI), api (litellm model + provider key). Default: heuristics only "
+             "codex (Codex CLI), api (litellm model + provider key), prismor (hosted judge on this "
+             "device's enrollment). Default: heuristics only "
              "(non-interactive only; $PRISMOR_JUDGE)",
     )
     setup_parser.add_argument(
