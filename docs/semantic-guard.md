@@ -89,7 +89,10 @@ scripted installs pass it as a flag:
 prismor setup --non-interactive --judge claude                       # Claude Code CLI, your Claude login
 prismor setup --non-interactive --judge codex                        # Codex CLI, your ChatGPT login
 prismor setup --non-interactive --judge api --judge-model gpt-4o-mini    # litellm + provider key
+prismor setup --non-interactive --judge prismor                      # hosted judge, enrolled devices
 ```
+
+Interactively, the step pre-selects Claude Code when its CLI is installed, then Codex.
 
 ![prismor setup picking the Codex CLI as judge, then a 0.55 heuristic score escalating to a 0.92 block](judge-provider.gif)
 
@@ -114,7 +117,7 @@ Either way it lands in the workspace policy:
 # .prismor/policy.yaml
 settings:
   semantic_guard:
-    provider: codex        # api | claude | codex
+    provider: codex        # api | claude | codex | prismor
     model: ""              # "" = that CLI's default model
 ```
 
@@ -127,15 +130,50 @@ and a hash of the text), so re-analysis of a session's history never re-runs the
 Keep the model at the CLI's default: small models (`gpt-5-mini`) over-warn on benign
 authority phrasing where the default Codex model and Haiku clear it.
 
-Both CLIs spawn a process per escalation (Claude Code ~20s, Codex ~5s), against
-a few hundred milliseconds over an API, which is why the default is heuristics
-only until you choose. The subagent runs isolated from the workspace: no MCP
+Both CLIs spawn a process per escalation (measured: Codex ~8s, Claude Code ~20-35s,
+and Claude Code calls time out when several run at once), against one to two seconds
+over an API, which is why a policy with no judge configured stays heuristics only. The subagent runs isolated from the workspace: no MCP
 servers, no hooks, no project config, so it cannot recurse into Prismor. Reinstall
 hooks if already running:
 
 ```bash
 prismor install-hooks --agent all --mode enforce
 ```
+
+### Or the Prismor hosted judge
+
+An enrolled device can use Prismor's hosted judge: no CLI and no key, about two
+seconds a verdict. The judged text (at most 3000 characters) and the heuristic score
+go to the control plane under the device key; the text is not stored. Verdicts count
+against the org's monthly judge quota and are cached like CLI verdicts. Not enrolled,
+offline or over quota, the layer keeps the heuristic verdict and says why on stderr.
+
+```yaml
+settings:
+  semantic_guard:
+    provider: prismor
+```
+
+### Judging every ingested text
+
+The judge only sees text whose heuristic score falls in `[low_threshold, high_threshold)`.
+Paraphrased, encoded and translated injections mostly score 0 on the regexes. On a
+157-text evaluation set (83 injections across 8 phrasings and 8 carriers, 74 hard
+benign texts), 45 injections never reached the judge, so the gated layer blocked 34%
+of them whichever judge was configured. Scoring every text, gpt-5.6-luna blocked
+83/83 with 1 false block and gpt-4o-mini 80/83 with 6. On one real machine only 1.6%
+of ingested texts landed in the default band.
+
+With a fast judge (`api` or `prismor`), send every ingested text:
+
+```yaml
+settings:
+  semantic_guard:
+    provider: prismor      # or api
+    low_threshold: 0       # every ingested text goes to the judge
+```
+
+Not with a CLI judge: that is a process spawn on every tool result.
 
 ### Step 3 — Verify it is active
 
@@ -170,10 +208,11 @@ settings:
                             #   heuristic  — regex signals only, no LLM, <1 ms
                             #   api        — every event goes to `model` (no pre-screen)
 
-    provider: ""            # api | claude | codex — which login judges the uncertain zone
+    provider: ""            # api | claude | codex | prismor — which login judges the uncertain zone
                             #   api    — `model` over litellm, needs a provider key
                             #   claude — Claude Code CLI on its own login (no key)
                             #   codex  — Codex CLI on its ChatGPT login (no key)
+                            #   prismor — Prismor hosted judge on the device's enrollment
                             #   ""     — claude CLI when mode is hybrid, else api (historical)
 
     cli_path: ""            # path to the Claude (or Codex) CLI binary
@@ -186,6 +225,7 @@ settings:
                             # provider key is set (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
 
     low_threshold: 0.30     # heuristic score below this → allow without LLM call
+                            # (0 → every ingested text is judged; fast judges only)
     high_threshold: 0.75    # heuristic score at or above this → block without LLM call
     warn_threshold: 0.45    # final score ≥ this emits a warn finding
     block_threshold: 0.75   # final score ≥ this emits a block finding

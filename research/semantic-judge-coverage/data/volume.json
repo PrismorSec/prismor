@@ -1,0 +1,18 @@
+{
+ "judgeable": 21919,
+ "distinct": 13448,
+ "active_days": 88,
+ "sessions": 1850,
+ "per_day_median": 111.0,
+ "per_day_p90": 628,
+ "mean_chars": 686.5932296181395,
+ "by_type": {
+  "prompt": 6414,
+  "tool_result": 7826,
+  "memory": 832,
+  "network": 148,
+  "subagent_spawn": 338,
+  "shell": 6153,
+  "file_read": 208
+ }
+}

@@ -2227,6 +2227,10 @@ class PolicyEngine:
                     model=str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
                     provider=str(cfg.get("provider") or "").lower(),
+                    # Documented and editable in the console for a long time,
+                    # but never read: the band was always 0.30-0.75.
+                    low_threshold=float(cfg.get("low_threshold", 0.30)),
+                    high_threshold=float(cfg.get("high_threshold", 0.75)),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard
@@ -2257,8 +2261,7 @@ class PolicyEngine:
         # combined_text; command is normalized separately. Configurable
         # fields are kept in the YAML for future granularity, but the
         # extractor exposes them merged today.
-        parts = [field_values.get("combined_text", ""), field_values.get("command", "")]
-        text = "\n".join(p for p in parts if p).strip()
+        text = _semantic_text(event, field_values)
         if len(text) < 12:  # too short to be a meaningful semantic attack
             return None
 
@@ -2272,6 +2275,13 @@ class PolicyEngine:
         if score < warn_t:
             return None
 
+        # A verdict no model produced is keyword scoring. Replayed over a real
+        # machine it blocked source-code reads, SDK docs and the user's own
+        # messages at 0.65-0.77 while missing most paraphrased attacks, so on
+        # its own it may block only when several strong signals agree.
+        judged = str(getattr(risk, "mode", "")) in ("hybrid_local_llm", "hybrid_api", "local_llm", "api")
+        if not judged:
+            block_t = max(block_t, float(cfg.get("heuristic_block_threshold", 0.85)))
         action = "block" if score >= block_t else "warn"
         severity = "CRITICAL" if action == "block" else "HIGH"
         category = "prompt_injection_semantic"
@@ -3292,6 +3302,40 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
         "typed_text": str(event.get("typed_text", "")),
     }
 
+
+
+def _instruction_file(path: str) -> bool:
+    """A file agents load as instructions: memory/rules files, READMEs, skills.
+
+    Writing an injection into one of these plants it for the next agent that
+    reads the repo, so its content stays in front of the semantic layer. An
+    ordinary source write does not.
+    """
+    if not path:
+        return False
+    from fnmatch import fnmatch
+    from prismor.runtime.hooks import _MEMORY_BASENAMES, _MEMORY_GLOBS
+
+    p = path.replace("\\", "/")
+    base = p.rsplit("/", 1)[-1]
+    if base in _MEMORY_BASENAMES or base == "SKILL.md" or base.upper().startswith("README"):
+        return True
+    return any(fnmatch(p, g) or fnmatch(p, "*/" + g.lstrip("*/")) for g in _MEMORY_GLOBS)
+
+
+def _semantic_text(event: Dict[str, Any], field_values: Dict[str, str]) -> str:
+    """The text the prompt-injection layer should read for this event.
+
+    Injection lives in what the agent INGESTS -- tool output, fetched pages,
+    file contents, prompts. Its own command line is not an injection vector
+    against itself, and neither is ordinary source it writes: on one real
+    machine 382 of the 400 texts the layer flagged were exactly those. The
+    DEFER path adjudicates a held command separately and is unaffected.
+    """
+    if str(event.get("type", "")) == "file_write" and not _instruction_file(field_values.get("path", "")):
+        return ""
+    text = field_values.get("combined_text", "").strip()
+    return text if len(text) >= 12 else ""
 
 def _bool_field(event: Dict[str, Any], key: str) -> str:
     """Read a boolean event fact as "true"/"false", or "" when absent.

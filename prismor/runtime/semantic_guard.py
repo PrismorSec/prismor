@@ -91,14 +91,18 @@ _sig(r"ATTENTION\s+AI\s+(ASSISTANT|SYSTEM)", 0.80, "in_content_injection_marker"
 
 # Credential / secret extraction
 _sig(r"(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|print|extract|inspect|dump|display|output)\s+.{0,60}((system|developer|initiali[sz]ation|internal)[\s-]*prompt|(your|hidden)\s+(instructions?|guidelines?|rules?|config\w*)|instructions?\s+you\s+(received|were\s+given)|internal\s+config\w*|conversation\s+history|hidden\s+context)", 0.70, "system_prompt_disclosure")
-_sig(r"(export|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.75, "credential_exfil_request")
+# 0.70, not 0.75: at the block threshold this one regex blocked on its own and
+# never reached a model -- on source code that merely includes a key name.
+_sig(r"(export|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.70, "credential_exfil_request")
 _sig(r"(service\s+account\s+key|api\s+key|access\s+token)\s+.{0,40}(file|include|export)", 0.70, "credential_collection")
 _sig(r"(vendor|partner|support\s+team)\s+.{0,60}(credential|key|secret)", 0.60, "third_party_credential_share")
 
 # Prismor / security self-bypass
 _sig(r"(attention|dear)\s+(prismor|claude|ai\s+assistant|security\s+monitor)", 0.75, "prismor_addressing")
 _sig(r"(pre.?approved|already\s+cleared|cleared\s+by)\s+.{0,40}(team|admin|security|prismor|prismor)", 0.65, "false_prior_approval")
-_sig(r"(false\s+positive|ignore\s+security\s+warning)", 0.65, "prismor_bypass_framing")
+# "false positive" alone matched every bug report, commit and PR about the
+# guard. The framing is an attack only when it is used to get a check skipped.
+_sig(r"(false\s+positive.{0,80}\b(ignore|skip|bypass|disable|pause|turn\s+off)\b|ignore\s+(the\s+)?security\s+warning)", 0.65, "prismor_bypass_framing")
 _sig(r"(delete|remove|disable)\s+.{0,40}(policy\.yaml|settings\.json|hook)", 0.80, "policy_deletion")
 _sig(r"proceed\s+.{0,30}(ignore|without).{0,30}(warning|check|security)", 0.65, "proceed_ignoring_security")
 

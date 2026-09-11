@@ -759,11 +759,20 @@ def _step_cloak(current: bool = True, step: int = 3, total: int = 4) -> bool:
 
 _JUDGE_OPTS = [
     # (provider, label, default model, description)
-    ("",       "Heuristics only",  "",                          "no LLM; regex + structural rules decide (default)"),
-    ("claude", "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s per escalation"),
-    ("codex",  "Codex CLI",        "",                          "your ChatGPT login, no API key; ~5s per escalation"),
-    ("api",    "API key",          "",                          "any litellm model via provider env key; ~0.4s"),
+    ("",        "Heuristics only",  "",                          "no LLM; regex + structural rules decide"),
+    ("claude",  "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s per escalation"),
+    ("codex",   "Codex CLI",        "",                          "your ChatGPT login, no API key; ~8s per escalation"),
+    ("api",     "API key",          "",                          "any litellm model via provider env key; ~1s"),
+    ("prismor", "Prismor hosted",   "",                          "enrolled device, no key or CLI; ~2s; judged text goes to Prismor"),
 ]
+
+
+def _default_judge() -> str:
+    """Pre-select the subscription the user already pays for: Claude Code, then Codex."""
+    for prov in ("claude", "codex"):
+        if _judge_ready(prov) == "found":
+            return prov
+    return ""
 
 
 def _judge_ready(provider: str) -> str:
@@ -779,6 +788,9 @@ def _judge_ready(provider: str) -> str:
         keys = [k for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")
                 if os.environ.get(k)]
         return keys[0] if keys else "no key in env"
+    if provider == "prismor":
+        from prismor.runtime.enterprise.identity import is_enrolled
+        return "enrolled" if is_enrolled() else "not enrolled"
     return ""
 
 
@@ -809,7 +821,8 @@ def _step_judge(current: tuple = ("", ""), step: int = 4, total: int = 5):
 
     Returns (provider, model); "" provider = heuristics only, no policy write.
     """
-    sel = next((i for i, o in enumerate(_JUDGE_OPTS) if o[0] == current[0]), 0)
+    want = current[0] or _default_judge()
+    sel = next((i for i, o in enumerate(_JUDGE_OPTS) if o[0] == want), 0)
     while True:
         lines = _header_lines(step, total, "LLM JUDGE")
         lines.append(f"  {_w('When the regex layer is unsure (score 0.30-0.75), a small model makes', DIM)}")
@@ -823,7 +836,7 @@ def _step_judge(current: tuple = ("", ""), step: int = 4, total: int = 5):
             ready = _judge_ready(prov)
             tag = ""
             if ready:
-                ok = ready in ("found",) or ready.endswith("_KEY")
+                ok = ready in ("found", "enrolled") or ready.endswith("_KEY")
                 tag = "  " + _w(f"[{ready}]", GRN if ok else YEL)
             lines.append(f"  {arrow}{dot}  {nm}{_w(desc[:max(tw - 46, 20)], DIM)}{tag}")
         lines.append("")
@@ -840,6 +853,8 @@ def _step_judge(current: tuple = ("", ""), step: int = 4, total: int = 5):
             prov, _l, default_model, _d = _JUDGE_OPTS[sel]
             if not prov:
                 return ("", "")
+            if prov == "prismor":  # the server picks the model
+                return (prov, "")
             sys.stdout.write("\n  " + _w("Model id (enter keeps the default; blank = CLI default)", DIM) + "\n")
             model = _read_line(current[1] if current[0] == prov and current[1] else default_model)
             return (prov, model)
