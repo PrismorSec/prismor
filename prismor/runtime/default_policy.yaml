@@ -311,6 +311,9 @@ settings:
     high_threshold: 0.75     # heuristic >= this -> block without LLM
     warn_threshold: 0.45     # final score >= this & < block_threshold -> warn
     block_threshold: 0.75    # final score >= this -> block (matches high_threshold)
+    heuristic_block_threshold: 0.85  # with no model verdict, block only at or above this;
+                             # below it a heuristic hit warns. Keyword scoring alone
+                             # is not confident enough to stop a tool call at 0.75.
     fields:                  # event fields scanned by the semantic layer
       - prompt
       - response
