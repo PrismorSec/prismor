@@ -43,7 +43,7 @@ import shlex
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-from prismor.runtime.shell_context import _outside_quotes, quoted_spans
+from prismor.runtime.shell_context import _INTERPRETERS, _outside_quotes, quoted_spans
 
 # ponytail: verb tables, not a shell grammar. Unknown verbs contribute nothing
 # to reads/writes (their operands are still in `exec`), and the doubt list
@@ -73,7 +73,10 @@ _HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 _REDIRECT = re.compile(r"^(\d*)(>>|>\||>|&>|<)(.*)$")
 _URL = re.compile(r"^[a-z][a-z0-9+.-]*://([^/?#]+)", re.IGNORECASE)
 _SEPARATOR = re.compile(r"\|\||&&|[;|&\n]")
-_METADATA_HOSTS = frozenset({"169.254.169.254", "169.254.169.253", "100.100.100.200",
+_LOCAL_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16",
+    "::1/128", "fc00::/7", "fe80::/10"))
+_METADATA_HOSTS = frozenset({"169.254.169.254", "169.254.169.253", "169.254.170.2", "100.100.100.200",
                              "metadata.google.internal", "metadata"})
 
 
@@ -166,7 +169,7 @@ def _split_heredocs(command: str) -> Tuple[str, List[str]]:
         m = _HEREDOC.search(line)
         if q is None and m and bare[m.start()] == "<":
             head = _words(bare[: m.start()])
-            if any(w.rsplit("/", 1)[-1] in _DOUBT for w in head):
+            if any(w.rsplit("/", 1)[-1] in (_DOUBT | _INTERPRETERS) for w in head):
                 raise _Doubt("heredoc fed to an interpreter")
             out.append(line[: m.start()] + line[m.end():])
             q = q_after
@@ -238,8 +241,8 @@ def _operand(word: str) -> str:
 
 
 def _pathlike(word: str) -> bool:
-    """A file operand, as opposed to a count (`head -c 3000`) or a sed script."""
-    return bool(word) and not word.isdigit() and not any(ch.isspace() for ch in word)
+    """A file operand, as opposed to a bare count (`head -c 3000`)."""
+    return bool(word) and not word.isdigit()
 
 
 def _classify(words: List[str], eff: Effects) -> None:
@@ -277,10 +280,8 @@ def _classify(words: List[str], eff: Effects) -> None:
         eff.writes.extend(f"{how or verb} {_operand(a)}" for a in paths)
 
     if verb in _READERS:
-        if verb == "sed" and any(a == "-i" or a.startswith("-i") or a == "--in-place" for a in args):
-            # The first operand is always the script (or, after -f, the script
-            # file); every operand after it is a file rewritten in place.
-            write(operands[1:], "sed -i")
+        if verb == "sed" and any(a == "--in-place" or a.startswith("-i") for a in args):
+            write(_sed_in_place_files(args), "sed -i")
         else:
             # The first operand of grep/sed/awk is a pattern or script, not a file.
             skip = 1 if verb in ("grep", "egrep", "fgrep", "rg", "ag", "awk", "sed") and operands else 0
@@ -313,6 +314,36 @@ def _classify(words: List[str], eff: Effects) -> None:
             host = _url_host(a)
             if host:
                 _add_host(eff, verb, a, host)
+
+
+def _sed_in_place_files(args: List[str]) -> List[str]:
+    """The files `sed -i` rewrites.
+
+    Missing one is not a narrowing, it is a hole: the attack set caught
+    `sed -i '' 's/mode: enforce/mode: observe/' ~/.prismor/policy.yaml`
+    reading as no write at all, because the quoted script has spaces.
+    """
+    files: List[str] = []
+    script_given = False
+    k = 0
+    while k < len(args):
+        a = args[k]
+        if a in ("-e", "--expression", "-f", "--file"):
+            script_given = True
+            k += 2
+            continue
+        if a == "-i" and k + 1 < len(args) and (args[k + 1] == "" or args[k + 1].startswith(".")):
+            k += 2                      # BSD backup suffix: `-i ''`, `-i .bak`
+            continue
+        if a.startswith("-"):
+            k += 1
+            continue
+        if not script_given:
+            script_given = True         # first bare word is the script
+        else:
+            files.append(a)
+        k += 1
+    return files
 
 
 def _url_host(word: str) -> Optional[str]:
@@ -358,4 +389,4 @@ def _is_local(host: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return host.lower().endswith(".localhost")
-    return ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified
+    return ip.is_unspecified or any(ip in net for net in _LOCAL_NETS)

