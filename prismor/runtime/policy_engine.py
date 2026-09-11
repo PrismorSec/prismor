@@ -1562,7 +1562,19 @@ class PolicyEngine:
                 _cmd = field_values.get("command", "")
                 # ".prismor/secrets" matches every expansion form of the default
                 # location (~/, $HOME/, absolute); _vault matches a custom dir.
-                if _cmd and (".prismor/secrets" in _cmd or _vault in _cmd):
+                #
+                # Looked for in what the command does -- its executed words,
+                # reads and writes -- not in prose it merely carries: a PR body
+                # that names the vault path, or source code being edited that
+                # mentions it, blocked 16 times in one session. On a command
+                # the extractor cannot read, every facet is the raw text, so
+                # the check is exactly the substring test it always was.
+                from prismor.runtime.trifecta import acting_text as _acting_text
+                _acts = "\n".join(
+                    _acting_text(field_values.get(f, "")) if f == "exec" else field_values.get(f, "")
+                    for f in _EFFECT_FIELDS
+                ) or _cmd
+                if _cmd and (".prismor/secrets" in _acts or _vault in _acts):
                     _hit_vault = _cmd
             if _hit_vault is not None:
                 finding_id = f"prismor-vault-access-{index}"
@@ -3250,8 +3262,12 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
     if isinstance(_meta, dict):
         meta_tool = str(_meta.get("tool_name") or "")
 
+    command = _normalize_command(raw_command)
     return {
-        "command": _normalize_command(raw_command),
+        "command": command,
+        # What the command does, for rules that name `exec`/`reads`/`writes`/
+        # `net_dst` in `fields:` instead of `command`. See prismor.runtime.effects.
+        **_effect_fields(command),
         "path": _resolve_path(raw_path),
         "url": str(event.get("url", "")),
         "combined_text": "\n".join(combined_parts),
@@ -3290,6 +3306,33 @@ def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
         "ax_role": str(event.get("ax_role", "")),
         "app_name": str(event.get("app_name", "")),
         "typed_text": str(event.get("typed_text", "")),
+    }
+
+
+_EFFECT_FIELDS = ("exec", "reads", "writes", "net_dst")
+
+
+def _effect_fields(command: str) -> Dict[str, str]:
+    """The command's effect facets as matchable fields.
+
+    Fail closed: when the extractor cannot read the command with confidence
+    it returns None, and every facet then IS the raw command -- a rule that
+    asked for `writes` matches exactly what it matched before. A confident
+    parse that finds no writes yields "", which the field loop skips, and
+    that skip is the whole precision gain.
+    """
+    if not command:
+        return {name: "" for name in _EFFECT_FIELDS}
+    from prismor.runtime.effects import extract
+
+    effects = extract(command)
+    if effects is None:
+        return {name: command for name in _EFFECT_FIELDS}
+    return {
+        "exec": effects.exec,
+        "reads": "\n".join(effects.reads),
+        "writes": "\n".join(effects.writes),
+        "net_dst": "\n".join(effects.net_dst),
     }
 
 
