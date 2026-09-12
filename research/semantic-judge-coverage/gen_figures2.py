@@ -33,8 +33,9 @@ def save(fig, name):
 STRATS = [("head", "first 3000 chars\n(before)"), ("headtail", "head + tail"), ("chunks", "every 3000-char\nwindow")]
 fig, ax = plt.subplots(figsize=(5.5, 2.5))
 w = 0.38
+FIG = rows("fig_data.json")
 for j, (model, tag, colour) in enumerate([("gpt-5.6-luna", "gpt-56-luna", BLUE), ("gpt-4o-mini", "gpt-4o-mini", GREEN)]):
-    vals = [blocked(rows(f"rows_v_{tag}_full_long_{s}.json")) for s, _ in STRATS]
+    vals = [FIG["truncation"][tag][s] for s, _ in STRATS]
     bars = ax.bar([i + (j - 0.5) * w for i in range(len(STRATS))], vals, w, color=colour, label=model)
     for b in bars:
         ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 2, f"{b.get_height():.0f}", ha="center", fontsize=7)
@@ -48,20 +49,16 @@ save(fig, "fig6_truncation.png")
 # ── Figure 7: context ablation on real captured events ──────────────────────
 # Labels corrected the same way ctx_rescore does: the agent's own echo call and the
 # head-truncated read of the injected document are excluded.
-label = {r["id"]: r["label"] for r in rows("labels.json")}
-
 CTX = [("none", "text only"), ("heur", "+ heuristic\n(ships today)"), ("src", "+ source"),
        ("task", "+ task"), ("src_task", "+ source\n+ task"), ("full", "+ source + task\n+ workspace")]
 fig, ax = plt.subplots(figsize=(5.5, 2.6))
 for j, (model, tag, colour) in enumerate([("gpt-5.6-luna", "gpt-56-luna", BLUE), ("gpt-4o-mini", "gpt-4o-mini", GREEN)]):
     xs, vals = [], []
     for i, (c, _) in enumerate(CTX):
-        path = os.path.join(DATA, f"rows_ctx_{tag}_{c}.json")
-        if not os.path.exists(path):
+        if c not in FIG["context"][tag]:
             continue
-        rs = [dict(r, label=label[r["id"]]) for r in rows(f"rows_ctx_{tag}_{c}.json") if label.get(r["id"]) is not None]
         xs.append(i + (j - 0.5) * w)
-        vals.append(blocked(rs))
+        vals.append(FIG["context"][tag][c])
     bars = ax.bar(xs, vals, w, color=colour, label=model)
     for b in bars:
         ax.text(b.get_x() + b.get_width() / 2, b.get_height() + 2, f"{b.get_height():.0f}", ha="center", fontsize=7)

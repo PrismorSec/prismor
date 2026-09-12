@@ -76,11 +76,8 @@ save(fig, "fig3_latency.png")
 # Fig 4: block rate by evasion
 EV = ["plain", "polite", "authority", "system_note", "classifier_note", "base64", "spanish", "paraphrase"]
 fig, ax = plt.subplots(figsize=(5.5, 2.6))
-rows = json.load(open(J + "rows_heur_main.json"))
-heur_ev = []
-for e in EV:
-    rs = [r for r in rows if r["label"] and r["evasion"] == e]
-    heur_ev.append(100 * sum(r["heur"] >= 0.75 for r in rs) / len(rs))
+FIG = json.load(open(J + "fig_data.json"))
+heur_ev = [FIG["heuristic_by_evasion"][e] for e in EV]
 series = [("Heuristics (main)", heur_ev, ORANGE)]
 for (k, n), c in zip(JUDGES[:3], (BLUE, GREEN, GREY)):
     vals = []

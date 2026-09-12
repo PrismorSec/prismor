@@ -512,9 +512,11 @@ story += [
       "and the 3000-character cut inside it, which hid every payload planted deeper in a document until the "
       "text was judged in windows. Context about the text, as opposed to the text itself, bought nothing."),
     H1("Reproducibility"),
-    P("The corpus generator, per-item verdicts for every run, the metrics script, aggregate real-machine counts and "
-      "the figure and PDF builders accompany this paper in its directory. Per-item rows include each model's raw "
-      "reply. Real session text is not included; only counts derived from it are."),
+    P("The corpus generator, the live-scenario scripts, the metrics and aggregation scripts, the "
+      "aggregate results behind every table and figure, and the figure and PDF builders accompany this "
+      "paper in its directory. Per-item verdicts are not included: they are large and the harness "
+      "regenerates them. Real session text is not included either; only counts and labels derived "
+      "from it are."),
 ]
 
 # ── References ──────────────────────────────────────────────────

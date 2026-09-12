@@ -16,8 +16,9 @@ is bought nothing.
   same vocabulary for a human reader.
 - `data/variants_eval.py` — judges the corpus, and the same injections buried in 8-20k-character
   documents, under a chosen prompt, provenance line and truncation strategy.
-- `data/rows_openai_*.json`, `data/rows_cli_*.json`, `data/rows_v_*.json` — per-item verdicts for
-  every run, with heuristic score, latency and token usage.
+- `data/summary.json`, `data/fig_data.json` — the aggregates behind every table and figure.
+  Per-item verdicts are not committed: they are tens of thousands of JSON lines and the harness
+  regenerates them.
 - `data/judge_prompt.txt`, `data/judge_prompt_short.txt` — the judge prompts compared in the paper.
 
 ## Live agent scenarios
@@ -31,7 +32,6 @@ harmless payloads planted on five routes. `data/st3ve_export.py` exports the cap
 - `data/ctx_eval.py` — the context ablation (none / heuristic / source / task / both / workspace).
 - `data/ctx_cli_eval.py` — the same ablation judged by the Claude Code CLI on a host subscription.
 - `data/ctx_rescore.py`, `data/compare_judges.py` — corrected-label scoring and the judge comparison.
-- `data/rows_ctx_*.json`, `data/rows_cli_*.json` — per-event verdicts, latency and token counts.
 
 ## Real-machine counts
 
@@ -42,7 +42,8 @@ only — no session content.
 ## Rebuild
 
 ```bash
-python3 data/analyze.py     # metrics -> data/summary.json
+python3 data/analyze.py         # metrics -> data/summary.json (needs regenerated rows)
+python3 aggregate_figures.py    # rows -> data/fig_data.json
 python3 gen_figures.py      # figures 1-5
 python3 gen_figures2.py     # figures 6-7
 python3 build_paper.py      # semantic_judge_coverage.pdf
