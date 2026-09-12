@@ -424,6 +424,24 @@ def _llm_analyze(
 _CACHE_MAX = 2000
 
 
+_WINDOW = 3000   # one judge call's worth of text, matching the prompt's own cap
+
+
+def _windows(text: str, limit: int) -> List[str]:
+    """Long text in judge-sized pieces.
+
+    The judge used to see the first 3000 characters and nothing else, so an
+    instruction planted further down a README, a log or a fetched page was
+    invisible: on 24 injections buried in 8-20k-character documents, judging
+    the head caught 0 and judging every window caught 24. Only text past the
+    first window costs an extra call, and the scan stops at the first decisive
+    window.
+    """
+    if len(text) <= _WINDOW:
+        return [text]
+    return [text[i:i + _WINDOW] for i in range(0, len(text), _WINDOW)][:limit]
+
+
 def _cache_path() -> Optional[str]:
     try:
         from prismor.runtime.store import prismor_home
@@ -500,6 +518,9 @@ class SemanticGuardV2:
         # regexes, so a fast judge (api, prismor) can take every ingested text
         # with low_threshold 0.
         self._low, self._high = low_threshold, high_threshold
+        # A CLI window costs a process spawn (~20-40s measured), an API window
+        # about a second, so they do not get the same budget for long text.
+        self._max_windows = 2 if provider in ("claude", "codex") else 8
         self._provider = provider if provider in JUDGE_PROVIDERS else ""
         self._cli = cli_path or (CODEX_CLI if self._provider == "codex" else CLAUDE_CLI)
         # A CLI escalation spawns a whole Claude Code process. Measured on an
@@ -553,20 +574,26 @@ class SemanticGuardV2:
         # answered for this exact text.
         import hashlib
         cache = _cache_load()
-        key = f"{self._provider}|{self._model}|" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-        hit = cache.get(key)
-        if hit:
-            llm = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
-                               str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
-        else:
-            llm = _llm_analyze(
-                text, effective_score, h.signals,
-                cli=self._cli, model=self._model, allow_cli=self._allow_cli,
-                provider=self._provider,
-            )
-            # CLI verdicts cost a process spawn, hosted ones a metered call.
-            if llm.mode == "local_llm" or (self._provider == "prismor" and llm.mode == "api"):
-                _cache_store(cache, key, llm)
+        llm: Optional[SemanticRisk] = None
+        for window in _windows(text, self._max_windows):
+            key = f"{self._provider}|{self._model}|" + hashlib.sha256(window.encode("utf-8")).hexdigest()
+            hit = cache.get(key)
+            if hit:
+                verdict = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
+                                       str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
+            else:
+                verdict = _llm_analyze(
+                    window, effective_score, h.signals,
+                    cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+                    provider=self._provider,
+                )
+                # CLI verdicts cost a process spawn, hosted ones a metered call.
+                if verdict.mode == "local_llm" or (self._provider == "prismor" and verdict.mode == "api"):
+                    _cache_store(cache, key, verdict)
+            if llm is None or verdict.risk_score > llm.risk_score:
+                llm = verdict
+            if llm.risk_score >= self._high:   # decided; later windows cannot change it
+                break
 
         # Step 5: merge. The uncertain zone is exactly where the regex layer
         # could not decide, so a judge that answered owns the verdict in both
