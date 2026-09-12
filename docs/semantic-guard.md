@@ -132,7 +132,13 @@ authority phrasing where the default Codex model and Haiku clear it.
 
 Both CLIs spawn a process per escalation (measured: Codex ~8s, Claude Code ~20-35s,
 and Claude Code calls time out when several run at once), against one to two seconds
-over an API, which is why a policy with no judge configured stays heuristics only. The subagent runs isolated from the workspace: no MCP
+over an API, which is why a policy with no judge configured stays heuristics only.
+
+A CLI judge pays for the process, not the tokens, so every window of a long text
+travels in one call: measured on one host, six texts cost 33.4s each judged one at
+a time and 7.3s each judged together (Codex: 7.1s against 2.3s). Windows the judge
+cache has already answered are not sent again, so a re-analysed session spawns
+nothing. The subagent runs isolated from the workspace: no MCP
 servers, no hooks, no project config, so it cannot recurse into Prismor. Reinstall
 hooks if already running:
 
@@ -143,7 +149,10 @@ prismor install-hooks --agent all --mode enforce
 ### Or the Prismor hosted judge
 
 An enrolled device can use Prismor's hosted judge: no CLI and no key, about two
-seconds a verdict. The judged text (at most 3000 characters) and the heuristic score
+seconds a verdict. The server judges with `gpt-5.6-luna`, which scored 83/83
+injections with one false block in 74 benign texts on the evaluation set in
+`research/semantic-judge-coverage/`; the model is chosen server-side, so a
+device never configures one. The judged text (at most 3000 characters) and the heuristic score
 go to the control plane under the device key; the text is not stored. Verdicts count
 against the org's monthly judge quota and are cached like CLI verdicts. Not enrolled,
 offline or over quota, the layer keeps the heuristic verdict and says why on stderr.
