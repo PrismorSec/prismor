@@ -68,8 +68,11 @@ def test_the_window_budget_is_bounded(judged):
     assert all(len(w) <= _WINDOW for w in judged)
 
 
-def test_a_cli_judge_gets_a_smaller_budget():
-    assert SemanticGuardV2(provider="codex")._max_windows == 2
+def test_every_judge_gets_the_same_window_budget():
+    """A CLI judge batches its windows into one call, so it is not capped below the rest:
+    a 2-window cap silently dropped everything past 6000 characters."""
+    assert SemanticGuardV2(provider="codex")._max_windows == 8
+    assert SemanticGuardV2(provider="claude")._max_windows == 8
     assert SemanticGuardV2(provider="prismor")._max_windows == 8
 
 

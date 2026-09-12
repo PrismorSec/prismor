@@ -595,9 +595,10 @@ class SemanticGuardV2:
         # regexes, so a fast judge (api, prismor) can take every ingested text
         # with low_threshold 0.
         self._low, self._high = low_threshold, high_threshold
-        # A CLI window costs a process spawn (~20-40s measured), an API window
-        # about a second, so they do not get the same budget for long text.
-        self._max_windows = 2 if provider in ("claude", "codex") else 8
+        # Every window of a text travels in one call now (see _batch_analyze), so a
+        # CLI judge no longer pays per window and gets the same budget as the rest.
+        # The cap it used to have quietly hid anything past 6000 characters.
+        self._max_windows = 8
         self._provider = provider if provider in JUDGE_PROVIDERS else ""
         self._cli = cli_path or (CODEX_CLI if self._provider == "codex" else CLAUDE_CLI)
         # A CLI escalation spawns a whole Claude Code process. Measured on an
