@@ -41,18 +41,19 @@ Prismor is highly customizable based on user's own policies. Observe or enforce 
 
 ## The Problem<a name="the-problem" />
 
-AI coding agents execute shell commands, read and write files, access credentials, and call external APIs. They do this autonomously, often across many steps, with limited checkpoints.
+AI agents execute shell commands, read and write files, access credentials, and call external APIs. They do this autonomously, often across many steps, with limited checkpoints.
 
 This creates risks that traditional security tooling isn't designed for:
 
 - **Prompt injection** - malicious content in a file, issue, or web page can redirect the agent mid-task
 - **Unintended destructive actions** - an agent misinterprets an instruction and runs something irreversible
 - **Secret exfiltration** - an agent reads `.env` or credential files as part of a debugging task and sends the content outbound
+- **Lack of visibility and identity** - an agent can spawn subagents and lack complete visibility for the end user
 - **Privilege escalation** - an agent modifies sudoers, CI pipelines, or file permissions to resolve a permission error
 - **Dependency manipulation** - an agent installs or rewrites a package at the direction of injected input
 - **Supply chain risk** - an agent installs a vulnerable or 0-day package while optimizing for code velocity
 
-Standard OS-level and endpoint security tools monitor the kernel and filesystem. By the time they see an action, the agent has already decided to take it. The gap is at the agent layer for avoiding the attack
+Standard OS-level and endpoint security tools monitor the kernel and filesystem. But they lack the context to make AI usable
 
 ---
 
