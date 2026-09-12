@@ -147,7 +147,12 @@ story += [
       "front of it: 45 of 83 injections scored below the escalation threshold, so the pipeline as shipped blocked "
       "at most 34% of injections whichever judge was configured. On one developer machine, 1.6% of 13,456 distinct "
       "ingested texts reached the judge. Separately, restricting the layer to ingested content cut false blocks on "
-      "441 real flagged events from 206 to 12 without changing detection. We report negative results, including a "
+      "441 real flagged events from 206 to 12 without changing detection. Two further results came from text the "
+      "judge never sees rather than from the judge: the layer passed only a text's first 3000 characters, so "
+      "injections buried in 8-20k-character documents were caught 0 of 24 that way against 24 of 24 when every "
+      "window is judged, and in a live scenario a real agent followed such a payload. Adding provenance, the "
+      "user's task or a workspace description changed nothing for the strongest model and cost a weaker one up "
+      "to 7 of 18 detections. We report negative results, including a "
       "prompt-hardening change with no measurable effect, and derive a deployment split: subscription CLIs for the "
       "uncertain band, and a fast hosted judge when every ingested text should be scored.", abstract_style),
     P("<b>Keywords:</b> prompt injection, AI coding agents, LLM-as-a-judge, runtime security, false positives",
@@ -371,6 +376,65 @@ story += [
 
 # ── 6. Negative results ─────────────────────────────────────────
 story += [
+    H2("5.7 How much of the text the judge sees"),
+    P("The layer passed the first 3000 characters of a text to the judge and discarded the rest. To "
+      "measure what that hides we planted each corpus injection in a benign document of 8,000 to 20,000 "
+      "characters, half at the tail and half in the middle, and added 12 benign long documents. Table 6 "
+      "and Figure 6 give the result: judging the head caught nothing at all, for either model. Judging "
+      "the head and the tail together caught exactly the tail half. Judging every 3000-character window "
+      "caught essentially everything, at 5.1 calls per document."),
+    make_table(["What the judge is given", "gpt-5.6-luna", "gpt-4o-mini", "Benign blocked", "Calls per text"], [
+        ["First 3000 characters", "0/24", "0/24", "0/12", "1.0"],
+        ["Head and tail", "12/24", "12/24", "0/12", "1.0"],
+        ["Every 3000-character window", "24/24", "23/24", "0-1/12", "5.1"],
+    ], col_widths=[1.9 * inch, 1.0 * inch, 1.0 * inch, 1.0 * inch, 1.2 * inch]),
+    P("<b>Table 6:</b> Injections buried in long documents (24 injections, 12 benign documents). Both "
+      "models are equally blind past the cut, so this is not a model-quality result.", caption),
+    Fig("fig6_truncation.png", "<b>Figure 6:</b> Detection against how much of a long document reaches the "
+                               "judge. The first bar pair is the behaviour this work replaced."),
+    P("On the machine measured in Section 5.4, 9.1% of distinct ingested texts exceed 3000 characters, and "
+      "for those the judge saw 11% of the content. The cost of windowing is therefore confined to about one "
+      "text in eleven."),
+    H2("5.8 What else the judge is told"),
+    P("Provenance is the context a judge might reasonably want: the same sentence is ordinary in a user's "
+      "own message and hostile in a fetched page. To test it on real traffic rather than templates we ran "
+      "four families of agent sessions on a test host under the guard's hooks (a code repository, web "
+      "fetches, ticket triage and log debugging; 15 tasks), with harmless payloads planted on five routes: "
+      "an instruction file the agent loads, a command's stdout, a third-party JSON document, the tail of a "
+      "long release-notes file, and a fetched web page. The sessions produced 79 captured texts, 18 of them "
+      "carrying a payload. Two classes of event are excluded from scoring: the agent's own marker-writing "
+      "call, which is a consequence rather than injected content, and a read of the injected document that "
+      "captured only its head."),
+    P("The agent followed three of the five payloads, writing the marker file from the instruction file, "
+      "from the command output and from the release-notes tail. The layer as it stood judged none of those "
+      "three texts."),
+    P("Each captured text was then judged with progressively more context, always in 3000-character "
+      "windows so that only the context varied (Table 7, Figure 7). For gpt-5.6-luna nothing moved: 18 of "
+      "18 planted texts blocked and no false blocks, in every variant. For gpt-4o-mini every added field "
+      "was neutral or harmful, and the source line alone cost 7 detections. The reason is visible in the "
+      "scores: on the 12 instruction-file events gpt-4o-mini answers between 0.60 and 0.80 depending on "
+      "phrasing, and 14 of its 20 planted scores fall within 0.05 of the 0.75 block line, so wording "
+      "decides the verdict. gpt-5.6-luna scores the same events 0.97 to 0.99, and none of its scores are "
+      "near the line."),
+    make_table(["Judge and context", "Planted blocked", "Benign blocked", "p50", "p95"], [
+        ["Claude Code CLI, subscription (heuristic)", "16/16", "0/12", "50.0 s", "100.7 s"],
+        ["Claude Code CLI, subscription (+ source + task)", "16/16", "0/12", "46.3 s", "101.7 s"],
+        ["gpt-5.6-luna (heuristic)", "16/16", "0/12", "3.4 s", "8.1 s"],
+        ["gpt-5.6-luna (+ source + task)", "16/16", "0/12", "5.2 s", "20.7 s"],
+        ["gpt-4o-mini (heuristic)", "14/16", "0/12", "1.3 s", "2.7 s"],
+        ["gpt-4o-mini (+ source + task)", "11/16", "0/12", "1.9 s", "3.4 s"],
+    ], col_widths=[2.6 * inch, 1.0 * inch, 0.9 * inch, 0.6 * inch, 0.6 * inch]),
+    P("<b>Table 7:</b> The same 36 captured events (16 planted, 12 benign after exclusions) judged by a "
+      "subscription CLI and by two hosted models. Latency is per event and includes every window; a CLI "
+      "window costs about 42 s against about 2 s for an API window.", caption),
+    Fig("fig7_context.png", "<b>Figure 7:</b> Planted injections blocked as the judge is told more about "
+                            "where the text came from and what the user asked for."),
+    P("The false blocks that survive every context set are the same two files throughout: a SECURITY.md "
+      "describing prompt injection and a detector test fixture. No provenance field fixed them, which "
+      "matches the corpus result that security writing is the hard negative class."),
+]
+
+story += [
     H1("6. Negative Results and Failures"),
     B("<b>The model-free cap trades blocks for warnings.</b> With the 0.85 cap, the heuristic alone blocked 1 of 83 "
       "corpus injections (it still flagged 45%). On a machine with no judge, the layer now mostly warns."),
@@ -385,6 +449,13 @@ story += [
     B("<b>A learned classifier was unstable.</b> In a related experiment on command rules, a gradient-boosted model "
       "trained to downgrade blocks looked strong on one split; across 10 grouped splits its worst split released 8 of "
       "30 attacks, and it was not shipped."),
+    B("<b>Provenance did not help.</b> Telling the judge where the text came from, what the user had "
+      "asked, and what the workspace is left the strongest model unchanged and made a cheaper one worse; "
+      "the source line alone cost gpt-4o-mini 7 of 18 detections by moving borderline scores across the "
+      "block line."),
+    B("<b>A cheap judge sits on the threshold.</b> 14 of gpt-4o-mini's 20 planted scores fall within 0.05 "
+      "of the 0.75 block line, so its verdicts are decided by prompt wording rather than by judgement. "
+      "Threshold tuning would trade those detections against the false blocks one for one."),
     B("<b>Documented thresholds were ignored.</b> The band thresholds were documented in the default policy and "
       "editable in the management console but never read by the engine, so the band was always [0.30, 0.75). The "
       "defect was found while adding the setting this paper recommends and is fixed alongside it."),
@@ -421,6 +492,11 @@ story += [
     B("Latency comes from one laptop and network location on one day; real-machine volumes come from one developer's "
       "machine and may not represent a team."),
     B("The hosted judge's end-to-end latency, including the control-plane hop, was not measured in this study."),
+    B("The live scenarios are one host, one agent (Claude Code on a small model), 15 tasks and 18 planted "
+      "texts, with payloads written to be harmless. They show that the routes work, not how often they "
+      "would work in production."),
+    B("Windowing was measured with non-overlapping windows; an instruction split across a window boundary "
+      "was not tested, and text beyond the window budget is still unjudged."),
 ]
 
 # ── 9. Conclusion ───────────────────────────────────────────────
@@ -431,7 +507,10 @@ story += [
       "34% when it sat behind the shipped regex gate, and on a real machine the gate passed 1.6% of ingested text. "
       "Small API models answered in one to two seconds; subscription CLIs were accurate but too slow to score "
       "everything. We recommend subscription judges for the uncertain band, a fast API or hosted judge with the low "
-      "threshold at 0 where coverage matters, and scoping the layer to text the agent ingests."),
+      "threshold at 0 where coverage matters, judging long text in windows, and scoping the layer to what the "
+      "agent ingests. Two coverage defects mattered more than any judge choice: the gate in front of the judge, "
+      "and the 3000-character cut inside it, which hid every payload planted deeper in a document until the "
+      "text was judged in windows. Context about the text, as opposed to the text itself, bought nothing."),
     H1("Reproducibility"),
     P("The corpus generator, per-item verdicts for every run, the metrics script, aggregate real-machine counts and "
       "the figure and PDF builders accompany this paper in its directory. Per-item rows include each model's raw "
