@@ -14,7 +14,7 @@ import json
 import os
 
 S = os.path.dirname(os.path.abspath(__file__)) + "/"
-rows_meta = json.load(open(S + "labels.json"))
+rows_meta = [json.loads(l) for l in open(S + "labels.jsonl")]
 label = {r["id"]: r["label"] for r in rows_meta}
 
 

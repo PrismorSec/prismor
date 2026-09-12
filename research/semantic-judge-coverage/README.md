@@ -27,7 +27,7 @@ is bought nothing.
 under the guard's hooks — a code repository, web fetches, ticket triage and log debugging — with
 harmless payloads planted on five routes. `data/st3ve_export.py` exports the captured events.
 
-- `data/labels.json` — one row per captured text: scenario, event type, file name, size and label.
+- `data/labels.jsonl` — one row per captured text: scenario, event type, file name, size and label.
   **The captured text itself is not published**; the scenario scripts regenerate it.
 - `data/ctx_eval.py` — the context ablation (none / heuristic / source / task / both / workspace).
 - `data/ctx_cli_eval.py` — the same ablation judged by the Claude Code CLI on a host subscription.
@@ -43,7 +43,7 @@ only — no session content.
 
 ```bash
 python3 data/analyze.py         # metrics -> data/summary.json (needs regenerated rows)
-python3 aggregate_figures.py    # rows -> data/fig_data.json
+ROWS_DIR=<dir> python3 aggregate_figures.py   # regenerated rows -> data/fig_data.json
 python3 gen_figures.py      # figures 1-5
 python3 gen_figures2.py     # figures 6-7
 python3 build_paper.py      # semantic_judge_coverage.pdf

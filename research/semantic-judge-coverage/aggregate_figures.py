@@ -39,7 +39,7 @@ for tag in ("gpt-56-luna", "gpt-4o-mini"):
                               for s in ("head", "headtail", "chunks")}
 
 # Figure 7: context ablation on the captured events, with the corrected labels.
-label = {r["id"]: r["label"] for r in json.load(open(os.path.join(DATA, "labels.json")))}
+label = {r["id"]: r["label"] for r in (json.loads(l) for l in open(os.path.join(DATA, "labels.jsonl")))}
 out["context"] = {}
 for tag in ("gpt-56-luna", "gpt-4o-mini"):
     per = {}
