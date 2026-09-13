@@ -148,8 +148,11 @@ def test_transcript_replay_posthog_after_web_preview_prompt(home, tmp_path):
 
     _prompt(ws, "look at the web preview code and summarize the layout", sid)
     rules = sa.load_scoped_rules(ws, sid)
-    assert POSTHOG_FAMILY in rules["deny_tools"], rules  # the family was *seen*, just not needed
-    assert _blocked_by_scope(_mcp_call(ws, sid))
+    # Static mode has no opinion on a family the prompt did not name: not
+    # denied, not in the inventory. A keyword miss is not a decision, so the
+    # call falls through to the base policy instead of being blocked.
+    assert POSTHOG_FAMILY not in rules["deny_tools"] and POSTHOG_FAMILY not in rules["inventory"], rules
+    assert not _blocked_by_scope(_mcp_call(ws, sid))
 
     _prompt(ws, "can you tell me from mcp posthog on our product usage and give me a summary", sid)
     rules = sa.load_scoped_rules(ws, sid)
@@ -248,10 +251,13 @@ def test_static_fallback_allows_family_named_in_prompt():
     tools = sa.BUILTIN_SCOPE_TOOLS + [POSTHOG_FAMILY, "mcp__plugin_cloudflare_cloudflare-api__*"]
     r = sa._static_fallback_rules("give me a posthog usage summary", tools)
     assert POSTHOG_FAMILY in r["allowed_tools"]
-    assert "mcp__plugin_cloudflare_cloudflare-api__*" in r["deny_tools"]
+    # Unnamed family: no opinion (not denied, not in the inventory) — it falls
+    # through to the base policy rather than being denied on a keyword miss.
+    assert "mcp__plugin_cloudflare_cloudflare-api__*" not in r["deny_tools"]
+    assert "mcp__plugin_cloudflare_cloudflare-api__*" not in r["inventory"]
     assert r["deny_network"] is False
     r = sa._static_fallback_rules("what does this repo do", tools)
-    assert POSTHOG_FAMILY in r["deny_tools"]
+    assert POSTHOG_FAMILY not in r["allowed_tools"] and POSTHOG_FAMILY not in r["deny_tools"]
 
 
 def test_merge_widens_families_and_drops_them_from_deny():

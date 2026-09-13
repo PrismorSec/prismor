@@ -33,7 +33,8 @@ def test_static_fallback_denies_unrelated_upstream():
     notes, pay = "mcp__prismor__notes__*", "mcp__prismor__payments__*"
     rules = _static_fallback_rules("get the release notes", [notes, pay])
     assert notes in rules["allowed_tools"]
-    assert pay in rules["deny_tools"]  # payments never named → denied
+    assert pay not in rules["deny_tools"]  # payments never named → no opinion, gateway screens it
+    assert pay not in rules["inventory"]
     assert not _tool_matches("mcp__prismor__payments__charge_card", rules["allowed_tools"])
 
 
