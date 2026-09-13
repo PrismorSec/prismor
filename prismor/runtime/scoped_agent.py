@@ -412,7 +412,7 @@ def synthesize_scoped_rules(
     from "never seen" (not a decision anyone made; falls through).
     """
     rules = _synthesize_scoped_rules(goal, available_tools, workspace)
-    if rules is not None:
+    if rules is not None and "inventory" not in rules:
         rules["inventory"] = list(available_tools)
     return rules
 
@@ -583,13 +583,19 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
         if is_mcp_tool(fam) and any(tok in goal_lower for tok in _mcp_family_tokens(fam)):
             allowed.add(fam)
 
-    deny = [t for t in available_tools if t not in allowed]
+    # An MCP family the prompt did not name is left out of deny_tools AND out
+    # of the inventory: a keyword miss ("terminal-mirror" vs termmirror) is
+    # not a decision, so the family falls through to the base policy and the
+    # gateway's screening exactly like an undiscovered one. Static mode only
+    # rules on what it can judge: writes, and MCP families the prompt names.
+    deny = [t for t in available_tools if t not in allowed and not is_mcp_tool(t)]
 
     rules = {
         "allowed_tools": sorted(allowed),
         "allowed_paths": ["**"],  # broad by default in static mode
         "deny_tools": deny,
         "deny_network": deny_network,
+        "inventory": [t for t in available_tools if not is_mcp_tool(t) or t in allowed],
     }
     # Cloaked-secret placeholders always require Bash (decloak runs in shell).
     return _apply_cloak_invariant(rules, goal)

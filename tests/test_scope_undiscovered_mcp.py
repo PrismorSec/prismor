@@ -22,21 +22,40 @@ def _event(tool):
     return {"type": "tool", "metadata": {"tool_name": tool}}
 
 
-def test_static_scope_records_inventory():
+def test_static_scope_records_inventory_of_what_it_ruled_on():
     rules = sa.synthesize_scoped_rules("look at the repo", ["Bash", "Read", POSTHOG_FAMILY], Path("."))
+    assert rules["inventory"] == ["Bash", "Read"]  # unnamed MCP family: no opinion
+    rules = sa.synthesize_scoped_rules("summarise posthog usage", ["Bash", "Read", POSTHOG_FAMILY], Path("."))
     assert rules["inventory"] == ["Bash", "Read", POSTHOG_FAMILY]
 
 
 def test_undiscovered_family_falls_through_even_when_scope_names_other_mcp():
-    rules = sa.synthesize_scoped_rules("look at the repo", ["Bash", "Read", POSTHOG_FAMILY], Path("."))
-    assert POSTHOG_FAMILY in rules["deny_tools"]  # scope does have MCP opinions
+    # LLM-shaped scope: it saw PostHog and denied it, never saw Chrome.
+    rules = {"allowed_tools": ["Bash", "Read"], "deny_tools": [POSTHOG_FAMILY], "allowed_paths": ["**"],
+             "deny_network": False, "inventory": ["Bash", "Read", POSTHOG_FAMILY]}
     assert sa.check_scoped_rules(rules, _event(CHROME_TOOL), "s") is None
+    assert sa.check_scoped_rules(rules, _event("mcp__plugin_posthog_posthog__exec"), "s") is not None
 
 
-def test_discovered_but_unallowed_family_is_denied():
-    rules = sa.synthesize_scoped_rules("look at the repo", ["Bash", "Read", CHROME_FAMILY], Path("."))
-    finding = sa.check_scoped_rules(rules, _event(CHROME_TOOL), "s")
-    assert finding is not None
+def test_llm_scope_that_saw_and_did_not_allow_family_denies_it():
+    # Shape the LLM path produces: the family was in the inventory and it chose not to allow it.
+    rules = {"allowed_tools": ["Bash", "Read"], "deny_tools": [], "allowed_paths": ["**"],
+             "deny_network": False, "inventory": ["Bash", "Read", CHROME_FAMILY]}
+    assert sa.check_scoped_rules(rules, _event(CHROME_TOOL), "s") is not None
+
+
+def test_static_has_no_opinion_on_mcp_family_the_prompt_did_not_name():
+    rules = sa.synthesize_scoped_rules("list the live terminal-mirror sessions",
+                                       ["Bash", "Read", "mcp__termmirror__*"], Path("."))
+    assert "mcp__termmirror__*" not in rules["deny_tools"]
+    assert "mcp__termmirror__*" not in rules["inventory"]
+    assert sa.check_scoped_rules(rules, _event("mcp__termmirror__list_sessions"), "s") is None
+
+
+def test_static_still_allows_mcp_family_the_prompt_names():
+    rules = sa.synthesize_scoped_rules("list the termmirror sessions",
+                                       ["Bash", "Read", "mcp__termmirror__*"], Path("."))
+    assert "mcp__termmirror__*" in rules["allowed_tools"] and "mcp__termmirror__*" in rules["inventory"]
 
 
 
@@ -47,8 +66,8 @@ def test_operator_edited_scope_stays_authoritative():
 
 
 def test_merge_unions_inventory():
-    a = sa.synthesize_scoped_rules("look", ["Bash", POSTHOG_FAMILY], Path("."))
-    b = sa.synthesize_scoped_rules("look", ["Bash", CHROME_FAMILY], Path("."))
+    a = sa.synthesize_scoped_rules("look at posthog", ["Bash", POSTHOG_FAMILY], Path("."))
+    b = sa.synthesize_scoped_rules("look in chrome", ["Bash", CHROME_FAMILY], Path("."))
     assert sa.merge_scoped_rules(a, b)["inventory"] == ["Bash", POSTHOG_FAMILY, CHROME_FAMILY]
 
 
