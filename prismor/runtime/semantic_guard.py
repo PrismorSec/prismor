@@ -93,7 +93,10 @@ _sig(r"ATTENTION\s+AI\s+(ASSISTANT|SYSTEM)", 0.80, "in_content_injection_marker"
 _sig(r"(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|print|extract|inspect|dump|display|output)\s+.{0,60}((system|developer|initiali[sz]ation|internal)[\s-]*prompt|(your|hidden)\s+(instructions?|guidelines?|rules?|config\w*)|instructions?\s+you\s+(received|were\s+given)|internal\s+config\w*|conversation\s+history|hidden\s+context)", 0.70, "system_prompt_disclosure")
 # 0.70, not 0.75: at the block threshold this one regex blocked on its own and
 # never reached a model -- on source code that merely includes a key name.
-_sig(r"(export|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.70, "credential_exfil_request")
+# ``export GH_TOKEN=$(gh auth token)`` is the shell builtin setting a variable
+# for the next command, not a request to export credentials -- it blocked a
+# plain `gh api` call live. The ``VAR=`` form is exempt; the prose form is not.
+_sig(r"(export(?!\s+[A-Za-z_][A-Za-z0-9_]*=)|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.70, "credential_exfil_request")
 _sig(r"(service\s+account\s+key|api\s+key|access\s+token)\s+.{0,40}(file|include|export)", 0.70, "credential_collection")
 _sig(r"(vendor|partner|support\s+team)\s+.{0,60}(credential|key|secret)", 0.60, "third_party_credential_share")
 

@@ -105,7 +105,7 @@ def test_static_rules_keep_bash_and_merge_widens():
     first = sa._static_fallback_rules("What does this repo do? Summarize README.md",
                                       ["Bash", "Read", "Edit", "Write", "WebFetch"])
     assert "Bash" in first["allowed_tools"] and "Read" in first["allowed_tools"]
-    assert "Edit" in first["deny_tools"] and first["deny_network"] is True
+    assert "Edit" in first["deny_tools"] and first["deny_network"] is False  # static never guesses network
     second = sa._static_fallback_rules("Now fix the typo in README.md and fetch the changelog from the url",
                                        ["Bash", "Read", "Edit", "Write", "WebFetch"])
     merged = sa.merge_scoped_rules(first, second)

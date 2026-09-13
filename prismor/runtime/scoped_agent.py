@@ -111,6 +111,18 @@ def _mentions_mcp(*lists: List[str]) -> bool:
     return any(is_mcp_tool(e) for lst in lists for e in (lst or []) if isinstance(e, str))
 
 
+def _scope_never_saw(tool: str, rules: Dict[str, Any]) -> bool:
+    """Was this MCP tool's server absent from the inventory the scope was
+    synthesised over? Judged per family: one undiscoverable connector (the
+    Chrome extension, a plugin added mid-session) must not be denied just
+    because the scope had opinions about *other* MCP servers."""
+    inventory = rules.get("inventory")
+    if isinstance(inventory, list):
+        return not _tool_matches(tool, [e for e in inventory if is_mcp_tool(e)])
+    # Pre-inventory sidecar: the old all-or-nothing heuristic.
+    return not _mentions_mcp(rules.get("allowed_tools", []), rules.get("deny_tools", []))
+
+
 def _read_json(path: Path) -> Any:
     try:
         if path.stat().st_size > _MAX_MCP_CONFIG_BYTES:
@@ -394,7 +406,22 @@ def synthesize_scoped_rules(
     Returns a parsed dict on success, or falls back to static heuristics
     if the SDK is unavailable or the API call fails. Returns None only if
     the static fallback also fails (should not happen).
+
+    The result carries ``inventory``: the tool list it was synthesised over.
+    ``check_scoped_rules`` uses it to tell "seen and not allowed" (deny)
+    from "never seen" (not a decision anyone made; falls through).
     """
+    rules = _synthesize_scoped_rules(goal, available_tools, workspace)
+    if rules is not None:
+        rules["inventory"] = list(available_tools)
+    return rules
+
+
+def _synthesize_scoped_rules(
+    goal: str,
+    available_tools: List[str],
+    workspace: Path,
+) -> Optional[Dict[str, Any]]:
     try:
         import anthropic  # noqa: F401
     except ImportError:
@@ -509,6 +536,9 @@ def merge_scoped_rules(existing: Dict[str, Any], new: Dict[str, Any]) -> Dict[st
     merged["allowed_paths"] = ["**"] if "**" in paths else paths
     merged["deny_network"] = bool(existing.get("deny_network", False)) and bool(new.get("deny_network", False))
     merged["prompts_seen"] = int(existing.get("prompts_seen") or 1) + 1
+    if isinstance(existing.get("inventory"), list) or isinstance(new.get("inventory"), list):
+        merged["inventory"] = list(dict.fromkeys(
+            list(existing.get("inventory") or []) + list(new.get("inventory") or [])))
     return merged
 
 
@@ -525,7 +555,12 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     # cannot orient without them, and denying them while allowing Read and
     # Bash buys nothing (the same listing is one `ls` or `grep` away).
     allowed = {"Read", "Bash", "Glob", "Grep"}
-    deny_network = True
+    # Never deny network from keywords. A ten-word vocabulary cannot tell
+    # "check if we have the gists locally" (which then runs `gh api`) from an
+    # offline task, and every miss blocked a routine `gh`/`curl`/`git push`
+    # for the rest of the session (deny_network only ever widens to False).
+    # The egress policy is the network control; the LLM path still scopes it.
+    deny_network = False
 
     # Detect task intent from keywords
     edit_keywords = {"edit", "fix", "refactor", "update", "change", "modify", "add", "implement", "create", "write"}
@@ -539,7 +574,6 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
         allowed.update({"Bash"})
     if any(kw in goal_lower for kw in network_keywords):
         allowed.update({"WebFetch", "WebSearch"})
-        deny_network = False
     if any(kw in goal_lower for kw in search_keywords):
         allowed.update({"Bash"})  # for grep/find
 
@@ -548,7 +582,6 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     for fam in available_tools:
         if is_mcp_tool(fam) and any(tok in goal_lower for tok in _mcp_family_tokens(fam)):
             allowed.add(fam)
-            deny_network = False
 
     deny = [t for t in available_tools if t not in allowed]
 
@@ -714,16 +747,15 @@ def check_scoped_rules(
         # prior allowlist, so the deny does not silently turn into an allowlist
         # that blocks every other tool.
         if "*" not in allowed:
-            if (is_mcp_tool(tool_name) and not _mentions_mcp(allowed, denied)
+            if (is_mcp_tool(tool_name) and _scope_never_saw(tool_name, rules)
                     and not rules.get("operator_edited")):
-                # An auto-synthesised scope with no opinion on MCP at all — it
-                # came from a tool list that never included this server
-                # (undiscovered plugin, server added mid-session). Denying tools
-                # the synthesiser could not even name is not a control anyone
-                # chose; the call still goes through the base policy and the
-                # MCP gateway's own screening. A hand-edited scope is different:
-                # a human shaped it, so its allowlist is authoritative and MCP
-                # tools it does not name stay blocked.
+                # An auto-synthesised scope whose inventory never included this
+                # server (undiscovered connector, server added mid-session).
+                # Denying tools the synthesiser could not even name is not a
+                # control anyone chose; the call still goes through the base
+                # policy and the MCP gateway's own screening. A hand-edited
+                # scope is different: a human shaped it, so its allowlist is
+                # authoritative and MCP tools it does not name stay blocked.
                 pass
             elif any(_tool_matches(t, allowed) for t in tags):
                 pass
