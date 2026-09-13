@@ -495,8 +495,10 @@ story += [
     B("The live scenarios are one host, one agent (Claude Code on a small model), 15 tasks and 18 planted "
       "texts, with payloads written to be harmless. They show that the routes work, not how often they "
       "would work in production."),
-    B("Windowing was measured with non-overlapping windows; an instruction split across a window boundary "
-      "was not tested, and text beyond the window budget is still unjudged."),
+    B("Window boundaries were probed on a single fixture: an instruction cut in half across a "
+      "3000-character boundary still scored 0.99 and 0.92 in the two halves judged separately, so "
+      "overlapping windows were not adopted. Text beyond the eight-window budget (24000 characters) "
+      "is still unjudged, which the tests pin."),
 ]
 
 # ── 9. Conclusion ───────────────────────────────────────────────
