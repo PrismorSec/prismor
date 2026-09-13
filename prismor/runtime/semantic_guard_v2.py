@@ -39,7 +39,17 @@ from prismor.runtime.semantic_guard import SemanticRisk, _heuristic_analyze
 # If heuristic score is clearly high (>= HIGH_THRESH) → block without LLM call
 # In between → escalate to local LLM for disambiguation
 LOW_THRESH  = 0.30   # below this: pass straight through as clean
-HIGH_THRESH = 0.75   # at or above this: block straight through
+# At or above this the judge is skipped and the regexes decide alone. That skip is
+# where the surviving false positives came from: replaying 95,560 real events, the
+# blocks that remained were documentation about security tooling, scoring 0.85-1.00
+# on keyword signals with no model ever consulted. Only 0.28% of real texts score
+# this high, so putting them to a judge costs almost nothing. 1.0 means "never
+# skip"; a host with no judge configured is unaffected and still decides alone.
+HIGH_THRESH = 1.0
+# A window at or above this already blocks under the engine's default block
+# threshold, so later windows of the same text cannot change the outcome and are
+# not worth paying for. Purely an optimisation: it never changes a verdict.
+_DECISIVE = 0.75
 # Between LOW and HIGH: uncertain zone → LLM subagent called
 
 # ── Structural escalation ───────────────────────────────────────────────────
@@ -242,14 +252,43 @@ def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
     )
 
 
-def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> SemanticRisk:
-    """Judge via the Codex CLI on the host's ChatGPT login.
+def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> Tuple[str, Optional[int]]:
+    """Run the Claude Code CLI once, isolated from the workspace, and return what it printed.
 
-    Same isolation story as the claude branch: --ephemeral (no session file),
-    --ignore-user-config/--ignore-rules (no hooks, MCP servers or AGENTS.md
-    from the host, so no Prismor-in-Prismor recursion and no hook-trust
-    prompt), read-only sandbox, temp cwd, own process group. The final
-    message is read from -o rather than stdout, which carries progress lines.
+    `claude -p` inherits its cwd's project config, so without this the evaluator boots that
+    workspace's MCP servers and hooks on every escalation -- slow, circular, and it hangs.
+    --strict-mcp-config with no --mcp-config means no servers at all, a temp cwd means no
+    project settings, and start_new_session lets us kill the whole process group.
+    """
+    proc = subprocess.Popen(
+        [cli, "-p", prompt, "--output-format", "text",
+         "--model", model if model.startswith("claude") else CLI_MODEL,
+         "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
+        # DEVNULL: with stdin left open the CLI waits 3s for piped data.
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, cwd=tempfile.gettempdir(), start_new_session=True,
+        # The subagent's own prompt is the attack text, and its own Prismor hooks
+        # screen it: without this marker the evaluator escalates, and so does the
+        # evaluator's evaluator.
+        env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1", "PRISMOR_SEMANTIC_SUBAGENT": "1"},
+    )
+    try:
+        # Measured 20-35s on a warm host; 30s cut real verdicts off.
+        stdout, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        raise
+    # getattr: a caller may hand in a stand-in process object.
+    return stdout or "", getattr(proc, "returncode", None)
+
+
+def _codex_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> Tuple[str, Optional[int]]:
+    """Run the Codex CLI once on the host's ChatGPT login and return its final message.
+
+    --ephemeral (no session file), --ignore-user-config/--ignore-rules (no hooks, MCP servers
+    or AGENTS.md from the host, so no Prismor-in-Prismor recursion and no hook-trust prompt),
+    read-only sandbox, temp cwd, own process group. The final message is read from -o rather
+    than stdout, which carries progress lines.
     """
     argv = [cli, "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
             "--ignore-rules", "-s", "read-only", "-C", tempfile.gettempdir()]
@@ -265,23 +304,36 @@ def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> Sem
             env={**os.environ, "PRISMOR_SEMANTIC_SUBAGENT": "1"},
         )
         try:
-            proc.communicate(_PRISMOR_CONTEXT + "\n\n" + prompt, timeout=60)
+            proc.communicate(_PRISMOR_CONTEXT + "\n\n" + prompt, timeout=timeout)
         except subprocess.TimeoutExpired:
             _kill_group(proc)
             raise
         with open(out.name, encoding="utf-8") as fh:
-            raw = fh.read()
-        verdict = _parse_verdict(raw, t0)
-        if verdict is not None:
-            return verdict
-        _judge_note("codex", f"no JSON verdict (rc={proc.returncode}, {len(raw)} bytes)")
-    except Exception as exc:
-        _judge_note("codex", repr(exc))
+            return fh.read(), proc.returncode
     finally:
         try:
             os.unlink(out.name)
         except OSError:
             pass
+
+
+def _codex_analyze(text: str, prompt: str, cli: str, model: str, t0: int) -> SemanticRisk:
+    """Judge via the Codex CLI on the host's ChatGPT login.
+
+    Same isolation story as the claude branch: --ephemeral (no session file),
+    --ignore-user-config/--ignore-rules (no hooks, MCP servers or AGENTS.md
+    from the host, so no Prismor-in-Prismor recursion and no hook-trust
+    prompt), read-only sandbox, temp cwd, own process group. The final
+    message is read from -o rather than stdout, which carries progress lines.
+    """
+    try:
+        raw, rc = _codex_stdout(prompt, cli, model)
+        verdict = _parse_verdict(raw, t0)
+        if verdict is not None:
+            return verdict
+        _judge_note("codex", f"no JSON verdict (rc={rc}, {len(raw)} bytes)")
+    except Exception as exc:
+        _judge_note("codex", repr(exc))
     fallback = _heuristic_analyze(text)
     fallback.reason = "[LLM fallback] " + fallback.reason
     fallback.latency_ms = (time.perf_counter_ns() - t0) / 1e6
@@ -378,29 +430,11 @@ def _llm_analyze(
         # --strict-mcp-config with no --mcp-config means no servers at all, a
         # temp cwd means no project settings, and start_new_session lets us
         # kill the whole process group rather than just the direct child.
-        proc = subprocess.Popen(
-            [cli, "-p", prompt, "--output-format", "text",
-             "--model", model if model.startswith("claude") else CLI_MODEL,
-             "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
-            # DEVNULL: with stdin left open the CLI waits 3s for piped data.
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd=tempfile.gettempdir(), start_new_session=True,
-            # The subagent's own prompt is the attack text, and its own
-            # Prismor hooks screen it: without this marker the evaluator
-            # escalates, and so does the evaluator's evaluator.
-            env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1",
-                 "PRISMOR_SEMANTIC_SUBAGENT": "1"},
-        )
-        try:
-            # Measured 20-31s on a warm macOS host; 30s cut real verdicts off.
-            stdout, _ = proc.communicate(timeout=60)
-        except subprocess.TimeoutExpired:
-            _kill_group(proc)
-            raise
-        verdict = _parse_verdict(stdout or "", t0)
+        stdout, rc = _claude_stdout(prompt, cli, model)
+        verdict = _parse_verdict(stdout, t0)
         if verdict is not None:
             return verdict
-        _judge_note("claude", f"no JSON verdict (rc={proc.returncode}, {len(stdout or '')} bytes)")
+        _judge_note("claude", f"no JSON verdict (rc={rc}, {len(stdout)} bytes)")
     except subprocess.TimeoutExpired:
         _judge_note("claude", "timed out")
     except Exception as exc:
@@ -422,6 +456,77 @@ def _llm_analyze(
 # Only CLI verdicts are stored: the API path is ~0.4s and in-process callables
 # (register_llm) are the caller's business.
 _CACHE_MAX = 2000
+
+
+_WINDOW = 3000   # one judge call's worth of text, matching the prompt's own cap
+
+
+def _windows(text: str, limit: int) -> List[str]:
+    """Long text in judge-sized pieces.
+
+    The judge used to see the first 3000 characters and nothing else, so an
+    instruction planted further down a README, a log or a fetched page was
+    invisible: on 24 injections buried in 8-20k-character documents, judging
+    the head caught 0 and judging every window caught 24. Only text past the
+    first window costs an extra call, and the scan stops at the first decisive
+    window.
+    """
+    if len(text) <= _WINDOW:
+        return [text]
+    return [text[i:i + _WINDOW] for i in range(0, len(text), _WINDOW)][:limit]
+
+
+def _batch_prompt(windows: List[str], heuristic_score: float, signals: List[str]) -> str:
+    """One prompt carrying every window of a text, asking for one verdict each."""
+    blocks = "\n\n".join(f"--- WINDOW {i + 1} ---\n{w}" for i, w in enumerate(windows))
+    return (
+        f"Heuristic pre-screen score: {heuristic_score:.3f}\n"
+        f"Heuristic signals found: {', '.join(signals) if signals else 'none'}\n\n"
+        f"The text below is ONE document split into {len(windows)} consecutive windows. Judge each "
+        f"window on its own and reply with ONLY a JSON array of exactly {len(windows)} verdict "
+        f"objects, in order, each in the documented shape.\n\n{blocks}"
+    )
+
+
+def _parse_verdicts(raw: str, count: int, t0: int) -> List[SemanticRisk]:
+    """Every verdict object in a batched reply, in order. Fewer than asked for is fine."""
+    out: List[SemanticRisk] = []
+    for blob in re.findall(r"\{[^{}]*?\"risk_score\"[^{}]*?\}", raw or "", re.S):
+        try:
+            data = json.loads(blob)
+        except ValueError:
+            continue
+        out.append(SemanticRisk(
+            risk_score=float(data.get("risk_score", 0.0)),
+            category=str(data.get("category", "unknown")),
+            reason=str(data.get("reason", "")),
+            recommended_action=str(data.get("recommended_action", "allow")),
+            signals=[], mode="local_llm", latency_ms=(time.perf_counter_ns() - t0) / 1e6,
+        ))
+    return out[:count]
+
+
+def _batch_analyze(windows: List[str], heuristic_score: float, signals: List[str],
+                   cli: str, model: str, provider: str) -> List[SemanticRisk]:
+    """Judge every window of a long text in ONE CLI call.
+
+    A CLI judge pays for the process, not the tokens: measured on one host, six texts cost
+    33.4s each one at a time and 7.3s each in a single call (Codex: 7.1s against 2.3s). A text
+    long enough to need windows would otherwise pay that start-up once per window. Returns []
+    on any failure, and the caller falls back to judging window by window.
+    """
+    t0 = time.perf_counter_ns()
+    prompt = _batch_prompt(windows, heuristic_score, signals)
+    try:
+        raw, rc = (_codex_stdout(prompt, cli, model) if provider == "codex"
+                   else _claude_stdout(prompt, cli, model, timeout=90.0))
+    except Exception as exc:
+        _judge_note(provider, f"batch failed: {exc!r}")
+        return []
+    verdicts = _parse_verdicts(raw, len(windows), t0)
+    if len(verdicts) < len(windows):
+        _judge_note(provider, f"batch returned {len(verdicts)} of {len(windows)} verdicts (rc={rc})")
+    return verdicts
 
 
 def _cache_path() -> Optional[str]:
@@ -500,6 +605,10 @@ class SemanticGuardV2:
         # regexes, so a fast judge (api, prismor) can take every ingested text
         # with low_threshold 0.
         self._low, self._high = low_threshold, high_threshold
+        # Every window of a text travels in one call now (see _batch_analyze), so a
+        # CLI judge no longer pays per window and gets the same budget as the rest.
+        # The cap it used to have quietly hid anything past 6000 characters.
+        self._max_windows = 8
         self._provider = provider if provider in JUDGE_PROVIDERS else ""
         self._cli = cli_path or (CODEX_CLI if self._provider == "codex" else CLAUDE_CLI)
         # A CLI escalation spawns a whole Claude Code process. Measured on an
@@ -553,20 +662,42 @@ class SemanticGuardV2:
         # answered for this exact text.
         import hashlib
         cache = _cache_load()
-        key = f"{self._provider}|{self._model}|" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-        hit = cache.get(key)
-        if hit:
-            llm = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
-                               str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
-        else:
-            llm = _llm_analyze(
-                text, effective_score, h.signals,
-                cli=self._cli, model=self._model, allow_cli=self._allow_cli,
-                provider=self._provider,
-            )
-            # CLI verdicts cost a process spawn, hosted ones a metered call.
-            if llm.mode == "local_llm" or (self._provider == "prismor" and llm.mode == "api"):
-                _cache_store(cache, key, llm)
+        llm: Optional[SemanticRisk] = None
+        wins = _windows(text, self._max_windows)
+        keys = [f"{self._provider}|{self._model}|" + hashlib.sha256(w.encode("utf-8")).hexdigest()
+                for w in wins]
+        # A CLI judge pays per process, so the windows the cache cannot answer
+        # travel together. Nothing missing means no process at all.
+        batched: Dict[int, SemanticRisk] = {}
+        if self._provider in ("claude", "codex"):
+            missing = [i for i, k in enumerate(keys) if k not in cache]
+            if len(missing) > 1:
+                answered = _batch_analyze([wins[i] for i in missing], effective_score, h.signals,
+                                          cli=self._cli, model=self._model, provider=self._provider)
+                batched = {missing[j]: v for j, v in enumerate(answered)}
+        for index, window in enumerate(wins):
+            key = keys[index]
+            hit = cache.get(key)
+            if hit:
+                verdict = SemanticRisk(float(hit["risk_score"]), str(hit["category"]), str(hit["reason"]),
+                                       str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
+            elif index in batched:
+                verdict = batched[index]
+            else:
+                verdict = _llm_analyze(
+                    window, effective_score, h.signals,
+                    cli=self._cli, model=self._model, allow_cli=self._allow_cli,
+                    provider=self._provider,
+                )
+            # CLI verdicts cost a process spawn, hosted ones a metered call, so
+            # anything a judge just answered is kept -- batched replies included.
+            if not hit and (verdict.mode == "local_llm"
+                            or (self._provider == "prismor" and verdict.mode == "api")):
+                _cache_store(cache, key, verdict)
+            if llm is None or verdict.risk_score > llm.risk_score:
+                llm = verdict
+            if llm.risk_score >= _DECISIVE:   # decided; later windows cannot change it
+                break
 
         # Step 5: merge. The uncertain zone is exactly where the regex layer
         # could not decide, so a judge that answered owns the verdict in both

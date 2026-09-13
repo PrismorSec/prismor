@@ -2230,7 +2230,7 @@ class PolicyEngine:
                     # Documented and editable in the console for a long time,
                     # but never read: the band was always 0.30-0.75.
                     low_threshold=float(cfg.get("low_threshold", 0.30)),
-                    high_threshold=float(cfg.get("high_threshold", 0.75)),
+                    high_threshold=float(cfg.get("high_threshold", 1.0)),
                 )
             else:
                 from prismor.runtime.semantic_guard import SemanticGuard
