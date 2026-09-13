@@ -39,7 +39,17 @@ from prismor.runtime.semantic_guard import SemanticRisk, _heuristic_analyze
 # If heuristic score is clearly high (>= HIGH_THRESH) → block without LLM call
 # In between → escalate to local LLM for disambiguation
 LOW_THRESH  = 0.30   # below this: pass straight through as clean
-HIGH_THRESH = 0.75   # at or above this: block straight through
+# At or above this the judge is skipped and the regexes decide alone. That skip is
+# where the surviving false positives came from: replaying 95,560 real events, the
+# blocks that remained were documentation about security tooling, scoring 0.85-1.00
+# on keyword signals with no model ever consulted. Only 0.28% of real texts score
+# this high, so putting them to a judge costs almost nothing. 1.0 means "never
+# skip"; a host with no judge configured is unaffected and still decides alone.
+HIGH_THRESH = 1.0
+# A window at or above this already blocks under the engine's default block
+# threshold, so later windows of the same text cannot change the outcome and are
+# not worth paying for. Purely an optimisation: it never changes a verdict.
+_DECISIVE = 0.75
 # Between LOW and HIGH: uncertain zone → LLM subagent called
 
 # ── Structural escalation ───────────────────────────────────────────────────
@@ -686,7 +696,7 @@ class SemanticGuardV2:
                 _cache_store(cache, key, verdict)
             if llm is None or verdict.risk_score > llm.risk_score:
                 llm = verdict
-            if llm.risk_score >= self._high:   # decided; later windows cannot change it
+            if llm.risk_score >= _DECISIVE:   # decided; later windows cannot change it
                 break
 
         # Step 5: merge. The uncertain zone is exactly where the regex layer

@@ -313,7 +313,10 @@ settings:
     low_threshold: 0.30      # heuristic < this  -> allow without LLM. 0 sends every
                              # ingested text to the judge: fast judges only (api,
                              # prismor); a CLI judge costs seconds per tool call
-    high_threshold: 0.75     # heuristic >= this -> block without LLM
+    high_threshold: 1.0      # heuristic >= this -> decide without asking the judge.
+                             # 1.0 = always ask when a judge is configured; set 0.75
+                             # to restore the old skip. Hosts with no judge are
+                             # unaffected: they still decide on heuristics alone.
     warn_threshold: 0.45     # final score >= this & < block_threshold -> warn
     block_threshold: 0.75    # final score >= this -> block (matches high_threshold)
     heuristic_block_threshold: 0.85  # with no model verdict, block only at or above this;

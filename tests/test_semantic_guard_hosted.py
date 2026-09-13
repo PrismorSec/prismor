@@ -92,7 +92,8 @@ def test_engine_reads_the_documented_band_thresholds():
     assert (g._low, g._high) == (0.0, 0.9)
     default = PolicyEngine()
     default.semantic_guard_config = {"enabled": True, "mode": "auto"}
-    assert (default._get_semantic_guard()._low, default._get_semantic_guard()._high) == (0.30, 0.75)
+    # 1.0: a judge, when configured, is asked about every text above low_threshold.
+    assert (default._get_semantic_guard()._low, default._get_semantic_guard()._high) == (0.30, 1.0)
 
 
 def test_judge_prompt_treats_labeling_instructions_as_injection():
@@ -106,3 +107,37 @@ def test_setup_preselects_the_subscription_cli_on_this_host(monkeypatch, found, 
     from prismor.runtime import setup_wizard as sw
     monkeypatch.setattr(sw, "_judge_ready", lambda p: "found" if p in found else "not installed")
     assert sw._default_judge() == expected
+
+
+def test_a_strong_heuristic_hit_still_reaches_the_judge(enrolled, calls, monkeypatch):
+    """Security documentation scores high on keywords; a judge is what clears it.
+
+    Replaying 95,560 real events, the blocks that survived the scope fix were all
+    decided at or above 0.75 with no model consulted, so the default no longer skips
+    the judge there.
+    """
+    import json as _json
+
+    from test_semantic_guard_scope import INJECTION          # a strong-scoring fixture
+
+    def cleared(req, timeout):
+        calls.append({"url": req.full_url, "auth": req.get_header("Authorization"),
+                      "body": _json.loads(req.data)})
+        return _Resp(_json.dumps({"risk_score": 0.1, "category": "clean",
+                                  "reason": "writing about security tooling",
+                                  "recommended_action": "allow"}).encode())
+    monkeypatch.setattr("urllib.request.urlopen", cleared)
+
+    res = SemanticGuardV2(provider="prismor").analyze(INJECTION)
+    assert res.escalated, "a 0.9+ heuristic score must still be put to the judge"
+    assert res.final.risk_score == 0.1 and res.final.mode == "hybrid_api"
+
+
+def test_without_a_judge_a_strong_hit_still_blocks_on_heuristics(monkeypatch, tmp_path):
+    from test_semantic_guard_scope import INJECTION
+
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    monkeypatch.setattr(identity, "load_identity", lambda: None)
+    monkeypatch.setattr(identity, "is_enrolled", lambda: False)
+    res = SemanticGuardV2(provider="prismor").analyze(INJECTION)
+    assert not res.escalated and res.final.risk_score >= 0.85
