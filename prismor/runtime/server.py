@@ -12,8 +12,8 @@ Read endpoints:
     GET /health            → {"status": "ok", "ts": "<iso>"}
     GET /api/stats         → aggregate stats for charts/KPIs
     GET /api/sessions      → paginated sessions  (?page&limit&sort&dir)
-    GET /api/findings      → paginated findings  (?page&limit&agent&severity&category&q)
-    GET /api/events        → paginated events    (?page&limit&verdict&agent)
+    GET /api/findings      → paginated findings  (?page&limit&agent&severity&category&q&subject)
+    GET /api/events        → paginated events    (?page&limit&verdict&agent&subject)
     GET /api/supply-chain  → supply chain enforcement stats
     GET /api/workspaces    → registered workspaces + enrollment status
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
@@ -413,6 +413,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     severity=qstr("severity"),
                     category=qstr("category"),
                     search=qstr("q"),
+                    subject=qstr("subject"),
                 )
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
@@ -427,6 +428,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     limit=qint("limit", 30),
                     verdict=qstr("verdict"),
                     agent=qstr("agent"),
+                    subject=qstr("subject"),
                 )
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
