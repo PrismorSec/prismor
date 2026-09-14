@@ -1,5 +1,23 @@
 ## [Unreleased]
 
+## [1.51.0] — 2026-09-14
+
+### Added
+- **The Prismor API: a hosted judge for the semantic layer, and `prismor login` to reach it.** `semantic_guard.provider: prismor` sends the text an agent ingested to the control plane under the machine's device key and gets a verdict back in about two seconds — no API key to manage and no coding-agent CLI to spawn. Signing in is a device-authorization flow rather than a token to copy: `prismor login` prints a short code, opens the browser, and stores the device key it is handed back; new accounts get a personal organization and 1,000 verdicts a month on the free plan. `prismor setup`'s **LLM judge** step offers it alongside the CLI judges and runs the sign-in for you. `--set-judge` wires the workspace in the same command and names the path it wrote. See #399 / #406.
+- **Long text is judged in windows.** The judge saw a text's first 3000 characters and nothing else, so an instruction planted further down a README, a log or a fetched page was invisible to it. On 24 injections buried in 8-20k-character documents, judging the head caught **0**; judging every 3000-character window caught **24**, for either model — this was never a model-quality problem. Text at or under one window still costs one call, the scan stops at the first window that already blocks, and each window is cached separately. See #400.
+- **A CLI judge's windows travel in one call.** A CLI judge pays for the process, not the tokens: six texts cost 33.4s each judged one at a time against 7.3s each judged together (Codex: 7.1s against 2.3s). Windows the judge cache has already answered are never re-sent. See #400.
+- **Codex hook trust is detected instead of assumed.** Codex runs no hook until the human has trusted it, and records that consent per entry in its own config — so hooks could be installed, `status` could list them, and nothing was screened. `prismor doctor` now fails on an untrusted scope, and `status`, `setup` and `install-hooks` say so with the one-time fix. See #407.
+
+### Changed
+- **A configured judge now decides above `high_threshold`, instead of the regexes deciding alone.** That skip is where the surviving false positives came from: replaying 95,560 real events, the blocks that remained were documentation *about* security tooling, scoring 0.85-1.00 on keyword signals with no model ever consulted. `high_threshold` defaults to `1.0` (never skip); it costs 42 extra judge calls in 14,752 real texts. **Hosts with no judge configured are unaffected** and still decide on heuristics alone. Set `high_threshold: 0.75` to restore the old skip.
+- **A fast judge sees every ingested text by default.** The escalation band exists to protect a slow judge, and it is also what hid paraphrased, encoded and translated injections: on a 157-text set (83 injections, 74 benign look-alikes) the gated layer caught 34% of injections whichever judge was configured, and the same judges scoring every text caught 96-100%. `low_threshold` is now unset in the shipped stanza and resolved from what the judge costs — `0` for `api`/`prismor` (about a second a verdict), `0.30` for `claude`/`codex`, which spawn a process per call. An explicit value still wins.
+- `prismor setup` pre-selects the subscription already installed on the machine (Claude Code, then Codex) on its judge step, rather than defaulting to heuristics only. See #399.
+
+### Fixed
+- **The semantic layer judged the agent's own output.** It concatenated the agent's command line and the source files it wrote with the content it ingested; on one machine 382 of 400 flagged texts were exactly those. Now only ingested fields are judged, plus writes to files agents load as instructions. Replaying 95,560 distinct real events, blocks fell from **1,130 to 38** (1.18% → 0.04%). See #399.
+- **`low_threshold` and `high_threshold` were documented and editable in the console but never read** — the band was always `[0.30, 0.75)` whatever the policy said. See #400.
+- **The CLI window budget hid text past 6000 characters.** A two-window cap made sense when each window was a process spawn; batching removed the reason and left the cap, so a long text was silently truncated. Caught end to end against the real Codex CLI: a 7597-character text with the payload in its last window scored 0.02 with the cap and 0.99 without, one spawn either way. See #400.
+
 ## [1.50.0] — 2026-09-10
 
 ### Added
