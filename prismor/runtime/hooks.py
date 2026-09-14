@@ -148,6 +148,51 @@ def _prismor_plugin_registered(config_text: str) -> bool:
     return any(m in str(entry).lower() for entry in plugins for m in ("prismor", "warden"))
 
 
+# Codex refuses to run a hook until the human has trusted it, and it records that
+# consent per hook entry in the USER config, keyed by the hooks file, the event and
+# the entry's position. Nothing about the hooks file itself says whether Codex
+# will run it. Verified live against codex-cli 0.145.0 (2026-09-13): with hooks
+# installed but untrusted, `codex exec` logged "hook: PostToolUse ... Completed"
+# thirty times and executed the command zero times - a full, silent bypass.
+_CODEX_TRUST_EVENTS = ("user_prompt_submit", "pre_tool_use", "permission_request", "post_tool_use")
+
+
+def codex_hook_trust(workspace: Path, codex_home: Optional[Path] = None) -> Dict[str, Any]:
+    """Whether Codex will actually run the hooks Prismor installed, at either scope.
+
+    Returns ``{"status": "not-installed" | "trusted" | "untrusted", "missing": [...],
+    "scopes": {"project" | "global": [untrusted events]}}``. A scope counts only when
+    its hooks file carries Prismor's dispatcher, so a user's own hooks are never
+    judged. ``untrusted`` means at least one Prismor entry has no trust record, so
+    that event never dispatches. Text-based: the record's exact hash is Codex's
+    business; its presence is what we can know.
+    """
+    home = codex_home or (Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex")
+    candidates = {
+        "project": (workspace / ".codex" / "hooks.json").resolve(),
+        "global": (home / "hooks.json").resolve(),
+    }
+    installed: Dict[str, Path] = {}
+    for scope, path in candidates.items():
+        try:
+            if path.exists() and "hook-dispatch" in path.read_text(encoding="utf-8"):
+                installed[scope] = path
+        except OSError:
+            continue
+    if not installed:
+        return {"status": "not-installed", "missing": [], "scopes": {}}
+    try:
+        text = (home / "config.toml").read_text(encoding="utf-8")
+    except OSError:
+        text = ""
+    scopes = {
+        scope: [ev for ev in _CODEX_TRUST_EVENTS if f'[hooks.state."{path}:{ev}:0:0"]' not in text]
+        for scope, path in installed.items()
+    }
+    missing = sorted({ev for evs in scopes.values() for ev in evs}, key=_CODEX_TRUST_EVENTS.index)
+    return {"status": "untrusted" if missing else "trusted", "missing": missing, "scopes": scopes}
+
+
 def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
     """True if a Prismor PreToolUse hook is present in this agent's config at
     ``scope`` ("project" | "global"). Text-based — the dispatcher command embeds

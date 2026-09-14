@@ -1396,6 +1396,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             except Exception as e:
                 return False, str(e)[:50]
         _spinner_run(f"Installing {agent} hooks", _install_hook)
+    if "codex" in agents:
+        # Codex runs nothing until the human trusts the hooks; installed is not screened.
+        from prismor.runtime.cli import codex_trust_line
+        _line = codex_trust_line(target)
+        if _line:
+            print(f"  {_w(_line, YEL)}")
+            print()
 
     # 3a. MCP mirror — only for agents explicitly opted in on the agent screen.
     # Deliberately after hooks: if this fails the machine still has working

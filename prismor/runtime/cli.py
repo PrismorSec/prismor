@@ -1370,7 +1370,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         register_workspace(workspace)
         for item in results:
             print(f"Installed {item['agent']} hooks at {item['configPath']}")
-        _print_codex_trust_note([item["agent"] for item in results])
+        _print_codex_trust_note([item["agent"] for item in results], workspace)
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=True)
         return
 
@@ -4185,14 +4185,32 @@ def _truncate_str(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _print_codex_trust_note(agents: List[str]) -> None:
+def codex_trust_line(workspace: Path) -> Optional[str]:
+    """One line on whether Codex will run the installed hooks, or None if it will."""
+    from prismor.runtime.hooks import codex_hook_trust
+    trust = codex_hook_trust(workspace)
+    if trust["status"] != "untrusted":
+        return None
+    return ("Codex has not trusted these hooks yet, so it will NOT run them: this workspace is "
+            "unscreened for Codex until you open `codex` here once and accept the hook-trust "
+            "prompt (headless runs: `codex exec --dangerously-bypass-hook-trust`).")
+
+
+def _print_codex_trust_note(agents: List[str], workspace: Optional[Path] = None) -> None:
     """Codex silently ignores hooks it has not been told to trust — the hook file
-    is written, `status` says installed, and nothing ever fires. Say so."""
+    is written, `status` says installed, and nothing ever fires. Check, and say so
+    only when it is actually the case."""
     if "codex" not in agents:
         return
-    print("  Codex runs hooks only after you trust them: open the Codex TUI once in this "
-          "workspace and accept the hook-trust prompt, or for headless runs pass "
-          "`codex exec --dangerously-bypass-hook-trust`.")
+    line = codex_trust_line(workspace) if workspace is not None else None
+    if line:
+        print(f"  {line}")
+    elif workspace is not None:
+        print("  Codex has trusted these hooks; they will run.")
+    else:
+        print("  Codex runs hooks only after you trust them: open the Codex TUI once in this "
+              "workspace and accept the hook-trust prompt, or for headless runs pass "
+              "`codex exec --dangerously-bypass-hook-trust`.")
 
 
 def _warn_other_scope_hooks(workspace: Path, scope: str, agents: List[str], *, installed: bool) -> None:
@@ -4687,8 +4705,13 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
     else:
         add("warn", "hooks", "no IDE hooks installed (run `prismor install-hooks`; SDK adapters are unaffected)")
     if "codex" in agents_with_hooks:
-        add("warn", "codex trust", "Codex only runs hooks it has been told to trust: accept the hook-trust prompt "
-                                   "in the Codex TUI once, or pass --dangerously-bypass-hook-trust to `codex exec`")
+        # A full, silent bypass when untrusted (verified live: hooks logged, never
+        # executed), so it fails the check rather than merely warning.
+        _trust_line = codex_trust_line(workspace)
+        if _trust_line:
+            add("fail", "codex trust", _trust_line)
+        else:
+            add("ok", "codex trust", "Codex has trusted the installed hooks")
 
     # 2. Policy engine loads.
     try:
@@ -4936,6 +4959,10 @@ def _print_status_overview(workspace: Path) -> None:
         else:
             scope_str = "project"
         print(f"  {_color('Hooks:', _GREEN)}       {', '.join(agents_with_hooks)}  ({mode_str}, {scope_str})")
+        if "codex" in agents_with_hooks:
+            _codex_line = codex_trust_line(workspace)
+            if _codex_line:
+                print(f"  {_color('Codex:', _YELLOW)}       {_codex_line}")
         _both = sorted(set(hooks_by_scope["project"]) & set(hooks_by_scope["global"]))
         if _both:
             print(f"  {_color('Note:', _YELLOW)}        {', '.join(_both)} hooked at both scopes — each tool call is "

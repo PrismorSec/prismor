@@ -66,6 +66,19 @@ stale package earlier on `sys.path`.
 
 This installs enforce-mode Prismor hooks and the Cloak prevention layer. To register a secret, run `prismor cloak add stripe_key` and enter the value when prompted. To import an entire dotenv file at once, run `prismor cloak add --env-file .env`. Claude/Hermes can auto-decloak placeholders at the tool boundary. Codex hooks are block-only, so run placeholder commands through `prismor cloak run -- <command>`.
 
+### Codex needs a one-time trust step
+
+Codex refuses to run a hook until you have trusted it, and it records that consent
+per hook in `~/.codex/config.toml`. Until then the hooks Prismor installed are
+written, `prismor status` can list them, and **nothing is screened**: Codex logs
+each hook event and skips the command. Verified against codex-cli 0.145.0.
+
+After `prismor setup` or `prismor install-hooks --agent codex`, open `codex`
+interactively once in the workspace and accept the hook-trust prompt. For headless
+or CI runs, pass `codex exec --dangerously-bypass-hook-trust`. `prismor status` and
+`prismor doctor` say when the hooks are still untrusted, and the install prints
+the same warning.
+
 Prefer the interactive wizard? Drop the env vars:
 
 ```bash
