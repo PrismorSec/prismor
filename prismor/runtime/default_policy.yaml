@@ -716,7 +716,9 @@ rules:
     patterns:
       - '\b(pg_dump|mysqldump|mongodump|redis-cli\s+--rdb)\b'
       - 'sqlite3\s+.*\.dump'
-      - '\bSELECT\b[^;]*\bFROM\b[^;]*\b(users?|accounts?|credentials?|passwords?|secrets?|tokens?|sessions?|admins?)\b'
+      # Require an actual database client in the execution chain. SQL quoted
+      # into a report or fixture is inert text, not a database read.
+      - '(?:\b(?:sqlite3|psql|mysql)\b[^;]{0,500}\bSELECT\b[^;]*\bFROM\b[^;]*\b(users?|accounts?|credentials?|passwords?|secrets?|tokens?|sessions?|admins?)\b|\bSELECT\b[^;]*\bFROM\b[^;]*\b(users?|accounts?|credentials?|passwords?|secrets?|tokens?|sessions?|admins?)\b[^;]{0,500}\|\s*(?:sqlite3|psql|mysql)\b)'
       - '\bCOPY\b.*\bTO\b\s+[''"'']'
     action: warn
 
@@ -724,11 +726,13 @@ rules:
   - id: path-traversal
     severity: HIGH
     category: path_traversal
-    title: Flags ../../ traversal, reads of /etc/passwd, /proc/self/environ
+    title: Flags relative traversal to sensitive files and direct reads of /etc or /proc
     event_types: [shell, file_read]
     fields: [command, path]
     patterns:
-      - '(\.\./){2,}'
+      # Relative traversal is only actionable when it reaches a sensitive
+      # target. Multi-level reads within the same project are routine.
+      - '(\.\./){2,}[^;\n]*(?:etc/(?:passwd|shadow|hosts|sudoers)|proc/(?:self|\d+)/(?:environ|cmdline|maps|root)|(?:\.env(?:\.[^/\s]+)?|id_rsa|id_ed25519|credentials|secrets?)(?:\s|$))'
       - '/etc/(passwd|shadow|hosts|sudoers)'
       - '/proc/self/(environ|cmdline|maps|root)'
       - '/proc/\d+/(environ|cmdline|maps)'
@@ -803,7 +807,10 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bcurl\b[^\n]*(-d\s|--data|--upload-file|-T\s|-F\s|--form)'
+      # Stop at shell separators so flags belonging to downstream commands
+      # (for example `tr -d` after a curl GET) cannot masquerade as curl flags.
+      # Short upload flags require a separate argument; long forms also allow =.
+      - '\bcurl\b[^\n|;&]*(?:\s(?:-d|-T|-F)\s+|\s(?:--data(?:-[a-z]+)?|--upload-file|--form)(?:\s+|=))'
       - '\bwget\b[^\n]*--post-(data|file)'
       - '\bnc\b[^\n]*<\s*/'
     action: warn
