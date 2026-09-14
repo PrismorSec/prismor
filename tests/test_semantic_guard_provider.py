@@ -101,7 +101,9 @@ def test_project_policy_provider_deep_merges_into_default_stanza(tmp_path):
     )
     cfg = PolicyEngine(workspace=tmp_path).semantic_guard_config
     assert cfg["provider"] == "codex"
-    assert cfg["enabled"] is True and "low_threshold" in cfg  # defaults survived
+    # defaults survived the merge (low_threshold is deliberately unset in the
+    # shipped stanza so the guard can pick from the judge's cost)
+    assert cfg["enabled"] is True and "high_threshold" in cfg
 
 
 def test_setup_writes_judge_under_existing_settings(tmp_path):

@@ -173,16 +173,19 @@ of them whichever judge was configured. Scoring every text, gpt-5.6-luna blocked
 83/83 with 1 false block and gpt-4o-mini 80/83 with 6. On one real machine only 1.6%
 of ingested texts landed in the default band.
 
-With a fast judge (`api` or `prismor`), send every ingested text:
+With a fast judge (`api` or `prismor`) this is now the default: every ingested text
+is judged, because a verdict costs about a second. A CLI judge keeps the narrow band
+instead, since it spawns a process per call (7-33s measured) and no tool call should
+wait that long. Pin either behaviour explicitly:
 
 ```yaml
 settings:
   semantic_guard:
-    provider: prismor      # or api
-    low_threshold: 0       # every ingested text goes to the judge
+    provider: prismor
+    low_threshold: 0.30    # opt back into the band (or 0 to force judging everything)
 ```
 
-Not with a CLI judge: that is a process spawn on every tool result.
+A host with no judge configured is unaffected either way: it decides on heuristics.
 
 ### Step 3 — Verify it is active
 
@@ -233,8 +236,11 @@ settings:
                             # "" → $PRISMOR_SEMANTIC_MODEL, else picked from whichever
                             # provider key is set (ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY)
 
-    low_threshold: 0.30     # heuristic score below this → allow without LLM call
-                            # (0 → every ingested text is judged; fast judges only)
+    low_threshold:          # heuristic score below this → allow without asking the
+                            # judge. Unset (the default) means the layer picks from
+                            # what the judge costs: 0 for api/prismor (judge every
+                            # ingested text), 0.30 for claude/codex (a process spawn
+                            # per call). Set a number to pin one.
     high_threshold: 0.75    # heuristic score at or above this → block without LLM call
     warn_threshold: 0.45    # final score ≥ this emits a warn finding
     block_threshold: 0.75   # final score ≥ this emits a block finding

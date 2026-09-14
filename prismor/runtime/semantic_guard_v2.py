@@ -596,7 +596,7 @@ class SemanticGuardV2:
         model: str = "",
         allow_cli: bool = True,
         provider: str = "",
-        low_threshold: float = LOW_THRESH,
+        low_threshold: Optional[float] = None,
         high_threshold: float = HIGH_THRESH,
     ) -> None:
         from prismor.runtime.semantic_guard import _LLM_FN, default_model
@@ -604,6 +604,15 @@ class SemanticGuardV2:
         # Most paraphrased, encoded or foreign-language injections score 0 on the
         # regexes, so a fast judge (api, prismor) can take every ingested text
         # with low_threshold 0.
+        # Unset means "decide from what the judge costs". A paraphrased, encoded or
+        # translated injection scores 0 on the regexes, so the band that protects a
+        # slow judge is also what hides those attacks: on a 157-text set the gated
+        # layer caught 34% of injections and judging every text caught 96-100%.
+        # A fast judge (about a second) can afford that on the hook path; a CLI
+        # judge spawns a process and costs 7-33s per call, which no tool call
+        # should wait for, so it keeps the narrow band. An explicit value wins.
+        if low_threshold is None:
+            low_threshold = 0.0 if provider in ("api", "prismor") else LOW_THRESH
         self._low, self._high = low_threshold, high_threshold
         # Every window of a text travels in one call now (see _batch_analyze), so a
         # CLI judge no longer pays per window and gets the same budget as the rest.

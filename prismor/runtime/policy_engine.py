@@ -2229,7 +2229,10 @@ class PolicyEngine:
                     provider=str(cfg.get("provider") or "").lower(),
                     # Documented and editable in the console for a long time,
                     # but never read: the band was always 0.30-0.75.
-                    low_threshold=float(cfg.get("low_threshold", 0.30)),
+                    # Unset: the guard picks from the judge's cost (0 for a fast
+                    # judge, the narrow band for a CLI one).
+                    low_threshold=(float(cfg["low_threshold"])
+                                   if cfg.get("low_threshold") is not None else None),
                     high_threshold=float(cfg.get("high_threshold", 1.0)),
                 )
             else:

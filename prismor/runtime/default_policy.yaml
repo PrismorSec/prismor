@@ -310,9 +310,12 @@ settings:
                              # gemini/gemini-2.0-flash. "" -> $PRISMOR_SEMANTIC_MODEL,
                              # else picked from whichever provider key is set.
                              # Keep it small: this runs per uncertain event.
-    low_threshold: 0.30      # heuristic < this  -> allow without LLM. 0 sends every
-                             # ingested text to the judge: fast judges only (api,
-                             # prismor); a CLI judge costs seconds per tool call
+    # low_threshold:         # heuristic < this -> allow without asking the judge.
+                             # Left unset on purpose: an api/prismor judge answers in
+                             # about a second and judges EVERY ingested text (0), a
+                             # claude/codex judge spawns a process (7-33s) and keeps
+                             # the 0.30 band. Set a number here to pin either one.
+                             # Hosts with no judge are unaffected.
     high_threshold: 1.0      # heuristic >= this -> decide without asking the judge.
                              # 1.0 = always ask when a judge is configured; set 0.75
                              # to restore the old skip. Hosts with no judge are
