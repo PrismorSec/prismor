@@ -424,6 +424,43 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     # ── enroll / device identity ────────────────────────────────────────
+    # ── login (device-authorization sign-in for the Prismor API) ───────
+    if args.command == "login":
+        from prismor.runtime.enterprise import cli_login as _login
+        from prismor.runtime.enterprise import identity as _identity
+
+        base = getattr(args, "api_base", None)
+        existing = _identity.load_identity()
+        if existing and not getattr(args, "force", False):
+            q = _login.quota(base=base)
+            print()
+            print("  This machine is already connected.")
+            print(f"    Organization  {existing.get('org_name') or existing.get('org_id') or 'unknown'}")
+            if q:
+                _limit = q.get("limit")
+                _left = "unlimited" if _limit is None else f"{q.get('remaining', 0):,} of {_limit:,} left"
+                print(f"    Prismor API   {_left} this month")
+            print()
+            print("  Connect it to a different account with:  prismor login --force")
+            print()
+            return 0
+
+        ok = _login.run_interactive(
+            base=base,
+            label=getattr(args, "label", None),
+            set_judge_for=workspace if getattr(args, "set_judge", False) else None,
+            open_browser=not getattr(args, "no_browser", False),
+        )
+        if not ok:
+            raise SystemExit(1)
+        if not getattr(args, "set_judge", False):
+            print("  Use it as this workspace's judge:")
+            print("    prismor login --set-judge      (or pick \"Prismor API\" in `prismor setup`)")
+            print()
+        print("  Check what is left any time:  prismor status")
+        print()
+        return 0
+
     if args.command == "enroll":
         from prismor.runtime.enterprise import identity as _identity
         token = getattr(args, "token", None) or getattr(args, "token_flag", None)
@@ -3668,6 +3705,20 @@ def build_parser() -> argparse.ArgumentParser:
     tags_test_p.add_argument("--workspace", help="Workspace path")
 
     # ── enroll / device identity (enterprise control plane) ─────────────
+    # ── login ──────────────────────────────────────────────────────────
+    login_parser = subparsers.add_parser(
+        "login",
+        help="Sign in and connect this machine to the Prismor API (1,000 free verdicts/month)",
+    )
+    login_parser.add_argument("--no-browser", action="store_true",
+                              help="Print the approval link instead of opening a browser")
+    login_parser.add_argument("--label", help="Name for this machine (default: hostname)")
+    login_parser.add_argument("--api-base", help="Control-plane base URL (default: $PRISMOR_API_BASE)")
+    login_parser.add_argument("--force", action="store_true",
+                              help="Replace the identity already stored on this machine")
+    login_parser.add_argument("--set-judge", action="store_true",
+                              help="Also set semantic_guard.provider: prismor for this workspace")
+
     enroll_parser = subparsers.add_parser(
         "enroll",
         help="Enroll this machine against a Prismor org for central observability + policy",

@@ -157,6 +157,19 @@ go to the control plane under the device key; the text is not stored. Verdicts c
 against the org's monthly judge quota and are cached like CLI verdicts. Not enrolled,
 offline or over quota, the layer keeps the heuristic verdict and says why on stderr.
 
+Sign in once per machine — no key to copy, no dashboard visit to find a token:
+
+```bash
+prismor login                 # shows a code, opens the browser, waits
+prismor login --set-judge     # ...and points this workspace at the Prismor API
+```
+
+`prismor login` asks the control plane for a short code, opens your browser to
+approve it, and stores the device key it is handed back. New accounts get a
+personal organization and 1,000 verdicts a month on the free plan; `prismor
+status` shows what is left. `prismor setup` offers the same thing on its **LLM
+judge** step and runs the sign-in for you.
+
 ```yaml
 settings:
   semantic_guard:

@@ -763,7 +763,7 @@ _JUDGE_OPTS = [
     ("claude",  "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s per escalation"),
     ("codex",   "Codex CLI",        "",                          "your ChatGPT login, no API key; ~8s per escalation"),
     ("api",     "API key",          "",                          "any litellm model via provider env key; ~1s"),
-    ("prismor", "Prismor hosted",   "",                          "enrolled device, no key or CLI; ~2s; judged text goes to Prismor"),
+    ("prismor", "Prismor API",     "",                          "1,000 free verdicts/month; no key or CLI; ~2s a verdict"),
 ]
 
 
@@ -790,7 +790,9 @@ def _judge_ready(provider: str) -> str:
         return keys[0] if keys else "no key in env"
     if provider == "prismor":
         from prismor.runtime.enterprise.identity import is_enrolled
-        return "enrolled" if is_enrolled() else "not enrolled"
+        # "sign in" is a to-do, not a blocker: picking it runs `prismor login`
+        # at the end of the install.
+        return "connected" if is_enrolled() else "sign in"
     return ""
 
 
@@ -836,7 +838,7 @@ def _step_judge(current: tuple = ("", ""), step: int = 4, total: int = 5):
             ready = _judge_ready(prov)
             tag = ""
             if ready:
-                ok = ready in ("found", "enrolled") or ready.endswith("_KEY")
+                ok = ready in ("found", "connected") or ready.endswith("_KEY")
                 tag = "  " + _w(f"[{ready}]", GRN if ok else YEL)
             lines.append(f"  {arrow}{dot}  {nm}{_w(desc[:max(tw - 46, 20)], DIM)}{tag}")
         lines.append("")
@@ -1363,8 +1365,20 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     if judge[0]:
         def _write_judge():
             _write_judge_setting(target, judge[0], judge[1])
-            return True, f"{judge[0]} ({judge[1] or 'CLI default'})"
+            label = "Prismor API" if judge[0] == "prismor" else f"{judge[0]} ({judge[1] or 'CLI default'})"
+            return True, label
         _spinner_run("Setting LLM judge", _write_judge)
+
+        # The Prismor API needs an account; everything else is already on the
+        # machine. Run the sign-in here, after the TUI has released the terminal,
+        # so the code and the browser link are readable.
+        if judge[0] == "prismor":
+            from prismor.runtime.enterprise.identity import is_enrolled
+            if not is_enrolled():
+                from prismor.runtime.enterprise import cli_login as _cli_login
+                if not _cli_login.run_interactive(label=None):
+                    print("  Sign in later with:  prismor login")
+                    print()
 
     # 3. Install hooks directly via prismor.runtime.hooks
     from prismor.runtime.hooks import install_hooks
