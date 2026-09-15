@@ -379,8 +379,11 @@ def _parse_requirements_txt(text: str) -> List[Dict[str, str]]:
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
-        # Handle name==version, name>=version, name~=version, bare name
-        match = re.match(r'^([A-Za-z0-9_.-]+)\s*([><=!~]+\s*[\d.]+)?', line)
+        # Handle name==version, name>=version, name~=version, bare name,
+        # optional PEP 508 extras (name[extra]==version) and PEP 440 tags such
+        # as rc1/post1 that are not purely digits and dots. Stops at an
+        # environment marker (";") or trailing comment ("#").
+        match = re.match(r'^([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*([><=!~][^\s;#]*)?', line)
         if match:
             name = match.group(1)
             version = (match.group(2) or "").strip()
@@ -402,8 +405,13 @@ def _parse_pyproject_toml(text: str) -> List[Dict[str, str]]:
             if stripped.startswith("]"):
                 in_deps = False
                 continue
-            # Extract package spec from quoted string
-            match = re.match(r'^["\']([A-Za-z0-9_.-]+)\s*([><=!~].*?)?["\']', stripped)
+            # Extract package spec from quoted string. The optional
+            # "[extra,extra]" group keeps PEP 508 extras from dropping the whole
+            # dependency (e.g. "requests[security]>=2.28").
+            match = re.match(
+                r'^["\']([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*([><=!~].*?)?["\']',
+                stripped,
+            )
             if match:
                 deps.append({
                     "name": match.group(1),
