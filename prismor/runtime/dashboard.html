@@ -11,11 +11,44 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <style>
+/* The Docs page is a frame, not a document: the search bar stays put and the
+   list and the reader scroll independently -- reading a long page must not
+   scroll the index of pages away. */
+body:has(#page-docs.page.active) .prismor-cta{display:none}
+#page-docs.page.active{display:flex;flex-direction:column;height:calc(100vh - var(--topbar-h));overflow:hidden}
+.docs-layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(240px,1fr) 2fr;gap:16px}
+.docs-layout>.card{min-height:0;display:flex;flex-direction:column;overflow:hidden;margin:0}
+#docsList{flex:1;min-height:0;overflow-y:auto;margin:0 -6px;padding:0 6px}
+.docs-search{display:flex;align-items:center;gap:10px;height:40px;padding:0 14px;margin-bottom:14px;
+  border:1px solid var(--gray-200);border-radius:10px;background:var(--surface)}
+.docs-search:focus-within{border-color:var(--accent)}
+.docs-search .icon{width:15px;height:15px;flex:none;color:var(--gray-500)}
+.docs-search input{flex:1;min-width:0;border:none;outline:none;background:none;
+  font-family:inherit;font-size:13px;color:var(--gray-900)}
+.docs-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.docs-count{font-size:11px;color:var(--gray-500);white-space:nowrap}
+.docs-clear{border:none;background:none;color:var(--gray-500);cursor:pointer;font-size:16px;line-height:1;padding:0 2px}
+.docs-clear:hover{color:var(--gray-900)}
 .doc-row{padding:9px 10px;border-radius:8px;cursor:pointer}
 .doc-row:hover{background:var(--gray-100)}
+.doc-row.sel{background:var(--gray-100);box-shadow:inset 2px 0 0 var(--accent)}
 .doc-row-title{font-size:13px;font-weight:600}
-.doc-row-name,.doc-row-hit{font:11px var(--font-mono);color:var(--gray-500);margin-top:2px;line-height:1.5}
-.doc-body{max-height:74vh;overflow:auto;font-size:13px;line-height:1.7}
+.doc-row-name{font:11px var(--font-mono);color:var(--gray-500);margin-top:2px}
+.doc-row-hit{font-size:11.5px;color:var(--gray-500);margin-top:3px;line-height:1.55;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.doc-row-hit mark{background:rgba(242,84,45,.18);color:inherit;border-radius:3px;padding:0 1px}
+/* Fills the card's width: the reader's gutters are the card's own padding on
+   both sides, plus a little room on the right for its scrollbar. */
+.doc-body{flex:1;min-height:0;overflow-y:auto;font-size:13px;line-height:1.7;padding-right:10px}
+/* The dashboard's reset zeroes paragraph margins and list padding, which turns
+   a rendered doc into one unbroken block with invisible bullets. */
+.doc-body p{margin:10px 0}
+.doc-body ul,.doc-body ol{margin:10px 0;padding-left:22px}
+.doc-body li{margin:4px 0}
+.doc-body li>p{margin:0}
+.doc-body blockquote{margin:12px 0;padding:2px 0 2px 12px;border-left:2px solid var(--gray-200);color:var(--gray-500)}
+.doc-body hr{border:none;border-top:1px solid var(--gray-200);margin:20px 0}
+.doc-body>:first-child{margin-top:0}
 .doc-body h1{font-size:20px;margin:0 0 12px}
 .doc-body h2{font-size:16px;margin:22px 0 8px}
 .doc-body h3{font-size:14px;margin:18px 0 6px}
@@ -1762,6 +1795,7 @@
   <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
 </svg>
@@ -1816,10 +1850,14 @@
   <div class="section"><h2>Docs</h2><div class="rule"></div>
     <span class="hint">The Prismor docs shipped with this install — browse or search without leaving the dashboard.</span>
   </div>
-  <div class="bar" style="margin-bottom:14px">
-    <input id="docsSearch" class="fsel" style="flex:1" placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
+  <div class="docs-search">
+    <svg class="icon"><use href="#i-search"/></svg>
+    <input id="docsSearch" type="search" spellcheck="false" autocomplete="off"
+           placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
+    <span id="docsCount" class="docs-count"></span>
+    <button id="docsClear" class="docs-clear" title="Clear" hidden onclick="docsClearSearch()">×</button>
   </div>
-  <div class="grid grid-1-2">
+  <div class="docs-layout">
     <div class="card">
       <div class="card-title">Pages</div>
       <div id="docsList"><div class="empty">Loading docs…</div></div>
@@ -2770,6 +2808,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 
 // ── Docs: browse and search the Markdown docs shipped with this install ───
 let _docsCache = null;
+let _docOpen = null;
 async function loadDocs() {
   const el = document.getElementById('docsList');
   try {
@@ -2783,16 +2822,55 @@ async function loadDocs() {
       '<a href="https://prismor.dev/docs" target="_blank" rel="noopener">prismor.dev/docs</a>.</div>';
   }
 }
-function renderDocsList(items) {
+// A raw Markdown line is not a search result: "### 1. Permission scope
+// (`owasp-llm-top10:LLM06`)" and a table row of pipes read as noise. Strip the
+// syntax, keep the sentence, and mark the words that matched.
+function docSnippet(line) {
+  return String(line || '')
+    .replace(/^[\s>#*+-]+/, '')          // heading / quote / bullet markers
+    .replace(/^\|\s*|\s*\|$/g, '')       // table row edges
+    .replace(/\s*\|\s*/g, ' · ')         // table cell separators
+    .replace(/`+/g, '')                  // code spans
+    .replace(/\*\*|__/g, '')             // bold
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')  // links -> their text
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function docHighlight(text, terms) {
+  let html = safeAttr(text);
+  for (const t of terms) {
+    if (t.length < 2) continue;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    html = html.replace(re, '<mark>$1</mark>');
+  }
+  return html;
+}
+function renderDocsList(items, query) {
   const el = document.getElementById('docsList');
-  if (!items.length) { el.innerHTML = '<div class="empty">No matches.</div>'; return; }
+  const terms = (query || '').toLowerCase().split(/\s+/).filter(Boolean).map(t => safeAttr(t));
+  const count = document.getElementById('docsCount');
+  if (count) count.textContent = query
+    ? items.length + (items.length === 1 ? ' page' : ' pages')
+    : '';
+  document.getElementById('docsClear').hidden = !query;
+  if (!items.length) {
+    el.innerHTML = '<div class="empty">No page mentions ' + safe(query || '') + '.</div>';
+    return;
+  }
   el.innerHTML = items.map(d =>
-    '<div class="doc-row" onclick="openDoc(\'' + safeJsArg(d.name) + '\')">' +
+    '<div class="doc-row' + (d.name === _docOpen ? ' sel' : '') + '" data-name="' + safeAttr(d.name) + '"' +
+      ' onclick="openDoc(\'' + safeJsArg(d.name) + '\')">' +
       '<div class="doc-row-title">' + safe(d.title) + '</div>' +
       (d.hits && d.hits.length
-        ? '<div class="doc-row-hit">' + d.hits.map(h => safe(h.snippet)).join('<br>') + '</div>'
+        ? d.hits.map(h => '<div class="doc-row-hit">' + docHighlight(docSnippet(h.snippet), terms) + '</div>').join('')
         : '<div class="doc-row-name">' + safe(d.name) + '</div>') +
     '</div>').join('');
+}
+function docsClearSearch() {
+  const inp = document.getElementById('docsSearch');
+  inp.value = '';
+  renderDocsList(_docsCache || []);
+  inp.focus();
 }
 async function openDoc(name) {
   const body = document.getElementById('docsBody');
@@ -2801,6 +2879,10 @@ async function openDoc(name) {
   body.innerHTML = '<div class="empty">Loading…</div>';
   try {
     const doc = await apiFetch('/api/docs?name=' + encodeURIComponent(name));
+    _docOpen = name;
+    document.querySelectorAll('#docsList .doc-row').forEach(r =>
+      r.classList.toggle('sel', r.dataset.name === name));
+    document.getElementById('docsBody').scrollTop = 0;
     body.innerHTML = window.marked
       ? window.marked.parse(doc.markdown)
       : '<pre style="white-space:pre-wrap">' + safe(doc.markdown) + '</pre>';
@@ -2816,7 +2898,7 @@ document.getElementById('docsSearch')?.addEventListener('input', (ev) => {
     if (!q) { renderDocsList(_docsCache || []); return; }
     try {
       const data = await apiFetch('/api/docs?q=' + encodeURIComponent(q));
-      renderDocsList(data.results || []);
+      renderDocsList(data.results || [], q);
     } catch (e) { /* keep the current list */ }
   }, 200);
 });
