@@ -1,5 +1,17 @@
 ## [Unreleased]
 
+## [1.52.0] — 2026-09-15
+
+### Added
+- **What a session cost, priced from the agent's own transcript.** Every assistant turn's usage — input, output, cache reads, 5m/1h cache writes — is summed from the transcript the agent already writes, deduped on message id and priced per model from LiteLLM's public price file (refreshed at most every 12 hours, with a static snapshot offline and a `pricing.json` override). Unknown models are reported as unknown rather than as $0. `prismor sessions`, `prismor session <id>` and `prismor tokens --session <id>` show it, and an enrolled machine spools one `llm_usage` record per new turn to the control plane. See #418.
+- **A Docs tab in the local dashboard.** The Markdown docs that ship with your install, browsable and searchable without leaving the dashboard — the list and the reader scroll independently, search matches every word of the query against a line and marks what matched. See #420.
+- **`prismor status` says what is left of this month's Prismor API judging.** 1.51.0's docs claimed it already did; `quota()` had exactly one caller, so the sentence shipped as an overclaim. The line appears only when the workspace actually uses the hosted judge, so nobody else pays a network call for a line that does not apply, and it renders offline or signed out with the fix. See #410.
+
+### Fixed
+- **The dashboard's MCP Playground is gone, and the MCP page now says how to configure one.** Opening it toasted `Could not load MCP playground: not found` on every install: the page called an `/api/mcp-playground` route that was never implemented, and what it offered was a second, fake copy of the MCP Servers tab. The MCP Servers page now carries the setup steps in its empty state — `prismor mcp-gateway install`, `prismor mirror on`, the configs Prismor will not guess at — and links into the gateway doc. See #420.
+- **The wheel ships all 53 docs, not 25.** The bundled set was a hand-maintained list in `pyproject.toml`, so more than half the docs simply did not exist for a pip install — `mcp-gateway.md` among them, which the MCP Servers setup card links to.
+- The dashboard's session page rendered underneath every other tab (`#page-session.page` set `display:flex`, which outranks `.page{display:none}`); it stayed invisible only because the other pages were tall enough to push it below the fold. See #420.
+
 ## [1.51.0] — 2026-09-14
 
 ### Added
