@@ -446,6 +446,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/tokens":
             try:
+                session_id = (qs.get("session") or [""])[0]
+                if session_id:
+                    from prismor.runtime.token_usage import session_cost
+                    data = {"sessionId": session_id, **session_cost(Path.cwd(), session_id)}
+                    self._send_json(data)
+                    return
                 days = max(1, qint("days", 1))
                 data = get_token_stats(hours=days * 24)
             except Exception as exc:

@@ -155,6 +155,21 @@ Every shell command, file read/write, web fetch, and user prompt is captured, so
 `prismor session <id>` is your forensic timeline for a specific incident — what
 the agent did, in order, and which findings fired.
 
+### Cost per session
+
+Each row in `prismor sessions` carries an estimated spend (`cost=$5.38 est`),
+and `prismor tokens --session <id>` breaks it down by model, with input,
+output, and cache read/write tokens (1-hour cache writes are priced
+separately). Usage is read from the agent's own transcript — Claude Code's
+`~/.claude/projects/*/<session>.jsonl` and Codex's `~/.codex/sessions`
+rollouts — and priced from LiteLLM's public price list, refreshed at most once
+every 12 hours into `~/.prismor/pricing-cache.json` (a built-in snapshot covers
+offline machines; `PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a
+`~/.prismor/pricing.json` (`{"model": {"input", "output", "cache_read",
+"cache_write"}}` in USD per 1M tokens) to add or override a rate. `cost=?`
+means no transcript is on this machine for that agent; `—` means the model has
+no known price.
+
 ---
 
 ## Offline analysis: `analyze` and `ingest`

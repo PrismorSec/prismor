@@ -1336,6 +1336,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 full = get_session(ws, s["sessionId"])
                 if full:
                     s["findings"] = full.get("findings", [])
+        from prismor.runtime.token_usage import sessions_cost
+        costs = sessions_cost(workspace, [s["sessionId"] for s in sessions])
+        for s in sessions:
+            s["cost"] = costs[s["sessionId"]]
         emit({"sessions": sessions}, as_json=args.json, formatter=format_sessions)
         return
 
@@ -1347,11 +1351,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         session = get_session(workspace, session_id)
         if session is None:
             raise SystemExit(f"Session not found: {session_id}")
+        from prismor.runtime.token_usage import session_cost
+        session["cost"] = session_cost(workspace, session_id)
         emit(session, as_json=args.json, formatter=format_session)
         return
 
     # ── tokens ─────────────────────────────────────────────────────────
     if args.command == "tokens":
+        if getattr(args, "session", None):
+            from prismor.runtime.token_usage import session_cost
+            payload = {"sessionId": args.session, **session_cost(workspace, args.session)}
+            emit(payload, as_json=args.json, formatter=format_session_tokens)
+            return
         show_all = getattr(args, "all", False)
         payload = get_token_stats(None if show_all else workspace, hours=args.hours)
         payload.update(hours=args.hours, scope="all workspaces" if show_all else "this workspace")
@@ -3402,6 +3413,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate across all registered workspaces instead of just this one",
     )
     tokens_parser.add_argument("--hours", type=int, default=24, metavar="N", help="Look-back window in hours (default: 24)")
+    tokens_parser.add_argument("--session", metavar="ID", help="Per-session usage and estimated cost (Claude Code / Codex)")
     tokens_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── install-hooks ──────────────────────────────────────────────────
@@ -6027,6 +6039,7 @@ def format_sessions(payload: Dict[str, Any]) -> str:
             f"  {_color(f'risk={risk}/100', risk_color)}"
             f"  findings={session['findingsCount']}"
             f"  agent={session['agent']}"
+            + (f"  cost={_fmt_cost(session['cost'])}" if session.get("cost") else "")
             + (f"  {_color(str(session['_workspace']).replace(str(Path.home()), '~'), _DIM)}" if session.get("_workspace") else "")
         )
         # Show inline findings if they were enriched (--findings-only)
@@ -6088,10 +6101,10 @@ def format_session(session: Dict[str, Any]) -> str:
         f"Updated: {session['updatedAt']}",
         f"Risk score: {session['riskScore']}",
         f"Findings: {session['findingsCount']}",
-        "",
-        "Findings",
-        "--------",
     ]
+    if session.get("cost"):
+        lines.append(f"Cost: {_fmt_cost(session['cost'])}")
+    lines.extend(["", "Findings", "--------"])
     for finding in session["findings"]:
         lines.append(f"- [{finding['severity']}] {finding['title']} ({finding['category']})")
         if finding.get("evidence"):
@@ -6100,6 +6113,37 @@ def format_session(session: Dict[str, Any]) -> str:
     for event in session["events"][-10:]:
         parts = [event.get("ts"), event.get("type"), event.get("path"), event.get("command"), event.get("url")]
         lines.append(f"- {' | '.join(part for part in parts if part)}")
+    return "\n".join(lines)
+
+
+def _fmt_cost(cost: Dict[str, Any]) -> str:
+    from prismor.runtime.pricing import fmt_usd
+    if not cost.get("known"):
+        return "?"
+    if not cost.get("priced"):
+        return f"— (unpriced: {', '.join(cost.get('unpriced') or [])})"
+    tail = f" (+unpriced: {', '.join(cost['unpriced'])})" if cost.get("unpriced") else ""
+    return f"{fmt_usd(cost['usd'])} est{tail}"
+
+
+def format_session_tokens(payload: Dict[str, Any]) -> str:
+    from prismor.runtime.pricing import cost_usd, fmt_usd
+    lines = [f"Session {payload['sessionId']}", "=" * 40]
+    if not payload.get("known"):
+        lines.append("No token usage recorded and no local transcript for this session.")
+        return "\n".join(lines)
+    t = payload["tokens"]
+    lines.extend([
+        f"Cost:           {_fmt_cost(payload):>12}",
+        f"Turns:          {payload['turns']:>12,}",
+        f"Input tokens:   {t['input']:>12,}",
+        f"Output tokens:  {t['output']:>12,}",
+        f"Cache read:     {t['cache_read']:>12,}",
+        f"Cache write:    {t['cache_5m'] + t['cache_1h']:>12,}" + (f"  ({t['cache_1h']:,} at 1h TTL)" if t["cache_1h"] else ""),
+        "", "By model", "--------",
+    ])
+    for model, mt in payload["by_model"].items():
+        lines.append(f"  {model:<32} {fmt_usd(cost_usd(mt, model)):>10}   in {mt['input']:,}  out {mt['output']:,}")
     return "\n".join(lines)
 
 

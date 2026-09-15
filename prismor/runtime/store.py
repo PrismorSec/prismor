@@ -539,6 +539,7 @@ def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]
 # SQLite can't ADD COLUMN NOT NULL without a default, and fresh DBs already get
 # the constraint via CREATE TABLE.
 _EXPECTED_COLUMNS: Dict[str, List[tuple]] = {
+    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0")],
     "sessions": [
         ("session_id", "TEXT"), ("agent", "TEXT"), ("agent_name", "TEXT"),
         ("source", "TEXT"), ("workspace_path", "TEXT"), ("repo_url", "TEXT"),
@@ -686,7 +687,8 @@ def initialize_database(workspace: Path) -> Path:
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 cache_read_tokens INTEGER,
-                cache_creation_tokens INTEGER
+                cache_creation_tokens INTEGER,
+                cache_1h_tokens INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS tool_output_size (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2465,16 +2467,18 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
     }
 
 
-def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> None:
+def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> int:
+    """Rows written (0 on any failure, or when INSERT OR IGNORE hit a duplicate)."""
     try:
         connection = sqlite3.connect(initialize_database(workspace))
         try:
-            connection.execute(sql, params)
+            written = connection.execute(sql, params).rowcount
             connection.commit()
+            return max(0, written)
         finally:
             connection.close()
     except Exception:
-        pass
+        return 0
 
 
 def record_token_usage(
@@ -2488,28 +2492,29 @@ def record_token_usage(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
-) -> None:
+    cache_1h_tokens: int = 0,
+) -> bool:
     """Record one assistant turn's real Anthropic token usage. Fail-open.
 
     Deduped on ``message_id`` — a single assistant turn can trigger several
     PostToolUse hooks (parallel tool calls), which would otherwise count the
-    same turn's usage multiple times.
+    same turn's usage multiple times. Returns True only for a new row.
     """
     if not message_id:
-        return
-    _insert_fail_open(
+        return False
+    return bool(_insert_fail_open(
         workspace,
         """
         INSERT OR IGNORE INTO token_usage (
             message_id, session_id, workspace_path, ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             message_id, session_id, str(workspace), ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
         ),
-    )
+    ))
 
 
 def record_tool_output_size(
@@ -2536,6 +2541,42 @@ def record_tool_output_size(
         """,
         (session_id, str(workspace), ts, agent, tool_name, label, size_chars, size_chars // 4),
     )
+
+
+def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Per-session, per-model token sums: {session_id: {"by_model": {...}, "turns": n}}.
+
+    Sessions with no rows are absent from the result (caller decides
+    "unknown" vs "$0"). Reads the shared home DB, which every workspace
+    writes to.
+    """
+    if not session_ids:
+        return {}
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        marks = ",".join("?" * len(session_ids))
+        for r in conn.execute(
+            "SELECT session_id, model, COUNT(*) as turns,"
+            "       COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out,"
+            "       COALESCE(SUM(cache_read_tokens),0) as cread,"
+            "       COALESCE(SUM(cache_creation_tokens),0) as ccreate,"
+            "       COALESCE(SUM(cache_1h_tokens),0) as c1h"
+            f"  FROM token_usage WHERE session_id IN ({marks}) GROUP BY session_id, model"
+            "  HAVING inp + out + cread + ccreate > 0",  # older rows from zero-usage placeholder turns
+            list(session_ids),
+        ):
+            entry = out.setdefault(r["session_id"], {"by_model": {}, "turns": 0})
+            entry["turns"] += r["turns"]
+            entry["by_model"][r["model"] or "unknown"] = {
+                "input": r["inp"], "output": r["out"], "cache_read": r["cread"],
+                "cache_5m": r["ccreate"] - r["c1h"], "cache_1h": r["c1h"],
+            }
+    finally:
+        conn.close()
+    return out
 
 
 def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: int = 8) -> Dict[str, Any]:
