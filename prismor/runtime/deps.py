@@ -381,9 +381,10 @@ def _parse_requirements_txt(text: str) -> List[Dict[str, str]]:
             continue
         # Handle name==version, name>=version, name~=version, bare name,
         # optional PEP 508 extras (name[extra]==version) and PEP 440 tags such
-        # as rc1/post1 that are not purely digits and dots. Stops at an
-        # environment marker (";") or trailing comment ("#").
-        match = re.match(r'^([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*([><=!~][^\s;#]*)?', line)
+        # as rc1/post1 that are not purely digits and dots. The \s* after the
+        # operator keeps the spaced form pip also accepts ("flask == 2.0").
+        # Stops at an environment marker (";") or trailing comment ("#").
+        match = re.match(r'^([A-Za-z0-9_.-]+)\s*(?:\[[^\]]*\])?\s*([><=!~]+\s*[^\s;#]*)?', line)
         if match:
             name = match.group(1)
             version = (match.group(2) or "").strip()

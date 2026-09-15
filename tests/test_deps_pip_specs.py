@@ -95,3 +95,23 @@ def test_requirements_comments_and_flags_are_still_skipped(tmp_path: Path) -> No
     )
     found = _by_name(parse_dependencies(manifest, "pip"))
     assert found == {"flask": "==3.0.0"}
+
+
+def test_requirements_spaced_operator_keeps_its_version(tmp_path: Path) -> None:
+    """pip accepts whitespace around the operator; the version must survive it.
+
+    Without the ``\\s*`` after the operator the capture stops at the space and
+    the version becomes a bare ``"=="``, which drops an exact IOC match down to
+    a name-only verdict.
+    """
+    manifest = _write(
+        tmp_path,
+        "requirements.txt",
+        "flask == 2.0\nrequests [security] >= 2.28\nnumpy== 1.26.0\n",
+    )
+    found = _by_name(parse_dependencies(manifest, "pip"))
+    assert found == {
+        "flask": "== 2.0",
+        "requests": ">= 2.28",
+        "numpy": "== 1.26.0",
+    }
