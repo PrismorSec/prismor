@@ -9,6 +9,23 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<style>
+.doc-row{padding:9px 10px;border-radius:8px;cursor:pointer}
+.doc-row:hover{background:var(--gray-100)}
+.doc-row-title{font-size:13px;font-weight:600}
+.doc-row-name,.doc-row-hit{font:11px var(--font-mono);color:var(--gray-500);margin-top:2px;line-height:1.5}
+.doc-body{max-height:74vh;overflow:auto;font-size:13px;line-height:1.7}
+.doc-body h1{font-size:20px;margin:0 0 12px}
+.doc-body h2{font-size:16px;margin:22px 0 8px}
+.doc-body h3{font-size:14px;margin:18px 0 6px}
+.doc-body pre,.doc-cmd{background:var(--gray-100);padding:10px 12px;border-radius:8px;overflow:auto;font:12px var(--font-mono);white-space:pre}
+.doc-body code{font:12px var(--font-mono)}
+.doc-body table{border-collapse:collapse;font-size:12px}
+.doc-body td,.doc-body th{border:1px solid var(--gray-200);padding:5px 8px;text-align:left}
+.doc-body img{max-width:100%}
+.mcp-hint a,.doc-body a{color:var(--accent);text-decoration:underline}
+</style>
 <script>
   (function () {
     try {
@@ -1530,7 +1547,7 @@
      and the detail panel stay put and only the trail scrolls. A 600-event
      session used to push its own controls -- and the panel showing the row you
      just clicked -- off the top of the screen. */
-  #page-session.page {
+  #page-session.page.active {
     display: flex; flex-direction: column; gap: 0;
     height: calc(100vh - var(--topbar-h)); overflow: hidden;
   }
@@ -1745,6 +1762,7 @@
   <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
 </svg>
 
@@ -1762,7 +1780,7 @@
   <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span></button>
   <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
-  <button class="tab-btn" data-tab="mcp" data-label="MCP Playground"><svg class="icon"><use href="#i-database"/></svg><span>MCP Playground</span></button>
+  <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span></button>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
 </div>
@@ -1794,24 +1812,20 @@
   <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
 </div>
 
-<div id="page-mcp" class="page">
-  <div class="section"><h2>MCP Playground</h2><div class="rule"></div>
-    <span class="hint">Claude Code tool access — every call is evaluated by Prismor before delivery.</span>
+<div id="page-docs" class="page">
+  <div class="section"><h2>Docs</h2><div class="rule"></div>
+    <span class="hint">The Prismor docs shipped with this install — browse or search without leaving the dashboard.</span>
+  </div>
+  <div class="bar" style="margin-bottom:14px">
+    <input id="docsSearch" class="fsel" style="flex:1" placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
   </div>
   <div class="grid grid-1-2">
     <div class="card">
-      <div class="card-title">Demo MCP server</div>
-      <div id="mcpServerMeta" style="font:12px var(--font-mono);color:var(--gray-600);margin-bottom:14px">Loading…</div>
-      <div class="bar"><input id="mcpNewTool" class="fsel" style="flex:1" placeholder="e.g. lookup_customer" />
-        <button class="btn-primary" onclick="mcpAddTool()">Add tool</button></div>
-      <div id="mcpTools"></div>
-      <button class="btn-ghost" style="margin-top:14px" onclick="mcpReset()">Reset playground</button>
+      <div class="card-title">Pages</div>
+      <div id="docsList"><div class="empty">Loading docs…</div></div>
     </div>
     <div class="card">
-      <div class="card-title">Delivery log</div>
-      <p style="font-size:11px;color:var(--gray-500);line-height:1.55;margin-bottom:12px">Enabled/denied writes the project-level policy for the <code>claude</code> agent and syncs the tool into active session scopes. A denied call is recorded by Prismor but never reaches the local MCP server.</p>
-      <div id="mcpResult" style="font-size:12px;color:var(--gray-500);margin-bottom:12px">Choose a tool to invoke it.</div>
-      <div id="mcpDelivered" style="font:12px var(--font-mono);color:var(--gray-600)"></div>
+      <div id="docsBody" class="doc-body"><div class="empty">Pick a page to read it here.</div></div>
     </div>
   </div>
 </div>
@@ -2750,26 +2764,63 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadAgents();           // silent background refresh
     }
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
-    if (btn.dataset.tab === 'mcp') loadMcpPlayground();
+    if (btn.dataset.tab === 'docs') loadDocs();
   });
 });
 
-let _mcpPlayground = null;
-async function loadMcpPlayground() {
-  try { _mcpPlayground = await apiFetch('/api/mcp-playground'); renderMcpPlayground(_mcpPlayground); }
-  catch (e) { toast('Could not load MCP playground: ' + e.message, true); }
+// ── Docs: browse and search the Markdown docs shipped with this install ───
+let _docsCache = null;
+async function loadDocs() {
+  const el = document.getElementById('docsList');
+  try {
+    const data = await apiFetch('/api/docs');
+    _docsCache = data.docs || [];
+    // Typed into the box while the list was still loading — that search wins.
+    if (!document.getElementById('docsSearch').value.trim())
+      renderDocsList(_docsCache.map(d => ({name: d.name, title: d.title})));
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Docs are not bundled with this install. Read them at ' +
+      '<a href="https://prismor.dev/docs" target="_blank" rel="noopener">prismor.dev/docs</a>.</div>';
+  }
 }
-function renderMcpPlayground(data) {
-  document.getElementById('mcpServerMeta').textContent = data.server + ' · session ' + data.sessionId;
-  const tools = data.tools || [];
-  document.getElementById('mcpTools').innerHTML = tools.map(t =>
-    '<div class="drawer-rule-row" style="padding:8px 0;border-bottom:1px solid var(--gray-100)">' +
-    '<code>' + safe(t.name) + '</code><span style="margin-left:auto;display:flex;gap:8px;align-items:center">' +
-    '<label style="font-size:11px"><input type="checkbox" ' + (t.enabled ? 'checked' : '') + ' onchange="mcpSetEnabled(\'' + safeJsArg(t.name) + '\', this.checked)"> enabled</label>' +
-    '<button class="btn-ghost" style="padding:4px 8px" onclick="mcpCall(\'' + safeJsArg(t.name) + '\')">Invoke</button></span></div>').join('');
-  const calls = data.delivered || [];
-  document.getElementById('mcpDelivered').textContent = calls.length ? 'Delivered: ' + calls.join(', ') : 'No calls delivered yet.';
+function renderDocsList(items) {
+  const el = document.getElementById('docsList');
+  if (!items.length) { el.innerHTML = '<div class="empty">No matches.</div>'; return; }
+  el.innerHTML = items.map(d =>
+    '<div class="doc-row" onclick="openDoc(\'' + safeJsArg(d.name) + '\')">' +
+      '<div class="doc-row-title">' + safe(d.title) + '</div>' +
+      (d.hits && d.hits.length
+        ? '<div class="doc-row-hit">' + d.hits.map(h => safe(h.snippet)).join('<br>') + '</div>'
+        : '<div class="doc-row-name">' + safe(d.name) + '</div>') +
+    '</div>').join('');
 }
+async function openDoc(name) {
+  const body = document.getElementById('docsBody');
+  // Called from the MCP Servers page too — make sure the reader is visible.
+  document.querySelector('.tab-btn[data-tab="docs"]')?.click();
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const doc = await apiFetch('/api/docs?name=' + encodeURIComponent(name));
+    body.innerHTML = window.marked
+      ? window.marked.parse(doc.markdown)
+      : '<pre style="white-space:pre-wrap">' + safe(doc.markdown) + '</pre>';
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Could not open ' + safe(name) + ': ' + safe(e.message) + '</div>';
+  }
+}
+let _docsSearchTimer;
+document.getElementById('docsSearch')?.addEventListener('input', (ev) => {
+  const q = ev.target.value.trim();
+  clearTimeout(_docsSearchTimer);
+  _docsSearchTimer = setTimeout(async () => {
+    if (!q) { renderDocsList(_docsCache || []); return; }
+    try {
+      const data = await apiFetch('/api/docs?q=' + encodeURIComponent(q));
+      renderDocsList(data.results || []);
+    } catch (e) { /* keep the current list */ }
+  }, 200);
+});
+
 // ── MCP Servers: one registry of every server Prismor fronts ──────────────
 async function loadMcpServers() {
   const el = document.getElementById('mcpServersList');
@@ -2786,7 +2837,7 @@ let _mcpServersCache = [];
 function renderMcpServers() {
   const el = document.getElementById('mcpServersList');
   const servers = _mcpServersCache;
-  if (!servers.length) { el.innerHTML = '<div class="empty">No MCP servers configured. Point your agent\'s .mcp.json at <code>prismor mcp-gateway</code>.</div>'; return; }
+  if (!servers.length) { el.innerHTML = mcpSetupHelp(); return; }
   el.innerHTML = servers.map(s =>
     s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)
   ).join('');
@@ -2856,6 +2907,26 @@ function renderRemoteCard(s) {
     '<div class="tp-grid" style="margin-top:12px">' + rows + '</div></div>';
 }
 
+// Nothing is wired up yet — say how to wire it, rather than showing an
+// empty page. Both halves are one command each.
+function mcpSetupHelp() {
+  return '<div class="card">' +
+    '<div class="card-title">No MCP servers are going through Prismor yet</div>' +
+    '<div class="mcp-hint" style="margin-bottom:14px">Prismor governs MCP tools two ways. Run either (or both) in your project, then reopen this page.</div>' +
+    '<div style="margin-bottom:16px">' +
+      '<b style="font-size:13px">1 · Front your MCP servers with the gateway</b>' +
+      '<div class="mcp-hint">Moves this workspace\'s <code>.mcp.json</code> servers behind <code>prismor mcp-gateway</code> (a <code>.bak</code> is kept). Every tool call is policy-screened before it runs and every result scanned for injection before the model sees it.</div>' +
+      '<pre class="doc-cmd">prismor mcp-gateway install        # this workspace\nprismor mcp-gateway install --all  # every MCP config on this machine\nprismor mcp-gateway uninstall      # restore the original .mcp.json</pre>' +
+    '</div>' +
+    '<div style="margin-bottom:16px">' +
+      '<b style="font-size:13px">2 · Mirror the agent\'s built-in tools</b>' +
+      '<div class="mcp-hint">Serves Bash/Read/Write over MCP so the built-ins are screened and their output redacted too. Takes effect in the next session.</div>' +
+      '<pre class="doc-cmd">prismor mirror on\nprismor mirror status</pre>' +
+    '</div>' +
+    '<div class="mcp-hint">Configs Prismor will not guess at (Zed\'s <code>context_servers</code>, Codex\'s TOML) are reported and left untouched — move those by hand. Full walkthrough: <a href="#" onclick="openDoc(\'mcp-gateway.md\');return false">MCP Gateway docs</a>.</div>' +
+    '</div>';
+}
+
 async function mcpOverrideSet(server, current) {
   try {
     const ws = _serverWorkspace || '';
@@ -2897,24 +2968,6 @@ async function mcpToolSet(tag, action) {
     toast('✓ ' + tag + ' → ' + action);
   } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
 }
-
-async function mcpRequest(body) {
-  const result = await apiFetch('/api/mcp-playground', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if (result.state) _mcpPlayground = result.state; else _mcpPlayground = result;
-  renderMcpPlayground(_mcpPlayground); return result;
-}
-async function mcpAddTool() {
-  const input = document.getElementById('mcpNewTool'), name = input.value.trim(); if (!name) return;
-  try { await mcpRequest({action:'add', name}); input.value = ''; toast('MCP tool added'); } catch (e) { toast(e.message, true); }
-}
-async function mcpSetEnabled(name, enabled) {
-  try { await mcpRequest({action:'set-enabled', name, enabled}); toast(name + (enabled ? ' enabled' : ' denied')); } catch (e) { toast(e.message, true); }
-}
-async function mcpCall(name) {
-  try { const r = await mcpRequest({action:'call', name}); document.getElementById('mcpResult').textContent = r.allowed ? name + ' allowed and delivered.' : name + ' blocked before delivery: ' + (r.reason || 'denied by policy'); toast(r.allowed ? 'MCP call delivered' : 'MCP call blocked', !r.allowed); }
-  catch (e) { toast(e.message, true); }
-}
-async function mcpReset() { try { await mcpRequest({action:'reset'}); document.getElementById('mcpResult').textContent = 'Playground reset.'; } catch (e) { toast(e.message, true); } }
 
 // ── Toast (non-blocking feedback — replaces alert()) ──────────────────────
 let _toastTimer;

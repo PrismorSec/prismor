@@ -78,9 +78,19 @@ never leaves your machine.
 | `GET /api/policy` | Effective policy state: mode, blocking/total rule counts, `explicitSelection`, editability |
 | `GET/PUT /api/policy/egress` | Read / edit `settings.egress` (`{action: set|add|remove, …}`); hostnames are validated |
 | `PUT /api/policy/rules` | Toggle rule enable/mode from the Policy tab |
+| `GET /api/docs` | The docs shipped with this install — the list, one page (`?name=<file>.md`), or a search (`?q=…`) |
 
 If you run `dashboard` before installing hooks anywhere, it warns that no workspaces
 are registered yet — install hooks in a project first to collect data.
+
+### Docs tab
+
+The Markdown docs that shipped with your install, browsable and searchable
+without leaving the dashboard — search matches every word of the query against
+a line and shows the matching lines. Offline-friendly: the pages are read from
+the installed package, not fetched. The **MCP Servers** tab links into it when
+nothing is going through Prismor yet, alongside the `prismor mcp-gateway
+install` / `prismor mirror on` commands that wire it up.
 
 ### Policy tab
 

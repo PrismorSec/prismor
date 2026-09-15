@@ -18,6 +18,7 @@ Read endpoints:
     GET /api/workspaces    → registered workspaces + enrollment status
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
     GET /api/agents        → agent registry merged with per-agent call stats
+    GET /api/docs          → bundled docs (?name=<file.md> one doc, ?q=… search)
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
 
 Write endpoints (human-only — localhost):
@@ -169,6 +170,65 @@ def _mcp_server_inventory(workspace: Path):
                       for t in tools],
         })
     return servers
+
+# -- Docs: the shipped Markdown docs, browsable from the dashboard ---------
+# Two locations: the wheel bundles a subset under runtime/data/docs, a source
+# checkout has the full set at the repo root.
+def _docs_dir() -> Optional[Path]:
+    here = Path(__file__).resolve()
+    for candidate in (here.parent / "data" / "docs", here.parents[2] / "docs"):
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def _doc_title(text: str, name: str) -> str:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return name[:-3].replace("-", " ").title()
+
+
+def _docs_list(root: Path):
+    out = []
+    for f in sorted(root.glob("*.md")):
+        try:
+            head = f.read_text(encoding="utf-8", errors="replace")[:2000]
+        except OSError:
+            continue
+        out.append({"name": f.name, "title": _doc_title(head, f.name)})
+    return out
+
+
+def _docs_search(root: Path, query: str, limit: int = 60):
+    """Case-insensitive substring scan over the docs. No index -- the corpus
+    is a few dozen small files."""
+    # Every word must appear in the line -- a two-word query matching only
+    # "decloak" or only "hook" is noise, and nobody types a phrase expecting
+    # an exact substring.
+    terms = [t for t in query.lower().split() if t]
+    if not terms:
+        return []
+    results = []
+    for f in sorted(root.glob("*.md")):
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        title = _doc_title(text, f.name)
+        hits = []
+        for i, line in enumerate(text.splitlines(), 1):
+            low = line.lower()
+            if all(t in low for t in terms):
+                hits.append({"line": i, "snippet": line.strip()[:200]})
+                if len(hits) >= 3:
+                    break
+        if hits or all(t in title.lower() for t in terms):
+            results.append({"name": f.name, "title": title, "hits": hits})
+        if len(results) >= limit:
+            break
+    return results
+
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
@@ -432,6 +492,32 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
                 return
             self._send_json(data)
+            return
+
+        if path == "/api/docs":
+            root = _docs_dir()
+            if root is None:
+                self._send_json({"error": "docs not bundled with this install"}, status=404)
+                return
+            name = qstr("name")
+            if name:
+                # Filename only -- never a path out of the docs directory.
+                if not name.endswith(".md") or "/" in name or "\\" in name:
+                    self._send_json({"error": "bad doc name"}, status=400)
+                    return
+                target = root / name
+                if not target.is_file():
+                    self._send_json({"error": "doc not found"}, status=404)
+                    return
+                text = target.read_text(encoding="utf-8", errors="replace")
+                self._send_json({"name": name, "title": _doc_title(text, name),
+                                 "markdown": text})
+                return
+            query = qstr("q").strip()
+            if query:
+                self._send_json({"query": query, "results": _docs_search(root, query)})
+                return
+            self._send_json({"docs": _docs_list(root)})
             return
 
         if path == "/api/supply-chain":
