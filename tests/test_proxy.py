@@ -277,6 +277,35 @@ def test_virtual_key_resolution():
     assert cfg.resolve_key("psk_live_wrong") is None
 
 
+def test_local_openai_compatible_upstream_can_override_base_url():
+    cfg = ProxyConfig({"upstreams": {
+        "openai": {"base_url": "http://host.docker.internal:11434"},
+    }})
+    assert cfg.upstream("openai")["base_url"] == "http://host.docker.internal:11434"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_upstream_auth_status_headers_are_distinguishable(monkeypatch, tmp_path, status):
+    sent = []
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = None
+    handler.wfile = type("Writer", (), {"write": lambda self, body: None})()
+    monkeypatch.setattr(handler, "send_response", lambda code: sent.append(("status", code)))
+    monkeypatch.setattr(handler, "send_header", lambda key, value: sent.append((key, value)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    response = type("Response", (), {
+        "status": status,
+        "read": lambda self: b'{"error":"unauthorized"}',
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_buffered(
+        handler, response, "openai", "model", False, None, "openai")
+
+    assert ("X-Prismor-Upstream", "openai") in sent
+    assert ("X-Prismor-Upstream-Status", str(status)) in sent
+
+
 def test_bad_config_raises():
     with pytest.raises(ProxyConfigError):
         ProxyConfig({"keys": ["not", "an", "object"]})

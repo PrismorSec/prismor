@@ -1132,9 +1132,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             if streaming:
-                self._relay_stream(resp, provider, model, subject)
+                self._relay_stream(resp, provider, model, subject, upstream_name)
             else:
-                self._relay_buffered(resp, provider, model, screened, subject)
+                self._relay_buffered(resp, provider, model, screened, subject,
+                                     upstream_name)
         finally:
             conn.close()
 
@@ -1158,7 +1159,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         return headers
 
     def _relay_buffered(self, resp: Any, provider: str, model: str,
-                        screened: bool, subject: Optional[str]) -> None:
+                        screened: bool, subject: Optional[str],
+                        upstream_name: str) -> None:
         payload = resp.read()
         if screened and self.screen is not None and resp.status < 400:
             payload = self._screen_response(provider, model, payload, subject)
@@ -1166,6 +1168,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         for key, value in resp.getheaders():
             if key.lower() not in _STRIP_RESPONSE_HEADERS:
                 self.send_header(key, value)
+        if resp.status in (401, 403):
+            self.send_header("X-Prismor-Upstream", upstream_name)
+            self.send_header("X-Prismor-Upstream-Status", str(resp.status))
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -1200,12 +1205,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         return json.dumps(body).encode()
 
     def _relay_stream(self, resp: Any, provider: str, model: str,
-                      subject: Optional[str]) -> None:
+                      subject: Optional[str], upstream_name: str) -> None:
         assert self.screen is not None
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() not in _STRIP_RESPONSE_HEADERS:
                 self.send_header(key, value)
+        if resp.status in (401, 403):
+            self.send_header("X-Prismor-Upstream", upstream_name)
+            self.send_header("X-Prismor-Upstream-Status", str(resp.status))
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
 
