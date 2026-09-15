@@ -4196,6 +4196,36 @@ def codex_trust_line(workspace: Path) -> Optional[str]:
             "prompt (headless runs: `codex exec --dangerously-bypass-hook-trust`).")
 
 
+def _print_status_quota(engine: Any) -> None:
+    """The `Prismor API:` line in `prismor status`: what is left of this month.
+
+    Only for workspaces that actually use the hosted judge — everyone else should
+    not pay a network call for a line that does not apply to them. Never raises:
+    status must render offline.
+    """
+    try:
+        cfg = (getattr(engine, "semantic_guard_config", None) or {}) if engine is not None else {}
+        if str(cfg.get("provider") or "").lower() != "prismor":
+            return
+        from prismor.runtime.enterprise import cli_login as _cli_login
+
+        quota = _cli_login.quota()
+        if quota is None:
+            print(f"  {_color('Prismor API:', _GREEN)} judge configured; usage unavailable "
+                  f"(offline, or this machine is not signed in — `prismor login`)")
+            return
+        limit = quota.get("limit")
+        if limit is None:
+            left = f"{quota.get('used', 0):,} used this month (unlimited)"
+        else:
+            left = (f"{quota.get('remaining', 0):,} of {limit:,} verdicts left this month"
+                    f" ({quota.get('used', 0):,} used)")
+        resets = str(quota.get("resets") or "")[:10]
+        print(f"  {_color('Prismor API:', _GREEN)} {left}{f', resets {resets}' if resets else ''}")
+    except Exception:
+        pass
+
+
 def _print_codex_trust_note(agents: List[str], workspace: Optional[Path] = None) -> None:
     """Codex silently ignores hooks it has not been told to trust — the hook file
     is written, `status` says installed, and nothing ever fires. Check, and say so
@@ -5023,7 +5053,9 @@ def _print_status_overview(workspace: Path) -> None:
         engine = PolicyEngine(workspace=workspace)
         print(f"  {_color('Rules:', _GREEN)}       {len(engine.rules)} active")
     except Exception:
-        pass
+        engine = None
+
+    _print_status_quota(engine)
 
     # Latest session
     sessions = list_sessions(workspace, 1)

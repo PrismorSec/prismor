@@ -120,3 +120,44 @@ def test_a_failed_start_reports_instead_of_raising(home, monkeypatch):
     out = io.StringIO()
     assert cli_login.run_interactive(out=out) is False
     assert "Could not start sign-in" in out.getvalue()
+
+
+def _engine(provider):
+    return type("E", (), {"rules": [], "semantic_guard_config": {"provider": provider}})()
+
+
+def test_status_reports_what_is_left_when_the_hosted_judge_is_configured(home, monkeypatch, capsys):
+    """The docs promised `prismor status` shows this; 1.51.0 shipped without it."""
+    from prismor.runtime import cli as _cli
+
+    cli_login.save(APPROVED)
+    transport(monkeypatch, [{"plan": "free", "used": 12, "limit": 1000, "remaining": 988,
+                             "resets": "2026-10-01T00:00:00.000Z"}])
+    _cli._print_status_quota(_engine("prismor"))
+    out = capsys.readouterr().out
+    assert "988 of 1,000 verdicts left" in out and "12 used" in out
+    assert "resets 2026-10-01" in out
+
+
+def test_status_says_nothing_about_quota_without_the_hosted_judge(home, monkeypatch, capsys):
+    from prismor.runtime import cli as _cli
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: pytest.fail("no network call"))
+    _cli._print_status_quota(_engine("codex"))
+    assert capsys.readouterr().out == ""
+
+
+def test_status_says_so_when_the_machine_is_not_signed_in(home, monkeypatch, capsys):
+    from prismor.runtime import cli as _cli
+
+    _cli._print_status_quota(_engine("prismor"))       # no identity saved
+    assert "prismor login" in capsys.readouterr().out
+
+
+def test_status_renders_for_an_unlimited_plan(home, monkeypatch, capsys):
+    from prismor.runtime import cli as _cli
+
+    cli_login.save(APPROVED)
+    transport(monkeypatch, [{"plan": "enterprise", "used": 4210, "limit": None, "remaining": None}])
+    _cli._print_status_quota(_engine("prismor"))
+    assert "4,210 used this month (unlimited)" in capsys.readouterr().out
