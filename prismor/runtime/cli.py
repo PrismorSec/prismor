@@ -1450,6 +1450,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         event = normalized["event"]
         _agent_event = str(event.get("agent_event") or "")
 
+        # A call that was asked about and then ran was allowed by the human.
+        if (_agent_event == "PostToolUse" or payload.get("hook_event_name") == "PostToolUse"):
+            try:
+                from prismor.runtime.learning import mark_ask_outcome as _mark_ask
+                _ti = payload.get("tool_input")
+                _cmd = _ti.get("command") if isinstance(_ti, dict) else None
+                _mark_ask(workspace, normalized["sessionId"], str(_cmd or event.get("command") or ""))
+            except Exception:
+                pass
+
         # Locally paused? Enforcement is suspended but observe-mode screening/
         # telemetry below still runs as normal — pause only silences blocking.
         # The heartbeat fires on a USER-TURN boundary (prompt submit or session
@@ -1747,6 +1757,43 @@ def main(argv: Optional[List[str]] = None) -> None:
                 pass  # best-effort — a block must never depend on its own help text
             if unblock_text:
                 reason += f"\n\n{unblock_text}"
+
+            if verdict == "block" and args.agent in ("claude", "qwen", "copilot"):
+                # Context can turn a deny into a question for the human, never
+                # into an allow, and only on a surface that can ask inline;
+                # everywhere else the block stands. The asked row is the
+                # store's first human label (see learning.mark_ask_outcome).
+                try:
+                    from prismor.runtime.learning import (
+                        contextual_step_up as _ctx_step_up,
+                        record_dismissal as _record_asked,
+                    )
+                    _why = _ctx_step_up(blocking, event, workspace, normalized["sessionId"])
+                    # Every enforce finding on the call must qualify, not just
+                    # the one that happened to govern: an ssh to a known host
+                    # beside a local policy edit is still a local policy edit.
+                    for _f in (current_findings or []):
+                        if not _why:
+                            break
+                        if _f is blocking or _f.get("contextInert"):
+                            continue
+                        if str(_f.get("mode") or "observe").lower() != "enforce":
+                            continue
+                        if str(_f.get("action") or "block").lower() != "block":
+                            continue
+                        if not _ctx_step_up(_f, event, workspace, normalized["sessionId"]):
+                            _why = None
+                    if _why:
+                        verdict = "step_up"
+                        reason += f"\n\nAsking instead of blocking: {_why}."
+                        _record_asked(
+                            workspace, normalized["sessionId"],
+                            blocking.get("ruleId", "unknown"),
+                            str(event.get("command") or blocking.get("evidence") or ""),
+                            "asked",
+                        )
+                except Exception:
+                    pass  # any doubt keeps the block
 
             if verdict == "defer":
                 # DEFER: hold the ambiguous action and escalate to the deeper
