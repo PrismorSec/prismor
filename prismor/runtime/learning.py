@@ -625,12 +625,13 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
         # A finding's event_index corresponds to the event's position
         # within its session (0-based row number by id order).
         rows = conn.execute(
-            """
+            f"""
             SELECT e.command_text, e.session_id
             FROM events e
             WHERE e.type = 'shell'
               AND e.command_text IS NOT NULL
               AND e.command_text != ''
+              AND e.session_id NOT IN ({_FIXTURE_SESSIONS_SQL})
               AND NOT EXISTS (
                   SELECT 1 FROM findings f
                   WHERE f.session_id = e.session_id
@@ -687,10 +688,27 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
 
 # ── False positive tracking ────────────────────────────────────────────────
 
+# Sessions that drive Prismor itself -- its hook, its engine, its benchmarks --
+# feed it attacks on purpose. Their findings are correct and must never teach
+# the learner that an attack is routine. On the maintainer's own laptop these
+# were 9% of sessions and half of all findings.
+_FIXTURE_SESSIONS_SQL = """
+    SELECT DISTINCT session_id FROM events
+    WHERE type = 'shell' AND (
+        command_text LIKE '%hook-dispatch%'
+        OR command_text LIKE '%immunity_cli%'
+        OR command_text LIKE '%PolicyEngine%'
+        OR command_text LIKE '%PreToolUse%'
+        OR command_text LIKE '%prismor check %'
+    )
+"""
+
+
 def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
     """Find rules that have been dismissed more than threshold times.
 
     Returns a list of dicts with rule_id, dismissal_count, and recommendation.
+    Self-test sessions (see ``_FIXTURE_SESSIONS_SQL``) are excluded.
     """
     db_path = get_db_path(workspace)
     if not db_path.exists():
@@ -700,11 +718,12 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     try:
         initialize_learning_tables(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT rule_id, COUNT(*) as cnt,
                    GROUP_CONCAT(DISTINCT reason) as reasons,
                    GROUP_CONCAT(evidence, '|||') as evidences
             FROM dismissals
+            WHERE session_id NOT IN ({_FIXTURE_SESSIONS_SQL})
             GROUP BY rule_id
             HAVING cnt >= ?
             ORDER BY cnt DESC

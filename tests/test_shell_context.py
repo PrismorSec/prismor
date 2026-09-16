@@ -112,3 +112,38 @@ def test_interpreter_payload_is_never_inert():
     command = "bash -c 'rm -rf /'"
     start = command.index('rm')
     assert is_inert_match(command, start, len(command) - 1) is False
+
+
+# ── Heredoc bodies ──────────────────────────────────────────────────────────
+# A script typed inline and saved with ``cat > file <<EOF`` is data at that
+# moment; the same body fed to an interpreter, or written and run in the same
+# call, is live.
+
+def _pos(command, needle):
+    start = command.index(needle)
+    return start, start + len(needle)
+
+
+def test_heredoc_written_to_file_is_inert():
+    cmd = "cat > /tmp/s/fixture.sh <<'SH'\necho start\nrm -rf /\nSH\necho written"
+    assert is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
+
+
+def test_heredoc_piped_to_interpreter_is_live():
+    cmd = "bash <<'SH'\nrm -rf /\nSH"
+    assert not is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
+
+
+def test_heredoc_written_then_run_in_same_call_is_live():
+    cmd = "cat > /tmp/s/x.py <<'PY'\nimport os\nos.system('rm -rf /')\nPY\npython3 /tmp/s/x.py"
+    assert not is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
+
+
+def test_apostrophe_in_heredoc_body_cannot_hide_trailing_interpreter():
+    cmd = "cat > /tmp/s/x.sh <<'SH'\necho it's fine\nrm -rf /\nSH\nsh /tmp/s/x.sh"
+    assert not is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
+
+
+def test_unclosed_heredoc_is_live():
+    cmd = "cat > /tmp/s/x.sh <<'SH'\nrm -rf /\n"
+    assert not is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
