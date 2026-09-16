@@ -210,5 +210,55 @@ class TestPrivilegeRings(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class TestSetEnabled(unittest.TestCase):
+    """`prismor sandbox on|off` must flip exactly one field: an operator who
+    turns containment off for an afternoon should get the same ring, network
+    and limits back when they turn it on again."""
+
+    def _policy(self, ws: Path):
+        import yaml
+        return yaml.safe_load((ws / ".prismor" / "policy.yaml").read_text())
+
+    def test_off_then_on_preserves_the_rest_of_the_block(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / ".prismor").mkdir()
+            (ws / ".prismor" / "policy.yaml").write_text(
+                'version: "1.0"\n'
+                "settings:\n"
+                "  sandbox:\n"
+                "    enabled: true\n"
+                "    mode: enforce\n"
+                "    network: allowlist\n"
+                "rules: []\n"
+            )
+            sandbox.set_enabled(ws, False)
+            block = self._policy(ws)["settings"]["sandbox"]
+            self.assertFalse(block["enabled"])
+            self.assertEqual(block["mode"], "enforce")
+            self.assertEqual(block["network"], "allowlist")
+
+            sandbox.set_enabled(ws, True)
+            block = self._policy(ws)["settings"]["sandbox"]
+            self.assertTrue(block["enabled"])
+            self.assertEqual(block["network"], "allowlist")
+
+    def test_writes_into_a_policy_with_no_sandbox_block(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / ".prismor").mkdir()
+            (ws / ".prismor" / "policy.yaml").write_text(
+                'version: "1.0"\nrules: []\n'
+            )
+            sandbox.set_enabled(ws, True)
+            self.assertTrue(self._policy(ws)["settings"]["sandbox"]["enabled"])
+
+    def test_parser_accepts_on_and_off(self):
+        parser = build_parser()
+        for sub in ("on", "off"):
+            args = parser.parse_args(["sandbox", sub])
+            self.assertEqual(args.sandbox_command, sub)
+
+
 if __name__ == "__main__":
     unittest.main()

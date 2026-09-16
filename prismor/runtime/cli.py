@@ -1962,6 +1962,29 @@ def main(argv: Optional[List[str]] = None) -> None:
             print()
             return
 
+        if subcmd in ("on", "off"):
+            from prismor.runtime.egress_cli import _org_managed_hint
+
+            want = subcmd == "on"
+            path = _sandbox.set_enabled(workspace, want)
+            state = _color("on", _GREEN) if want else _color("off", _YELLOW)
+            print(f"sandbox {state}  ({path})")
+            if want:
+                report = _sandbox.status_report(
+                    {**cfg, "enabled": True}
+                )
+                docker = report["docker"]
+                if not (docker.get("cli_found") and docker.get("server_reachable")):
+                    print(_color(
+                        "Docker is not reachable here — commands will run "
+                        "unsandboxed until it is.", _YELLOW))
+            else:
+                print(_color(
+                    "commands now run on the host. Policy screening, egress "
+                    "and cloaking are unaffected.", _DIM))
+            _org_managed_hint(workspace)
+            return
+
         if subcmd == "check":
             report = _sandbox.status_report(cfg)
             ready = report["docker"].get("cli_found") and report["docker"].get("server_reachable")
@@ -3297,6 +3320,13 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
     sandbox_sub.add_parser("check", help="Check whether the Docker sandbox backend is available")
+
+    sandbox_on = sandbox_sub.add_parser("on", help="Turn the sandbox on for this workspace")
+    sandbox_on.add_argument("--workspace", help="Workspace path")
+
+    sandbox_off = sandbox_sub.add_parser("off", help="Turn the sandbox off — commands run on the host")
+    sandbox_off.add_argument("--workspace", help="Workspace path")
+
 
     sandbox_run = sandbox_sub.add_parser("run", help="Run a command inside the configured sandbox")
     sandbox_run.add_argument("--mode", choices=["observe", "enforce"], help="Override sandbox mode for this run")

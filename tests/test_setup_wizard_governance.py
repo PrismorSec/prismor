@@ -64,8 +64,17 @@ class TestInstallCompilesMode(unittest.TestCase):
         """The wizard used to pass force=True, which ALSO skipped the runtime
         check, so setup wrote an enforcing sandbox onto a host with no Docker —
         strictly more dangerous than the `mode apply` it wraps. Now the sandbox
-        axis degrades and everything else still lands."""
+        axis degrades and everything else still lands.
+
+        The catalogue ships every mode's sandbox off (containment is opt-in via
+        `prismor sandbox on`), so this patches dev-safe back on to keep
+        exercising the degradation path the wizard has to honour."""
+        from prismor.runtime import modes as _modes
+        _dev_safe = _modes.get_mode("dev-safe")
+        _sandboxed = {**_dev_safe,
+                      "sandbox": {**_dev_safe["sandbox"], "enabled": True}}
         with mock.patch("prismor.runtime.setup_wizard._REPO_ROOT", Path("/nonexistent")), \
+             mock.patch.object(_modes, "get_mode", return_value=_sandboxed), \
              mock.patch("prismor.runtime.sandbox.docker_status",
                         new=lambda: {"cli_found": False, "server_reachable": False,
                                      "error": "docker CLI not found"}), \

@@ -212,28 +212,31 @@ the default there tags every workspace read as untrusted, which turns
 `untrusted_content then critical_action -> block` into "read anything, then do
 anything" and denies every call after the session's first read.
 
-#### Modes that need a container runtime
+#### Containment is opt-in
 
-`dev-safe` enforces its sandbox, and `cli.py` **blocks** a shell call outright
-when an enforcing sandbox has no runtime behind it — it does not silently run
-unsandboxed. On a host without Docker that means every command fails, so
-`mode apply` preflights and refuses rather than letting you find out one command
-at a time:
+Adopting a mode does not start routing your shell commands through Docker.
+`dev-safe` and `trusted-workspace` both ship `sandbox.enabled: false`: they
+compile a sandbox configuration (ring, network, mounts, limits) and leave it
+switched off, so the mode changes what may run without changing where it runs.
 
-```
-$ prismor mode apply dev-safe
-prismor mode: mode 'dev-safe' enforces a Docker sandbox and this host cannot
-reach one (docker CLI not found). Every shell command would be blocked, not just
-sandboxed. Options: start or install Docker; apply with --observe …
+```bash
+prismor sandbox on      # containment on, using the settings the mode compiled
+prismor sandbox off     # back to running on the host
+prismor sandbox status  # what is configured, and whether Docker can back it
 ```
 
-`trusted-workspace` sets `sandbox.mode: observe`, so a missing runtime degrades
-to a warning and the mode works anywhere. `regulated-airgap` enforces a sandbox
-but denies the Bash tool, so no shell event ever reaches the sandbox gate and it
-too runs on a host without Docker.
+Only the field flips, so an off/on round trip keeps the ring, network and
+limits the mode chose. `regulated-airgap` is the exception and ships its
+sandbox on — containment is what that posture *is*.
 
-`mode show` re-checks at read time, which is what catches a runtime that
-disappeared *after* the mode was applied.
+Once it is on, a missing container runtime matters. `cli.py` **blocks** a shell
+call outright when an enforcing sandbox has no runtime behind it — it does not
+silently run unsandboxed — so `mode apply` preflights and degrades the sandbox
+axis to `observe` rather than leaving every command to fail one at a time. The
+rest of the posture (rules, egress, tag rules) still lands, and `mode show`
+re-checks at read time to catch a runtime that disappeared *after* the mode was
+applied. `regulated-airgap` enforces a sandbox but denies the Bash tool, so no
+shell event ever reaches the sandbox gate and it too runs without Docker.
 
 **Known limitation:** the sandbox gate is wired for the Claude adapter only. On
 other agents the sandbox axis is not applied, even though `mode explain` still

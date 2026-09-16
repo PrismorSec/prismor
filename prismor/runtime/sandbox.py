@@ -283,6 +283,30 @@ def run(command: str, *, workspace: Path, config: Dict[str, Any]) -> int:
         return 127
 
 
+def set_enabled(workspace: Path, enabled: bool) -> Path:
+    """Flip ``settings.sandbox.enabled`` in the workspace policy, in place.
+
+    Only the one field is touched, so the rest of the sandbox block a mode
+    compiled (ring, network, limits) survives an off/on round trip.
+    """
+    from prismor.runtime.egress_cli import (
+        _load_policy_file, _policy_path, _save_policy_file,
+    )
+
+    data = _load_policy_file(workspace)
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+        data["settings"] = settings
+    block = settings.get("sandbox")
+    if not isinstance(block, dict):
+        block = {}
+        settings["sandbox"] = block
+    block["enabled"] = bool(enabled)
+    _save_policy_file(workspace, data)
+    return _policy_path(workspace)
+
+
 def status_report(config: Dict[str, Any]) -> Dict[str, Any]:
     cfg = effective_config(config)
     return {

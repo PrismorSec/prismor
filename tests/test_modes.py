@@ -434,6 +434,19 @@ def _docker(available):
     )
 
 
+def _sandboxed(mode_id="dev-safe"):
+    """Patch the catalogue so `mode_id` comes back with its sandbox switched on.
+
+    Every mode but regulated-airgap ships `sandbox.enabled: false` -- containment
+    is opt-in (`prismor sandbox on`). The degradation machinery below still has
+    to work for the operator who opts in, so these tests exercise it against
+    that shape rather than against whatever the catalogue happens to default to.
+    """
+    base = modes.get_mode(mode_id)
+    on = {**base, "sandbox": {**(base.get("sandbox") or {}), "enabled": True}}
+    return mock.patch.object(modes, "get_mode", return_value=on)
+
+
 class TestSandboxPreflight(unittest.TestCase):
     """A host with no container runtime loses containment, not the posture.
     These pin that the sandbox axis degrades on its own, that the rest of the
@@ -442,7 +455,7 @@ class TestSandboxPreflight(unittest.TestCase):
 
     def test_dev_safe_applies_with_a_degraded_sandbox_without_a_runtime(self):
         ws = _workspace()
-        with _docker(False), _unmanaged():
+        with _docker(False), _unmanaged(), _sandboxed():
             path, notes = modes.apply_mode(ws, "dev-safe")
         self.assertTrue(path.exists())
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -463,7 +476,7 @@ class TestSandboxPreflight(unittest.TestCase):
         the sandbox was skipped. Without the provenance stamp `mode show`
         called every Docker-less install hand-edited the moment it was made."""
         ws = _workspace()
-        with _docker(False), _unmanaged():
+        with _docker(False), _unmanaged(), _sandboxed():
             modes.apply_mode(ws, "dev-safe")
             self.assertTrue(modes.is_sandbox_skipped_build(ws))
             self.assertFalse(modes.has_drifted(ws))
@@ -473,7 +486,7 @@ class TestSandboxPreflight(unittest.TestCase):
         check" — conflating them is what let setup write an enforcing sandbox
         onto a host with no Docker."""
         ws = _workspace()
-        with _docker(False), _unmanaged():
+        with _docker(False), _unmanaged(), _sandboxed():
             path, _ = modes.apply_mode(ws, "dev-safe", force=True)
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
         self.assertEqual(
@@ -509,7 +522,9 @@ class TestSandboxPreflight(unittest.TestCase):
         self.assertIsNone(modes.sandbox_preflight(modes.get_mode("regulated-airgap")))
 
     def test_needs_container_runtime_requires_all_three_conditions(self):
-        base = modes.get_mode("dev-safe")
+        catalogue = modes.get_mode("dev-safe")
+        base = {**catalogue,
+                "sandbox": {**catalogue["sandbox"], "enabled": True}}
         self.assertTrue(modes.needs_container_runtime(base))
         off = {**base, "sandbox": {**base["sandbox"], "enabled": False}}
         self.assertFalse(modes.needs_container_runtime(off))
@@ -517,6 +532,21 @@ class TestSandboxPreflight(unittest.TestCase):
         self.assertFalse(modes.needs_container_runtime(observing))
         no_shell = {**base, "tools": {"deny": ["Bash"]}}
         self.assertFalse(modes.needs_container_runtime(no_shell))
+
+    def test_containment_is_opt_in_except_where_it_is_the_posture(self):
+        """Adopting a governance mode must not silently start routing every
+        shell command through Docker. regulated-airgap is the one exception:
+        containment is what that mode *is*."""
+        for mode_id in ALL_MODES:
+            sandbox = modes.get_mode(mode_id).get("sandbox") or {}
+            enabled = bool(sandbox.get("enabled"))
+            if mode_id == "regulated-airgap":
+                self.assertTrue(enabled, "regulated-airgap contains by design")
+            else:
+                self.assertFalse(
+                    enabled,
+                    f"{mode_id} turns the sandbox on without being asked",
+                )
 
     def test_every_runtime_dependent_mode_says_so_in_its_friction(self):
         """A dependency this hard belongs in `mode explain`, not in a stack
