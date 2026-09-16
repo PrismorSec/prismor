@@ -181,6 +181,139 @@ def record_dismissal(
         conn.close()
 
 
+# ── Contextual step-up: ask the human instead of denying ──────────────────
+
+#: A host counts as known once this device has used it in this many earlier
+#: sessions. On the maintainer laptop the test box had 34; a host an injected
+#: page names for the first time has 0.
+_KNOWN_HOST_SESSIONS = 5
+
+
+def _session_tainted(workspace: Path, session_id: str) -> bool:
+    """Whether untrusted content has entered this session (trifecta ledger).
+
+    Unknown reads as tainted: context may turn a deny into a question, never
+    into an allow, and never when the session's provenance is in doubt.
+    """
+    try:
+        from prismor.runtime.trifecta import TagLedger
+        return "untrusted_content" in TagLedger(workspace, session_id).seen
+    except Exception:
+        return True
+
+
+def contextual_step_up(
+    blocking: Dict[str, Any],
+    event: Dict[str, Any],
+    workspace: Path,
+    session_id: str,
+) -> Optional[str]:
+    """Why a blocking shell finding should ask a human instead of denying.
+
+    Returns the reason, or ``None`` to keep the block. Only while the
+    session has seen no untrusted content, and only when every destination
+    in the command is one this device has used in at least
+    ``_KNOWN_HOST_SESSIONS`` earlier sessions. A URL destination is keyed
+    by host plus its first path segment, so ``github.com/attacker-mirror``
+    is new even though ``github.com`` is not. Then one of two must hold:
+
+      * the finding is about the destination itself (network isolation,
+        egress), so a familiar destination is exactly what it was asking
+        about; or
+      * the matched text sits inside the payload of ssh/docker/kubectl to
+        that destination, an action on a machine the device already works
+        with.
+
+    A local action that merely shares a command line with a known-host ssh
+    keeps its block. Replaying the laptop store, the test box alone was
+    1,006 of 1,292 raw-IP findings; the adversarial exfil commands all
+    name a collector this device has never used.
+    """
+    if str(event.get("type") or "") != "shell":
+        return None
+    command = str(event.get("command") or "")
+    if not command or _session_tainted(workspace, session_id):
+        return None
+    try:
+        from prismor.runtime.egress import extract_destinations
+        dests = extract_destinations(event)
+    except Exception:
+        return None
+    keys: Dict[str, str] = {}
+    for d in dests:
+        if not d.host:
+            continue
+        key = d.host
+        if d.origin == "url":
+            m = re.search(r"://[^/\s'\"]*/([^/\s'\"?#]+)", d.evidence or "")
+            if m:
+                key = f"{d.host}/{m.group(1)}"
+        keys[key] = d.host
+    if not keys:
+        return None
+    db_path = get_db_path(workspace)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        counts = {
+            k: conn.execute(
+                "SELECT COUNT(DISTINCT session_id) FROM events "
+                "WHERE session_id != ? AND command_text LIKE ?",
+                (session_id, f"%{k}%"),
+            ).fetchone()[0]
+            for k in keys
+        }
+    finally:
+        conn.close()
+    if not all(c >= _KNOWN_HOST_SESSIONS for c in counts.values()):
+        return None
+    detail = ", ".join(f"{k} in {counts[k]} earlier sessions" for k in sorted(counts))
+
+    about_destination = (
+        str(blocking.get("category") or "") == "network_isolation"
+        or str(blocking.get("ruleId") or "") in ("raw-ip-outbound", "egress-allowlist", "egress-deny")
+    )
+    if about_destination:
+        return f"every destination is one this device has used before ({detail})"
+
+    pattern = blocking.get("pattern")
+    if pattern:
+        try:
+            from prismor.runtime.shell_context import is_remote_payload
+            m = re.search(str(pattern), command, re.IGNORECASE)
+            if m and is_remote_payload(command, m.start(), m.end()):
+                return f"the action runs on a machine this device already works with ({detail})"
+        except re.error:
+            pass
+    return None
+
+
+def mark_ask_outcome(workspace: Path, session_id: str, command: str) -> None:
+    """The human allowed an asked call and it ran: label the ``asked`` row.
+
+    A call the human refused never reaches the post-tool hook, so its row
+    stays ``asked``; the two together are the first human labels the store
+    has.
+    """
+    db_path = get_db_path(workspace)
+    if not db_path.exists() or not command:
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        row = conn.execute(
+            "SELECT id FROM dismissals WHERE session_id = ? AND reason = 'asked' "
+            "AND substr(evidence, 1, 60) = substr(?, 1, 60) ORDER BY id DESC LIMIT 1",
+            (session_id, command),
+        ).fetchone()
+        if row:
+            conn.execute("UPDATE dismissals SET reason = 'asked_allow' WHERE id = ?", (row[0],))
+            conn.commit()
+    finally:
+        conn.close()
+
+
 # ── Evasion detection ──────────────────────────────────────────────────────
 
 _EVASION_THRESHOLD = 0.6

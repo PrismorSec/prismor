@@ -157,3 +157,42 @@ class R4Decisions(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class ContextualAsk(R4Decisions):
+    """A deny on a known host becomes an inline ask; the host's history lives
+    in the isolated $PRISMOR_HOME store."""
+
+    HOST = "10.0.0.9"
+
+    def _seed_known_host(self, n: int = 5):
+        from prismor.runtime.cli import analyze_events
+        from prismor.runtime.store import save_session_snapshot
+        old = dict(os.environ)
+        os.environ["PRISMOR_HOME"] = str(self.home)
+        try:
+            for i in range(n):
+                events = [{"type": "shell", "command": f"ssh ubuntu@{self.HOST} 'npm test'", "ts": "2026-01-01T00:00:00Z"}]
+                analysis = analyze_events(events, repo_root=self.ws, workspace=self.ws)
+                save_session_snapshot(workspace=self.ws, session_id=f"seed-{i}", agent="claude",
+                                      source="ingest", repo_url=None, events=events, analysis=analysis)
+        finally:
+            os.environ.clear(); os.environ.update(old)
+
+    def test_deny_on_known_host_becomes_ask(self):
+        self._seed_known_host()
+        proc = _dispatch("claude", f"ssh ubuntu@{self.HOST} 'echo R4_DENY_MARKER'", self.ws, self.home)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = self._stdout_json(proc)
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "ask")
+        self.assertIn("Asking instead of blocking", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_deny_on_unknown_host_still_denies(self):
+        self._seed_known_host(n=1)
+        proc = _dispatch("claude", f"ssh ubuntu@{self.HOST} 'echo R4_DENY_MARKER'", self.ws, self.home)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
+
+    def test_deny_without_ask_surface_stays_deny(self):
+        self._seed_known_host()
+        proc = _dispatch("cursor", f"ssh ubuntu@{self.HOST} 'echo R4_DENY_MARKER'", self.ws, self.home)
+        self.assertEqual(proc.returncode, 2, proc.stdout)
