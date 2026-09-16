@@ -64,6 +64,39 @@ def test_requirements_extras_keep_their_version(tmp_path: Path) -> None:
     assert found == {"requests": ">=2.28", "urllib3": ">=1.26.5"}
 
 
+def test_requirements_operator_may_have_surrounding_whitespace(tmp_path: Path) -> None:
+    """pip accepts a space around the operator: 'name == version' is valid.
+
+    Regression: dropping the \\s* after the operator run made the version
+    become the literal "==" for this shape, downgrading an exact-range
+    advisory match to a name-only one (review by Ar9av on #391's PR).
+    """
+    manifest = _write(
+        tmp_path,
+        "requirements.txt",
+        "mistralai == 2.4.6\n",
+    )
+    found = parse_dependencies(manifest, "pip")
+    assert len(found) == 1
+    assert found[0]["name"] == "mistralai"
+    assert "2.4.6" in found[0]["version"]
+    assert found[0]["version"] != "=="
+
+
+def test_requirements_operator_whitespace_with_extras(tmp_path: Path) -> None:
+    """Same spacing case, combined with extras, matching Ar9av's report."""
+    manifest = _write(
+        tmp_path,
+        "requirements.txt",
+        "mistralai[agents] == 2.4.6\n",
+    )
+    found = parse_dependencies(manifest, "pip")
+    assert len(found) == 1
+    assert found[0]["name"] == "mistralai"
+    assert "2.4.6" in found[0]["version"]
+    assert found[0]["version"] != "=="
+
+
 def test_requirements_pep440_prerelease_and_postrelease_survive(tmp_path: Path) -> None:
     """rc/post tags are part of the version; truncating them corrupts matching."""
     manifest = _write(
