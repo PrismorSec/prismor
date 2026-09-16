@@ -95,6 +95,22 @@ check("custom list empty after removal", patterns.list_custom_patterns() == [])
 check("removing a missing pattern returns False",
       patterns.remove_pattern("nope_[0-9]{9}") is False)
 
+# Org-pushed patterns: projected from the signed policy, read-only on device.
+n = patterns.write_org_patterns(["orgco_[A-Z0-9]{20}", "bad([regex", "orgco_[A-Z0-9]{20}", ""])
+check("write_org_patterns keeps only valid, distinct regexes", n == 1, n)
+check("org pattern listed", patterns.list_org_patterns() == ["orgco_[A-Z0-9]{20}"])
+check("all_patterns includes the org pattern", "orgco_[A-Z0-9]{20}" in patterns.all_patterns())
+check("add_pattern treats an org pattern as already present",
+      patterns.add_pattern("orgco_[A-Z0-9]{20}") is False)
+try:
+    patterns.remove_pattern("orgco_[A-Z0-9]{20}")
+    check("removing an org pattern raises ValueError", False, "no exception")
+except ValueError:
+    check("removing an org pattern raises ValueError", True)
+patterns.write_org_patterns([])
+check("empty org list removes the file",
+      not patterns.org_patterns_file().exists() and patterns.list_org_patterns() == [])
+
 
 # ── B. secret-guard.sh end-to-end ────────────────────────────────────────────
 print("\n[B] secret-guard hook")

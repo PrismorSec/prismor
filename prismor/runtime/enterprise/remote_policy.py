@@ -34,7 +34,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from prismor.runtime.enterprise import identity as _identity
 
@@ -727,6 +727,14 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     home.mkdir(parents=True, exist_ok=True)
     cached_policy_path().write_text(policy_yaml, encoding="utf-8")
     _cached_sig_path().write_text(signature, encoding="utf-8")
+    # The cloak hooks are bash and read pattern files, not this YAML: project
+    # the org's secret patterns to a file they load. Verified policy only -
+    # this runs after the signature check above. Best-effort, never fatal.
+    try:
+        from prismor.runtime.cloaking.patterns import write_org_patterns
+        write_org_patterns(_extract_cloak_patterns(policy_yaml))
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
     _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
@@ -735,6 +743,17 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         "full_capture": full_capture,
     }), encoding="utf-8")
     return True
+
+
+def _extract_cloak_patterns(policy_yaml: str) -> List[str]:
+    """The org's ``settings.cloak_patterns`` list. Empty on any parse problem."""
+    try:
+        import yaml
+        parsed = yaml.safe_load(policy_yaml)
+        pats = (((parsed or {}).get("settings") or {}).get("cloak_patterns")) or []
+        return [str(p) for p in pats if p] if isinstance(pats, list) else []
+    except Exception:
+        return []
 
 
 def _extract_full_capture(policy_yaml: str) -> bool:

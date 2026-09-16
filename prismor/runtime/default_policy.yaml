@@ -414,6 +414,13 @@ settings:
 
   # Regex patterns used to identify dependency manifest files.
   # Matched paths cause risky_write findings to be upgraded to HIGH severity.
+  # cloak_patterns: []          # org-pushed secret regexes (one POSIX ERE each).
+  #                             # Only honored from the signed remote policy: on
+  #                             # every fetch the runtime writes them to
+  #                             # $PRISMOR_HOME/cloak_patterns.org.txt, which the
+  #                             # cloak hooks load after built-in + custom patterns.
+  #                             # Local additions go in cloak_patterns.txt via
+  #                             # `prismor cloak pattern add`.
   manifest_patterns:
     - 'package(-lock)?\.json$|pnpm-lock\.yaml$|yarn\.lock$'
     - 'requirements.*\.txt$|pyproject\.toml$|Pipfile$'

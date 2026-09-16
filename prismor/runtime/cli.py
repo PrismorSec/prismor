@@ -690,7 +690,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         # plus the heartbeat counter (session metadata) and workspace-scope map.
         _home = _identity.prismor_home()
         for p in (_remote.cached_policy_path(), _remote._cached_sig_path(), _remote._meta_path(),
-                  _home / "heartbeat.json", _home / "workspace-scopes.json"):
+                  _home / "heartbeat.json", _home / "workspace-scopes.json",
+                  _home / "cloak_patterns.org.txt"):
             try:
                 if p.exists():
                     p.unlink()
@@ -2499,6 +2500,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 builtin_patterns,
                 custom_patterns_file,
                 list_custom_patterns,
+                list_org_patterns,
+                org_patterns_file,
                 remove_pattern,
             )
 
@@ -2546,6 +2549,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             else:
                 print(f"  {_color('none — add with: prismor cloak pattern add <regex>', _DIM)}")
             print()
+            org = list_org_patterns()
+            if org:
+                label = _color("ORG PATTERNS", _BOLD)
+                print(f"  {label} ({len(org)})  {_color(str(org_patterns_file()), _DIM)}")
+                print(f"  {_color('─' * 50, _DIM)}")
+                for p in org:
+                    print(f"  {_color('•', _CYAN)} {p}")
+                print(f"  {_color('pushed by your org policy; managed in the Prismor console', _DIM)}")
+                print()
             return
 
         raise SystemExit("Usage: prismor cloak {install|uninstall|add|list|remove|status|run|pattern}")
