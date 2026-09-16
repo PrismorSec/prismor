@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+## [1.53.0] — 2026-09-15
+
+### Changed
+- **Docker containment is opt-in.** Adopting a governance mode no longer starts routing every Bash call through a container behind your back: `dev-safe` and `trusted-workspace` now compile `sandbox.enabled: false`. The rest of the block — ring, network, mounts, resource limits — is still compiled, so it is configuration waiting for a switch rather than a setting you have to write yourself. `regulated-airgap` is unchanged and still ships its sandbox on, because containment is what that posture is. `dev-safe`'s residual risk now states the consequence outright: commands run on the host, so the mode decides whether a command may run, not what it can reach once it does. See #424.
+
+### Added
+- **`prismor sandbox on` / `prismor sandbox off`.** Turning containment off previously meant hand-editing `.prismor/policy.yaml` or unwinding the whole mode — `prismor sandbox` only had `status`, `check` and `run`. The toggle writes exactly `settings.sandbox.enabled`, so an off/on round trip comes back with the ring, network and limits the mode chose. `on` warns when Docker is not reachable instead of leaving every command to fail one at a time; `off` says plainly that policy screening, egress and cloaking are unaffected. See #424.
+
+### Fixed
+- The CLI reference claimed `prismor mode apply` *refuses* on a host with no container runtime. It degrades the sandbox axis to `observe` and lands the rest of the posture — the documented behaviour had not matched the code.
+
 ## [1.52.0] — 2026-09-15
 
 ### Added
