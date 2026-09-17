@@ -89,6 +89,16 @@ class TestDashboardQueries(unittest.TestCase):
         self.assertEqual(by_action["shell: rm -rf /"]["verdict"], "blocked")
         self.assertEqual(by_action["shell: rm -rf /"]["severity"], "critical")
 
+    def test_session_detail_links_each_finding_to_its_own_event(self):
+        # The recent-blocked list joins a finding to its event by position in
+        # the session. It used to count earlier events per (finding, event)
+        # pair, which timed the dashboard's session page out on large
+        # sessions; the rewrite must still pick the finding's own event.
+        detail = get_session_scoped_detail(self.workspace, "test-session")
+        stamps = [item["ts"] for item in detail["recent_blocked"]]
+        self.assertIn("2026-01-01T00:00:01Z", stamps)      # the rm -rf event
+        self.assertNotIn("2026-01-01T00:00:00Z", stamps)   # not the ls before it
+
     def test_events_page_verdict_filter_uses_per_event_match(self):
         allowed_only = get_events_page(verdict="allowed")
         actions = [item["action"] for item in allowed_only["items"]]

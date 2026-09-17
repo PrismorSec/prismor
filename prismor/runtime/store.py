@@ -3712,20 +3712,20 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             cur = conn.cursor()
             cur.execute(
                 """
+                WITH numbered AS (
+                    SELECT ts, ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                    FROM events WHERE session_id = ?
+                )
                 SELECT f.title, f.category, f.severity, f.evidence, e.ts
                 FROM findings f
-                LEFT JOIN events e
-                  ON e.session_id = f.session_id
-                 AND (
-                   SELECT COUNT(*)
-                   FROM events e2
-                   WHERE e2.session_id = e.session_id
-                     AND e2.id < e.id
-                 ) = COALESCE(f.event_index, 0)
+                LEFT JOIN numbered e ON e.rn = COALESCE(f.event_index, 0)
                 WHERE f.session_id = ?
                 ORDER BY e.ts DESC LIMIT 5
                 """,
-                (session_id,),
+                # Numbering the session's events once is linear. Counting the
+                # earlier events per (finding, event) pair was cubic and took
+                # ~9s on a session with 800 findings, past the page's timeout.
+                (session_id, session_id),
             )
             recent_blocked = [
                 {"title": r[0], "category": r[1], "severity": r[2], "evidence": r[3], "ts": r[4]}
