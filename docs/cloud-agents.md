@@ -62,7 +62,7 @@ a failed setup script is a silently unscreened agent. With
 | <img src="https://thesvg.org/icons/github-copilot/light.svg" width="16" height="16" alt=""> | Copilot coding agent | `.github/workflows/copilot-setup-steps.yml` | Repo `.github/hooks/*.json` |
 | <img src="https://thesvg.org/icons/openhands/default.svg" width="16" height="16" alt=""> | OpenHands Cloud | `.openhands/setup.sh` | Repo `.openhands/hooks.json` |
 | <img src="https://thesvg.org/icons/codex/light.svg" width="16" height="16" alt=""> | Codex cloud | Settings → Environments → Setup script | See [Codex](#codex) |
-| | Replicas | Environment start hook | Home or repo: a stock CLI with a normal `$HOME`. See [Replicas](#replicas) |
+| <img src="https://replicas.dev/R-logo-new.svg" width="16" height="16" alt=""> | Replicas | Environment start hook | Home or repo: a stock CLI with a normal `$HOME`. See [Replicas](#replicas) |
 
 Most of these snapshot the VM after the script runs. Install there; run
 `prismor enroll` per boot, never in the snapshotted step, or one device identity
@@ -86,7 +86,7 @@ says so when it sees untrusted Codex hooks. Where you do control the invocation
 
 ## Replicas
 
-[Replicas](https://docs.replicas.dev) runs stock agent CLIs (Claude Code, Codex,
+<img src="https://replicas.dev/R-logo-new.svg" width="16" height="16" alt=""> [Replicas](https://docs.replicas.dev) runs stock agent CLIs (Claude Code, Codex,
 Cursor, OpenCode and others) in disposable cloud VMs with an ordinary home
 directory, so it is the one platform here where the committed config is
 optional: a start hook that runs plain `prismor setup` is enough, and nothing
