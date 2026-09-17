@@ -232,6 +232,17 @@ def build_record(
         "redacted": not full_capture,
     }
 
+    # The extension that caused this call (prismor/runtime/extensions.py): a
+    # loaded skill, a host it named, an MCP server. An id, a name and a review
+    # flag: configuration on the machine, not captured content, so it survives
+    # redaction and lets the console attach sessions to what they ran under.
+    _ext = (event.get("metadata") or {}).get("extension") if isinstance(event.get("metadata"), dict) else None
+    if isinstance(_ext, dict) and _ext.get("id"):
+        record["extension_id"] = str(_ext.get("id"))[:600]
+        record["extension_name"] = str(_ext.get("name") or "")[:200]
+        record["extension_kind"] = str(_ext.get("kind") or "")[:10]
+        record["extension_reviewed"] = bool(_ext.get("reviewed"))
+
     # Data-boundary context (see prismor/runtime/data_boundary.py): which
     # classes of data travelled, to which trust tier, and whether the call was
     # induced by external documentation. All are static labels/enums — no

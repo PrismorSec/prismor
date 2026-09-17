@@ -62,6 +62,7 @@ prismor
 ├─ Visibility (audit & forensics)
 │   ├─ audit                  Full posture audit (--fix to remediate)
 │   ├─ scan                   Scan MCP servers & skills for risk
+│   ├─ extensions <action>    list · why · approve · wrap-hooks — what puts instructions or code into the agent
 │   ├─ deps                   Check project deps vs. threat feed
 │   ├─ analyze / ingest       Run the engine over a JSONL session
 │   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
@@ -369,6 +370,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 |---|---|---|
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
+| `prismor extensions [list\|why\|approve\|wrap-hooks\|unwrap-hooks]` | `--kind`, `--json`, `--workspace` | Inventory of skills, plugins, third-party hooks and MCP servers with origin, installer, capabilities and the documents they caused to be fetched. See [Extension Ledger](extensions.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
 | `prismor analyze [FILE]` | `--input`, `--json`, `--sarif` | Run the engine over a JSONL session (or the most recent one). SARIF output feeds GitHub Code Scanning. |
 | `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a single pre-normalized JSONL session and store it in the local DB. |

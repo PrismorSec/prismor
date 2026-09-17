@@ -152,6 +152,7 @@ packages = [
 "docs/deploy-docker.md" = "prismor/runtime/data/docs/deploy-docker.md"
 "docs/docker.md" = "prismor/runtime/data/docs/docker.md"
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
+"docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/frameworks-agno.md" = "prismor/runtime/data/docs/frameworks-agno.md"
 "docs/frameworks-autogen-core.md" = "prismor/runtime/data/docs/frameworks-autogen-core.md"
 "docs/frameworks-beeai.md" = "prismor/runtime/data/docs/frameworks-beeai.md"

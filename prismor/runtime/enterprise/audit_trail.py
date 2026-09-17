@@ -285,6 +285,8 @@ def append_action_record(
         "input_summary": _input_summary(view),
         "evidence_hash": hashlib.sha256(_canonical(view)).hexdigest(),
         "agent_stated_intent": _stated_intent(event),
+        # What told the agent to do this, when an extension did (extensions.py).
+        "extension_id": ((meta.get("extension") or {}).get("id") if isinstance(meta, dict) else None),
         # Decision.
         "verdict": _verdict(findings, blocking),
         "mode": mode,
@@ -329,6 +331,38 @@ def append_approval_record(
         "rules": [rule_id] if rule_id else [],
         "severity": severity,
         "reason": reason or f"human approval {status}",
+    }
+    return _append(record)
+
+
+def append_extension_record(
+    *,
+    event: str,
+    extension: Dict[str, Any],
+    session_id: str = "",
+    **detail: Any,
+) -> Dict[str, Any]:
+    """Append one signed record for an extension lifecycle event:
+    ``extension_installed | extension_changed | extension_invoked |
+    remote_ref_drift | remote_ref_flagged | hook_executed``. The install path is
+    the one part of an agent's supply chain no tool call passes through, so it
+    gets its own record type rather than riding on an action."""
+    record: Dict[str, Any] = {
+        "record_type": "extension",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "device_id": _device_id(),
+        "prismor_version": _prismor_version(),
+        "session_id": session_id,
+        "event": event,
+        "extension_id": extension.get("id"),
+        "kind": extension.get("kind"),
+        "name": extension.get("name"),
+        "path": extension.get("path"),
+        "origin": extension.get("origin"),
+        "sha256": extension.get("sha256"),
+        "installed_by": extension.get("installed_by"),
+        "capabilities": extension.get("capabilities") or [],
+        "detail": {k: v for k, v in detail.items() if v is not None},
     }
     return _append(record)
 

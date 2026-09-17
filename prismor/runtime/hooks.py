@@ -763,6 +763,12 @@ def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: s
     return f'"{py}" "{shim}" hook-dispatch --agent {agent} {ws_flag}--mode {mode}'
 
 
+# `Skill` is how Claude loads a skill. Without it a skill invocation never
+# reaches the hook: per-skill denies cannot fire, and nothing records which
+# third-party instructions a session was running under.
+_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*"
+
+
 def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_workspace: bool = True) -> Dict[str, Any]:
     hooks = dict(config.get("hooks", {}))
     hooks["UserPromptSubmit"] = _merge_claude_entries(
@@ -778,11 +784,11 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
     # _normalize_claude) so they can be attributed to the subagent.
     hooks["PreToolUse"] = _merge_claude_entries(
         hooks.get("PreToolUse", []),
-        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
     )
     hooks["PostToolUse"] = _merge_claude_entries(
         hooks.get("PostToolUse", []),
-        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
     )
     # SessionStart carries the project-memory files (CLAUDE.md/AGENTS.md) that
     # Claude auto-loads before any tool call. Scanning them here brings their

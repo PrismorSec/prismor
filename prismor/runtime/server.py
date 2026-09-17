@@ -368,6 +368,24 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
+        if path == "/api/extensions/session":
+            workspace = self._resolve_workspace(qs) or Path.cwd()
+            try:
+                from prismor.runtime.extensions import session_extensions
+                self._send_json(session_extensions(workspace, (qs.get("id") or [""])[0]))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/extensions":
+            workspace = self._resolve_workspace(qs) or Path.cwd()
+            try:
+                from prismor.runtime.extensions import overview
+                self._send_json(overview(workspace))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
         if path == "/api/workspaces":
             workspaces = list_registered_workspaces()
             enrollment = get_enrollment()
@@ -619,6 +637,21 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 })
             except Exception as exc:
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
+            return
+
+        # POST /api/extensions/approve — a human accepts an extension after review
+        if path == "/api/extensions/approve":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+                from prismor.runtime.extensions import approve
+                ws_str = body.get("workspace")
+                workspace = Path(ws_str) if ws_str else (_SERVER_WORKSPACE or Path.cwd())
+                self._send_json({"ok": True, **approve(workspace, str(body.get("id") or ""))})
+            except SystemExit as exc:
+                self._send_json({"error": str(exc)}, status=404)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
             return
 
         # POST /api/tool-policy — deny/allow a tool tag at agent or global scope

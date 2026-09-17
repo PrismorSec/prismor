@@ -1047,7 +1047,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .agent-hero {
     display:flex; align-items:center; gap:16px; flex-wrap:wrap;
     padding:18px 20px; margin-bottom:18px;
-    background:linear-gradient(135deg,#fff, var(--gray-50));
+    background:linear-gradient(135deg,var(--surface), var(--gray-50));
     border:1px solid var(--gray-200); border-radius:14px;
   }
   .agent-avatar {
@@ -1069,7 +1069,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .agent-stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
   .agent-stat {
     flex:1; min-width:120px; padding:14px 16px; border:1px solid var(--gray-200);
-    border-radius:12px; background:#fff;
+    border-radius:12px; background:var(--surface);
   }
   .agent-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--gray-400); font-weight:600; }
   .agent-stat-value { font-size:24px; font-weight:700; color:var(--gray-900); margin-top:4px; }
@@ -1095,6 +1095,77 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tp-deny.on  { background:#fee2e2; color:#b91c1c; border-color:#fecaca; }
   .mcp-kind { font-size:11px; font-weight:600; color:var(--gray-500); background:var(--gray-100); border-radius:999px; padding:2px 9px; margin-left:2px; }
   .mcp-kind-mirror { color:#a16207; background:#fef9c3; }
+  .ext-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+  .ext-stat { background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; padding:12px 14px; }
+  .ext-stat b { display:block; color:var(--gray-900); font-size:22px; font-weight:700; line-height:1.1; }
+  .ext-stat span { font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:.04em; }
+  .ext-stat em { font-style:normal; font-size:11px; font-weight:600; color:#b45309; margin-left:6px; }
+  .ext-views { display:inline-flex; gap:2px; padding:3px; margin-bottom:14px; border:1px solid var(--gray-200); border-radius:9px; background:var(--gray-100); }
+  .ext-view { font-size:12.5px; font-weight:600; padding:6px 14px; border-radius:6px; border:0; background:none; color:var(--gray-500); cursor:pointer; }
+  .ext-view.on { background:var(--surface); color:var(--gray-900); box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .ext-view small { font-weight:600; color:var(--gray-400); margin-left:5px; }
+  .ext-use { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; padding:10px 12px; cursor:pointer; }
+  .ext-use:hover { background:var(--gray-100); border-radius:10px; }
+  .ext-use-id { font-family:var(--mono,ui-monospace,monospace); font-size:12px; color:var(--gray-900); font-weight:600; }
+  .ext-use-meta { font-size:11px; color:var(--gray-400); margin-left:auto; white-space:nowrap; }
+  .ext-agent { font-size:10.5px; font-weight:700; border-radius:4px; padding:1px 6px; background:rgba(59,130,246,.14); color:#3b82f6; flex:none; }
+  .ext-quiet { font-size:11px; color:var(--gray-500); }
+  .ext-never { font-size:10.5px; font-weight:600; border-radius:999px; padding:1px 8px; border:1px dashed var(--gray-300); color:var(--gray-500); flex:none; }
+  .ext-agent-card { padding:14px; }
+  .ext-agent-head { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+  .ext-agent-head b { font-size:15px; color:var(--gray-900); }
+  .ext-agent-nums { display:flex; flex-wrap:wrap; gap:18px; margin-bottom:10px; }
+  .ext-agent-nums div { font-size:11px; color:var(--gray-500); }
+  .ext-agent-nums div b { display:block; font-size:18px; color:var(--gray-900); }
+  .ext-agent-nums div.warn b { color:#d97706; }
+  .ext-chipline { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:6px; }
+  .ext-chipline em { font-style:normal; font-size:11px; color:var(--gray-400); width:74px; flex:none; }
+  .ext-layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+  @media (max-width: 980px) { .ext-layout { grid-template-columns:1fr; } }
+  .ext-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .ext-filter { font-size:12px; font-weight:600; padding:4px 11px; border-radius:999px; border:1px solid var(--gray-200); background:var(--surface); color:var(--gray-500); cursor:pointer; }
+  .ext-filter.on { background:var(--gray-900); color:var(--surface); border-color:transparent; }
+  .ext-row { background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; margin-bottom:8px; }
+  .ext-row.review { border-left:3px solid #f59e0b; }
+  .ext-head { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; min-width:0; }
+  .ext-name { color:var(--gray-900); font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .ext-origin { font-size:11px; color:var(--gray-400); font-family:var(--mono,ui-monospace,monospace); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+  .ext-badge { font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; border-radius:4px; padding:2px 6px; flex:none; }
+  .ext-badge.new, .ext-badge.changed { background:rgba(245,158,11,.18); color:#d97706; }
+  .ext-badge.approved { background:rgba(34,197,94,.16); color:#16a34a; }
+  .ext-badge.unchanged { background:var(--gray-100); color:var(--gray-500); }
+  .ext-kind { font-size:10px; font-weight:700; text-transform:uppercase; color:var(--gray-500); border:1px solid var(--gray-200); border-radius:4px; padding:1px 5px; flex:none; }
+  .ext-cap { font-size:10.5px; font-weight:600; border-radius:999px; padding:1px 8px; background:var(--gray-100); color:var(--gray-500); flex:none; }
+  .ext-cap.remote_instructions, .ext-cap.network { background:rgba(239,68,68,.15); color:#ef4444; }
+  .ext-cap.runs_code, .ext-cap.declares_hooks { background:rgba(249,115,22,.15); color:#f97316; }
+  .ext-body { border-top:1px solid var(--gray-100); padding:10px 12px 12px; font-size:12px; display:none; }
+  .ext-row.open .ext-body { display:block; }
+  .ext-kv { display:grid; grid-template-columns:110px minmax(0,1fr); gap:4px 10px; }
+  .ext-kv dt { color:var(--gray-400); }
+  .ext-kv dd { margin:0; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; overflow-wrap:anywhere; }
+  .ext-approve { margin-top:10px; font-size:12px; font-weight:600; padding:5px 12px; border-radius:6px; border:1px solid #16a34a; background:rgba(34,197,94,.12); color:#16a34a; cursor:pointer; }
+  .ext-ev { display:grid; grid-template-columns:8px minmax(0,1fr); gap:10px; padding:8px 0; border-bottom:1px solid var(--gray-100); font-size:12px; }
+  .ext-ev:last-child { border-bottom:0; }
+  .ext-ev i { width:8px; height:8px; border-radius:50%; margin-top:5px; background:var(--gray-300); }
+  .ext-ev.extension_installed i, .ext-ev.extension_changed i { background:#f59e0b; }
+  .ext-ev.remote_ref_drift i, .ext-ev.remote_ref_flagged i { background:#ef4444; }
+  .ext-ev.extension_invoked i { background:#3b82f6; }
+  .ext-cause { display:inline-flex; align-items:center; gap:4px; flex:none; font-size:10.5px; font-weight:600; border-radius:999px;
+    padding:1px 8px; margin-left:6px; background:var(--gray-100); color:var(--gray-600); cursor:pointer; white-space:nowrap; }
+  .ext-cause .icon { width:11px; height:11px; }
+  .ext-cause.unreviewed { background:rgba(245,158,11,.18); color:#d97706; }
+  .ext-sess { color:#3b82f6; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+  .sess-ran-under { margin:0 0 14px; padding:12px 14px 6px; background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; font-size:12px; }
+  .sess-ran-under[hidden] { display:none; }
+  .sess-ran-under .ext-row { background:none; }
+  .sess-ext-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin-bottom:10px; }
+  .sess-ext-hooks { margin:0 0 8px; }
+  .sess-ext-hooks summary { cursor:pointer; color:var(--gray-500); font-weight:600; padding:4px 2px 8px; }
+  .sess-ran-title { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--gray-400); }
+  .sess-ran-group { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px; }
+  .sess-ran-group em { font-style:normal; color:var(--gray-500); margin-right:2px; }
+  .sess-ran-docs { font-weight:600; color:var(--gray-600); margin-left:6px; }
+  .ext-ev small { display:block; color:var(--gray-400); font-size:11px; overflow-wrap:anywhere; }
   .mcp-hint { font-size:11.5px; color:var(--gray-500); margin-top:8px; line-height:1.5; }
   .tp-toggle { position:relative; width:38px; height:22px; border-radius:999px; border:1px solid var(--gray-200); background:var(--gray-100); cursor:pointer; padding:0; transition:background .12s; }
   .tp-toggle.on { background:#22c55e; border-color:#16a34a; }
@@ -1785,6 +1856,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-merge" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></symbol>
+  <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
   <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/></symbol>
@@ -1814,6 +1886,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span></button>
   <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
+  <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
   <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span></button>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
@@ -1844,6 +1917,24 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span class="hint">Every MCP server Prismor fronts, and how each tool is handled. Allow runs it; Ask requires human approval (step-up); Deny blocks it. Applies across all agents.</span>
   </div>
   <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
+</div>
+
+<div id="page-extensions" class="page">
+  <div class="section"><h2>Extensions</h2><div class="rule"></div>
+    <span class="hint">Everything that puts instructions or code into your agents. Start from a session to see what it actually used, roll up to an agent, or audit what is installed on this machine.</span>
+  </div>
+  <div id="extSummary" class="ext-summary"></div>
+  <div class="ext-views" id="extViews"></div>
+  <div class="ext-layout">
+    <div>
+      <div class="ext-filters" id="extFilters"></div>
+      <div id="extList"><div class="empty">Loading extensions…</div></div>
+    </div>
+    <div class="card ext-timeline">
+      <div class="card-title">Lifecycle <span class="mcp-kind">signed trail</span></div>
+      <div id="extEvents"><div class="empty">No extension events yet.</div></div>
+    </div>
+  </div>
 </div>
 
 <div id="page-docs" class="page">
@@ -2241,6 +2332,14 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div id="agentControls"></div>
   </div>
 
+  <div class="card" id="agentExtCard" style="margin-bottom:16px" hidden>
+    <div class="bar" style="margin-bottom:10px">
+      <div class="card-title">Extensions this agent loads</div>
+      <div class="bar-right"><a class="ext-sess" onclick="openExtensionsFor(_agentViewName)">open in ledger</a></div>
+    </div>
+    <div id="agentExtBody"></div>
+  </div>
+
   <div class="card">
     <div class="bar" style="margin-bottom:14px">
       <div class="card-title">Sessions for this agent</div>
@@ -2279,6 +2378,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     </div>
     <div class="sess-ctrl-btns" id="sessFlowActions"></div>
   </div>
+
+  <div id="sessRanUnder" class="sess-ran-under" hidden></div>
 
   <div class="session-layout">
     <div>
@@ -2802,6 +2903,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadAgents();           // silent background refresh
     }
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
+    if (btn.dataset.tab === 'extensions') loadExtensions();
     if (btn.dataset.tab === 'docs') loadDocs();
   });
 });
@@ -2904,6 +3006,214 @@ document.getElementById('docsSearch')?.addEventListener('input', (ev) => {
 });
 
 // ── MCP Servers: one registry of every server Prismor fronts ──────────────
+// A tool call an extension caused carries that extension; an unreviewed one is
+// the thing a responder most needs to notice, so it is the loud variant.
+function extCauseChip(x) {
+  if (!x || !x.id) return '';
+  return '<span class="ext-cause' + (x.reviewed ? '' : ' unreviewed') + '" title="' +
+    safeAttr((x.kind || 'extension') + ' ' + (x.name || '') + (x.via ? ' · ' + x.via : '') + (x.reviewed ? '' : ' · not reviewed')) +
+    '" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(x.id) + '\')">' +
+    '<svg class="icon"><use href="#i-puzzle"/></svg>' + safe(x.name || x.id) + '</span>';
+}
+function openExtension(id) {
+  _extView = 'installed'; _extAgent = ''; _extFilter = 'all'; _extOpen = {}; _extOpen[id] = true;
+  document.querySelector('.tab-btn[data-tab="extensions"]')?.click();
+}
+function openExtensionsFor(agent, filter) {
+  _extView = 'installed'; _extAgent = agent || ''; _extFilter = filter || 'all'; _extOpen = {};
+  document.querySelector('.tab-btn[data-tab="extensions"]')?.click();
+}
+// The session page answers "what was this run under" on its own: every
+// extension with its origin, what it can do, the calls it caused here and the
+// documents it sent the agent to, reviewable in place.
+let _sessExt = null, _sessExtOpen = {};
+async function loadSessionExtensions(sessionId, ws) {
+  const el = document.getElementById('sessRanUnder');
+  el.hidden = true; el.innerHTML = ''; _sessExt = null; _sessExtOpen = {};
+  try {
+    const d = await apiFetch('/api/extensions/session?id=' + encodeURIComponent(sessionId) + (ws ? '&workspace=' + encodeURIComponent(ws) : ''));
+    if (!_sessionViewState || _sessionViewState.sessionId !== sessionId) return;
+    _sessExt = d;
+    (d.extensions || []).forEach(x => { if (x.role !== 'ambient' && !x.reviewed) _sessExtOpen[x.id] = true; });
+    renderSessionExtensions();
+  } catch (e) { /* the session view works without it */ }
+}
+function sessExtRow(x, calls) {
+  const mine = calls.filter(ev => ev.extension && ev.extension.id === x.id);
+  const blocked = mine.filter(ev => flowVerdict(ev) === 'block').length;
+  const kv = [['Origin', x.origin], ['Installed by', extBy(x.installed_by)], ['Path', x.path], ['Command', x.command],
+    ['Hosts named', (x.hosts || []).join(', ')]].filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+  const docs = (x.documents || []).map(doc => '<dt>Read here</dt><dd>' + safe(doc.url) + (doc.sha256 ? ' · sha256 ' + safe(String(doc.sha256).slice(0, 12)) + ' · ' + doc.bytes + ' bytes' : '') +
+    (doc.last_changed ? ' · <b style="color:#ef4444">changed ' + safe(extWhen(doc.last_changed)) + '</b>' : '') + '</dd>').join('');
+  const id = safeJsArg(x.id);
+  return '<div class="ext-row' + (x.reviewed ? '' : ' review') + (_sessExtOpen[x.id] ? ' open' : '') + '">' +
+    '<div class="ext-head" onclick="_sessExtOpen[\'' + id + '\']=!_sessExtOpen[\'' + id + '\'];renderSessionExtensions()">' +
+      '<span class="ext-badge ' + (x.reviewed ? 'approved' : 'new') + '">' + (x.reviewed ? 'reviewed' : 'unreviewed') + '</span>' +
+      '<span class="ext-kind">' + safe(x.kind) + '</span><span class="ext-name">' + safe(x.name) + '</span>' +
+      (x.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
+      (x.role === 'ambient' ? '' : '<span class="ext-quiet">' + (mine.length ? 'caused ' + mine.length + ' call' + (mine.length === 1 ? '' : 's') + ' here' + (blocked ? ', ' + blocked + ' blocked' : '') : 'no calls traced to it') + '</span>') +
+      '<span class="ext-origin">' + safe(x.origin || '') + '</span></div>' +
+    '<div class="ext-body"><dl class="ext-kv">' + kv + docs + '</dl>' +
+      (x.reviewed ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button>') +
+      ' <a class="ext-sess" style="margin-left:10px" onclick="openExtension(\'' + id + '\')">open in ledger</a></div></div>';
+}
+function renderSessionExtensions() {
+  const el = document.getElementById('sessRanUnder'), d = _sessExt;
+  if (!el || !d || !(d.extensions || []).length) return;
+  const calls = (_sessionViewState && _sessionViewState.data && _sessionViewState.data.recent_events) || [];
+  const used = d.extensions.filter(x => x.role !== 'ambient'), hooks = d.extensions.filter(x => x.role === 'ambient');
+  const unrev = used.filter(x => !x.reviewed).length;
+  el.innerHTML = '<div class="sess-ext-head"><span class="sess-ran-title">Extensions in this session</span>' +
+      '<span class="ext-quiet">' + (used.length ? used.length + ' loaded' + (unrev ? ', <b style="color:#d97706">' + unrev + ' never reviewed</b>' : '') : 'none loaded') +
+      (hooks.length ? ' · ' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') + ' ran around every call' : '') +
+      ((d.fetched || []).length ? ' · ' + d.fetched.length + ' document' + (d.fetched.length === 1 ? '' : 's') + ' read on a skill\'s say-so' : '') + '</span></div>' +
+    used.map(x => sessExtRow(x, calls)).join('') +
+    (hooks.length ? '<details class="sess-ext-hooks"' + (_sessExtOpen.__hooks ? ' open' : '') + ' ontoggle="_sessExtOpen.__hooks=this.open"><summary>' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') +
+      (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '');
+  el.hidden = false;
+}
+
+// ── Extensions: the ledger of what puts instructions or code into the agent ──
+let _extCache = null, _extFilter = 'review', _extOpen = {}, _extView = 'sessions', _extAgent = '';
+async function loadExtensions() {
+  const ws = _serverWorkspace || '';
+  try {
+    _extCache = await apiFetch('/api/extensions' + (ws ? '?workspace=' + encodeURIComponent(ws) : ''), {timeoutMs: 20000});
+    if (!(_extCache.rows || []).some(r => r.needs_review) && _extFilter === 'review') _extFilter = 'all';
+    // Nothing has run yet on a fresh install: the inventory is the only thing to show.
+    if (!(_extCache.sessions || []).length && _extView === 'sessions') _extView = 'installed';
+    renderExtensions();
+  } catch (e) {
+    document.getElementById('extList').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  }
+}
+function extWhen(ts) { try { return new Date(ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ts || ''; } }
+function extBy(by) { return !by ? '' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
+function extAgentName(a) { return a === 'any' || !a ? 'any agent' : a; }
+function extUseChips(s) {
+  return (s.used || []).map(extCauseChip).join('') +
+    (s.hooks ? '<span class="ext-quiet">+ ' + s.hooks + ' hook' + (s.hooks === 1 ? '' : 's') + '</span>' : '') +
+    (s.documents ? '<span class="ext-quiet">· read ' + s.documents + ' document' + (s.documents === 1 ? '' : 's') + ' on a skill\'s say-so</span>' : '');
+}
+function renderExtSessions(d) {
+  const list = (d.sessions || []).filter(s => !_extAgent || s.agent === _extAgent);
+  return list.length ? list.map(s =>
+    '<div class="ext-row' + (s.unreviewed ? ' review' : '') + '"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
+      '<span class="ext-agent">' + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      ((s.used || []).length ? extUseChips(s) : '<span class="ext-quiet">loaded nothing' + (s.hooks ? ' · ' + s.hooks + ' third-party hook' + (s.hooks === 1 ? '' : 's') + ' ran around it' : '') + '</span>') +
+      '<span class="ext-use-meta">' + safe(extWhen(s.ts)) + '</span></div></div>').join('')
+    : '<div class="empty">No session has run under an extension yet.</div>';
+}
+function extAgentBody(a, d) {
+  const mine = d.rows.filter(r => (r.agents || ['any']).some(x => x === a.agent || x === 'any'));
+  const used = mine.filter(r => (r.used_in || []).length && r.kind !== 'plugin');
+  const idle = mine.filter((r, i) => r.never_used && r.kind !== 'plugin' && mine.findIndex(o => o.never_used && o.kind !== 'plugin' && o.name === r.name) === i);
+  const chip = r => extCauseChip({id: r.id, kind: r.kind, name: r.name, reviewed: !r.needs_review, via: (r.used_in || []).length + ' session(s)'});
+  const nums = [['Sessions', a.sessions], ['Ran unreviewed', a.unreviewed_sessions, 1], ['Installed', a.installed], ['Never used', a.never_used], ['To review', a.review, 1]];
+  return '<div class="ext-agent-nums">' + nums.map(([l, v, w]) => '<div' + (w && v ? ' class="warn"' : '') + '><b>' + (v || 0) + '</b>' + l + '</div>').join('') + '</div>' +
+    (used.length ? '<div class="ext-chipline"><em>Used</em>' + used.map(chip).join('') + '</div>' : '') +
+    (idle.length ? '<div class="ext-chipline"><em>Never used</em>' + idle.slice(0, 8).map(r => '<span class="ext-never" onclick="openExtension(\'' + safeJsArg(r.id) + '\')" style="cursor:pointer">' + safe(r.name) + '</span>').join('') +
+      (idle.length > 8 ? '<a class="ext-sess" onclick="openExtensionsFor(\'' + safeJsArg(a.agent) + '\',\'never_used\')">+' + (idle.length - 8) + ' more</a>' : '') + '</div>' : '');
+}
+function renderExtAgents(d) {
+  return (d.agents || []).length ? d.agents.map(a =>
+    '<div class="ext-row ext-agent-card' + (a.unreviewed_sessions ? ' review' : '') + '"><div class="ext-agent-head"><b>' + safe(extAgentName(a.agent)) + '</b>' +
+      '<a class="ext-sess" onclick="_extView=\'sessions\';_extAgent=\'' + safeJsArg(a.agent) + '\';renderExtensions()">sessions</a>' +
+      '<a class="ext-sess" onclick="openExtensionsFor(\'' + safeJsArg(a.agent) + '\')">installed</a></div>' + extAgentBody(a, d) + '</div>').join('')
+    : '<div class="empty">No agents yet.</div>';
+}
+async function renderAgentExtensions(agentName) {
+  const card = document.getElementById('agentExtCard');
+  card.hidden = true;
+  try {
+    if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
+    const a = (_extCache.agents || []).find(x => x.agent === agentName);
+    if (!a || _agentViewName !== agentName) return;
+    document.getElementById('agentExtBody').innerHTML = extAgentBody(a, _extCache);
+    card.hidden = false;
+  } catch (e) { /* the agent page works without it */ }
+}
+function renderExtensions() {
+  const d = _extCache || {rows: [], events: [], counts: {}};
+  const kinds = [['skill','Skills'],['plugin','Plugins'],['hook','Third-party hooks'],['mcp','MCP servers']];
+  const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
+  const review = d.rows.filter(r => r.needs_review).length, idle = d.rows.filter(r => r.never_used).length;
+  document.getElementById('extSummary').innerHTML = [
+    [sess.length, 'Sessions that ran under extensions', unrev ? unrev + ' under something unreviewed' : ''],
+    [d.rows.filter(r => (r.used_in || []).length).length, 'Extensions actually used', ''],
+    [d.rows.length, 'Installed on this machine', review ? review + ' to review' : ''],
+    [idle, 'Installed, never used', '']]
+    .map(([n, label, warn]) => '<div class="ext-stat"><b>' + n + (warn ? '<em>' + safe(warn) + '</em>' : '') + '</b><span>' + label + '</span></div>').join('');
+  document.getElementById('extViews').innerHTML = [['sessions', 'By session', sess.length], ['agents', 'By agent', (d.agents || []).length], ['installed', 'Installed', d.rows.length]]
+    .map(([k, l, n]) => '<button class="ext-view' + (_extView === k ? ' on' : '') + '" onclick="_extView=\'' + k + '\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
+  const agentPick = _extView === 'agents' ? '' : '<select class="fsel" style="margin-right:6px" onchange="_extAgent=this.value;renderExtensions()"><option value="">All agents</option>' +
+    (d.agents || []).filter(a => a.agent !== 'any').map(a => '<option value="' + safeAttr(a.agent) + '"' + (_extAgent === a.agent ? ' selected' : '') + '>' + safe(a.agent) + '</option>').join('') + '</select>';
+  const filters = [['review','Needs review (' + review + ')'],['all','All'],['never_used','Never used (' + idle + ')'],['remote_instructions','Reads remote instructions'],['runs_code','Runs code'],['network','Talks to the network']]
+    .concat(kinds.map(([k, l]) => [k, l]));
+  document.getElementById('extFilters').innerHTML = agentPick + (_extView !== 'installed' ? '' : filters.map(([k, l]) =>
+    '<button class="ext-filter' + (_extFilter === k ? ' on' : '') + '" onclick="_extFilter=\'' + k + '\';renderExtensions()">' + safe(l) + '</button>').join(''));
+  if (_extView !== 'installed') {
+    document.getElementById('extList').innerHTML = _extView === 'sessions' ? renderExtSessions(d) : renderExtAgents(d);
+    return renderExtEvents(d);
+  }
+  const rows = d.rows.filter(r => !_extAgent || (r.agents || ['any']).some(x => x === _extAgent || x === 'any')).filter(r => _extFilter === 'all' ? true
+    : _extFilter === 'never_used' ? r.never_used
+    : _extFilter === 'review' ? r.needs_review
+    : ['skill','plugin','hook','mcp'].includes(_extFilter) ? r.kind === _extFilter
+    : (r.capabilities || []).includes(_extFilter))
+    .sort((a, b) => (b.needs_review - a.needs_review) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  document.getElementById('extList').innerHTML = rows.length ? rows.slice(0, 300).map(r => {
+    const rev = r.needs_review;
+    const kv = [['Id', r.id], ['Loaded by', (r.agents || []).map(extAgentName).join(', ')], ['Path', r.path], ['Origin', r.origin], ['Installed by', extBy(r.installed_by)],
+      ['First seen', r.first_seen ? extWhen(r.first_seen) : ''], ['Hosts named', (r.hosts || []).join(', ')],
+      ['Command', r.command], ['Part of', r.parent], ['Hash', (r.sha256 || '').slice(0, 16)]]
+      .filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+    const used = (r.invocations || []).slice(-5).reverse().map(i =>
+      '<dt>Invoked</dt><dd><a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(i.session) + '\')">session ' +
+      safe(String(i.session).slice(0, 8)) + '</a> · ' + safe(extWhen(i.ts)) + '</dd>').join('');
+    const docs = (r.remote_refs || []).map(x =>
+      '<dt>Fetched</dt><dd>' + safe(x.url) + ' · sha256 ' + safe(String(x.sha256).slice(0, 12)) + ' · ' + x.bytes + ' bytes' +
+      (x.last_changed ? ' · <b style="color:#b91c1c">changed ' + safe(extWhen(x.last_changed)) + '</b>' : '') + '</dd>').join('');
+    return '<div class="ext-row' + (rev ? ' review' : '') + (_extOpen[r.id] ? ' open' : '') + '">' +
+      '<div class="ext-head" onclick="_extOpen[\'' + safeJsArg(r.id) + '\']=!_extOpen[\'' + safeJsArg(r.id) + '\'];renderExtensions()">' +
+        '<span class="ext-badge ' + safeAttr(r.needs_review && r.status === 'unchanged' ? 'new' : r.status) + '">' + safe(r.status === 'unchanged' ? (r.needs_review ? 'unreviewed' : 'seen') : r.status) + '</span>' +
+        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name">' + safe(r.name) + '</span>' +
+        (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
+        (r.never_used ? '<span class="ext-never">never used</span>' : (r.used_in || []).length ? '<span class="ext-quiet">' + r.used_in.length + ' session' + (r.used_in.length === 1 ? '' : 's') + '</span>' : '') +
+        '<span class="ext-origin">' + safe(r.origin || '') + '</span>' +
+        (r.agents || []).filter(a => a !== 'any').map(a => '<span class="ext-agent">' + safe(a) + '</span>').join('') + '</div>' +
+      '<div class="ext-body"><dl class="ext-kv">' + kv + used + docs + '</dl>' +
+        (r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button>' : '') +
+      '</div></div>';
+  }).join('') + (rows.length > 300 ? '<div class="empty">Showing 300 of ' + rows.length + '. Narrow with a filter.</div>' : '')
+    : '<div class="empty">Nothing here. ' + (_extFilter === 'review' ? 'Every extension on this machine has been seen before.' : '') + '</div>';
+  renderExtEvents(d);
+}
+function renderExtEvents(d) {
+  const label = {extension_installed: 'installed', extension_changed: 'changed', extension_invoked: 'invoked',
+    remote_ref_drift: 'remote document changed', remote_ref_flagged: 'remote document flagged', hook_executed: 'hook ran'};
+  document.getElementById('extEvents').innerHTML = (d.events || []).length ? d.events.map(e => {
+    const det = e.detail || {};
+    const extra = [det.url, det.children_new ? 'with ' + det.children_new.length + ' new inside' : '',
+      det.children_changed ? det.children_changed.length + ' changed inside' : '',
+      det.rules ? 'rules: ' + det.rules.join(', ') : '', det.exit_code != null ? 'exit ' + det.exit_code + ' · ' + det.ms + 'ms' : '',
+      e.event === 'extension_installed' ? extBy(e.installed_by) : '', e.session_id ? 'session ' + String(e.session_id).slice(0, 8) : '']
+      .filter(Boolean).join(' · ');
+    return '<div class="ext-ev ' + safeAttr(e.event) + '"><i></i><div><b>' + safe(e.kind) + ' ' + safe(e.name) + '</b> ' + safe(label[e.event] || e.event) +
+      '<small>' + safe(extWhen(e.ts)) + (e.origin ? ' · ' + safe(e.origin) : '') + '</small>' + (extra ? '<small>' + safe(extra) + '</small>' : '') + '</div></div>';
+  }).join('') : '<div class="empty">No extension events yet. The first sync records what is already installed as the baseline.</div>';
+}
+async function extApprove(id) {
+  try {
+    await apiFetch('/api/extensions/approve', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: id, workspace: _serverWorkspace || undefined})});
+    toast('Marked reviewed');
+    _extCache = null;
+    if (_sessionViewState && _sessExt && document.getElementById('page-session')?.classList.contains('active')) loadSessionExtensions(_sessionViewState.sessionId, _sessionViewState.workspace);
+    else loadExtensions();
+  } catch (e) { toast('✗ ' + e.message, true); }
+}
+
 async function loadMcpServers() {
   const el = document.getElementById('mcpServersList');
   try {
@@ -3815,6 +4125,7 @@ async function openAgentView(agentName, isBack){
   renderAgentHero(agentName);
   renderAgentControls(agentName);
   renderAgentSessions(agentName);
+  renderAgentExtensions(agentName);
 }
 function renderAgentSwitch(current){
   const sel = document.getElementById('agentViewSelect');
@@ -3973,6 +4284,7 @@ async function openSessionView(sessionId, workspace, isBack){
   document.getElementById('sessFlowCanvas').innerHTML = '<div class="flow-empty">Loading session flow…</div>';
   document.getElementById('sessNodePanel').innerHTML = '<div class="node-panel-empty">Loading…</div>';
 
+  loadSessionExtensions(sessionId, ws);
   await ensureAllSessions(false);
   const sess = _allSessionsCache.find(s=>s.sessionId===sessionId);
   const agent = sess ? sess.agent : '';
@@ -3987,6 +4299,7 @@ async function openSessionView(sessionId, workspace, isBack){
     if (_sessionViewState.sessionId !== sessionId) return;
     _sessionViewState.data = data;
     renderSessionView(data);
+    renderSessionExtensions();
   } catch(e){
     document.getElementById('sessFlowCanvas').innerHTML = '<div class="flow-empty" style="color:#b91c1c">Failed to load session: '+safe(e.message)+'</div>';
   }
@@ -4136,6 +4449,7 @@ function treeLeafEl(ev, idx){
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
+    extCauseChip(ev.extension)+
     '<span class="tree-ts">'+safe(ev.ts||'')+'</span>';
   return btn;
 }
@@ -4207,6 +4521,10 @@ function renderNodePanel(ev){
         '<span class="scoped-tag tag-net">'+safe(ev.toolTag||ev.type||'unknown')+'</span></div>'+
       '<div class="drawer-rule-row"><span class="drawer-rule-label">Type</span>'+
         '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+
+      (ev.extension ? '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">Caused by</span>'+
+        '<div style="font-size:11px;line-height:1.5;color:var(--gray-600)">'+extCauseChip(ev.extension)+
+        '<div>The '+safe(ev.extension.kind)+' '+safe(ev.extension.via||'caused this call')+'.'+
+        (ev.extension.reviewed ? '' : ' No human has reviewed it.')+'</div></div></div>' : '')+
       '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">When</span>'+
         '<div style="font-size:11px;color:var(--gray-600)">'+safe(ev.tsAbs||ev.ts||'')+'</div></div>'+
       '<div class="drawer-rule-row" style="align-items:flex-start;margin-bottom:0"><span class="drawer-rule-label">Action</span>'+

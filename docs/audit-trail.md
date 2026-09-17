@@ -44,6 +44,11 @@ Without it, records are still hash-chained but unsigned.
 | `verdict`, `rules`, `reason`, `mode`, `eval_ms` | why: the policy decision in human-readable terms |
 | `seq`, `prev_hash`, `hash`, `signature`, `signing_key_id` | the chain + signature |
 
+Extension lifecycle events get their own records too (`record_type: "extension"`):
+`extension_installed`, `extension_changed`, `extension_invoked`, `remote_ref_drift`,
+`remote_ref_flagged` and `hook_executed`. An install is the one part of an agent's
+supply chain no tool call passes through. See [Extension Ledger](extensions.md).
+
 Human approvals get their own records (`record_type: "approval"`). The
 headless approval path (`await_step_up`) writes the outcome, one of
 `approved`, `denied`, `expired`, `timeout`, or `request_failed`, along with the

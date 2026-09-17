@@ -3809,6 +3809,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "lane": event_lane(row["type"] or "", meta if isinstance(meta, dict) else {}),
                     "artifacts": artifacts,
                     "toolTag": tool_tag or "",
+                    "extension": meta.get("extension") if isinstance(meta, dict) else None,
                     "action": (f"{row['type']}: {' '.join(str(detail).split())[:300]}"
                                if detail else (row["type"] or "event")),
                     "verdict": verdict,

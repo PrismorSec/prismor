@@ -325,6 +325,29 @@ def evaluate_tool_call(
     except Exception as exc:
         sys.stderr.write(f"[prismor] scoped enforcement error: {exc}\n")
 
+    # An agent installing a plugin, skill or MCP server into itself. Warn-level:
+    # the point is that the install is in the trail with the session that ran it.
+    try:
+        if str(event.get("agent_event") or "").lower().startswith("pre"):
+            from prismor.runtime.extensions import install_finding
+            _ext_finding = install_finding(event, session_id, mode=engine.device_mode or engine.default_mode)
+            if _ext_finding:
+                findings.append(_ext_finding)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] extension install check error: {exc}\n")
+
+    # A finding raised while the session runs under an extension nobody has
+    # reviewed says so: it is usually the first thing a responder needs.
+    if findings:
+        try:
+            from prismor.runtime.extensions import unreviewed_in_session
+            _under = unreviewed_in_session(workspace, session_id)
+            if _under:
+                for _f in findings:
+                    _f.setdefault("unreviewedExtensions", _under)
+        except Exception:
+            pass
+
     # Per-agent kill-switch: inject a CRITICAL finding when the agent is disabled.
     # This runs before IAM so the disabled state always wins.
     if _control is not None and not _control.enabled:
