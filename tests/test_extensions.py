@@ -284,3 +284,28 @@ def test_usage_rolls_up_from_session_to_agent_to_device(ws, monkeypatch):
     assert agents["claude"]["sessions"] == 1 and agents["claude"]["used"] >= 1
     assert agents["codex"]["never_used"] == 1 and agents["codex"]["sessions"] == 0
     assert ext.report_payload(ws)["sessions"][0]["agent"] == "claude"
+
+
+def test_mcp_server_with_no_config_file_is_recorded_when_a_session_uses_it(ws):
+    # Servers from a browser extension, a hosted connector or a plugin are in no
+    # file discovery reads. Using one must still attach it to the session.
+    ext.sync(ws)
+    call = {"type": "tool_use", "metadata": {"tool_name": "mcp__browser-bridge__navigate"}}
+    tag = ext.tag_event(ws, "s1", call)
+    assert tag["kind"] == "mcp" and tag["name"] == "browser-bridge" and tag["reviewed"] is False
+    ext.tag_event(ws, "s1", {"type": "tool_use", "metadata": {"tool_name": "mcp__browser-bridge__click"}})
+
+    view = ext.overview(ws)
+    rows = [r for r in view["rows"] if r["name"] == "browser-bridge"]
+    assert len(rows) == 1 and rows[0]["installed_by"] == "observed" and rows[0]["needs_review"]
+    assert rows[0]["used_in"] == ["s1"] and view["sessions"][0]["used"][0]["name"] == "browser-bridge"
+    assert [e["event"] for e in _trail() if e["name"] == "browser-bridge"] == ["extension_installed"]
+    assert ext.unreviewed_in_session(ws, "s1") == ["browser-bridge"]
+
+    ext.approve(ws, "browser-bridge")
+    assert ext.tag_event(ws, "s1", call)["reviewed"] is True
+
+    # Once a config file does describe it, the inspectable row replaces the observed one.
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {"browser-bridge": {"command": "npx", "args": ["bb"]}}}))
+    names = [r for r in ext.sync(ws) if r["name"] == "browser-bridge"]
+    assert len(names) == 1 and not names[0].get("observed")

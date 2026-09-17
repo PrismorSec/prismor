@@ -3088,7 +3088,7 @@ async function loadExtensions() {
   }
 }
 function extWhen(ts) { try { return new Date(ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ts || ''; } }
-function extBy(by) { return !by ? '' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
+function extBy(by) { return !by ? '' : by === 'observed' ? 'seen in use · no config file describes it' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
 function extAgentName(a) { return a === 'any' || !a ? 'any agent' : a; }
 function extUseChips(s) {
   return (s.used || []).map(extCauseChip).join('') +

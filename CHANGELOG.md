@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [1.54.1] — 2026-09-17
+
+### Fixed
+- **An MCP server with no config file never showed up in a session.** The extension ledger found MCP servers only in config files on disk, so servers brought by a browser extension, a hosted connector or a plugin matched nothing, and a session that used only those showed no extensions at all. The first call to such a server now records it as `installed by: observed`, unreviewed, and attaches it to the session and the tool call. It is reported to the console at the next prompt rather than from inside the hook, and is replaced by the inspectable entry if a config file later describes the same server.
+
 ## [1.54.0] — 2026-09-17
 
 ### Added

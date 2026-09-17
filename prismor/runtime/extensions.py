@@ -197,7 +197,10 @@ def _registry_files(workspace: Path) -> List[Path]:
 
 def registry_changed(workspace: Path) -> bool:
     """One stat per registry file: has anything been installed since last sync?"""
-    seen = _load(workspace)["mtimes"]
+    data = _load(workspace)
+    if data.get("report_due"):  # something was seen in use mid-session; the next prompt reports it
+        return True
+    seen = data["mtimes"]
     for p in _registry_files(workspace):
         try:
             m = p.stat().st_mtime_ns
@@ -427,7 +430,9 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[
     bootstrap = not data.get("bootstrapped")  # a flag, not "no items": an empty machine is a baseline too
     now, now_s = _now(), time.time()
     pending = [p for p in data["pending"] if now_s - float(p.get("at", 0)) < _PENDING_WINDOW_S]
-    rows = discover_extensions(workspace)
+    rows = discover_extensions(workspace) + _observed_rows(items)
+    rows = [r for r in rows if not (r.get("observed") and any(
+        o["kind"] == "mcp" and not o.get("observed") and _serves(o["name"], r["name"]) for o in rows))]
     # Parents first, so a child knows whether its plugin's own record covers it.
     rows.sort(key=lambda r: r.get("parent") is not None)
     moved: Dict[str, Dict[str, Any]] = {}
@@ -469,7 +474,7 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[
         # One record per install or update; what came with it rides in the detail.
         _audit(m["event"], m["row"], session_id, previous_sha256=m.get("previous_sha256"),
                children_new=m["new"][:40] or None, children_changed=m["changed"][:40] or None)
-    report = bool(moved) and record
+    report = (bool(moved) or bool(data.pop("report_due", False))) and record
     if record:
         data["bootstrapped"] = True
         data["pending"] = pending
@@ -632,6 +637,32 @@ def _tag(ext_id: str, entry: Dict[str, Any], via: str) -> Dict[str, Any]:
             "reviewed": bool(entry.get("approved")) or entry.get("installed_by") == "baseline", "via": via}
 
 
+def _serves(row_name: str, server: str) -> bool:
+    return bool(row_name) and (row_name == server or server.endswith("_" + row_name))
+
+
+# An MCP server does not have to be in a config file to be in the session: the
+# Chrome extension, hosted connectors and plugins bring servers no file on disk
+# describes. Having nothing to inspect is a reason to show one, not to hide it,
+# so the first call to an unknown server records it as seen-in-use.
+def _observed_rows(items: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [{"id": eid, "kind": "mcp", "name": it.get("name"), "path": "", "sha256": "", "origin": None,
+             "parent": None, "capabilities": [], "hosts": [], "agents": it.get("agents") or ["any"],
+             "observed": True} for eid, it in items.items() if it.get("observed")]
+
+
+def _observe_mcp(data: Dict[str, Any], server: str, session_id: str) -> str:
+    eid = f"mcp:observed#{server}"
+    if eid not in data["items"]:
+        data["items"][eid] = {"sha256": "", "first_seen": _now(), "approved": False, "kind": "mcp", "name": server,
+                              "path": "", "origin": None, "installed_by": "observed", "capabilities": [],
+                              "observed": True, "agents": [_AGENT or "any"]}
+        _audit("extension_installed", {"id": eid, "kind": "mcp", "name": server, "installed_by": "observed"},
+               session_id, observed=True)
+        data["report_due"] = True  # no network on the hook's hot path
+    return eid
+
+
 def _mcp_server(tool: str) -> str:
     parts = tool.split("__")
     return parts[1] if len(parts) >= 3 and parts[0] == "mcp" else ""
@@ -664,8 +695,10 @@ def tag_event(workspace: Path, session_id: str, event: Dict[str, Any]) -> Option
             tag = _tag(ext_id, items.get(ext_id) or {}, "named this host")
     elif tool.startswith("mcp__"):
         server = _mcp_server(tool)
-        ext_id = next((eid for eid, it in items.items() if it.get("kind") == "mcp" and it.get("name")
-                       and (it["name"] == server or server.endswith("_" + it["name"]))), None)
+        ext_id = next((eid for eid, it in items.items() if it.get("kind") == "mcp" and not it.get("observed")
+                       and _serves(str(it.get("name") or ""), server)), None)
+        if not ext_id and server and data.get("bootstrapped"):
+            ext_id = _observe_mcp(data, server, session_id)
         if ext_id:
             tag = _tag(ext_id, items[ext_id], "serves this tool")
             dirty = _link(_session(data, session_id), ext_id, "mcp", items[ext_id])

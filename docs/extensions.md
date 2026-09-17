@@ -65,7 +65,10 @@ The session is the grain. The other two levels are sums of it.
 Each ledger row records which agents load it, taken from where it lives on disk
 (`claude`, `codex`, `gemini`, `cursor`, or `any` for the shared `.agents/`
 directory). Each session records the agent that ran it. A skill, plugin or MCP
-server that no recorded session has loaded is marked never used. Hooks are not,
+server that no recorded session has loaded is marked never used. An MCP server
+that a session calls but that no config file describes, such as one brought by a
+browser extension, a hosted connector or a plugin, is recorded the first time it
+is used, as `installed by: observed` and unreviewed. Hooks are not,
 because they run whether or not anything uses them.
 
 The session page has an "Extensions in this session" panel: each extension with
