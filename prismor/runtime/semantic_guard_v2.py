@@ -351,6 +351,7 @@ def _prismor_analyze(text: str, heuristic_score: float, signals: List[str], t0: 
     import urllib.error
     import urllib.request
     from prismor.runtime.enterprise.identity import api_base, load_identity
+    from prismor.runtime.http_ua import user_agent
 
     ident = load_identity()
     why = "not enrolled (run `prismor enroll`)"
@@ -360,7 +361,10 @@ def _prismor_analyze(text: str, heuristic_score: float, signals: List[str], t0: 
                            "signals": list(signals)}).encode("utf-8")
         req = urllib.request.Request(
             f"{base}/api/v1/judge", data=body, method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ident['device_key']}"},
+            # urllib's default UA is 403'd by the CDN in front of the control
+            # plane (Cloudflare 1010), which read as a judge failure on every call.
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ident['device_key']}",
+                     "User-Agent": user_agent()},
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:

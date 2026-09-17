@@ -50,6 +50,18 @@ def test_hosted_judge_calls_the_enrolled_control_plane(enrolled, calls):
                                "signals": res.heuristic.signals}}]
 
 
+def test_hosted_judge_identifies_itself_to_the_cdn(enrolled, monkeypatch):
+    # prismor.dev sits behind Cloudflare, which 403s urllib's default UA (error 1010).
+    seen = []
+
+    def fake_urlopen(req, timeout):
+        seen.append(req.get_header("User-agent"))
+        return _Resp(json.dumps(VERDICT).encode())
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    SemanticGuardV2(provider="prismor").analyze(UNCERTAIN)
+    assert seen and seen[0].startswith("prismor-runtime/")
+
+
 def test_hosted_verdicts_are_cached_because_they_are_metered(enrolled, calls):
     g = SemanticGuardV2(provider="prismor")
     g.analyze(UNCERTAIN)
