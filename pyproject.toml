@@ -181,6 +181,7 @@ packages = [
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
+"docs/replicas.md" = "prismor/runtime/data/docs/replicas.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"
