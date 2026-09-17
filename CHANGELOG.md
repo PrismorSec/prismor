@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 ### Added
-- **`prismor install-hooks --portable`, for agents that run in a hosted VM.** Claude Code on the web, Cursor cloud agents and the Copilot coding agent load hooks only from the cloned repo, and the command Prismor normally writes embeds this machine's interpreter, shim and checkout path, so a committed config did nothing on the VM. `--portable` writes a command that finds `prismor` when the hook fires (`PATH`, then `~/.local/bin`), so the repo carries the hook config and the platform's setup script only installs the binary. A missing binary warns and allows, so a teammate without Prismor is not locked out; `PRISMOR_HOOK_REQUIRED=1` turns that into a block for cloud environments. Verified in a fresh VM with Claude Code, OpenHands and Codex. See [cloud-agents.md](docs/cloud-agents.md).
+- **`prismor install-hooks --portable`, for agents that run in a hosted VM.** Claude Code on the web, Cursor cloud agents and the Copilot coding agent load hooks only from the cloned repo, and the command Prismor normally writes embeds this machine's interpreter, shim and checkout path, so a committed config did nothing on the VM. `--portable` writes a command that finds `prismor` when the hook fires (`PATH`, then `~/.local/bin`), so the repo carries the hook config and the platform's setup script only installs the binary. A missing binary warns and allows, so a teammate without Prismor is not locked out; `PRISMOR_HOOK_REQUIRED=1` turns that into a block for cloud environments. Verified in a fresh VM with Claude Code, OpenHands and Codex, and on real Replicas cloud workspaces, whose start-hook recipe is in the same guide. See [cloud-agents.md](docs/cloud-agents.md).
 
 ## [1.53.0] — 2026-09-15
 
