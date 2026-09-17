@@ -62,7 +62,7 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
     return _strip_windsurf(config, marker)
 
 
-def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
+def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str, portable: bool = False) -> List[Dict[str, str]]:
     agents = list(_SUPPORTED_AGENTS) if agent == "all" else [agent]
     results = []
     for current_agent in agents:
@@ -79,10 +79,10 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
         # from the payload's cwd instead.
         command = _dispatcher_command(
             repo_root=repo_root, workspace=workspace, agent=current_agent, mode=mode,
-            pin_workspace=(scope == "project"),
+            pin_workspace=(scope == "project" and not portable), portable=portable,
         )
         if current_agent == "claude":
-            config = _merge_claude(config, command, workspace, pin_workspace=(scope == "project"))
+            config = _merge_claude(config, command, workspace, pin_workspace=(scope == "project" and not portable))
         elif current_agent == "cursor":
             config = _merge_cursor(config, command)
         elif current_agent == "openclaw":
@@ -734,7 +734,25 @@ def _write_dispatch_shim(repo_root: Path) -> Path:
     return shim
 
 
-def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True) -> str:
+# The installed command normally embeds three absolute paths (interpreter, shim,
+# workspace), which is right for one machine and useless in a config file that
+# is committed to a repo and cloned onto a hosted agent's VM. Several hosted
+# agents (Claude Code on the web, Cursor cloud agents, Copilot coding agent)
+# load hooks ONLY from the clone, so the committed form has to find prismor at
+# run time instead. Missing binary = warn and let the call through, so a
+# teammate without prismor is not locked out; PRISMOR_HOOK_REQUIRED=1 (set it in
+# the cloud environment) turns that into a block.
+_PORTABLE_TEMPLATE = (
+    "sh -c 'p=$(command -v prismor || echo \"$HOME/.local/bin/prismor\"); "
+    "[ -x \"$p\" ] || {{ echo \"prismor not installed: tool call not screened\" >&2; "
+    "[ -n \"$PRISMOR_HOOK_REQUIRED\" ] && exit 2; exit 0; }}; "
+    "exec \"$p\" hook-dispatch --agent {agent} --mode {mode}'"
+)
+
+
+def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True, portable: bool = False) -> str:
+    if portable:
+        return _PORTABLE_TEMPLATE.format(agent=agent, mode=mode)
     # Route through the prismor CLI for consistency (one canonical entry point),
     # invoked via the generated shim with the current interpreter rather than
     # the `prismor` console script, which is not reliably on PATH inside the

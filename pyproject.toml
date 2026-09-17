@@ -145,6 +145,7 @@ packages = [
 "docs/audit-trail.md" = "prismor/runtime/data/docs/audit-trail.md"
 "docs/canary.md" = "prismor/runtime/data/docs/canary.md"
 "docs/cli-reference.md" = "prismor/runtime/data/docs/cli-reference.md"
+"docs/cloud-agents.md" = "prismor/runtime/data/docs/cloud-agents.md"
 "docs/connecting-to-the-platform.md" = "prismor/runtime/data/docs/connecting-to-the-platform.md"
 "docs/dashboard.md" = "prismor/runtime/data/docs/dashboard.md"
 "docs/decision-contract.md" = "prismor/runtime/data/docs/decision-contract.md"

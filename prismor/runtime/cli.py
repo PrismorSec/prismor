@@ -1378,10 +1378,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             agent=args.agent,
             scope=args.scope,
             mode=args.mode,
+            portable=getattr(args, "portable", False),
         )
         register_workspace(workspace)
         for item in results:
             print(f"Installed {item['agent']} hooks at {item['configPath']}")
+        if getattr(args, "portable", False):
+            print("Portable: the hook finds `prismor` at run time, so this file is safe to commit. "
+                  "Install prismor in the cloud environment's setup script.")
         _print_codex_trust_note([item["agent"] for item in results], workspace)
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=True)
         return
@@ -3464,6 +3468,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
+    install_parser.add_argument("--portable", action="store_true", help="Write a hook command with no machine-specific paths, for a config file committed to the repo and cloned onto a hosted agent's VM (needs sh)")
 
     # ── uninstall-hooks ────────────────────────────────────────────────
     uninstall_parser = subparsers.add_parser(
