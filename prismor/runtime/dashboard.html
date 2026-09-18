@@ -62,10 +62,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <script>
   (function () {
     try {
-      var theme = localStorage.getItem('prismor-dashboard-theme') || 'dark';
-      document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+      var theme = localStorage.getItem('prismor-dashboard-theme') || 'light';
+      document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
     } catch (_) {
-      document.documentElement.setAttribute('data-theme', 'dark');
+      document.documentElement.setAttribute('data-theme', 'light');
     }
   })();
 </script>
@@ -1830,6 +1830,231 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .match-pattern{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
     color:var(--gray-600);background:var(--gray-100);border-radius:4px;padding:4px 6px;word-break:break-all}
   mark.match-mark{background:rgba(220,38,38,.22);color:inherit;border-radius:2px;padding:0 1px}
+
+  /* ═══════════════════════════════════════════════════════════════════
+     LEDGER LAYER — light-first editorial console: brand + breadcrumb top
+     bar under a thin accent stripe, grouped sidebar with counts, a hero
+     with a pass-rate ring, hairline-divided KPI strip and a numbered
+     "one tool call" strip. Hairlines instead of shadows, navy ink, one
+     green for pass / one red for intercept. Appended last so single-
+     selector overrides win on source order (same convention as above).
+     ═══════════════════════════════════════════════════════════════════ */
+  :root {
+    --ink: #1f2a3c; --ink-2: #4a5566; --muted: #7a8494;
+    --hairline: #e3e7eb; --hairline-strong: #cfd5dc;
+    --ok: #2f7d4f; --ok-soft: #eef7f1; --ok-btn: #5cbf8a;
+    --warn: #d9a524; --bad: #b3372b; --stripe: #7c3aed;
+
+    --gray-50: #f7f9fa; --gray-100: #f1f3f5; --gray-200: var(--hairline);
+    --gray-300: var(--hairline-strong); --gray-400: var(--muted); --gray-500: #6a7484;
+    --gray-600: var(--ink-2); --gray-700: #334052; --gray-800: #26324a; --gray-900: var(--ink);
+
+    --app-bg: #ffffff; --surface: #ffffff; --surface-muted: #f7f9fa; --surface-strong: #ffffff;
+    --accent: var(--ink); --md-primary: var(--ink); --md-primary-d: #111a2a; --md-primary-soft: #edf1f4;
+    --pink-600: var(--bad); --purple: var(--ink); --green-500: var(--ok); --danger-ink: var(--bad);
+    --md-e1: none; --md-e2: none; --md-e3: 0 16px 48px rgba(31,42,60,.14);
+    --md-radius: 8px; --md-radius-sm: 6px;
+    --sidebar-w: 236px; --topbar-h: 56px; --stripe-h: 5px;
+
+    --chart-text: var(--muted); --chart-grid: #eef1f4;
+    --chart-passed: #9aa7b8; --chart-intercepted: var(--bad);
+    --chart-bar-warm: var(--bad); --chart-bar-cool: #3f5470; --chart-bar-hot: var(--bad);
+    --chart-palette-1: var(--ok); --chart-palette-2: var(--warn); --chart-palette-3: var(--bad);
+    --chart-palette-4: #3f5470; --chart-palette-5: #9aa7b8; --chart-palette-6: #d6dce3;
+  }
+  html[data-theme="dark"] {
+    --ink: #eef1f5; --ink-2: #b6bec9; --muted: #7f8896;
+    --hairline: #262c35; --hairline-strong: #353d48;
+    --ok: #4fae78; --ok-soft: rgba(79,174,120,.10); --ok-btn: #3f9a67;
+    --warn: #e0b23a; --bad: #e0685a; --stripe: #8b5cf6;
+    --gray-50: #14181d; --gray-100: #1a1f26; --gray-200: var(--hairline); --gray-300: var(--hairline-strong);
+    --gray-400: var(--muted); --gray-500: #99a2ae; --gray-600: var(--ink-2); --gray-700: #d3d9e1;
+    --gray-800: #e4e8ee; --gray-900: var(--ink);
+    --app-bg: #0e1116; --surface: #0e1116; --surface-muted: #14181d; --surface-strong: #1a1f26;
+    --accent: var(--ink); --md-primary: var(--ink); --md-primary-d: #ffffff; --md-primary-soft: #1a1f26;
+    --pink-600: var(--bad); --purple: var(--ink); --green-500: var(--ok); --danger-ink: #f2a1a1;
+    --md-e3: 0 16px 48px rgba(0,0,0,.6);
+    --chart-text: var(--muted); --chart-grid: #1c222a; --chart-passed: #5d6b7d; --chart-intercepted: var(--bad);
+    --chart-bar-warm: var(--bad); --chart-bar-cool: #7e93ad; --chart-bar-hot: var(--bad);
+    --chart-palette-1: var(--ok); --chart-palette-2: var(--warn); --chart-palette-3: var(--bad);
+    --chart-palette-4: #7e93ad; --chart-palette-5: #5d6b7d; --chart-palette-6: #353d48;
+  }
+  body { color: var(--ink-2); }
+
+  /* accent stripe across the very top, above the bar */
+  .topbar {
+    margin-left: 0; height: calc(var(--topbar-h) + var(--stripe-h)); padding: 0 20px;
+    border-top: var(--stripe-h) solid var(--stripe); border-bottom: 1px solid var(--hairline);
+  }
+  .topbar-left { gap: 12px; }
+  .topbar-brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; padding-right: 8px; }
+  .topbar-brand .topbar-logo { display: block; width: 24px; height: 24px; }
+  .topbar-brand .sidebar-brand-name { font-size: 16px; font-weight: 700; color: var(--ink); letter-spacing: -.01em; }
+  .breadcrumb-sep { color: var(--hairline-strong); font-size: 15px; }
+  .topbar h1 { font-size: 15px; font-weight: 500; color: var(--ink-2); }
+  #breadcrumbLabel { font-size: 15px; font-weight: 500; color: var(--ink); }
+  .topbar-right { gap: 10px; }
+  .last-updated { font-size: 11.5px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 3px 9px; }
+  .badge-live { background: var(--ok-soft); color: var(--ok); }
+  .mode-chip { font-size: 10.5px; padding: 4px 10px; }
+  .theme-toggle, .upgrade-btn {
+    font-size: 12.5px; font-weight: 500; padding: 7px 12px; border-radius: 6px;
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink-2); box-shadow: none;
+    text-transform: none; letter-spacing: 0;
+  }
+  .theme-toggle:hover, .upgrade-btn:hover { background: var(--gray-100); color: var(--ink); box-shadow: none; opacity: 1; }
+  .upgrade-btn .icon { color: var(--ink-2); width: 15px; height: 15px; }
+  html[data-theme="dark"] .upgrade-btn { background: var(--surface); color: var(--ink-2); border-color: var(--hairline); }
+  html[data-theme="dark"] .theme-toggle-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--gray-100); }
+
+  /* sidebar sits under the bar, grouped, counts on the right */
+  .tab-nav {
+    top: calc(var(--topbar-h) + var(--stripe-h)); padding: 6px 10px 20px; gap: 1px;
+    background: var(--surface); border-right: 1px solid var(--hairline);
+  }
+  .nav-group {
+    font-size: 10.5px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); padding: 18px 12px 6px;
+  }
+  .tab-nav .tab-btn {
+    padding: 9px 12px; border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--ink);
+    border: 1px solid transparent; gap: 12px;
+  }
+  .tab-nav .tab-btn .icon { width: 17px; height: 17px; color: var(--ink-2); }
+  .tab-nav .tab-btn:hover { background: var(--gray-50); color: var(--ink); }
+  .tab-nav .tab-btn.active {
+    background: var(--md-primary-soft); color: var(--ink); border-color: transparent; box-shadow: none; border-radius: 8px;
+  }
+  .tab-nav .tab-btn.active .icon { color: var(--ink); }
+  .tab-count { margin-left: auto; font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tab-count:empty { display: none; }
+  .tab-lock { margin-left: auto; opacity: .55; }
+  .tab-lock .icon { width: 13px; height: 13px; }
+  .topbar, .page, .prismor-cta { margin-left: 0; }
+  .page, .prismor-cta { margin-left: var(--sidebar-w); }
+  .page { padding: 12px 40px 48px; }
+  #page-docs.page.active, #page-session.page.active { height: calc(100vh - var(--topbar-h) - var(--stripe-h)); }
+
+  /* hero */
+  .hero {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 48px; align-items: center;
+    padding: 56px 0 40px;
+  }
+  .hero h1 { font-size: 46px; font-weight: 600; letter-spacing: -.028em; line-height: 1.08; color: var(--ink); }
+  .hero p { font-size: 17.5px; line-height: 1.55; color: var(--ink-2); margin: 18px 0 28px; max-width: 580px; }
+  .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn-ok, .btn-line {
+    font: 600 14px var(--font-ui); padding: 11px 16px; border-radius: 6px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 9px; line-height: 1; transition: background .15s;
+  }
+  .btn-ok { background: var(--ok-btn); color: #fff; border: 1px solid var(--ok-btn); }
+  .btn-ok:hover { background: var(--ok); border-color: var(--ok); }
+  .btn-line { background: var(--surface); color: var(--ink); border: 1px solid var(--hairline-strong); }
+  .btn-line:hover { background: var(--gray-50); }
+  .btn-ok .icon, .btn-line .icon { width: 15px; height: 15px; }
+  .ring-wrap { display: flex; align-items: center; gap: 40px; }
+  .ring { position: relative; width: 196px; height: 196px; }
+  .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+  .ring-pct { font-size: 38px; font-weight: 600; letter-spacing: -.02em; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+  .ring-pct small { font-size: 19px; font-weight: 500; margin-left: 1px; }
+  .ring-cap { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+  .ring-legend { display: grid; gap: 14px; font-size: 14.5px; color: var(--ink-2); min-width: 210px; }
+  .ring-legend > div { display: flex; align-items: center; gap: 10px; }
+  .ring-legend b { margin-left: auto; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .ring-legend-sep { height: 1px; background: var(--hairline); margin: 2px 0; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+  /* hairline KPI strip */
+  .strip-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; }
+  .kpi-label { font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .kpi-strip {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin-bottom: 40px;
+  }
+  .kpi-strip > div { padding: 28px 28px 30px; border-left: 1px solid var(--hairline); min-width: 0; }
+  .kpi-strip > div:first-child { border-left: none; padding-left: 0; }
+  .kpi-big { font-size: 34px; font-weight: 500; letter-spacing: -.02em; color: var(--ink); margin: 16px 0 12px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .kpi-sub, .kpi-strip .kpi-delta { font-size: 13.5px; color: var(--muted); margin-top: 0; }
+  .kpi-strip .kpi-delta .up { color: var(--bad); } .kpi-strip .kpi-delta .down { color: var(--ok); }
+
+  /* the five-step strip */
+  .steps-label { font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .steps {
+    display: grid; grid-template-columns: repeat(5, 1fr); background: var(--surface);
+    border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; margin-bottom: 36px;
+  }
+  .step { padding: 24px 22px 22px; border-left: 1px solid var(--hairline); position: relative; min-width: 0; }
+  .step:first-child { border-left: none; }
+  .step.hi { background: var(--ok-soft); }
+  .step:not(:last-child)::after {
+    content: ''; position: absolute; top: 50%; right: -7px; width: 12px; height: 12px; z-index: 1;
+    border-top: 1px solid var(--hairline); border-right: 1px solid var(--hairline);
+    background: inherit; transform: translateY(-50%) rotate(45deg);
+  }
+  .step:not(.hi):not(:last-child)::after { background: var(--surface); }
+  .step-n { font: 12px var(--font-mono); color: var(--muted); }
+  .step-t { font-size: 17px; font-weight: 600; color: var(--ink); margin: 14px 0 6px; }
+  .step-d { font-size: 13.5px; line-height: 1.5; color: var(--ink-2); min-height: 40px; }
+  .step-f { border-top: 1px solid var(--hairline); margin-top: 18px; padding-top: 12px; font: 12.5px var(--font-mono); color: var(--ink-2); }
+  .step.hi .step-f { border-top-color: rgba(47,125,79,.18); }
+
+  /* surfaces: hairlines, no elevation; titles read as headings */
+  .card, .agent-hero, .agent-stat, .agent-ctrl-card, .session-hero, .node-panel, .flow-card, .flow-node {
+    border: 1px solid var(--hairline); box-shadow: none; border-radius: 8px;
+  }
+  .card:hover, .agent-stat:hover, .flow-node:hover { box-shadow: none; }
+  .card { padding: 20px 22px; }
+  .card-title { font-size: 15px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; margin-bottom: 14px; }
+  .section { margin: 36px 0 14px 0; }
+  .section h2 { font-size: 11px; font-weight: 500; letter-spacing: .14em; color: var(--muted); }
+  .section .rule { display: none; }
+  .section .hint { font-size: 12px; color: var(--muted); }
+  th { font-size: 10.5px; letter-spacing: .1em; color: var(--muted); border-bottom-color: var(--hairline); }
+  td { font-size: 12.5px; color: var(--ink-2); border-bottom-color: var(--gray-100); }
+  tbody tr:hover td { background: var(--gray-50); }
+  .kpi-value { color: var(--ink); }
+  .empty { font-size: 12px; }
+  .sev-critical { background: #fbeeec; color: var(--bad); border-color: #f1cfcb; }
+  .sev-high { background: #fbf3e4; color: #9a6b0c; border-color: #efdcae; }
+  .sev-medium { background: var(--gray-100); color: var(--ink-2); border-color: var(--hairline); }
+  .event-dot.blocked, .trail-dot.blocked { background: var(--bad); }
+  .event-dot.allowed { background: var(--ok); }
+  .fsel, .finput, .rules-search { background: var(--surface); border-color: var(--hairline-strong); color: var(--ink); }
+  .btn-primary { background: var(--ink); color: #fff; box-shadow: none; text-transform: none; letter-spacing: 0; }
+  .btn-primary:hover { background: var(--md-primary-d); box-shadow: none; }
+  html[data-theme="dark"] .btn-primary { background: var(--ink); color: #0e1116; }
+  html[data-theme="dark"] .btn-primary:hover { background: #ffffff; }
+  .prismor-cta { background: var(--ink); border-color: var(--ink); box-shadow: none; border-radius: 8px; margin: 20px 40px 0 calc(var(--sidebar-w) + 40px); }
+  html[data-theme="dark"] .prismor-cta { color: #0e1116; }
+  html[data-theme="dark"] .prismor-cta-text strong { color: #0e1116; }
+  html[data-theme="dark"] .prismor-cta-text span { color: rgba(14,17,22,.7); }
+  html[data-theme="dark"] .prismor-cta-btn { background: #0e1116; color: var(--ink); }
+  #loadingScreen { background: var(--app-bg); }
+
+  @media (max-width: 1200px) {
+    .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 36px; }
+    .hero h1 { font-size: 36px; }
+    .steps { grid-template-columns: repeat(2, 1fr); }
+    .step:nth-child(3), .step:nth-child(5) { border-left: none; }
+    .step { border-top: 1px solid var(--hairline); }
+    .step:nth-child(-n+2) { border-top: none; }
+    .step::after { display: none; }
+  }
+  @media (max-width: 900px) {
+    .nav-group, .tab-count { display: none; }
+    .tab-nav .tab-btn { justify-content: center; padding: 10px 0; }
+    .page, .prismor-cta { margin-left: 60px; }
+    .prismor-cta { margin-left: 76px; margin-right: 16px; }
+    .page { padding: 12px 16px 32px; }
+    .kpi-strip { grid-template-columns: 1fr 1fr; }
+    .kpi-strip > div { padding: 18px 16px; }
+    .kpi-strip > div:nth-child(odd) { border-left: none; padding-left: 0; }
+    .kpi-strip > div:nth-child(n+3) { border-top: 1px solid var(--hairline); }
+    .steps { grid-template-columns: 1fr; }
+    .step { border-left: none; }
+    .ring-wrap { flex-direction: column; align-items: flex-start; gap: 20px; }
+  }
 </style>
 </head>
 <body>
@@ -1874,34 +2099,39 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════ -->
 <div class="tab-nav">
-  <div class="sidebar-brand">
-    <img class="topbar-logo" src="https://prismor.dev/Prismor_Logo.png" alt="Prismor" />
-    <span class="sidebar-brand-name">Prismor</span>
-  </div>
-  <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
-          title="Effective enforcement mode — click to manage in Policy Control">
-    <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
-  </button>
+  <div class="nav-group">Run</div>
   <button class="tab-btn active" data-tab="overview" data-label="Overview"><svg class="icon"><use href="#i-home"/></svg><span>Overview</span></button>
-  <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span></button>
-  <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span></button>
+  <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span><span class="tab-count" id="navSessions"></span></button>
+  <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span><span class="tab-count" id="navAgents"></span></button>
+  <div class="nav-group">Policy</div>
+  <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
   <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
-  <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
-  <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span></button>
+  <div class="nav-group">Govern</div>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
+  <div class="nav-group">Platform</div>
+  <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
 </div>
 
 <!-- ═══ TOP BAR (breadcrumb) ══════════════════════════════════════ -->
 <div class="topbar">
   <div class="topbar-left">
-    <h1>Local Prismor</h1>
+    <a class="topbar-brand" href="#" onclick="document.querySelector('.tab-btn[data-tab=&quot;overview&quot;]')?.click();return false">
+      <img class="topbar-logo" src="https://prismor.dev/Prismor_Logo.png" alt="Prismor" />
+      <span class="sidebar-brand-name">Prismor</span>
+    </a>
+    <span class="breadcrumb-sep">/</span>
+    <h1>Local</h1>
     <span class="breadcrumb-sep">/</span>
     <span id="breadcrumbLabel">Overview</span>
   </div>
   <div class="topbar-right">
     <span id="lastUpdated" class="last-updated"></span>
     <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
+    <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
+            title="Effective enforcement mode — click to manage in Policy Control">
+      <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
+    </button>
     <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
       <span class="theme-toggle-dot"></span>
       <span id="themeToggleLabel">Dark</span>
@@ -1963,8 +2193,31 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- PAGE: OVERVIEW                                                 -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div id="page-overview" class="page active">
-  <div class="period-row">
-    Period:
+  <section class="hero">
+    <div>
+      <h1>Every tool call, screened.</h1>
+      <p>Prismor sits in the hook path of every agent on this machine and decides each tool call against the policy in force, before anything runs.</p>
+      <div class="hero-actions">
+        <button class="btn-ok" onclick="document.querySelector('.tab-btn[data-tab=&quot;sessions&quot;]')?.click()"><svg class="icon"><use href="#i-play"/></svg> Open sessions</button>
+        <button class="btn-line" onclick="gotoPolicy()"><svg class="icon"><use href="#i-shield"/></svg> Policy control</button>
+      </div>
+    </div>
+    <div class="ring-wrap">
+      <div class="ring">
+        <canvas id="ringChart"></canvas>
+        <div class="ring-center"><div class="ring-pct" id="ringPct">–</div><div class="ring-cap">passed</div></div>
+      </div>
+      <div class="ring-legend">
+        <div><span class="sw" style="background:var(--ok)"></span>Passed<b id="ringPassed">-</b></div>
+        <div><span class="sw" style="background:var(--bad)"></span>Intercepted<b id="ringBlocked">-</b></div>
+        <div class="ring-legend-sep"></div>
+        <div>Findings recorded<b id="ringFindings">-</b></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="strip-head">
+    <span class="kpi-label">Agent activity · <span id="hintActivity">last 7 days</span></span>
     <select id="globalDays" class="fsel">
       <option value="1" selected>Last 1 day</option>
       <option value="7">Last 7 days</option>
@@ -1973,33 +2226,20 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <option value="90">Last 90 days</option>
     </select>
   </div>
-
-  <div class="section">
-    <h2>Agent Activity</h2><div class="rule"></div><span id="hintActivity" class="hint">last 7 days</span>
+  <div class="kpi-strip">
+    <div><div class="kpi-label">Tool calls inspected</div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta"></div></div>
+    <div><div class="kpi-label">Dangerous cmds prevented</div><div id="kpiDangerous" class="kpi-big">-</div><div id="kpiDangerousDelta" class="kpi-sub kpi-delta"></div></div>
+    <div><div class="kpi-label">Active sessions</div><div id="kpiSessions" class="kpi-big">-</div><div class="kpi-sub">across <span id="kpiAgentCount">–</span> agents</div></div>
+    <div><div class="kpi-label">Findings</div><div id="kpiFindings" class="kpi-big">-</div><div class="kpi-sub"><span id="sevCritical">-</span> critical · <span id="sevHigh">-</span> high · <span id="sevMedium">-</span> medium · <span id="sevLow">-</span> low</div></div>
   </div>
 
-  <div class="grid grid-3">
-    <div class="card">
-      <div class="card-title">Active Sessions</div>
-      <div id="kpiSessions" class="kpi-value">-</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Tool Calls Inspected</div>
-      <div id="kpiToolCalls" class="kpi-value">-</div>
-      <div id="kpiToolsDelta" class="kpi-delta"></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Dangerous Cmds Prevented</div>
-      <div id="kpiDangerous" class="kpi-value accent">-</div>
-      <div id="kpiDangerousDelta" class="kpi-delta"></div>
-    </div>
-  </div>
-
-  <div class="grid grid-4">
-    <div class="card sev-card critical"><div class="sev-label">Critical</div><div id="sevCritical" class="sev-count">-</div></div>
-    <div class="card sev-card high">    <div class="sev-label">High</div>    <div id="sevHigh"     class="sev-count">-</div></div>
-    <div class="card sev-card medium">  <div class="sev-label">Medium</div>  <div id="sevMedium"   class="sev-count">-</div></div>
-    <div class="card sev-card low">     <div class="sev-label">Low</div>     <div id="sevLow"      class="sev-count">-</div></div>
+  <div class="steps-label">What happens to one tool call</div>
+  <div class="steps">
+    <div class="step"><div class="step-n">01</div><div class="step-t">Request</div><div class="step-d">The agent asks. Nothing has run yet.</div><div class="step-f" id="stepReq">–</div></div>
+    <div class="step"><div class="step-n">02</div><div class="step-t">Identity</div><div class="step-d">Which agent, which session, which workspace.</div><div class="step-f" id="stepId">–</div></div>
+    <div class="step"><div class="step-n">03</div><div class="step-t">Policy</div><div class="step-d">The rules in force are evaluated locally, as code.</div><div class="step-f" id="stepPol">–</div></div>
+    <div class="step hi"><div class="step-n">04</div><div class="step-t">Decision</div><div class="step-d">Allowed, warned, or blocked, before anything runs.</div><div class="step-f" id="stepDec">–</div></div>
+    <div class="step"><div class="step-n">05</div><div class="step-t">Evidence</div><div class="step-d">Recorded to the local ledger, synced when enrolled.</div><div class="step-f" id="stepEv">–</div></div>
   </div>
 
   <div class="card">
@@ -2775,6 +3015,9 @@ function chartTheme() {
     barWarm: read('--chart-bar-warm', '#F9E5A6'),
     barCool: read('--chart-bar-cool', '#A8D5F7'),
     barHot: read('--chart-bar-hot', '#FCA5A5'),
+    ok: read('--ok', '#2e7d4f'),
+    bad: read('--bad', '#b3372b'),
+    surface: read('--surface', '#ffffff'),
     palette: [
       read('--chart-palette-1', '#B4A5F6'),
       read('--chart-palette-2', '#E8BAEE'),
@@ -2804,6 +3047,11 @@ function syncChartTheme() {
   if (donutChart) {
     donutChart.data.datasets[0].backgroundColor = COLORS;
     donutChart.update('none');
+  }
+  if (ringChart) {
+    ringChart.data.datasets[0].backgroundColor = [theme.ok, theme.bad];
+    ringChart.data.datasets[0].borderColor = theme.surface;
+    ringChart.update('none');
   }
   if (lineChart) {
     lineChart.data.datasets[0].borderColor = theme.passed;
@@ -3426,6 +3674,8 @@ function updateModeChip(data) {
             || 'observe';
   chip.className = 'mode-chip ' + (mode === 'enforce' ? 'enforce' : 'observe');
   label.textContent = mode;
+  _navMode = mode; if (eff.total) _navRules = eff.total;
+  syncNavCounts();
   if (mode === 'enforce') {
     chip.title = eff.blocking
       ? 'Enforce — ' + eff.blocking + ' of ' + eff.total + ' rules block in real time. Click to manage.'
@@ -4654,13 +4904,18 @@ async function applyNodePolicy(action, scope){
 
 
 // ── Charts ────────────────────────────────────────────────────────────────
-let donutChart, lineChart, agentBarChart, toolBarChart, mcpBarChart, scEcoBarChart;
+let donutChart, ringChart, lineChart, agentBarChart, toolBarChart, mcpBarChart, scEcoBarChart;
 function initCharts() {
   const theme = chartTheme();
   COLORS = theme.palette;
   Chart.defaults.font.family = '"Inter", -apple-system, BlinkMacSystemFont, sans-serif';
   Chart.defaults.font.size = 10;
   Chart.defaults.color = theme.text;
+  ringChart = new Chart(document.getElementById('ringChart'), {
+    type:'doughnut',
+    data:{labels:['Passed','Intercepted'],datasets:[{data:[],backgroundColor:[theme.ok,theme.bad],borderWidth:2,borderColor:theme.surface}]},
+    options:{cutout:'82%',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}},
+  });
   donutChart = new Chart(document.getElementById('donutChart'), {
     type:'doughnut',
     data:{labels:[],datasets:[{data:[],backgroundColor:COLORS,borderWidth:0}]},
@@ -4965,6 +5220,21 @@ async function loadStats(){
     document.getElementById('sevHigh').textContent=fmtNum(sv.high||0);
     document.getElementById('sevMedium').textContent=fmtNum(sv.medium||0);
     document.getElementById('sevLow').textContent=fmtNum(sv.low||0);
+    const total=k.toolCallsInspected24h||0, blocked=k.dangerousCommandsPrevented24h||0, passed=Math.max(0,total-blocked);
+    const pctText=total?(Math.round(passed/total*1000)/10)+'%':'–';
+    const findings=(sv.critical||0)+(sv.high||0)+(sv.medium||0)+(sv.low||0);
+    document.getElementById('ringPct').innerHTML=total?pctText.replace('%','<small>%</small>'):'–';
+    document.getElementById('ringPassed').textContent=fmtNum(passed);
+    document.getElementById('ringBlocked').textContent=fmtNum(blocked);
+    document.getElementById('ringFindings').textContent=fmtNum(findings);
+    document.getElementById('kpiFindings').textContent=fmtNum(findings);
+    ringChart.data.datasets[0].data=total?[passed,blocked]:[1,0];
+    ringChart.update();
+    document.getElementById('stepReq').textContent=fmtNum(total)+' inspected';
+    document.getElementById('stepDec').textContent=pctText+' passed';
+    document.getElementById('stepEv').textContent=fmtNum(findings)+' findings';
+    _navSessions=k.activeSessions||0;
+    syncNavCounts();
     const threats=data.threatsByCategory||{};
     const catKeys=Object.keys(CAT_LABELS);
     donutChart.data.labels=catKeys.map(k=>CAT_LABELS[k]);
@@ -5067,6 +5337,20 @@ document.getElementById('globalDays').addEventListener('change',()=>{loadStats()
 // AGENTS TAB — per-agent kill switch, mode override, IAM profile
 // ══════════════════════════════════════════════════════════════════════════
 let _agentsCache = null;
+// Sidebar counts and the step-strip footers read from three loaders that land
+// in any order, so each one just re-renders whatever is known so far.
+let _navSessions = null, _navRules = null, _navMode = null;
+function syncNavCounts() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v == null ? '' : fmtNum(v); };
+  const agents = _agentsCache ? (_agentsCache.agents || []).length : null;
+  set('navAgents', agents); set('navSessions', _navSessions); set('navRules', _navRules);
+  set('kpiAgentCount', agents);
+  const n = v => v == null ? '–' : fmtNum(v);
+  const idEl = document.getElementById('stepId');
+  if (idEl) idEl.textContent = n(agents) + ' agents · ' + n(_navSessions) + ' sessions';
+  const polEl = document.getElementById('stepPol');
+  if (polEl) polEl.textContent = (_navRules == null ? '–' : fmtNum(_navRules) + ' rules') + (_navMode ? ' · ' + _navMode : '');
+}
 
 function fmtLastSeen(iso) {
   if (!iso) return '—';
@@ -5084,6 +5368,7 @@ async function loadAgents() {
     const data = await apiFetch('/api/agents');
     _agentsCache = data;
     renderAgents(data);
+    syncNavCounts();
   } catch (e) {
     console.error('[prismor] agents:', e);
     if (!_agentsCache) {
