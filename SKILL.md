@@ -386,6 +386,28 @@ already runs. Configuration is the user's — see
 
 ---
 
+## 6b. Ask the store (what happened, and why)
+
+Every screened tool call is in a local SQLite store. When the user asks what
+Prismor blocked, which rule is noisy, what a session did, or how to tune policy
+from real history, query it — do not open the file with sqlite3 or Python.
+
+```bash
+prismor query --schema                                         # tables + columns
+prismor query "SELECT json_extract(enrichment_json,'$.ruleId') r, count(*) n
+               FROM findings GROUP BY 1 ORDER BY n DESC LIMIT 20"
+prismor query "SELECT ts, type, command_text FROM events
+               WHERE session_id = '<id>' ORDER BY id" --format table
+prismor docs query-your-data                                   # schema + example queries
+```
+
+`prismor query` is read-only (SELECT/WITH/EXPLAIN only, `mode=ro`), output is
+redacted, and the store file is protected by the `prismor-self-edit` and
+`db-modification` rules. A finding was actually stopped only when
+`enrichment_json.action = 'block'` and `.mode = 'enforce'`. To act on what you
+find, propose a change to `.prismor/policy.yaml` keyed by that `ruleId` and let
+the human apply it — the policy file is not yours to write.
+
 ## 7. Enforcement surfaces
 
 Prismor can sit in front of an agent several ways. They all reach the same
@@ -634,6 +656,7 @@ Start here for the full command map: [`docs/cli-reference.md`](./docs/cli-refere
 - [`docs/telemetry-receipts.md`](./docs/telemetry-receipts.md): signed receipt schema
 - [`docs/live-telemetry.md`](./docs/live-telemetry.md): why live telemetry wasn't automatic, and the fix
 - [`docs/dashboard.md`](./docs/dashboard.md): terminal + web dashboards and session forensics
+- [`docs/query-your-data.md`](./docs/query-your-data.md): the session store's schema, read-only `prismor query`, from a finding to a policy change
 
 **Deployment and enterprise**
 - [`docs/installation.md`](./docs/installation.md): every install path — pip, curl, git clone, PEP 668 systems, Windows, cloaking setup

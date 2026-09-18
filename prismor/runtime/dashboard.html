@@ -1947,6 +1947,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
            placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
     <span id="docsCount" class="docs-count"></span>
     <button id="docsClear" class="docs-clear" title="Clear" hidden onclick="docsClearSearch()">×</button>
+    <button class="btn-ghost" id="docsAskAgent" onclick="docsCopyAgentPrompt()"
+            title="Copy a prompt that teaches your agent to query this store read-only">Ask your agent</button>
   </div>
   <div class="docs-layout">
     <div class="card">
@@ -2968,6 +2970,17 @@ function renderDocsList(items, query) {
         : '<div class="doc-row-name">' + safe(d.name) + '</div>') +
     '</div>').join('');
 }
+async function docsCopyAgentPrompt() {
+  try {
+    const data = await apiFetch('/api/query-prompt');
+    await navigator.clipboard.writeText(data.prompt);
+    toast('Prompt copied — paste it into your agent and finish the last line.');
+    openDoc('query-your-data.md');
+  } catch (e) {
+    toast('Could not copy: ' + (e && e.message || e), true);
+  }
+}
+
 function docsClearSearch() {
   const inp = document.getElementById('docsSearch');
   inp.value = '';

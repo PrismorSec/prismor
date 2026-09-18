@@ -232,4 +232,5 @@ at all. See [Transcript Ingest](transcript-ingest.md).
 - [Prismor](prismor-runtime.md) — session-log schema and the audit command
 - [Transcript Ingest](transcript-ingest.md) — reconstructing pre-install activity
 - [Learning](learning.md) — mines this same history for new rules
+- [Query your data](query-your-data.md) — the store's schema and read-only SQL access for you and your agent
 - [CLI Reference](cli-reference.md) — all commands at a glance

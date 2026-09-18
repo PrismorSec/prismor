@@ -19,6 +19,7 @@ Read endpoints:
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
     GET /api/agents        → agent registry merged with per-agent call stats
     GET /api/docs          → bundled docs (?name=<file.md> one doc, ?q=… search)
+    GET /api/query-prompt  → copy-paste prompt teaching an agent to query the store
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
 
 Write endpoints (human-only — localhost):
@@ -456,6 +457,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     "off": sum(1 for r in rules if not r.get("enabled")),
                 },
             })
+            return
+
+        if path == "/api/query-prompt":
+            from prismor.runtime.query import agent_prompt, resolve_db_path
+            db_path = resolve_db_path()
+            self._send_json({"prompt": agent_prompt(db_path), "dbPath": str(db_path)})
             return
 
         if path == "/api/stats":
