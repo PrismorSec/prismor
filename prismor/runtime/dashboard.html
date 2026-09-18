@@ -7,7 +7,7 @@
 <link rel="icon" type="image/png" href="https://prismor.dev/Prismor_Logo.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <style>
@@ -1824,10 +1824,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background: var(--surface); border-color: var(--gray-200); color: var(--gray-700);
   }
 
-  .match-hit{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+  .match-hit{font-family:var(--font-mono);font-size:10.5px;line-height:1.5;
     color:var(--gray-800);background:rgba(220,38,38,.09);border:1px solid rgba(220,38,38,.22);
     border-radius:4px;padding:4px 6px;word-break:break-all;max-height:120px;overflow:auto}
-  .match-pattern{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+  .match-pattern{font-family:var(--font-mono);font-size:10.5px;line-height:1.5;
     color:var(--gray-600);background:var(--gray-100);border-radius:4px;padding:4px 6px;word-break:break-all}
   mark.match-mark{background:rgba(220,38,38,.22);color:inherit;border-radius:2px;padding:0 1px}
 
@@ -1855,6 +1855,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     --md-e1: none; --md-e2: none; --md-e3: 0 16px 48px rgba(31,42,60,.14);
     --md-radius: 8px; --md-radius-sm: 6px;
     --sidebar-w: 236px; --topbar-h: 56px; --stripe-h: 5px;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     --chart-text: var(--muted); --chart-grid: #eef1f4;
     --chart-passed: #9aa7b8; --chart-intercepted: var(--bad);
@@ -2032,6 +2033,59 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   html[data-theme="dark"] .prismor-cta-btn { background: #0e1116; color: var(--ink); }
   #loadingScreen { background: var(--app-bg); }
 
+  /* policy page */
+  .prec-details { border: 1px solid var(--hairline); border-radius: 8px; margin-bottom: 18px; background: var(--surface); }
+  .prec-details > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 14px; padding: 14px 18px;
+  }
+  .prec-details > summary::-webkit-details-marker { display: none; }
+  .prec-summary { font-size: 14px; font-weight: 500; color: var(--ink); flex: 1; }
+  .prec-toggle { font-size: 12.5px; color: var(--muted); }
+  .prec-details[open] > summary { border-bottom: 1px solid var(--hairline); }
+  .prec-details[open] .prec-toggle::after { content: ' · hide'; }
+  .prec-details .drawer-event-card { border: none; background: var(--surface); border-radius: 0 0 8px 8px; padding: 16px 18px; margin: 0; }
+  .prec-details .drawer-event-card > .drawer-section-title,
+  .prec-details .drawer-event-card > .drawer-section-title + div { display: none; }
+  .policy-scope-nav { background: none; padding: 0; gap: 4px; border-bottom: 1px solid var(--hairline); border-radius: 0; margin-bottom: 22px; align-items: center; }
+  .policy-scope-btn { font-size: 13.5px; padding: 10px 12px; border-radius: 0; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .policy-scope-btn.active { background: none; box-shadow: none; color: var(--ink); border-bottom-color: var(--ink); }
+  .policy-scope-sep {
+    font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    margin-left: 22px; padding-right: 6px; border-left: 1px solid var(--hairline); padding-left: 18px;
+  }
+  .rules-legend { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; font-size: 13px; color: var(--ink-2); margin: 2px 0 14px; }
+  .rules-legend > span { display: inline-flex; align-items: center; gap: 7px; }
+  .rules-legend-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+  .rules-filters { display: flex; gap: 4px; }
+  .rules-filters .fbtn { font-size: 12px; padding: 6px 10px; }
+  .rules-filters .fbtn.active { background: var(--md-primary-soft); color: var(--ink); border-color: transparent; }
+  .rules-toolbar { gap: 10px; }
+  .rules-count { font-size: 12.5px; }
+  .rules-list { max-height: none; overflow: visible; }
+  .rule-row { padding: 12px 16px; gap: 14px; }
+  .rule-row.locked { background: var(--surface-muted); }
+  .rule-id { font-size: 13px; }
+  .rule-title { font-size: 12.5px; white-space: normal; }
+  .rule-sev { min-width: 64px; text-align: center; }
+  .rules-actions {
+    position: sticky; bottom: 0; margin-top: 0; padding: 12px 0 14px; background: var(--surface);
+    border-top: 1px solid var(--hairline);
+  }
+  .rules-actions:not(.dirty) .btn-primary, .rules-actions:not(.dirty) #rulesDiscard { opacity: .45; }
+  .yaml-editor { font-family: var(--font-mono); font-size: 12px; border-radius: 8px; }
+
+  /* docs: collapsible page list */
+  .docs-pages-head { display: flex; align-items: center; justify-content: space-between; }
+  .docs-collapse {
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink-2); cursor: pointer;
+    width: 26px; height: 26px; border-radius: 6px; font-size: 18px; line-height: 1; padding: 0 0 2px;
+  }
+  .docs-collapse:hover { background: var(--gray-100); color: var(--ink); }
+  .docs-layout.collapsed { grid-template-columns: 48px 1fr; }
+  .docs-layout.collapsed .docs-pages { padding: 12px 10px; }
+  .docs-layout.collapsed .docs-pages-head { margin: 0; justify-content: center; }
+  .docs-layout.collapsed .docs-pages-head > span, .docs-layout.collapsed #docsList { display: none; }
+
   @media (max-width: 1200px) {
     .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 36px; }
     .hero h1 { font-size: 36px; }
@@ -2178,9 +2232,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span id="docsCount" class="docs-count"></span>
     <button id="docsClear" class="docs-clear" title="Clear" hidden onclick="docsClearSearch()">×</button>
   </div>
-  <div class="docs-layout">
-    <div class="card">
-      <div class="card-title">Pages</div>
+  <div class="docs-layout" id="docsLayout">
+    <div class="card docs-pages">
+      <div class="card-title docs-pages-head"><span>Pages</span>
+        <button id="docsCollapseBtn" class="docs-collapse" type="button" onclick="toggleDocsPages()" title="Hide the page list">&lsaquo;</button>
+      </div>
       <div id="docsList"><div class="empty">Loading docs…</div></div>
     </div>
     <div class="card">
@@ -2654,40 +2710,48 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   <div id="enrollBanner"></div>
   <div id="workspaceBanner"></div>
-  <div id="policyPrecedenceCard" class="drawer-event-card" style="margin-bottom:14px"></div>
+  <details class="prec-details" id="precDetails">
+    <summary>
+      <span class="kpi-label">Which policy governs</span>
+      <span id="precSummary" class="prec-summary">Loading…</span>
+      <span class="prec-toggle">Show the four layers</span>
+    </summary>
+    <div id="policyPrecedenceCard" class="drawer-event-card"></div>
+  </details>
 
   <div class="policy-scope-nav">
     <button class="policy-scope-btn active" data-pscope="rules">Rules</button>
     <button class="policy-scope-btn" data-pscope="egress">Network egress</button>
-    <button class="policy-scope-btn" data-pscope="global">Global</button>
+    <span class="policy-scope-sep">YAML files</span>
     <button class="policy-scope-btn" data-pscope="project">Project</button>
+    <button class="policy-scope-btn" data-pscope="global">Global</button>
     <button class="policy-scope-btn" data-pscope="enterprise">Enterprise</button>
     <button class="policy-scope-btn" data-pscope="effective">Effective (merged)</button>
   </div>
 
   <!-- Per-rule toggle list (project-scoped) -->
   <div id="pscope-rules" class="policy-scope-pane active">
-    <div class="banner banner-info">
-      <span class="banner-icon"><svg class="icon"><use href="#i-shield"/></svg></span>
-      <div class="banner-text">
-        <strong>Detection rules</strong>
-        Turning a rule <em>off</em> stops it being evaluated at all. A rule that is on either
-        <span class="rule-verdict blocks">blocks</span> — it stops the call — or
-        <span class="rule-verdict reports">reports</span> it and lets it through; which one is decided by
-        the policy's enforce selection, not by these toggles. Core safety-floor rules stay pinned on even if
-        a project tries to disable them. Saved to <code>.prismor/policy.yaml</code>; live agents pick it up within
-        30&nbsp;s.
-      </div>
+    <div class="rules-legend">
+      <span><span class="rule-verdict blocks">blocks</span> stops the call</span>
+      <span><span class="rule-verdict reports">reports</span> records it, the call proceeds</span>
+      <span><span class="rule-lock"><svg class="icon"><use href="#i-lock"/></svg> Pinned</span> safety floor, cannot be turned off</span>
+      <span class="rules-legend-note">A toggle decides whether a rule runs at all. Whether it blocks or reports comes from the policy's enforce selection. Saved to the project policy file; agents pick it up within 30&nbsp;s.</span>
     </div>
     <div class="rules-toolbar">
       <input id="rulesSearch" class="rules-search" type="text" spellcheck="false"
              placeholder="Search rules by name, category, or description…" />
+      <div class="rules-filters" id="rulesFilters">
+        <button class="fbtn active" data-rf="all">All</button>
+        <button class="fbtn" data-rf="blocks">Blocking</button>
+        <button class="fbtn" data-rf="reports">Reporting</button>
+        <button class="fbtn" data-rf="off">Off</button>
+      </div>
       <span id="rulesCount" class="rules-count">—</span>
-      <button class="btn-ghost" id="rulesAll">Enable editable</button>
-      <button class="btn-ghost" id="rulesNone">Disable editable</button>
+      <button class="btn-ghost" id="rulesAll" title="Turn on every rule that is not pinned">All on</button>
+      <button class="btn-ghost" id="rulesNone" title="Turn off every rule that is not pinned">All off</button>
     </div>
     <div id="rulesList" class="rules-list"><div class="empty">Loading…</div></div>
-    <div class="policy-actions">
+    <div class="policy-actions rules-actions" id="rulesActions">
       <button class="btn-primary" id="rulesSave">Save rules</button>
       <button class="btn-ghost" id="rulesDiscard">Discard changes</button>
       <span id="rulesSaveStatus" class="policy-status"></span>
@@ -3157,6 +3221,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 });
 
 // ── Docs: browse and search the Markdown docs shipped with this install ───
+function toggleDocsPages(force) {
+  const l = document.getElementById('docsLayout');
+  const collapsed = force == null ? !l.classList.contains('collapsed') : !!force;
+  l.classList.toggle('collapsed', collapsed);
+  const b = document.getElementById('docsCollapseBtn');
+  b.innerHTML = collapsed ? '&rsaquo;' : '&lsaquo;';
+  b.title = collapsed ? 'Show the page list' : 'Hide the page list';
+  try { localStorage.setItem('prismor-docs-pages-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+}
+try { if (localStorage.getItem('prismor-docs-pages-collapsed') === '1') toggleDocsPages(true); } catch (_) {}
 let _docsCache = null;
 let _docOpen = null;
 async function loadDocs() {
@@ -5739,6 +5813,13 @@ function renderPolicyTab(data) {
         intro: 'Highest active layer wins. Click Open to jump straight to the governing layer.',
       },
     );
+    const chain = (data.precedence || {}).chain || [];
+    const win = chain.find(e => e.winning) || chain.find(e => e.exists);
+    const eff = data.effective || {};
+    const sum = document.getElementById('precSummary');
+    if (sum) sum.textContent = !win ? 'No policy layers loaded yet.'
+      : (win.label || win.scope) + ' governs · ' + (win.mode || eff.mode || 'observe')
+        + (eff.total ? ' · ' + (eff.blocking || 0) + ' of ' + eff.total + ' rules block' : '');
   }
 
   // Global
@@ -5897,13 +5978,22 @@ function _rulesDirty() {
   return _rulesCatalog.some(r => _rulesState[r.id] !== r.enabled);
 }
 
+let _rulesFilter = 'all';
 function renderRules() {
   const q = (document.getElementById('rulesSearch').value || '').toLowerCase();
   const list = document.getElementById('rulesList');
-  const vis = _rulesCatalog.filter(r =>
+  const passesFilter = r => {
+    const on = _rulesState[r.id];
+    if (_rulesFilter === 'blocks') return on && r.blocks;
+    if (_rulesFilter === 'reports') return on && !r.blocks;
+    if (_rulesFilter === 'off') return !on;
+    return true;
+  };
+  const vis = _rulesCatalog.filter(r => passesFilter(r) && (
     !q || r.id.toLowerCase().includes(q)
        || (r.title || '').toLowerCase().includes(q)
-       || (r.category || '').toLowerCase().includes(q));
+       || (r.category || '').toLowerCase().includes(q)));
+  document.getElementById('rulesActions')?.classList.toggle('dirty', _rulesDirty());
   const onCount = _rulesCatalog.filter(r => _rulesState[r.id]).length;
   const lockedCount = _rulesCatalog.filter(r => r.locked).length;
   // "78/78 on" is true and useless when only seven of them stop anything.
@@ -5950,6 +6040,11 @@ function renderRules() {
 }
 
 document.getElementById('rulesSearch').addEventListener('input', renderRules);
+document.querySelectorAll('#rulesFilters .fbtn').forEach(b => b.addEventListener('click', () => {
+  _rulesFilter = b.dataset.rf;
+  document.querySelectorAll('#rulesFilters .fbtn').forEach(x => x.classList.toggle('active', x === b));
+  renderRules();
+}));
 document.getElementById('rulesAll').addEventListener('click', () => {
   _rulesCatalog.forEach(r => { if (!r.locked) _rulesState[r.id] = true; }); renderRules();
 });
