@@ -1979,14 +1979,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if _f.get("remediation"):
                     _line += f" → {_f['remediation']}"
                 sys.stderr.write(_line + "\n")
-            # Record as dismissal for learning (observe = user saw but continued).
+            # Record for learning. Nobody decided anything here: observe mode
+            # surfaced the finding and the call ran. The reason says so, so a
+            # later pass never mistakes these rows for human overrides.
             try:
                 from prismor.runtime.learning import record_dismissal as _record_dismissal
                 _record_dismissal(
                     workspace, normalized["sessionId"],
                     top.get("ruleId", "unknown"),
                     top.get("evidence", ""),
-                    "user_skip",
+                    "observe_surfaced",
                 )
             except Exception:
                 pass  # best-effort, don't break the hook
