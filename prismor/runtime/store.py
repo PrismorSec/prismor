@@ -1842,8 +1842,21 @@ def get_sessions_page(
     limit: int = 20,
     sort: str = "updatedAt",
     direction: str = "desc",
+    agent: str = "",
+    workspace: str = "",
+    search: str = "",
+    findings: str = "",
+    min_risk: int = 0,
+    since_hours: int = 0,
 ) -> Dict[str, Any]:
-    """Return a paginated list of sessions across all registered workspaces."""
+    """Return a paginated list of sessions across all registered workspaces.
+
+    Filters apply before paging: ``agent`` and ``workspace`` match exactly,
+    ``search`` is a substring of the session id, ``findings`` is ``with`` or
+    ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
+    keeps sessions active within that window. ``facets`` lists the agents and
+    workspaces of the unfiltered set so a picker can offer every value.
+    """
     sort_col = _VALID_SESSION_SORTS.get(sort, "updated_at")
     reverse = direction.lower() != "asc"
     workspaces = _state_query_workspaces()
@@ -1874,6 +1887,7 @@ def get_sessions_page(
                     "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
                     "updatedAtAbs": _absolute_time_store(row["updated_at"] or ""),
                     "_sortRaw": row[sort_col] or "",
+                    "_updatedRaw": row["updated_at"] or "",
                     "workspace": workspace_path,
                     "workspaceName": Path(workspace_path).name if workspace_path else "",
                 })
@@ -1881,6 +1895,42 @@ def get_sessions_page(
             pass
         finally:
             conn.close()
+
+    facets = {
+        "agents": sorted({r["agent"] for r in rows}),
+        "workspaces": sorted(
+            {(r["workspace"], r["workspaceName"]) for r in rows}, key=lambda w: (w[1].lower(), w[0])
+        ),
+    }
+    facets["workspaces"] = [{"path": p, "name": n} for p, n in facets["workspaces"]]
+
+    from datetime import datetime, timezone, timedelta
+    cutoff = None
+    if since_hours and since_hours > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+
+    def _active_since(raw: str) -> bool:
+        if cutoff is None:
+            return True
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt >= cutoff
+        except Exception:
+            return False
+
+    needle = (search or "").strip().lower()
+    rows = [
+        r for r in rows
+        if (not agent or r["agent"] == agent)
+        and (not workspace or r["workspace"] == workspace)
+        and (not needle or needle in r["sessionId"].lower())
+        and (findings != "with" or r["findingsCount"] > 0)
+        and (findings != "clean" or r["findingsCount"] == 0)
+        and (not min_risk or r["riskScore"] >= min_risk)
+        and _active_since(r["_updatedRaw"])
+    ]
 
     rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
     total = len(rows)
@@ -1891,8 +1941,72 @@ def get_sessions_page(
     items = rows[offset: offset + limit]
     for r in items:
         r.pop("_sortRaw", None)
+        r.pop("_updatedRaw", None)
 
-    return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit}
+    return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit, "facets": facets}
+
+
+def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
+    """Per-MCP-server usage over the window: calls, blocked calls, distinct
+    sessions, last call, and the same per tool. Keyed by server name as the
+    agent saw it (``mcp__<server>__<tool>``)."""
+    from datetime import datetime, timezone
+    usage: Dict[str, Dict[str, Any]] = {}
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            for row in conn.execute(
+                """
+                SELECT e.raw_json, e.ts, e.session_id, f.finding_id IS NOT NULL as blocked
+                FROM events e
+                LEFT JOIN findings f ON f.session_id = e.session_id
+                                    AND f.event_index = (
+                                      SELECT COUNT(*) FROM events e2
+                                      WHERE e2.session_id = e.session_id AND e2.id < e.id
+                                    )
+                WHERE e.type != 'supply_chain' AND e.ts >= datetime('now', ?)
+                LIMIT 20000
+                """,
+                (f"-{hours} hours",),
+            ):
+                info = _extract_mcp_or_tool(row["raw_json"] or "")
+                if not info or info["kind"] != "mcp":
+                    continue
+                tool = ""
+                try:
+                    meta = (json.loads(row["raw_json"]).get("metadata") or {})
+                    tn = str(meta.get("tool_name") or "")
+                    if tn.startswith("mcp__") and "__" in tn[5:]:
+                        tool = tn[5:].split("__", 1)[1]
+                except Exception:
+                    tool = ""
+                srv = usage.setdefault(info["name"], {
+                    "calls": 0, "blocked": 0, "sessions": set(), "last_ts": "", "tools": {}})
+                srv["calls"] += 1
+                srv["blocked"] += 1 if row["blocked"] else 0
+                srv["sessions"].add(row["session_id"])
+                ts = row["ts"] or ""
+                if ts > srv["last_ts"]:
+                    srv["last_ts"] = ts
+                if tool:
+                    t = srv["tools"].setdefault(tool, {"calls": 0, "blocked": 0, "last_ts": ""})
+                    t["calls"] += 1
+                    t["blocked"] += 1 if row["blocked"] else 0
+                    if ts > t["last_ts"]:
+                        t["last_ts"] = ts
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    for srv in usage.values():
+        srv["sessions"] = len(srv["sessions"])
+        srv["last"] = _relative_time_store(srv["last_ts"]) if srv["last_ts"] else ""
+        srv["lastAbs"] = _absolute_time_store(srv["last_ts"]) if srv["last_ts"] else ""
+        for t in srv["tools"].values():
+            t["last"] = _relative_time_store(t["last_ts"]) if t["last_ts"] else ""
+    return usage
 
 
 def get_findings_page(

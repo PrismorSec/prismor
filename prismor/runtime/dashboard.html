@@ -2074,6 +2074,51 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .rules-actions:not(.dirty) .btn-primary, .rules-actions:not(.dirty) #rulesDiscard { opacity: .45; }
   .yaml-editor { font-family: var(--font-mono); font-size: 12px; border-radius: 8px; }
 
+  /* sessions: filter bar */
+  .sess-filters { margin: 0 0 16px; gap: 8px; }
+  .sess-filters .finput { width: 220px; }
+  .sess-filters .finput, .sess-filters .fsel { font-size: 12.5px; padding: 7px 10px; border-radius: 6px; }
+  .sess-filters .finput::-webkit-search-cancel-button { -webkit-appearance: none; }
+  .sess-filters .fbtn { font-size: 12px; padding: 7px 10px; }
+
+  /* mcp servers */
+  .mcp-summary { margin-bottom: 28px; }
+  .mcp-card { margin-bottom: 16px; }
+  .mcp-card-direct { border-color: #efdcae; }
+  .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .mcp-avatar { width: 28px; height: 28px; border-radius: 7px; background: var(--md-primary-soft); color: var(--ink); display: inline-grid; place-items: center; font-weight: 700; font-size: 13px; }
+  .mcp-name { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+  .mcp-head-right { margin-left: auto; }
+  .mcp-kind { font-size: 11px; font-weight: 500; }
+  .mcp-kind-gw { color: var(--ok); background: var(--ok-soft); }
+  .mcp-kind-mirror { color: #6d4c0c; background: #fbf3e4; }
+  .mcp-kind-direct { color: var(--bad); background: #fbeeec; }
+  .mcp-kind-seen { color: #3f5470; background: #eef2f6; }
+  .mcp-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 4px 0; min-width: 0; }
+  .mcp-meta code { font-family: var(--font-mono); font-size: 11.5px; background: var(--gray-100); border-radius: 4px; padding: 2px 6px; max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-meta-k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .mcp-meta-src { color: var(--muted); font-size: 12px; }
+  .mcp-muted { color: var(--muted); }
+  .mcp-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin: 14px 0; }
+  .mcp-usage > div { padding: 12px 16px; border-left: 1px solid var(--hairline); }
+  .mcp-usage > div:first-child { border-left: none; padding-left: 0; }
+  .mcp-num { font-size: 22px; font-weight: 500; color: var(--ink); margin: 6px 0 2px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .mcp-usage .kpi-sub { font-size: 12px; }
+  .mcp-findings { margin: 0 0 12px 18px; font-size: 12.5px; color: var(--ink-2); line-height: 1.55; }
+  .mcp-fix { margin: 0 0 14px; }
+  .mcp-fix .doc-cmd { margin-top: 8px; }
+  .tp-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--gray-100); }
+  .tp-row:last-child { border-bottom: none; }
+  .tp-tool { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); min-width: 0; }
+  .tp-stats { display: inline-flex; gap: 12px; font-size: 12px; color: var(--ink-2); margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tp-blocked { color: var(--bad); }
+  .tp-btns { margin-left: 0; }
+
+  /* extensions: long hook paths wrap inside the lifecycle card */
+  .ext-layout > * { min-width: 0; }
+  .ext-timeline, .ext-ev, .ext-ev b, .ext-ev span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+  .ext-ev b { font-weight: 600; }
+
   /* docs: collapsible page list */
   .docs-pages-head { display: flex; align-items: center; justify-content: space-between; }
   .docs-collapse {
@@ -2198,8 +2243,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══ PAGE: MCP PLAYGROUND ══════════════════════════════════════ -->
 <div id="page-mcpservers" class="page">
   <div class="section"><h2>MCP Servers</h2><div class="rule"></div>
-    <span class="hint">Every MCP server Prismor fronts, and how each tool is handled. Allow runs it; Ask requires human approval (step-up); Deny blocks it. Applies across all agents.</span>
+    <span class="hint">every MCP server declared on this machine: where it is configured, whether its calls pass through Prismor, what it has been doing in the last 7 days, and how each tool is handled</span>
   </div>
+  <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
   <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
 </div>
 
@@ -2534,6 +2580,31 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
 
   <div id="enrollBannerSess"></div>
+
+  <div class="bar sess-filters" id="sessFilters">
+    <input id="sfSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Session id contains…" />
+    <select id="sfAgent" class="fsel"><option value="">All agents</option></select>
+    <select id="sfWorkspace" class="fsel"><option value="">All workspaces</option></select>
+    <select id="sfFindings" class="fsel">
+      <option value="">Any findings</option>
+      <option value="with">With findings</option>
+      <option value="clean">Clean only</option>
+    </select>
+    <select id="sfRisk" class="fsel">
+      <option value="0">Any risk</option>
+      <option value="30">Risk ≥ 30</option>
+      <option value="60">Risk ≥ 60</option>
+      <option value="80">Risk ≥ 80</option>
+    </select>
+    <select id="sfSince" class="fsel">
+      <option value="0">Any time</option>
+      <option value="1">Active in last hour</option>
+      <option value="24">Last 24 hours</option>
+      <option value="168">Last 7 days</option>
+      <option value="720">Last 30 days</option>
+    </select>
+    <button class="fbtn" id="sfClear" hidden>Clear filters</button>
+  </div>
 
   <div class="card" style="margin-bottom:16px">
     <div class="bar" style="margin-bottom:16px">
@@ -3197,7 +3268,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       // Render from cache instantly, refresh in background
       if (_sessCtrlCache) {
         renderSessionControl(_sessCtrlCache.items, _serverWorkspace);
-        document.getElementById('scSessCount').textContent = fmtNum(_sessCtrlCache.total) + ' sessions';
+        document.getElementById('scSessCount').textContent = sessCountLabel(_sessCtrlCache.total);
         buildPager('scSessPager', _sessCtrlData, () => loadSessionControl());
         if (_wsCache) renderEnrollBanners((_wsCache).enrollment);
         renderSessions(_sessCtrlCache.items);
@@ -3550,11 +3621,73 @@ async function loadMcpServers() {
 let _mcpServersCache = [];
 function renderMcpServers() {
   const el = document.getElementById('mcpServersList');
+  const sum = document.getElementById('mcpSummary');
   const servers = _mcpServersCache;
-  if (!servers.length) { el.innerHTML = mcpSetupHelp(); return; }
-  el.innerHTML = servers.map(s =>
-    s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)
-  ).join('');
+  if (!servers.length) { el.innerHTML = mcpSetupHelp(); if (sum) sum.hidden = true; return; }
+  const governed = servers.filter(s => s.kind !== 'direct').length;
+  const idle = servers.filter(s => !((s.usage || {}).calls)).length;
+  const direct = servers.length - governed;
+  const calls = servers.reduce((n, s) => n + ((s.usage || {}).calls || 0), 0);
+  const blocked = servers.reduce((n, s) => n + ((s.usage || {}).blocked || 0), 0);
+  const tools = servers.reduce((n, s) => n + (s.tools || []).length, 0);
+  if (sum) {
+    sum.hidden = false;
+    sum.innerHTML =
+      '<div><div class="kpi-label">Servers</div><div class="kpi-big">' + servers.length + '</div><div class="kpi-sub">' + governed + ' screened · ' + direct + ' direct · ' + idle + ' idle this week</div></div>' +
+      '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>' +
+      '<div><div class="kpi-label">Calls · 7 days</div><div class="kpi-big">' + fmtNum(calls) + '</div><div class="kpi-sub">across every server below</div></div>' +
+      '<div><div class="kpi-label">Blocked · 7 days</div><div class="kpi-big">' + fmtNum(blocked) + '</div><div class="kpi-sub">' + (calls ? (Math.round(blocked / calls * 1000) / 10) + '% of calls' : 'no calls recorded') + '</div></div>';
+  }
+  const order = { mirror: 0, gateway: 1, remote: 2, seen: 3, direct: 4 };
+  // Mirror first, then whatever the agents actually use; idle servers sink.
+  const nCalls = s => (s.usage || {}).calls || 0;
+  el.innerHTML = servers.slice().sort((a, b) => (order[a.kind] === 0) !== (order[b.kind] === 0) ? (order[a.kind] - order[b.kind]) : (nCalls(b) - nCalls(a)) || (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name))
+    .map(s => s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)).join('');
+}
+
+// Shared card chrome: kind chip, risk chip, where it is declared, week's usage.
+function mcpKindChip(s) {
+  if (s.kind === 'mirror') return '<span class="mcp-kind mcp-kind-mirror" title="Prismor serves the agent\'s built-in tools itself, so they are screened and redacted">mirror · built-ins</span>';
+  if (s.kind === 'direct') return '<span class="mcp-kind mcp-kind-direct" title="Declared in a config the agent reads directly; its calls never reach Prismor">direct · ungoverned</span>';
+  if (s.kind === 'gateway') return '<span class="mcp-kind mcp-kind-gw" title="Routed through prismor mcp-gateway: every call is screened before it runs and every result scanned before the model sees it">behind the gateway</span>';
+  if (s.kind === 'seen') return '<span class="mcp-kind mcp-kind-seen" title="No config Prismor scans declares it; the hooks saw the agent call it, so its calls are screened like any other tool">seen in calls · hook-screened</span>';
+  return '<span class="mcp-kind mcp-kind-gw" title="Its tools are in this workspace\'s policy scope; calls are screened by the hooks">in policy scope</span>';
+}
+function mcpRiskChip(s) {
+  const r = s.risk || 'none';
+  return r === 'none' ? '' : '<span class="rule-sev ' + r.toUpperCase() + '" title="Risk from the config scan">' + r + '</span>';
+}
+function mcpDeclaredMarkup(s) {
+  const decl = s.declared_in || [];
+  if (!decl.length) return '<div class="mcp-meta mcp-muted">Not declared in any config Prismor scans' + (s.kind === 'mirror' ? ' — served in-process by the gateway.' : (s.kind === 'seen' ? ' — known only from calls the agent made.' : ' — listed because this workspace\'s policy scope names it.')) + '</div>';
+  return decl.map(d => {
+    const how = d.url ? '<code>' + safe(d.url) + '</code>' : (d.command ? '<code>' + safe(d.command) + '</code>' : '');
+    return '<div class="mcp-meta">' +
+      '<span class="mcp-meta-k">' + safe(d.transport || 'stdio') + '</span>' + how +
+      '<span class="mcp-meta-src" title="' + safeAttr(d.source) + '">' + safe(d.agent) + ' · ' + safe(d.source.split('/').slice(-2).join('/')) + (d.workspace_scoped ? ' · came with the repo' : '') + '</span>' +
+    '</div>';
+  }).join('');
+}
+function mcpUsageMarkup(s) {
+  const u = s.usage || {};
+  const cell = (k, v, sub) => '<div><div class="kpi-label">' + k + '</div><div class="mcp-num">' + v + '</div>' + (sub ? '<div class="kpi-sub">' + sub + '</div>' : '') + '</div>';
+  return '<div class="mcp-usage">' +
+    cell('Calls · 7d', fmtNum(u.calls || 0)) +
+    cell('Blocked', fmtNum(u.blocked || 0), u.calls ? (Math.round((u.blocked||0) / u.calls * 1000) / 10) + '%' : '') +
+    cell('Sessions', fmtNum(u.sessions || 0)) +
+    cell('Last call', u.last ? '<span title="' + safeAttr(u.lastAbs || '') + '">' + safe(u.last) + '</span>' : '<span class="mcp-muted">never</span>') +
+  '</div>';
+}
+function mcpFindingsMarkup(s) {
+  const f = s.findings || [];
+  if (!f.length) return '';
+  return '<ul class="mcp-findings">' + f.map(x => '<li>' + safe(x) + '</li>').join('') + '</ul>';
+}
+function mcpCardHead(s, extra) {
+  return '<div class="card-title mcp-head">' +
+    '<span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span>' +
+    '<span class="mcp-name">' + safe(s.name) + '</span>' + mcpKindChip(s) + mcpRiskChip(s) +
+    '<span class="mcp-head-right">' + (extra || '') + '</span></div>';
 }
 
 // The mirror: front-of-house controls. A Governing / Pass-through switch (screen
@@ -3579,7 +3712,7 @@ function renderMirrorCard(s) {
       ' onclick="mcpToolEnable(\'' + safeAttr(s.name) + '\',\'' + safeAttr(t.name) + '\',' + (on ? 'true' : 'false') + ')">' +
       '<span class="tp-knob"></span></button>';
     return '<div class="tp-row' + (governing ? '' : ' tp-row-off') + '">' +
-      '<span class="tp-tool">' + safe(t.name) + '</span>' + toggle + '</div>';
+      '<span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) + toggle + '</div>';
   }).join('');
   let hint;
   if (paused) {
@@ -3594,31 +3727,42 @@ function renderMirrorCard(s) {
     hint = 'Pass-through — the mirror still serves the tools below but runs them exactly as the natives would ' +
       '(logged, not blocked or redacted). Flip back to Governing here, or <code>prismor mirror passthrough off</code>.';
   }
-  return '<div class="card" style="margin-bottom:16px">' +
-    '<div class="card-title" style="display:flex;align-items:center;gap:10px">' +
-      '<span class="badge" style="width:24px;height:24px;border-radius:6px;background:var(--gray-100);display:inline-grid;place-items:center;font-weight:700;font-size:12px">P</span>' +
-      safe(s.name) + '<span class="mcp-kind mcp-kind-mirror">mirror · built-ins</span>' +
-      '<span style="margin-left:auto">' + ovBtn + '</span></div>' +
+  return '<div class="card mcp-card">' + mcpCardHead(s, ovBtn) +
+    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) +
     '<div class="mcp-hint">' + hint + '</div>' +
     '<div class="tp-grid" style="margin-top:10px">' + rows + '</div></div>';
 }
 
+function mcpToolStats(t) {
+  const c = t.calls || 0, bl = t.blocked || 0;
+  return '<span class="tp-stats">' +
+    (c ? '<span title="calls in the last 7 days">' + fmtNum(c) + ' calls</span>' : '<span class="mcp-muted">no calls yet</span>') +
+    (bl ? '<span class="tp-blocked" title="blocked in the last 7 days">' + fmtNum(bl) + ' blocked</span>' : '') +
+    (t.last ? '<span class="mcp-muted">' + safe(t.last) + '</span>' : '') +
+  '</span>';
+}
 function renderRemoteCard(s) {
+  const direct = s.kind === 'direct';
   const rows = (s.tools || []).length ? (s.tools || []).map(t => {
     const st = t.state || 'allow';
     const btn = (val, label, title) =>
       '<button class="tp-btn tp-' + val + (st === val ? ' on' : '') + '" title="' + title + '" ' +
         'onclick="mcpToolSet(\'' + safeAttr(t.tag) + '\',\'' + val + '\')">' + label + '</button>';
-    return '<div class="tp-row"><span class="tp-tool">' + safe(t.name) + '</span>' +
+    return '<div class="tp-row"><span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) +
       '<span class="tp-btns">' + btn('allow','Allow','Runs without prompting') +
         btn('ask','Ask','Requires human approval (step-up)') +
         btn('deny','Deny','Blocked in real time') + '</span></div>';
-  }).join('') : '<div class="tp-row" style="color:var(--gray-400);font-size:12px">No tools with a policy yet — they appear here once the agent uses them.</div>';
-  return '<div class="card" style="margin-bottom:16px">' +
-    '<div class="card-title" style="display:flex;align-items:center;gap:10px">' +
-      '<span class="badge" style="width:24px;height:24px;border-radius:6px;background:var(--gray-100);display:inline-grid;place-items:center;font-weight:700;font-size:12px">P</span>' +
-      safe(s.name) + '<span class="mcp-kind">remote</span></div>' +
-    '<div class="tp-grid" style="margin-top:12px">' + rows + '</div></div>';
+  }).join('') : '<div class="tp-row mcp-muted" style="font-size:12.5px">' +
+      (direct ? 'Prismor never sees this server\'s calls, so there is nothing to govern here yet.'
+              : 'No tools seen or governed yet — they appear here the first time the agent calls one, or when you set a policy.') + '</div>';
+  const fix = direct
+    ? '<div class="banner banner-warn mcp-fix"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
+        '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config. Front it so every call is screened first:' +
+        '<pre class="doc-cmd">prismor mcp-gateway install --all</pre></div></div>'
+    : '';
+  return '<div class="card mcp-card' + (direct ? ' mcp-card-direct' : '') + '">' + mcpCardHead(s) +
+    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) + fix +
+    '<div class="tp-grid">' + rows + '</div></div>';
 }
 
 // Nothing is wired up yet — say how to wire it, rather than showing an
@@ -5043,21 +5187,66 @@ function initCharts() {
 
 // ── Sessions (overview table) ─────────────────────────────────────────────
 const sessState = {page:1,limit:20,sort:'updatedAt',dir:'desc',total:0,pages:1};
+
+// One filter bar, both lists: the control list up top and the full log below
+// read the same query, so narrowing to one agent narrows what you can pause.
+const SESS_FILTER_IDS = {q:'sfSearch', agent:'sfAgent', workspace:'sfWorkspace', findings:'sfFindings', min_risk:'sfRisk', since_hours:'sfSince'};
+function sessFilterQuery() {
+  return Object.entries(SESS_FILTER_IDS).map(([k, id]) => {
+    const v = (document.getElementById(id)?.value || '').trim();
+    return v && v !== '0' ? '&' + k + '=' + encodeURIComponent(v) : '';
+  }).join('');
+}
+function sessFiltersActive() { return sessFilterQuery() !== ''; }
+let _sessFacetsFilled = false;
+function fillSessFacets(facets) {
+  if (_sessFacetsFilled || !facets) return;
+  const fill = (id, items, first) => {
+    const sel = document.getElementById(id); if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">' + first + '</option>' + items.map(o =>
+      '<option value="' + safeAttr(o.value) + '">' + safe(o.label) + '</option>').join('');
+    sel.value = cur;
+  };
+  fill('sfAgent', (facets.agents || []).map(a => ({value:a, label:a})), 'All agents');
+  fill('sfWorkspace', (facets.workspaces || []).map(w => ({value:w.path, label:w.name || w.path})), 'All workspaces');
+  _sessFacetsFilled = (facets.agents || []).length > 0;
+}
+function sessCountLabel(total) {
+  return fmtNum(total) + ' session' + (total === 1 ? '' : 's') + (sessFiltersActive() ? ' match' : '');
+}
+Object.values(SESS_FILTER_IDS).forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', () => {
+    sessState.page = 1; _sessCtrlData.page = 1;
+    document.getElementById('sfClear').hidden = !sessFiltersActive();
+    loadSessions(); loadSessionControl();
+  });
+});
+document.getElementById('sfClear').addEventListener('click', () => {
+  Object.values(SESS_FILTER_IDS).forEach(id => { const el = document.getElementById(id); if (el) el.value = el.tagName === 'INPUT' ? '' : el.options[0].value; });
+  document.getElementById('sfClear').hidden = true;
+  sessState.page = 1; _sessCtrlData.page = 1;
+  loadSessions(); loadSessionControl();
+});
+
 async function loadSessions() {
   const {page,limit,sort,dir} = sessState;
   try {
-    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}`);
+    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}` + sessFilterQuery());
     sessState.page=data.page; sessState.pages=data.pages; sessState.total=data.total;
+    fillSessFacets(data.facets);
     renderSessions(data.items);
     buildPager('sessPager',sessState,loadSessions);
-    document.getElementById('sessCount').textContent=fmtNum(data.total)+' sessions';
+    document.getElementById('sessCount').textContent=sessCountLabel(data.total);
     updateSessHeaders();
   } catch(e){console.error('[prismor] sessions:',e);}
 }
 function renderSessions(rows) {
   const tbody=document.getElementById('sessBody');
   renderOverviewSessions(rows.slice(0, 5));
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="7" class="empty">No sessions yet</td></tr>';return;}
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="7" class="empty">'+(sessFiltersActive()?'No sessions match these filters.':'No sessions yet')+'</td></tr>';return;}
   tbody.innerHTML=rows.map(s=>{
     const rc=riskClass(s.riskScore);
     const srcCls=s.source==='supply_chain'?'supply':'';
@@ -5590,14 +5779,15 @@ async function loadSessionControl() {
   const ws = activeWorkspace();
   const { page, limit } = _sessCtrlData;
   try {
-    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=updatedAt&dir=desc`);
+    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=updatedAt&dir=desc` + sessFilterQuery());
+    fillSessFacets(data.facets);
     _sessCtrlData.items = data.items || [];
     _sessCtrlData.total = data.total || 0;
     _sessCtrlData.pages = data.pages || 1;
     _sessCtrlData.page = data.page || 1;
     _sessCtrlCache = { items: data.items || [], total: data.total || 0, pages: data.pages || 1, page: data.page || 1 };
     renderSessionControl(data.items || [], ws);
-    document.getElementById('scSessCount').textContent = fmtNum(data.total || 0) + ' sessions';
+    document.getElementById('scSessCount').textContent = sessCountLabel(data.total || 0);
     buildPager('scSessPager', _sessCtrlData, () => loadSessionControl());
   } catch(e) { console.error('[prismor] session-ctrl:', e); }
   loadSessions();

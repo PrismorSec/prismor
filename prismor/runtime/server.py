@@ -40,6 +40,7 @@ from urllib.parse import urlparse, parse_qs
 from prismor.runtime.store import (
     get_aggregate_stats,
     get_sessions_page,
+    get_mcp_usage,
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
@@ -169,7 +170,118 @@ def _mcp_server_inventory(workspace: Path):
             "tools": [{"name": t[len(prefix):], "tag": t, "state": _state(t)}
                       for t in tools],
         })
+    return _enrich_mcp_inventory(workspace, servers, seen)
+
+
+def _enrich_mcp_inventory(workspace: Path, servers, seen):
+    """Attach where each server is declared (config file, agent, transport,
+    command or URL, whether it is behind the gateway) and what it has been
+    doing (calls, blocks, sessions, last call, per tool) over the last week.
+    Servers declared in a config but not reaching policy are appended as
+    ``direct`` so the page shows coverage, not just what is governed."""
+    from dataclasses import asdict
+    records = []
+    try:
+        from prismor.runtime.discover import discover_mcp
+        records = discover_mcp(workspace)
+    except Exception:
+        records = []
+    by_name = {}
+    for r in records:
+        if r.is_gateway:
+            continue
+        by_name.setdefault(r.name.lower(), []).append(asdict(r))
+
+    def _decl(name: str):
+        return by_name.get(name.lower()) or []
+
+    usage = {}
+    try:
+        usage = get_mcp_usage()
+    except Exception:
+        usage = {}
+
+    for s in servers:
+        decl = _decl(s["name"])
+        s["declared_in"] = [{
+            "source": d["source"], "agent": d["agent"], "transport": d["transport"],
+            "command": " ".join(d["command"] or []), "url": d["url"],
+            "managed": d["managed"], "workspace_scoped": d["workspace_scoped"],
+        } for d in decl]
+        s["managed"] = s["kind"] == "mirror" or any(d["managed"] for d in decl)
+        s["risk"] = max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none")
+        s["findings"] = sorted({f for d in decl for f in (d["findings"] or [])})
+        u = usage.get(s["name"]) or {}
+        s["usage"] = {k: u.get(k, 0 if k in ("calls", "blocked", "sessions") else "")
+                      for k in ("calls", "blocked", "sessions", "last", "lastAbs")}
+        tools_seen = (u.get("tools") or {})
+        have = {t["name"] for t in s["tools"]}
+        prefix = "" if s["kind"] == "mirror" else f"mcp__{s['name']}__"
+        for name in sorted(tools_seen):
+            if name not in have:
+                tag = name if s["kind"] == "mirror" else prefix + name
+                s["tools"].append({"name": name, "tag": tag, "state": "allow"})
+        for t in s["tools"]:
+            tu = tools_seen.get(t["name"]) or {}
+            t["calls"] = tu.get("calls", 0)
+            t["blocked"] = tu.get("blocked", 0)
+            t["last"] = tu.get("last", "")
+        s["tools"].sort(key=lambda t: (-t.get("calls", 0), t["name"]))
+
+    # Declared somewhere on this machine but not in this workspace's policy
+    # families: behind the gateway (governed) or reached directly (not).
+    known = {n.lower() for n in seen}
+    for key, decl in sorted(by_name.items()):
+        if key in known:
+            continue
+        known.add(key)
+        name = decl[0]["name"]
+        u = usage.get(name) or {}
+        managed = any(d["managed"] for d in decl)
+        servers.append({
+            "name": name, "kind": "gateway" if managed else "direct", "tools": [],
+            "declared_in": [{
+                "source": d["source"], "agent": d["agent"], "transport": d["transport"],
+                "command": " ".join(d["command"] or []), "url": d["url"],
+                "managed": d["managed"], "workspace_scoped": d["workspace_scoped"],
+            } for d in decl],
+            "managed": any(d["managed"] for d in decl),
+            "risk": max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none"),
+            "findings": sorted({f for d in decl for f in (d["findings"] or [])}),
+            "usage": {"calls": u.get("calls", 0), "blocked": u.get("blocked", 0),
+                      "sessions": u.get("sessions", 0), "last": u.get("last", ""), "lastAbs": u.get("lastAbs", "")},
+        })
+    # Only known from calls the hooks saw (a host-bundled server, or one an
+    # agent registered outside any config Prismor scans).
+    for name, u in sorted(usage.items(), key=lambda kv: -kv[1]["calls"]):
+        if name.lower() in known:
+            continue
+        known.add(name.lower())
+        prefix = f"mcp__{name}__"
+        servers.append({
+            "name": name, "kind": "seen", "declared_in": [], "managed": False,
+            "risk": "none", "findings": [],
+            "usage": {"calls": u["calls"], "blocked": u["blocked"], "sessions": u["sessions"],
+                      "last": u["last"], "lastAbs": u["lastAbs"]},
+            "tools": sorted([
+                {"name": t, "tag": prefix + t, "state": _state_for_tag(prefix + t, workspace),
+                 "calls": tu["calls"], "blocked": tu["blocked"], "last": tu["last"]}
+                for t, tu in u["tools"].items()], key=lambda t: (-t["calls"], t["name"])),
+        })
     return servers
+
+
+def _state_for_tag(tag: str, workspace: Path) -> str:
+    from prismor.runtime.agents import load_agents_config
+    cfg = load_agents_config(workspace)
+    if tag in set(cfg.get("global_deny_tools") or []):
+        return "deny"
+    if tag in set(cfg.get("global_ask_tools") or []):
+        return "ask"
+    return "allow"
+
+
+_RISK_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 # -- Docs: the shipped Markdown docs, browsable from the dashboard ---------
 # Two locations: the wheel bundles a subset under runtime/data/docs, a source
@@ -475,6 +587,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     limit=qint("limit", 20),
                     sort=qstr("sort", "updatedAt"),
                     direction=qstr("dir", "desc"),
+                    agent=qstr("agent"),
+                    workspace=qstr("workspace"),
+                    search=qstr("q"),
+                    findings=qstr("findings"),
+                    min_risk=qint("min_risk", 0),
+                    since_hours=qint("since_hours", 0),
                 )
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
