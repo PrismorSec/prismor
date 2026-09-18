@@ -1,0 +1,37 @@
+version: 2
+updates:
+  # Maintain GitHub Actions dependencies
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci(deps)"
+
+  # Maintain Python dependencies for root package
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "fix(deps)"
+
+  # Maintain npm dependencies for Mastra adapter
+  - package-ecosystem: "npm"
+    directory: "/adapters/mastra"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
+
+  # Maintain npm dependencies for Vercel AI adapter
+  - package-ecosystem: "npm"
+    directory: "/adapters/vercel-ai"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "fix(deps)"
