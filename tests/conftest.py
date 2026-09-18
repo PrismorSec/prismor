@@ -62,7 +62,7 @@ import os
 import sys
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pytest
 
@@ -231,37 +231,68 @@ def _live_prismor_modules() -> List[types.ModuleType]:
 # that is an intentional tradeoff for the leak class in #308.
 _SnapKey = Tuple[types.ModuleType, str, str, Optional[str]]
 _MISSING = object()
+_BASELINE: Dict[_SnapKey, Any] = {}
+_INDEXED_MODULE_IDS: Set[int] = set()
+
+# Pre-indexed target slots for fast-path leak checking:
+# (mod, mod_name, attr, cattr, pristine, key)
+_CallableSlot = Tuple[types.ModuleType, str, str, Optional[str], Any, _SnapKey]
+_SLOTS: List[_CallableSlot] = []
+
+
+def _index_module(mod: types.ModuleType) -> None:
+    if id(mod) in _INDEXED_MODULE_IDS:
+        return
+    _INDEXED_MODULE_IDS.add(id(mod))
+    name = getattr(mod, "__name__", "?")
+    try:
+        items = list(vars(mod).items())
+    except Exception:
+        return
+    for attr, value in items:
+        if attr.startswith("__") and attr.endswith("__"):
+            # PEP 649 (Python 3.14) gives an annotated module a real
+            # FunctionType ``__annotate__`` that materialises lazily on
+            # first annotation access, i.e. *after* the baseline snapshot.
+            # Skipping module-level dunders here avoids 2 000+ spurious
+            # teardown errors on 3.14+ boxes. The class branch below is
+            # intentionally untouched, so a leaked PolicyEngine.__init__
+            # is still caught.
+            continue
+        if isinstance(value, (types.FunctionType, types.BuiltinFunctionType)):
+            key = (mod, name, attr, None)
+            _BASELINE[key] = value
+            _SLOTS.append((mod, name, attr, None, value, key))
+        elif inspect.isclass(value) and getattr(value, "__module__", "").startswith("prismor"):
+            try:
+                class_items = list(vars(value).items())
+            except Exception:
+                continue
+            for cattr, cvalue in class_items:
+                if isinstance(cvalue, (types.FunctionType, staticmethod, classmethod)):
+                    key = (mod, name, attr, cattr)
+                    _BASELINE[key] = cvalue
+                    _SLOTS.append((mod, name, attr, cattr, cvalue, key))
+
+
+def _ensure_indexed() -> None:
+    """Index any live prismor modules that are not yet in _SLOTS."""
+    needs_reindex = False
+    for n, m in sys.modules.items():
+        if n.startswith("prismor") and isinstance(m, types.ModuleType) and id(m) not in _INDEXED_MODULE_IDS:
+            needs_reindex = True
+            break
+    if not needs_reindex and _SLOTS:
+        return
+
+    for mod in _live_prismor_modules():
+        if id(mod) not in _INDEXED_MODULE_IDS:
+            _index_module(mod)
 
 
 def _snapshot_callables() -> Dict[_SnapKey, Any]:
-    snap: Dict[_SnapKey, Any] = {}
-    for mod in _live_prismor_modules():
-        name = getattr(mod, "__name__", "?")
-        try:
-            items = list(vars(mod).items())
-        except Exception:
-            continue
-        for attr, value in items:
-            if attr.startswith("__") and attr.endswith("__"):
-                # PEP 649 (Python 3.14) gives an annotated module a real
-                # FunctionType ``__annotate__`` that materialises lazily on
-                # first annotation access, i.e. *after* the baseline snapshot.
-                # Skipping module-level dunders here avoids 2 000+ spurious
-                # teardown errors on 3.14+ boxes. The class branch below is
-                # intentionally untouched, so a leaked PolicyEngine.__init__
-                # is still caught.
-                continue
-            if isinstance(value, (types.FunctionType, types.BuiltinFunctionType)):
-                snap[(mod, name, attr, None)] = value
-            elif inspect.isclass(value) and getattr(value, "__module__", "").startswith("prismor"):
-                try:
-                    class_items = list(vars(value).items())
-                except Exception:
-                    continue
-                for cattr, cvalue in class_items:
-                    if isinstance(cvalue, (types.FunctionType, staticmethod, classmethod)):
-                        snap[(mod, name, attr, cattr)] = cvalue
-    return snap
+    _ensure_indexed()
+    return dict(_BASELINE)
 
 
 def _resolve(key: _SnapKey) -> Tuple[Any, Optional[str]]:
@@ -331,15 +362,8 @@ def _restore_sys_modules(before: Dict[str, types.ModuleType]) -> None:
                 pass
 
 
-# Pristine value of every callable, taken once collection has imported all the
-# test modules (and with them the runtime they exercise). The per-test snapshot
-# below is the primary reference; this one covers a module a test imports for
-# the first time inside its own body, which has no per-test baseline.
-_BASELINE: Dict[_SnapKey, Any] = {}
-
-
 def pytest_collection_finish(session: pytest.Session) -> None:
-    _BASELINE.update(_snapshot_callables())
+    _ensure_indexed()
 
 
 @pytest.fixture(autouse=True)
@@ -350,30 +374,38 @@ def _no_module_state_leaks() -> Any:
     a bare ``module.func = lambda: ...`` does. The original is put back either
     way, so one offender cannot cascade into the rest of the run.
     """
+    _ensure_indexed()
     modules_before = _snapshot_sys_modules()
-    before = _snapshot_callables()
     try:
         yield
     finally:
         _restore_sys_modules(modules_before)
-        after = _snapshot_callables()
+        _ensure_indexed()
         leaked = []
-        for key in set(before) | set(after):
-            target, attr = _resolve(key)
-            if target is None or attr is None:
-                current = _MISSING
+        for mod, mod_name, attr, cattr, pristine, key in _SLOTS:
+            if cattr is None:
+                try:
+                    current = vars(mod).get(attr, _MISSING)
+                except Exception:
+                    current = getattr(mod, attr, _MISSING)
             else:
-                current = inspect.getattr_static(target, attr, _MISSING)
-            pristine = before.get(key, _BASELINE.get(key, current))
+                cls = vars(mod).get(attr, None)
+                if cls is None:
+                    current = _MISSING
+                else:
+                    try:
+                        current = vars(cls).get(cattr, _MISSING)
+                    except Exception:
+                        current = getattr(cls, cattr, _MISSING)
             if current is not pristine:
                 leaked.append(_restore(key, pristine))
-        leaked = sorted(leaked)
-    if leaked:
-        pytest.fail(
-            "test leaked patched module state (restored, but fix the test): "
-            + ", ".join(leaked)
-            + "\nUse monkeypatch.setattr / mock.patch instead of assigning to a "
-              "module attribute, so the patch is undone when the test ends.",
-            pytrace=False,
-        )
+        if leaked:
+            leaked = sorted(leaked)
+            pytest.fail(
+                "test leaked patched module state (restored, but fix the test): "
+                + ", ".join(leaked)
+                + "\nUse monkeypatch.setattr / mock.patch instead of assigning to a "
+                  "module attribute, so the patch is undone when the test ends.",
+                pytrace=False,
+            )
 
