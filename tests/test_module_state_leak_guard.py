@@ -77,3 +77,31 @@ def test_leak_guard_detects_class_method_leak():
         except StopIteration:
             pass
     assert PolicyEngine.__init__ is orig
+
+
+def test_leak_guard_clean_run_passes():
+    gen = _no_module_state_leaks.__wrapped__()
+    next(gen)
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+
+
+def test_leak_guard_detects_class_object_mock_leak():
+    import prismor.runtime.policy_engine as pe
+    orig_pe = pe.PolicyEngine
+    orig_init = pe.PolicyEngine.__init__
+    gen = _no_module_state_leaks.__wrapped__()
+    next(gen)
+    pe.PolicyEngine = mock.MagicMock(return_value=None)
+    try:
+        with pytest.raises(pytest.fail.Exception, match=r"PolicyEngine\.__init__"):
+            try:
+                next(gen)
+            except StopIteration:
+                pass
+    finally:
+        pe.PolicyEngine = orig_pe
+    assert pe.PolicyEngine.__init__ is orig_init
+
