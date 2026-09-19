@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -1660,6 +1661,24 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path
     return _unmapped_tool_event(base, payload)
 
 
+# Codex's apply_patch carries no path field: the files live in the patch body's
+# "*** Add File: <path>" style headers (and "*** Move to:" for renames).
+_PATCH_FILE_RE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)\s*$", re.M)
+
+# Codex has no Skill tool: it loads a skill by reading its SKILL.md with the
+# shell, so that read is the only moment a skill invocation is observable.
+_SKILL_READ_RE = re.compile(r"(?:^|[\s'\"/=])skills/([A-Za-z0-9][\w.-]*)/SKILL\.md\b")
+
+
+def _patch_paths(patch: str) -> List[str]:
+    return list(dict.fromkeys(_PATCH_FILE_RE.findall(patch)))
+
+
+def _codex_skill_read(command: str) -> str:
+    m = _SKILL_READ_RE.search(command or "")
+    return m.group(1) if m else ""
+
+
 def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
     hook_event = payload.get("hook_event_name", "unknown")
     tool_name = payload.get("tool_name", "")
@@ -1674,20 +1693,30 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
     if tool_name == "Bash":
+        command = tool_input.get("command", "")
+        skill = _codex_skill_read(command)
+        if skill:
+            base["metadata"]["skill"] = skill
         return {
             **base,
             "type": "shell",
-            "command": tool_input.get("command", ""),
+            "command": command,
             "stdout": payload.get("stdout", ""),
             "stderr": payload.get("stderr", ""),
         }
     if tool_name == "Read":
         return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
     if tool_name in {"Edit", "MultiEdit", "Write", "apply_patch"}:
+        path = tool_input.get("file_path") or tool_input.get("path", "")
+        if not path and tool_name == "apply_patch":
+            paths = _patch_paths(str(tool_input.get("command", "")))
+            path = paths[0] if paths else ""
+            if len(paths) > 1:
+                base["metadata"]["patch_paths"] = paths
         return {
             **base,
             "type": "file_write",
-            "path": tool_input.get("file_path") or tool_input.get("path", ""),
+            "path": path,
             # A plain single Edit call (as opposed to MultiEdit) has shape
             # {file_path, old_string, new_string} — no "edits" list and no
             # "content" key — so new_string must be its own fallback or the
