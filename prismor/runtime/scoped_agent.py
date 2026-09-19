@@ -349,6 +349,10 @@ def resolve_skill_name(event: Dict[str, Any]) -> Optional[str]:
     the whole skill surface collapses to one undifferentiated tag.
     """
     meta = event.get("metadata") or {}
+    # Set by adapters whose skills load without a Skill tool (Codex: a shell
+    # read of SKILL.md).
+    if isinstance(meta.get("skill"), str) and meta["skill"].strip():
+        return meta["skill"].strip()[:_MAX_SKILL_NAME]
     raw = meta.get("raw")
     if not isinstance(raw, dict):
         return None
