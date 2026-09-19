@@ -1798,9 +1798,15 @@ class PolicyEngine:
         # the session's taint file from disk, and doing that once per line of a
         # script is hundreds of needless reads. The originating shell event
         # still marks once, from this same findings list, after the script scan.
+        # Only a *confirmed* injection taints: an LLM judge's verdict, or a
+        # CRITICAL structural hit (injection hidden in HTML). The regex rule
+        # and the keyword heuristic both fire on any page that merely talks
+        # about jailbreaks or exfiltration, and tainting on them turned every
+        # later GET into a CRITICAL "secret exfil" (#404).
         taint = None if event.get("_script_line") else self._get_taint(session_id)
         if taint is not None and any(
-            f.get("category") in ("prompt_injection", "prompt_injection_semantic")
+            (f.get("category") == "prompt_injection_semantic" and f.get("judged"))
+            or (f.get("category") == "prompt_injection" and f.get("severity") == "CRITICAL")
             for f in findings
         ):
             taint.mark_injection(index)
@@ -2295,6 +2301,9 @@ class PolicyEngine:
         reason = getattr(risk, "reason", "")
         sem_cat = getattr(risk, "category", "unknown")
         evidence = f"category={sem_cat} score={score:.2f} reason={reason}"
+        # True only when an LLM judge answered; a heuristic-only verdict is a
+        # keyword hit, not a judgement (taint marking keys off this).
+        judged = str(getattr(risk, "mode", "")) in ("api", "local_llm", "hybrid_api", "hybrid_local_llm")
 
         return {
             "id": prefixed_id,
@@ -2305,6 +2314,7 @@ class PolicyEngine:
             "eventIndex": index,
             "ruleId": rule_id,
             "action": action,
+            "judged": judged,
             # Same provenance tag the rule findings carry (#155).
             "source": _EVENT_SOURCE.get(str(event.get("type", "")), str(event.get("type", ""))),
         }
