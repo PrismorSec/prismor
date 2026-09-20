@@ -748,6 +748,13 @@ def initialize_database(workspace: Path) -> Path:
                 size_chars INTEGER,
                 approx_tokens INTEGER
             );
+            CREATE TABLE IF NOT EXISTS hook_timings (
+                session_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                hook_event TEXT,
+                hook_ms INTEGER,
+                PRIMARY KEY (session_id, ts)
+            );
             """
         )
         # Migrate before creating indexes — old DBs may be missing columns the
@@ -2124,6 +2131,56 @@ def get_findings_page(
     }
 
 
+_HOOK_TIMINGS_DDL = (
+    "CREATE TABLE IF NOT EXISTS hook_timings ("
+    "session_id TEXT NOT NULL, ts TEXT NOT NULL, hook_event TEXT, hook_ms INTEGER, "
+    "PRIMARY KEY (session_id, ts))"
+)
+
+
+def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int) -> None:
+    """How long one hook process took, keyed to the event it screened.
+
+    Kept out of events.raw_json on purpose: every snapshot rewrites the events
+    table from the session JSONL, and that JSONL line is appended before policy
+    runs, so nothing in it can hold the total. Best-effort: a failure here must
+    never surface in the agent's hook output.
+    """
+    if not session_id or not ts:
+        return
+    try:
+        conn = sqlite3.connect(get_db_path(workspace), timeout=2)
+        try:
+            conn.execute(_HOOK_TIMINGS_DDL)
+            conn.execute(
+                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms) VALUES (?, ?, ?, ?)",
+                (session_id, ts, hook_event or "", int(hook_ms)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _hook_timings(conn, session_id: str = "", limit: int = 5000) -> Dict[tuple, Dict[str, Any]]:
+    """(session_id, ts) -> {hookEvent, hookMs}; {} on a DB written before the table existed."""
+    try:
+        if session_id:
+            rows = conn.execute(
+                "SELECT session_id, ts, hook_event, hook_ms FROM hook_timings WHERE session_id = ?",
+                (session_id,),
+            )
+        else:
+            rows = conn.execute(
+                "SELECT session_id, ts, hook_event, hook_ms FROM hook_timings ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            )
+        return {(r[0], r[1]): {"hookEvent": r[2] or "", "hookMs": r[3]} for r in rows}
+    except sqlite3.OperationalError:
+        return {}
+
+
 def get_events_page(
     page: int = 1,
     limit: int = 30,
@@ -2140,6 +2197,7 @@ def get_events_page(
         if conn is None:
             continue
         try:
+            timings = _hook_timings(conn)
             where_clauses: List[str] = []
             params: List[Any] = []
             limit = max(1, min(limit, 200))
@@ -2246,6 +2304,7 @@ def get_events_page(
                 if detail:
                     action_parts.append(detail[:80])
                 ts_raw = row["ts"] or ""
+                timing = timings.get((row["session_id"], ts_raw)) or {}
                 rows.append({
                     "ts": _relative_time_store(ts_raw) if ts_raw else "",
                     "tsAbs": _absolute_time_store(ts_raw),
@@ -2253,6 +2312,8 @@ def get_events_page(
                     "agent": row["agent"] or "unknown",
                     "action": ": ".join(action_parts) if action_parts else "event",
                     "toolTag": tool_tag,
+                    "agentEvent": (raw.get("agent_event") if isinstance(raw, dict) else "") or "",
+                    "hookMs": timing.get("hookMs"),
                     "actionType": row["action_type"] or "",
                     "verdict": verdict_value,
                     "severity": (severity or "low").lower(),
@@ -3639,10 +3700,13 @@ def _drop_duplicate_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     repeat (the agent running `ls` twice) is either slower than the window or
     genuinely worth showing twice.
     """
-    seen: Dict[Tuple[str, str], float] = {}
+    seen: Dict[Tuple[str, str, str], float] = {}
     out: List[Dict[str, Any]] = []
     for ev in events:
-        key = (str(ev.get("type") or ""), str(ev.get("action") or "")[:400])
+        # The phase is part of the key: a fast command's Pre and Post rows land
+        # inside the window too, and collapsing them dropped the Pre row -- the
+        # one carrying the verdict -- before _merge_tool_phases could fold them.
+        key = (str(ev.get("type") or ""), str(ev.get("agentEvent") or ""), str(ev.get("action") or "")[:400])
         stamp = _epoch_of(ev.get("_tsRaw"))
         previous = seen.get(key)
         if previous is not None and stamp is not None and abs(previous - stamp) <= _DUPLICATE_WINDOW_S:
@@ -3689,6 +3753,7 @@ def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if value and field not in (ev.get("artifacts") or {}):
                     ev.setdefault("artifacts", {})[field] = value
             ev["phases"] = ["PreToolUse", "PostToolUse"]
+            ev["postHookMs"] = post.get("hookMs")
         merged.append(ev)
     # A Post with no Pre in this window is still something that happened.
     for leftover in pending.values():
@@ -3823,6 +3888,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
         try:
             conn = sqlite3.connect(str(db), check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            timings = _hook_timings(conn, session_id)
             cur = conn.cursor()
             cur.execute(
                 """
@@ -3920,6 +3986,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "tsAbs": _absolute_time_store(row["ts"]),
                     "type": row["type"] or "",
                     "agentEvent": row["agent_event"] or "",
+                    "hookMs": (timings.get((session_id, row["ts"])) or {}).get("hookMs"),
                     "lane": event_lane(row["type"] or "", meta if isinstance(meta, dict) else {}),
                     "artifacts": artifacts,
                     "toolTag": tool_tag or "",

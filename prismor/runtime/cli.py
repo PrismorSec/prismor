@@ -55,6 +55,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -66,6 +67,14 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prismor.runtime import __version__
+
+# Wall-clock start of this hook process, for the per-call hook time the
+# dashboard shows. The dispatch shim stamps PRISMOR_HOOK_T0 before importing
+# anything; an older shim leaves it unset and the count starts at this import.
+try:
+    _HOOK_T0 = float(os.environ.get("PRISMOR_HOOK_T0") or 0) or time.time()
+except ValueError:
+    _HOOK_T0 = time.time()
 
 # ── Dependency check ────────────────────────────────────────────────
 # PyYAML is required for the policy engine to load any rules.
@@ -1652,6 +1661,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         _current_engine = decision.engine
         current_findings = decision.findings
         blocking = decision.blocking
+
+        # Stamp how long this hook process took once it exits -- whichever
+        # path it leaves by (allow, block via sys.exit(2), sandbox rewrite).
+        import atexit as _atexit
+        from prismor.runtime.store import record_hook_timing as _record_hook_timing
+        _atexit.register(
+            lambda _ws=workspace, _sid=normalized["sessionId"], _ts=str(event.get("ts") or ""), _ev=_agent_event:
+            _record_hook_timing(_ws, _sid, _ts, _ev, int((time.time() - _HOOK_T0) * 1000))
+        )
 
         # ── Memory-poisoning counter-instruction (SessionStart) ─────────────
         # A memory event (project-memory files loaded at SessionStart) can never
