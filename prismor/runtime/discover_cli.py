@@ -7,6 +7,8 @@ Sections:
     mcp         MCP servers declared anywhere, and whether they route through
                 the gateway
     keys        AI-provider credentials, and whether Cloak has them
+    webmcp      browsers where a page can register tools for an in-tab agent —
+                reported, but never scored, since no surface governs it yet
 
 The inventory and diff logic lives in ``discover``; this module is UX only.
 
@@ -121,6 +123,37 @@ def _print_credentials(creds: List[Dict[str, Any]]) -> None:
     print()
 
 
+def _elide_left(path: str, width: int = 88) -> str:
+    """Trim a long path from the front, not the back.
+
+    An extension bundle path is mostly a fixed Chromium prefix; the identifying
+    part is the id and version at the end, which a plain truncation cuts off.
+    """
+    return path if len(path) <= width else "…" + path[-(width - 1):]
+
+
+def _print_webmcp(surfaces: List[Dict[str, Any]]) -> None:
+    print(f"  {_c('BROWSER (WebMCP)', _BOLD)}")
+    if not surfaces:
+        print(f"    {_c('none found', _DIM)}")
+        print()
+        return
+    for surface in surfaces:
+        # Never "SHADOW": nothing can govern this surface yet, so it is not a
+        # gap in coverage. Matches how an agent Prismor has no hook for reads.
+        line = f"    {_c('no coverage', _YELLOW):<22} {surface['name']}"
+        line += _c(f"  [{surface['browser']}]", _DIM)
+        if surface.get("profile"):
+            line += _c(f"  {surface['profile']}", _DIM)
+        print(line)
+        print(f"      {_c(_elide_left(_home_relative(surface.get('location') or '')), _DIM)}")
+        for finding in surface.get("findings") or []:
+            print(f"      {_c('· ' + finding, _DIM)}")
+    print(f"    {_c('Which tools a page exposes is decided at runtime and is not', _DIM)}")
+    print(f"    {_c('visible from disk — inspect a page with a WebMCP inspector.', _DIM)}")
+    print()
+
+
 def _print_summary(report: Dict[str, Any]) -> None:
     summary = report["summary"]
     context = report["context"]
@@ -150,6 +183,12 @@ def _print_summary(report: Dict[str, Any]) -> None:
     if summary["high_risk_mcp"]:
         print(f"  {_c('High risk:', _BOLD)} "
               f"{_c(str(summary['high_risk_mcp']) + ' ungoverned MCP server(s)', _RED)}")
+    # Stated separately from Shadow, and not in the coverage figure above:
+    # nothing can govern a browser tab yet, so this is a heads-up, not a gap.
+    if summary.get("webmcp_total"):
+        print(f"  {_c('Browser:', _BOLD)}   "
+              f"{_c(str(summary['webmcp_total']) + ' WebMCP surface(s)', _YELLOW)}"
+              f"  {_c('— not covered by any surface, not scored', _DIM)}")
 
     print()
     if not context["enrolled"]:
@@ -286,6 +325,7 @@ def discover_all(workspace: Path, *, as_json: bool = False,
         _print_agents(report["agents"])
         _print_mcp(report["mcp"])
         _print_credentials(report["credentials"])
+        _print_webmcp(report.get("webmcp") or [])
         _print_summary(report)
         if sent is True:
             print(f"  {_c('Reported to your organization console.', _DIM)}")
@@ -342,6 +382,20 @@ def discover_mcp(workspace: Path, *, as_json: bool = False,
         run_fix({"mcp": records}, workspace=workspace,
                 repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
                 mode=mode, kinds=("mcp",), assume_yes=assume_yes)
+
+
+def discover_webmcp(workspace: Path, *, as_json: bool = False) -> None:
+    """Browser-resident WebMCP capability, and why none of it is governed.
+
+    Takes no ``--fix``: there is nothing to install in front of a browser tab,
+    so offering a remediation would be promising a fix that does not exist.
+    """
+    records = [asdict(w) for w in _discover.discover_webmcp(workspace)]
+    if as_json:
+        print(json.dumps({"webmcp": records}, indent=2))
+        return
+    print()
+    _print_webmcp(records)
 
 
 def discover_keys(workspace: Path, *, as_json: bool = False,
