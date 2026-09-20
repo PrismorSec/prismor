@@ -19,21 +19,31 @@ class TestMetricsRegistry(unittest.TestCase):
     def test_counter_increments(self):
         self.registry.inc_counter("test_counter", 1.0, labels={"status": "ok"})
         self.registry.inc_counter("test_counter", 2.0, labels={"status": "ok"})
-        
+
         output = self.registry.generate_prometheus_text()
         self.assertIn('test_counter{status="ok"} 3.0', output)
 
     def test_latency_percentiles(self):
-        # Insert known latency distribution
         for i in range(1, 101):
             self.registry.observe_latency("test_latency_seconds", float(i))
 
         output = self.registry.generate_prometheus_text()
-        self.assertIn('test_latency_seconds{quantile="0.5"} 51.000000', output)
+        # On 1..100 with int((n-1)*p):
+        # p0.50 -> index 49 (50.0)
+        # p0.90 -> index 89 (90.0)
+        # p0.95 -> index 94 (95.0)
+        # p0.99 -> index 98 (99.0)
+        self.assertIn('test_latency_seconds{quantile="0.5"} 50.000000', output)
         self.assertIn('test_latency_seconds{quantile="0.9"} 90.000000', output)
         self.assertIn('test_latency_seconds{quantile="0.95"} 95.000000', output)
         self.assertIn('test_latency_seconds{quantile="0.99"} 99.000000', output)
         self.assertIn("test_latency_seconds_count 100", output)
+        self.assertIn("test_latency_seconds_sum 5050.000000", output)
+
+    def test_label_escaping(self):
+        self.registry.inc_counter("escaped_metric", 1.0, labels={"rule": 'foo"bar\\baz\nqux'})
+        output = self.registry.generate_prometheus_text()
+        self.assertIn('escaped_metric{rule="foo\\"bar\\\\baz\\nqux"} 1.0', output)
 
     def test_global_helper_functions(self):
         record_request(status="blocked")

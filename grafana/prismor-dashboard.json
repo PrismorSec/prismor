@@ -8,30 +8,45 @@
   "liveNow": false,
   "panels": [
     {
+      "id": 1,
       "title": "Request Volume (req/s)",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
       "targets": [
         {
-          "expr": "sum(rate(prismor_requests_total[1m]))",
+          "expr": "sum(rate(prismor_requests_total[$__rate_interval]))",
           "legendFormat": "Requests/sec"
         }
       ]
     },
     {
+      "id": 2,
       "title": "Block Rate by Rule",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
       "targets": [
         {
-          "expr": "sum by (rule) (rate(prismor_blocked_total[1m]))",
+          "expr": "sum by (rule) (rate(prismor_blocked_total[$__rate_interval]))",
           "legendFormat": "{{rule}}"
         }
       ]
     },
     {
+      "id": 3,
       "title": "Risk & Finding Distribution",
       "type": "barchart",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
       "targets": [
         {
@@ -41,8 +56,13 @@
       ]
     },
     {
+      "id": 4,
       "title": "Enforcement Latency Percentiles",
       "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
       "targets": [
         {
@@ -56,6 +76,20 @@
   "schemaVersion": 38,
   "style": "dark",
   "tags": ["prismor", "security", "observability"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "hide": 0,
+        "label": "Prometheus",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "type": "datasource"
+      }
+    ]
+  },
   "title": "Prismor Runtime Observability",
   "version": 1
 }
