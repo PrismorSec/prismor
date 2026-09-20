@@ -1,0 +1,61 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "title": "Request Volume (req/s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum(rate(prismor_requests_total[1m]))",
+          "legendFormat": "Requests/sec"
+        }
+      ]
+    },
+    {
+      "title": "Block Rate by Rule",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "sum by (rule) (rate(prismor_blocked_total[1m]))",
+          "legendFormat": "{{rule}}"
+        }
+      ]
+    },
+    {
+      "title": "Risk & Finding Distribution",
+      "type": "barchart",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "sum by (category) (prismor_findings_total)",
+          "legendFormat": "{{category}}"
+        }
+      ]
+    },
+    {
+      "title": "Enforcement Latency Percentiles",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "prismor_enforcement_latency_seconds{quantile=~\"0.5|0.9|0.95|0.99\"}",
+          "legendFormat": "p{{quantile}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["prismor", "security", "observability"],
+  "title": "Prismor Runtime Observability",
+  "version": 1
+}
