@@ -1154,6 +1154,9 @@ rules:
       # Other Prismor state an agent has no legitimate reason to rewrite.
       - '(>|rm|mv|cp|truncate|tee)[^\n]*\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
+      # The session store. Reads are fine (`prismor query`, sqlite3 SELECT);
+      # SQL writes are caught by db-modification, this catches the file.
+      - '(>|rm|mv|cp|truncate|tee|shred)[^\n]*\bprismor\.db(-wal|-shm)?\b'
       # The local dashboard's write API (loopback, unauthenticated by design
       # — it assumes only the human reaches it).
       - '(curl|wget|http|nc)[^\n]*(127\.0\.0\.1|localhost)[^\n]*/api/(policy|tool-policy|agents|sessions)'

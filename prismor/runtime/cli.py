@@ -17,6 +17,8 @@ Commands:
   uninstall-hooks Remove IDE hooks
   hook-dispatch Internal: called by IDE hooks (not for direct use)
   dashboard     Open the Prismor web dashboard (local server + browser)
+  query SQL     Read-only SQL over the local session store (redacted output)
+  docs [NAME]   Print a bundled doc page (or list them)
   enroll TOKEN  Enroll this machine into a Prismor org (central observability + policy)
   enroll-status Show this machine's enrollment status
   logout        Un-enroll this machine (remove device identity + cached remote policy)
@@ -721,6 +723,14 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.command == "trail":
         _run_trail(args)
+        return
+
+    if args.command == "query":
+        _run_query(args)
+        return
+
+    if args.command == "docs":
+        _run_docs(args)
         return
 
     if args.command == "attest":
@@ -3364,6 +3374,21 @@ def build_parser() -> argparse.ArgumentParser:
     audit_parser.add_argument("--fix", action="store_true", help="Auto-remediate fixable issues")
     audit_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
+    # ── query / docs ────────────────────────────────────────────────────
+    query_parser = subparsers.add_parser(
+        "query",
+        help="Read-only SQL over the local session store (sessions, events, findings, ...)",
+    )
+    query_parser.add_argument("sql", nargs="?", help="A SELECT / WITH / EXPLAIN statement")
+    query_parser.add_argument("--schema", action="store_true", help="List tables and columns instead")
+    query_parser.add_argument("--workspace", help="Workspace whose store to open (default: the shared $PRISMOR_HOME store)")
+    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (0 = no cap; default 200)")
+    query_parser.add_argument("--format", choices=["json", "jsonl", "table"], default="json")
+    query_parser.add_argument("--path", action="store_true", help="Print the store path and exit")
+
+    docs_parser = subparsers.add_parser("docs", help="Print a bundled doc page, or list them")
+    docs_parser.add_argument("name", nargs="?", help="Page name, e.g. query-your-data (.md optional)")
+
     # ── trail ──────────────────────────────────────────────────────────
     trail_parser = subparsers.add_parser(
         "trail",
@@ -4710,6 +4735,49 @@ def _print_status(session: Dict[str, Any]) -> None:
         print(f"  {_color(f'[{sev}]', color)} {finding['title']} ({finding['category']})")
         if finding.get("evidence"):
             print(f"         {finding['evidence']}")
+
+
+def _run_query(args) -> None:
+    from prismor.runtime.query import QueryError, agent_prompt, format_rows, resolve_db_path, run_query, schema
+
+    ws = Path(args.workspace).expanduser().resolve() if getattr(args, "workspace", None) else None
+    db_path = resolve_db_path(ws)
+    if getattr(args, "path", False):
+        print(db_path)
+        return
+    try:
+        if getattr(args, "schema", False):
+            for table, cols in schema(db_path).items():
+                print(f"{table}: {', '.join(cols)}")
+            return
+        if not args.sql:
+            print("usage: prismor query \"SELECT ...\"   |   prismor query --schema", file=sys.stderr)
+            print("docs:  prismor docs query-your-data", file=sys.stderr)
+            sys.exit(2)
+        rows = run_query(args.sql, db_path, limit=args.limit, workspace=ws)
+    except QueryError as exc:
+        print(f"prismor query: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(format_rows(rows, args.format))
+
+
+def _run_docs(args) -> None:
+    from prismor.runtime.server import _docs_dir, _docs_list
+
+    root = _docs_dir()
+    if root is None:
+        print("docs are not bundled with this install — see https://prismor.dev/docs", file=sys.stderr)
+        sys.exit(1)
+    name = getattr(args, "name", None)
+    if not name:
+        for d in _docs_list(root):
+            print(f"{d['name'][:-3]:<36} {d['title']}")
+        return
+    name = name if name.endswith(".md") else f"{name}.md"
+    if "/" in name or "\\" in name or not (root / name).is_file():
+        print(f"no doc named {name!r} — `prismor docs` lists them", file=sys.stderr)
+        sys.exit(1)
+    print((root / name).read_text(encoding="utf-8"))
 
 
 def _run_trail(args) -> None:
