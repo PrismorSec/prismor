@@ -37,6 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse, parse_qs
+from prismor.runtime.metrics import REGISTRY
 
 from prismor.runtime.store import (
     get_aggregate_stats,
@@ -446,12 +447,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             return p if p.exists() else None
         return _SERVER_WORKSPACE
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
+    def do_OPTIONS(self) -> None:
         self.send_response(204)
         self._send_cors()
         self.end_headers()
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         qs = parse_qs(parsed.query, keep_blank_values=False)
@@ -459,7 +460,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         def qstr(key: str, default: str = "") -> str:
             return qs.get(key, [default])[0]
 
-        def qint(key: str, default: int = 1) -> int:
+        def qint(key: str, default: int = 0) -> int:
             try:
                 return int(qs.get(key, [default])[0])
             except (ValueError, TypeError):
@@ -473,15 +474,18 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
             return
 
-        if path == "/api/mcp-servers":
-            workspace = self._resolve_workspace(qs) or Path.cwd()
-            try:
-                self._send_json({"servers": _mcp_server_inventory(workspace)})
-            except Exception as exc:
-                self._send_json({"error": str(exc)}, status=500)
+        if path == "/metrics":
+            payload = REGISTRY.generate_prometheus_text().encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(payload)
             return
 
-        if path == "/api/extensions/session":
+        if path == "/api/mcp-servers":
+
             workspace = self._resolve_workspace(qs) or Path.cwd()
             try:
                 from prismor.runtime.extensions import session_extensions
