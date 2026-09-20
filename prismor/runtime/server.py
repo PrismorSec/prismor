@@ -20,6 +20,7 @@ Read endpoints:
     GET /api/agents        → agent registry merged with per-agent call stats
     GET /api/docs          → bundled docs (?name=<file.md> one doc, ?q=… search)
     GET /api/query-prompt  → copy-paste prompt teaching an agent to query the store
+    GET /metrics           → Prometheus text exposition (see docs/observability.md)
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
 
 Write endpoints (human-only — localhost):
@@ -471,6 +472,25 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/health":
             self._send_json({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
+            return
+
+        if path == "/metrics":
+            # Prometheus text exposition, rebuilt from the store per scrape.
+            # A scrape must not take the server down, but it also must not
+            # report a silent zero: a failure answers 500 so the target goes
+            # down in Prometheus rather than graphing a flat line.
+            try:
+                from prismor.runtime.metrics import render as render_metrics
+                payload = render_metrics().encode("utf-8")
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_cors()
+            self.end_headers()
+            self.wfile.write(payload)
             return
 
         if path == "/api/mcp-servers":

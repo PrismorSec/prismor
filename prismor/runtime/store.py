@@ -1419,6 +1419,33 @@ def _state_query_workspaces() -> List[Path]:
     return []
 
 
+def get_hook_latency_ms(limit: int = 5000) -> List[int]:
+    """Recent per-call hook durations (ms) across every registered workspace.
+
+    Feeds the /metrics latency summary. The hook dispatcher is a separate
+    short-lived process from the dashboard server, so the timings it stamps on
+    exit are readable only through the store. Returns [] on DBs written before
+    the hook_timings table existed.
+    """
+    samples: List[int] = []
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            rows = conn.execute(
+                "SELECT hook_ms FROM hook_timings WHERE hook_ms IS NOT NULL "
+                "ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            samples.extend(int(r[0]) for r in rows)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    return samples
+
+
 def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     """Query all registered workspace DBs and return dashboard-shaped data.
 
