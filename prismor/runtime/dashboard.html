@@ -535,6 +535,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     font-size:10px; font-weight:600; letter-spacing:.02em;
     background:#eef2ff; color:#4338ca; vertical-align:middle;
   }
+  .hook-pill {
+    display:inline-block; padding:0 5px; border-radius:999px; font-size:9px; font-weight:600;
+    letter-spacing:.02em; background:var(--gray-100); color:var(--gray-500); vertical-align:middle;
+  }
 
   /* ── Policy Control tab ── */
   .policy-scope-nav {
@@ -1660,6 +1664,24 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   #page-session .flow-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #page-session #sessFlowCanvas { flex: 1; min-height: 0; overflow-y: auto; }
   #page-session .node-panel { position: static; min-height: 0; overflow-y: auto; }
+  /* The trail is what this page is for. Everything above it is one line
+     each -- a 450px stack of hero + extensions left a 350px window to scroll
+     a 600-event session through. */
+  #page-session .view-topbar { margin-bottom: 8px; }
+  #page-session .session-hero { padding: 10px 16px; margin-bottom: 8px; gap: 10px; }
+  #page-session .session-hero-title { display: none; }
+  #page-session .session-hero-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #page-session .session-hero-id { margin-top: 0; font-size: 13px; }
+  #page-session .session-hero-meta { margin-top: 0; }
+  #page-session .sess-ran-under { margin-bottom: 8px; padding: 0 14px; }
+  .sess-ext-all > summary { list-style: none; cursor: pointer; padding: 9px 0; margin: 0; }
+  .sess-ext-all > summary::-webkit-details-marker { display: none; }
+  .sess-ext-toggle { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--gray-500); }
+  .sess-ext-all[open] > summary { border-bottom: 1px solid var(--gray-100); margin-bottom: 10px; }
+  .sess-ext-all[open] .sess-ext-toggle::after { content: ' \25B4'; }
+  .sess-ext-all:not([open]) .sess-ext-toggle::after { content: ' \25BE'; }
+  .sess-ext-all > .ext-row:last-child, .sess-ext-all > .sess-ext-hooks:last-child { margin-bottom: 10px; }
+  #page-session .flow-head { padding: 9px 14px; }
 
   @media (max-width: 900px) {
     .tab-nav { width: 60px; }
@@ -1945,6 +1967,20 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .hero h1 { font-size: 46px; font-weight: 600; letter-spacing: -.028em; line-height: 1.08; color: var(--ink); }
   .hero p { font-size: 17.5px; line-height: 1.55; color: var(--ink-2); margin: 18px 0 28px; max-width: 580px; }
   .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .attn-title { font-size: 34px; margin-top: 6px; }
+  .attn-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; max-width: 580px; }
+  .attn-list li { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--gray-200); border-radius: 10px; background: var(--surface); font-size: 13px; }
+  .attn-list li.link { cursor: pointer; } .attn-list li.link:hover { border-color: var(--gray-400); }
+  .attn-list li b { color: var(--ink); font-weight: 600; } .attn-list li span { color: var(--ink-2); font-size: 12.5px; }
+  .attn-sub { font-size: 12.5px !important; margin: 16px 0 18px !important; color: var(--muted) !important; }
+  .help { display: inline-block; font-style: normal; font-size: 9px; line-height: 12px; width: 13px; height: 13px; text-align: center; border-radius: 50%; border: 1px solid currentColor; opacity: .55; cursor: help; vertical-align: 1px; margin-left: 2px; }
+  .kpi-strip .kpi-delta.neutral .up, .kpi-strip .kpi-delta.neutral .down { color: var(--muted); }
+  .how-it-works { margin-bottom: 28px; } .how-it-works > summary { list-style: none; cursor: pointer; display: flex; gap: 10px; align-items: center; }
+  .how-it-works > summary::-webkit-details-marker { display: none; } .how-it-works[open] > summary { margin-bottom: 14px; }
+  .how-it-works:not([open]) .sess-ext-toggle::after { content: ' \25BE'; } .how-it-works[open] .sess-ext-toggle::after { content: ' \25B4'; }
+  .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
+  .ext-stat small { display: block; font-size: 11px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+  .ext-review-note { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--gray-500); max-width: 460px; vertical-align: middle; }
   .btn-ok, .btn-line {
     font: 600 14px var(--font-ui); padding: 11px 16px; border-radius: 6px; cursor: pointer;
     display: inline-flex; align-items: center; gap: 9px; line-height: 1; transition: background .15s;
@@ -2251,7 +2287,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-extensions" class="page">
   <div class="section"><h2>Extensions</h2><div class="rule"></div>
-    <span class="hint">Everything that puts instructions or code into your agents. Start from a session to see what it actually used, roll up to an agent, or audit what is installed on this machine.</span>
+    <span class="hint">Skills, plugins, MCP servers and third-party hooks: anything installed on this machine that can put instructions or code into an agent. Prismor records each one when it first appears and again when its files change, so you can read it once and know it has not moved since.</span>
   </div>
   <div id="extSummary" class="ext-summary"></div>
   <div class="ext-views" id="extViews"></div>
@@ -2261,7 +2297,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div id="extList"><div class="empty">Loading extensions…</div></div>
     </div>
     <div class="card ext-timeline">
-      <div class="card-title">Lifecycle <span class="mcp-kind">signed trail</span></div>
+      <div class="card-title" title="Every install, change and invocation, hash-chained so an entry cannot be edited after the fact.">What changed, when <i class="help">?</i></div>
       <div id="extEvents"><div class="empty">No extension events yet.</div></div>
     </div>
   </div>
@@ -2297,8 +2333,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-overview" class="page active">
   <section class="hero">
     <div>
-      <h1>Every tool call, screened.</h1>
-      <p>Prismor sits in the hook path of every agent on this machine and decides each tool call against the policy in force, before anything runs.</p>
+      <div class="kpi-label">Needs attention</div>
+      <h1 id="attnTitle" class="attn-title">Checking…</h1>
+      <ul id="attnList" class="attn-list"></ul>
+      <p class="attn-sub">Prismor screens every tool call your agents make on this machine and decides it against the policy in force before it runs. Words used here: a <b>call</b> is one tool use; the <b>decision</b> is allowed, warned or blocked; a <b>rule fired</b> is one policy rule that matched, block or not.</p>
       <div class="hero-actions">
         <button class="btn-ok" onclick="document.querySelector('.tab-btn[data-tab=&quot;sessions&quot;]')?.click()"><svg class="icon"><use href="#i-play"/></svg> Open sessions</button>
         <button class="btn-line" onclick="gotoPolicy()"><svg class="icon"><use href="#i-shield"/></svg> Policy control</button>
@@ -2307,13 +2345,13 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="ring-wrap">
       <div class="ring">
         <canvas id="ringChart"></canvas>
-        <div class="ring-center"><div class="ring-pct" id="ringPct">–</div><div class="ring-cap">passed</div></div>
+        <div class="ring-center"><div class="ring-pct" id="ringPct">–</div><div class="ring-cap">allowed</div></div>
       </div>
       <div class="ring-legend">
-        <div><span class="sw" style="background:var(--ok)"></span>Passed<b id="ringPassed">-</b></div>
-        <div><span class="sw" style="background:var(--bad)"></span>Intercepted<b id="ringBlocked">-</b></div>
+        <div><span class="sw" style="background:var(--ok)"></span>Allowed<b id="ringPassed">-</b></div>
+        <div><span class="sw" style="background:var(--bad)"></span>Blocked<b id="ringBlocked">-</b></div>
         <div class="ring-legend-sep"></div>
-        <div>Findings recorded<b id="ringFindings">-</b></div>
+        <div title="Every policy rule that matched a call in this window, including warn-only rules that did not block anything.">Rules fired <i class="help">?</i><b id="ringFindings">-</b></div>
       </div>
     </div>
   </section>
@@ -2329,13 +2367,14 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     </select>
   </div>
   <div class="kpi-strip">
-    <div><div class="kpi-label">Tool calls inspected</div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta"></div></div>
-    <div><div class="kpi-label">Dangerous cmds prevented</div><div id="kpiDangerous" class="kpi-big">-</div><div id="kpiDangerousDelta" class="kpi-sub kpi-delta"></div></div>
-    <div><div class="kpi-label">Active sessions</div><div id="kpiSessions" class="kpi-big">-</div><div class="kpi-sub">across <span id="kpiAgentCount">–</span> agents</div></div>
-    <div><div class="kpi-label">Findings</div><div id="kpiFindings" class="kpi-big">-</div><div class="kpi-sub"><span id="sevCritical">-</span> critical · <span id="sevHigh">-</span> high · <span id="sevMedium">-</span> medium · <span id="sevLow">-</span> low</div></div>
+    <div><div class="kpi-label" title="Tool calls that went through a Prismor hook and got a decision.">Calls screened <i class="help">?</i></div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta neutral"></div></div>
+    <div><div class="kpi-label" title="Calls a rule stopped before they ran. Warn-only matches are not counted here.">Blocked <i class="help">?</i></div><div id="kpiDangerous" class="kpi-big">-</div><div id="kpiDangerousDelta" class="kpi-sub kpi-delta"></div></div>
+    <div><div class="kpi-label" title="Sessions with at least one call in this window.">Sessions <i class="help">?</i></div><div id="kpiSessions" class="kpi-big">-</div><div class="kpi-sub"><span id="kpiAgentCount">–</span> agents registered on this machine</div></div>
+    <div><div class="kpi-label" title="Every rule match, blocking or not, by the severity the rule carries. One call can fire several rules.">Rules fired <i class="help">?</i></div><div id="kpiFindings" class="kpi-big">-</div><div class="kpi-sub"><span id="sevCritical">-</span> critical · <span id="sevHigh">-</span> high · <span id="sevMedium">-</span> medium · <span id="sevLow">-</span> low</div></div>
   </div>
 
-  <div class="steps-label">What happens to one tool call</div>
+  <details class="how-it-works">
+  <summary class="steps-label">How Prismor decides one tool call <span class="sess-ext-toggle">show</span></summary>
   <div class="steps">
     <div class="step"><div class="step-n">01</div><div class="step-t">Request</div><div class="step-d">The agent asks. Nothing has run yet.</div><div class="step-f" id="stepReq">–</div></div>
     <div class="step"><div class="step-n">02</div><div class="step-t">Identity</div><div class="step-d">Which agent, which session, which workspace.</div><div class="step-f" id="stepId">–</div></div>
@@ -2343,6 +2382,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="step hi"><div class="step-n">04</div><div class="step-t">Decision</div><div class="step-d">Allowed, warned, or blocked, before anything runs.</div><div class="step-f" id="stepDec">–</div></div>
     <div class="step"><div class="step-n">05</div><div class="step-t">Evidence</div><div class="step-d">Recorded to the local ledger, synced when enrolled.</div><div class="step-f" id="stepEv">–</div></div>
   </div>
+  </details>
 
   <div class="card">
     <div class="bar" style="margin-bottom:14px">
@@ -3447,7 +3487,7 @@ function sessExtRow(x, calls) {
       (x.role === 'ambient' ? '' : '<span class="ext-quiet">' + (mine.length ? 'caused ' + mine.length + ' call' + (mine.length === 1 ? '' : 's') + ' here' + (blocked ? ', ' + blocked + ' blocked' : '') : 'no calls traced to it') + '</span>') +
       '<span class="ext-origin">' + safe(x.origin || '') + '</span></div>' +
     '<div class="ext-body"><dl class="ext-kv">' + kv + docs + '</dl>' +
-      (x.reviewed ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button>') +
+      (x.reviewed ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>') +
       ' <a class="ext-sess" style="margin-left:10px" onclick="openExtension(\'' + id + '\')">open in ledger</a></div></div>';
 }
 function renderSessionExtensions() {
@@ -3456,18 +3496,18 @@ function renderSessionExtensions() {
   const calls = (_sessionViewState && _sessionViewState.data && _sessionViewState.data.recent_events) || [];
   const used = d.extensions.filter(x => x.role !== 'ambient'), hooks = d.extensions.filter(x => x.role === 'ambient');
   const unrev = used.filter(x => !x.reviewed).length;
-  el.innerHTML = '<div class="sess-ext-head"><span class="sess-ran-title">Extensions in this session</span>' +
+  el.innerHTML = '<details class="sess-ext-all"' + (_sessExtOpen.__all ? ' open' : '') + ' ontoggle="_sessExtOpen.__all=this.open"><summary class="sess-ext-head"><span class="sess-ran-title">Extensions in this session</span>' +
       '<span class="ext-quiet">' + (used.length ? used.length + ' loaded' + (unrev ? ', <b style="color:#d97706">' + unrev + ' never reviewed</b>' : '') : 'none loaded') +
       (hooks.length ? ' · ' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') + ' ran around every call' : '') +
-      ((d.fetched || []).length ? ' · ' + d.fetched.length + ' document' + (d.fetched.length === 1 ? '' : 's') + ' read on a skill\'s say-so' : '') + '</span></div>' +
+      ((d.fetched || []).length ? ' · ' + d.fetched.length + ' document' + (d.fetched.length === 1 ? '' : 's') + ' read on a skill\'s say-so' : '') + '</span><span class="sess-ext-toggle">details</span></summary>' +
     used.map(x => sessExtRow(x, calls)).join('') +
     (hooks.length ? '<details class="sess-ext-hooks"' + (_sessExtOpen.__hooks ? ' open' : '') + ' ontoggle="_sessExtOpen.__hooks=this.open"><summary>' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') +
-      (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '');
+      (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '') + '</details>';
   el.hidden = false;
 }
 
 // ── Extensions: the ledger of what puts instructions or code into the agent ──
-let _extCache = null, _extFilter = 'review', _extOpen = {}, _extView = 'sessions', _extAgent = '';
+let _extCache = null, _extFilter = 'review', _extOpen = {}, _extView = 'installed', _extAgent = '';
 async function loadExtensions() {
   const ws = _serverWorkspace || '';
   try {
@@ -3481,7 +3521,7 @@ async function loadExtensions() {
   }
 }
 function extWhen(ts) { try { return new Date(ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ts || ''; } }
-function extBy(by) { return !by ? '' : by === 'observed' ? 'seen in use · no config file describes it' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
+function extBy(by) { return !by ? '' : by === 'out-of-band' ? 'installed outside any agent session (a person, a script or another tool)' : by === 'baseline' ? 'already present when Prismor first looked' : by === 'observed' ? 'seen in use · no config file describes it' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
 function extAgentName(a) { return a === 'any' || !a ? 'any agent' : a; }
 function extUseChips(s) {
   return (s.used || []).map(extCauseChip).join('') +
@@ -3489,8 +3529,10 @@ function extUseChips(s) {
     (s.documents ? '<span class="ext-quiet">· read ' + s.documents + ' document' + (s.documents === 1 ? '' : 's') + ' on a skill\'s say-so</span>' : '');
 }
 function renderExtSessions(d) {
-  const list = (d.sessions || []).filter(s => !_extAgent || s.agent === _extAgent);
-  return list.length ? list.map(s =>
+  const all = (d.sessions || []).filter(s => !_extAgent || s.agent === _extAgent);
+  const list = all.filter(s => (s.used || []).length), quiet = all.length - list.length;
+  const note = quiet ? '<div class="ext-quiet" style="padding:6px 2px 10px">' + quiet + ' session' + (quiet === 1 ? '' : 's') + ' loaded no extension (only the third-party hooks that run around every call) and ' + (quiet === 1 ? 'is' : 'are') + ' not listed.</div>' : '';
+  return list.length ? note + list.map(s =>
     '<div class="ext-row' + (s.unreviewed ? ' review' : '') + '"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
       '<span class="ext-agent">' + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
       ((s.used || []).length ? extUseChips(s) : '<span class="ext-quiet">loaded nothing' + (s.hooks ? ' · ' + s.hooks + ' third-party hook' + (s.hooks === 1 ? '' : 's') + ' ran around it' : '') + '</span>') +
@@ -3532,11 +3574,11 @@ function renderExtensions() {
   const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
   const review = d.rows.filter(r => r.needs_review).length, idle = d.rows.filter(r => r.never_used).length;
   document.getElementById('extSummary').innerHTML = [
-    [sess.length, 'Sessions that ran under extensions', unrev ? unrev + ' under something unreviewed' : ''],
-    [d.rows.filter(r => (r.used_in || []).length).length, 'Extensions actually used', ''],
-    [d.rows.length, 'Installed on this machine', review ? review + ' to review' : ''],
-    [idle, 'Installed, never used', '']]
-    .map(([n, label, warn]) => '<div class="ext-stat"><b>' + n + (warn ? '<em>' + safe(warn) + '</em>' : '') + '</b><span>' + label + '</span></div>').join('');
+    [review, 'Need review', 'New or changed since anyone looked. Read each one, then mark it reviewed.', review ? 'warn' : '', "_extView='installed';_extFilter='review';renderExtensions()"],
+    [d.rows.filter(r => (r.used_in || []).length).length, 'Used by a session', 'Loaded by at least one recorded agent session.', '', "_extView='installed';_extFilter='all';renderExtensions()"],
+    [d.rows.length, 'Installed on this machine', idle + ' never used by any session', '', "_extView='installed';_extFilter='all';renderExtensions()"],
+    [unrev, 'Sessions that ran unreviewed code', unrev ? 'An agent loaded something nobody had read yet.' : 'Every session so far loaded only reviewed extensions.', unrev ? 'warn' : '', "_extView='sessions';renderExtensions()"]]
+    .map(([n, label, sub, cls, go]) => '<div class="ext-stat ' + cls + '" onclick="' + go + '"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
   document.getElementById('extViews').innerHTML = [['sessions', 'By session', sess.length], ['agents', 'By agent', (d.agents || []).length], ['installed', 'Installed', d.rows.length]]
     .map(([k, l, n]) => '<button class="ext-view' + (_extView === k ? ' on' : '') + '" onclick="_extView=\'' + k + '\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
   const agentPick = _extView === 'agents' ? '' : '<select class="fsel" style="margin-right:6px" onchange="_extAgent=this.value;renderExtensions()"><option value="">All agents</option>' +
@@ -3576,7 +3618,7 @@ function renderExtensions() {
         '<span class="ext-origin">' + safe(r.origin || '') + '</span>' +
         (r.agents || []).filter(a => a !== 'any').map(a => '<span class="ext-agent">' + safe(a) + '</span>').join('') + '</div>' +
       '<div class="ext-body"><dl class="ext-kv">' + kv + used + docs + '</dl>' +
-        (r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button>' : '') +
+        (r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '') +
       '</div></div>';
   }).join('') + (rows.length > 300 ? '<div class="empty">Showing 300 of ' + rows.length + '. Narrow with a filter.</div>' : '')
     : '<div class="empty">Nothing here. ' + (_extFilter === 'review' ? 'Every extension on this machine has been seen before.' : '') + '</div>';
@@ -3593,7 +3635,7 @@ function renderExtEvents(d) {
       e.event === 'extension_installed' ? extBy(e.installed_by) : '', e.session_id ? 'session ' + String(e.session_id).slice(0, 8) : '']
       .filter(Boolean).join(' · ');
     return '<div class="ext-ev ' + safeAttr(e.event) + '"><i></i><div><b>' + safe(e.kind) + ' ' + safe(e.name) + '</b> ' + safe(label[e.event] || e.event) +
-      '<small>' + safe(extWhen(e.ts)) + (e.origin ? ' · ' + safe(e.origin) : '') + '</small>' + (extra ? '<small>' + safe(extra) + '</small>' : '') + '</div></div>';
+      '<small>' + safe(extWhen(e.ts)) + (e.origin ? ' · ' + safe(e.origin === 'out-of-band' ? 'outside any session' : e.origin) : '') + '</small>' + (extra ? '<small>' + safe(extra) + '</small>' : '') + '</div></div>';
   }).join('') : '<div class="empty">No extension events yet. The first sync records what is already installed as the baseline.</div>';
 }
 async function extApprove(id) {
@@ -4016,7 +4058,7 @@ function renderDrawerContent(sessId, ws, data) {
         (policy.ruleId || policy.title || policy.evidence || categoryLabel ?
           '<div class="drawer-policy-card ' + (blocked ? '' : 'allowed') + '">' +
             '<div class="drawer-rule-row"><span class="drawer-rule-label">Policy</span>' +
-              '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">' + safe(policy.ruleId || policy.id || 'runtime-policy') + '</div>' +
+              '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">' + safe(ruleLabel(policy.ruleId || policy.id || 'runtime-policy')) + '</div>' +
               (categoryLabel ? '<div style="font-size:10px;color:var(--gray-500);margin-top:2px">' + safe(categoryLabel) + '</div>' : '') + '</div></div>' +
             (policy.title ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">' + safe(policy.title) + '</div></div>' : '') +
             (policy.evidence ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">' + safe(policy.evidence) + '</div></div>' : '') +
@@ -4126,8 +4168,8 @@ function renderDrawerContent(sessId, ws, data) {
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   } else {
     footerEl.innerHTML =
-      '<button class="drawer-toggle pause" onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause Prismor</button>' +
-      '<button class="drawer-toggle clear" onclick="drawerAction(\'clear\')">Clear scope</button>' +
+      '<button class="drawer-toggle pause" title="Stop screening this session: nothing is blocked or flagged until you resume." onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause Prismor</button>' +
+      '<button class="drawer-toggle clear" title="Drop the per-session tool scope Prismor derived from the prompt. Global and project policy still apply." onclick="drawerAction(\'clear\')">Clear scope</button>' +
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   }
 }
@@ -4782,7 +4824,7 @@ function renderSessionView(data){
   let pills = '';
   if (agent) pills += '<span class="agent-pill link" onclick="openAgentView(\''+safeAttr(agent)+'\')">'+safe(agent)+'</span>';
   if (paused) pills += '<span class="status-pill status-paused"><span class="status-dot"></span>Immunity Paused</span>';
-  else if (scoped) pills += '<span class="status-pill status-scoped"><span class="status-dot"></span>Scoped</span>';
+  else if (scoped) pills += '<span class="status-pill status-scoped" title="Prismor derived a tool scope from the prompt: only the tools, paths and hosts the task needs are allowed in this session."><span class="status-dot"></span>Scoped <i class="help">?</i></span>';
   else pills += '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>';
   if (blocks.length) pills += '<span class="status-pill status-blocked"><span class="status-dot"></span>'+blocks.length+' block'+(blocks.length===1?'':'s')+'</span>';
   document.getElementById('sessFlowMeta').innerHTML = pills;
@@ -4849,7 +4891,10 @@ function eventSummary(ev){
   // the previous answer each time and the recognisable part is buried.
   const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.content
     || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
-  return String(raw).replace(/\s+/g,' ').trim().slice(0,300);
+  // Agents prefix nearly every command with `cd <repo> &&`; in a row 90 chars
+  // wide that prefix is all a reader sees. The panel still shows it in full.
+  const text = (a.command || ev.type === 'shell') ? String(raw).replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/, '') : String(raw);
+  return text.replace(/\s+/g,' ').trim().slice(0,300);
 }
 // What makes two prompts the same turn. One user message can produce several
 // model requests -- ask, run the tool, send the result back for the answer --
@@ -4918,7 +4963,7 @@ function treeLeafEl(ev, idx){
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
     extCauseChip(ev.extension)+
-    '<span class="tree-ts">'+safe(ev.ts||'')+'</span>';
+    '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
 function renderSessionFlow(trail){
@@ -4973,6 +5018,12 @@ function renderNodePanelDefault(data){
   }
   panel.innerHTML=html;
 }
+// A session-scoped rule is stored as "<session id>:<rule>-<n>"; the id is
+// the row you are already looking at, so it only obscures the rule's name.
+function ruleLabel(id){
+  const m = String(id||'').match(/^[0-9a-f-]{20,}:(.+?)(?:-\d+)?$/);
+  return m ? m[1] + ' (session-scoped rule)' : id;
+}
 function renderNodePanel(ev){
   const panel=document.getElementById('sessNodePanel');
   const policy=ev.policy||{};
@@ -4988,7 +5039,9 @@ function renderNodePanel(ev){
       '<div class="drawer-rule-row"><span class="drawer-rule-label">Tool tag</span>'+
         '<span class="scoped-tag tag-net">'+safe(ev.toolTag||ev.type||'unknown')+'</span></div>'+
       '<div class="drawer-rule-row"><span class="drawer-rule-label">Type</span>'+
-        '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+
+        '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+      ((ev.agentEvent || ev.hookMs != null) ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Hook</span>'+
+        '<span style="font-size:11px;color:var(--gray-600)">'+safe(ev.agentEvent||'hook')+(ev.hookMs != null ? ' '+fmtMs(ev.hookMs) : '')+
+        (ev.postHookMs != null ? ' &middot; PostToolUse '+fmtMs(ev.postHookMs) : '')+'</span></div>' : '')+
       (ev.extension ? '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">Caused by</span>'+
         '<div style="font-size:11px;line-height:1.5;color:var(--gray-600)">'+extCauseChip(ev.extension)+
         '<div>The '+safe(ev.extension.kind)+' '+safe(ev.extension.via||'caused this call')+'.'+
@@ -5131,7 +5184,7 @@ function initCharts() {
   Chart.defaults.color = theme.text;
   ringChart = new Chart(document.getElementById('ringChart'), {
     type:'doughnut',
-    data:{labels:['Passed','Intercepted'],datasets:[{data:[],backgroundColor:[theme.ok,theme.bad],borderWidth:2,borderColor:theme.surface}]},
+    data:{labels:['Allowed','Blocked'],datasets:[{data:[],backgroundColor:[theme.ok,theme.bad],borderWidth:2,borderColor:theme.surface}]},
     options:{cutout:'82%',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}},
   });
   donutChart = new Chart(document.getElementById('donutChart'), {
@@ -5143,7 +5196,7 @@ function initCharts() {
     type:'line',
     data:{labels:[],datasets:[
       {label:'Passed',data:[],borderColor:theme.passed,borderWidth:1.5,pointRadius:0,tension:0.3},
-      {label:'Intercepted',data:[],borderColor:theme.intercepted,borderWidth:2,pointRadius:0,tension:0.3},
+      {label:'Blocked',data:[],borderColor:theme.intercepted,borderWidth:2,pointRadius:0,tension:0.3},
     ]},
     options:{responsive:true,maintainAspectRatio:false,
       scales:{x:{grid:{display:false},ticks:{callback:v=>String(v).slice(5),color:theme.text}},y:{grid:{color:theme.grid},ticks:{color:theme.text}}},
@@ -5399,6 +5452,12 @@ async function loadEvents(){
     if (_eventsAbort === controller) _eventsAbort = null;
   }
 }
+// Hook wall time as the harness saw it: process start to exit.
+function fmtMs(ms){ if (ms == null) return ''; return ms < 1000 ? ms+' ms' : (ms/1000).toFixed(1)+' s'; }
+function hookMeta(name, ms){
+  if (!name && ms == null) return '';
+  return ' &middot; '+(name ? '<span class="hook-pill">'+safe(name)+'</span>' : '')+(ms != null ? ' '+fmtMs(ms) : '');
+}
 function renderEvents(rows){
   const container=document.getElementById('evtContainer');
   if(!rows.length){container.innerHTML='<div class="empty">No events match the current filters</div>';return;}
@@ -5419,6 +5478,7 @@ function renderEvents(rows){
           (ev.tsAbs?'<span class="ts-hover" title="'+safeAttr(ev.tsAbs)+'">'+safe(ev.ts)+'</span>':safe(ev.ts))+
           ' &middot; <strong style="color:var(--gray-600)">'+safe(ev.agent)+'</strong>'+
           (sid ? ' &middot; <span class="event-sess-id" title="'+safeAttr(sid)+'">'+safe(shortId(sid,18))+'</span>' : '')+
+          hookMeta(ev.agentEvent, ev.hookMs)+
         '</div>'+
         '<div class="event-action">'+toolTag+safe(ev.action)+'</div>'+
       '</div>'+
@@ -5456,6 +5516,26 @@ document.getElementById('evtAgent').addEventListener('change',e=>{evtState.agent
 document.getElementById('evtLimit').addEventListener('change',e=>{evtState.limit=parseInt(e.target.value,10);evtState.page=1;loadEvents();});
 
 // ── Stats ─────────────────────────────────────────────────────────────────
+// What needs a person, first. Numbers describe; this list says what to do.
+let _attn = {ext: null};
+function renderAttention(k){
+  const items = [];
+  const win = String(k.days)==='1' ? 'last 24 hours' : 'last '+k.days+' days';
+  if (k.blocked) items.push({n:k.blocked, t:'call'+(k.blocked===1?'':'s')+' blocked in the '+win, d:'See which rule stopped each one and whether it was right.', go:"document.querySelector('.tab-btn[data-tab=\\'sessions\\']')?.click()"});
+  const ext = _attn.ext;
+  if (ext && ext.review) items.push({n:ext.review, t:'extension'+(ext.review===1?'':'s')+' waiting for review', d:'New or changed skills, MCP servers and hooks that put instructions into your agents. Read them once and mark reviewed.', go:"_extView='installed';_extFilter='review';document.querySelector('.tab-btn[data-tab=\\'extensions\\']')?.click()"});
+  if (!k.total) items.push({n:'', t:'No calls screened yet', d:'Run an agent in a hooked workspace, or run `prismor setup` to install the hooks.', go:''});
+  // Headline is the first item; its own "what to do" line leads the list.
+  document.getElementById('attnTitle').textContent = items.length ? (items[0].n ? fmtNum(items[0].n)+' '+items[0].t : items[0].t) : 'All clear';
+  document.getElementById('attnList').innerHTML = items.map((i, idx) =>
+    '<li'+(i.go?' onclick="'+i.go+'" class="link"':'')+'>'+(idx ? '<b>'+(i.n!==''?fmtNum(i.n)+' ':'')+safe(i.t)+'</b>' : '')+'<span>'+safe(i.d)+(i.go?' &rarr;':'')+'</span></li>').join('')
+    + (!items.length ? '<li><span>Nothing blocked in this window and every extension has been reviewed.</span></li>' : '');
+  if (!ext){
+    apiFetch('/api/extensions'+(_serverWorkspace?'?workspace='+encodeURIComponent(_serverWorkspace):''), {timeoutMs:20000})
+      .then(d => { _extCache = d; const c = d.counts||{}; _attn.ext = {review: Object.values(c).reduce((a,x)=>a+(x.review||0),0)}; renderAttention(k); })
+      .catch(()=>{ _attn.ext = {review:0}; });
+  }
+}
 async function loadStats(){
   try{
     const days=document.getElementById('globalDays').value;
@@ -5491,6 +5571,7 @@ async function loadStats(){
     document.getElementById('ringBlocked').textContent=fmtNum(blocked);
     document.getElementById('ringFindings').textContent=fmtNum(findings);
     document.getElementById('kpiFindings').textContent=fmtNum(findings);
+    renderAttention({blocked, total, findings, days});
     ringChart.data.datasets[0].data=total?[passed,blocked]:[1,0];
     ringChart.update();
     document.getElementById('stepReq').textContent=fmtNum(total)+' inspected';
