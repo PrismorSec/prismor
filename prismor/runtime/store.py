@@ -2043,6 +2043,79 @@ def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
     return usage
 
 
+def _extract_subject_from_event(raw: Any) -> Optional[Dict[str, Any]]:
+    """Pull the end-user subject dict from a stored event payload.
+
+    Runtime stamps ``metadata.subject`` via :func:`evaluate_tool_call`. Older
+    or adapter-shaped events may also put ``subject`` at the top level.
+    """
+    if not isinstance(raw, dict):
+        return None
+    for candidate in (
+        raw.get("subject"),
+        (raw.get("metadata") or {}).get("subject") if isinstance(raw.get("metadata"), dict) else None,
+    ):
+        if isinstance(candidate, dict) and (
+            candidate.get("user_id") or candidate.get("team_id") or candidate.get("org_id")
+        ):
+            return candidate
+        if isinstance(candidate, str) and candidate.strip():
+            try:
+                from prismor.runtime.principal import resolve_subject
+                return resolve_subject(candidate.strip()).as_dict()
+            except Exception:
+                return {"user_id": candidate.strip(), "source": "raw"}
+    return None
+
+
+def _format_subject_label(subject: Optional[Dict[str, Any]]) -> str:
+    """Canonical filter/display label: ``user:alice`` or ``user=alice;team=data``."""
+    if not subject:
+        return ""
+    user_id = subject.get("user_id")
+    if not user_id:
+        return ""
+    team_id = subject.get("team_id")
+    org_id = subject.get("org_id")
+    if team_id or org_id:
+        parts = [f"user={user_id}"]
+        if team_id:
+            parts.append(f"team={team_id}")
+        if org_id:
+            parts.append(f"org={org_id}")
+        return ";".join(parts)
+    return f"user:{user_id}"
+
+
+def _subject_filter_matches(filter_str: str, subject: Optional[Dict[str, Any]]) -> bool:
+    """Match a ``?subject=`` query against a stored subject dict.
+
+    Accepts the same shapes as ``PRISMOR_SUBJECT`` / ``resolve_subject``:
+    bare ``alice``, ``user:alice``, or ``user=alice;team=data``.
+    """
+    needle = (filter_str or "").strip()
+    if not needle:
+        return True
+    if not subject:
+        return False
+    try:
+        from prismor.runtime.principal import resolve_subject
+        wanted = resolve_subject(needle)
+    except Exception:
+        wanted = None
+    if wanted is not None and wanted.user_id:
+        if (subject.get("user_id") or "") != wanted.user_id:
+            return False
+        if wanted.team_id and (subject.get("team_id") or "") != wanted.team_id:
+            return False
+        if wanted.org_id and (subject.get("org_id") or "") != wanted.org_id:
+            return False
+        return True
+    # Fallback: exact label match (case-insensitive).
+    label = _format_subject_label(subject)
+    return label.lower() == needle.lower() or (subject.get("user_id") or "").lower() == needle.lower()
+
+
 def get_findings_page(
     page: int = 1,
     limit: int = 25,
@@ -2050,10 +2123,16 @@ def get_findings_page(
     severity: str = "",
     category: str = "",
     search: str = "",
+    subject: str = "",
 ) -> Dict[str, Any]:
-    """Return a paginated, filtered list of findings across all registered workspaces."""
+    """Return a paginated, filtered list of findings across all registered workspaces.
+
+    ``subject`` filters by end-user principal (e.g. ``user:alice``), resolved from
+    the triggering event's stored subject metadata.
+    """
     severity_filter = severity.lower() if severity else ""
     raw_cats = _REVERSE_CATEGORY_MAP.get(category, []) if category else []
+    subject_filter = (subject or "").strip()
     workspaces = _state_query_workspaces()
     rows: List[Dict[str, Any]] = []
 
@@ -2103,6 +2182,7 @@ def get_findings_page(
                        te.url_text     as trig_url,
                        te.content_text as trig_content,
                        te.agent_event  as trig_hook,
+                       te.raw_json     as trig_raw,
                        s.updated_at    as session_updated
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
@@ -2119,6 +2199,16 @@ def get_findings_page(
                 trig_kind = (row["trig_type"] or "").strip() or row["trig_hook"] or ""
                 trig_detail = (row["trig_cmd"] or row["trig_path"] or row["trig_url"]
                               or row["trig_content"] or "")
+                subj = None
+                raw_json = row["trig_raw"] or ""
+                if raw_json:
+                    try:
+                        subj = _extract_subject_from_event(json.loads(raw_json))
+                    except Exception:
+                        subj = None
+                if subject_filter and not _subject_filter_matches(subject_filter, subj):
+                    continue
+                subj_label = _format_subject_label(subj)
                 rows.append({
                     "id": (row["finding_id"] or "")[:20],
                     "sessionId": row["session_id"] or "",
@@ -2127,6 +2217,8 @@ def get_findings_page(
                     "severity": (row["severity"] or "low").lower(),
                     "evidence": (row["evidence"] or "")[:800],
                     "agent": row["agent"] or "unknown",
+                    "subject": subj_label,
+                    "subjectDetail": subj,
                     "ts": _relative_time_store(ts_raw) if ts_raw else "",
                     "tsAbs": _absolute_time_store(ts_raw),
                     "_tsRaw": ts_raw,
@@ -2143,6 +2235,7 @@ def get_findings_page(
     rows.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
     all_agents = sorted({r["agent"] for r in rows})
     all_cats = sorted({r["category"] for r in rows})
+    all_subjects = sorted({r["subject"] for r in rows if r.get("subject")})
     total = len(rows)
     limit = max(1, min(limit, 200))
     pages = max(1, (total + limit - 1) // limit)
@@ -2154,7 +2247,7 @@ def get_findings_page(
 
     return {
         "items": items, "total": total, "page": page, "pages": pages, "limit": limit,
-        "agents": all_agents, "categories": all_cats,
+        "agents": all_agents, "categories": all_cats, "subjects": all_subjects,
     }
 
 
@@ -2213,10 +2306,15 @@ def get_events_page(
     limit: int = 30,
     verdict: str = "",
     agent: str = "",
+    subject: str = "",
 ) -> Dict[str, Any]:
-    """Return a paginated, filtered list of events across all registered workspaces."""
+    """Return a paginated, filtered list of events across all registered workspaces.
+
+    ``subject`` filters by end-user principal (e.g. ``user:alice``).
+    """
     workspaces = _state_query_workspaces()
     rows: List[Dict[str, Any]] = []
+    subject_filter = (subject or "").strip()
 
     for ws in workspaces:
         db_path = get_db_path(ws)
@@ -2231,7 +2329,7 @@ def get_events_page(
             page = max(1, page)
             if verdict == "blocked":
                 fetch_limit = max(300, page * limit * 12)
-            elif verdict == "allowed" or agent:
+            elif verdict == "allowed" or agent or subject_filter:
                 fetch_limit = max(300, page * limit * 5)
             else:
                 fetch_limit = max(200, page * limit * 3)
@@ -2295,6 +2393,10 @@ def get_events_page(
                     tag = meta.get("tool_name")
                     if isinstance(tag, str) and tag.strip():
                         tool_tag = tag.strip()
+                subj = _extract_subject_from_event(raw)
+                if subject_filter and not _subject_filter_matches(subject_filter, subj):
+                    continue
+                subj_label = _format_subject_label(subj)
                 finding_id = row["finding_id"]
                 severity = row["severity"]
                 category = row["category"]
@@ -2337,6 +2439,8 @@ def get_events_page(
                     "tsAbs": _absolute_time_store(ts_raw),
                     "_tsRaw": ts_raw,
                     "agent": row["agent"] or "unknown",
+                    "subject": subj_label,
+                    "subjectDetail": subj,
                     "action": ": ".join(action_parts) if action_parts else "event",
                     "toolTag": tool_tag,
                     "agentEvent": (raw.get("agent_event") if isinstance(raw, dict) else "") or "",
@@ -2378,6 +2482,7 @@ def get_events_page(
         deduped = [ev for ev in deduped if ev.get("verdict") != "blocked"]
 
     all_agents = sorted({ev["agent"] for ev in deduped})
+    all_subjects = sorted({ev["subject"] for ev in deduped if ev.get("subject")})
     total = len(deduped)
     pages = max(1, (total + limit - 1) // limit)
     page = max(1, min(page, pages))
@@ -2388,7 +2493,7 @@ def get_events_page(
 
     return {
         "items": items, "total": total, "page": page, "pages": pages, "limit": limit,
-        "agents": all_agents,
+        "agents": all_agents, "subjects": all_subjects,
     }
 
 

@@ -2512,6 +2512,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="bar">
         <label>Agent</label>
         <select id="fAgent" class="fsel"><option value="">All</option></select>
+        <label>User</label>
+        <select id="fSubject" class="fsel"><option value="">All</option></select>
         <label>Severity</label>
         <select id="fSev" class="fsel">
           <option value="">All</option>
@@ -2536,7 +2538,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div style="overflow-x:auto">
         <table>
           <thead><tr>
-            <th>Finding</th><th>Agent</th><th>Category</th><th>Severity</th><th>When</th><th style="width:16px"></th>
+            <th>Finding</th><th>Agent</th><th>User</th><th>Category</th><th>Severity</th><th>When</th><th style="width:16px"></th>
           </tr></thead>
           <tbody id="findBody"></tbody>
         </table>
@@ -2555,6 +2557,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         <div class="bar-sep"></div>
         <label>Agent</label>
         <select id="evtAgent" class="fsel"><option value="">All</option></select>
+        <label>User</label>
+        <select id="evtSubject" class="fsel"><option value="">All</option></select>
         <div class="bar-right">
           <span id="evtCount" class="result-count"></span>
           <label>Per page</label>
@@ -5368,16 +5372,20 @@ document.getElementById('sessLimit').addEventListener('change',e=>{
 });
 
 // ── Findings ──────────────────────────────────────────────────────────────
-const findState={page:1,limit:25,agent:'',severity:'',category:'',q:'',total:0,pages:1};
+const findState={page:1,limit:25,agent:'',severity:'',category:'',q:'',subject:'',total:0,pages:1};
 async function loadFindings(){
-  const {page,limit,agent,severity,category,q}=findState;
-  const params=new URLSearchParams({page,limit,agent,severity,category,q});
+  const {page,limit,agent,severity,category,q,subject}=findState;
+  const params=new URLSearchParams({page,limit,agent,severity,category,q,subject});
   try{
     const data=await apiFetch('/api/findings?'+params);
     findState.page=data.page; findState.pages=data.pages; findState.total=data.total;
     if(data.agents){
       const sel=document.getElementById('fAgent'); const cur=sel.value;
       sel.innerHTML='<option value="">All</option>'+data.agents.map(a=>'<option value="'+a+'"'+(a===cur?' selected':'')+'>'+a+'</option>').join('');
+    }
+    if(data.subjects){
+      const sel=document.getElementById('fSubject'); const cur=findState.subject || sel.value;
+      sel.innerHTML='<option value="">All</option>'+data.subjects.map(s=>'<option value="'+safeAttr(s)+'"'+(s===cur?' selected':'')+'>'+safe(s)+'</option>').join('');
     }
     if(data.categories){
       const sel=document.getElementById('fCat'); const cur=sel.value;
@@ -5390,26 +5398,30 @@ async function loadFindings(){
 }
 function renderFindings(rows){
   const tbody=document.getElementById('findBody');
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="6" class="empty">No findings match the current filters</td></tr>';return;}
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="7" class="empty">No findings match the current filters</td></tr>';return;}
   tbody.innerHTML=rows.map((f,i)=>{
     const eid='fev-'+i;
     const trig=f.trigger||{};
     const triggerBlock=trig.detail
       ?'<div style="margin-top:8px"><span class="trigger-kind">'+safe(trig.kind||'event')+'</span><div class="trigger-detail">'+safe(trig.detail)+'</div></div>'
       :'';
+    const userLabel=f.subject||'—';
     return '<tr class="finding-row" onclick="toggleEvidence(\''+eid+'\')">'+
       '<td>'+safe(f.title)+'</td>'+
       '<td><span class="agent-pill">'+safe(f.agent)+'</span></td>'+
+      '<td style="color:var(--gray-500)" title="'+safeAttr(f.subject||'')+'">'+safe(userLabel)+'</td>'+
       '<td style="color:var(--gray-500)">'+safe(CAT_LABELS[f.category]||f.category)+'</td>'+
       '<td><span class="sev-badge '+sevClass(f.severity)+'">'+safe(f.severity)+'</span></td>'+
       '<td>'+tsCell(f.ts,f.tsAbs)+'</td>'+
       '<td class="expand-arrow">▸</td>'+
     '</tr>'+
     '<tr id="'+eid+'" class="finding-ev-row">'+
-      '<td class="finding-ev-cell" colspan="6">'+
+      '<td class="finding-ev-cell" colspan="7">'+
         '<div>'+safe(f.evidence||'No evidence recorded.')+'</div>'+
         triggerBlock+
-        '<div style="margin-top:8px;font-size:10px;color:var(--gray-400)">session: <span title="'+safeAttr(f.sessionId)+'">'+safe(shortId(f.sessionId,32))+'</span></div>'+
+        '<div style="margin-top:8px;font-size:10px;color:var(--gray-400)">session: <span title="'+safeAttr(f.sessionId)+'">'+safe(shortId(f.sessionId,32))+'</span>'+
+          (f.subject?' &middot; user: '+safe(f.subject):'')+
+        '</div>'+
       '</td>'+
     '</tr>';
   }).join('');
@@ -5420,8 +5432,9 @@ function toggleEvidence(id){
   const prev=row.previousElementSibling;
   if(prev){const arrow=prev.querySelector('.expand-arrow');if(arrow)arrow.textContent=row.classList.contains('open')?'▾':'▸';}
 }
-['fAgent','fSev','fCat'].forEach(id=>document.getElementById(id).addEventListener('change',e=>{
-  findState[id==='fAgent'?'agent':id==='fSev'?'severity':'category']=e.target.value;
+['fAgent','fSev','fCat','fSubject'].forEach(id=>document.getElementById(id).addEventListener('change',e=>{
+  const map={fAgent:'agent',fSev:'severity',fCat:'category',fSubject:'subject'};
+  findState[map[id]]=e.target.value;
   findState.page=1; loadFindings();
 }));
 let _findSearchTimer;
@@ -5434,12 +5447,12 @@ document.getElementById('findLimit').addEventListener('change',e=>{
 });
 
 // ── Events ────────────────────────────────────────────────────────────────
-const evtState={page:1,limit:30,verdict:'',agent:'',total:0,pages:1};
+const evtState={page:1,limit:30,verdict:'',agent:'',subject:'',total:0,pages:1};
 let _eventsAbort = null;
 let _eventsReqId = 0;
 async function loadEvents(){
-  const {page,limit,verdict,agent}=evtState;
-  const params=new URLSearchParams({page,limit,verdict,agent});
+  const {page,limit,verdict,agent,subject}=evtState;
+  const params=new URLSearchParams({page,limit,verdict,agent,subject});
   const reqId = ++_eventsReqId;
   if (_eventsAbort) _eventsAbort.abort();
   const controller = new AbortController();
@@ -5453,6 +5466,10 @@ async function loadEvents(){
     if(data.agents){
       const sel=document.getElementById('evtAgent'); const cur=sel.value;
       sel.innerHTML='<option value="">All</option>'+data.agents.map(a=>'<option value="'+a+'"'+(a===cur?' selected':'')+'>'+a+'</option>').join('');
+    }
+    if(data.subjects){
+      const sel=document.getElementById('evtSubject'); const cur=evtState.subject || sel.value;
+      sel.innerHTML='<option value="">All</option>'+data.subjects.map(s=>'<option value="'+safeAttr(s)+'"'+(s===cur?' selected':'')+'>'+safe(s)+'</option>').join('');
     }
     renderEvents(data.items);
     buildPager('evtPager',evtState,loadEvents);
@@ -5484,12 +5501,14 @@ function renderEvents(rows){
     const encVerdict = encodeURIComponent(ev.verdict || 'allowed');
     const encSeverity = encodeURIComponent(ev.severity || 'low');
     const encPolicy = encodeURIComponent(JSON.stringify(ev.policy || {}));
+    const userMeta = ev.subject ? ' &middot; <span title="end-user subject">'+safe(ev.subject)+'</span>' : '';
     return '<div class="event-row" onclick="onEventClick(\''+safeJsArg(sid)+'\',\''+safeJsArg(ws)+'\',\''+safeJsArg(encTag)+'\',\''+safeJsArg(encType)+'\',\''+safeJsArg(encAction)+'\',\''+safeJsArg(encVerdict)+'\',\''+safeJsArg(encSeverity)+'\',\''+safeJsArg(encPolicy)+'\')" title="Open session controls">'+
       '<span class="event-dot '+(ev.verdict||'allowed')+'"></span>'+
       '<div style="flex:1;min-width:0">'+
         '<div class="event-meta">'+
           (ev.tsAbs?'<span class="ts-hover" title="'+safeAttr(ev.tsAbs)+'">'+safe(ev.ts)+'</span>':safe(ev.ts))+
           ' &middot; <strong style="color:var(--gray-600)">'+safe(ev.agent)+'</strong>'+
+          userMeta+
           (sid ? ' &middot; <span class="event-sess-id" title="'+safeAttr(sid)+'">'+safe(shortId(sid,18))+'</span>' : '')+
           hookMeta(ev.agentEvent, ev.hookMs)+
         '</div>'+
@@ -5526,6 +5545,7 @@ document.querySelectorAll('.fbtn[data-verdict]').forEach(btn=>{
   });
 });
 document.getElementById('evtAgent').addEventListener('change',e=>{evtState.agent=e.target.value;evtState.page=1;loadEvents();});
+document.getElementById('evtSubject').addEventListener('change',e=>{evtState.subject=e.target.value;evtState.page=1;loadEvents();});
 document.getElementById('evtLimit').addEventListener('change',e=>{evtState.limit=parseInt(e.target.value,10);evtState.page=1;loadEvents();});
 
 // ── Stats ─────────────────────────────────────────────────────────────────
@@ -6604,7 +6624,7 @@ setInterval(() => {
   loadSessionControl();
   loadPolicy();
   loadAgents();
-  if (findState.page===1 && !findState.agent && !findState.severity && !findState.category && !findState.q) loadFindings();
+  if (findState.page===1 && !findState.agent && !findState.severity && !findState.category && !findState.q && !findState.subject) loadFindings();
   if (evtState.page===1 && !evtState.verdict && !evtState.agent) loadEvents();
 }, 30000);
 </script>
