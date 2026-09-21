@@ -280,6 +280,49 @@ def _output_size(event: Dict[str, Any]) -> int:
     return len(payload)
 
 
+def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
+                     model: str, usage: Dict[str, Any], message_id: str,
+                     ts: str = "") -> None:
+    """Record a provider ``usage`` block seen on the proxy lane.
+
+    Normalizes the providers' differing field names so the LLM lane populates
+    the same ``token_usage`` store the Claude Code transcript path does:
+    Anthropic ``input_tokens``/``output_tokens``/``cache_read_input_tokens``,
+    OpenAI chat ``prompt_tokens``/``completion_tokens`` (+
+    ``prompt_tokens_details.cached_tokens``), OpenAI Responses
+    ``input_tokens``/``output_tokens`` (+ ``input_tokens_details``), and Gemini
+    ``promptTokenCount``/``candidatesTokenCount``/``cachedContentTokenCount``.
+    Deduped on ``message_id``; an empty usage block or missing id records
+    nothing. Best-effort — never raises."""
+    if not isinstance(usage, dict) or not usage or not message_id:
+        return
+
+    def pick(*names: str) -> int:
+        for name in names:
+            value = usage.get(name)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                return int(value)
+        return 0
+
+    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
+    cached = details.get("cached_tokens") if isinstance(details, dict) else 0
+    try:
+        _record(workspace, session_id, agent, {
+            "ts": ts,
+            "message_id": message_id,
+            "model": model,
+            "input_tokens": pick("input_tokens", "prompt_tokens", "promptTokenCount"),
+            "output_tokens": pick("output_tokens", "completion_tokens", "candidatesTokenCount"),
+            "cache_read_tokens": pick("cache_read_input_tokens", "cachedContentTokenCount") or int(cached or 0),
+            "cache_creation_tokens": pick("cache_creation_input_tokens"),
+            "cache_1h_tokens": 0,
+        })
+    except Exception:
+        pass
+
+
 def record_from_event(*, workspace: Path, session_id: str, agent: str, event: Dict[str, Any]) -> None:
     """Called on every hook dispatch. Never raises — callers treat this as
     best-effort."""

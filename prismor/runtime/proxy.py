@@ -701,6 +701,8 @@ class StreamScreen:
         self._tool_json: List[str] = []
         self._tool_index: int = 0
         self._holding = False
+        self._usage: Dict[str, Any] = {}
+        self._usage_id: str = ""
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -716,12 +718,55 @@ class StreamScreen:
         self._holding = False
         return out
 
+    def _capture_usage(self, event: Dict[str, Any]) -> None:
+        """Accumulate the token-usage a stream carries, wherever it lands.
+
+        OpenAI puts a top-level ``usage`` on the final chunk (only when the
+        client sent ``stream_options.include_usage``); Anthropic splits it
+        across ``message_start`` (``message.usage``, input tokens) and the
+        ``message_delta`` frames (``usage``, cumulative output); Gemini repeats
+        ``usageMetadata`` per chunk. Merging every occurrence yields the final
+        counts without knowing which frame is last. No usage in the stream ->
+        nothing captured -> nothing recorded."""
+        for block in (event.get("usage"), event.get("usageMetadata")):
+            if isinstance(block, dict):
+                self._usage.update(block)
+        message = event.get("message")
+        if isinstance(message, dict):
+            if isinstance(message.get("usage"), dict):
+                self._usage.update(message["usage"])
+            if message.get("id"):
+                self._usage_id = str(message["id"])
+        for key in ("id", "responseId"):
+            if event.get(key):
+                self._usage_id = str(event[key])
+
+    def meter(self) -> None:
+        """Record the accumulated usage once the stream is done. Best-effort."""
+        if not self._usage:
+            return
+        try:
+            import uuid
+            from prismor.runtime.token_usage import record_llm_usage
+            record_llm_usage(
+                workspace=self.screen.workspace,
+                session_id=self.session_id,
+                agent=PROXY_AGENT,
+                model=self.model,
+                usage=self._usage,
+                message_id=self._usage_id or str(uuid.uuid4()),
+            )
+        except Exception:
+            pass
+
     # -- internals -------------------------------------------------------
 
     def _feed(self, chunk: bytes) -> bytes:
         event = _sse_payload(chunk)
         if event is None:
             return b"" if self._holding else chunk
+
+        self._capture_usage(event)
 
         if self.provider == "anthropic":
             return self._feed_anthropic(chunk, event)
@@ -1227,6 +1272,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             tail = stream.flush()
             if tail:
                 self._write_chunk(tail)
+            stream.meter()
         finally:
             try:
                 self.wfile.write(b"0\r\n\r\n")
@@ -1344,12 +1390,15 @@ def _meter(screen: Screen, body: Dict[str, Any], model: str) -> None:
     if not isinstance(usage, dict):
         return
     try:
-        from prismor.runtime.token_usage import record_from_event
-        record_from_event(
+        import uuid
+        from prismor.runtime.token_usage import record_llm_usage
+        record_llm_usage(
             workspace=screen.workspace,
             session_id=screen.session_id,
             agent=PROXY_AGENT,
-            event={"type": "llm_usage", "metadata": {"model": model, "usage": usage}},
+            model=model,
+            usage=usage,
+            message_id=str(body.get("id") or body.get("responseId") or uuid.uuid4()),
         )
     except Exception:
         pass
