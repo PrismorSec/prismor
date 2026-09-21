@@ -138,6 +138,49 @@ talks to it as the SDK would. No API key, no network, no `google-genai` install.
 
 The same run as an animation: [gemini.gif](llm-proxy/gemini.gif).
 
+## A2A (agent-to-agent)
+
+The proxy also governs A2A traffic — the JSON-RPC protocol one agent uses to
+hand a task to another. There is nothing new to run and no separate lane to
+configure: A2A names its method (`message/send`, `message/stream`,
+`tasks/send`, ...) in the JSON-RPC body, so the same endpoint serves both model
+calls and agent-to-agent calls, and the proxy picks the lane per request.
+
+Point the calling agent's A2A client base URL at the proxy:
+
+```python
+from a2a.client import A2AClient          # or any A2A client
+client = A2AClient(url="http://127.0.0.1:7080", ...)
+```
+
+```json
+// proxy.json -- the "upstream" is the remote agent's A2A endpoint
+{
+  "upstreams": { "planner": { "base_url": "https://planner.agents.internal" } },
+  "keys": { "psk_live_ops": { "subject": "user:ops", "upstream": "planner" } }
+}
+```
+
+On each screened method the proxy pulls the text out of the message -- every
+`TextPart`, and every `DataPart` (a data part is exactly where an injected
+instruction or a leaked secret rides) -- and runs it through the same policy and
+the same cloak masking as a model prompt. A blocked message comes back as a
+JSON-RPC error the client parses (`error.code -32001`), not an HTTP crash:
+
+```json
+{"jsonrpc": "2.0", "id": "req-1",
+ "error": {"code": -32001,
+           "message": "Blocked by Prismor [prompt-injection]: injected instruction",
+           "data": {"prismor": "policy_block"}}}
+```
+
+![An A2A message-send blocked as a JSON-RPC error, and a safe one passing](llm-proxy/a2a.png)
+
+Secrets in the outbound message are masked before it reaches the other agent,
+and text in the agent's reply is redacted on the way back. Streaming A2A
+(`message/stream`) is screened on the request and forwarded on the response;
+response-side redaction of a streamed A2A reply is not yet done.
+
 ## Virtual keys
 
 With `keys` configured, a client presents a Prismor key and the proxy swaps in

@@ -3230,7 +3230,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── proxy: the LLM lane (governs agents that cannot be hooked) ───────
     _pp = subparsers.add_parser(
         "proxy",
-        help="Run the Prismor LLM proxy — screen model traffic, and every tool call the model proposes",
+        help="Run the Prismor LLM/A2A proxy — screen model traffic and agent-to-agent messages, plus every tool call the model proposes",
         description="Sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so "
         "an agent Prismor cannot hook is still governed: point it at the proxy with "
         "ANTHROPIC_BASE_URL, OPENAI_BASE_URL, or the Gen AI SDK's HttpOptions(base_url=...). "
@@ -3238,7 +3238,10 @@ def build_parser() -> argparse.ArgumentParser:
         "response is reshaped into the same event a Bash hook produces and run through the same "
         "policy, so a rule that stops a command at the hook layer also stops the model from "
         "proposing it. Streaming tool calls are held until they can be judged. Virtual keys in "
-        "the config swap a Prismor key for the real provider credential, so agents never hold one.",
+        "the config swap a Prismor key for the real provider credential, so agents never hold one. "
+        "It also governs A2A (Agent-to-Agent) JSON-RPC traffic on the same endpoint: point an A2A "
+        "client base URL at the proxy and the message an agent sends to another agent is screened "
+        "and cloak-masked through the same policy.",
     )
     _pp.add_argument("--port", type=int, default=7080, help="Port to listen on (default: 7080)")
     _pp.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")

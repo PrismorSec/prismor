@@ -12,8 +12,12 @@ traffic pass through a URL we control::
     # Google Gen AI SDK (Gemini API, Vertex, Gemini Enterprise Agent Platform)
     genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))
 
+    # A2A (Agent-to-Agent): point the client's base URL at the proxy. A2A names
+    # its method in the JSON-RPC body, so the same endpoint serves both lanes.
+
 That is the one lever that works on an agent Prismor cannot hook, which is
-most of them.
+most of them. The A2A lane screens the message an agent sends to another agent
+(and masks secrets on the way out) through the very same policy engine.
 
 What makes this different from an AI gateway
 --------------------------------------------
@@ -267,6 +271,62 @@ def _system_of(body: Dict[str, Any]) -> Any:
     return body.get("system") or body.get("instructions") or body.get("systemInstruction")
 
 
+#: A2A (Agent-to-Agent) JSON-RPC methods. A2A names its method in the *body*,
+#: not the path, so the same proxy endpoint serves both LLM and A2A traffic and
+#: the lane is chosen per request. Only the methods that carry a fresh message
+#: are screened; tasks/get and friends carry no new content, so they forward
+#: unscreened (but still forward).
+A2A_SCREENED_METHODS = frozenset({
+    "message/send", "message/stream", "tasks/send", "tasks/sendSubscribe",
+})
+A2A_METHODS = A2A_SCREENED_METHODS | frozenset({
+    "tasks/get", "tasks/cancel", "tasks/resubscribe",
+    "tasks/pushNotificationConfig/set", "tasks/pushNotificationConfig/get",
+    "agent/authenticatedExtendedCard",
+})
+
+
+def a2a_method(body):
+    return str((body or {}).get("method") or "")
+
+
+def is_a2a(body):
+    """True for an A2A JSON-RPC request Prismor should treat as its own lane."""
+    return bool(body and body.get("jsonrpc") == "2.0"
+                and a2a_method(body) in A2A_METHODS)
+
+
+def _a2a_messages(body):
+    params = body.get("params") or {}
+    out = []
+    message = params.get("message")
+    if isinstance(message, dict):
+        out.append(message)
+    for msg in (params.get("history") or []):
+        if isinstance(msg, dict):
+            out.append(msg)
+    return out
+
+
+def extract_a2a_prompt(body):
+    """The text an A2A request carries: every part of its message (and history).
+
+    A2A parts are text parts or data parts; a DataPart is where an injected
+    instruction or a leaked secret rides, so both reach the engine as text or
+    the rule never sees them.
+    """
+    out = []
+    for message in _a2a_messages(body):
+        for part in (message.get("parts") or []):
+            if not isinstance(part, dict):
+                continue
+            if isinstance(part.get("text"), str):
+                out.append(part["text"])
+            elif part.get("data") is not None:
+                out.append(json.dumps(part["data"], default=str))
+    return "\n".join(p for p in out if p)
+
+
 def extract_prompt(body: Dict[str, Any]) -> str:
     """The text going to the model: system prompt plus every message.
 
@@ -276,6 +336,8 @@ def extract_prompt(body: Dict[str, Any]) -> str:
     here (secret material, data-boundary values, injected instructions riding
     in a tool result) are category rules over combined text.
     """
+    if is_a2a(body):
+        return extract_a2a_prompt(body)
     parts: List[str] = []
     system = _system_of(body)
     if system:
@@ -296,6 +358,12 @@ def prompt_parts(body: Dict[str, Any]) -> Dict[str, str]:
     wants the sentence they typed, not their sentence welded to the workflow's
     system prompt.
     """
+    if is_a2a(body):
+        text = extract_a2a_prompt(body)
+        parts = {"a2a_method": a2a_method(body)}
+        if text:
+            parts["user_message"] = text
+        return parts
     system = _system_of(body)
     out: Dict[str, str] = {}
     if system:
@@ -382,6 +450,8 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
     (``/v1beta/models/gemini-2.5-pro:generateContent``), so reading only the
     body would label every Gemini event with an empty model.
     """
+    if provider == "a2a":
+        return a2a_method(body)
     if provider != "google":
         return str((body or {}).get("model") or "")
     tail = path.rsplit("/", 1)[-1]
@@ -390,6 +460,8 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
 
 def is_streaming(provider: str, path: str, body: Optional[Dict[str, Any]]) -> bool:
     """Gemini streams by *method name*; the others by a ``stream`` body flag."""
+    if provider == "a2a":
+        return False
     if provider == "google":
         return ":streamGenerateContent" in path
     return bool((body or {}).get("stream"))
@@ -460,8 +532,13 @@ class Screen:
 
     def prompt_event(self, provider: str, model: str, prompt: str,
                      subject: Optional[str], session_id: str = "",
-                     parts: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        event = self._base("prompt", subject, session_id)
+                     parts: Optional[Dict[str, str]] = None,
+                     agent_event: str = "prompt") -> Dict[str, Any]:
+        # ``agent_event`` decides whether policy may *block* this: only a
+        # pre-action event is eligible (hooks.should_block). The LLM lane keeps
+        # "prompt" (screen + redact, block on the proposed tool call); an A2A
+        # message is itself the action about to happen, so it is pre-action.
+        event = self._base(agent_event, subject, session_id)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": "llm_request"})
         # The flattened blob is what policy reads; the parts are what a person
@@ -640,8 +717,16 @@ def refusal_reason(blocking: Dict[str, Any]) -> str:
     return f"Blocked by Prismor [{rule}]: {detail}"
 
 
-def error_body(provider: str, message: str, status: int = 403) -> bytes:
+def error_body(provider: str, message: str, status: int = 403,
+               rpc_id: Any = None) -> bytes:
     """A refusal the client's own SDK will parse and surface, not choke on."""
+    if provider == "a2a":
+        # A2A speaks JSON-RPC: a block is an error object the client reads,
+        # not an HTTP failure it raises. -32001 is a server-defined error.
+        payload = {"jsonrpc": "2.0", "id": rpc_id,
+                   "error": {"code": -32001, "message": message,
+                             "data": {"prismor": "policy_block"}}}
+        return json.dumps(payload).encode()
     if provider == "anthropic":
         payload = {"type": "error",
                    "error": {"type": "permission_error", "message": message}}
@@ -997,7 +1082,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _refuse(self, provider: str, message: str, status: int = 403) -> None:
-        body = error_body(provider, message, status)
+        body = error_body(provider, message, status,
+                          rpc_id=getattr(self, "_a2a_id", None))
+        # An A2A policy block is a JSON-RPC error the client reads at HTTP 200;
+        # a transport-auth failure (401) stays a transport failure.
+        status = 200 if provider == "a2a" and status != 401 else status
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -1049,15 +1138,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def _forward(self, raw_body: bytes) -> None:
         provider = self._provider()
+        path, query = urlsplit(self.path).path, urlsplit(self.path).query
+        body = _loads_object(raw_body)
+        a2a = is_a2a(body)
+        if a2a:
+            # A2A rides the same endpoint as the LLM lanes; the JSON-RPC method
+            # in the body is what marks it, so the lane is chosen per request.
+            provider = "a2a"
+            self._a2a_id = body.get("id")
         subject, upstream_override, auth_error = self._auth()
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
 
-        path, query = urlsplit(self.path).path, urlsplit(self.path).query
-        body = _loads_object(raw_body)
-        screened = body is not None and any(
-            path.endswith(p) or path == p for p, _ in PROVIDER_ROUTES)
+        screened = body is not None and (
+            (a2a and a2a_method(body) in A2A_SCREENED_METHODS)
+            or (not a2a and any(
+                path.endswith(p) or path == p for p, _ in PROVIDER_ROUTES)))
         model = model_of(provider, path, body)
         streaming = is_streaming(provider, path, body)
 
@@ -1122,9 +1219,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # proposes, so a turn's prompt and its consequences share a session.
         self._session_id = self.screen.session_for(
             body, self.headers.get("x-prismor-session") or "")
-        event = self.screen.prompt_event(provider, model, prompt, subject,
-                                         session_id=self._session_id,
-                                         parts=prompt_parts(body))
+        event = self.screen.prompt_event(
+            provider, model, prompt, subject,
+            session_id=self._session_id, parts=prompt_parts(body),
+            agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -1467,6 +1565,7 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     print(f"[prismor]                        OPENAI_BASE_URL={base}/v1 codex")
     print(f"[prismor]                        genai.Client(http_options="
           f"types.HttpOptions(base_url='{base}'))")
+    print(f"[prismor]                        A2A client base URL={base}")
     def _stop(signum, _frame):
         # SIGTERM is how a container stops, so the flush has to hang off the
         # signal rather than only off KeyboardInterrupt.
