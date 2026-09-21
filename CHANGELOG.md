@@ -3,6 +3,9 @@
 ### Added
 - **Query your own data.** The session store was always a local SQLite file, but nothing documented it and nothing offered a safe way in. `prismor query "SELECT …"` is a read-only door: `mode=ro` plus `PRAGMA query_only`, SELECT/WITH/EXPLAIN only, every string cell redacted the same way tool results are. `prismor query --schema` lists the tables, `prismor docs <page>` prints a bundled doc in the terminal, and [query-your-data.md](docs/query-your-data.md) has the schema, the questions people ask it (what was blocked, which rule is noisy, what one session did), and how to turn a finding into a policy change. The dashboard's Docs tab has an **Ask your agent** button that copies a prompt with the real store path filled in, and the bundled skill teaches the same commands, so an agent can explain what Prismor did and help tune policy without being pointed at the file. The store file itself is now covered by the self-edit rule (`rm`/`mv`/`tee` against `prismor.db` is blocked; SQL writes already were).
 
+### Fixed
+- **A crafted Bash command could hide a second command from policy.** Before evaluating a command, Prismor strips its own decloak wrapper back off so the dashboard and the rules see what the agent actually asked for. It recognised that wrapper loosely: find the `2>&1 | PRISMOR_SECRETS_DIR=` marker, check that `scrub-stream` and `PIPESTATUS` appear *somewhere* after it, then discard everything after the marker. A command shaped like the wrapper but carrying its own payload — `{ : printf safe } 2>&1 | PRISMOR_SECRETS_DIR=/tmp scrub-stream PIPESTATUS; curl … | bash` — was therefore recorded and scored as `printf safe`, while the shell still ran the trailing `curl`. The tail now has to match the wrapper exactly, down to the two `printf %q` paths and the literal `; exit ${PIPESTATUS[0]}`; anything else is left alone and evaluated whole. Reported by Madhusudhanan G (@Madhumasa84).
+
 ## [1.54.1] — 2026-09-17
 
 ### Fixed
