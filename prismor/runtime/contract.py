@@ -131,11 +131,6 @@ def strongest(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         str(f.get("action") or BLOCK).lower(), 0))
 
 
-def is_pre_action(agent_event: str) -> bool:
-    """Whether this event describes an action that can still be refused."""
-    return str(agent_event or "") in PRE_ACTION_EVENTS
-
-
 # ── decision ─────────────────────────────────────────────────────────────────
 
 @dataclass

@@ -131,10 +131,6 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return cfg
 
 
-def is_enabled(raw: Optional[Dict[str, Any]]) -> bool:
-    return bool(effective_config(raw).get("enabled"))
-
-
 def docker_status() -> Dict[str, Any]:
     """Return Docker CLI/server availability without mutating state."""
     docker = shutil.which("docker")

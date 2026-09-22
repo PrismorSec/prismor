@@ -1332,11 +1332,6 @@ def _absolute_time_store(ts: str) -> str:
         return ts
 
 
-def _ts_pair(ts: str) -> Dict[str, str]:
-    """Return ``{"rel": "2h ago", "abs": "2026-06-06 14:23:05 UTC"}`` for a ts."""
-    return {"rel": _relative_time_store(ts) if ts else "", "abs": _absolute_time_store(ts)}
-
-
 def _extract_mcp_or_tool(raw_json: str) -> Optional[Dict[str, str]]:
     """Identify whether an event was an MCP server call or a skill/tool call.
 
