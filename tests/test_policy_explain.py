@@ -82,3 +82,75 @@ def test_floor_rule_explains_which_floor_caught_it(tmp_path):
     mode, why = engine.explain_mode(_rule(engine, "remote-execution"))
     assert mode == "enforce"
     assert "safety floor" in why and "remote_execution" in why
+
+
+# ── allowlist attribution ────────────────────────────────────────────────────
+
+ALLOWLISTED = """rules:
+  - id: zz-guard
+    severity: HIGH
+    category: prompt_injection
+    title: House rule
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - 'zzmarker'
+    action: block
+    mode: enforce
+allowlists:
+  - id: allow-zz-known
+    rule_ids: [zz-guard]
+    reason: reviewed by security, known safe
+    patterns:
+      - 'zzmarker'
+%s
+"""
+
+VETO = """  - id: veto-zz-danger
+    rule_ids: [zz-guard]
+    type: veto
+    reason: never allow the dangerous spelling
+    patterns:
+      - 'zzmarker --force'
+"""
+
+
+def _allow_engine(tmp_path: Path, extra: str = "") -> PolicyEngine:
+    d = tmp_path / ".prismor"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "policy.yaml").write_text(ALLOWLISTED % extra, encoding="utf-8")
+    return PolicyEngine(workspace=tmp_path)
+
+
+def test_enforcement_path_is_unchanged_by_the_explain_plumbing(tmp_path):
+    engine = _allow_engine(tmp_path)
+    event = {"type": "shell", "command": "echo zzmarker"}
+    assert engine.evaluate(event, 1) == []          # allowlist still hides it
+
+
+def test_explaining_shows_the_allowlist_that_swallowed_the_finding(tmp_path):
+    engine = _allow_engine(tmp_path)
+    event = {"type": "shell", "command": "echo zzmarker"}
+    found = engine.evaluate(event, 1, include_suppressed=True)
+    assert len(found) == 1
+    assert found[0]["suppressedBy"]["id"] == "allow-zz-known"
+    assert "known safe" in found[0]["suppressedBy"]["reason"]
+
+
+def test_allowlist_match_returns_the_entry_and_the_bool_wrapper_agrees(tmp_path):
+    engine = _allow_engine(tmp_path)
+    entry = engine.allowlist_match("zz-guard", "echo zzmarker")
+    assert entry is not None and entry.id == "allow-zz-known"
+    assert engine._is_allowlisted("zz-guard", "echo zzmarker") is True
+    assert engine.allowlist_match("zz-guard", "nothing here") is None
+    assert engine._is_allowlisted("zz-guard", "nothing here") is False
+
+
+def test_a_veto_means_nothing_is_suppressed(tmp_path):
+    engine = _allow_engine(tmp_path, extra=VETO)
+    event = {"type": "shell", "command": "echo zzmarker --force"}
+    found = engine.evaluate(event, 1, include_suppressed=True)
+    assert len(found) == 1
+    # the veto disqualified the allowlist, so this is a real finding
+    assert "suppressedBy" not in found[0]
+    assert engine.evaluate(event, 1) != []

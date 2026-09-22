@@ -101,6 +101,39 @@ A finding matched inside inert text (a commit message, a PR body, a grep
 pattern) is also called out: it describes an action rather than performing one,
 so it reports and never blocks.
 
+### When an exception swallowed it
+
+An allowlist that matches makes a finding vanish, and a vanished finding is
+indistinguishable from a rule that never fired — which is how an allowlist that
+is too broad survives review. `--explain` shows those too:
+
+```
+$ prismor check 'echo zzmarker'
+PASS  echo zzmarker
+
+$ prismor check 'echo zzmarker' --explain
+[HIGH] House rule                                          (SUPPRESSED)
+  suppressed by allowlist 'allow-zz-known' — reviewed by security 2026-09-01
+  rule: zz-guard  action: block
+  defined by: project policy layer
+  mode: enforce — rule sets mode: enforce  →  blocks
+```
+
+The rule matched and *would* have blocked; a named exception cancelled it. Only
+`--explain` asks for these — the enforcement path never sees a suppressed
+finding, so its behaviour is unchanged.
+
+A `type: veto` entry disqualifies every allowlist for a match, so a vetoed
+finding is reported as a real one rather than as suppressed.
+
+### One more gate: pre-action events
+
+Blocking also requires the event to be a **pre-action** one (`PreToolUse`,
+`UserPromptSubmit`, a `Pre…` surface event). A finding raised on a post-action
+event reports but cannot block, whatever its mode — there is nothing left to
+stop. This is a property of *when the event arrives*, not of the rule: the same
+event type can arrive pre-action on one surface and post-action on another.
+
 ## The request → grant flow
 
 1. **Dev requests** (in the repo): `prismor exempt request --reason "deploy.sh uses curl|sh"`.

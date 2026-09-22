@@ -1222,6 +1222,7 @@ class PolicyEngine:
         index: int,
         session_id: str = "",
         subject: Optional[Any] = None,
+        include_suppressed: bool = False,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -1349,9 +1350,16 @@ class PolicyEngine:
             if matched_evidence is None:
                 continue
 
-            # Check allowlist.
-            if self._is_allowlisted(rule.id, matched_evidence):
-                continue
+            # Check allowlist. An explaining caller asks for the suppressed
+            # ones too, tagged with the entry that swallowed them; the default
+            # stays exactly as before for the enforcement path.
+            _allow = self.allowlist_match(rule.id, matched_evidence)
+            if _allow is not None:
+                if not include_suppressed:
+                    continue
+                _suppressed_by = {"id": _allow.id, "reason": _allow.reason}
+            else:
+                _suppressed_by = None
 
             # Per-rule severity overrides (configured in YAML, not hardcoded).
             severity = rule.severity
@@ -1428,6 +1436,12 @@ class PolicyEngine:
             # never event content, so redacted telemetry may carry it.
             if evasion:
                 finding["evasion"] = evasion
+
+            # Only present for an explaining caller (include_suppressed): this
+            # finding matched but an allowlist swallowed it. The enforcement
+            # path never sees these, so the finding shape there is unchanged.
+            if _suppressed_by is not None:
+                finding["suppressedBy"] = _suppressed_by
 
             findings.append(finding)
 
@@ -2880,6 +2894,15 @@ class PolicyEngine:
         return self.evaluate(event, 0)
 
     def _is_allowlisted(self, rule_id: str, evidence: str) -> bool:
+        return self.allowlist_match(rule_id, evidence) is not None
+
+    def allowlist_match(self, rule_id: str, evidence: str) -> Optional["AllowlistEntry"]:
+        """The allowlist entry suppressing this finding, or None.
+
+        Returning the entry rather than a bool is what lets a reader see *which*
+        exception swallowed a match: a silently dropped finding is
+        indistinguishable from a rule that never fired.
+        """
         # Vetoes are resolved first and unconditionally: a veto that matches
         # means no allowlist may suppress this finding, whatever order the
         # entries appear in the merged policy. Without the two passes a
@@ -2887,11 +2910,11 @@ class PolicyEngine:
         # project-level allowlist could out-rank an org-level veto.
         for entry in self.allowlists:
             if entry.type == "veto" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
-                return False
+                return None
         for entry in self.allowlists:
             if entry.type == "allow" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
-                return True
-        return False
+                return entry
+        return None
 
     @property
     def egress_allowlist(self) -> List[str]:
