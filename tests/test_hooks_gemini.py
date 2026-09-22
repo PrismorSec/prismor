@@ -1,8 +1,8 @@
-"""Tests for the Gemini CLI hooks adapter (_strip_gemini, _merge_gemini, _normalize_gemini).
+"""Tests for the Gemini CLI hooks adapter (strip, _merge_gemini, _normalize_gemini).
 
 Gemini CLI uses the same Claude-style nested hook config shape and exit-2
 blocking convention.  These tests verify:
-  - _strip_gemini  removes Prismor entries and leaves others intact.
+  - stripping    removes Prismor entries and leaves others intact.
   - _merge_gemini  writes all expected events (BeforeTool, AfterTool,
                    SessionStart) with the correct matcher.
   - _normalize_gemini converts every built-in tool name to the right
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime.hooks import (
     _SUPPORTED_AGENTS,
-    _strip_gemini,
+    _strip_for_agent,
     _merge_gemini,
     _normalize_gemini,
     install_hooks,
@@ -44,10 +44,10 @@ class TestSupportedAgents(unittest.TestCase):
         self.assertIn("gemini", _SUPPORTED_AGENTS)
 
 
-# --- _strip_gemini -----------------------------------------------------------
+# --- stripping -----------------------------------------------------------
 
 class TestStripGemini(unittest.TestCase):
-    """_strip_gemini removes Prismor hook entries while preserving others."""
+    """Stripping removes Prismor hook entries while preserving others."""
 
     def _config(self, command):
         return {
@@ -66,7 +66,7 @@ class TestStripGemini(unittest.TestCase):
 
     def test_removes_prismor_entry(self):
         config = self._config(_COMMAND)
-        result, removed = _strip_gemini(config, _MARKER)
+        result, removed = _strip_for_agent("gemini", config, _MARKER)
         self.assertTrue(removed)
         before_tool = result["hooks"]["BeforeTool"]
         self.assertEqual(len(before_tool), 1)
@@ -85,7 +85,7 @@ class TestStripGemini(unittest.TestCase):
                 ]
             }
         }
-        result, removed = _strip_gemini(config, _MARKER)
+        result, removed = _strip_for_agent("gemini", config, _MARKER)
         self.assertTrue(removed)
         self.assertEqual(result["hooks"]["BeforeTool"], [])
 
@@ -97,11 +97,11 @@ class TestStripGemini(unittest.TestCase):
                 ]
             }
         }
-        result, removed = _strip_gemini(config, _MARKER)
+        result, removed = _strip_for_agent("gemini", config, _MARKER)
         self.assertFalse(removed)
 
     def test_empty_config(self):
-        result, removed = _strip_gemini({}, _MARKER)
+        result, removed = _strip_for_agent("gemini", {}, _MARKER)
         self.assertFalse(removed)
         self.assertEqual(result.get("hooks", {}), {})
 
@@ -114,7 +114,7 @@ class TestStripGemini(unittest.TestCase):
                 for event in ["BeforeTool", "AfterTool", "SessionStart"]
             }
         }
-        result, removed = _strip_gemini(config, _MARKER)
+        result, removed = _strip_for_agent("gemini", config, _MARKER)
         self.assertTrue(removed)
         for event in ["BeforeTool", "AfterTool", "SessionStart"]:
             self.assertEqual(result["hooks"][event], [])
@@ -186,7 +186,7 @@ class TestMergeGemini(unittest.TestCase):
 
     def test_idempotent(self):
         first = _merge_gemini({}, _COMMAND)
-        stripped, _ = _strip_gemini(first, _MARKER)
+        stripped, _ = _strip_for_agent("gemini", first, _MARKER)
         second = _merge_gemini(stripped, _COMMAND)
         prismor_commands = [
             h["command"]

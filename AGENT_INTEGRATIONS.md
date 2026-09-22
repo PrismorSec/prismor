@@ -142,7 +142,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Blocking:** hook emits `{"permissionDecision": "deny", "permissionDecisionReason": "..."}` on stdout. Exit-2 convention is not used — Copilot reads the JSON response instead.
 - **Static layer:** `--allow-tool` / `--deny-tool` / `--allow-all-tools` CLI flags apply before the hook fires (deny beats allow). Useful as defense-in-depth.
 - **Payload note:** `toolArgs` arrives as a JSON-encoded string; `_normalize_copilot()` parses it before evaluation.
-- **Code:** `prismor/runtime/hooks.py` `_merge_copilot()`, `_strip_copilot()`, `_normalize_copilot()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_copilot()`, `_normalize_copilot()`.
 
 ### Codex (OpenAI)
 
@@ -153,7 +153,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Sweep target:** `~/.codex/`.
 - **Minimum version: `codex-cli` ≥ `0.141.0-alpha.1`.** Earlier versions, including the `0.140.0` stable release, have an upstream bug ([openai/codex#26383](https://github.com/openai/codex/issues/26383), [#26452](https://github.com/openai/codex/issues/26452)) where `codex exec` never dispatches *any* hook — not because of config shape, matcher syntax, or hook trust, but because `--dangerously-bypass-hook-trust` silently failed to propagate to the exec thread, so hooks (which require persisted trust) were dropped before dispatch even without `exec` printing an error. Fixed in [openai/codex#26434](https://github.com/openai/codex/pull/26434), merged 2026-06-16, first shipped in `rust-v0.141.0-alpha.1`. As of this writing that fix has not yet reached a stable release tag — pin to an alpha ≥ that build if you need working Codex hooks today, and watch for the next `0.141.x` (or later) stable release.
 - **Required feature flag:** Codex's hook dispatcher additionally requires `[features].hooks = true` (previously `codex_hooks`, deprecated in current stable) in the **user-level** `~/.codex/config.toml` — read from nowhere else, not even a project-scoped `.codex/config.toml`. Without it, hooks are silent no-ops: no error, no warning, every tool call passes straight through. `install_hooks()` now sets/migrates this automatically as of PrismorSec/prismor#149 (verified live against `codex-cli 0.142.5`: a destructive command that should have been blocked instead ran and deleted its target file before this fix).
-- **Code:** `prismor/runtime/hooks.py` `_merge_codex()`, `_strip_codex()`, `_normalize_codex()`, `_ensure_codex_hooks_feature_enabled()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_codex()`, `_normalize_codex()`, `_ensure_codex_hooks_feature_enabled()`.
 
 ### Grok Build (xAI)
 
@@ -164,7 +164,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Sweep target:** `~/.grok/`.
 - **Not yet verified against a live `grok` install.** This integration is built entirely from [docs.x.ai/build/features/hooks](https://docs.x.ai/build/features/hooks) and [docs.x.ai/build/overview](https://docs.x.ai/build/overview) — no `grok` binary was available to smoke-test against at implementation time. Before relying on this in `enforce` mode, run `grok inspect` to confirm the real built-in tool names, and verify a deliberately blocked command is actually denied end to end (the same live check done for Codex above).
 - **Project-hook trust:** Grok requires trust before running project-level hooks (`/hooks-trust` or `--trust` inside `grok`, recorded in `~/.grok/trusted_folders.toml`). This is a one-time manual step Prismor does not automate.
-- **Code:** `prismor/runtime/hooks.py` `_merge_grok()`, `_strip_grok()`, `_normalize_grok()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_grok()`, `_normalize_grok()`.
 
 ### Kiro CLI (AWS)
 
@@ -176,7 +176,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Tool-name taxonomy:** canonical snake_case (`execute_bash`, `fs_read`, `fs_write`, `use_aws`) plus short aliases (`shell`, `read`, `write`, `aws`) — normalization matches on both forms. `fs_write`'s `tool_input` shape (`{"operations": [{"mode": ..., "path": ...}]}`) is not fully documented past the `path` field; content extraction from the first operation is best-effort with several fallback field names.
 - **Sweep target:** `~/.kiro/`.
 - **Not yet verified against a live `kiro-cli` binary.** Built from [kiro.dev/docs/cli/hooks](https://kiro.dev/docs/cli/hooks/), the [agent configuration reference](https://kiro.dev/docs/cli/custom-agents/configuration-reference/), and community documentation at [Ar9av/agent-manual](https://github.com/Ar9av/agent-manual/blob/main/tools/kiro/README.md). Before relying on this in `enforce` mode, confirm live whether a partial `kiro_default.json` is merged or replaces built-in defaults, and verify a deliberately blocked command is actually denied end to end.
-- **Code:** `prismor/runtime/hooks.py` `_merge_kiro()`, `_strip_kiro()`, `_normalize_kiro()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_kiro()`, `_normalize_kiro()`.
 
 ### Crush (Charmbracelet)
 
@@ -186,7 +186,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Blocking:** exit 2 blocks the tool call, with the reason read from **stderr only**. A `{"decision":"block","reason":"..."}` stdout envelope — the convention several other agents in this table use — was tested live and silently ignored; do not copy that pattern here.
 - **Tool-name taxonomy:** shell tool is `bash`. `view` reads a file; `write`/`edit`/`multiedit` write; `fetch`/`download`/`sourcegraph` are network.
 - **Sweep target:** `~/.config/crush/`.
-- **Code:** `prismor/runtime/hooks.py` `_merge_crush()`, `_strip_crush()`, `_normalize_crush()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_crush()`, `_normalize_crush()`.
 
 ### OpenHands
 
@@ -196,7 +196,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Payload shape note:** the event-name field in the hook's stdin JSON is `event_type`, not `hook_event_name` like the Claude/Codex-family agents — a real schema difference between OpenHands and most of this table, not a typo.
 - **Blocking:** exit 2 from the hook blocks the tool call; falls into the same fail-closed `else` branch as Cursor/Windsurf/Codex/Kiro.
 - **Sweep target:** `~/.openhands/`.
-- **Code:** `prismor/runtime/hooks.py` `_merge_openhands()`, `_strip_openhands()`, `_normalize_openhands()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_openhands()`, `_normalize_openhands()`.
 
 ### Qwen Code (Alibaba)
 
@@ -206,7 +206,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Blocking:** a **nested** stdout JSON envelope (`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "..."}}`), not the flat shape Copilot uses. This needed its own `cli.py` branch — it doesn't fit any existing blocking pattern in this table. Verified the deny is honored even without a non-zero exit code, so this dispatcher path intentionally does not `raise SystemExit(2)` afterward.
 - **Non-interactive gotcha (not a hook bug, but easy to mistake for one):** running `qwen -p "..."` without `-y`/`--yolo` leaves shell-tool approval unable to proceed in a non-interactive session; a small/cheap model can then narrate a plausible-sounding fake "command succeeded" or "blocked by your hook" result without any tool call — or hook — actually running. Always pass `-y` when testing or scripting this integration, and don't trust the model's narration as proof a hook fired; check the hook's own side effects.
 - **Sweep target:** `~/.qwen/`.
-- **Code:** `prismor/runtime/hooks.py` `_merge_qwen()`, `_strip_qwen()`, `_normalize_qwen()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_qwen()`, `_normalize_qwen()`.
 
 ### Continue CLI
 
@@ -215,7 +215,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Blocking:** exit 2, same as Claude/Codex/Kiro — falls into the generic fail-closed `else` branch.
 - **⚠️ Known issue, not a Prismor bug:** verified live (2026-07, `cn` v1.5.47) that hooks configured exactly per this schema, in every documented config location (project/global, custom/default `--config` path), **did not fire at all in headless (`cn -p`) mode** — not just for `PreToolUse`, but for `UserPromptSubmit` too, which needs no tool call whatsoever to trigger. `runHeadlessMode()` in Continue's own source does call `initializeServices()` (which registers and eagerly initializes the hooks service) before running the prompt, so this isn't an obvious ordering bug — root cause not fully pinned down beyond that. **This integration is shipped anyway** because interactive-mode users may still be covered, and an installed-but-inert hook config does no harm — but **do not treat "hooks installed" as "hooks active" for Continue CLI** without testing your actual invocation mode first. Re-check this against newer `cn` releases before relying on it.
 - **Sweep target:** `~/.continue/`.
-- **Code:** `prismor/runtime/hooks.py` `_merge_continue()`, `_strip_continue()`, `_normalize_continue()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_continue()`, `_normalize_continue()`.
 
 ### Goose (Agentic AI Foundation, formerly Block)
 
@@ -225,7 +225,7 @@ Prismor integrates with Hermes at two complementary layers:
 - **Payload shape note:** the event-name field is `event`, not `hook_event_name`.
 - **Blocking:** exit 2 blocks (stderr reason), OR a `{"decision":"block","reason":"..."}` stdout envelope — both confirmed live. This fits the generic fail-closed `else` branch; no special-case needed in `cli.py`.
 - **Sweep target:** `~/.config/goose/`.
-- **Code:** `prismor/runtime/hooks.py` `_merge_goose()`, `_strip_goose()`, `_normalize_goose()`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_goose()`, `_normalize_goose()`.
 
 ---
 
@@ -668,7 +668,11 @@ When a new AI coding agent ships a pre-tool hook API, the checklist is:
 1. Add the agent name to `_SUPPORTED_AGENTS` in `prismor/runtime/hooks.py`.
 2. Add a `_config_path(...)` branch returning the right project/user path.
 3. Write `_merge_<agent>(config, command, ...)` producing the hook config.
-4. Write `_strip_<agent>(config, marker)` for clean uninstall.
+4. Register the agent in `_STRIP_BY_AGENT` against the shape its config uses —
+   `_strip_nested_hooks` (Claude-shape `{matcher, hooks: [{type, command}]}` entries),
+   `_strip_flat_hooks` (`{command, ...}` entries), or `_strip_plugin_entries`
+   (a `plugins` path list) — so uninstall is clean. Agents left out of the table
+   fall back to the flat shape.
 5. Write `_normalize_<agent>(payload, session_id)` mapping the agent's payload to Prismor's canonical `{type, session_id, agent, agent_event, ...}` shape.
 6. Add the config directory to `TOOL_DIRS` in `prismor/runtime/sweep.py` if sweep applies.
 7. Add MCP/skill config locations to `prismor scan` discovery.

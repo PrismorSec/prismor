@@ -13,11 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prismor.runtime.hooks import (
     _is_pre_action,
     _strip_claude,
-    _strip_codex,
-    _strip_cursor,
-    _strip_grok,
-    _strip_kiro,
-    _strip_windsurf,
+    _strip_for_agent,
     install_hooks,
     normalize_payload,
     uninstall_hooks,
@@ -85,139 +81,83 @@ class TestStripClaude(unittest.TestCase):
         self.assertFalse(removed)
 
 
-class TestStripCursor(unittest.TestCase):
-    """Test _strip_cursor removes Prismor entries."""
+_MARKER = "/repo/prismor/runtime/cli.py"
+
+
+class TestStripPerAgent(unittest.TestCase):
+    """Uninstall strips Prismor entries for each agent's own config shape.
+
+    Driven through _strip_for_agent — the entry point install and uninstall
+    actually call — so each case also pins that agent to the right shape:
+    nested (Claude-shape) agents carry {type, command} under an entry's
+    "hooks"; flat agents put "command" on the entry itself. `expected` is the
+    whole config after stripping, so sibling hooks and unrelated top-level
+    keys are checked to survive untouched.
+    """
+
+    CASES = [
+        (
+            "cursor",
+            {"hooks": {"beforeShellCommand": [
+                {"command": f'python3 "{_MARKER}" hook-dispatch --agent cursor'},
+                {"command": "other-linter --check"},
+            ]}},
+            {"hooks": {"beforeShellCommand": [{"command": "other-linter --check"}]}},
+        ),
+        (
+            "windsurf",
+            {"hooks": {"pre_run_command": [
+                {"command": f'python3 "{_MARKER}" hook-dispatch --agent windsurf', "show_output": False},
+                {"command": "other-tool", "show_output": True},
+            ]}},
+            {"hooks": {"pre_run_command": [{"command": "other-tool", "show_output": True}]}},
+        ),
+        (
+            # Non-hooks fields (name, tools, ...) survive stripping untouched.
+            "kiro",
+            {"name": "kiro_default", "hooks": {"preToolUse": [
+                {"command": f'python3 "{_MARKER}" hook-dispatch --agent kiro'},
+                {"command": "other-tool --check"},
+            ]}},
+            {"name": "kiro_default", "hooks": {"preToolUse": [{"command": "other-tool --check"}]}},
+        ),
+        (
+            "codex",
+            {"hooks": {"PreToolUse": [{"matcher": "Bash|apply_patch|mcp__.*", "hooks": [
+                {"type": "command", "command": f'python3 "{_MARKER}" hook-dispatch --agent codex'},
+                {"type": "command", "command": "other-tool --check"},
+            ]}]}},
+            {"hooks": {"PreToolUse": [{"matcher": "Bash|apply_patch|mcp__.*", "hooks": [
+                {"type": "command", "command": "other-tool --check"},
+            ]}]}},
+        ),
+        (
+            "grok",
+            {"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [
+                {"type": "command", "command": f'python3 "{_MARKER}" hook-dispatch --agent grok'},
+                {"type": "command", "command": "other-tool --check"},
+            ]}]}},
+            {"hooks": {"PreToolUse": [{"matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [
+                {"type": "command", "command": "other-tool --check"},
+            ]}]}},
+        ),
+    ]
 
     def test_removes_prismor_entries(self):
-        marker = "/repo/prismor/runtime/cli.py"
-        config = {
-            "hooks": {
-                "beforeShellCommand": [
-                    {"command": f'python3 "{marker}" hook-dispatch --agent cursor'},
-                    {"command": "other-linter --check"},
-                ]
-            }
-        }
-        result, removed = _strip_cursor(config, marker)
-        self.assertTrue(removed)
-        self.assertEqual(len(result["hooks"]["beforeShellCommand"]), 1)
-        self.assertEqual(result["hooks"]["beforeShellCommand"][0]["command"], "other-linter --check")
+        for agent, config, expected in self.CASES:
+            with self.subTest(agent=agent):
+                result, removed = _strip_for_agent(agent, config, _MARKER)
+                self.assertTrue(removed)
+                self.assertEqual(result, expected)
 
-    def test_no_change(self):
-        config = {"hooks": {"beforeShellCommand": [{"command": "unrelated"}]}}
-        result, removed = _strip_cursor(config, "/repo/prismor/runtime/cli.py")
-        self.assertFalse(removed)
-
-
-class TestStripCodex(unittest.TestCase):
-    """Test _strip_codex removes Prismor entries."""
-
-    def test_removes_prismor_hooks(self):
-        marker = "/repo/prismor/runtime/cli.py"
-        config = {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash|apply_patch|mcp__.*",
-                        "hooks": [
-                            {"type": "command", "command": f'python3 "{marker}" hook-dispatch --agent codex'},
-                            {"type": "command", "command": "other-tool --check"},
-                        ],
-                    }
-                ]
-            }
-        }
-        result, removed = _strip_codex(config, marker)
-        self.assertTrue(removed)
-        self.assertEqual(len(result["hooks"]["PreToolUse"]), 1)
-        self.assertEqual(len(result["hooks"]["PreToolUse"][0]["hooks"]), 1)
-        self.assertEqual(result["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "other-tool --check")
-
-    def test_no_change(self):
-        config = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "unrelated"}]}]}}
-        result, removed = _strip_codex(config, "/repo/prismor/runtime/cli.py")
-        self.assertFalse(removed)
-
-
-class TestStripGrok(unittest.TestCase):
-    """Test _strip_grok removes Prismor entries."""
-
-    def test_removes_prismor_hooks(self):
-        marker = "/repo/prismor/runtime/cli.py"
-        config = {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
-                        "hooks": [
-                            {"type": "command", "command": f'python3 "{marker}" hook-dispatch --agent grok'},
-                            {"type": "command", "command": "other-tool --check"},
-                        ],
-                    }
-                ]
-            }
-        }
-        result, removed = _strip_grok(config, marker)
-        self.assertTrue(removed)
-        self.assertEqual(len(result["hooks"]["PreToolUse"]), 1)
-        self.assertEqual(len(result["hooks"]["PreToolUse"][0]["hooks"]), 1)
-        self.assertEqual(result["hooks"]["PreToolUse"][0]["hooks"][0]["command"], "other-tool --check")
-
-    def test_no_change(self):
-        config = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "unrelated"}]}]}}
-        result, removed = _strip_grok(config, "/repo/prismor/runtime/cli.py")
-        self.assertFalse(removed)
-
-
-class TestStripKiro(unittest.TestCase):
-    """Test _strip_kiro removes Prismor entries."""
-
-    def test_removes_prismor_hooks(self):
-        marker = "/repo/prismor/runtime/cli.py"
-        config = {
-            "name": "kiro_default",
-            "hooks": {
-                "preToolUse": [
-                    {"command": f'python3 "{marker}" hook-dispatch --agent kiro'},
-                    {"command": "other-tool --check"},
-                ]
-            },
-        }
-        result, removed = _strip_kiro(config, marker)
-        self.assertTrue(removed)
-        self.assertEqual(len(result["hooks"]["preToolUse"]), 1)
-        self.assertEqual(result["hooks"]["preToolUse"][0]["command"], "other-tool --check")
-        # Non-hooks fields (name, tools, ...) survive stripping untouched.
-        self.assertEqual(result["name"], "kiro_default")
-
-    def test_no_change(self):
-        config = {"hooks": {"preToolUse": [{"command": "unrelated"}]}}
-        result, removed = _strip_kiro(config, "/repo/prismor/runtime/cli.py")
-        self.assertFalse(removed)
-
-
-class TestStripWindsurf(unittest.TestCase):
-    """Test _strip_windsurf removes Prismor entries."""
-
-    def test_removes_prismor_entries(self):
-        marker = "/repo/prismor/runtime/cli.py"
-        config = {
-            "hooks": {
-                "pre_run_command": [
-                    {"command": f'python3 "{marker}" hook-dispatch --agent windsurf', "show_output": False},
-                    {"command": "other-tool", "show_output": True},
-                ]
-            }
-        }
-        result, removed = _strip_windsurf(config, marker)
-        self.assertTrue(removed)
-        self.assertEqual(len(result["hooks"]["pre_run_command"]), 1)
-        self.assertEqual(result["hooks"]["pre_run_command"][0]["command"], "other-tool")
-
-    def test_no_change(self):
-        config = {"hooks": {"pre_run_command": [{"command": "other"}]}}
-        result, removed = _strip_windsurf(config, "/repo/prismor/runtime/cli.py")
-        self.assertFalse(removed)
+    def test_no_change_when_nothing_is_ours(self):
+        for agent, config, _expected in self.CASES:
+            with self.subTest(agent=agent):
+                # Same shape and event names, but no entry carries the marker.
+                clean = json.loads(json.dumps(config).replace(_MARKER, "/other/tool.py"))
+                result, removed = _strip_for_agent(agent, clean, _MARKER)
+                self.assertFalse(removed)
+                self.assertEqual(result, clean)
 
 
 class TestInstallUninstallRoundtrip(unittest.TestCase):

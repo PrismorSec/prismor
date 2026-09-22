@@ -28,39 +28,101 @@ class HookConfigError(Exception):
     """
 
 
+def _strip_nested_hooks(config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
+    """Strip Prismor entries from a Claude-shape config.
+
+    ``hooks[event]`` is a list of ``{matcher, hooks: [{type, command}]}`` —
+    the marker is matched against each *inner* hook's command, and an entry
+    whose inner list empties out is dropped along with it.
+    """
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        cleaned = []
+        for entry in entries:
+            inner_hooks = entry.get("hooks", [])
+            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
+            if len(filtered) < len(inner_hooks):
+                removed = True
+            if filtered:
+                cleaned.append({**entry, "hooks": filtered})
+        hooks[event_name] = cleaned
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_flat_hooks(config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
+    """Strip Prismor entries from a flat-shape config.
+
+    ``hooks[event]`` is a list of ``{command, ...}`` entries; the marker is
+    matched against each entry's own command. Non-hook top-level keys are
+    preserved untouched.
+    """
+    hooks = dict(config.get("hooks", {}))
+    removed = False
+    for event_name in list(hooks.keys()):
+        entries = hooks[event_name]
+        if not isinstance(entries, list):
+            continue
+        filtered = [e for e in entries if marker not in e.get("command", "")]
+        if len(filtered) < len(entries):
+            removed = True
+        hooks[event_name] = filtered
+    return {**config, "hooks": hooks}, removed
+
+
+def _strip_plugin_entries(config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
+    """Strip Prismor from a plugin-path config (``plugins`` is a list of paths).
+
+    These agents register the hook as a plugin directory rather than an inline
+    command, so there is no command to match ``marker`` against — ownership is
+    decided by the path naming, same test as :data:`_PLUGIN_REGISTERED_AGENTS`.
+    """
+    plugins = list(config.get("plugins", []))
+    filtered = [p for p in plugins if "warden" not in p.lower() and "prismor" not in p.lower()]
+    return {**config, "plugins": filtered}, len(filtered) < len(plugins)
+
+
+def _strip_claude(config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
+    """Claude's config is the nested shape plus a ``PRISMOR_WORKSPACE`` env pin."""
+    config, removed = _strip_nested_hooks(config, marker)
+    env = dict(config.get("env", {}))
+    if "PRISMOR_WORKSPACE" in env:
+        del env["PRISMOR_WORKSPACE"]
+        removed = True
+    return {**config, "env": env}, removed
+
+
+# Which config shape each agent uses. Agents absent from this table fall back
+# to the flat shape, which is what the previous per-agent if-chain did.
+_STRIP_BY_AGENT = {
+    "claude": _strip_claude,
+    # Nested (Claude-shape) hook entries.
+    "codex": _strip_nested_hooks,
+    "continue": _strip_nested_hooks,
+    "gemini": _strip_nested_hooks,
+    "goose": _strip_nested_hooks,
+    "grok": _strip_nested_hooks,
+    "openhands": _strip_nested_hooks,
+    "qwen": _strip_nested_hooks,
+    # Flat hook entries.
+    "copilot": _strip_flat_hooks,
+    "crush": _strip_flat_hooks,
+    "cursor": _strip_flat_hooks,
+    "kiro": _strip_flat_hooks,
+    "windsurf": _strip_flat_hooks,
+    # Plugin-path registration.
+    "hermes": _strip_plugin_entries,
+    "openclaw": _strip_plugin_entries,
+    "opencode": _strip_plugin_entries,
+}
+
+
 def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[Dict[str, Any], bool]:
     """Remove hooks whose command contains `marker`, for the given agent's config."""
-    if agent == "claude":
-        return _strip_claude(config, marker)
-    if agent == "cursor":
-        return _strip_cursor(config, marker)
-    if agent == "openclaw":
-        return _strip_openclaw(config, marker)
-    if agent == "hermes":
-        return _strip_hermes(config, marker)
-    if agent == "codex":
-        return _strip_codex(config, marker)
-    if agent == "copilot":
-        return _strip_copilot(config, marker)
-    if agent == "grok":
-        return _strip_grok(config, marker)
-    if agent == "kiro":
-        return _strip_kiro(config, marker)
-    if agent == "crush":
-        return _strip_crush(config, marker)
-    if agent == "openhands":
-        return _strip_openhands(config, marker)
-    if agent == "qwen":
-        return _strip_qwen(config, marker)
-    if agent == "continue":
-        return _strip_continue(config, marker)
-    if agent == "goose":
-        return _strip_goose(config, marker)
-    if agent == "opencode":
-        return _strip_opencode(config, marker)
-    if agent == "gemini":
-        return _strip_gemini(config, marker)
-    return _strip_windsurf(config, marker)
+    return _STRIP_BY_AGENT.get(agent, _strip_flat_hooks)(config, marker)
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str, portable: bool = False) -> List[Dict[str, str]]:
@@ -134,8 +196,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
 
 
 # Agents whose hook is registered as a plugin path rather than an inline
-# command. _strip_openclaw / _strip_hermes / _strip_opencode use the same
-# "is this one of ours" test when uninstalling.
+# command. _strip_plugin_entries uses the same "is this one of ours" test
+# when uninstalling.
 _PLUGIN_REGISTERED_AGENTS = ("openclaw", "hermes", "opencode")
 
 
@@ -866,57 +928,6 @@ def _merge_windsurf(config: Dict[str, Any], command: str, workspace: Path) -> Di
     return {**config, "hooks": hooks}
 
 
-def _strip_claude(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    env = dict(config.get("env", {}))
-    if "PRISMOR_WORKSPACE" in env:
-        del env["PRISMOR_WORKSPACE"]
-        removed = True
-    return {**config, "hooks": hooks, "env": env}, removed
-
-
-def _strip_cursor(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        filtered = [e for e in entries if marker not in e.get("command", "")]
-        if len(filtered) < len(entries):
-            removed = True
-        hooks[event_name] = filtered
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_windsurf(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        filtered = [e for e in entries if marker not in e.get("command", "")]
-        if len(filtered) < len(entries):
-            removed = True
-        hooks[event_name] = filtered
-    return {**config, "hooks": hooks}, removed
-
-
 def _merge_openclaw(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
     # 1. Scaffold the plugin package
     plugin_dir = repo_root / "prismor" / "runtime" / "openclaw-plugin"
@@ -935,13 +946,6 @@ def _merge_openclaw(config: Dict[str, Any], command: str, repo_root: Path) -> Di
     return {**config, "plugins": plugins}
 
 
-def _strip_openclaw(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    plugins = list(config.get("plugins", []))
-    filtered = [p for p in plugins if "warden" not in p.lower() and "prismor" not in p.lower()]
-    removed = len(filtered) < len(plugins)
-    return {**config, "plugins": filtered}, removed
-
-
 def _merge_opencode(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
     # 1. Scaffold the opencode plugin
     plugin_dir = repo_root / "prismor" / "runtime" / "opencode-plugin"
@@ -954,13 +958,6 @@ def _merge_opencode(config: Dict[str, Any], command: str, repo_root: Path) -> Di
         plugins.append(plugin_path)
 
     return {**config, "plugins": plugins}
-
-
-def _strip_opencode(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    plugins = list(config.get("plugins", []))
-    filtered = [p for p in plugins if "prismor" not in p.lower() and "warden" not in p.lower()]
-    removed = len(filtered) < len(plugins)
-    return {**config, "plugins": filtered}, removed
 
 
 _OPENCODE_PLUGIN_JS = """\
@@ -1151,13 +1148,6 @@ def _merge_hermes(config: Dict[str, Any], command: str, repo_root: Path) -> Dict
     _scaffold_hermes_internal_hook(hooks_dir, command)
 
     return {**config, "plugins": plugins}
-
-
-def _strip_hermes(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    plugins = list(config.get("plugins", []))
-    filtered = [p for p in plugins if "warden" not in p.lower() and "prismor" not in p.lower()]
-    removed = len(filtered) < len(plugins)
-    return {**config, "plugins": filtered}, removed
 
 
 _HERMES_PLUGIN_JS = """\
@@ -1446,162 +1436,6 @@ def _merge_goose(config: Dict[str, Any], command: str, plugin_dir: Path) -> Dict
         {"hooks": [{"type": "command", "command": command, "timeout": 15}]},
     )
     return {**config, "hooks": hooks}
-
-
-def _strip_copilot(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        filtered = [e for e in entries if marker not in e.get("command", "")]
-        if len(filtered) < len(entries):
-            removed = True
-        hooks[event_name] = filtered
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_codex(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_grok(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_kiro(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        filtered = [e for e in entries if marker not in e.get("command", "")]
-        if len(filtered) < len(entries):
-            removed = True
-        hooks[event_name] = filtered
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_crush(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        filtered = [e for e in entries if marker not in e.get("command", "")]
-        if len(filtered) < len(entries):
-            removed = True
-        hooks[event_name] = filtered
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_openhands(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_qwen(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_continue(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
-
-
-def _strip_goose(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
 
 
 def _unmapped_tool_event(base: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2763,31 +2597,6 @@ def _normalize_opencode(payload: Dict[str, Any], session_id: str) -> Dict[str, A
 # and the Google Developers Blog launch post. Before relying on this in
 # `enforce` mode, run `gemini` and confirm a deliberately blocked command is
 # actually denied end-to-end.
-
-
-def _strip_gemini(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
-    """Remove Prismor hook entries from a Gemini CLI settings.json config.
-
-    Gemini CLI uses the same nested Claude-shape hook entries
-    (list of {matcher, hooks:[{type, command}]} per event), so the
-    strip logic mirrors _strip_claude but operates on Gemini's event names.
-    """
-    hooks = dict(config.get("hooks", {}))
-    removed = False
-    for event_name in list(hooks.keys()):
-        entries = hooks[event_name]
-        if not isinstance(entries, list):
-            continue
-        cleaned = []
-        for entry in entries:
-            inner_hooks = entry.get("hooks", [])
-            filtered = [h for h in inner_hooks if marker not in h.get("command", "")]
-            if len(filtered) < len(inner_hooks):
-                removed = True
-            if filtered:
-                cleaned.append({**entry, "hooks": filtered})
-        hooks[event_name] = cleaned
-    return {**config, "hooks": hooks}, removed
 
 
 def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:

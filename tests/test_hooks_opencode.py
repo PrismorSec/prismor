@@ -1,10 +1,10 @@
-"""Tests for the OpenCode hooks adapter (_strip_opencode, _merge_opencode, _normalize_opencode).
+"""Tests for the OpenCode hooks adapter (strip, _merge_opencode, _normalize_opencode).
 
 OpenCode uses JS plugins registered under opencode.json ("plugins": [...]) and
 throws an Error on deny inside tool.execute.before.
 These tests verify:
   - "opencode" is in _SUPPORTED_AGENTS.
-  - _strip_opencode removes Prismor plugin entries.
+  - stripping      removes Prismor plugin entries.
   - _merge_opencode scaffolds the plugin package and registers it.
   - _normalize_opencode maps tool calls (bash, read, write, fetch) correctly.
   - install/uninstall roundtrip lifecycle works as expected.
@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime.hooks import (
     _SUPPORTED_AGENTS,
-    _strip_opencode,
+    _strip_for_agent,
     _merge_opencode,
     _normalize_opencode,
     install_hooks,
@@ -43,10 +43,10 @@ class TestSupportedAgentsOpenCode(unittest.TestCase):
         self.assertIn("opencode", _SUPPORTED_AGENTS)
 
 
-# --- _strip_opencode ---------------------------------------------------------
+# --- stripping ---------------------------------------------------------
 
 class TestStripOpenCode(unittest.TestCase):
-    """_strip_opencode removes Prismor plugin entries while keeping others."""
+    """Stripping removes Prismor plugin entries while keeping others."""
 
     def test_removes_prismor_plugin(self):
         config = {
@@ -55,13 +55,13 @@ class TestStripOpenCode(unittest.TestCase):
                 "/other/plugin",
             ]
         }
-        result, removed = _strip_opencode(config, _MARKER)
+        result, removed = _strip_for_agent("opencode", config, _MARKER)
         self.assertTrue(removed)
         self.assertEqual(result["plugins"], ["/other/plugin"])
 
     def test_no_change_when_absent(self):
         config = {"plugins": ["/other/plugin"]}
-        result, removed = _strip_opencode(config, _MARKER)
+        result, removed = _strip_for_agent("opencode", config, _MARKER)
         self.assertFalse(removed)
         self.assertEqual(result["plugins"], ["/other/plugin"])
 
