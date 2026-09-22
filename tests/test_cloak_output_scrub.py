@@ -319,6 +319,21 @@ def main() -> int:
     print(f"\n{_passed} passed, {_failed} failed")
     return 1 if _failed else 0
 
+def test_decloak_exec_prevents_shell_injection(tmp_path):
+    hook = Path("prismor/runtime/cloaking/hooks/decloak-exec.sh").resolve()
+    vault = tmp_path / "secrets"
+    vault.mkdir()
+    marker = tmp_path / "executed"
 
+    (vault / "demo").write_text(f"$(touch {marker})", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PRISMOR_SECRETS_DIR"] = str(vault)
+    env["PRISMOR_CLOAK_CMD"] = 'printf "%s" "@@SECRET:demo@@" >/dev/null'
+
+    subprocess.run(["bash", str(hook)], env=env, check=True)
+
+    assert not marker.exists(), "Vulnerability: shell injection executed through eval"
+    
 if __name__ == "__main__":
     sys.exit(main())

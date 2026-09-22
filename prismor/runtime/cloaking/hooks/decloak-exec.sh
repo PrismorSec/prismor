@@ -21,6 +21,8 @@ SECRETS_DIR="${PRISMOR_SECRETS_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/secrets}"
 cmd="${PRISMOR_CLOAK_CMD:-}"
 [[ -n "$cmd" ]] || exit 0
 
+idx=0
+
 # Same placeholder grammar as decloak.sh. An escaped colon is deliberately not
 # matched, so the literal syntax can still be written.
 while IFS= read -r placeholder; do
@@ -32,8 +34,12 @@ while IFS= read -r placeholder; do
   # hook and here, leave the placeholder alone rather than running a command
   # with an empty credential silently substituted in.
   [[ -f "$secret_file" ]] || continue
-  real="$(cat "$secret_file")"
-  cmd="${cmd//"$placeholder"/$real}"
+
+  var_name="_PRISMOR_SECRET_${idx}"
+  idx=$((idx + 1))
+
+  export "$var_name"="$(cat "$secret_file")"
+  cmd="${cmd//"$placeholder"/"\"\${${var_name}}\""}"
 done < <(printf '%s' "$cmd" | grep -oE '@@SECRET:[a-zA-Z0-9_-]+@@' | sort -u || true)
 
 eval "$cmd"
