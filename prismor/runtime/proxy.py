@@ -67,6 +67,7 @@ import os
 import re
 import signal
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -96,6 +97,17 @@ PROVIDER_ROUTES: Tuple[Tuple[str, str], ...] = (
     # /publishers/google/models/... form with one entry each.
     (":generateContent", "google"),
     (":streamGenerateContent", "google"),
+    # Bedrock InvokeModel carries the Anthropic messages shape in its body
+    # (system + messages, content blocks out), so the anthropic normalizer and
+    # every anthropic rule already fit it -- only the path needed naming.
+    # invoke-with-response-stream is deliberately absent: its response is AWS
+    # event-stream framing, not SSE, so it cannot be reframed and is forwarded
+    # (signed) but unscreened.
+    ("/invoke", "anthropic"),
+    # Azure OpenAI puts the deployment in the path:
+    # /openai/deployments/<d>/chat/completions?api-version=... -- so the
+    # "/v1/chat/completions" suffix above never matches it.
+    ("/chat/completions", "openai"),
 )
 
 #: Substring → provider, for paths that are *routed* but not screened: token
@@ -709,6 +721,169 @@ class Screen:
             return text
 
 
+# ── cloud-provider credentials ───────────────────────────────────────────────
+# A managed model endpoint does not take a static API key. Bedrock signs every
+# request (SigV4), Vertex wants a short-lived OAuth bearer, and Azure is the
+# ordinary static swap under a different header name -- so only the first two
+# need code here. Both are stdlib: the package still has exactly one runtime
+# dependency, deliberately.
+
+#: Cached Google access token: {"value": str, "expires": epoch seconds}.
+_GCP_TOKEN: Dict[str, Any] = {"value": "", "expires": 0.0}
+_GCP_LOCK = threading.Lock()
+
+#: Refresh this many seconds before a token actually expires.
+_TOKEN_SKEW = 120.0
+
+
+def _sign(key: bytes, msg: str) -> bytes:
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
+
+
+def aws_canonical_path(path: str) -> str:
+    """The path AWS canonicalizes to -- which is also the one we must send.
+
+    A Bedrock model id carries a colon (``...-v2:0``), and SigV4 signs the
+    percent-encoded path, so signing the raw one yields a 403 that reads like a
+    bad credential. Decoding first makes this idempotent whether or not the
+    client already encoded it.
+    """
+    from urllib.parse import quote, unquote
+    return quote(unquote(path or "/"), safe="/~") or "/"
+
+
+def _canonical_query(query: str) -> str:
+    """SigV4 canonical query string: params sorted, each part re-encoded.
+
+    Decode before encoding: the incoming query is already percent-encoded, and
+    quoting it again turns ``one%20two`` into ``one%2520two``.
+    """
+    if not query:
+        return ""
+    from urllib.parse import quote, unquote
+    pairs = []
+    for part in query.split("&"):
+        if not part:
+            continue
+        name, _, value = part.partition("=")
+        pairs.append((quote(unquote(name), safe="-_.~"),
+                      quote(unquote(value), safe="-_.~")))
+    return "&".join(f"{n}={v}" for n, v in sorted(pairs))
+
+
+def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
+                  region: str, service: str, method: str, canonical_uri: str,
+                  query: str, payload: bytes, host: str,
+                  now: Optional[datetime] = None) -> Dict[str, str]:
+    """AWS SigV4 for one request, stdlib only.
+
+    Pinned by a signature computed from the published AWS example credentials
+    in ``tests/test_proxy_cloud_auth.py``: a signer that is subtly wrong fails
+    as a 403 from the provider, which reads like a credential problem and not
+    like a bug here.
+    """
+    now = now or datetime.now(timezone.utc)
+    amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+    datestamp = now.strftime("%Y%m%d")
+    payload_hash = hashlib.sha256(payload or b"").hexdigest()
+
+    # Canonical headers must be sorted by lowercased name; host, x-amz-date and
+    # x-amz-security-token already are.
+    canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
+    signed_headers = "host;x-amz-date"
+    if session_token:
+        canonical_headers += f"x-amz-security-token:{session_token}\n"
+        signed_headers += ";x-amz-security-token"
+
+    canonical_request = "\n".join([
+        method, aws_canonical_path(canonical_uri), _canonical_query(query),
+        canonical_headers, signed_headers, payload_hash,
+    ])
+    scope = f"{datestamp}/{region}/{service}/aws4_request"
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256", amz_date, scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    key = _sign(("AWS4" + secret_key).encode("utf-8"), datestamp)
+    for part in (region, service, "aws4_request"):
+        key = _sign(key, part)
+    signature = hmac.new(key, string_to_sign.encode("utf-8"),
+                         hashlib.sha256).hexdigest()
+
+    out = {
+        "x-amz-date": amz_date,
+        "authorization": (f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, "
+                          f"SignedHeaders={signed_headers}, Signature={signature}"),
+    }
+    if session_token:
+        out["x-amz-security-token"] = session_token
+    return out
+
+
+def _aws_region_of(spec: Dict[str, Any], host: str) -> str:
+    """Explicit region wins; otherwise read it out of the regional hostname."""
+    region = str(spec.get("region") or "")
+    if region:
+        return region
+    parts = host.split(".")
+    # bedrock-runtime.us-east-1.amazonaws.com
+    return parts[1] if len(parts) > 3 and parts[-2:] == ["amazonaws", "com"] else "us-east-1"
+
+
+def _gcp_token_from_metadata() -> Tuple[str, float]:
+    """The instance service account's token, when running on GCP."""
+    conn = HTTPConnection("169.254.169.254", timeout=2)
+    try:
+        conn.request("GET",
+                     "/computeMetadata/v1/instance/service-accounts/default/token",
+                     headers={"Metadata-Flavor": "Google"})
+        resp = conn.getresponse()
+        if resp.status != 200:
+            return "", 0.0
+        data = json.loads(resp.read() or b"{}")
+        return str(data.get("access_token") or ""), float(data.get("expires_in") or 0)
+    finally:
+        conn.close()
+
+
+def _gcp_token_from_gcloud() -> Tuple[str, float]:
+    """A developer box: borrow whatever gcloud is already logged in as."""
+    out = subprocess.run(["gcloud", "auth", "print-access-token"],
+                         capture_output=True, text=True, timeout=20)
+    token = (out.stdout or "").strip()
+    # gcloud does not report a TTL; Google access tokens are an hour.
+    return (token, 3600.0) if out.returncode == 0 and token else ("", 0.0)
+
+
+def gcp_access_token() -> str:
+    """A Google OAuth bearer for Vertex, cached until shortly before it expires.
+
+    Vertex wants an OAuth token rather than an API key, and minting one from a
+    service-account key needs RS256 signing, which the stdlib cannot do. So we
+    borrow a token that already exists: the metadata server on GCP, else the
+    gcloud CLI on a developer machine. An operator who mints tokens some other
+    way can still use the plain static path with ``api_key_env``.
+    """
+    with _GCP_LOCK:
+        if _GCP_TOKEN["value"] and time.time() < float(_GCP_TOKEN["expires"]):
+            return str(_GCP_TOKEN["value"])
+        token, ttl = "", 0.0
+        for source in (_gcp_token_from_metadata, _gcp_token_from_gcloud):
+            try:
+                token, ttl = source()
+            except Exception:
+                token, ttl = "", 0.0
+            if token:
+                break
+        if not token:
+            raise ProxyConfigError(
+                "auth 'gcp-oauth': no Google token available (tried the GCP "
+                "metadata server and `gcloud auth print-access-token`)")
+        _GCP_TOKEN["value"] = token
+        _GCP_TOKEN["expires"] = time.time() + max(ttl - _TOKEN_SKEW, 60.0)
+        return token
+
+
 # ── refusals, in each provider's own error shape ─────────────────────────────
 
 def refusal_reason(blocking: Dict[str, Any]) -> str:
@@ -1253,6 +1428,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if base.path and base.path != "/":
             path = base.path.rstrip("/") + path
+        if str(spec.get("auth") or "").lower() == "aws-sigv4":
+            # Send exactly what we sign, or the signature will not verify.
+            path = aws_canonical_path(path)
         query = urlsplit(self.path).query
         if self.config.keys and "key=" in query:
             # Google's other credential form is ?key=<API key>. In virtual-key
@@ -1262,7 +1440,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             conn.request(self.command, path + (f"?{query}" if query else ""),
                          body=raw_body or None,
-                         headers=self._upstream_headers(spec, raw_body))
+                         headers=self._upstream_headers(
+                             spec, raw_body, host=base.netloc or base.hostname or "",
+                             path=path, query=query))
             conn.sock.settimeout(READ_TIMEOUT)  # type: ignore[union-attr]
             resp = conn.getresponse()
         except Exception as exc:
@@ -1282,9 +1462,38 @@ class ProxyHandler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _upstream_headers(self, spec: Dict[str, Any], raw_body: bytes) -> Dict[str, str]:
+    def _upstream_headers(self, spec: Dict[str, Any], raw_body: bytes,
+                          host: str = "", path: str = "",
+                          query: str = "") -> Dict[str, str]:
         headers = {k: v for k, v in self.headers.items()
                    if k.lower() not in _STRIP_REQUEST_HEADERS}
+        auth_mode = str(spec.get("auth") or "").lower()
+        if auth_mode in ("aws-sigv4", "gcp-oauth"):
+            # A managed endpoint's credential is ambient (instance role, env,
+            # metadata server) rather than a key the agent could hold, so it is
+            # applied whenever the upstream asks for it -- virtual-key mode is
+            # about swapping a key the client sent, and here there is none.
+            headers = {k: v for k, v in headers.items()
+                       if k.lower() not in _AUTH_HEADERS}
+            if auth_mode == "gcp-oauth":
+                headers["authorization"] = f"Bearer {gcp_access_token()}"
+            else:
+                access = os.environ.get("AWS_ACCESS_KEY_ID") or ""
+                secret = os.environ.get("AWS_SECRET_ACCESS_KEY") or ""
+                if not (access and secret):
+                    raise ProxyConfigError(
+                        "auth 'aws-sigv4': AWS_ACCESS_KEY_ID / "
+                        "AWS_SECRET_ACCESS_KEY are not set")
+                headers.update(sigv4_headers(
+                    access_key=access, secret_key=secret,
+                    session_token=os.environ.get("AWS_SESSION_TOKEN") or "",
+                    region=_aws_region_of(spec, host),
+                    service=str(spec.get("service") or "bedrock"),
+                    method=self.command, canonical_uri=path, query=query,
+                    payload=raw_body, host=host))
+            headers["Content-Length"] = str(len(raw_body))
+            headers["Accept-Encoding"] = "identity"
+            return headers
         env_name = str(spec.get("api_key_env") or "")
         real_key = os.environ.get(env_name) if env_name else None
         if real_key and self.config.keys:

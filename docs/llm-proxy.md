@@ -181,6 +181,54 @@ and text in the agent's reply is redacted on the way back. Streaming A2A
 (`message/stream`) is screened on the request and forwarded on the response;
 response-side redaction of a streamed A2A reply is not yet done.
 
+## Managed endpoints (Bedrock, Vertex, Azure)
+
+A managed model endpoint does not take a static API key, which is what kept the
+proxy off most production fleets. Each upstream can now name how it
+authenticates with `auth`:
+
+```json
+{
+  "upstreams": {
+    "bedrock": {
+      "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+      "auth": "aws-sigv4", "region": "us-east-1", "service": "bedrock"
+    },
+    "vertex": {
+      "base_url": "https://us-central1-aiplatform.googleapis.com",
+      "auth": "gcp-oauth"
+    },
+    "azure": {
+      "base_url": "https://my-resource.openai.azure.com",
+      "auth_header": "api-key", "api_key_env": "AZURE_OPENAI_KEY"
+    }
+  },
+  "keys": { "psk_live_ops": { "subject": "user:ops", "upstream": "bedrock" } }
+}
+```
+
+- **`aws-sigv4`** signs every request from `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` when assuming a role).
+  `region` is read from the hostname when you do not name it. The screened,
+  cloak-masked body is what gets signed, so masking a secret never invalidates
+  the signature.
+- **`gcp-oauth`** borrows a short-lived Google token: the GCP metadata server
+  when the proxy runs on GCP, otherwise `gcloud auth print-access-token`. It is
+  cached until shortly before it expires. If you mint tokens another way, keep
+  using the plain static path with `api_key_env`.
+- **Azure** needs no new mode — it is the ordinary static swap under a
+  different header name (`api-key`).
+
+These are *screened*, not merely signed: Bedrock's `InvokeModel` carries the
+Anthropic messages shape, so the same rules that govern a Claude call govern a
+Bedrock one, and Azure's `/openai/deployments/<d>/chat/completions` is screened
+as OpenAI.
+
+One gap to know about: Bedrock's `invoke-with-response-stream` answers in AWS
+event-stream framing rather than SSE, so it cannot be reframed. It is signed
+and forwarded, but not screened — use the buffered `invoke` where policy must
+hold on the response.
+
 ## Virtual keys
 
 With `keys` configured, a client presents a Prismor key and the proxy swaps in

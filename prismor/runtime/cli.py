@@ -3241,7 +3241,9 @@ def build_parser() -> argparse.ArgumentParser:
         "the config swap a Prismor key for the real provider credential, so agents never hold one. "
         "It also governs A2A (Agent-to-Agent) JSON-RPC traffic on the same endpoint: point an A2A "
         "client base URL at the proxy and the message an agent sends to another agent is screened "
-        "and cloak-masked through the same policy.",
+        "and cloak-masked through the same policy. Managed endpoints work too: an upstream "
+        "can set auth=aws-sigv4 (Bedrock) or auth=gcp-oauth (Vertex) so the proxy signs or "
+        "mints the credential itself and the agent never holds one.",
     )
     _pp.add_argument("--port", type=int, default=7080, help="Port to listen on (default: 7080)")
     _pp.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
