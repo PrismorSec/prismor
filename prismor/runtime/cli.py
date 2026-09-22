@@ -3323,7 +3323,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     check_parser.add_argument("--workspace", help="Workspace path for project-level policy")
     check_parser.add_argument("--explain", action="store_true",
-                              help="Show the rule patterns and matched substring for each finding")
+                              help="Show, per finding, which policy layer defined the rule, "
+                                   "why it resolves to observe or enforce, and its pattern")
     check_parser.add_argument("--from-log", metavar="PATH",
                               help="Replay a JSONL session log and check every event")
     check_parser.add_argument("--suggest-allowlist", action="store_true",
@@ -4390,6 +4391,18 @@ def _print_findings(
             rule = next((r for r in engine.rules if r.id == f.get("ruleId")), None)
             if rule is not None:
                 print(f"  category: {f.get('category')}  action: {f.get('action')}")
+                # The two questions --explain exists to answer: who set this
+                # rule, and why does `action: block` sometimes only warn?
+                print(f"  defined by: {rule.layer} policy layer")
+                try:
+                    mode, why = engine.explain_mode(rule)
+                    verdict = "blocks" if mode == "enforce" else "reports only"
+                    print(f"  mode: {mode} — {why}  →  {verdict}")
+                except Exception:
+                    pass
+                if f.get("contextInert"):
+                    print("  context: matched inside inert text "
+                          "(commit message, PR body, grep pattern) — reports, never blocks")
                 print(f"  event_types: {sorted(rule.event_types)}")
                 print(f"  fields: {rule.fields}")
                 print(f"  pattern: {_truncate_str(rule.patterns.pattern, 160)}")
