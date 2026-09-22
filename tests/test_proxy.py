@@ -550,6 +550,49 @@ def test_google_upstream_default():
     assert spec["base_url"] == "https://generativelanguage.googleapis.com"
     assert spec["auth_header"] == "x-goog-api-key"
 
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
+def test_relay_buffered_redacts_upstream_error_bodies(monkeypatch, status):
+    """Credentials echoed in 4xx/5xx error payloads must be redacted."""
+    secret = "dummy_test_key_12345" 
+    redacted_marker = "[REDACTED]"   
+
+    sent_headers = []
+    sent_payload = []
+
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = type("FakeScreen", (), {
+        "redact": lambda self, text: text.replace(secret, redacted_marker)
+    })()
+    handler.wfile = type("Writer", (), {
+        "write": lambda self, body: sent_payload.append(body)
+    })()
+
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda key, value: sent_headers.append((key, value)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+
+    raw_error = json.dumps({
+        "error": {
+            "type": "invalid_request_error",
+            "message": f"Rejected request containing key {secret}",
+            "details": {"key_echo": secret},
+        }
+    }).encode("utf-8")
+
+    response = type("Response", (), {
+        "status": status,
+        "read": lambda self: raw_error,
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_buffered(
+        handler, response, "anthropic", "claude-3-5-sonnet", True, None, "anthropic"
+    )
+
+    assert len(sent_payload) == 1
+    output_str = sent_payload[0].decode("utf-8")
+    assert secret not in output_str, "Secret leaked in error body"
+    assert redacted_marker in output_str
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))

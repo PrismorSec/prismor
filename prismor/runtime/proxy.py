@@ -1514,8 +1514,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         screened: bool, subject: Optional[str],
                         upstream_name: str) -> None:
         payload = resp.read()
-        if screened and self.screen is not None and resp.status < 400:
-            payload = self._screen_response(provider, model, payload, subject)
+        if screened and self.screen is not None:
+            if resp.status < 400:
+                payload = self._screen_response(provider, model, payload, subject)
+            else:
+                body = _loads_object(payload)
+                if body is not None:
+                    _mask_in_place(body, self.screen.redact)
+                    payload = json.dumps(body).encode()
+                else:
+                    try:
+                        text = payload.decode("utf-8", errors="replace")
+                        payload = self.screen.redact(text).encode("utf-8")
+                    except Exception:
+                        pass
+
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() not in _STRIP_RESPONSE_HEADERS:
