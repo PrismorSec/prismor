@@ -1075,6 +1075,10 @@ class PolicyEngine:
         # tighten-only merge with the local agents.yaml.
         _ac = settings.get("agent_controls")
         self.agent_controls: Dict[str, Any] = _ac if isinstance(_ac, dict) else {}
+        # Operator-written prompt guardrails (per agent, tuned per session),
+        # added to the model's context by the hook layer — see guardrails.py.
+        _pg = settings.get("prompt_guardrails")
+        self.prompt_guardrails: Dict[str, Any] = _pg if isinstance(_pg, dict) else {}
         # Per-event rule exemptions (relax/flag a rule for a specific user,
         # device, or session) from the verified signed policy. A list matched at
         # evaluation time against the current context (see runtime), NOT a

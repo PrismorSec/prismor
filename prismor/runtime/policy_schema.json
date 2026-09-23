@@ -198,6 +198,79 @@
             "additionalProperties": false
           }
         },
+        "prompt_guardrails": {
+          "type": "object",
+          "description": "Operator-written instructions added to the agent's context at session start and when they change (see guardrails.py). Advice the model reads, not enforcement.",
+          "properties": {
+            "agents": {
+              "type": "object",
+              "description": "Keyed by agent name or framework id; \"*\" applies to every agent.",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ]
+                    }
+                  ]
+                }
+              }
+            },
+            "sessions": {
+              "type": "object",
+              "description": "Per-session tuning keyed by session id.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "add": {
+                    "type": "array",
+                    "items": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "text": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "text"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "mute": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
         "rule_exemptions": {
           "type": "array",
           "description": "Admin-granted per-event rule exemptions, matched at eval time against the current user/device/session. 'allow' drops the finding; 'flag' downgrades it to a non-blocking warning. Core/floor rules can never be exempted.",
