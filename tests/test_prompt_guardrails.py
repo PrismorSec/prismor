@@ -56,3 +56,27 @@ def test_hook_dispatch_delivers_one_json_object(tmp_path):
     policy.write_text(policy.read_text().replace("Never push to main.", "Never force-push."), encoding="utf-8")
     ctx = dispatch("UserPromptSubmit")["hookSpecificOutput"]["additionalContext"]
     assert "updated" in ctx and "Never force-push." in ctx
+
+
+def test_proxy_adds_guardrails_to_each_provider_system_prompt():
+    from prismor.runtime.proxy import add_system_text
+
+    anth = {"model": "m", "max_tokens": 5, "system": "be terse", "messages": []}
+    add_system_text("anthropic", anth, "G")
+    assert anth["system"] == "be terse\n\nG"
+    blocks = {"system": [{"type": "text", "text": "x"}], "messages": []}
+    add_system_text("anthropic", blocks, "G")
+    assert blocks["system"][-1] == {"type": "text", "text": "G"}
+    chat = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]}
+    add_system_text("openai", chat, "G")
+    assert [m["role"] for m in chat["messages"]] == ["system", "system", "user"]
+    assert chat["messages"][1]["content"] == "G"
+    resp = {"input": "hi"}
+    add_system_text("openai", resp, "G")
+    assert resp["instructions"] == "G"
+    gem = {"contents": []}
+    add_system_text("google", gem, "G")
+    assert gem["systemInstruction"] == {"parts": [{"text": "G"}]}
+    legacy = {"prompt": "Human: hi"}
+    add_system_text("anthropic", legacy, "G")
+    assert legacy == {"prompt": "Human: hi"}

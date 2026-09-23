@@ -44,7 +44,11 @@ Use::
     from prismor.claude_agent_sdk import prismor_hook_matcher
 
     options = ClaudeAgentOptions(
-        hooks={"PreToolUse": [prismor_hook_matcher(mode="enforce", subject="user:alice")]},
+        hooks={
+            "PreToolUse": [prismor_hook_matcher(mode="enforce", subject="user:alice")],
+            # optional: the operator's prompt guardrails, added to context
+            "UserPromptSubmit": [prismor_prompt_hook_matcher()],
+        },
     )
 """
 from __future__ import annotations
@@ -57,7 +61,7 @@ from typing import Any, Optional, Union
 from prismor.runtime.principal import Subject, resolve_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 
-__all__ = ["prismor_hook_matcher", "prismor_pre_tool_use_hook", "PrismorBlocked"]
+__all__ = ["prismor_hook_matcher", "prismor_pre_tool_use_hook", "prismor_prompt_hook_matcher", "PrismorBlocked"]
 
 
 class PrismorBlocked(Exception):
@@ -152,3 +156,30 @@ def prismor_hook_matcher(*, matcher: Optional[str] = None, **opts: Any):
     from claude_agent_sdk import HookMatcher
 
     return HookMatcher(matcher=matcher, hooks=[prismor_pre_tool_use_hook(**opts)])
+
+
+def prismor_prompt_hook_matcher(*, workspace: Optional[Union[str, Path]] = None,
+                                session_id: Optional[str] = None,
+                                agent: str = "claude-agent-sdk"):
+    """HookMatcher for UserPromptSubmit that adds the operator's prompt
+    guardrails to Claude's context: on the first prompt, and again only when
+    they change (a console edit reaches the next prompt). Same contract as the
+    Claude Code hook: hookSpecificOutput.additionalContext.
+    """
+    from claude_agent_sdk import HookMatcher
+
+    ws = Path(workspace) if workspace else Path.cwd()
+
+    async def callback(input_data: dict, tool_use_id: Optional[str], context: dict) -> dict:
+        try:
+            from prismor.runtime import guardrails
+            sid = session_id or str(input_data.get("session_id") or f"claude-agent-sdk-{os.getpid()}")
+            text = guardrails.context_for(guardrails.block_now(ws), agent=agent,
+                                          session_id=sid, agent_event="UserPromptSubmit")
+        except Exception:
+            text = None
+        if not text:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+
+    return HookMatcher(matcher=None, hooks=[callback])

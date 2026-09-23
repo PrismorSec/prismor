@@ -372,6 +372,28 @@ def guard_agent(
             )
             guarded.append(getattr(tool, "name", "tool"))
     agent_obj.__prismor_guarded_tools__ = guarded  # type: ignore[attr-defined]
+    # Prompt guardrails: the SDK re-reads `instructions` every turn when it is a
+    # callable, so appending the operator's guardrails there keeps a console
+    # edit in force from the agent's next run. The agent's own instructions,
+    # static or dynamic, come first and are untouched.
+    if not getattr(agent_obj, "__prismor_guardrails__", False):
+        base = getattr(agent_obj, "instructions", None)
+        ws = Path(workspace) if workspace else Path.cwd()
+        sid = session_id or f"openai-agents-{os.getpid()}"
+
+        async def _instructions(ctx: Any, agent_: Any) -> str:
+            text = base(ctx, agent_) if callable(base) else (base or "")
+            if hasattr(text, "__await__"):
+                text = await text
+            try:
+                from prismor.runtime.guardrails import current_text
+                rails = current_text(ws, name or agent, sid)
+            except Exception:
+                rails = ""
+            return f"{text}\n\n{rails}" if (text and rails) else (text or rails)
+
+        agent_obj.instructions = _instructions
+        agent_obj.__prismor_guardrails__ = True  # type: ignore[attr-defined]
     # Declare the complete SDK roster immediately; no tool needs to be invoked
     # before it appears in the enterprise capability inventory.
     try:

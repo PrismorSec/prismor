@@ -37,7 +37,8 @@ Qwen Code behaves the same, including headless `qwen -p` with `--yolo`: it
 refused the file while the guardrail was on and created it once the guardrail
 was turned off.
 
-SDK adapters and `prismor proxy` do not carry guardrails yet.
+Production agents built on an SDK get them too. See
+[Production agents](#production-agents).
 
 ## Add guardrails to an agent
 
@@ -80,6 +81,68 @@ If all guardrails are removed, the agent is told that none apply any more.
 ![The session page with the guardrails panel next to the trail](prompt-guardrails/session-page.png)
 
 Session guardrails are kept in the bundle for 30 days after they were created.
+
+## Production agents
+
+Agents built on an SDK get guardrails in three ways. In each case the
+guardrails are keyed by the agent's name in the console, so you add them the
+same way: open the agent, click **Add guardrail**.
+
+**OpenAI Agents SDK.** `guard_agent` wraps the agent's `instructions` in a
+callable, which the SDK calls on every run. The agent's own instructions come
+first and the guardrails are appended, so a console edit takes effect on the
+next run.
+
+```python
+from prismor.openai import guard_agent
+
+agent = Agent(name="ops-bot", instructions="You are an ops assistant.", tools=[...])
+guard_agent(agent, name="ops-bot", mode="enforce")
+```
+
+**Claude Agent SDK.** Add the prompt hook next to the tool hook. It returns the
+guardrails as `additionalContext` on the first prompt and again whenever they
+change, the same way the Claude Code hook does.
+
+```python
+from prismor.claude_agent_sdk import prismor_hook_matcher, prismor_prompt_hook_matcher
+
+options = ClaudeAgentOptions(hooks={
+    "PreToolUse": [prismor_hook_matcher(mode="enforce")],
+    "UserPromptSubmit": [prismor_prompt_hook_matcher()],
+})
+```
+
+**Anything else, through `prismor proxy`.** This covers LangChain and
+LangGraph, CrewAI, the Vercel AI SDK, n8n, and any client that takes a base
+URL. The proxy appends the guardrails to the system prompt of each request it
+forwards:
+
+| Provider | Where the guardrails go |
+|----------|-------------------------|
+| Anthropic and Bedrock | `system` |
+| OpenAI Chat Completions | a system message after the agent's own |
+| OpenAI Responses | `instructions` |
+| Gemini | `systemInstruction` |
+
+The agent resends its system prompt on every call, so nothing has to be
+remembered between turns. Name the agent with `--agent-name`; that is the name
+it appears under in the console.
+
+```bash
+prismor proxy --mode enforce --agent-name support-bot
+```
+
+```python
+llm = ChatOpenAI(model="gpt-4.1", base_url="http://127.0.0.1:7080/v1")
+```
+
+The same request, with the same guardrail set on each agent in the console:
+
+![An OpenAI Agents SDK agent, a LangGraph agent through prismor proxy and a Claude Agent SDK agent each refusing to write debug.log because of the guardrail](prompt-guardrails/production-agents.png)
+
+With the guardrail off, all three wrote the file. A long-running proxy picks up
+a console edit within one policy refresh, about 30 seconds, without a restart.
 
 ## What the model receives
 

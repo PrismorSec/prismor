@@ -121,3 +121,29 @@ def context_for(block: Any, *, agent: str, session_id: str, agent_event: str) ->
         pass
     return text
 
+
+
+
+def block_now(workspace: Path) -> Any:
+    """settings.prompt_guardrails as of now, pulling a changed org policy first.
+
+    For in-process surfaces (SDK adapters) that have no hook-dispatch around
+    them to do the refresh.
+    """
+    try:
+        from prismor.runtime.enterprise import remote_policy
+        remote_policy.check_and_refresh()
+    except Exception:
+        pass
+    from prismor.runtime.policy_engine import PolicyEngine
+    return PolicyEngine(workspace=workspace).prompt_guardrails
+
+
+def current_text(workspace: Path, agent: str, session_id: str) -> str:
+    """The rendered guardrails for ``agent`` right now, or "" when none apply.
+
+    For surfaces that rebuild the prompt each turn (an SDK's instructions
+    callable), so a console edit lands on the agent's next turn.
+    """
+    rails = effective(block_now(workspace), agent, session_id)
+    return render(rails) if rails else ""

@@ -612,6 +612,15 @@ class Screen:
         is an incremental snapshot in runtime.py; this keeps the blast radius
         to one file until that lands.
         """
+        # Keep org-managed policy fresh (debounced ~30s; no-op when not
+        # enrolled), as the hook layer and the MCP gateway do. Without it a
+        # long-lived proxy served whatever signed policy it started with, so a
+        # console change -- a new rule, a pause, a guardrail -- never reached it.
+        try:
+            from prismor.runtime.enterprise import remote_policy as _remote
+            _remote.check_and_refresh()
+        except Exception:
+            pass
         try:
             from prismor.runtime.principal import resolve_subject
             from prismor.runtime.runtime import evaluate_tool_call
@@ -1409,6 +1418,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
             return reason
         _mask_in_place(body, self.screen.redact)
+        if provider != "a2a":
+            try:
+                from prismor.runtime import guardrails as _guardrails
+                rails = _guardrails.effective(
+                    getattr(getattr(decision, "engine", None), "prompt_guardrails", None),
+                    self.screen.agent_name or PROXY_AGENT, self._session_id)
+                if rails:
+                    add_system_text(provider, body, _guardrails.render(rails))
+            except Exception as exc:
+                sys.stderr.write(f"[prismor-proxy] guardrails not added: {exc}\n")
         return None
 
     def _relay(self, upstream_name: str, provider: str, raw_body: bytes,
@@ -1618,6 +1637,37 @@ def _loads_object(raw: bytes) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def add_system_text(provider: str, body: Dict[str, Any], text: str) -> None:
+    """Append operator text to a request's system prompt, in place.
+
+    The agent resends its whole system prompt on every call, so adding the
+    guardrails to each request is what keeps them in force: there is no
+    earlier turn to rely on. Gemini: systemInstruction. Anthropic and Bedrock:
+    ``system``. OpenAI Responses: ``instructions``. OpenAI chat: a system
+    message after the agent's own. The legacy /v1/complete prompt is left alone.
+    """
+    if provider == "google":
+        si = body.get("systemInstruction")
+        if not isinstance(si, dict):
+            si = body["systemInstruction"] = {"parts": []}
+        si.setdefault("parts", []).append({"text": text})
+    elif provider == "anthropic" and isinstance(body.get("messages"), list):
+        sysp = body.get("system")
+        if isinstance(sysp, list):
+            sysp.append({"type": "text", "text": text})
+        else:
+            body["system"] = f"{sysp}\n\n{text}" if sysp else text
+    elif provider == "openai" and "input" in body:
+        prior = body.get("instructions")
+        body["instructions"] = f"{prior}\n\n{text}" if prior else text
+    elif provider == "openai" and isinstance(body.get("messages"), list):
+        msgs = body["messages"]
+        i = 0
+        while i < len(msgs) and isinstance(msgs[i], dict) and msgs[i].get("role") in ("system", "developer"):
+            i += 1
+        msgs.insert(i, {"role": "system", "content": text})
 
 
 def _mask_in_place(node: Any, redact: Callable[[str], str]) -> None:
