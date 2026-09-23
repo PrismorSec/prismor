@@ -27,7 +27,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 __all__ = ["audit_skills", "approve_skill", "discover_skill_files", "format_audit"]
 

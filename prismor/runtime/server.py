@@ -711,7 +711,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/agents":
             try:
-                from prismor.runtime.agents import list_agents, load_agents_config
+                from prismor.runtime.agents import list_agents
                 from prismor.runtime.iam import list_agent_ids, load_iam_config
                 workspace = _SERVER_WORKSPACE or Path.cwd()
 

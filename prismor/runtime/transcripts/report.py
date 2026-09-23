@@ -13,7 +13,7 @@ import collections
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from prismor.runtime.transcripts.driver import SweepResult, SessionResult
+from prismor.runtime.transcripts.driver import SweepResult
 
 _SEVERITY_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"]
 

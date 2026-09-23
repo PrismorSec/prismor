@@ -1479,7 +1479,6 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
 
     live_events_raw: List[Dict[str, Any]] = []
     top_users_acc: Dict[str, Dict[str, Any]] = {}
-    top_mcp_acc: Dict[str, Dict[str, Any]] = {}
     severity_breakdown: Counter = Counter()
 
     for ws in workspaces:
@@ -1984,7 +1983,6 @@ def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
     """Per-MCP-server usage over the window: calls, blocked calls, distinct
     sessions, last call, and the same per tool. Keyed by server name as the
     agent saw it (``mcp__<server>__<tool>``)."""
-    from datetime import datetime, timezone
     usage: Dict[str, Dict[str, Any]] = {}
     for ws in _state_query_workspaces():
         conn = _connect_ro(get_db_path(ws))
@@ -2924,7 +2922,6 @@ def get_agents_overview() -> List[Dict[str, Any]]:
     Groups across all registered workspace DBs. Falls back gracefully when
     the agent_name column doesn't exist yet (pre-migration DBs).
     """
-    from collections import Counter
     workspaces = _state_query_workspaces()
 
     # agent_name → {framework, last_seen, total_calls, blocked_calls}

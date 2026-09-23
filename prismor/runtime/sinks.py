@@ -370,9 +370,6 @@ def _dispatch_prismor(
     No-op (silent) when the machine is not enrolled — the sink can be left on
     in default policy without effect until `prismor enroll` runs.
     """
-    import urllib.request
-    import urllib.error
-
     from prismor.runtime.enterprise import identity as _identity
     from prismor.runtime.enterprise import telemetry as _telemetry
 

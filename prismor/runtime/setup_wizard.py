@@ -22,13 +22,29 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+# Terminal formatting lives in tui_format, which was split out of this module so
+# that non-interactive callers need not import the wizard's atexit/signal
+# handlers. These are the names it took with it — aliased rather than redefined
+# so the two renderings cannot drift apart.
+from prismor.runtime.tui_format import (
+    BLU,
+    BOLD,
+    CYAN,
+    DIM,
+    GRN,
+    RED,
+    VERSION,
+    WHT,
+    YEL,
+    pad as _pad,
+    term_width as _term_width,
+    visible_len as _visible_len,
+    w as _w,
+)
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
-try:
-    from prismor.runtime import __version__ as _PKG_VERSION
-except Exception:
-    _PKG_VERSION = "0.0.0"
-_VERSION = f"v{_PKG_VERSION}"
+_VERSION = VERSION
 _BACK = object()  # sentinel for "go back"
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -44,16 +60,6 @@ _PKG_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PKG_DIR.parent.parent
 
 # ── ANSI ─────────────────────────────────────────────────────────────────────
-
-RST  = "\033[0m"
-BOLD = "\033[1m"
-DIM  = "\033[37m"
-CYAN = "\033[36m"
-GRN  = "\033[32m"
-YEL  = "\033[33m"
-RED  = "\033[31m"
-BLU  = "\033[34m"
-WHT  = "\033[97m"
 
 HIDE    = "\033[?25l"
 SHOW    = "\033[?25h"
@@ -72,28 +78,7 @@ def _s(*codes: str) -> str:
     return "".join(codes)
 
 
-def _w(text: str, *codes: str) -> str:
-    if not codes or codes == ("",):
-        return str(text)
-    return "".join(codes) + str(text) + RST
-
-
-def _visible_len(text: str) -> int:
-    return len(re.sub(r"\033\[[0-9;]*m", "", str(text)))
-
-
-def _pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - _visible_len(text))
-
-
 # ── Screen buffer ────────────────────────────────────────────────────────────
-
-def _term_width() -> int:
-    try:
-        return os.get_terminal_size().columns
-    except Exception:
-        return 80
-
 
 def _term_height() -> int:
     try:
@@ -784,7 +769,6 @@ def _default_judge() -> str:
 
 def _judge_ready(provider: str) -> str:
     """One-word readiness hint per provider, from what is on this host."""
-    import shutil
     if provider == "claude":
         from prismor.runtime.semantic_guard_v2 import CLAUDE_CLI
         return "found" if os.path.exists(CLAUDE_CLI) else "not installed"

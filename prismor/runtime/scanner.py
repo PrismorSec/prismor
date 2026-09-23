@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from prismor.runtime.policy_engine import PolicyEngine, _has_invisible_chars, _has_suspicious_unicode
+from prismor.runtime.policy_engine import PolicyEngine, _has_suspicious_unicode
 
 # Maximum size of skill source files to read (100 KB).
 _MAX_SOURCE_SIZE = 100 * 1024

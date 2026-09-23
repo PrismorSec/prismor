@@ -6,7 +6,6 @@ is allowed, then this module constrains where the allowed command executes.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import shlex
 import shutil

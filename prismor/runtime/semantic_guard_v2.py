@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 # Import heuristic engine from v1. This is an absolute import that resolves via

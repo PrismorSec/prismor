@@ -54,7 +54,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -96,20 +95,15 @@ except ImportError:
     sys.exit(1)
 
 from prismor.runtime.feed import load_feed, match_advisories
-from prismor.runtime.hooks import install_hooks, legacy_should_block, normalize_payload, should_block, uninstall_hooks
+from prismor.runtime.hooks import install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import (
-    append_session_event,
-    get_db_path,
-    get_sessions_dir,
     get_session,
     get_token_stats,
     infer_default_workspace,
-    initialize_database,
     list_registered_workspaces,
     list_sessions,
-    read_session_events,
     register_workspace,
     save_session_snapshot,
 )
@@ -259,8 +253,6 @@ def _run_extensions(args) -> None:
 def _run_memory(args) -> None:
     """Dispatch ``prismor memory {status,trust,verify,scan,approve,sign,unsign}``."""
     from prismor.runtime.memory_guard import (
-        compute_file_hash,
-        load_trust_store,
         approve_memory_file,
         trust_memory_file,
         sign_memory_file,
@@ -1222,7 +1214,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit":
-        from prismor.runtime.audit import run_audit, apply_fixes, AuditFinding
+        from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
 
         if getattr(args, "json", False):
@@ -2417,8 +2409,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "sweep":
         from prismor.runtime.sweep import (
             scan, report_findings, redact, restore, clean, show_vault,
-            _vault_exists, _prompt_passphrase, _read_vault, info as sweep_info,
-            ok as sweep_ok, warn as sweep_warn, err as sweep_err,
+            _vault_exists, _prompt_passphrase, info as sweep_info,
+            ok as sweep_ok, warn as sweep_warn,
         )
 
         def _need_passphrase(confirm: bool = False) -> str:
@@ -3997,7 +3989,7 @@ def build_parser() -> argparse.ArgumentParser:
     enroll_parser.add_argument("--label", help="Human-readable device label (default: hostname)")
     enroll_parser.add_argument("--api-base", help="Control-plane base URL (default: $PRISMOR_API_BASE)")
 
-    enroll_status = subparsers.add_parser("enroll-status", help="Show this machine's enrollment status")
+    subparsers.add_parser("enroll-status", help="Show this machine's enrollment status")
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -4837,7 +4829,7 @@ def _print_status(session: Dict[str, Any]) -> None:
 
 
 def _run_query(args) -> None:
-    from prismor.runtime.query import QueryError, agent_prompt, format_rows, resolve_db_path, run_query, schema
+    from prismor.runtime.query import QueryError, format_rows, resolve_db_path, run_query, schema
 
     ws = Path(args.workspace).expanduser().resolve() if getattr(args, "workspace", None) else None
     db_path = resolve_db_path(ws)
@@ -6583,7 +6575,6 @@ def _print_surfaces(workspace: Path) -> None:
     three is what makes an unsupported agent look like a misconfiguration.
     """
     from prismor.runtime import surfaces as _surfaces
-    from prismor.runtime.contract import surface as _surface
 
     rows = _surfaces.resolve(workspace)
     gw = _surfaces.gateway(workspace)

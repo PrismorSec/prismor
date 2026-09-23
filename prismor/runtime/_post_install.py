@@ -29,7 +29,6 @@ def maybe_show() -> None:
     RST  = "\033[0m"
     BOLD = "\033[1m"
     CYAN = "\033[36m"
-    GRN  = "\033[32m"
     DIM  = "\033[37m"
 
     print(
