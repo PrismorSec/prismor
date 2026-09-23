@@ -1027,6 +1027,7 @@ class StreamScreen:
         self._holding = False
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
+        self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -1064,6 +1065,12 @@ class StreamScreen:
         for key in ("id", "responseId"):
             if event.get(key):
                 self._usage_id = str(event[key])
+        # Responses API: usage rides inside response.completed's ``response``.
+        response = event.get("response")
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            self._usage.update(response["usage"])
+            if response.get("id"):
+                self._usage_id = str(response["id"])
 
     def meter(self) -> None:
         """Record the accumulated usage once the stream is done. Best-effort."""
@@ -1150,6 +1157,8 @@ class StreamScreen:
         return b""
 
     def _feed_openai(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        if str(event.get("type") or "").startswith("response."):
+            return self._feed_responses(chunk, event)
         choices = event.get("choices") or []
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
@@ -1173,6 +1182,54 @@ class StreamScreen:
         if delta.get("content"):
             return _rewrite_text_delta(chunk, event, self.screen.redact)
         return chunk
+
+    def _feed_responses(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        """OpenAI Responses API (``/v1/responses``): typed ``response.*`` events.
+
+        A function_call is its own output item, streamed sequentially:
+        ``output_item.added`` -> ``function_call_arguments.delta``* ->
+        ``.done`` -> ``output_item.done``. Hold the whole item and judge it
+        at ``output_item.done``. Every other frame is masked whole, which
+        covers text deltas, the ``.done`` recaps and the final
+        ``response.completed`` (which also repeats any denied call, so it
+        is stripped the way the buffered path strips a whole body).
+        """
+        etype = event.get("type")
+        item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        is_call = item.get("type") in ("function_call", "tool_call")
+        if etype == "response.output_item.added" and is_call:
+            self._holding = True
+            self._tool_name = str(item.get("name") or "")
+            self._tool_json = []
+            self._tool_index = int(event.get("output_index") or 0)
+            self._pending = [chunk]
+            return b""
+
+        if self._holding:
+            self._pending.append(chunk)
+            if etype == "response.function_call_arguments.delta":
+                self._tool_json.append(str(event.get("delta") or ""))
+            elif etype == "response.output_item.done" and is_call:
+                if item.get("arguments"):   # the full arguments, authoritative
+                    self._tool_json = [str(item["arguments"])]
+                reason = self._verdict(self._tool_name,
+                                       _loads("".join(self._tool_json) or "{}"))
+                held, self._pending = b"".join(self._pending), []
+                self._holding = False
+                if reason is None:
+                    return held
+                self.blocked.append(reason)
+                self._denied[self._tool_name] = reason
+                sys.stderr.write(f"[prismor-proxy] {reason} (tool={self._tool_name})\n")
+                return _responses_refusal_frames(reason, self._tool_index)
+            return b""
+
+        before = json.dumps(event)
+        response = event.get("response")
+        if self._denied and isinstance(response, dict):
+            _strip_blocked_calls("openai", response, self._denied)
+        _mask_in_place(event, self.screen.redact)
+        return chunk if json.dumps(event) == before else _sse_reframe(chunk, event)
 
     def _verdict(self, tool_name: str, arguments: Any) -> Optional[str]:
         """The refusal that should replace this call, or None to release it."""
@@ -1244,12 +1301,41 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
             return chunk
     else:
         return chunk
+    return _sse_reframe(chunk, event)
+
+
+def _sse_reframe(chunk: bytes, event: Dict[str, Any]) -> bytes:
+    """``event`` re-serialized, keeping the original frame's ``event:`` line."""
     name = b""
     for line in chunk.split(b"\n"):
         if line.startswith(b"event:"):
             name = line + b"\n"
             break
     return name + b"data: " + json.dumps(event).encode() + b"\n\n"
+
+
+def _responses_refusal_frames(message: str, index: int) -> bytes:
+    """A refusal as a Responses API message item at the denied call's index.
+
+    The full item lifecycle, because the SDK's stream accumulator indexes
+    ``content[content_index]`` and drops a text delta whose part never opened.
+    """
+    item_id = f"msg_prismor_{index}"
+    part = {"type": "output_text", "text": message, "annotations": []}
+    item = {"id": item_id, "type": "message", "role": "assistant", "status": "completed",
+            "content": [part]}
+    at = {"item_id": item_id, "output_index": index, "content_index": 0}
+    frames = [
+        {"type": "response.output_item.added", "output_index": index,
+         "item": {**item, "status": "in_progress", "content": []}},
+        {"type": "response.content_part.added", **at, "part": {**part, "text": ""}},
+        {"type": "response.output_text.delta", **at, "delta": message},
+        {"type": "response.output_text.done", **at, "text": message},
+        {"type": "response.content_part.done", **at, "part": part},
+        {"type": "response.output_item.done", "output_index": index, "item": item},
+    ]
+    return b"".join(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n".encode()
+                    for f in frames)
 
 
 def _sse_text_frames(provider: str, message: str, index: int = 0) -> bytes:

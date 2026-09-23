@@ -241,6 +241,66 @@ def test_openai_stream_holds_tool_calls(monkeypatch, tmp_path):
     assert b"Blocked by Prismor" in out
 
 
+def _responses_call(stream, name, args, index=0):
+    """Feed one streamed Responses API function_call item, as gpt-6-luna emits it."""
+    item = {"id": "fc_1", "type": "function_call", "name": name,
+            "call_id": "call_1", "arguments": ""}
+    out = stream.feed(_sse("response.output_item.added", {
+        "type": "response.output_item.added", "output_index": index, "item": item}))
+    out += stream.feed(_sse("response.function_call_arguments.delta", {
+        "type": "response.function_call_arguments.delta", "output_index": index,
+        "item_id": "fc_1", "delta": args}))
+    out += stream.feed(_sse("response.function_call_arguments.done", {
+        "type": "response.function_call_arguments.done", "output_index": index,
+        "item_id": "fc_1", "arguments": args}))
+    assert out == b"", "a function_call item must stay held until it is judged"
+    return out + stream.feed(_sse("response.output_item.done", {
+        "type": "response.output_item.done", "output_index": index,
+        "item": {**item, "status": "completed", "arguments": args}}))
+
+
+def test_responses_stream_replaces_denied_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = _responses_call(stream, "Bash", '{"command": "rm -rf /"}', index=1)
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+    frames = [json.loads(l[len("data: "):]) for l in out.decode().splitlines()
+              if l.startswith("data: ")]
+    assert {f["output_index"] for f in frames} == {1}
+
+    # response.completed repeats the whole output, denied call included.
+    out = stream.feed(_sse("response.completed", {"type": "response.completed", "response": {
+        "id": "resp_1", "status": "completed", "usage": {"input_tokens": 5, "output_tokens": 2},
+        "output": [{"type": "function_call", "name": "Bash",
+                    "arguments": '{"command": "rm -rf /"}'}]}}))
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+
+
+def test_responses_stream_releases_allowed_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = _responses_call(stream, "Bash", '{"command": "ls"}')
+    assert out.count(b"event: ") == 4 and b"function_call_arguments.delta" in out
+    assert not stream.blocked
+
+
+def test_responses_stream_redacts_text_and_meters_usage(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    monkeypatch.setattr(screen, "redact", lambda s: s.replace("sk-live-123", "[CLOAKED]"))
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = stream.feed(_sse("response.output_text.delta", {
+        "type": "response.output_text.delta", "delta": "key is sk-live-123"}))
+    assert b"sk-live-123" not in out and out.startswith(b"event: response.output_text.delta")
+
+    calls = []
+    monkeypatch.setattr("prismor.runtime.token_usage.record_llm_usage",
+                        lambda **kw: calls.append(kw))
+    stream.feed(_sse("response.completed", {"type": "response.completed", "response": {
+        "id": "resp_9", "usage": {"input_tokens": 7, "output_tokens": 3}, "output": []}}))
+    stream.meter()
+    assert calls[0]["usage"]["input_tokens"] == 7 and calls[0]["message_id"] == "resp_9"
+
+
 def test_stream_survives_garbage_frames(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path)
     stream = StreamScreen(screen, "anthropic", "m", None)
