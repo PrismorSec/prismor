@@ -2336,6 +2336,8 @@ def get_events_page(
                                 verdict_value = "blocked"
                     except Exception:
                         pass
+                if verdict_value == "blocked" and not _enforced(enrichment):
+                    verdict_value = "warned"
                 if detail:
                     action_parts.append(detail[:80])
                 ts_raw = row["ts"] or ""
@@ -2382,8 +2384,10 @@ def get_events_page(
     deduped.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
     if verdict == "blocked":
         deduped = [ev for ev in deduped if ev.get("verdict") == "blocked"]
+    elif verdict == "warned":
+        deduped = [ev for ev in deduped if ev.get("verdict") == "warned"]
     elif verdict == "allowed":
-        deduped = [ev for ev in deduped if ev.get("verdict") != "blocked"]
+        deduped = [ev for ev in deduped if ev.get("verdict") == "allowed"]
 
     all_agents = sorted({ev["agent"] for ev in deduped})
     total = len(deduped)
@@ -4124,6 +4128,8 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                             "source": "inferred-scoped",
                         }
                         verdict = "blocked"
+                if verdict == "blocked" and not _enforced(enrichment):
+                    verdict = "warned"
                 artifacts = event_artifacts(raw)
                 # A prompt has no command, path or url, so the trail used to
                 # describe the most informative event in a session as the bare
@@ -4173,7 +4179,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             }
             for item in recent_events:
                 policy = item.get("policy") or {}
-                if item.get("verdict") != "blocked" or not _enforced(policy):
+                if item.get("verdict") != "blocked":
                     continue
                 block = {
                     "title": policy.get("title") or "Blocked by runtime policy",

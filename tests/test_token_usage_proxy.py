@@ -127,3 +127,10 @@ def test_buffered_meter_uses_the_request_session_not_the_process(monkeypatch):
     # No per-request id falls back to the process session, as before.
     proxy_mod._meter(screen, body, "gpt-6-luna")
     assert calls[1]["session_id"] == "process-sess"
+
+
+def test_proxy_usage_gets_a_timestamp(captured_rows):
+    # An empty ts fell outside every `ts >= datetime('now', ...)` cost window.
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a", model="m",
+                        usage={"input_tokens": 3, "output_tokens": 1}, message_id="resp_1")
+    assert captured_rows[0]["ts"]

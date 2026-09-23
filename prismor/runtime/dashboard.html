@@ -2099,6 +2099,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sev-high { background: #fbf3e4; color: #9a6b0c; border-color: #efdcae; }
   .sev-medium { background: var(--gray-100); color: var(--ink-2); border-color: var(--hairline); }
   .event-dot.blocked, .trail-dot.blocked { background: var(--bad); }
+  .event-dot.warned, .trail-dot.warned { background: #f59e0b; }
   .event-dot.allowed { background: var(--ok); }
   .fsel, .finput, .rules-search { background: var(--surface); border-color: var(--hairline-strong); color: var(--ink); }
   .btn-primary { background: var(--ink); color: #fff; box-shadow: none; text-transform: none; letter-spacing: 0; }
@@ -2594,6 +2595,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="bar">
         <button class="fbtn active" data-verdict="">All</button>
         <button class="fbtn" data-verdict="blocked">Blocked</button>
+        <button class="fbtn" data-verdict="warned">Warned</button>
         <button class="fbtn" data-verdict="allowed">Allowed</button>
         <div class="bar-sep"></div>
         <label>Agent</label>
@@ -4200,7 +4202,7 @@ function renderDrawerContent(sessId, ws, data) {
   if (_drawerSelectedEvent) {
     const ev = _drawerSelectedEvent;
     const policy = ev.policy || {};
-    const blocked = ev.verdict === 'blocked' || policy.action === 'block';
+    const blocked = ev.verdict === 'blocked';
     const categoryLabel = CAT_LABELS[policy.category] || policy.category || '';
     const evSec = document.createElement('div');
     evSec.className = 'drawer-section';
@@ -4253,7 +4255,7 @@ function renderDrawerContent(sessId, ws, data) {
         const policy = item.policy || {};
         const blocked = item.verdict === 'blocked';
         return '<div class="trail-row">' +
-          '<span class="trail-dot ' + (blocked ? 'blocked' : 'allowed') + '"></span>' +
+          '<span class="trail-dot ' + (blocked ? 'blocked' : item.verdict === 'warned' ? 'warned' : 'allowed') + '"></span>' +
           '<div class="trail-main">' +
             '<div class="trail-meta">' +
               '<span>' + safe(item.ts || '') + '</span>' +
@@ -4941,6 +4943,7 @@ function renderAgentSessions(agentName){
 // ── Session flow view ──────────────────────────────────────────────────
 function flowVerdict(ev){
   const p = ev.policy || {};
+  if (ev.verdict === 'warned') return 'warn';
   if (ev.verdict === 'blocked'){
     if (p.mode && p.mode !== 'enforce') return 'warn';
     if (p.action && p.action !== 'block') return 'warn';
@@ -6116,10 +6119,14 @@ async function loadSessionControl() {
 function statusPill(item, scoped) {
   const paused = scoped && scoped.paused;
   const hasScoped = !!scoped;
-  const hasBlocks = item.findingsCount > 0;
+  // blockCount when the caller knows real blocks; the sessions list only has
+  // findingsCount, which includes warnings, so it says "findings".
+  const n = item.blockCount != null ? item.blockCount : item.findingsCount;
+  const noun = item.blockCount != null ? 'block' : 'finding';
+  const hasBlocks = n > 0;
   if (paused) return '<span class="status-pill status-paused"><span class="status-dot"></span>Paused</span>';
   if (hasScoped) return '<span class="status-pill status-scoped"><span class="status-dot"></span>Scoped</span>';
-  if (hasBlocks) return '<span class="status-pill status-blocked"><span class="status-dot"></span>' + item.findingsCount + ' blocks</span>';
+  if (hasBlocks) return '<span class="status-pill status-blocked"><span class="status-dot"></span>' + n + ' ' + noun + (n === 1 ? '' : 's') + '</span>';
   return '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>';
 }
 
@@ -6170,7 +6177,7 @@ async function toggleSessDetail(detailId, sessId, ws, idx) {
     renderSessDetail(detail, data, idx);
     // Update pill
     const pill = document.getElementById('pill-' + idx);
-    if (pill) pill.innerHTML = statusPill({findingsCount: (data.recent_blocked||[]).length}, data.scoped);
+    if (pill) pill.innerHTML = statusPill({blockCount: (data.recent_blocked||[]).length}, data.scoped);
   } catch(e) {
     detail.innerHTML = '<div style="font-size:11px;color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
   }
@@ -6233,7 +6240,7 @@ async function sessAction(sessId, action, workspace, idx) {
       const data = await apiFetch(`/api/sessions/${encodeURIComponent(sessId)}/control${params}`);
       renderSessDetail(detail, data, idx);
       const pill = document.getElementById('pill-' + idx);
-      if (pill) pill.innerHTML = statusPill({findingsCount:(data.recent_blocked||[]).length}, data.scoped);
+      if (pill) pill.innerHTML = statusPill({blockCount:(data.recent_blocked||[]).length}, data.scoped);
     }
     toast({pause:'Session paused — protection off', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
   } catch(e) {

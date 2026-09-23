@@ -1028,6 +1028,12 @@ class StreamScreen:
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
         self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
+        # chat/completions: parallel calls interleave by ``index``; each is
+        # judged on its own, or their JSON concatenates and policy sees none.
+        self._calls: Dict[int, Dict[str, Any]] = {}
+        # The stream's id/model/etc., stamped on a synthesized refusal: the SDK
+        # seeds its snapshot from the first chunk and asserts without them.
+        self._chunk_meta: Dict[str, Any] = {}
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -1038,9 +1044,18 @@ class StreamScreen:
             return chunk
 
     def flush(self) -> bytes:
-        """Anything still held when the upstream closes mid-block."""
+        """Anything still held when the upstream closes mid-block.
+
+        A held tool call was never judged. In enforce mode it is dropped, not
+        released: a truncated call is unusable anyway, and releasing it is
+        a bypass (cut the stream before the stop frame, skip the policy)."""
         out, self._pending = b"".join(self._pending), []
-        self._holding = False
+        holding, self._holding, self._calls = self._holding, False, {}
+        if holding and out and self.screen.mode == "enforce":
+            reason = "Blocked by Prismor: tool call cut off before it could be screened"
+            self.blocked.append(reason)
+            sys.stderr.write(f"[prismor-proxy] {reason}\n")
+            return b""
         return out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
@@ -1159,6 +1174,10 @@ class StreamScreen:
     def _feed_openai(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
         if str(event.get("type") or "").startswith("response."):
             return self._feed_responses(chunk, event)
+        if not self._chunk_meta and event.get("id"):
+            self._chunk_meta = {k: event[k] for k in
+                                ("id", "object", "created", "model", "system_fingerprint")
+                                if k in event}
         choices = event.get("choices") or []
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
@@ -1167,15 +1186,20 @@ class StreamScreen:
             self._holding = True
             self._pending.append(chunk)
             for call in delta["tool_calls"]:
-                fn = (call or {}).get("function") or {}
+                call = call or {}
+                slot = self._calls.setdefault(int(call.get("index") or 0),
+                                              {"id": "", "name": "", "args": []})
+                fn = call.get("function") or {}
+                if call.get("id"):
+                    slot["id"] = str(call["id"])
                 if fn.get("name"):
-                    self._tool_name = str(fn["name"])
+                    slot["name"] = str(fn["name"])
                 if fn.get("arguments"):
-                    self._tool_json.append(str(fn["arguments"]))
+                    slot["args"].append(str(fn["arguments"]))
             return b""
         if self._holding and finish:
             self._pending.append(chunk)
-            return self._judge()
+            return self._judge_openai()
         if self._holding:
             self._pending.append(chunk)
             return b""
@@ -1244,6 +1268,38 @@ class StreamScreen:
         self.screen.log(decision, tool_name)
         blocking = self.screen.blocking(decision)
         return None if blocking is None else refusal_reason(blocking)
+
+    def _judge_openai(self) -> bytes:
+        """Judge each held chat/completions call; drop only the denied ones."""
+        calls, self._calls = self._calls, {}
+        held, self._pending = b"".join(self._pending), []
+        self._holding = False
+        kept, refusals = [], []
+        for index in sorted(calls):
+            call = calls[index]
+            reason = self._verdict(call["name"], _loads("".join(call["args"]) or "{}"))
+            if reason is None:
+                kept.append(call)
+                continue
+            refusals.append(reason)
+            self.blocked.append(reason)
+            sys.stderr.write(f"[prismor-proxy] {reason} (tool={call['name']})\n")
+        if not refusals:
+            return held
+        delta: Dict[str, Any] = {"role": "assistant", "content": "\n".join(refusals)}
+        if kept:
+            # Re-emit the allowed calls whole, renumbered from 0 so a client
+            # assembling by index doesn't leave a gap where the denied one was.
+            delta["tool_calls"] = [
+                {"index": i, "id": c["id"], "type": "function",
+                 "function": {"name": c["name"], "arguments": "".join(c["args"])}}
+                for i, c in enumerate(kept)]
+        frames = [{**self._chunk_meta,
+                   "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+                  {**self._chunk_meta,
+                   "choices": [{"index": 0, "delta": {},
+                                "finish_reason": "tool_calls" if kept else "stop"}]}]
+        return b"".join(f"data: {json.dumps(f)}\n\n".encode() for f in frames)
 
     def _judge(self) -> bytes:
         """Evaluate the completed tool call; release it or replace it."""

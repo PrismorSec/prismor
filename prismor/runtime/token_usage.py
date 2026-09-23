@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -310,7 +311,8 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
     cached = details.get("cached_tokens") if isinstance(details, dict) else 0
     try:
         _record(workspace, session_id, agent, {
-            "ts": ts,
+            # An empty ts falls outside every time-windowed cost query.
+            "ts": ts or datetime.now(timezone.utc).isoformat(),
             "message_id": message_id,
             "model": model,
             "input_tokens": pick("input_tokens", "prompt_tokens", "promptTokenCount"),
