@@ -394,6 +394,25 @@ def _check_cloaked_secrets_in_url(url: str) -> Optional[str]:
     return _check_cloaked_secrets_in_text(url)
 
 
+_LEADING_FLAGS_RE = re.compile(r"^\(\?([aiLmsux]+)\)")
+
+
+def _alternation(patterns) -> str:
+    """Join patterns into one alternation without breaking inline flags.
+
+    A pattern may start with a global flag like ``(?i)``, which is only legal at
+    the very start of an expression; wrapped as ``(?:(?i)...)`` inside a join it
+    raises "global flags not at the start" and takes down every rule in the
+    engine. Scope such flags to their own pattern instead, ``(?i:...)``.
+    """
+    parts = []
+    for p in patterns:
+        m = _LEADING_FLAGS_RE.match(p)
+        scoped = m and set(m.group(1)) <= set("imsx")
+        parts.append(f"(?{m.group(1)}:{p[m.end():]})" if scoped else f"(?:{p})")
+    return "|".join(parts)
+
+
 _QUANT_ANY_RE = re.compile(r'\bany\s+of\s*\(', re.IGNORECASE)
 _QUANT_ALL_RE = re.compile(r'\ball\s+of\s*\(', re.IGNORECASE)
 _QUANT_N_RE = re.compile(r'\b(\d+)\s+of\s*\(', re.IGNORECASE)
@@ -582,7 +601,7 @@ class CompiledRule:
         # newlines — prevents evasion via embedded newlines. The individual
         # pattern strings are kept so a finding can report which one fired.
         self.raw_patterns: List[str] = effective
-        joined = "|".join(f"(?:{p})" for p in effective)
+        joined = _alternation(effective)
         self.patterns: re.Pattern[str] = re.compile(
             joined, re.IGNORECASE | re.DOTALL
         )
@@ -611,7 +630,7 @@ class CompiledRule:
                         continue
                     try:
                         groups[str(gname)] = re.compile(
-                            "|".join(f"(?:{p})" for p in plist), re.IGNORECASE | re.DOTALL)
+                            _alternation(plist), re.IGNORECASE | re.DOTALL)
                     except re.error as exc:
                         sys.stderr.write(
                             f"[prismor] rule '{self.id}': ignoring invalid pattern group "
@@ -697,7 +716,7 @@ class AllowlistEntry:
         _t = str(raw.get("type", "allow")).lower()
         self.type: str = _t if _t in ("allow", "veto") else "allow"
         self.raw_patterns: List[str] = [str(p) for p in raw["patterns"]]
-        joined = "|".join(f"(?:{p})" for p in raw["patterns"])
+        joined = _alternation(raw["patterns"])
         self.patterns: re.Pattern[str] = re.compile(joined, re.IGNORECASE)
 
     def applies_to(self, rule_id: str) -> bool:
@@ -1120,7 +1139,7 @@ class PolicyEngine:
 
         manifest_pats: List[str] = settings.get("manifest_patterns", []) or []
         if manifest_pats:
-            joined = "|".join(f"(?:{p})" for p in manifest_pats)
+            joined = _alternation(manifest_pats)
             self._manifest_re = re.compile(joined, re.IGNORECASE)
 
         # Legacy flat allowlist — still read verbatim so scanner.py and any
