@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,16 @@ from prismor.runtime.proxy import (  # noqa: E402
     response_tool_calls,
 )
 from prismor.runtime.runtime import Decision  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _stop_proxy_snapshot_writers():
+    """Daemon snapshot writers outlive a test's Screen unless stopped."""
+    proxy_mod.Screen._stop_writers()
+    proxy_mod.Screen._all.clear()
+    yield
+    proxy_mod.Screen._stop_writers()
+    proxy_mod.Screen._all.clear()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -388,23 +399,37 @@ def test_unrouted_path_follows_the_credential_the_client_presented():
     assert _provider_for("/v1/models", {}) == "anthropic"  # config default
 
 
-def test_short_session_is_snapshotted_on_shutdown(monkeypatch, tmp_path):
-    """A session shorter than the rebuild interval must still be visible.
-
-    The rebuild is periodic because re-analysing the whole log on every event
-    is quadratic for a long-lived surface. But a proxy session is often one
-    chat turn -- the n8n agent that produced a blocked install command logged
-    five events -- so periodic-only left a session log on disk and no session
-    in `prismor sessions`, the dashboard or the console.
-    """
+def test_debounced_snapshot_coalesces_and_fires_without_shutdown(monkeypatch, tmp_path):
+    """A burst of events triggers one rebuild after the quiet period."""
+    monkeypatch.setattr(proxy_mod, "SNAPSHOT_DEBOUNCE", 0.05)
     screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
                               session_id="short-session", agent_name="n8n")
     saved = []
     monkeypatch.setattr(proxy_mod.Screen, "_snapshot_one",
                         lambda self, sid: saved.append(sid))
 
+    ev = {"type": "prompt", "prompt": "hello", "session_id": "short-session"}
+    for _ in range(3):
+        screen._persist(ev)
+    assert saved == [], "rebuild must wait for the debounce window"
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not saved:
+        time.sleep(0.02)
+    assert saved == ["short-session"]
+    assert len(saved) == 1, "three events in one burst must coalesce"
+
+
+def test_shutdown_still_flushes_inside_debounce_window(monkeypatch, tmp_path):
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="short-session", agent_name="n8n")
+    saved = []
+    monkeypatch.setattr(proxy_mod.Screen, "_snapshot_one",
+                        lambda self, sid: saved.append(sid))
+    monkeypatch.setattr(proxy_mod, "SNAPSHOT_DEBOUNCE", 60.0)
+
     screen._persist({"type": "prompt", "prompt": "hello", "session_id": "short-session"})
-    assert saved == [], "no periodic rebuild is due after one event"
+    assert saved == []
 
     screen.snapshot()
     assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"

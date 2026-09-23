@@ -157,9 +157,9 @@ _STRIP_RESPONSE_HEADERS = frozenset({
 CONNECT_TIMEOUT = 30
 READ_TIMEOUT = 600
 
-#: Rebuild the derived session snapshot once every this many events. See
+#: Rebuild the derived session snapshot after this many quiet seconds. See
 #: ``Screen.evaluate`` for why it is not once per event.
-SNAPSHOT_EVERY = 25
+SNAPSHOT_DEBOUNCE = 1.0
 
 
 # ── config ───────────────────────────────────────────────────────────────────
@@ -489,21 +489,38 @@ class Screen:
     allowed", and so tests can drive it without a socket.
     """
 
+    _all: List["Screen"] = []
+
+    @classmethod
+    def _stop_writers(cls) -> None:
+        for screen in list(cls._all):
+            screen._writer_stop.set()
+            if screen._writer.is_alive():
+                screen._writer.join(timeout=1.0)
+
     def __init__(self, workspace: Path, mode: str, session_id: str,
                  agent_name: str = "") -> None:
         self.workspace = workspace
         self.mode = mode
         self.session_id = session_id
         self.agent_name = agent_name
-        # session id -> [events, unsnapshotted]. A proxy outlives any one
-        # conversation, so counting per process would snapshot on a boundary
-        # that means nothing.
-        self._counts: Dict[str, List[int]] = {}
+        # session id -> unsnapshotted event count (reset after each rebuild).
+        self._pending: Dict[str, int] = {}
+        self._dirty_at: Dict[str, float] = {}
         self._conversations: Dict[str, str] = {}
         # Serialized for the same reason the MCP gateway serializes: the
         # trifecta TagLedger is order-dependent, and concurrent evaluations
         # could let the completing half of a forbidden tag pair through.
         self._lock = threading.Lock()
+        self._snapshot_lock = threading.Lock()
+        self._writer_stop = threading.Event()
+        self._writer = threading.Thread(
+            target=self._snapshot_writer_loop,
+            name="prismor-proxy-snapshot",
+            daemon=True,
+        )
+        self._writer.start()
+        Screen._all.append(self)
 
     # -- events ----------------------------------------------------------
 
@@ -606,11 +623,11 @@ class Screen:
         every event, so the audit trail is unchanged — only the derived
         snapshot is amortized.
 
-        ponytail: rebuild every SNAPSHOT_EVERY events, so the console lags a
-        live proxy session by at most that many calls. The same defect is in
-        every long-lived surface (the MCP gateway has it too) and the real fix
-        is an incremental snapshot in runtime.py; this keeps the blast radius
-        to one file until that lands.
+        ponytail: a background writer rebuilds after SNAPSHOT_DEBOUNCE quiet
+        seconds, so a short chat turn is visible without waiting for shutdown.
+        Bursts still coalesce into one rebuild so the quadratic cost does not
+        return. The real fix is an incremental snapshot in runtime.py; this
+        keeps the blast radius to one file until that lands.
         """
         try:
             from prismor.runtime.principal import resolve_subject
@@ -633,8 +650,19 @@ class Screen:
                 raise
             return None
 
+    def _snapshot_writer_loop(self) -> None:
+        while not self._writer_stop.wait(0.05):
+            now = time.monotonic()
+            ready: List[str] = []
+            with self._snapshot_lock:
+                for sid, t in self._dirty_at.items():
+                    if now - t >= SNAPSHOT_DEBOUNCE and self._pending.get(sid):
+                        ready.append(sid)
+            for sid in ready:
+                self.snapshot(sid)
+
     def _persist(self, event: Dict[str, Any]) -> None:
-        """Append the event; rebuild that session's snapshot every N events."""
+        """Append the event; mark the session dirty for a debounced rebuild."""
         sid = str(event.get("session_id") or self.session_id)
         try:
             from prismor.runtime.store import append_session_event
@@ -642,28 +670,27 @@ class Screen:
         except Exception as exc:
             sys.stderr.write(f"[prismor-proxy] session log error: {exc}\n")
             return
-        counts = self._counts.setdefault(sid, [0, 0])
-        counts[0] += 1
-        counts[1] += 1
-        if counts[0] % SNAPSHOT_EVERY:
-            return
-        self.snapshot(sid)
+        with self._snapshot_lock:
+            self._pending[sid] = self._pending.get(sid, 0) + 1
+            self._dirty_at[sid] = time.monotonic()
 
     def snapshot(self, session_id: str = "") -> None:
         """Rebuild the session snapshot the console and `prismor sessions` read.
 
-        Called every SNAPSHOT_EVERY events for one session, and for every
-        session the process touched when the surface stops. A conversation is
-        often a handful of events -- the n8n agent that produced a blocked
-        install command logged five -- so a purely periodic rebuild left short
-        sessions with a log on disk and no session anywhere an operator looks.
+        Called by the debounced writer after a quiet period, and for every
+        session the process touched when the surface stops.
         """
-        targets = [session_id] if session_id else list(self._counts)
+        with self._snapshot_lock:
+            if session_id:
+                targets = [session_id] if self._pending.get(session_id) else []
+            else:
+                targets = [sid for sid, n in self._pending.items() if n]
         for sid in targets:
-            counts = self._counts.get(sid)
-            if not counts or not counts[1]:
-                continue
-            counts[1] = 0
+            with self._snapshot_lock:
+                if not self._pending.get(sid):
+                    continue
+                self._pending[sid] = 0
+                self._dirty_at.pop(sid, None)
             self._snapshot_one(sid)
 
     def _snapshot_one(self, sid: str) -> None:
@@ -1791,8 +1818,10 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     except KeyboardInterrupt:
         print("\n[prismor] proxy stopped.")
     finally:
-        # Sessions here are often a single chat turn, well under the periodic
-        # rebuild, so without this the console never sees them at all.
+        # Flush anything still inside the debounce window on the way out.
+        ProxyHandler.screen._writer_stop.set()
+        if ProxyHandler.screen._writer.is_alive():
+            ProxyHandler.screen._writer.join(timeout=2.0)
         ProxyHandler.screen.snapshot()
 
 
