@@ -27,9 +27,15 @@ model:
 | Codex | no SessionStart hook, so sent on the first prompt | yes |
 | Qwen Code | not installed, so sent on the first prompt | yes |
 
-Claude Code is verified end to end. Codex and Qwen Code get the same
-`additionalContext` hook output but have not yet been verified in a live
-session.
+All three are verified in live sessions. Codex shows the added context as a
+`hook context` line under the prompt, then follows it. Muting the guardrail for
+that session from the console lets the next prompt through:
+
+![Codex refusing a .log file, then creating it after the guardrail was muted for the session](prompt-guardrails/codex.png)
+
+Qwen Code behaves the same, including headless `qwen -p` with `--yolo`: it
+refused the file while the guardrail was on and created it once the guardrail
+was turned off.
 
 SDK adapters and `prismor proxy` do not carry guardrails yet.
 
