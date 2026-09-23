@@ -155,8 +155,20 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv and argv[0] != "hook-dispatch":
         _update_notice()
 
-    if not argv or argv[0] in ("-h", "--help", "help"):
+    if not argv:
         _print_usage()
+        return
+
+    # `prismor --help secret` reads as a search too, not a request for the full map.
+    if argv[0] in ("-h", "--help") and len(argv) > 1:
+        _help(argv[1:])
+        return
+    if argv[0] in ("-h", "--help"):
+        _print_usage()
+        return
+
+    if argv[0] == "help":
+        _help(argv[1:])
         return
 
     if argv[0] in ("-V", "--version"):
@@ -178,29 +190,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         prismor_main([cmd, *rest])
         return
 
-    sys.stderr.write(
-        f"prismor: unknown command '{cmd}'.\n"
-        f"  Run 'prismor --help' to see all commands.\n"
-    )
-    sys.exit(2)
+    _unknown_command(cmd)
 
 
 # Ordered grouping for `prismor help`. Every group lists the commands it
-# owns; any introspected command NOT named here lands in the "More" catch-all,
+# owns; any introspected command NOT named here lands in the "Other" catch-all,
 # so a new prismor.runtime.cli subcommand can never silently vanish from help.
 _HELP_GROUPS = [
-    ("Quick start",          ["setup", "discover", "status", "dashboard", "audit", "update", "pause", "pause-hard", "resume"]),
-    ("Runtime protection",   ["check", "semantic-check", "scan", "deps", "sandbox", "policy"]),
-    ("Sessions & forensics", ["analyze", "ingest", "sessions", "session"]),
-    ("Hooks",                ["install-hooks", "uninstall-hooks", "mcp-gateway", "mirror", "surfaces"]),
-    ("Secret prevention",    ["cloak", "sweep", "canary"]),
-    ("Identity & scoping",   ["iam", "scope", "learn"]),
-    ("Enterprise / org",     ["enroll", "enroll-status", "workspace", "exempt", "logout"]),
-    ("Supply chain",         ["supplychain"]),
+    ("Get started",          ["setup", "status", "doctor", "discover", "dashboard", "login", "update", "docs"]),
+    ("Day to day",           ["check", "allow", "pause", "pause-hard", "resume", "unlock", "lock", "mode"]),
+    ("Policy & scoping",     ["policy", "tags", "scope", "iam", "egress", "agents", "learn"]),
+    ("Secrets",              ["cloak", "sweep", "canary"]),
+    ("Scanning & audit",     ["audit", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
+    ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy",
+                              "sandbox", "inference-hook", "eval-server"]),
+    ("Sessions & evidence",  ["sessions", "session", "analyze", "ingest", "tokens", "trail", "attest", "query"]),
+    ("Org enrollment",       ["enroll", "enroll-status", "workspace", "exempt", "logout"]),
 ]
 
-# Commands handled elsewhere in the help (deprecated section) or never shown.
-_HELP_HIDDEN = {"hook-dispatch", "info", "serve"}
+# Internal plumbing and back-compat aliases: routable, never listed.
+_HELP_HIDDEN = {"hook-dispatch", "exec-hook", "inference-hook-server", "info", "serve"}
 
 # supplychain is dispatched by this umbrella, not a prismor.runtime.cli subcommand, so it
 # is injected manually with its own help + sub-actions.
@@ -209,7 +218,7 @@ _SUPPLY_ACTIONS = ["npm", "pip", "pnpm", "yarn", "uv", "cargo", "go", "harden"]
 
 
 def _command_table():
-    """Introspect build_parser() → {name: (help, sub_actions, mode_flags)}.
+    """Introspect build_parser() → {name: (help, [(sub, sub_help)], mode_flags)}.
 
     Generated from the live parser so help can never drift from the real CLI.
     """
@@ -228,72 +237,149 @@ def _command_table():
             nested, flags = [], []
             for sa in sub._actions:
                 if isinstance(sa, argparse._SubParsersAction):
-                    nested = list(sa.choices.keys())
+                    sub_helps = {ca.dest: (ca.help or "") for ca in sa._get_subactions()}
+                    nested = [(k, sub_helps.get(k, "")) for k in sa.choices]
                 elif isinstance(sa, argparse._StoreTrueAction):
                     flags += [o for o in sa.option_strings if o.startswith("--")]
             table[name] = (helps.get(name, ""), nested, flags)
         break
     # supplychain isn't in prismor.runtime.cli — add it so help is complete.
-    table["supplychain"] = (_SUPPLY_HELP[0], _SUPPLY_ACTIONS, [])
+    table["supplychain"] = (_SUPPLY_HELP[0], [(a, f"Gate {a} installs" if a != "harden" else "Harden this project")
+                                               for a in _SUPPLY_ACTIONS], [])
     return table
 
 
-def _print_usage() -> None:
+def _help_sections(table=None):
+    """[(group title, [(name, help, sub_actions)])] — the visible command map.
+
+    Commands with suppressed/empty help or in _HELP_HIDDEN never show; anything
+    real that no group claims lands in "Other".
+    """
+    import argparse
+    table = _command_table() if table is None else table
+    visible = {n: v for n, v in table.items()
+               if n not in _HELP_HIDDEN and v[0] and v[0] != argparse.SUPPRESS}
+    sections, placed = [], set()
+    for title, names in _HELP_GROUPS + [("Other", sorted(visible))]:
+        rows = [(n, visible[n][0], visible[n][1]) for n in names if n in visible and n not in placed]
+        placed.update(n for n, _, _ in rows)
+        if rows:
+            sections.append((title, rows))
+    return sections
+
+
+def _search(sections, query: str):
+    """[(group, command, help, subs)] matching every word of `query`.
+
+    Sub-commands are searched too and returned as their exact runnable form
+    ("cloak add"), so a search answers "what do I type", not just "which area".
+    An empty query returns the top-level commands only.
+    """
+    words = query.lower().split()
+    hits = []
+    for group, rows in sections:
+        for name, help_text, subs in rows:
+            candidates = [(name, help_text, subs)]
+            if words:
+                candidates += [(f"{name} {s}", f"{h}" if h else help_text, [])
+                               for s, h in subs if h != "==SUPPRESS=="]
+            for cmd, h, sub in candidates:
+                hay = f"{cmd} {h}".lower()
+                if all(w in hay for w in words):
+                    hits.append((group, cmd, h, sub))
+    return hits
+
+
+def _fit(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: max(width - 1, 1)] + "…"
+
+
+def _print_usage(query: str = "") -> None:
+    """Static command map, one line per command. `query` filters by name/description."""
+    import shutil
     def b(t: str) -> str: return _c(t, _BOLD)
     def d(t: str) -> str: return _c(t, _DIM)
 
-    table = _command_table()
-    pad = 16
+    width = shutil.get_terminal_size((100, 24)).columns
+    q = query.strip()
+    hits = _search(_help_sections(), q)
+    col = max(18, max((len(c) for _, c, _, _ in hits), default=0) + 2) if q else 18
 
-    def _emit(name: str) -> None:
-        if name not in table:
+    print()
+    if q:
+        if not hits:
+            print(f"  No commands match '{query}'. Run {b('prismor help')} to see them all.")
+            print()
             return
-        help_text, nested, flags = table[name]
-        full_cmd = f"prismor {name}"
-        col = pad + 9
-        print(f"    {full_cmd.ljust(col)}{d(help_text)}")
-        if nested:
-            sub = " · ".join(f"prismor {name} {s}" for s in nested)
-            print(f"    {' ' * col}{d('· ' + sub)}")
-        elif flags:
-            print(f"    {' ' * col}{d('modes:  ' + '  '.join(flags))}")
-
-    print()
-    print(f"  {b('prismor')} — runtime security for AI coding agents")
-    print()
-    print(f"  Usage: {b('prismor')} <command> [options...]")
-    print(f"         {b('prismor')} <command> --help   {d('flags + sub-actions for one command')}")
-
-    grouped = set(_HELP_HIDDEN)
-    for title, names in _HELP_GROUPS:
-        present = [n for n in names if n in table]
-        if not present:
-            continue
+        print(f"  Commands matching '{query}':")
+    else:
+        print(f"  {b('prismor')} — runtime security for AI coding agents")
         print()
-        print(f"  {b(title)}")
-        for n in present:
-            _emit(n)
-            grouped.add(n)
+        print(f"  Usage: {b('prismor')} <command> [options]")
+        print(f"  New here? Run {b('prismor setup')}, then {b('prismor status')}.")
 
-    # Catch-all: any real command not placed in a group above.
-    leftover = [n for n in table if n not in grouped]
-    if leftover:
+    group = None
+    for title, cmd, help_text, _ in hits:
+        if title != group:
+            group = title
+            print()
+            print(f"  {b(title)}")
+        # Search results carry the `prismor` prefix so they paste straight in.
+        label = f"prismor {cmd}" if q else cmd
+        pad = col + 8 if q else col
+        print(f"    {label.ljust(pad)}{d(_fit(help_text, width - pad - 5))}")
+    if q:
         print()
-        print(f"  {b('More')}")
-        for n in sorted(leftover):
-            _emit(n)
+        print(d(f"  Details: prismor help <command>, e.g. prismor help {hits[0][1]}"))
 
-    col = pad + 9
+    if not q:
+        print()
+        print(f"  {b('prismor help <command>')}   {d('flags and sub-commands for one command')}")
+        print(f"  {b('prismor help <word>')}      {d('search commands, e.g. prismor help secret')}")
+        if sys.stdin.isatty() and sys.stdout.isatty() and _can_browse():
+            print(f"  {b('prismor help')}             {d('browse interactively (this list when piped)')}")
+        print(f"  {b('prismor --version')}        {d('show version')}")
+        print()
+        print(d("  Renamed: info → status, serve → dashboard --no-open (old names still work)"))
     print()
-    print(f"  {b('Help & version')}")
-    print(f"    {'prismor --help'.ljust(col)}{d('This message')}")
-    print(f"    {'prismor <cmd> --help'.ljust(col)}{d('Flags + sub-actions for one command')}")
-    print(f"    {'prismor --version'.ljust(col)}{d('Show version')}")
-    print()
-    print(f"  {b('Deprecated')}  {d('(kept working; will be removed in a future release)')}")
-    print(f"    {'prismor info'.ljust(col)}{d('use `prismor status`')}")
-    print(f"    {'prismor serve'.ljust(col)}{d('use `prismor dashboard --no-open`')}")
-    print()
+
+
+def _can_browse() -> bool:
+    try:
+        import termios  # noqa: F401  (POSIX only; Windows gets the static map)
+        return True
+    except ImportError:
+        return False
+
+
+def _help(args: List[str]) -> None:
+    """`prismor help [command [sub] | word]`."""
+    table = _command_table()
+    if args and args[0] in table:
+        main([*args, "--help"])
+        return
+    if args:
+        _print_usage(" ".join(args))
+        return
+    if sys.stdin.isatty() and sys.stdout.isatty() and _can_browse():
+        from prismor.runtime.help_browser import browse
+        sections = _help_sections(table)
+        picked = browse(lambda q: _search(sections, q))
+        if picked:
+            main([*picked.split(), "--help"])
+        return
+    _print_usage()
+
+
+def _unknown_command(cmd: str) -> None:
+    import difflib
+    names = [n for n in _command_table() if n not in _HELP_HIDDEN]
+    close = difflib.get_close_matches(cmd, names, n=3, cutoff=0.6)
+    sys.stderr.write(f"prismor: unknown command '{cmd}'.\n")
+    if close:
+        sys.stderr.write(f"  Did you mean: {', '.join(close)}?\n")
+    sys.stderr.write("  Run 'prismor help' to see all commands.\n")
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -142,15 +142,28 @@ def _self_protection_steps(rule_id: str, workspace: Optional[Path]) -> List[str]
     relaxed from the command line; if this one could be too, an agent that hit
     any other rule could simply relax this one first and then that one.
     """
+    # Say which state this machine is in. "Set a password if you haven't" left
+    # the agent guessing, and it guessed "just run prismor unlock", which on a
+    # fresh install only prints that no password exists.
+    try:
+        from prismor.runtime import unlock as _unlock
+        configured = _unlock.is_configured()
+    except Exception:
+        configured = True
+    if configured:
+        let_agent = ("2. To let the agent do it: open a short window with  prismor unlock  "
+                     "(you will be asked for your Prismor password; the window is 3 minutes "
+                     "by default), then have the agent retry.")
+    else:
+        let_agent = ("2. To let the agent do it: no unlock password is set on this machine yet. "
+                     "In your own terminal run  prismor unlock --set-password  once, then  "
+                     "prismor unlock  (a 3-minute window), then have the agent retry.")
     return [
         f"{rule_id} guards Prismor's own configuration, so it cannot be relaxed "
         "with `prismor allow`.",
         "1. If a person asked for this: run it yourself in your own terminal — "
         "Prismor governs agent tool calls, not you.",
-        "2. To let the agent do it: open a short window with  prismor unlock  "
-        "(you will be asked for your Prismor password; the window is 3 minutes "
-        "by default), then have the agent retry.",
-        "3. If no unlock password is set up yet:  prismor unlock --set-password",
+        let_agent,
     ]
 
 

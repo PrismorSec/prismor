@@ -8,7 +8,9 @@ links to the dedicated deep-dive doc for that capability.
 prismor <command> [options...]
 prismor <domain> <action> [options...]
 prismor --help               # the same map, in your terminal
-prismor <command> --help     # help for one command
+prismor help                 # browse it interactively: type to filter, enter for details
+prismor help <command>       # help for one command (same as prismor <command> --help)
+prismor help <word>          # search commands and sub-commands, e.g. prismor help secret
 ```
 
 There are two shapes:

@@ -2156,6 +2156,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         if scope not in ("project", "global"):
             scope = "project"
         non_interactive = getattr(args, "non_interactive", False) or not sys.stdin.isatty()
+        # A bare `prismor setup` from an agent's shell has no TTY for the wizard.
+        # Installing log-only defaults there looks like success but protects
+        # nothing, so hand the agent the wizard's questions to put to the user.
+        # Any explicit choice (flag or env) means someone already decided.
+        chose = any(getattr(args, k, None) not in (None, False) for k in (
+            "non_interactive", "mode", "agents", "enforce_rules", "recommended", "judge", "scope",
+        )) or getattr(args, "cloak", None) is not None or any(os.environ.get(k) for k in ("PRISMOR_MODE", "PRISMOR_CLOAK", "PRISMOR_SCOPE"))
+        from prismor.runtime.setup_wizard import running_under_agent, print_agent_questions
+        if not sys.stdin.isatty() and not chose and running_under_agent():
+            print_agent_questions(target)
+            return
         if non_interactive:
             mode = getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "observe")
             agents_str = getattr(args, "agents", None)
@@ -4187,6 +4198,12 @@ def build_parser() -> argparse.ArgumentParser:
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive onboarding wizard — pick mode, select agents, enable cloaking, choose scope",
+        epilog=(
+            "AI agents: run `prismor setup` with no flags first. With no terminal it installs "
+            "nothing and prints the questions to ask the user (mode, cloaking, scope, agents) "
+            "plus the exact command for their answers. Don't pick these for the user: "
+            "--scope global changes every project on the machine."
+        ),
     )
     setup_parser.add_argument(
         "target",
@@ -4276,7 +4293,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_parser = subparsers.add_parser(
         "update",
-        help="Check for and install the latest immunity-agent from PyPI",
+        help="Check for and install the latest prismor from PyPI",
     )
     update_parser.add_argument(
         "--check",

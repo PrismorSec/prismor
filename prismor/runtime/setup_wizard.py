@@ -60,6 +60,13 @@ SHOW    = "\033[?25h"
 ALT_ON  = "\033[?1049h"
 ALT_OFF = "\033[?1049l"
 
+# Piped or captured output (an agent's Bash tool, CI logs) gets plain text: no
+# colour, no cursor/screen codes, no spinner frames smeared across the log.
+_PLAIN = not sys.stdout.isatty() or bool(os.environ.get("NO_COLOR"))
+if _PLAIN:
+    RST = BOLD = DIM = CYAN = GRN = YEL = RED = BLU = WHT = ""
+    HIDE = SHOW = ALT_ON = ALT_OFF = ""
+
 
 def _s(*codes: str) -> str:
     return "".join(codes)
@@ -1110,6 +1117,13 @@ _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 def _spinner_run(label: str, fn) -> None:
+    if _PLAIN:
+        try:
+            ok, msg = fn()
+        except Exception as e:
+            ok, msg = False, str(e)[:60]
+        print(f"  {'✓' if ok else '✗'}  {label}{f'  {msg}' if msg else ''}")
+        return
     stop = threading.Event()
 
     def spin() -> None:
@@ -1260,8 +1274,9 @@ def _install_skill(target: Path):
 
 
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
-    sys.stdout.write(ALT_OFF)
-    sys.stdout.write("\033[H\033[J" + HIDE)
+    if not _PLAIN:
+        sys.stdout.write(ALT_OFF)
+        sys.stdout.write("\033[H\033[J" + HIDE)
     sys.stdout.flush()
     print(_w("  Installing Prismor...\n", BOLD, CYAN))
 
@@ -1554,6 +1569,61 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+# Env vars agent CLIs set on the shells they spawn. ponytail: a known-names
+# list, not a general detector; add an agent here when it sets its own marker.
+_AGENT_ENV = ("AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI")
+
+
+def running_under_agent() -> bool:
+    return any(os.environ.get(k) for k in _AGENT_ENV)
+
+
+def print_agent_questions(target: Path) -> None:
+    """What an agent sees when it runs a bare `prismor setup`: the wizard's
+    choices as plain questions plus the exact command for each answer, so the
+    agent asks the user instead of silently installing log-only defaults."""
+    target = target.resolve()
+    agents = [n for n, ok in _detect_agents(target).items() if ok] or ["claude"]
+    n_rec = sum(1 for r in _load_rules() if r.get("recommended"))
+    env_files = sorted(
+        p.name for p in target.glob(".env*")
+        if p.is_file() and not p.name.endswith((".example", ".sample", ".template"))
+    )
+    secrets = ", ".join(env_files) + " (values not hidden from agents yet)" if env_files else "no .env files found"
+    cloak_rec = "recommended" if env_files else "optional"
+    cmd = f"prismor setup --non-interactive --mode enforce --recommended --cloak --scope project --agents {','.join(agents)}"
+    print(f"""Prismor setup needs a few answers from the user. Nothing has been installed yet.
+Ask the user these questions, then run the command at the bottom.
+
+Detected
+  workspace  {target}
+  agents     {', '.join(agents)}
+  secrets    {secrets}
+
+1. Mode: should Prismor block risky actions, or only log them?
+     enforce   {f"block the {n_rec} recommended safety-floor rules".ljust(48)}--mode enforce --recommended   [recommended]
+     observe   {"log only, block nothing".ljust(48)}--mode observe
+2. Secret cloaking: replace secret values with @@SECRET:name@@ placeholders the agent never sees?
+     yes       --cloak      [{cloak_rec}]
+     no        --no-cloak
+3. Scope: protect only this project, or every project on this machine?
+     project   --scope project   [recommended]
+     global    --scope global
+4. Agents: which to protect? Detected: {', '.join(agents)}   --agents {','.join(agents)}
+
+With the recommended answers:
+  {cmd}""")
+    for name in env_files:
+        print(f"  prismor cloak add --env-file {name}   # imports its values as placeholders; only names are printed")
+    print("""
+5. Later policy changes: Prismor blocks agents from editing its own policy. To let an agent
+   add rules you ask for, you approve each change with a password. The user sets it once,
+   in their own terminal (it needs a keyboard, so an agent can't run it):
+     prismor unlock --set-password
+   Then, whenever the agent needs to edit policy:  prismor unlock   (opens a 3-minute window)""")
+    print("\nPrefer the full wizard? The user can run `prismor setup` in their own terminal.")
+
 
 def run_non_interactive(
     target: Path,

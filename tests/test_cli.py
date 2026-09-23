@@ -247,7 +247,7 @@ class TestImmunityUmbrella(unittest.TestCase):
         from prismor.runtime.cli import build_parser
         r = run_immunity("--help")
         self.assertEqual(r.returncode, 0)
-        hidden = {"hook-dispatch"}  # internal, intentionally not listed
+        hidden = {"hook-dispatch", "exec-hook", "inference-hook-server"}  # internal / aliases, intentionally not listed
         parser = build_parser()
         commands = []
         for action in parser._actions:
@@ -259,19 +259,18 @@ class TestImmunityUmbrella(unittest.TestCase):
                 continue
             self.assertIn(cmd, r.stdout, f"command '{cmd}' missing from --help")
 
-    def test_help_shows_subactions_and_modes(self):
-        # Sub-actions of domains and a command's "internal" mode flags must be
-        # discoverable straight from `prismor --help`.
-        r = run_immunity("--help")
+    def test_help_search_finds_subactions(self):
+        # The top-level map is one line per command; sub-actions stay
+        # discoverable by searching for them.
+        r = run_immunity("help", "plant")
         self.assertEqual(r.returncode, 0)
-        for token in ("install", "show", "plant", "--redact", "--all", "--no-open"):
-            self.assertIn(token, r.stdout, f"'{token}' missing from --help")
+        self.assertIn("canary", r.stdout)
 
     def test_bare_invocation_prints_help(self):
         r = run_immunity()
         self.assertEqual(r.returncode, 0)
-        self.assertIn("immunity", r.stdout)
-        self.assertIn("Quick start", r.stdout)
+        self.assertIn("prismor", r.stdout)
+        self.assertIn("Get started", r.stdout)
 
     def test_version_flag(self):
         r = run_immunity("--version")
