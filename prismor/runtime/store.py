@@ -3781,6 +3781,7 @@ def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     ev.setdefault("artifacts", {})[field] = value
             ev["phases"] = ["PreToolUse", "PostToolUse"]
             ev["postHookMs"] = post.get("hookMs")
+            ev["postHookInput"] = post.get("hookInput")
         merged.append(ev)
     # A Post with no Pre in this window is still something that happened.
     for leftover in pending.values():
@@ -3850,6 +3851,67 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes // 60}h {minutes % 60}m"
 
 
+def _transcript_hook_runs(transcript: str) -> List[Dict[str, Any]]:
+    """Every hook the agent ran, as Claude Code logs it in the transcript: one
+    attachment per hook command, with its duration and exit code. Prismor only
+    sees its own hook, so this is the one place the third-party ones show up."""
+    runs: List[Dict[str, Any]] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"hook_' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                att = rec.get("attachment") if isinstance(rec, dict) else None
+                if not isinstance(att, dict) or not str(att.get("type") or "").startswith("hook_"):
+                    continue
+                try:
+                    ms = int(att.get("durationMs"))
+                except (TypeError, ValueError):
+                    ms = None
+                runs.append({"toolUseId": att.get("toolUseID") or "", "event": att.get("hookEvent") or "",
+                             "name": att.get("hookName") or "", "command": str(att.get("command") or "")[:400],
+                             "ms": ms, "exit": str(att.get("exitCode") if att.get("exitCode") is not None else ""),
+                             "ok": att.get("type") == "hook_success", "ts": rec.get("timestamp") or "",
+                             # What the hook sent back: stdout/stderr as printed,
+                             # content as the agent put it in the model's context.
+                             **{k: str(att.get(k) or "")[:4000] for k in ("stdout", "stderr", "content")}})
+    except OSError:
+        return []
+    return runs
+
+
+_TOOL_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure"]
+
+
+def _attach_hook_runs(events: List[Dict[str, Any]], transcript: str) -> None:
+    """Give each row the hooks that ran for it, in order: a tool call gets its
+    PreToolUse and PostToolUse hooks by tool_use_id; a session or prompt row
+    gets the hooks of its own event that ran around it."""
+    if not transcript:
+        return
+    runs = _transcript_hook_runs(transcript)
+    by_call: Dict[str, List[Dict[str, Any]]] = {}
+    for run in runs:
+        if run["event"] in _TOOL_HOOK_EVENTS:
+            by_call.setdefault(run["toolUseId"], []).append(run)
+            continue
+        # A prompt or session hook has no tool_use_id, and the transcript
+        # stamps it when the turn lands, after the hooks ran: the nearest row of
+        # the same event within a minute is the one it served.
+        at = _epoch_of(run["ts"])
+        rows = [ev for ev in events if ev.get("agentEvent") == run["event"] and _epoch_of(ev.get("_tsRaw"))]
+        near = min(rows, key=lambda ev: abs(_epoch_of(ev.get("_tsRaw")) - at), default=None) if at else None
+        if near is not None and abs(_epoch_of(near.get("_tsRaw")) - at) <= 60:
+            near.setdefault("hookRuns", []).append(run)
+    for ev in events:
+        if ev.get("toolUseId") in by_call:
+            ev["hookRuns"] = sorted(by_call[ev["toolUseId"]], key=lambda r: (_TOOL_HOOK_EVENTS.index(r["event"]), r["ts"]))
+
+
 def _attach_task_durations(
     events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
 ) -> None:
@@ -3899,6 +3961,53 @@ def _attach_task_durations(
             first_seen[task_id] = ended
 
 
+def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], limit: int = 200) -> List[Dict[str, Any]]:
+    """The tool calls an extension caused in the given sessions (every session
+    when ``session_ids`` is None, a multi-second scan), newest first, with the
+    input the agent passed to each one."""
+    db = prismor_home() / "prismor.db"
+    if not ext_ids or session_ids == [] or not db.exists():
+        return []
+    conn = _connect_ro(db)
+    if conn is None:
+        return []
+    wanted, out, seen = set(ext_ids), [], set()
+    if session_ids is None:
+        where = "(" + " OR ".join(["raw_json LIKE ?"] * len(wanted)) + ")"
+        params = ['%"id": ' + json.dumps(i) + "%" for i in wanted]
+    else:
+        where = "session_id IN (%s) AND raw_json LIKE '%%\"extension\"%%'" % ",".join("?" * len(session_ids))
+        params = list(session_ids)
+    try:
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "
+                            + where + " ORDER BY id DESC", params)
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except ValueError:
+                continue
+            meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            ext = meta.get("extension") if isinstance(meta.get("extension"), dict) else {}
+            if ext.get("id") not in wanted:
+                continue
+            hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            # The dispatcher can store one call twice; the tool_use_id says so.
+            if hook.get("tool_use_id"):
+                if hook["tool_use_id"] in seen:
+                    continue
+                seen.add(hook["tool_use_id"])
+            out.append({"session": row["session_id"], "ts": row["ts"], "agent": raw.get("agent") or "",
+                        "tool": meta.get("tool_name") or hook.get("tool_name") or raw.get("type") or "",
+                        "via": ext.get("via") or "",
+                        "input": json.dumps(hook.get("tool_input", raw.get("command") or raw.get("url") or ""),
+                                            indent=1, default=str)[:4000]})
+            if len(out) >= limit:
+                break
+    finally:
+        conn.close()
+    return out
+
+
 def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any]:
     """Return scoped rules + recent blocked findings for a session."""
     from prismor.runtime.scoped_agent import load_scoped_rules, check_scoped_rules
@@ -3910,6 +4019,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
     # notification can say how long the work took and what actually launched
     # it, instead of quoting an opaque id.
     tool_calls: Dict[str, Dict[str, str]] = {}
+    transcript = ""
     db = prismor_home() / "prismor.db"
     if db.exists():
         try:
@@ -3965,6 +4075,8 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 meta = raw.get("metadata", {}) if isinstance(raw, dict) else {}
                 tool_tag = meta.get("tool_name") if isinstance(meta, dict) else ""
                 hook_payload = meta.get("raw") if isinstance(meta, dict) else None
+                if isinstance(hook_payload, dict) and hook_payload.get("transcript_path"):
+                    transcript = transcript or str(hook_payload["transcript_path"])
                 if isinstance(hook_payload, dict) and hook_payload.get("tool_use_id"):
                     # Rows arrive newest first, so the last write is the call itself.
                     tool_calls[str(hook_payload["tool_use_id"])] = {
@@ -4018,7 +4130,10 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "artifacts": artifacts,
                     "toolTag": tool_tag or "",
                     "extension": meta.get("extension") if isinstance(meta, dict) else None,
-                    "action": (f"{row['type']}: {' '.join(str(detail).split())[:300]}"
+                    "toolUseId": hook_payload.get("tool_use_id") if isinstance(hook_payload, dict) else None,
+                    # The JSON every hook of this event got on stdin.
+                    "hookInput": json.dumps(hook_payload, indent=1, default=str)[:6000] if isinstance(hook_payload, dict) else "",
+                    "action": (f"{row['type']}: {' '.join(str(detail).split())[:4000]}"
                                if detail else (row["type"] or "event")),
                     "verdict": verdict,
                     "severity": (severity or "low").lower(),
@@ -4036,6 +4151,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 })
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
             _attach_task_durations(recent_events, tool_calls)
+            _attach_hook_runs(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
             for item in recent_events:
                 item.pop("_tsRaw", None)

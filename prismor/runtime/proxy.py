@@ -161,6 +161,43 @@ READ_TIMEOUT = 600
 #: ``Screen.evaluate`` for why it is not once per event.
 SNAPSHOT_DEBOUNCE = 1.0
 
+# A model's tools are whatever the caller named them. Claude's are ``Bash`` and
+# ``Read``; an OpenAI-style agent calls the same thing ``bash``, ``shell`` or
+# ``run_command`` with ``cmd`` or an argv list. Matched only on the exact native
+# names, a proposed ``cat ~/.ssh/id_rsa`` fell through to the generic payload
+# path and no command rule ever saw a command.
+_PROPOSED_ALIASES = {
+    **{n: "Bash" for n in ("bash", "shell", "sh", "terminal", "exec", "run", "run_command", "run_shell_command",
+                           "execute_command", "execute_shell", "shell_command", "local_shell", "container.exec")},
+    **{n: "Read" for n in ("read", "read_file", "cat_file", "view_file", "open_file")},
+    **{n: "Write" for n in ("write", "write_file", "create_file", "save_file")},
+    **{n: "Edit" for n in ("edit", "edit_file", "str_replace", "replace_in_file")},
+    **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse")},
+    "glob": "Glob", "grep": "Grep",
+}
+
+
+def _native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
+    """(native tool, native-keyed args) for a proposed call, so the mirror's
+    shaper -- and with it every hook rule -- applies to it."""
+    tool = _PROPOSED_ALIASES.get(str(tool_name or "").strip().lower(), tool_name)
+    if not isinstance(arguments, dict):
+        return tool, arguments
+    args = dict(arguments)
+    if tool == "Bash":
+        cmd = args.get("command", args.get("cmd", args.get("script")))
+        if isinstance(cmd, list):
+            import shlex
+            cmd = shlex.join(str(c) for c in cmd)
+        args["command"] = "" if cmd is None else str(cmd)
+    elif tool in ("Read", "Write", "Edit"):
+        args.setdefault("file_path", args.get("path") or args.get("filename") or args.get("file") or "")
+        if tool == "Write":
+            args.setdefault("content", args.get("text") or args.get("contents") or "")
+    elif tool == "WebFetch":
+        args.setdefault("url", args.get("uri") or args.get("href") or "")
+    return tool, args
+
 
 # ── config ───────────────────────────────────────────────────────────────────
 
@@ -595,7 +632,7 @@ class Screen:
                                   "tool_name": tool_name, "proposed": True})
         try:
             from prismor.runtime import mirror
-            shaped = mirror.shape_call_event(tool_name, arguments)
+            shaped = mirror.shape_call_event(*_native_call(tool_name, arguments))
         except Exception:
             shaped = None
         if shaped:
@@ -1580,7 +1617,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if blocked:
             body = _strip_blocked_calls(provider, body, blocked)
         _mask_in_place(body, self.screen.redact)
-        _meter(self.screen, body, model)
+        _meter(self.screen, body, model, getattr(self, "_session_id", ""))
         return json.dumps(body).encode()
 
     def _relay_stream(self, resp: Any, provider: str, model: str,
@@ -1713,11 +1750,39 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
             if not kept:
                 message.pop("tool_calls", None)
                 choice["finish_reason"] = "stop"
+    # Responses API: tool calls are top-level output items, not inside a
+    # message. Without this branch a denied call is recorded as blocked but
+    # still handed back to the agent -- and gpt-6-luna forces this endpoint for
+    # any request with tools, so enforce mode was silently a no-op for it.
+    items = body.get("output")
+    if isinstance(items, list) and any(
+            isinstance(i, dict) and i.get("type") in ("function_call", "tool_call")
+            and i.get("name") in blocked for i in items):
+        kept_items, refusals = [], []
+        for item in items:
+            if (isinstance(item, dict) and item.get("type") in ("function_call", "tool_call")
+                    and item.get("name") in blocked):
+                refusals.append(blocked[item["name"]])
+            else:
+                kept_items.append(item)
+        # A message item carrying the refusal, so an agent that reads output
+        # text learns why instead of retrying a call it never sees.
+        if refusals:
+            kept_items.append({"type": "message", "role": "assistant", "status": "completed",
+                               "content": [{"type": "output_text", "text": "\n".join(refusals), "annotations": []}]})
+        body["output"] = kept_items
+        if not any(isinstance(i, dict) and i.get("type") in ("function_call", "tool_call") for i in kept_items):
+            body["status"] = "completed"
     return body
 
 
-def _meter(screen: Screen, body: Dict[str, Any], model: str) -> None:
-    """Record token usage against the session. Best-effort, never fatal."""
+def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "") -> None:
+    """Record token usage against the session. Best-effort, never fatal.
+
+    ``session_id`` is this request's conversation, not the proxy's process
+    session: without it a buffered response's tokens landed on the pid-keyed
+    log session instead of the chat the caller was in. The streaming path
+    already threads it (StreamScreen.session_id)."""
     usage = body.get("usage")
     if not isinstance(usage, dict):
         usage = body.get("usageMetadata")   # Gemini's name for the same thing
@@ -1728,7 +1793,7 @@ def _meter(screen: Screen, body: Dict[str, Any], model: str) -> None:
         from prismor.runtime.token_usage import record_llm_usage
         record_llm_usage(
             workspace=screen.workspace,
-            session_id=screen.session_id,
+            session_id=session_id or screen.session_id,
             agent=PROXY_AGENT,
             model=model,
             usage=usage,

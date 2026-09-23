@@ -510,6 +510,16 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
+        if path == "/api/extensions/detail":
+            workspace = self._resolve_workspace(qs) or Path.cwd()
+            try:
+                from prismor.runtime.extensions import extension_detail
+                self._send_json(extension_detail(workspace, qs.get("id") or [],
+                                                 history=(qs.get("history") or [""])[0] == "1"))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
         if path == "/api/extensions":
             workspace = self._resolve_workspace(qs) or Path.cwd()
             try:

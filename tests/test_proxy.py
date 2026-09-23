@@ -269,6 +269,27 @@ def test_strip_blocked_calls_openai_drops_only_the_denied_one():
     assert "Blocked by Prismor" in out["choices"][0]["message"]["content"]
 
 
+def test_strip_blocked_calls_responses_api_replaces_the_denied_item():
+    # gpt-6-luna forces /v1/responses for any tool use, and a denied call lives
+    # as a top-level output item there, not inside a message.
+    body = {"status": "completed", "output": [
+        {"type": "function_call", "name": "fetch_url", "arguments": '{"url":"http://203.0.113.9/x"}'},
+        {"type": "function_call", "name": "read_file", "arguments": '{"path":"a"}'}]}
+    out = _strip_blocked_calls("openai", body, {"fetch_url": "Blocked by Prismor: raw IP"})
+    kinds = [(i["type"], i.get("name")) for i in out["output"]]
+    assert ("function_call", "fetch_url") not in kinds
+    assert ("function_call", "read_file") in kinds
+    assert any(i["type"] == "message" and "Blocked by Prismor" in i["content"][0]["text"] for i in out["output"])
+
+
+def test_strip_blocked_calls_responses_api_all_denied_completes():
+    body = {"status": "completed", "output": [
+        {"type": "function_call", "name": "fetch_url", "arguments": "{}"}]}
+    out = _strip_blocked_calls("openai", body, {"fetch_url": "Blocked by Prismor: nope"})
+    assert not [i for i in out["output"] if i["type"] == "function_call"]
+    assert out["status"] == "completed"
+
+
 # ── config / virtual keys ────────────────────────────────────────────────────
 
 def test_default_upstreams_present():
@@ -433,6 +454,18 @@ def test_shutdown_still_flushes_inside_debounce_window(monkeypatch, tmp_path):
 
     screen.snapshot()
     assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"
+
+
+def test_openai_style_tool_names_are_screened_as_native_calls(tmp_path):
+    # A proposed `bash`/`shell` call must reach the command rules, not the
+    # generic payload path: that is where ~/.ssh/id_rsa gets caught.
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe", session_id="s", agent_name="t")
+    for name, args, want in [("bash", {"command": "cat ~/.ssh/id_rsa"}, "cat ~/.ssh/id_rsa"),
+                             ("shell", {"cmd": ["bash", "-lc", "ls -la"]}, "bash -lc 'ls -la'")]:
+        ev = screen.tool_event(name, args, "openai", "m", None)
+        assert ev["type"] == "shell" and ev["command"] == want
+    assert screen.tool_event("read_file", {"path": "/etc/passwd"}, "openai", "m", None)["path"] == "/etc/passwd"
+    assert screen.tool_event("lookup_weather", {"city": "x"}, "openai", "m", None)["type"] == "tool_result"
 
 
 def test_prompt_parts_separate_what_the_person_said(tmp_path):

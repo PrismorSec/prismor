@@ -113,3 +113,17 @@ def test_stream_without_usage_records_nothing(monkeypatch):
     stream.feed(_frame({"id": "c", "choices": [{"delta": {"content": "hi"}}]}))
     stream.meter()
     assert calls == []
+
+
+def test_buffered_meter_uses_the_request_session_not_the_process(monkeypatch):
+    # A buffered (non-streaming) response's tokens must land on the request's
+    # conversation, not the proxy's pid-keyed process session.
+    calls = []
+    monkeypatch.setattr(tu, "record_llm_usage", lambda **kw: calls.append(kw))
+    screen = Screen(workspace=Path("/x"), mode="observe", session_id="process-sess")
+    body = {"id": "resp-1", "usage": {"prompt_tokens": 9, "completion_tokens": 4}}
+    proxy_mod._meter(screen, body, "gpt-6-luna", "conversation-42")
+    assert calls[0]["session_id"] == "conversation-42"
+    # No per-request id falls back to the process session, as before.
+    proxy_mod._meter(screen, body, "gpt-6-luna")
+    assert calls[1]["session_id"] == "process-sess"

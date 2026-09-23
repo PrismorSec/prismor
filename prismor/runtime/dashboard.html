@@ -1060,6 +1060,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background:var(--gray-900); color:#fff; font-weight:700; font-size:20px;
   }
   .agent-avatar.blocked { background:#b91c1c; }
+  .agent-avatar.has-ico { background:var(--surface); border:1px solid var(--gray-200); }
+  .agent-avatar .agent-ico { width:28px; height:28px; margin:0; }
   .agent-hero-main { flex:1; min-width:180px; }
   .agent-hero-name { font-size:18px; font-weight:700; color:var(--gray-900); display:flex; align-items:center; gap:10px; }
   .agent-hero-sub { font-size:12px; color:var(--gray-500); margin-top:3px; }
@@ -1116,7 +1118,19 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-quiet { font-size:11px; color:var(--gray-500); }
   .ext-never { font-size:10.5px; font-weight:600; border-radius:999px; padding:1px 8px; border:1px dashed var(--gray-300); color:var(--gray-500); flex:none; }
   .ext-agent-card { padding:14px; }
-  .ext-agent-head { display:flex; align-items:baseline; gap:10px; margin-bottom:10px; }
+  .ext-agent-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .agent-ico { width:16px; height:16px; vertical-align:-3px; margin-right:5px; flex:none; }
+  .ext-agent .agent-ico { width:11px; height:11px; vertical-align:-1px; margin-right:3px; }
+  html[data-theme="dark"] .agent-ico.l, html:not([data-theme="dark"]) .agent-ico.d { display:none; }
+  .extd-agents { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+  .extd-agent { border:1px solid var(--gray-200); border-radius:8px; padding:10px 12px; background:var(--surface); }
+  .extd-agent b { font-size:14px; color:var(--gray-900); display:flex; align-items:center; }
+  .extd-agent small { display:block; color:var(--gray-500); font-size:11.5px; margin-top:4px; }
+  .extd-call { border-top:1px solid var(--gray-100); padding:8px 2px; }
+  .extd-call-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; color:var(--gray-600); }
+  .extd-call-head code { font-size:12px; color:var(--gray-900); }
+  .extd-call pre { margin:6px 0 0; padding:8px 10px; border-radius:6px; background:var(--gray-50); color:var(--gray-800);
+    font-size:11.5px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
   .ext-agent-head b { font-size:15px; color:var(--gray-900); }
   .ext-agent-nums { display:flex; flex-wrap:wrap; gap:18px; margin-bottom:10px; }
   .ext-agent-nums div { font-size:11px; color:var(--gray-500); }
@@ -1190,7 +1204,16 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .session-hero-id { font-family:var(--font-mono); font-size:14px; font-weight:600; color:var(--gray-900); margin-top:3px; word-break:break-all; }
   .session-hero-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
 
-  .session-layout { display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start; }
+  .session-layout { display:grid; grid-template-columns:minmax(0,1fr) clamp(360px, 36%, 520px); gap:16px; align-items:start; }
+  /* Long values (commands, prompts, regexes, hooks) get the full panel width
+     under their label instead of a 60% column beside it. */
+  .drawer-rule-row.stack { flex-direction:column; gap:4px; }
+  .drawer-rule-row.stack > .drawer-rule-label { min-width:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .drawer-rule-row.stack > div { width:100%; }
+  .drawer-code { font-family:var(--font-mono); font-size:11px; line-height:1.5; color:var(--gray-800); background:var(--surface);
+    border:1px solid var(--gray-200); border-radius:6px; padding:6px 8px; max-height:180px; overflow:auto;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  .drawer-rule-row details > summary { cursor:pointer; color:#3b82f6; font-size:11px; margin-bottom:4px; }
   .session-layout > div { min-width:0; }
   @media (max-width:900px){ .session-layout { grid-template-columns:1fr; } }
 
@@ -1258,6 +1281,26 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     color:var(--gray-500); background:var(--gray-100); border-radius:5px; padding:1px 6px; }
   .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
   .tree-leaf.blocked .tree-text { color:var(--danger-ink); font-weight:600; }
+  .hook-chip { flex:none; font-size:10px; font-weight:600; border-radius:999px; padding:1px 7px; margin-left:6px;
+    background:var(--gray-100); color:var(--gray-600); font-variant-numeric:tabular-nums; }
+  .hook-chip.slow { background:rgba(217,119,6,.14); color:#d97706; }
+  .hook-chip.fail { background:rgba(220,38,38,.12); color:#dc2626; }
+  .hook-runs { margin-top:4px; }
+  .hook-phase { font-size:10.5px; font-weight:700; color:var(--gray-500); margin:8px 0 3px; text-transform:uppercase; letter-spacing:.04em; }
+  .hook-run { font-size:11px; margin-bottom:5px; }
+  .hook-run > summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 8px; align-items:center; cursor:pointer; list-style:none; }
+  .hook-run > summary::-webkit-details-marker { display:none; }
+  .hook-run[open] > summary code { color:#3b82f6; }
+  .hook-io { font-size:11px; color:var(--gray-600); margin:6px 0 0; }
+  .hook-io em { font-style:normal; font-weight:600; color:var(--gray-500); display:block; margin-bottom:2px; }
+  .hook-io pre { margin:0; padding:6px 8px; border-radius:6px; background:var(--gray-50); color:var(--gray-800); font-size:10.5px;
+    max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .hook-sent { font-size:11px; margin:0 0 6px; } .hook-sent summary { cursor:pointer; color:#3b82f6; }
+  .hook-run code { font-size:11px; color:var(--gray-800); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hook-run .ms { text-align:right; color:var(--gray-600); font-variant-numeric:tabular-nums; }
+  .hook-run .bar { grid-column:1 / -1; height:3px; border-radius:2px; background:var(--gray-100); }
+  .hook-run .bar i { display:block; height:100%; border-radius:2px; background:#3b82f6; }
+  .hook-run.slow .bar i { background:#d97706; } .hook-run.fail .bar i { background:#dc2626; }
   .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); font-variant-numeric:tabular-nums; }
   .flow-legend { display:flex; gap:12px; font-size:10px; color:var(--gray-500); }
   .flow-legend span { display:inline-flex; align-items:center; gap:4px; }
@@ -1314,7 +1357,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .flow-empty { padding:40px 20px; text-align:center; color:var(--gray-400); font-size:12px; }
 
   /* node detail side panel */
-  .node-panel { border:1px solid var(--gray-200); border-radius:14px; background:var(--surface); padding:16px; position:sticky; top:16px; }
+  .node-panel { border:1px solid var(--gray-200); border-radius:14px; background:var(--surface); padding:16px 18px; position:sticky; top:16px; }
   .node-panel-empty { color:var(--gray-400); font-size:12px; text-align:center; padding:24px 8px; }
   .node-panel h4 { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--gray-400); font-weight:700; margin:0 0 10px; }
   .node-actions { margin-top:14px; padding-top:14px; border-top:1px solid var(--gray-100); }
@@ -2710,6 +2753,32 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- PAGE: AGENT DETAIL (sub-view)                                 -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="page-extension" class="page">
+  <div class="view-topbar">
+    <button class="view-back" onclick="goBack()">← Back</button>
+    <div class="crumbs">
+      <a onclick="document.querySelector('.tab-btn[data-tab=&quot;extensions&quot;]')?.click()">Extensions</a><span class="sep">/</span>
+      <span id="extdCrumb">Extension</span>
+    </div>
+  </div>
+  <div id="extdHead" class="card" style="margin-bottom:16px"></div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:10px">Agents that used it</div>
+    <div id="extdAgents"></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="bar" style="margin-bottom:6px">
+      <div class="card-title" title="The input the agent passed on every tool call this extension caused.">Calls and the context passed <i class="help">?</i></div>
+      <div class="bar-right"><span id="extdCallCount" class="result-count"></span></div>
+    </div>
+    <div id="extdCalls"></div>
+  </div>
+  <div class="card">
+    <div class="card-title" style="margin-bottom:6px">Sessions</div>
+    <div id="extdSessions"></div>
+  </div>
+</div>
+
 <div id="page-agent" class="page">
   <div class="view-topbar">
     <button class="view-back" onclick="goBack()">← Back</button>
@@ -3461,9 +3530,87 @@ function extCauseChip(x) {
     '" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(x.id) + '\')">' +
     '<svg class="icon"><use href="#i-puzzle"/></svg>' + safe(x.name || x.id) + '</span>';
 }
-function openExtension(id) {
-  _extView = 'installed'; _extAgent = ''; _extFilter = 'all'; _extOpen = {}; _extOpen[id] = true;
-  document.querySelector('.tab-btn[data-tab="extensions"]')?.click();
+// Agent marks from thesvg.org. Monochrome marks ship a light and a dark
+// variant; both are rendered and CSS shows the one that fits the theme.
+const _AGENT_SVG = {claude:'claude-code', 'claude-code':'claude-code', 'claude-desktop':'claude', 'claude-agent-sdk':'anthropic',
+  codex:'codex', cursor:'cursor', copilot:'github-copilot', windsurf:'windsurf', gemini:'gemini-cli', opencode:'opencode',
+  openclaw:'openclaw', hermes:'hermes', grok:'grok', qwen:'qwen', kiro:'kiro', openhands:'openhands', continue:'continue',
+  'openai-agents':'openai', langchain:'langchain', crewai:'crewai', 'pydantic-ai':'pydantic', mastra:'mastra',
+  'google-adk':'google', 'autogen-core':'microsoft', 'semantic-kernel':'microsoft', n8n:'n8n'};
+const _AGENT_SVG_MONO = new Set(['codex', 'cursor', 'github-copilot', 'windsurf', 'grok', 'qwen', 'openai', 'anthropic']);
+function agentIcon(name, fallback) {
+  const key = n => String(n || '').toLowerCase().trim().replace(/\s+/g, '-');
+  const slug = _AGENT_SVG[key(name)] || _AGENT_SVG[key(fallback)];
+  if (!slug) return '';
+  const img = (v, c) => '<img class="agent-ico' + c + '" src="https://thesvg.org/icons/' + slug + '/' + v + '.svg" alt="" onerror="this.remove()">';
+  return _AGENT_SVG_MONO.has(slug) ? img('light', ' l') + img('dark', ' d') : img('default', '');
+}
+// ── Extension page: who used it and what they passed it ──
+let _extViewId = null, _extDetail = null;
+async function openExtension(id, isBack) {
+  if (!isBack) { recordView({view:'extension', id: id}); _pushCurrentView(); }
+  _extViewId = id; _extDetail = null;
+  showSubPage('page-extension');
+  document.getElementById('extdCrumb').textContent = id;
+  ['extdHead', 'extdAgents', 'extdCalls', 'extdSessions'].forEach(k => document.getElementById(k).innerHTML = '<div class="empty">Loading…</div>');
+  try {
+    if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
+  } catch (e) { /* the page still shows usage without the ledger row */ }
+  if (_extViewId === id) loadExtensionDetail(id, false);
+}
+async function loadExtensionDetail(id, history) {
+  const row = ((_extCache || {}).rows || []).find(r => r.id === id) || {id: id, name: id.replace(/^.*[#:]/, ''), kind: id.split(':')[0]};
+  const ids = [id].concat(((_extCache || {}).rows || []).filter(r => r.parent === id).map(r => r.id));
+  renderExtensionHead(row);
+  if (history) document.getElementById('extdCalls').innerHTML = '<div class="empty">Searching every recorded call… this takes a few seconds.</div>';
+  try {
+    const d = await apiFetch('/api/extensions/detail?' + ids.map(i => 'id=' + encodeURIComponent(i)).join('&') + (history ? '&history=1' : '') +
+      (_serverWorkspace ? '&workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 60000});
+    if (_extViewId !== id) return;
+    _extDetail = {...d, history: history};
+    renderExtensionDetail(row);
+  } catch (e) {
+    document.getElementById('extdCalls').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  }
+}
+function renderExtensionHead(r) {
+  document.getElementById('extdCrumb').textContent = r.name || r.id;
+  const kv = [['Id', r.id], ['Loaded by', (r.agents || []).map(extAgentName).join(', ')], ['Path', r.path], ['Origin', r.origin],
+    ['Installed by', extBy(r.installed_by)], ['First seen', r.first_seen ? extWhen(r.first_seen) : ''], ['Hosts named', (r.hosts || []).join(', ')],
+    ['Command', r.command], ['Part of', r.parent], ['Hash', (r.sha256 || '').slice(0, 16)]]
+    .filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+  const reviewed = r.status === 'approved' || (r.status && !r.needs_review);
+  document.getElementById('extdHead').innerHTML =
+    '<div class="ext-agent-head"><span class="ext-badge ' + (reviewed ? 'approved' : 'new') + '">' + (reviewed ? 'reviewed' : 'unreviewed') + '</span>' +
+      '<span class="ext-kind">' + safe(r.kind || '') + '</span><b>' + safe(r.name || r.id) + '</b>' +
+      (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') + '</div>' +
+    '<dl class="ext-kv">' + kv + '</dl>' +
+    (r.status && r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '');
+}
+function renderExtensionDetail(row) {
+  const d = _extDetail;
+  document.getElementById('extdAgents').innerHTML = (d.agents || []).length ? '<div class="extd-agents">' + d.agents.map(a =>
+    '<div class="extd-agent" style="cursor:pointer" onclick="openAgentView(\'' + safeJsArg(a.agent) + '\')"><b>' + agentIcon(a.agent) + safe(extAgentName(a.agent)) + '</b>' +
+      '<small>' + a.sessions + ' session' + (a.sessions === 1 ? '' : 's') + ' · ' + a.calls + ' call' + (a.calls === 1 ? '' : 's') + '</small>' +
+      (a.last ? '<small>last ' + safe(extWhen(a.last)) + '</small>' : '') + '</div>').join('') + '</div>'
+    : '<div class="empty">No recorded session has used it' + (d.history ? '.' : ' in the last 50 sessions the ledger keeps.') + '</div>';
+  const more = d.history ? '' : ' <a class="ext-sess" onclick="loadExtensionDetail(\'' + safeJsArg(_extViewId) + '\', true)">search full history</a>';
+  document.getElementById('extdCallCount').innerHTML = (d.calls || []).length + ' call' + ((d.calls || []).length === 1 ? '' : 's') + more;
+  const agentOf = Object.fromEntries((d.sessions || []).map(s => [s.session, s.agent]));
+  document.getElementById('extdCalls').innerHTML = (d.calls || []).length ? d.calls.map(c => {
+    const agent = agentOf[c.session] || c.agent || 'any';
+    return '<div class="extd-call"><div class="extd-call-head"><span class="ext-agent">' + agentIcon(agent) + safe(extAgentName(agent)) + '</span>' +
+      '<code>' + safe(String(c.tool).replace(/^mcp__.*?__/, '')) + '</code>' +
+      '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(c.session) + '\')">session ' + safe(String(c.session).slice(0, 8)) + '</a>' +
+      '<span class="ext-quiet">' + safe(extWhen(c.ts)) + (c.via ? ' · ' + safe(c.via) : '') + '</span></div>' +
+      (c.input && c.input !== '""' && c.input !== '{}' ? '<pre>' + safe(c.input) + '</pre>' : '<div class="ext-quiet" style="margin-top:4px">no input</div>') + '</div>';
+  }).join('') : '<div class="empty">' + (row.kind === 'hook' ? 'A hook runs around calls rather than causing them, so it has no calls of its own.' : 'No tool call traced to it yet.') + '</div>';
+  document.getElementById('extdSessions').innerHTML = (d.sessions || []).length ? d.sessions.map(s =>
+    '<div class="ext-row"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
+      '<span class="ext-agent">' + agentIcon(s.agent) + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      '<span class="ext-quiet">' + safe(s.role === 'invoked' ? 'loaded it' : s.role === 'ambient' ? 'ran around every call' : 'called its tools') + '</span>' +
+      '<span class="ext-use-meta">' + safe(extWhen(s.ts)) + '</span></div></div>').join('')
+    : '<div class="empty">None recorded.</div>';
 }
 function openExtensionsFor(agent, filter) {
   _extView = 'installed'; _extAgent = agent || ''; _extFilter = filter || 'all'; _extOpen = {};
@@ -3547,7 +3694,7 @@ function renderExtSessions(d) {
   const note = quiet ? '<div class="ext-quiet" style="padding:6px 2px 10px">' + quiet + ' session' + (quiet === 1 ? '' : 's') + ' loaded no extension (only the third-party hooks that run around every call) and ' + (quiet === 1 ? 'is' : 'are') + ' not listed.</div>' : '';
   return list.length ? note + list.map(s =>
     '<div class="ext-row' + (s.unreviewed ? ' review' : '') + '"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
-      '<span class="ext-agent">' + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      '<span class="ext-agent">' + agentIcon(s.agent) + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
       ((s.used || []).length ? extUseChips(s) : '<span class="ext-quiet">loaded nothing' + (s.hooks ? ' · ' + s.hooks + ' third-party hook' + (s.hooks === 1 ? '' : 's') + ' ran around it' : '') + '</span>') +
       '<span class="ext-use-meta">' + safe(extWhen(s.ts)) + '</span></div></div>').join('')
     : '<div class="empty">No session has run under an extension yet.</div>';
@@ -3565,7 +3712,7 @@ function extAgentBody(a, d) {
 }
 function renderExtAgents(d) {
   return (d.agents || []).length ? d.agents.map(a =>
-    '<div class="ext-row ext-agent-card' + (a.unreviewed_sessions ? ' review' : '') + '"><div class="ext-agent-head"><b>' + safe(extAgentName(a.agent)) + '</b>' +
+    '<div class="ext-row ext-agent-card' + (a.unreviewed_sessions ? ' review' : '') + '"><div class="ext-agent-head"><b>' + agentIcon(a.agent) + safe(extAgentName(a.agent)) + '</b>' +
       '<a class="ext-sess" onclick="_extView=\'sessions\';_extAgent=\'' + safeJsArg(a.agent) + '\';renderExtensions()">sessions</a>' +
       '<a class="ext-sess" onclick="openExtensionsFor(\'' + safeJsArg(a.agent) + '\')">installed</a></div>' + extAgentBody(a, d) + '</div>').join('')
     : '<div class="empty">No agents yet.</div>';
@@ -3625,11 +3772,11 @@ function renderExtensions() {
     return '<div class="ext-row' + (rev ? ' review' : '') + (_extOpen[r.id] ? ' open' : '') + '">' +
       '<div class="ext-head" onclick="_extOpen[\'' + safeJsArg(r.id) + '\']=!_extOpen[\'' + safeJsArg(r.id) + '\'];renderExtensions()">' +
         '<span class="ext-badge ' + safeAttr(r.needs_review && r.status === 'unchanged' ? 'new' : r.status) + '">' + safe(r.status === 'unchanged' ? (r.needs_review ? 'unreviewed' : 'seen') : r.status) + '</span>' +
-        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name">' + safe(r.name) + '</span>' +
+        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name" style="cursor:pointer;text-decoration:underline dotted" title="Open its page" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(r.id) + '\')">' + safe(r.name) + '</span>' +
         (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
         (r.never_used ? '<span class="ext-never">never used</span>' : (r.used_in || []).length ? '<span class="ext-quiet">' + r.used_in.length + ' session' + (r.used_in.length === 1 ? '' : 's') + '</span>' : '') +
         '<span class="ext-origin">' + safe(r.origin || '') + '</span>' +
-        (r.agents || []).filter(a => a !== 'any').map(a => '<span class="ext-agent">' + safe(a) + '</span>').join('') + '</div>' +
+        (r.agents || []).filter(a => a !== 'any').map(a => '<span class="ext-agent">' + agentIcon(a) + safe(a) + '</span>').join('') + '</div>' +
       '<div class="ext-body"><dl class="ext-kv">' + kv + used + docs + '</dl>' +
         (r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '') +
       '</div></div>';
@@ -3658,6 +3805,7 @@ async function extApprove(id) {
     toast('Marked reviewed');
     _extCache = null;
     if (_sessionViewState && _sessExt && document.getElementById('page-session')?.classList.contains('active')) loadSessionExtensions(_sessionViewState.sessionId, _sessionViewState.workspace);
+    else if (document.getElementById('page-extension')?.classList.contains('active')) openExtension(id, true);
     else loadExtensions();
   } catch (e) { toast('✗ ' + e.message, true); }
 }
@@ -4556,6 +4704,7 @@ function _pushCurrentView(){
   const ap = document.querySelector('.page.active');
   const id = ap ? ap.id : null;
   if (id === 'page-agent' && _agentViewName){ const n=_agentViewName; _backStack.push(()=>openAgentView(n, true)); }
+  else if (id === 'page-extension' && _extViewId){ const x=_extViewId; _backStack.push(()=>openExtension(x, true)); }
   else if (id === 'page-session' && _sessionViewState){ const sx=_sessionViewState.sessionId, wx=_sessionViewState.workspace; _backStack.push(()=>openSessionView(sx, wx, true)); }
   else { const tb=document.querySelector('.tab-btn.active'); const t=tb?tb.dataset.tab:'sessions'; _backStack.push(()=>document.querySelector('.tab-btn[data-tab="'+t+'"]')?.click()); }
 }
@@ -4572,12 +4721,14 @@ function currentViewState(){
     return {view:'session', id:_sessionViewState.sessionId, ws:_sessionViewState.workspace || ''};
   }
   if (id === 'page-agent' && _agentViewName) return {view:'agent', name:_agentViewName};
+  if (id === 'page-extension' && _extViewId) return {view:'extension', id:_extViewId};
   const tab = document.querySelector('.tab-btn.active');
   return {view:'tab', tab: tab ? tab.dataset.tab : 'sessions'};
 }
 function hashForView(st){
   if (st.view === 'session') return '#/session/' + encodeURIComponent(st.id);
   if (st.view === 'agent')   return '#/agent/'   + encodeURIComponent(st.name);
+  if (st.view === 'extension') return '#/extension/' + encodeURIComponent(st.id);
   return '#/' + (st.tab || 'sessions');
 }
 function recordView(st, replace){
@@ -4589,9 +4740,9 @@ function recordView(st, replace){
   } catch(e){ /* file:// and other historyless contexts */ }
 }
 function parseHash(){
-  const m = /^#\/(session|agent)\/(.+)$/.exec(location.hash || '');
-  if (m) return m[1] === 'session'
-    ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
+  const m = /^#\/(session|agent|extension)\/(.+)$/.exec(location.hash || '');
+  if (m) return m[1] === 'session' ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
+    : m[1] === 'extension' ? {view:'extension', id:decodeURIComponent(m[2])}
     : {view:'agent', name:decodeURIComponent(m[2])};
   const t = /^#\/([a-z-]+)$/.exec(location.hash || '');
   return t ? {view:'tab', tab:t[1]} : null;
@@ -4602,6 +4753,7 @@ function applyViewState(st){
   try {
     if (st.view === 'session') openSessionView(st.id, st.ws || '', true);
     else if (st.view === 'agent') openAgentView(st.name, true);
+    else if (st.view === 'extension') openExtension(st.id, true);
     else document.querySelector('.tab-btn[data-tab="' + (st.tab || 'sessions') + '"]')?.click();
   } finally {
     // The tab click is synchronous; the view opens are not, but they only
@@ -4667,7 +4819,9 @@ function renderAgentHero(agentName){
   const sessions = _allSessionsCache.filter(s=>sessionBelongsToAgent(s, agentName));
   const findings = sessions.reduce((n,s)=>n+(s.findingsCount||0),0);
   if (a){
-    avatar.className = 'agent-avatar' + (a.enabled?'':' blocked');
+    const ico = agentIcon(agentName, a.framework);
+    if (ico) avatar.innerHTML = ico;
+    avatar.className = 'agent-avatar' + (ico ? ' has-ico' : '') + (a.enabled?'':' blocked');
     status.innerHTML = a.enabled
       ? '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>'
       : '<span class="status-pill status-blocked"><span class="status-dot"></span>Blocked</span>';
@@ -4975,7 +5129,7 @@ function treeLeafEl(ev, idx){
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
-    extCauseChip(ev.extension)+
+    extCauseChip(ev.extension)+hookChip(ev)+
     '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
@@ -5055,27 +5209,25 @@ function renderNodePanel(ev){
         '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+      ((ev.agentEvent || ev.hookMs != null) ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Hook</span>'+
         '<span style="font-size:11px;color:var(--gray-600)">'+safe(ev.agentEvent||'hook')+(ev.hookMs != null ? ' '+fmtMs(ev.hookMs) : '')+
         (ev.postHookMs != null ? ' &middot; PostToolUse '+fmtMs(ev.postHookMs) : '')+'</span></div>' : '')+
-      (ev.extension ? '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">Caused by</span>'+
+      hookRunsHtml(ev)+
+      (ev.extension ? '<div class="drawer-rule-row stack"><span class="drawer-rule-label">Caused by</span>'+
         '<div style="font-size:11px;line-height:1.5;color:var(--gray-600)">'+extCauseChip(ev.extension)+
         '<div>The '+safe(ev.extension.kind)+' '+safe(ev.extension.via||'caused this call')+'.'+
         (ev.extension.reviewed ? '' : ' No human has reviewed it.')+'</div></div></div>' : '')+
       '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">When</span>'+
         '<div style="font-size:11px;color:var(--gray-600)">'+safe(ev.tsAbs||ev.ts||'')+'</div></div>'+
-      '<div class="drawer-rule-row" style="align-items:flex-start;margin-bottom:0"><span class="drawer-rule-label">Action</span>'+
-        '<div style="font-size:11px;color:var(--gray-600);line-height:1.5;word-break:break-word">'+safe(ev.action||'')+'</div></div>'+
+      '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">Action</span>'+
+        '<div class="drawer-code">'+safe(ev.action||'')+'</div></div>'+
       ((policy.ruleId||policy.title||policy.evidence||categoryLabel)?
         '<div class="drawer-policy-card '+({allow:'allowed',warn:'warned',block:''})[v]+'">'+
           '<div class="drawer-rule-row"><span class="drawer-rule-label">Policy</span>'+
             '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">'+safe(policy.ruleId||policy.id||'runtime-policy')+'</div>'+
             (categoryLabel?'<div style="font-size:10px;color:var(--gray-500);margin-top:2px">'+safe(categoryLabel)+'</div>':'')+'</div></div>'+
-          (policy.title?'<div class="drawer-rule-row"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
-          (policy.matched?'<div class="drawer-rule-row"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
-          (policy.pattern?'<div class="drawer-rule-row"><span class="drawer-rule-label">Pattern</span><div class="match-pattern">'+safe(policy.pattern)+'</div></div>':'')+
-          (policy.evidence?'<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4;word-break:break-word">'+highlightHit(policy.evidence, policy.matched)+'</div></div>':'')+
-          '<div class="drawer-rule-row" style="margin-bottom:0"><span class="drawer-rule-label">Mode</span>'+
-            '<span class="scoped-tag '+(policy.mode==='enforce'?'tag-deny':'tag-net')+'">'+safe(policy.mode||(v==='block'?'enforce':'observe'))+'</span>'+
-            (policy.action?'<span class="scoped-tag '+(policy.action==='block'?'tag-deny':'tag-allow')+'">'+safe(policy.action)+'</span>':'')+
-          '</div>'+
+          (policy.title?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
+          (policy.matched?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
+          (policy.pattern?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Pattern</span><div><details><summary>Show the regex ('+String(policy.pattern).length+' chars)</summary><div class="match-pattern">'+safe(policy.pattern)+'</div></details></div></div>':'')+
+          (policy.evidence?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Why it matched</span>'+reasonHtml(policy)+'</div>':'')+
+          '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">What happened</span>'+modeHtml(policy, v)+'</div>'+
         '</div>':'')+
     '</div>';
   panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
@@ -5100,6 +5252,27 @@ const ARTIFACT_FIELDS = [
 // Which characters tripped the rule. The evidence is the whole command, so
 // without marking the hit a reader is left diffing a 400-character line
 // against a regex by eye.
+// The semantic pre-screen writes its evidence as the judge prompt itself
+// ("Heuristic pre-screen score: … Text to evaluate: …", cut at 220 chars).
+// Say what it means instead; the evaluated text is in Artefacts, whole.
+function reasonHtml(policy){
+  const ev = String(policy.evidence || '');
+  const m = ev.match(/Heuristic pre-screen score:\s*([\d.]+)\s*Heuristic signals found:\s*([^\n]*)/);
+  if (!m) return '<div class="drawer-code">' + highlightHit(ev, policy.matched) + '</div>';
+  const score = parseFloat(m[1]), signals = m[2].trim() === 'none' ? [] : m[2].split(',').map(x => x.trim().replace(/_/g, ' ')).filter(Boolean);
+  return '<div style="font-size:11.5px;line-height:1.5;color:var(--gray-700)">The text scored <b>' + Math.round(score * 100) + '/100</b> on the ' +
+    'prompt-injection pre-screen' + (signals.length ? ', because it looks like: ' + signals.map(x => '<span class="scoped-tag tag-net">' + safe(x) + '</span>').join(' ') : '') + '.' +
+    '<div style="color:var(--gray-500);margin-top:4px">The full text it read is under <a class="ext-sess" onclick="document.querySelector(\'#sessNodePanel .art-row\')?.scrollIntoView({behavior:\'smooth\'})">Artefacts</a>.</div></div>';
+}
+// Mode is how Prismor runs; action is what the rule asks for. Two tags side by
+// side ("observe" "block") read as a contradiction, so say what happened.
+function modeHtml(policy, v){
+  const mode = policy.mode || (v === 'block' ? 'enforce' : 'observe'), act = policy.action || '';
+  const text = v === 'block' ? 'Blocked. The rule says ' + (act || 'block') + ' and Prismor is enforcing.'
+    : act === 'block' && mode === 'observe' ? 'Only logged. The rule says block, but Prismor is in observe mode, so the call went through.'
+    : 'Logged as a warning' + (act ? ' (rule action: ' + act + ')' : '') + '. The call went through.';
+  return '<div style="font-size:11.5px;line-height:1.5;color:var(--gray-700)">' + safe(text) + '</div>';
+}
 function highlightHit(text, hit){
   const body = String(text||'');
   if (!hit) return safe(body);
@@ -5467,6 +5640,59 @@ async function loadEvents(){
 }
 // Hook wall time as the harness saw it: process start to exit.
 function fmtMs(ms){ if (ms == null) return ''; return ms < 1000 ? ms+' ms' : (ms/1000).toFixed(1)+' s'; }
+// Third-party hooks per row, from the agent's own transcript. Hooks of one
+// event run in parallel, so the slowest one is the wait the agent saw.
+const HOOK_SLOW_MS = 2000;
+function fmtDur(ms){
+  if (ms == null) return '–';
+  if (ms < 1000) return ms + ' ms';
+  const sec = ms / 1000;
+  return sec < 60 ? sec.toFixed(1) + ' s' : Math.floor(sec / 60) + ' min ' + Math.round(sec % 60) + ' s';
+}
+function hookLabel(cmd){
+  const c = String(cmd||'');
+  if (/hook-dispatch/.test(c)) return 'prismor hook-dispatch';
+  const script = c.match(/[^\s"'=]+\.(?:sh|py|js|mjs|ts|rb)\b/);
+  return script ? script[0].split('/').slice(-2).join('/') : c.slice(0, 60);
+}
+function hookPhaseStats(runs){
+  const slowest = Math.max(0, ...runs.map(r => r.ms || 0));
+  return {slowest, fail: runs.some(r => !r.ok || (r.exit && r.exit !== '0'))};
+}
+function hookChip(ev){
+  const runs = ev.hookRuns || [];
+  if (!runs.length) return '';
+  const phases = {};
+  runs.forEach(r => (phases[r.event] = phases[r.event] || []).push(r));
+  const wait = Object.values(phases).reduce((n, p) => n + hookPhaseStats(p).slowest, 0);
+  const fail = runs.some(r => !r.ok || (r.exit && r.exit !== '0'));
+  return '<span class="hook-chip' + (fail ? ' fail' : wait >= HOOK_SLOW_MS ? ' slow' : '') + '" title="' +
+    safeAttr(runs.map(r => r.event + ' ' + hookLabel(r.command) + ' ' + fmtDur(r.ms)).join('\n')) + '">' +
+    runs.length + ' hook' + (runs.length === 1 ? '' : 's') + ' · ' + fmtDur(wait) + '</span>';
+}
+function hookRunsHtml(ev){
+  const runs = ev.hookRuns || [];
+  if (!runs.length) return '';
+  const max = Math.max(1, ...runs.map(r => r.ms || 0));
+  const phases = [];
+  runs.forEach(r => { let p = phases.find(x => x.event === r.event); if (!p) phases.push(p = {event: r.event, runs: []}); p.runs.push(r); });
+  const block = (label, text) => text ? '<div class="hook-io"><em>' + label + '</em><pre>' + safe(prettyJson(text)) + '</pre></div>' : '';
+  return '<div class="drawer-rule-row stack"><span class="drawer-rule-label" title="As the agent logged them. Hooks of one event run in parallel, so the slowest is the wait.">Hooks</span><div class="hook-runs" style="flex:1;min-width:0">' +
+    phases.map(p => { const st = hookPhaseStats(p.runs);
+      const input = p.event === 'PostToolUse' ? ev.postHookInput : p.event === 'PreToolUse' || p.event === ev.agentEvent ? ev.hookInput : '';
+      return '<div class="hook-phase">' + safe(p.event) + ' · ' + p.runs.length + ' ran at once · agent waited ' + fmtDur(st.slowest) + '</div>' +
+        (input ? '<details class="hook-sent"><summary>What every ' + safe(p.event) + ' hook received</summary>' + block('stdin', input) + '</details>' : '') +
+        p.runs.map(r => { const bad = !r.ok || (r.exit && r.exit !== '0'), slow = (r.ms || 0) >= HOOK_SLOW_MS;
+          const out = block('Sent back (stdout)', r.stdout) + block('Errors (stderr)', r.stderr) + block('Added to the model\'s context', r.content);
+          return '<details class="hook-run' + (bad ? ' fail' : slow ? ' slow' : '') + '"><summary><code>' + safe(hookLabel(r.command)) + '</code>' +
+            '<span class="ms">' + fmtDur(r.ms) + (bad ? ' · exit ' + safe(r.exit || '?') : '') + '</span>' +
+            '<span class="bar"><i style="width:' + Math.max(2, Math.round(100 * (r.ms || 0) / max)) + '%"></i></span></summary>' +
+            '<div class="hook-io"><em>Command</em><pre>' + safe(r.command) + '</pre></div>' +
+            '<div class="hook-io"><em>Took</em> ' + fmtDur(r.ms) + ' · exit ' + safe(r.exit || '0') + (r.ok ? '' : ' · the agent logged it as an error') + '</div>' +
+            (out || '<div class="hook-io"><em>Sent back nothing</em></div>') + '</details>'; }).join(''); }).join('') +
+    '</div></div>';
+}
+function prettyJson(t){ try { return JSON.stringify(JSON.parse(t), null, 1); } catch (e) { return t; } }
 function hookMeta(name, ms){
   if (!name && ms == null) return '';
   return ' &middot; '+(name ? '<span class="hook-pill">'+safe(name)+'</span>' : '')+(ms != null ? ' '+fmtMs(ms) : '');
@@ -5770,7 +5996,7 @@ function renderAgents(data) {
         '<option value="' + safeAttr(p) + '"' + (a.iam_profile === p ? ' selected' : '') + '>' + safe(p) + '</option>'))
       .join('');
     return '<tr class="' + (a.enabled ? '' : 'agent-off') + '">' +
-      '<td><span class="agent-name link" onclick="openAgentView(\'' + safeAttr(a.name) + '\')">' + safe(a.name) + '</span>' +
+      '<td>' + agentIcon(a.name, a.framework) + '<span class="agent-name link" onclick="openAgentView(\'' + safeAttr(a.name) + '\')">' + safe(a.name) + '</span>' +
         (a.framework && a.framework !== a.name ? ' <span class="agent-pill">' + safe(a.framework) + '</span>' : '') + '</td>' +
       '<td>' + status + '</td>' +
       '<td><select class="fsel" onchange="agentSet(\'' + safeAttr(a.name) + '\',{mode:this.value||null})">' + modeOpts + '</select></td>' +
