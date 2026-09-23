@@ -319,21 +319,56 @@ def main() -> int:
     print(f"\n{_passed} passed, {_failed} failed")
     return 1 if _failed else 0
 
-def test_decloak_exec_prevents_shell_injection(tmp_path):
-    hook = Path("prismor/runtime/cloaking/hooks/decloak-exec.sh").resolve()
-    vault = tmp_path / "secrets"
-    vault.mkdir()
-    marker = tmp_path / "executed"
+_EXEC = _HOOKS / "decloak-exec.sh"
+_PH = "@@SECRET:{}@@".format
 
-    (vault / "demo").write_text(f"$(touch {marker})", encoding="utf-8")
 
-    env = os.environ.copy()
-    env["PRISMOR_SECRETS_DIR"] = str(vault)
-    env["PRISMOR_CLOAK_CMD"] = 'printf "%s" "@@SECRET:demo@@" >/dev/null'
+def _exec(tmp_path, cmd, secrets):
+    vault = tmp_path / "vault"
+    vault.mkdir(exist_ok=True)
+    for name, value in secrets.items():
+        (vault / name).write_text(value, encoding="utf-8")
+    env = {**os.environ, "PRISMOR_SECRETS_DIR": str(vault), "PRISMOR_CLOAK_CMD": cmd}
+    return subprocess.run(["bash", str(_EXEC)], env=env, capture_output=True, text=True, cwd=tmp_path)
 
-    subprocess.run(["bash", str(hook)], env=env, check=True)
 
-    assert not marker.exists(), "Vulnerability: shell injection executed through eval"
-    
+# (command, secrets, expected stdout). `t` has a space, `q` a single quote.
+_EXEC_CASES = {
+    "unquoted": (f"printf '[%s]' {_PH('t')}", {"t": "a b"}, "[a b]"),
+    "double-quoted": (f'printf "[%s]" "x {_PH("t")} y"', {"t": "a b"}, "[x a b y]"),
+    "single-quoted": (f"printf '[%s]' 'Bearer {_PH('t')}'", {"t": "a b"}, "[Bearer a b]"),
+    "single quote in value": (f"printf '[%s]' '{_PH('q')}'", {"q": "it's"}, "[it's]"),
+    "ansi-c quoted": (f"printf '[%s]' $'x\\t{_PH('t')}'", {"t": "a b"}, "[x\ta b]"),
+    "adjacent text": (f"printf '[%s]' k={_PH('t')}/z", {"t": "a b"}, "[k=a b/z]"),
+    "repeated": (f"printf '[%s]' {_PH('t')} '{_PH('t')}'", {"t": "a b"}, "[a b][a b]"),
+    "heredoc": (f"cat <<EOF\nk={_PH('t')}\nEOF", {"t": "a b"}, "k=a b\n"),
+    "quoted heredoc": (f"cat <<'EOF'\nk={_PH('t')} $HOME\nEOF", {"t": "a b"}, "k=a b $HOME\n"),
+    "tab-stripped heredoc": (f"cat <<-EOF\n\tk={_PH('t')}\n\tEOF", {"t": "a b"}, "k=a b\n"),
+    "escaped colon": ("printf '[%s]' '@@SECRET\\:t@@'", {"t": "a b"}, "[@@SECRET\\:t@@]"),
+    "missing secret": (f"printf '[%s]' {_PH('gone')}", {}, f"[{_PH('gone')}]"),
+}
+
+
+@pytest.mark.parametrize("case", _EXEC_CASES)
+def test_decloak_exec_expands_in_every_quoting_context(tmp_path, case):
+    cmd, secrets, want = _EXEC_CASES[case]
+    assert _exec(tmp_path, cmd, secrets).stdout == want
+
+
+@pytest.mark.parametrize("cmd", [
+    "printf '%s' {}", "printf '%s' \"{}\"", "printf '%s' '{}'", "printf '%s' $'{}'",
+    "cat <<EOF\n{}\nEOF", "cat <<'EOF'\n{}\nEOF",
+])
+def test_decloak_exec_never_runs_secret_content(tmp_path, cmd):
+    # #457: a secret's own metacharacters must stay data in every context.
+    evil = "$(touch pwned1)`touch pwned2`'; touch pwned3; '\"; touch pwned4; \"\nEOF\ntouch pwned5"
+    res = _exec(tmp_path, cmd.format(_PH("evil")), {"evil": evil})
+    assert not list(tmp_path.glob("pwned*")), res.stderr
+
+
+def test_decloak_exec_preserves_exit_status(tmp_path):
+    assert _exec(tmp_path, f"test {_PH('t')} = 'a b' && exit 7", {"t": "a b"}).returncode == 7
+
+
 if __name__ == "__main__":
     sys.exit(main())
