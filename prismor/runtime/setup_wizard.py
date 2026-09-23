@@ -1381,6 +1381,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         def _write_judge():
             _write_judge_setting(target, judge[0], judge[1])
             label = "Prismor API" if judge[0] == "prismor" else f"{judge[0]} ({judge[1] or 'CLI default'})"
+            # The api judge imports litellm, which the base install leaves out.
+            # Without it every verdict falls back to heuristics, i.e. the judge
+            # is silently off — say so here, where the user just chose it.
+            if judge[0] == "api":
+                import importlib.util
+                if importlib.util.find_spec("litellm") is None:
+                    return False, "needs litellm: pip install 'prismor[semantic]'"
             return True, label
         _spinner_run("Setting LLM judge", _write_judge)
 
