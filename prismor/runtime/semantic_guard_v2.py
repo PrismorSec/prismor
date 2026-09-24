@@ -252,7 +252,14 @@ def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
     )
 
 
-def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> Tuple[str, Optional[int]]:
+# Agent hooks default to a 30s budget (UserPromptSubmit included), and the judge runs
+# inside one: a verdict that lands after the agent gave up is thrown away along with
+# the rest of the hook's output. With hooks off (see _claude_stdout) a CLI verdict
+# measured 4-6s, so 20s leaves headroom without outliving the caller.
+CLI_TIMEOUT = 20.0
+
+
+def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEOUT) -> Tuple[str, Optional[int]]:
     """Run the Claude Code CLI once, isolated from the workspace, and return what it printed.
 
     `claude -p` inherits its cwd's project config, so without this the evaluator boots that
@@ -263,7 +270,12 @@ def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> 
     proc = subprocess.Popen(
         [cli, "-p", prompt, "--output-format", "text",
          "--model", model if model.startswith("claude") else CLI_MODEL,
-         "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT],
+         "--strict-mcp-config", "--system-prompt", _PRISMOR_CONTEXT,
+         # User-scope hooks still load from a temp cwd, and Prismor's are among them:
+         # every judge call ran a full hook-dispatch of its own. Measured on one
+         # host, same verdict: 70.9s with hooks, 5.1s without. (Not --bare: that
+         # also drops the OAuth login most hosts judge on.)
+         "--settings", '{"disableAllHooks":true}', "--no-session-persistence"],
         # DEVNULL: with stdin left open the CLI waits 3s for piped data.
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, cwd=tempfile.gettempdir(), start_new_session=True,
@@ -273,7 +285,6 @@ def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> 
         env={**os.environ, "CLAUDE_NO_INTERACTIVE": "1", "PRISMOR_SEMANTIC_SUBAGENT": "1"},
     )
     try:
-        # Measured 20-35s on a warm host; 30s cut real verdicts off.
         stdout, _ = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         _kill_group(proc)
@@ -282,7 +293,7 @@ def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> 
     return stdout or "", getattr(proc, "returncode", None)
 
 
-def _codex_stdout(prompt: str, cli: str, model: str, timeout: float = 60.0) -> Tuple[str, Optional[int]]:
+def _codex_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEOUT) -> Tuple[str, Optional[int]]:
     """Run the Codex CLI once on the host's ChatGPT login and return its final message.
 
     --ephemeral (no session file), --ignore-user-config/--ignore-rules (no hooks, MCP servers
@@ -523,7 +534,7 @@ def _batch_analyze(windows: List[str], heuristic_score: float, signals: List[str
     prompt = _batch_prompt(windows, heuristic_score, signals)
     try:
         raw, rc = (_codex_stdout(prompt, cli, model) if provider == "codex"
-                   else _claude_stdout(prompt, cli, model, timeout=90.0))
+                   else _claude_stdout(prompt, cli, model))
     except Exception as exc:
         _judge_note(provider, f"batch failed: {exc!r}")
         return []
@@ -617,6 +628,16 @@ class SemanticGuardV2:
         # should wait for, so it keeps the narrow band. An explicit value wins.
         if low_threshold is None:
             low_threshold = 0.0 if provider in ("api", "prismor") else LOW_THRESH
+        # A policy that names a CLI judge travels to hosts without that CLI (a
+        # team policy, a server with no Claude Code). An enrolled host still has
+        # the hosted judge, which answers the same question in about a second;
+        # it keeps the CLI's narrow band, so a stand-in does not
+        # spend the hosted quota on every text. Otherwise: the API path or heuristics.
+        if provider in ("claude", "codex") and not os.path.exists(
+                cli_path or (CODEX_CLI if provider == "codex" else CLAUDE_CLI)):
+            from prismor.runtime.enterprise.identity import is_enrolled
+            if is_enrolled():
+                provider = "prismor"
         self._low, self._high = low_threshold, high_threshold
         # Every window of a text travels in one call now (see _batch_analyze), so a
         # CLI judge no longer pays per window and gets the same budget as the rest.

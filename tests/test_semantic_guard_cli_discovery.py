@@ -79,6 +79,14 @@ def test_subagent_runs_isolated_from_the_workspace(monkeypatch, tmp_path):
     assert "--strict-mcp-config" in seen["argv"]      # no MCP servers at all
     assert seen["kw"]["cwd"] != os.getcwd()           # no project settings
     assert seen["kw"]["start_new_session"] is True    # killable as a group
+    # User-scope hooks (Prismor's own) load even from a temp cwd: 70.9s vs 5.1s.
+    assert seen["argv"][seen["argv"].index("--settings") + 1] == '{"disableAllHooks":true}'
+    assert "--bare" not in seen["argv"]               # would drop the OAuth login
+
+
+def test_cli_judge_fits_inside_the_agent_hook_budget():
+    # Claude Code gives a hook 30s; a verdict after that is discarded with the output.
+    assert sg.CLI_TIMEOUT < 30
 
 
 def test_a_hung_subagent_falls_back_instead_of_blocking_forever(monkeypatch, tmp_path):
