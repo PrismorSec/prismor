@@ -386,6 +386,8 @@ def test_strip_blocked_calls_responses_api_all_denied_completes():
     out = _strip_blocked_calls("openai", body, {"fetch_url": "Blocked by Prismor: nope"})
     assert not [i for i in out["output"] if i["type"] == "function_call"]
     assert out["status"] == "completed"
+    # Clients validate every output item's id; the Vercel AI SDK throws without it.
+    assert all(isinstance(i.get("id"), str) and i["id"] for i in out["output"])
 
 
 # ── config / virtual keys ────────────────────────────────────────────────────

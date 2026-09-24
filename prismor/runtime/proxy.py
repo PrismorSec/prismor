@@ -1928,9 +1928,11 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
             else:
                 kept_items.append(item)
         # A message item carrying the refusal, so an agent that reads output
-        # text learns why instead of retrying a call it never sees.
+        # text learns why instead of retrying a call it never sees. The id is
+        # required: the Vercel AI SDK rejects an output item without one.
         if refusals:
-            kept_items.append({"type": "message", "role": "assistant", "status": "completed",
+            kept_items.append({"id": f"msg_prismor_{len(kept_items)}",
+                               "type": "message", "role": "assistant", "status": "completed",
                                "content": [{"type": "output_text", "text": "\n".join(refusals), "annotations": []}]})
         body["output"] = kept_items
         if not any(isinstance(i, dict) and i.get("type") in ("function_call", "tool_call") for i in kept_items):
