@@ -857,3 +857,36 @@ def test_silent_session_human_report_names_the_shapes(silent_claude_home, tmp_pa
     text = format_report(sweep(_options(tmp_path)))
     assert "produced no events" in text
     assert "type=summary" in text
+
+
+def test_sweep_emits_progress_when_interactive(claude_home, tmp_path, monkeypatch):
+    """When sys.stderr is a TTY, sweep must print status notifications."""
+    import io
+    from unittest.mock import MagicMock
+
+    options = _options(tmp_path)
+    fake_stderr = io.StringIO()
+    fake_stderr.isatty = MagicMock(return_value=True)
+
+    monkeypatch.setattr("sys.stderr", fake_stderr)
+    sweep(options)
+
+    output = fake_stderr.getvalue()
+    assert "Discovering and evaluating session transcripts" in output
+    assert "Scanning transcripts:" in output
+
+
+def test_sweep_remains_silent_when_non_interactive(claude_home, tmp_path, monkeypatch):
+    """When sys.stderr is not a TTY, sweep must not print progress lines."""
+    import io
+    from unittest.mock import MagicMock
+
+    options = _options(tmp_path)
+    fake_stderr = io.StringIO()
+    fake_stderr.isatty = MagicMock(return_value=False)
+
+    monkeypatch.setattr("sys.stderr", fake_stderr)
+    sweep(options)
+
+    assert fake_stderr.getvalue() == ""
+    
