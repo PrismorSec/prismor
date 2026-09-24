@@ -1114,6 +1114,12 @@ class StreamScreen:
 
         self._capture_usage(event)
 
+        if "error" in event:
+            # Anthropic's `event: error`, and OpenAI/Gemini in-stream errors.
+            # Provider error text can echo request content, so mask it.
+            _mask_in_place(event, self.screen.redact)
+            return _sse_reframe(chunk, event)
+
         if self.provider == "anthropic":
             return self._feed_anthropic(chunk, event)
         if self.provider == "google":
@@ -1729,12 +1735,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     _mask_in_place(body, self.screen.redact)
                     payload = json.dumps(body).encode()
                 else:
-                    try:
-                        text = payload.decode("utf-8", errors="replace")
-                        payload = self.screen.redact(text).encode("utf-8")
-                    except Exception:
-                        pass
-
+                    text = payload.decode("utf-8", errors="replace")
+                    payload = self.screen.redact(text).encode("utf-8")
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() not in _STRIP_RESPONSE_HEADERS:
@@ -1778,6 +1780,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _relay_stream(self, resp: Any, provider: str, model: str,
                       subject: Optional[str], upstream_name: str) -> None:
         assert self.screen is not None
+        if resp.status >= 400:
+            # An error answer to a streaming request is plain JSON, not SSE, so
+            # StreamScreen would pass it through unredacted. Buffer it instead.
+            self._relay_buffered(resp, provider, model, True, subject, upstream_name)
+            return
         self.send_response(resp.status)
         for key, value in resp.getheaders():
             if key.lower() not in _STRIP_RESPONSE_HEADERS:

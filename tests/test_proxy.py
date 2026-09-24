@@ -709,8 +709,8 @@ def test_google_upstream_default():
 @pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
 def test_relay_buffered_redacts_upstream_error_bodies(monkeypatch, status):
     """Credentials echoed in 4xx/5xx error payloads must be redacted."""
-    secret = "dummy_test_key_12345" 
-    redacted_marker = "[REDACTED]"   
+    secret = "dummy_test_key_12345"
+    redacted_marker = "[REDACTED]"
 
     sent_headers = []
     sent_payload = []
@@ -749,6 +749,49 @@ def test_relay_buffered_redacts_upstream_error_bodies(monkeypatch, status):
     output_str = sent_payload[0].decode("utf-8")
     assert secret not in output_str, "Secret leaked in error body"
     assert redacted_marker in output_str
+
+def _redacting_screen(monkeypatch, tmp_path, secret):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    monkeypatch.setattr(screen, "redact", lambda text: text.replace(secret, "[REDACTED]"))
+    return screen
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
+def test_stream_redacts_in_stream_error_frames(monkeypatch, tmp_path, provider):
+    secret = "dummy_test_key_12345"
+    screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    stream = StreamScreen(screen, provider, "m", None)
+    out = stream.feed(_sse("error", {"type": "error",
+                                     "error": {"message": f"bad key {secret}"}}))
+    assert secret.encode() not in out
+    assert out.startswith(b"event: error\n") and b"[REDACTED]" in out
+
+
+def test_streaming_request_error_body_is_buffered_and_redacted(monkeypatch, tmp_path):
+    """A 4xx to a stream request is plain JSON; it must not bypass redaction."""
+    secret = "dummy_test_key_12345"
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    written, headers = [], []
+    handler.wfile = type("Writer", (), {"write": lambda self, b: written.append(b)})()
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda k, v: headers.append((k, v)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    body = json.dumps({"error": {"message": f"invalid key {secret}"}}).encode()
+    chunks = [body, b""]
+    response = type("Response", (), {
+        "status": 401,
+        "read": lambda self, *a: chunks.pop(0) if chunks else b"",
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_stream(handler, response, "anthropic", "m", None,
+                                         "anthropic")
+
+    out = b"".join(written)
+    assert secret.encode() not in out and b"[REDACTED]" in out
+    assert ("Transfer-Encoding", "chunked") not in headers
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
