@@ -1,6 +1,6 @@
 """Prismor — interactive setup wizard, usable from both pip install and git clone.
 
-This module contains the full 4-step TUI wizard and the non-interactive install path.
+This module contains the full multi-step TUI wizard and the non-interactive install path.
 It is the backing implementation for ``prismor setup``.
 
 The original wizard in ``scripts/setup.py`` continues to work for git-clone users

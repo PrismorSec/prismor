@@ -244,9 +244,14 @@ bash ~/.prismor/scripts/init.sh .
 The setup wizard lets you:
 
 1. Choose enforcement mode (`observe` or `enforce`)
-2. Toggle detection rules on/off. Each rule shows exactly what it catches.
-3. Select which agents to hook (Claude Code, Cursor, Windsurf, OpenClaw, Hermes)
-4. Review and confirm before installing
+2. In enforce mode, pick a governance mode (`dev-safe`, `trusted-workspace`,
+   `regulated-airgap`) or `custom` to toggle detection rules on/off. Each rule
+   shows exactly what it catches.
+3. Select which agents to hook
+4. Enable secret cloaking
+5. Configure the LLM judge
+6. Choose install scope (this project or global)
+7. Optionally set an unlock password, then review and confirm before installing
 
 After setup, restart your shell and the `prismor` command is available from any directory.
 

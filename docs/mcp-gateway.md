@@ -77,7 +77,9 @@ prismor mcp-gateway [serve] [--config PATH] [--mode enforce|observe]
                     [--namespace plain|none] [--workspace PATH]
 ```
 
-- `--mode enforce` (default) blocks policy violations; `observe` logs only.
+- `--mode enforce` blocks policy violations; `observe` logs only. A bare
+  `serve` defaults to `observe`; `install` writes `--mode enforce` into the
+  configs it migrates.
   The control plane can still force enforce per agent/device.
 - **Shim mode** — front a single server with no config file:
   `prismor mcp-gateway --upstream 'npx -y @modelcontextprotocol/server-github'`

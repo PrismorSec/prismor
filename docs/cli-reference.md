@@ -18,7 +18,7 @@ There are two shapes:
 - **Top-level commands** — `prismor status`, `prismor audit`, `prismor check …`
 - **Domains** that take an action — `prismor cloak add …`, `prismor canary plant …`
 
-`prismor` is a deprecated drop-in alias for `prismor`; it forwards everything
+`immunity` is a deprecated drop-in alias for `prismor`; it forwards everything
 unchanged and prints a migration notice. Use `prismor`.
 
 ---
@@ -339,12 +339,6 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace` | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
-
-### proxy
-
-| Command | Key flags | Description |
-|---|---|---|
-| `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode observe\|enforce`, `--workspace`, `--config`, `--session-id`, `--agent-name` | Policy proxy for model traffic. Point an agent at it with `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL`; the outbound prompt is screened and cloak-masked, and every `tool_use` in the response is evaluated as the tool call it is. See [the LLM proxy](llm-proxy.md). |
 
 ### proxy
 
