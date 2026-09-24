@@ -199,8 +199,7 @@ class TestMemoryInvisibleControlDetection(unittest.TestCase):
         for glob in (".claude/rules/*.md", ".claude/agents/*.md",
                      ".cursor/rules/*.mdc", ".github/copilot-instructions.md",
                      ".devin/rules/*.md", ".windsurf/rules/*.md",
-                     ".roo/rules/*.md", ".augment/rules/*.md",
-                     "**/.github/copilot-instructions.md"):
+                     ".roo/rules/*.md", ".augment/rules/*.md"):
             self.assertIn(glob, _MEMORY_GLOBS)
         self.assertEqual(
             set(_MEMORY_PATH_PATTERNS), set(_MEMORY_BASENAMES) | set(_MEMORY_GLOBS))

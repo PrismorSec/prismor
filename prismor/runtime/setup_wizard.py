@@ -22,13 +22,29 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+# Terminal formatting lives in tui_format, which was split out of this module so
+# that non-interactive callers need not import the wizard's atexit/signal
+# handlers. These are the names it took with it — aliased rather than redefined
+# so the two renderings cannot drift apart.
+from prismor.runtime.tui_format import (
+    BLU,
+    BOLD,
+    CYAN,
+    DIM,
+    GRN,
+    RED,
+    VERSION,
+    WHT,
+    YEL,
+    pad as _pad,
+    term_width as _term_width,
+    visible_len as _visible_len,
+    w as _w,
+)
+
 # ── Constants ────────────────────────────────────────────────────────────────
 
-try:
-    from prismor.runtime import __version__ as _PKG_VERSION
-except Exception:
-    _PKG_VERSION = "0.0.0"
-_VERSION = f"v{_PKG_VERSION}"
+_VERSION = VERSION
 _BACK = object()  # sentinel for "go back"
 
 _PKG_DIR = Path(__file__).resolve().parent
@@ -45,48 +61,24 @@ _REPO_ROOT = _PKG_DIR.parent.parent
 
 # ── ANSI ─────────────────────────────────────────────────────────────────────
 
-RST  = "\033[0m"
-BOLD = "\033[1m"
-DIM  = "\033[37m"
-CYAN = "\033[36m"
-GRN  = "\033[32m"
-YEL  = "\033[33m"
-RED  = "\033[31m"
-BLU  = "\033[34m"
-WHT  = "\033[97m"
-
 HIDE    = "\033[?25l"
 SHOW    = "\033[?25h"
 ALT_ON  = "\033[?1049h"
 ALT_OFF = "\033[?1049l"
+
+# Piped or captured output (an agent's Bash tool, CI logs) gets plain text: no
+# colour, no cursor/screen codes, no spinner frames smeared across the log.
+_PLAIN = not sys.stdout.isatty() or bool(os.environ.get("NO_COLOR"))
+if _PLAIN:
+    RST = BOLD = DIM = CYAN = GRN = YEL = RED = BLU = WHT = ""
+    HIDE = SHOW = ALT_ON = ALT_OFF = ""
 
 
 def _s(*codes: str) -> str:
     return "".join(codes)
 
 
-def _w(text: str, *codes: str) -> str:
-    if not codes or codes == ("",):
-        return str(text)
-    return "".join(codes) + str(text) + RST
-
-
-def _visible_len(text: str) -> int:
-    return len(re.sub(r"\033\[[0-9;]*m", "", str(text)))
-
-
-def _pad(text: str, width: int) -> str:
-    return text + " " * max(0, width - _visible_len(text))
-
-
 # ── Screen buffer ────────────────────────────────────────────────────────────
-
-def _term_width() -> int:
-    try:
-        return os.get_terminal_size().columns
-    except Exception:
-        return 80
-
 
 def _term_height() -> int:
     try:
@@ -777,7 +769,6 @@ def _default_judge() -> str:
 
 def _judge_ready(provider: str) -> str:
     """One-word readiness hint per provider, from what is on this host."""
-    import shutil
     if provider == "claude":
         from prismor.runtime.semantic_guard_v2 import CLAUDE_CLI
         return "found" if os.path.exists(CLAUDE_CLI) else "not installed"
@@ -1110,6 +1101,13 @@ _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 def _spinner_run(label: str, fn) -> None:
+    if _PLAIN:
+        try:
+            ok, msg = fn()
+        except Exception as e:
+            ok, msg = False, str(e)[:60]
+        print(f"  {'✓' if ok else '✗'}  {label}{f'  {msg}' if msg else ''}")
+        return
     stop = threading.Event()
 
     def spin() -> None:
@@ -1260,8 +1258,9 @@ def _install_skill(target: Path):
 
 
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
-    sys.stdout.write(ALT_OFF)
-    sys.stdout.write("\033[H\033[J" + HIDE)
+    if not _PLAIN:
+        sys.stdout.write(ALT_OFF)
+        sys.stdout.write("\033[H\033[J" + HIDE)
     sys.stdout.flush()
     print(_w("  Installing Prismor...\n", BOLD, CYAN))
 
@@ -1366,6 +1365,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         def _write_judge():
             _write_judge_setting(target, judge[0], judge[1])
             label = "Prismor API" if judge[0] == "prismor" else f"{judge[0]} ({judge[1] or 'CLI default'})"
+            # The api judge imports litellm, which the base install leaves out.
+            # Without it every verdict falls back to heuristics, i.e. the judge
+            # is silently off — say so here, where the user just chose it.
+            if judge[0] == "api":
+                import importlib.util
+                if importlib.util.find_spec("litellm") is None:
+                    return False, "needs litellm: pip install 'prismor[semantic]'"
             return True, label
         _spinner_run("Setting LLM judge", _write_judge)
 
@@ -1554,6 +1560,61 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+# Env vars agent CLIs set on the shells they spawn. ponytail: a known-names
+# list, not a general detector; add an agent here when it sets its own marker.
+_AGENT_ENV = ("AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI")
+
+
+def running_under_agent() -> bool:
+    return any(os.environ.get(k) for k in _AGENT_ENV)
+
+
+def print_agent_questions(target: Path) -> None:
+    """What an agent sees when it runs a bare `prismor setup`: the wizard's
+    choices as plain questions plus the exact command for each answer, so the
+    agent asks the user instead of silently installing log-only defaults."""
+    target = target.resolve()
+    agents = [n for n, ok in _detect_agents(target).items() if ok] or ["claude"]
+    n_rec = sum(1 for r in _load_rules() if r.get("recommended"))
+    env_files = sorted(
+        p.name for p in target.glob(".env*")
+        if p.is_file() and not p.name.endswith((".example", ".sample", ".template"))
+    )
+    secrets = ", ".join(env_files) + " (values not hidden from agents yet)" if env_files else "no .env files found"
+    cloak_rec = "recommended" if env_files else "optional"
+    cmd = f"prismor setup --non-interactive --mode enforce --recommended --cloak --scope project --agents {','.join(agents)}"
+    print(f"""Prismor setup needs a few answers from the user. Nothing has been installed yet.
+Ask the user these questions, then run the command at the bottom.
+
+Detected
+  workspace  {target}
+  agents     {', '.join(agents)}
+  secrets    {secrets}
+
+1. Mode: should Prismor block risky actions, or only log them?
+     enforce   {f"block the {n_rec} recommended safety-floor rules".ljust(48)}--mode enforce --recommended   [recommended]
+     observe   {"log only, block nothing".ljust(48)}--mode observe
+2. Secret cloaking: replace secret values with @@SECRET:name@@ placeholders the agent never sees?
+     yes       --cloak      [{cloak_rec}]
+     no        --no-cloak
+3. Scope: protect only this project, or every project on this machine?
+     project   --scope project   [recommended]
+     global    --scope global
+4. Agents: which to protect? Detected: {', '.join(agents)}   --agents {','.join(agents)}
+
+With the recommended answers:
+  {cmd}""")
+    for name in env_files:
+        print(f"  prismor cloak add --env-file {name}   # imports its values as placeholders; only names are printed")
+    print("""
+5. Later policy changes: Prismor blocks agents from editing its own policy. To let an agent
+   add rules you ask for, you approve each change with a password. The user sets it once,
+   in their own terminal (it needs a keyboard, so an agent can't run it):
+     prismor unlock --set-password
+   Then, whenever the agent needs to edit policy:  prismor unlock   (opens a 3-minute window)""")
+    print("\nPrefer the full wizard? The user can run `prismor setup` in their own terminal.")
+
 
 def run_non_interactive(
     target: Path,

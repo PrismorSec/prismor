@@ -33,7 +33,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from prismor.runtime.transcripts.adapters import get_adapters
 from prismor.runtime.transcripts.base import DiscoveredSession, ParseStats

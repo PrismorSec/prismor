@@ -48,7 +48,7 @@ __all__ = [
     "match_install_command", "install_finding", "note_install_command",
     "on_skill_invoked", "fetch_allowed_by_skill", "on_remote_fetch",
     "wrap_hooks", "unwrap_hooks", "run_wrapped_hook", "why", "format_rows", "overview", "send_report", "tag_event", "session_extensions",
-    "unreviewed_in_session",
+    "unreviewed_in_session", "extension_detail",
 ]
 
 _MAX_BYTES = 512 * 1024
@@ -943,6 +943,41 @@ def why(workspace: Path, ref: str) -> Dict[str, Any]:
     children = [r["id"] for r in every if r.get("parent") == row["id"]]
     return {**row, "invocations": (data["items"].get(row["id"]) or {}).get("invocations", []),
             "remote_refs": docs, "children": children}
+
+
+def extension_detail(workspace: Path, ids: List[str], history: bool = False) -> Dict[str, Any]:
+    """One extension's page: which sessions and agents ran under it, and what
+    the agent passed on each call it caused. ``ids`` is the extension plus
+    anything inside it (a plugin's skills), so using a child counts. The ledger
+    keeps the last 50 sessions; ``history`` scans every recorded call instead."""
+    from prismor.runtime.store import get_extension_calls
+    data = _load(workspace)
+    wanted = set(ids)
+    sessions = []
+    for sid, sess in data["sessions"].items():
+        hit = [link for eid, link in (sess.get("links") or {}).items() if eid in wanted]
+        if hit:
+            sessions.append({"session": sid, "agent": sess.get("agent") or "any",
+                             "ts": min(str(h.get("ts") or "") for h in hit), "role": hit[0].get("role")})
+    calls = get_extension_calls(list(wanted), None if history else [s["session"] for s in sessions],
+                                limit=500 if history else 200)
+    known = {s["session"] for s in sessions}
+    for c in reversed(calls):  # oldest first, so a session's ts is its first call
+        if c["session"] not in known:
+            known.add(c["session"])
+            sessions.append({"session": c["session"], "agent": c["agent"] or "any", "ts": c["ts"], "role": "mcp"})
+    sessions.sort(key=lambda s: s["ts"], reverse=True)
+    agents: Dict[str, Dict[str, Any]] = {}
+    for s in sessions:
+        a = agents.setdefault(s["agent"], {"agent": s["agent"], "sessions": 0, "calls": 0, "last": ""})
+        a["sessions"] += 1
+        a["last"] = max(a["last"], s["ts"])
+    by_session = {s["session"]: s["agent"] for s in sessions}
+    for c in calls:
+        key = by_session.get(c["session"]) or c["agent"] or "any"
+        agents.setdefault(key, {"agent": key, "sessions": 0, "calls": 0, "last": ""})["calls"] += 1
+    return {"ids": list(wanted), "sessions": sessions, "calls": calls,
+            "agents": sorted(agents.values(), key=lambda a: -a["sessions"])}
 
 
 def overview(workspace: Path, events: int = 40) -> Dict[str, Any]:

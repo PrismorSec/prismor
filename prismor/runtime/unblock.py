@@ -13,21 +13,15 @@ an agent that tries to apply them for itself just earns a second block.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from prismor.runtime.allow import literal_pattern, yaml_single_quoted
 from prismor.runtime.policy_engine import (
     _CORE_BLOCK_CATEGORIES,
     _NON_OVERRIDABLE_RULE_IDS,
     _SELF_PROTECTION_RULE_IDS,
 )
-
-# Longest evidence we will paste back as a literal allowlist pattern. Beyond
-# this the string is probably a whole command line whose incidental parts (pids,
-# temp paths, timestamps) would never match twice, so a copied pattern would be
-# a dead entry that leaves the user believing they made an exception.
-_MAX_LITERAL_EVIDENCE = 120
 
 # Longest rule pattern worth quoting back. The core rules carry multi-line
 # lookahead regexes that fill a screen; past this, naming the rule is kinder.
@@ -51,39 +45,9 @@ def _policy_path(workspace: Optional[Path]) -> str:
     return str((workspace / ".prismor" / "policy.yaml")) if workspace else ".prismor/policy.yaml"
 
 
-def _literal_pattern(finding: Dict[str, Any]) -> Optional[str]:
-    """A regex matching exactly this evidence, or None if it won't generalize.
-
-    Three things make a suggestion worse than none, because each yields an entry
-    that looks right and silently never matches:
-      - truncated evidence (`_truncate` appends an ellipsis at 220 chars);
-      - evidence long enough to be a whole command line, whose pids and temp
-        paths would never recur;
-      - a newline, which YAML would fold into a space inside a quoted scalar.
-    Evidence joins each matched field with a newline, so the first line is the
-    primary one (the path or command); allowlists match with `search`, so a
-    first-line pattern still hits the joined blob.
-    """
-    evidence = str(finding.get("evidence") or "").strip()
-    first_line = evidence.split("\n", 1)[0].strip()
-    if not first_line or first_line.endswith("...") or len(first_line) > _MAX_LITERAL_EVIDENCE:
-        return None
-    return re.escape(first_line)
-
-
-def _yaml_single_quoted(value: str) -> str:
-    """Quote a regex for YAML single-quoted style.
-
-    Regexes are full of backslashes, and YAML's double-quoted style would read
-    `\\.` as an unknown escape and refuse to parse. Single-quoted style is
-    literal — only the quote itself needs doubling.
-    """
-    return "'" + value.replace("'", "''") + "'"
-
-
 def _allowlist_yaml(rule_id: str, finding: Dict[str, Any]) -> List[str]:
     """YAML for an allowlist entry suppressing this rule for this evidence only."""
-    pattern = _literal_pattern(finding)
+    pattern = literal_pattern(finding.get("evidence") or "")
     if pattern is None:
         pattern = "<regex matching only the case you want to allow>"
     # Column 0 for the top-level key: these lines are meant to be pasted
@@ -91,9 +55,9 @@ def _allowlist_yaml(rule_id: str, finding: Dict[str, Any]) -> List[str]:
     return [
         "allowlists:",
         f"  - id: allow-{rule_id}",
-        f"    rule_ids: [{_yaml_single_quoted(rule_id)}]",
+        f"    rule_ids: [{yaml_single_quoted(rule_id)}]",
         "    patterns:",
-        f"      - {_yaml_single_quoted(pattern)}",
+        f"      - {yaml_single_quoted(pattern)}",
         "    reason: '<why this specific case is safe>'",
     ]
 
@@ -111,7 +75,7 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
     an unblock path is that the narrow one should be the easy one.
     """
     path = _policy_path(workspace)
-    pattern = _literal_pattern(finding)
+    pattern = literal_pattern(finding.get("evidence") or "")
     steps: List[str] = []
     if pattern:
         steps.append(
@@ -142,15 +106,28 @@ def _self_protection_steps(rule_id: str, workspace: Optional[Path]) -> List[str]
     relaxed from the command line; if this one could be too, an agent that hit
     any other rule could simply relax this one first and then that one.
     """
+    # Say which state this machine is in. "Set a password if you haven't" left
+    # the agent guessing, and it guessed "just run prismor unlock", which on a
+    # fresh install only prints that no password exists.
+    try:
+        from prismor.runtime import unlock as _unlock
+        configured = _unlock.is_configured()
+    except Exception:
+        configured = True
+    if configured:
+        let_agent = ("2. To let the agent do it: open a short window with  prismor unlock  "
+                     "(you will be asked for your Prismor password; the window is 3 minutes "
+                     "by default), then have the agent retry.")
+    else:
+        let_agent = ("2. To let the agent do it: no unlock password is set on this machine yet. "
+                     "In your own terminal run  prismor unlock --set-password  once, then  "
+                     "prismor unlock  (a 3-minute window), then have the agent retry.")
     return [
         f"{rule_id} guards Prismor's own configuration, so it cannot be relaxed "
         "with `prismor allow`.",
         "1. If a person asked for this: run it yourself in your own terminal — "
         "Prismor governs agent tool calls, not you.",
-        "2. To let the agent do it: open a short window with  prismor unlock  "
-        "(you will be asked for your Prismor password; the window is 3 minutes "
-        "by default), then have the agent retry.",
-        "3. If no unlock password is set up yet:  prismor unlock --set-password",
+        let_agent,
     ]
 
 

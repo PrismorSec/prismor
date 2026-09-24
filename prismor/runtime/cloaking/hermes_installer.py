@@ -15,12 +15,11 @@ and enable it via ``plugins.enabled`` in Hermes config.yaml.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
-from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 

@@ -25,11 +25,6 @@ from typing import List
 _BUILTIN_FILE = Path(__file__).resolve().parent / "builtin_patterns.txt"
 
 
-def builtin_patterns_file() -> Path:
-    """Path to the bundled, read-only pattern file."""
-    return _BUILTIN_FILE
-
-
 def custom_patterns_file() -> Path:
     """Path to the user's editable custom-pattern file.
 

@@ -309,3 +309,30 @@ def test_mcp_server_with_no_config_file_is_recorded_when_a_session_uses_it(ws):
     (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {"browser-bridge": {"command": "npx", "args": ["bb"]}}}))
     names = [r for r in ext.sync(ws) if r["name"] == "browser-bridge"]
     assert len(names) == 1 and not names[0].get("observed")
+
+
+def test_extension_detail_lists_agents_sessions_and_the_input_of_each_call(ws):
+    # The extension page answers "which agents used this and what did they pass it".
+    import sqlite3
+    from prismor.runtime.store import prismor_home
+    ext.set_agent("claude")
+    ext.sync(ws)
+    call = {"type": "tool_use", "metadata": {"tool_name": "mcp__browser-bridge__navigate"}}
+    ext.tag_event(ws, "s1", call)
+    ext.set_agent("")
+    db = prismor_home() / "prismor.db"
+    db.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT, ts TEXT, type TEXT, agent_event TEXT, raw_json TEXT)")
+    raw = {"agent": "claude", "metadata": {**call["metadata"], "raw": {"tool_use_id": "t1", "tool_input": {"url": "https://a.dev"}}}}
+    for _ in range(2):  # the same call stored twice counts once
+        conn.execute("INSERT INTO events (session_id, ts, agent_event, raw_json) VALUES ('s1', '2026-01-01', 'PreToolUse', ?)",
+                     (json.dumps(raw),))
+    conn.commit()
+    conn.close()
+
+    d = ext.extension_detail(ws, ["mcp:observed#browser-bridge"])
+    assert [s["session"] for s in d["sessions"]] == ["s1"]
+    assert d["agents"] == [{"agent": "claude", "sessions": 1, "calls": 1, "last": d["sessions"][0]["ts"]}]
+    assert len(d["calls"]) == 1 and '"https://a.dev"' in d["calls"][0]["input"]
+    assert len(ext.extension_detail(ws, ["mcp:observed#browser-bridge"], history=True)["calls"]) == 1

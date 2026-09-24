@@ -42,9 +42,7 @@ that vendor was just fetched (the "follow the SKILL.md" shape).
 
 from __future__ import annotations
 
-import json
 import re
-import shlex
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
 

@@ -14,7 +14,7 @@ Hermes Agent supports two plugin discovery mechanisms for Python plugins:
 
 2. **Filesystem install** — `prismor cloak install --agent hermes` copies the plugin files to `~/.hermes/plugins/prismor-cloak/` and enables it in Hermes' `config.yaml`.
 
-Both paths converge on the same `register()` function in `prismor.runtime.cloaking.hermes_plugin_entry`.
+Both paths run the same code: the filesystem plugin's `__init__.py` is a verbatim copy of `prismor.runtime.cloaking.hermes_plugin_entry`, kept self-contained so it loads even when Hermes cannot import `prismor` (a test fails if the two drift).
 
 ---
 
@@ -153,7 +153,7 @@ hooks:
 
 - `prismor/runtime/cloaking/hermes_plugin_entry.py` — shared `register()` function consumed by both pip discovery and filesystem install
 - `prismor/runtime/cloaking/hermes_installer.py` — `install()`/`uninstall()`/`status()` for filesystem-level setup (copies plugin files, enables in Hermes config, sets env vars)
-- `prismor/runtime/cloaking/hermes-plugin/__init__.py` — re-exports `register()` for the filesystem install path
+- `prismor/runtime/cloaking/hermes-plugin/__init__.py` — self-contained copy of `hermes_plugin_entry.py` for the filesystem install path
 - `prismor/runtime/cloaking/hermes-plugin/plugin.yaml` — plugin manifest with hook declarations
 
 ---

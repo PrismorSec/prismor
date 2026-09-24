@@ -60,3 +60,30 @@ def test_blocked_row_quotes_the_pattern_that_fired(monkeypatch):
     store._attach_matched_patterns(events, None)
     assert events[0]["policy"]["pattern"] == r"yes\s*\|"
     assert events[0]["policy"]["matched"] == "yes |"
+
+
+def test_hook_runs_from_the_transcript_attach_to_their_call_and_prompt(tmp_path):
+    # Prismor sees only its own hook; the agent's transcript lists every hook
+    # that ran for a call, with timing. Pre sorts before Post.
+    import json
+    from prismor.runtime.store import _attach_hook_runs
+    lines = [
+        {"timestamp": "2026-01-01T00:00:02Z", "attachment": {"type": "hook_success", "hookEvent": "PostToolUse",
+         "toolUseID": "t1", "command": "post.sh", "durationMs": 40, "exitCode": 0}},
+        {"timestamp": "2026-01-01T00:00:01Z", "attachment": {"type": "hook_success", "hookEvent": "PreToolUse",
+         "toolUseID": "t1", "command": "a/b/pre.sh", "durationMs": 2500, "exitCode": 0}},
+        {"timestamp": "2026-01-01T00:00:00Z", "attachment": {"type": "hook_non_blocking_error", "hookEvent": "SessionStart",
+         "toolUseID": "x", "command": "start.sh", "durationMs": 9, "exitCode": 1}},
+        {"type": "user", "message": "not a hook"},
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\nnot json\n")
+    call = {"toolUseId": "t1", "agentEvent": "PreToolUse", "_tsRaw": "2026-01-01T00:00:01Z"}
+    start = {"agentEvent": "SessionStart", "_tsRaw": "2026-01-01T00:00:03Z"}
+    other = {"toolUseId": "t2", "agentEvent": "PreToolUse", "_tsRaw": "2026-01-01T00:00:05Z"}
+    _attach_hook_runs([call, start, other], str(path))
+    assert [(r["event"], r["command"], r["ms"]) for r in call["hookRuns"]] == [
+        ("PreToolUse", "a/b/pre.sh", 2500), ("PostToolUse", "post.sh", 40)]
+    assert start["hookRuns"][0]["ok"] is False and start["hookRuns"][0]["exit"] == "1"
+    assert "hookRuns" not in other
+    _attach_hook_runs([other], str(tmp_path / "missing.jsonl"))  # no transcript, no crash

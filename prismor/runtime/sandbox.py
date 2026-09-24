@@ -6,7 +6,6 @@ is allowed, then this module constrains where the allowed command executes.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import shlex
 import shutil
@@ -129,10 +128,6 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(cfg.get("resource_limits"), dict):
         cfg["resource_limits"] = {}
     return cfg
-
-
-def is_enabled(raw: Optional[Dict[str, Any]]) -> bool:
-    return bool(effective_config(raw).get("enabled"))
 
 
 def docker_status() -> Dict[str, Any]:

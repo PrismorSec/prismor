@@ -19,7 +19,6 @@ import json
 import os
 import shutil
 import subprocess
-import stat
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -218,7 +217,7 @@ def _check_cloaking(workspace: Path) -> List[AuditFinding]:
     findings: List[AuditFinding] = []
 
     try:
-        from prismor.runtime.cloaking import status as cloak_status, list_secrets, secrets_dir
+        from prismor.runtime.cloaking import status as cloak_status, list_secrets
     except ImportError:
         findings.append(AuditFinding(
             severity="HIGH",
@@ -518,7 +517,6 @@ def _check_network_rules(workspace: Path) -> List[AuditFinding]:
     }
 
     active_ids = {r.id for r in engine.rules}
-    active_network = network_rule_ids & active_ids
     missing_network = network_rule_ids - active_ids
 
     if missing_network:

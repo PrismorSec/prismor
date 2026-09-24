@@ -70,6 +70,20 @@ def test_tofu_baseline_new_unchanged_changed_approved(ws):
     assert rows["tidy"]["status"] == "approved"
 
 
+def test_scan_cache_skips_unchanged_skills_until_rules_change(ws):
+    from prismor.runtime.policy_engine import PolicyEngine
+    engine = PolicyEngine(workspace=ws)
+    first = audit_skills(ws, engine=engine)
+    calls = []
+    real = engine.evaluate
+    engine.evaluate = lambda *a, **k: calls.append(1) or real(*a, **k)
+    assert audit_skills(ws, engine=engine) == [{**r, "status": "unchanged"} for r in first]
+    assert calls == []  # both skills served from the cache
+    next(r for r in engine.rules if "skill_manifest" in r.event_types).severity = "LOW"
+    audit_skills(ws, engine=engine)
+    assert len(calls) == 2  # a rule change invalidates every cached scan
+
+
 def test_changed_or_flagged_only_reports_hot(ws):
     hot = {r["name"] for r in changed_or_flagged(ws)}
     assert "acme" in hot          # self-updating

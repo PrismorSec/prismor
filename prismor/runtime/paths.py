@@ -57,13 +57,6 @@ def _resolve(*relparts: str) -> Path:
     return _BUNDLED_DATA.joinpath(*relparts)
 
 
-def data_root() -> Path:
-    """Best-guess root that contains ``advisories/``, ``keys/`` and ``templates/``."""
-    feed = feed_path()
-    # feed == <root>/advisories/immunity-feed.json → root is two levels up.
-    return feed.parent.parent
-
-
 def feed_path() -> Path:
     return _resolve("advisories", "immunity-feed.json")
 

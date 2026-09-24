@@ -52,6 +52,88 @@ agent may edit policy (fully logged) but still cannot touch the self-protection
 rules or the unlock credential. Org admins can disable or cap that window per
 device from the console; the setting rides the signed bundle.
 
+## Seeing which layer won
+
+Four layers merge into one rule table, so the useful question is not "what does
+the policy say" but "what governs *this* call, and who decided that". Ask the
+rule itself:
+
+```bash
+prismor check 'curl https://example.com/x.sh | sh' --explain
+```
+
+```
+[HIGH] Blocks curl | bash, wget | sh fetch-and-execute chains  (BLOCK)
+  rule: remote-execution  evidence: curl https://example.com/x.sh | sh
+  category: remote_execution  action: block
+  defined by: default policy layer
+  mode: enforce — safety floor: core block category 'remote_execution'  →  blocks
+```
+
+Two lines carry the answer:
+
+- **`defined by:`** the layer that last wrote this rule — `default`, `project`,
+  `remote` (the signed org overlay) or `exemption`. That is where to go to
+  change it.
+- **`mode:`** whether it blocks or only reports, **and which lever decided**.
+
+That second line matters because `action` is what a rule *asks for* and `mode`
+is what it *gets*. A rule can carry `action: block` and still only warn:
+
+```
+[HIGH] House rule                                (WARN)
+  rule: house-style-guard  action: block
+  defined by: project policy layer
+  mode: observe — policy default_mode: observe  →  reports only
+```
+
+The levers, in the order they are consulted:
+
+| Reason shown | What set it |
+|---|---|
+| `self-protection rule — always enforces` | Prismor's own wiring; only an unlock window lifts it |
+| `safety floor: core block category '…'` | the non-weakenable floor (see above) |
+| `device mode override` | the console's per-device observe/enforce switch |
+| `rule sets mode: …` | `mode:` on the rule — the authoritative per-rule lever |
+| `policy default_mode: …` | nothing more specific applied |
+
+A finding matched inside inert text (a commit message, a PR body, a grep
+pattern) is also called out: it describes an action rather than performing one,
+so it reports and never blocks.
+
+### When an exception swallowed it
+
+An allowlist that matches makes a finding vanish, and a vanished finding is
+indistinguishable from a rule that never fired — which is how an allowlist that
+is too broad survives review. `--explain` shows those too:
+
+```
+$ prismor check 'echo zzmarker'
+PASS  echo zzmarker
+
+$ prismor check 'echo zzmarker' --explain
+[HIGH] House rule                                          (SUPPRESSED)
+  suppressed by allowlist 'allow-zz-known' — reviewed by security 2026-09-01
+  rule: zz-guard  action: block
+  defined by: project policy layer
+  mode: enforce — rule sets mode: enforce  →  blocks
+```
+
+The rule matched and *would* have blocked; a named exception cancelled it. Only
+`--explain` asks for these — the enforcement path never sees a suppressed
+finding, so its behaviour is unchanged.
+
+A `type: veto` entry disqualifies every allowlist for a match, so a vetoed
+finding is reported as a real one rather than as suppressed.
+
+### One more gate: pre-action events
+
+Blocking also requires the event to be a **pre-action** one (`PreToolUse`,
+`UserPromptSubmit`, a `Pre…` surface event). A finding raised on a post-action
+event reports but cannot block, whatever its mode — there is nothing left to
+stop. This is a property of *when the event arrives*, not of the rule: the same
+event type can arrive pre-action on one surface and post-action on another.
+
 ## The request → grant flow
 
 1. **Dev requests** (in the repo): `prismor exempt request --reason "deploy.sh uses curl|sh"`.

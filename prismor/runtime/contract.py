@@ -131,11 +131,6 @@ def strongest(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         str(f.get("action") or BLOCK).lower(), 0))
 
 
-def is_pre_action(agent_event: str) -> bool:
-    """Whether this event describes an action that can still be refused."""
-    return str(agent_event or "") in PRE_ACTION_EVENTS
-
-
 # ── decision ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -286,10 +281,11 @@ SURFACES: Tuple[Surface, ...] = (
         normalizer="prismor.runtime.proxy:Screen.tool_event",
         can_refuse=True, can_rewrite=True, can_redact=True,
         notes="Sits on the model traffic itself (ANTHROPIC_BASE_URL / "
-              "OPENAI_BASE_URL), so it governs agents with no hook support at "
-              "all. Screens the outbound prompt and every tool_use the model "
-              "proposes, reshaped through the mirror's normalizer so one rule "
-              "table covers a hooked, mirrored and proposed call alike.",
+              "OPENAI_BASE_URL / Gen AI base_url) and on A2A agent-to-agent "
+              "JSON-RPC, so it governs agents with no hook support at all. "
+              "Screens the outbound prompt (or A2A message) and every tool_use "
+              "the model proposes, reshaped through the mirror's normalizer so "
+              "one rule table covers a hooked, mirrored and proposed call alike.",
     ),
     Surface(
         id="inference-hook",

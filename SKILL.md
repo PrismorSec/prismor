@@ -94,6 +94,10 @@ pip install prismor
 prismor setup            # interactive setup TUI
 ```
 
+Run from your shell (no TTY), a bare `prismor setup` installs nothing and
+prints the wizard's questions with the flags for each answer. Put those
+questions to the user and run the `--non-interactive` command they choose.
+
 The wizard is four steps in observe mode. Choosing **enforce** inserts a
 [governance mode](#3-governance-modes) step — three named postures, each shown
 with its coverage and friction — and only if the user picks `custom` does it

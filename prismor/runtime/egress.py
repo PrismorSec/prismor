@@ -61,7 +61,7 @@ import shlex
 import socket
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urlparse
 
 __all__ = [

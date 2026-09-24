@@ -138,6 +138,97 @@ talks to it as the SDK would. No API key, no network, no `google-genai` install.
 
 The same run as an animation: [gemini.gif](llm-proxy/gemini.gif).
 
+## A2A (agent-to-agent)
+
+The proxy also governs A2A traffic — the JSON-RPC protocol one agent uses to
+hand a task to another. There is nothing new to run and no separate lane to
+configure: A2A names its method (`message/send`, `message/stream`,
+`tasks/send`, ...) in the JSON-RPC body, so the same endpoint serves both model
+calls and agent-to-agent calls, and the proxy picks the lane per request.
+
+Point the calling agent's A2A client base URL at the proxy:
+
+```python
+from a2a.client import A2AClient          # or any A2A client
+client = A2AClient(url="http://127.0.0.1:7080", ...)
+```
+
+```json
+// proxy.json -- the "upstream" is the remote agent's A2A endpoint
+{
+  "upstreams": { "planner": { "base_url": "https://planner.agents.internal" } },
+  "keys": { "psk_live_ops": { "subject": "user:ops", "upstream": "planner" } }
+}
+```
+
+On each screened method the proxy pulls the text out of the message -- every
+`TextPart`, and every `DataPart` (a data part is exactly where an injected
+instruction or a leaked secret rides) -- and runs it through the same policy and
+the same cloak masking as a model prompt. A blocked message comes back as a
+JSON-RPC error the client parses (`error.code -32001`), not an HTTP crash:
+
+```json
+{"jsonrpc": "2.0", "id": "req-1",
+ "error": {"code": -32001,
+           "message": "Blocked by Prismor [prompt-injection]: injected instruction",
+           "data": {"prismor": "policy_block"}}}
+```
+
+![An A2A message-send blocked as a JSON-RPC error, and a safe one passing](llm-proxy/a2a.png)
+
+Secrets in the outbound message are masked before it reaches the other agent,
+and text in the agent's reply is redacted on the way back. Streaming A2A
+(`message/stream`) is screened on the request and forwarded on the response;
+response-side redaction of a streamed A2A reply is not yet done.
+
+## Managed endpoints (Bedrock, Vertex, Azure)
+
+A managed model endpoint does not take a static API key, which is what kept the
+proxy off most production fleets. Each upstream can now name how it
+authenticates with `auth`:
+
+```json
+{
+  "upstreams": {
+    "bedrock": {
+      "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+      "auth": "aws-sigv4", "region": "us-east-1", "service": "bedrock"
+    },
+    "vertex": {
+      "base_url": "https://us-central1-aiplatform.googleapis.com",
+      "auth": "gcp-oauth"
+    },
+    "azure": {
+      "base_url": "https://my-resource.openai.azure.com",
+      "auth_header": "api-key", "api_key_env": "AZURE_OPENAI_KEY"
+    }
+  },
+  "keys": { "psk_live_ops": { "subject": "user:ops", "upstream": "bedrock" } }
+}
+```
+
+- **`aws-sigv4`** signs every request from `AWS_ACCESS_KEY_ID` /
+  `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` when assuming a role).
+  `region` is read from the hostname when you do not name it. The screened,
+  cloak-masked body is what gets signed, so masking a secret never invalidates
+  the signature.
+- **`gcp-oauth`** borrows a short-lived Google token: the GCP metadata server
+  when the proxy runs on GCP, otherwise `gcloud auth print-access-token`. It is
+  cached until shortly before it expires. If you mint tokens another way, keep
+  using the plain static path with `api_key_env`.
+- **Azure** needs no new mode — it is the ordinary static swap under a
+  different header name (`api-key`).
+
+These are *screened*, not merely signed: Bedrock's `InvokeModel` carries the
+Anthropic messages shape, so the same rules that govern a Claude call govern a
+Bedrock one, and Azure's `/openai/deployments/<d>/chat/completions` is screened
+as OpenAI.
+
+One gap to know about: Bedrock's `invoke-with-response-stream` answers in AWS
+event-stream framing rather than SSE, so it cannot be reframed. It is signed
+and forwarded, but not screened — use the buffered `invoke` where policy must
+hold on the response.
+
 ## Virtual keys
 
 With `keys` configured, a client presents a Prismor key and the proxy swaps in

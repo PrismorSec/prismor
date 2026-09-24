@@ -277,7 +277,14 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_self_edit_sig is not None
         and str(latest_self_edit_sig) != str(_current_self_edit_sig())
     )
-    if (version_changed or profile_changed or capture_changed
+    # Prompt guardrails (settings.prompt_guardrails) are served without a
+    # version bump; an admin's edit reaches the agent's next prompt.
+    latest_guardrails_sig = body.get("promptGuardrailsSig")
+    guardrails_changed = (
+        latest_guardrails_sig is not None
+        and str(latest_guardrails_sig) != str(_current_prompt_guardrails_sig())
+    )
+    if (version_changed or profile_changed or capture_changed or guardrails_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
@@ -513,6 +520,22 @@ def _current_egress_sig() -> str:
             egress = {"egress_allowlist": sorted(str(x) for x in legacy)}
         import hashlib
         blob = json.dumps(egress, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _current_prompt_guardrails_sig() -> str:
+    """Canonical JSON of settings.prompt_guardrails → sha256 → 16 hex, matching
+    the server's promptGuardrailsSig. ensure_ascii=False because the server
+    hashes JavaScript's JSON.stringify, which leaves non-ASCII text unescaped."""
+    try:
+        pol = verify_and_load()
+        block = ((pol or {}).get("settings") or {}).get("prompt_guardrails")
+        if not isinstance(block, dict) or not block:
+            return ""
+        import hashlib
+        blob = json.dumps(block, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""

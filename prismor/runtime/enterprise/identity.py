@@ -20,7 +20,6 @@ from prismor.runtime.http_ua import user_agent as _http_user_agent
 
 import json
 import os
-import stat
 from pathlib import Path
 from typing import Any, Dict, Optional
 

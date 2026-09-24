@@ -33,7 +33,7 @@ def test_warn_action():
     assert compile_rule("web_read with secrets_access -> warn").action == "warn"
 
 
-def test_mixed_with_then():
+def test_mixed_with_then_parses():
     r = compile_rule("untrusted_content with private_data then external_comms -> block")
     assert r.steps == [{"untrusted_content", "private_data"}, {"external_comms"}]
 

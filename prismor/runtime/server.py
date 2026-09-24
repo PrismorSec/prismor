@@ -20,6 +20,7 @@ Read endpoints:
     GET /api/agents        → agent registry merged with per-agent call stats
     GET /api/docs          → bundled docs (?name=<file.md> one doc, ?q=… search)
     GET /api/query-prompt  → copy-paste prompt teaching an agent to query the store
+    GET /metrics           → Prometheus text exposition (see docs/observability.md)
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
 
 Write endpoints (human-only — localhost):
@@ -473,6 +474,25 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
             return
 
+        if path == "/metrics":
+            # Prometheus text exposition, rebuilt from the store per scrape.
+            # A scrape must not take the server down, but it also must not
+            # report a silent zero: a failure answers 500 so the target goes
+            # down in Prometheus rather than graphing a flat line.
+            try:
+                from prismor.runtime.metrics import render as render_metrics
+                payload = render_metrics().encode("utf-8")
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self._send_cors()
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
         if path == "/api/mcp-servers":
             workspace = self._resolve_workspace(qs) or Path.cwd()
             try:
@@ -486,6 +506,16 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             try:
                 from prismor.runtime.extensions import session_extensions
                 self._send_json(session_extensions(workspace, (qs.get("id") or [""])[0]))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/extensions/detail":
+            workspace = self._resolve_workspace(qs) or Path.cwd()
+            try:
+                from prismor.runtime.extensions import extension_detail
+                self._send_json(extension_detail(workspace, qs.get("id") or [],
+                                                 history=(qs.get("history") or [""])[0] == "1"))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
             return
@@ -691,7 +721,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/api/agents":
             try:
-                from prismor.runtime.agents import list_agents, load_agents_config
+                from prismor.runtime.agents import list_agents
                 from prismor.runtime.iam import list_agent_ids, load_iam_config
                 workspace = _SERVER_WORKSPACE or Path.cwd()
 
