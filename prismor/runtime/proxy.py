@@ -732,7 +732,7 @@ class Screen:
 
     def _snapshot_one(self, sid: str) -> None:
         try:
-            from prismor.runtime.cli import analyze_events
+            from prismor.runtime.cli import analyze_session_incremental
             from prismor.runtime.store import read_session_events, save_session_snapshot
             events = read_session_events(self.workspace, sid)
             save_session_snapshot(
@@ -743,9 +743,9 @@ class Screen:
                 source="proxy",
                 repo_url=None,
                 events=events,
-                analysis=analyze_events(events, repo_root=self.workspace,
-                                        workspace=self.workspace,
-                                        session_id=sid),
+                analysis=analyze_session_incremental(events, repo_root=self.workspace,
+                                                     workspace=self.workspace,
+                                                     session_id=sid),
             )
         except Exception as exc:  # best-effort, exactly as the runtime path is
             sys.stderr.write(f"[prismor-proxy] snapshot error: {exc}\n")

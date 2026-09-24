@@ -6131,11 +6131,13 @@ def analyze_events(
     repo_root: Path,
     workspace: Optional[Path] = None,
     session_id: str = "",
+    start: int = 0,
+    prior_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     engine = PolicyEngine(workspace=workspace)
-    findings: List[Dict[str, Any]] = []
-    for index, event in enumerate(events):
-        findings.extend(engine.evaluate(event, index, session_id=session_id))
+    findings: List[Dict[str, Any]] = list(prior_findings or [])
+    for index in range(start, len(events)):
+        findings.extend(engine.evaluate(events[index], index, session_id=session_id))
 
     feed_matches = match_advisories(findings, load_feed(repo_root))
     summary = {
@@ -6150,6 +6152,33 @@ def analyze_events(
         "feedMatches": feed_matches,
         "blockCategories": sorted(engine.block_categories),
     }
+
+
+def analyze_session_incremental(
+    events: List[Dict[str, Any]],
+    *,
+    repo_root: Path,
+    workspace: Path,
+    session_id: str,
+) -> Dict[str, Any]:
+    """``analyze_events`` for a live session: evaluate only the events added
+    since the last call and carry the earlier findings forward from a sidecar
+    next to the session log, so a hook call costs O(new events) instead of
+    O(session) (#477). Cross-event state lives in the on-disk taint store, not
+    the engine, so this matches a full replay. A missing or out-of-step sidecar
+    falls back to a full analysis."""
+    from prismor.runtime.store import locked_json_update, session_log_path
+    sidecar = session_log_path(workspace, session_id).with_suffix(".analysis.json")
+    with locked_json_update(sidecar) as state:
+        done = state.get("events")
+        prior = state.get("findings")
+        if not (isinstance(done, int) and 0 < done <= len(events) and isinstance(prior, list)):
+            done, prior = 0, []
+        analysis = analyze_events(events, repo_root=repo_root, workspace=workspace,
+                                  session_id=session_id, start=done, prior_findings=prior)
+        state["events"] = len(events)
+        state["findings"] = analysis["findings"]
+    return analysis
 
 
 def severity_breakdown(findings: List[Dict[str, Any]]) -> Dict[str, int]:

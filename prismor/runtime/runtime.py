@@ -182,8 +182,8 @@ def evaluate_tool_call(
         append_session_event(workspace, session_id, event)
         events = read_session_events(workspace, session_id)
         try:
-            from prismor.runtime.cli import analyze_events  # lazy: avoid import cycle
-            analysis = analyze_events(
+            from prismor.runtime.cli import analyze_session_incremental  # lazy: avoid import cycle
+            analysis = analyze_session_incremental(
                 events, repo_root=repo_root, workspace=workspace, session_id=session_id
             )
             save_session_snapshot(
