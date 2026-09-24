@@ -1925,8 +1925,10 @@ rules:
     patterns:
       # curl/wget -o FILE ... && ... (chmod +x | bash/sh/zsh | ./run)
       - '\b(curl|wget)\b[^\n]*(-o|-O|--output)\b[^\n]*(&&|;|\|\|)\s*[^\n]*(\bchmod\b[^\n]*\+x|\b(bash|sh|zsh)\b|(^|\s)\./)'
-      # chmod +x a tmp/download path then execute a tmp/download path
-      - '\bchmod\b[^\n]*\+x[^\n]*(/tmp/|/var/tmp/|/dev/shm/)\S+[^\n]*(&&|;)\s*[^\n]*(/tmp/|/var/tmp/|/dev/shm/)'
+      # fetch, then chmod +x a tmp path and execute a tmp path. The fetch is
+      # required: a locally written scratch script is not a dropper (#483).
+      # Cross-call staging (fetch now, run later) is learning.py's job.
+      - '\b(curl|wget|fetch|nc|ncat|socat|iwr|Invoke-WebRequest|urllib|requests\.get)\b[^\n]*\bchmod\b[^\n]*\+x[^\n]*(/tmp/|/var/tmp/|/dev/shm/)\S+[^\n]*(&&|;)\s*[^\n]*(/tmp/|/var/tmp/|/dev/shm/)'
     action: block
 
   # ── HIGH: Disable host security services or firewall ────────────────────
