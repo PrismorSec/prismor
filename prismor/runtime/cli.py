@@ -6202,23 +6202,24 @@ def _offer_transcript_backfill(
     hint = "  Reconstruct it later with: prismor ingest --discover\n"
 
     try:
-        from prismor.runtime.transcripts.adapters import get_adapters
+        from prismor.runtime.transcripts.driver import SweepOptions, pending
     except Exception:
         return
 
-    # Cheap pre-check: only ask when there is genuinely something to read.
-    # Discovery stats files without opening them, and stops at the first hit.
-    found = False
+    options = SweepOptions(
+        workspace=workspace,
+        repo_root=repo_root,
+        since_days=30.0,
+        max_events=50_000,
+        persist=True,
+    )
+    # Only ask when there is genuinely something to read. Discovery stats
+    # files without opening them, so this is cheap even on a large history.
     try:
-        for adapter in get_adapters(None):
-            for _ in adapter.discover():
-                found = True
-                break
-            if found:
-                break
+        todo = pending(options)
     except Exception:
         return
-    if not found:
+    if not todo:
         return
 
     if choice is None:
@@ -6229,6 +6230,7 @@ def _offer_transcript_backfill(
         print("\n[prismor] Past agent activity was found on this machine.")
         print("  Replaying it shows what your policy would have blocked, and")
         print("  populates the dashboard with real history instead of an empty page.")
+        print(f"  {_sweep_summary(todo, options.max_events)}.")
         try:
             answer = input("  Reconstruct it now? [Y/n] ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -6239,25 +6241,72 @@ def _offer_transcript_backfill(
             print(hint)
             return
 
-    from prismor.runtime.transcripts.driver import SweepOptions, sweep
     from prismor.runtime.transcripts.report import format_report
 
-    result = sweep(
-        SweepOptions(
-            workspace=workspace,
-            repo_root=repo_root,
-            since_days=30.0,
-            max_events=50_000,
-            persist=True,
-        )
-    )
+    result = _run_sweep(options, todo)
     print(format_report(result, since_label="last 30d"))
+
+
+def _sweep_summary(todo, max_events: int) -> str:
+    """'78 transcripts (412 MB), about 1-3 minutes' — sized before any parsing."""
+    mb = sum(s.size for s in todo) / 1e6
+    # ponytail: ~35 events/MB and ~175 events/s, measured on one laptop. The
+    # buckets absorb the error; the live ETA in _run_sweep corrects it.
+    seconds = min(mb * 35, max_events) / 175
+    if seconds < 45:
+        eta = "usually under a minute"
+    elif seconds < 150:
+        eta = "about 1-3 minutes"
+    else:
+        eta = "can take several minutes"
+    return f"{len(todo)} transcripts ({mb:,.0f} MB), {eta}"
+
+
+def _run_sweep(options, todo=None):
+    """Run a transcript sweep with a heads-up and a live progress line.
+
+    Everything goes to stderr, so `ingest --discover --json` stays parseable.
+    """
+    from prismor.runtime.transcripts.driver import pending, sweep
+
+    if todo is None:
+        todo = pending(options)
+    if not todo:
+        return sweep(options)
+    print(
+        f"[prismor] Replaying {_sweep_summary(todo, options.max_events)}...",
+        file=sys.stderr,
+    )
+    live = sys.stderr.isatty()
+    if live:
+        started = time.monotonic()
+
+        def tick(done: int, events: int) -> None:
+            elapsed = time.monotonic() - started
+            # The sweep ends at whichever runs out first: transcripts or
+            # the event budget.
+            left = elapsed / done * (len(todo) - done)
+            if events:
+                left = min(left, elapsed / events * (options.max_events - events))
+            sys.stderr.write(
+                f"\r  {done}/{len(todo)} transcripts · {events:,} events · "
+                f"{elapsed:.0f}s elapsed, ~{left:.0f}s left\033[K"
+            )
+            sys.stderr.flush()
+
+        options.progress = tick
+    try:
+        return sweep(options)
+    finally:
+        if live:
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
 
 
 def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
     """Sweep this machine's agent transcripts and report what policy would do."""
     from prismor.runtime.transcripts.adapters import ADAPTERS
-    from prismor.runtime.transcripts.driver import SweepOptions, sweep
+    from prismor.runtime.transcripts.driver import SweepOptions
     from prismor.runtime.transcripts.report import (
         format_report,
         format_rule_detail,
@@ -6276,7 +6325,7 @@ def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
 
     since_days = _parse_since(args.since)
     export_dir = getattr(args, "export_corpus", None)
-    result = sweep(
+    result = _run_sweep(
         SweepOptions(
             workspace=workspace,
             repo_root=repo_root,

@@ -33,7 +33,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from prismor.runtime.transcripts.adapters import get_adapters
 from prismor.runtime.transcripts.base import DiscoveredSession, ParseStats
@@ -84,6 +84,9 @@ class SweepOptions:
     #: them; retaining by default would hold an entire history in memory for
     #: reports that never look at individual events.
     retain_events: bool = False
+    #: Called after each in-window transcript with (sessions_done,
+    #: events_evaluated), so a caller can draw progress on a long sweep.
+    progress: Optional[Callable[[int, int], None]] = None
 
 
 @dataclass
@@ -194,6 +197,17 @@ def _cutoff(since_days: Optional[float]) -> Optional[float]:
     return time.time() - (since_days * 86400)
 
 
+def pending(options: SweepOptions) -> List[DiscoveredSession]:
+    """The transcripts a sweep would read. Stats files only; nothing is parsed."""
+    cutoff = _cutoff(options.since_days)
+    return [
+        session
+        for adapter in get_adapters(options.agents)
+        for session in adapter.discover()
+        if cutoff is None or session.mtime >= cutoff
+    ]
+
+
 def sweep(options: SweepOptions) -> SweepResult:
     """Discover, evaluate and optionally persist every matching transcript."""
     from prismor.runtime.hooks import normalize_payload, should_block
@@ -208,6 +222,7 @@ def sweep(options: SweepOptions) -> SweepResult:
     cutoff = _cutoff(options.since_days)
     budget = options.max_events
     replay_ids: List[str] = []
+    done = 0
 
     for adapter in get_adapters(options.agents):
         found_any = False
@@ -232,6 +247,9 @@ def sweep(options: SweepOptions) -> SweepResult:
                 should_block=should_block,
             )
             budget -= consumed
+            done += 1
+            if options.progress:
+                options.progress(done, options.max_events - budget)
             if outcome is None:
                 continue
             replay_ids.append(outcome.replay_session_id)
