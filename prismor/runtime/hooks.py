@@ -2247,7 +2247,6 @@ _MEMORY_GLOBS: Tuple[str, ...] = (
     ".windsurf/rules/*.md",
     ".roo/rules/*.md",
     ".augment/rules/*.md",
-    "**/.github/copilot-instructions.md",
 )
 _MEMORY_PATH_PATTERNS: Tuple[str, ...] = _MEMORY_BASENAMES + _MEMORY_GLOBS
 # Cap total scanned memory content so a huge memory file can't blow the OS
@@ -2360,9 +2359,9 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
     entry in ``_MEMORY_PATH_PATTERNS``, and unions in anything the agent
     reported loading itself (see ``_instructions_loaded_paths``).
 
-    Recursive (``**``) globs are expanded ONLY under the workspace itself —
-    running one against an ancestor would walk large parts of the filesystem on
-    the interactive SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
+    No pattern recurses: a ``**`` glob walks every node_modules and nested repo
+    under the workspace (30s+ on a projects dir) on the interactive
+    SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
     paths, de-duplicated by resolved target and stable in search order.
     """
     search_dirs: List[Path] = []
@@ -2371,7 +2370,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
         search_dirs.append(ws)
         search_dirs.extend(ws.parents[:3])
     except Exception:
-        ws = workspace
         search_dirs.append(workspace)
     search_dirs.append(Path.home() / ".claude")
 
@@ -2399,8 +2397,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
             if "*" not in pattern:
                 if not _add(directory / pattern):
                     return found
-                continue
-            if pattern.startswith("**") and directory != ws:
                 continue
             try:
                 matches = directory.glob(pattern)
