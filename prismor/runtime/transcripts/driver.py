@@ -30,6 +30,7 @@ state directory, so the driver removes its own afterwards.
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -209,6 +210,10 @@ def sweep(options: SweepOptions) -> SweepResult:
     budget = options.max_events
     replay_ids: List[str] = []
 
+    if sys.stderr.isatty():
+        sys.stderr.write("Discovering and evaluating session transcripts (this may take a moment)...\n")
+        sys.stderr.flush()
+
     for adapter in get_adapters(options.agents):
         found_any = False
         for session in adapter.discover():
@@ -221,6 +226,10 @@ def sweep(options: SweepOptions) -> SweepResult:
             if budget <= 0:
                 result.truncated = True
                 break
+
+            if sys.stderr.isatty():
+                sys.stderr.write(f"\rScanning transcripts: {len(result.sessions) + 1} sessions...")
+                sys.stderr.flush()
 
             outcome, consumed = _replay_session(
                 adapter=adapter,
@@ -240,6 +249,10 @@ def sweep(options: SweepOptions) -> SweepResult:
             result.empty_agents.append(adapter.agent)
         if result.truncated:
             break
+
+    if sys.stderr.isatty() and result.sessions:
+        sys.stderr.write("\r\033[K")
+        sys.stderr.flush()
 
     _cleanup_taint(options.workspace, replay_ids)
     result.elapsed_seconds = time.monotonic() - started
