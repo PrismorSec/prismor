@@ -387,7 +387,7 @@ prismor uninstall-hooks --agent all --scope project      # every supported agent
 | OpenClaw | `<workspace>/.openclaw/plugins.json` | `~/.openclaw/config.json` |
 | Hermes | `<workspace>/.hermes/plugins.json` | `~/.hermes/config.json` |
 | Codex | `<workspace>/.codex/hooks.json` | `~/.codex/hooks.json` |
-| Copilot | `<workspace>/.github/copilot/hooks.json` | `~/.copilot/hooks.json` |
+| Copilot | `<workspace>/.github/hooks/prismor.json` | `~/.copilot/hooks/prismor.json` |
 | Grok Build | `<workspace>/.grok/hooks/prismor.json` | `~/.grok/hooks/prismor.json` |
 | Kiro CLI | `<workspace>/.kiro/agents/kiro_default.json` | `~/.kiro/agents/kiro_default.json` |
 | Crush | `<workspace>/crush.json` | `~/.config/crush/crush.json` |

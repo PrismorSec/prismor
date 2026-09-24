@@ -135,7 +135,7 @@ Per-agent matrix (only one `--agent` value per invocation, or `all`):
 | Windsurf | `windsurf` | `.windsurf/hooks.json` |
 | OpenClaw | `openclaw` | `~/.openclaw/config.json` |
 | Hermes | `hermes` | `~/.hermes/config.json` |
-| GitHub Copilot CLI | `copilot` | `.github/copilot/hooks.json` |
+| GitHub Copilot CLI | `copilot` | `.github/hooks/prismor.json` |
 | Codex (OpenAI) | `codex` | `.codex/hooks.json` |
 | Grok Build (xAI) | `grok` | `.grok/hooks/prismor.json` |
 | Kiro CLI (AWS) | `kiro` | `.kiro/agents/kiro_default.json` |

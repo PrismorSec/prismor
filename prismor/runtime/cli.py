@@ -4618,7 +4618,7 @@ def _find_hook_config(agent: str, workspace: Path) -> Path:
     if agent == "codex":
         return workspace / ".codex" / "hooks.json"
     if agent == "copilot":
-        return workspace / ".github" / "copilot" / "hooks.json"
+        return workspace / ".github" / "hooks" / "prismor.json"
     if agent == "grok":
         return workspace / ".grok" / "hooks" / "prismor.json"
     if agent == "kiro":

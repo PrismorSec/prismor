@@ -118,8 +118,8 @@ agents:
     kind: coding-agent
     surface: hook-config
     status: shipped
-    config_paths: { project: ".github/copilot/hooks.json", user: "~/.copilot/hooks.json" }
-    events: [UserPromptSubmitted, PreToolUse, PostToolUse]
+    config_paths: { project: ".github/hooks/prismor.json", user: "~/.copilot/hooks/prismor.json" }
+    events: [UserPromptSubmit, PreToolUse, PostToolUse]
     blocking: json-permission
     normalizer: _normalize_copilot
     sources: ["https://docs.github.com/en/copilot/reference/hooks-configuration"]

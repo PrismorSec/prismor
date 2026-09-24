@@ -661,7 +661,9 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         if agent == "codex":
             return workspace / ".codex" / "hooks.json"
         if agent == "copilot":
-            return workspace / ".github" / "copilot" / "hooks.json"
+            # Copilot loads only .github/hooks/*.json and ~/.copilot/hooks/*.json;
+            # the old .github/copilot/hooks.json + ~/.copilot/hooks.json were never read (#481).
+            return workspace / ".github" / "hooks" / "prismor.json"
         if agent == "grok":
             return workspace / ".grok" / "hooks" / "prismor.json"
         if agent == "kiro":
@@ -693,7 +695,7 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     if agent == "codex":
         return home / ".codex" / "hooks.json"
     if agent == "copilot":
-        return home / ".copilot" / "hooks.json"
+        return home / ".copilot" / "hooks" / "prismor.json"
     if agent == "grok":
         return home / ".grok" / "hooks" / "prismor.json"
     if agent == "kiro":
@@ -1274,7 +1276,14 @@ def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
 
 def _merge_copilot(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     hooks = dict(config.get("hooks", {}))
-    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmitted"]:
+    # PascalCase names: Copilot then sends Claude-shaped payloads and honours
+    # the flat permissionDecision deny on PreToolUse (verified live, #481).
+    # "UserPromptSubmitted" never fires, so drop our entry from older installs.
+    if "UserPromptSubmitted" in hooks:
+        hooks["UserPromptSubmitted"] = [e for e in hooks["UserPromptSubmitted"] if e.get("command") != command]
+        if not hooks["UserPromptSubmitted"]:
+            del hooks["UserPromptSubmitted"]
+    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmit"]:
         hooks[event_name] = _merge_simple_command_entries(hooks.get(event_name, []), command)
     return {**config, "version": config.get("version", 1), "hooks": hooks}
 
@@ -1638,17 +1647,28 @@ def _unmapped_tool_event(base: Dict[str, Any], payload: Dict[str, Any]) -> Dict[
 
 
 def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    # Copilot CLI (verified live on 1.0.88, #481) fires two payload shapes. The
+    # PascalCase events we register are Claude-shaped: tool_name is canonical
+    # (Bash/Read/Write/Edit) and arguments sit in tool_input. The camelCase
+    # events carry toolName (bash/view/create/edit/apply_patch) + toolArgs.
+    # Either way the file tools use Copilot's own keys: {path}, {path,
+    # file_text}, {path, old_str, new_str}, and apply_patch is raw patch text.
     hook_event = payload.get("hookEventName") or payload.get("hook_event_name") or "unknown"
     tool_name = payload.get("toolName") or payload.get("tool_name") or ""
-    # Copilot sends toolArgs as a JSON-encoded string; parse it.
-    tool_args_raw = payload.get("toolArgs") or payload.get("tool_args") or "{}"
+    tool_args_raw = next(
+        (payload[k] for k in ("tool_input", "toolInput", "toolArgs", "tool_args") if payload.get(k)), {}
+    )
+    patch = ""
     if isinstance(tool_args_raw, str):
         try:
             tool_args: Dict[str, Any] = json.loads(tool_args_raw)
         except (json.JSONDecodeError, ValueError):
             tool_args = {"raw": tool_args_raw}
+            patch = tool_args_raw
     else:
         tool_args = tool_args_raw
+    if not isinstance(tool_args, dict):
+        tool_args = {"raw": str(tool_args)}
     base = {
         "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
@@ -1656,15 +1676,24 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path
         "agent_event": hook_event,
         "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
     }
-    if hook_event == "UserPromptSubmitted":
+    if hook_event in {"UserPromptSubmit", "UserPromptSubmitted", "userPromptSubmitted"} or (
+        "prompt" in payload and not tool_name
+    ):
         return {**base, "type": "prompt", "prompt": payload.get("prompt") or tool_args.get("prompt", "")}
-    if tool_name in {"ShellCommand", "run_shell_command", "Bash"}:
+    name = tool_name.lower()
+    path = tool_args.get("path") or tool_args.get("file_path") or tool_args.get("filePath") or ""
+    if name in {"bash", "shell", "shellcommand", "run_shell_command", "powershell"}:
         return {**base, "type": "shell", "command": tool_args.get("command") or tool_args.get("cmd", "")}
-    if tool_name in {"ReadFile", "read_file", "Read"}:
-        return {**base, "type": "file_read", "path": tool_args.get("path") or tool_args.get("filePath", "")}
-    if tool_name in {"WriteFile", "write_file", "EditFile", "Write", "Edit"}:
-        return {**base, "type": "file_write", "path": tool_args.get("path") or tool_args.get("filePath", ""), "content": tool_args.get("content", "")}
-    if tool_name in {"WebFetch", "web_fetch", "WebSearch"}:
+    if name in {"read", "view", "readfile", "read_file"}:
+        return {**base, "type": "file_read", "path": path}
+    if patch and "*** Begin Patch" in patch:
+        from prismor.runtime.transcripts.adapters.codex import _PATCH_PATH_RE
+        match = _PATCH_PATH_RE.search(patch)
+        return {**base, "type": "file_write", "path": match.group(1) if match else "", "content": patch}
+    if name in {"write", "create", "edit", "writefile", "write_file", "editfile", "str_replace", "apply_patch"}:
+        content = tool_args.get("file_text") or tool_args.get("new_str") or tool_args.get("content", "")
+        return {**base, "type": "file_write", "path": path, "content": content}
+    if name in {"webfetch", "web_fetch", "websearch", "fetch"}:
         return {**base, "type": "network", "url": tool_args.get("url", "")}
     # Copilot is an approval-capable surface (inline "ask"), so MCP calls must
     # be classified like the other agents' — otherwise `mcp` guardrail rules
