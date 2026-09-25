@@ -262,3 +262,44 @@ def test_tool_tags_sig_changes_when_an_agent_overlay_changes(tmp_path, monkeypat
         "          Bash: [critical_action, private_data]",
     ))
     assert remote_policy._current_tool_tags_sig() != before
+ 
+
+def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monkeypatch):
+    """Calling verify_and_load multiple times on unchanged files must reuse the in-process
+    memo, bypassing repeated signature checks and YAML parsing (#478)."""
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / ".prismor"))
+    _write_remote(tmp_path / ".prismor", REMOTE_POLICY)
+    _enroll()
+
+    from unittest.mock import patch
+    from prismor.runtime.enterprise import remote_policy
+
+    remote_policy.clear_policy_cache()
+
+    with patch.object(remote_policy, "_verify_signature", wraps=remote_policy._verify_signature) as mock_sig:
+        
+        p1 = remote_policy.verify_and_load()
+        assert p1 is not None
+        assert mock_sig.call_count == 1
+
+        p2 = remote_policy.verify_and_load()
+        p3 = remote_policy.verify_and_load()
+        assert p2 == p1
+        assert p3 == p1
+        assert mock_sig.call_count == 1
+
+        p1["mutated_field"] = True
+        p4 = remote_policy.verify_and_load()
+        assert "mutated_field" not in p4
+        assert mock_sig.call_count == 1
+     
+        _write_remote(tmp_path / ".prismor", AGENT_CONTROL_POLICY)
+        p5 = remote_policy.verify_and_load()
+        assert p5 is not None
+        assert mock_sig.call_count == 2
+       
+        remote_policy.clear_policy_cache()
+        p6 = remote_policy.verify_and_load()
+        assert p6 is not None
+        assert mock_sig.call_count == 3
+     
