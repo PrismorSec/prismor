@@ -1902,6 +1902,7 @@ def get_sessions_page(
     """
     sort_col = _VALID_SESSION_SORTS.get(sort, "updated_at")
     reverse = direction.lower() != "asc"
+    sql_direction = "DESC" if reverse else "ASC"
     workspaces = _state_query_workspaces()
     rows: List[Dict[str, Any]] = []
 
@@ -1915,7 +1916,7 @@ def get_sessions_page(
             name_col = "agent_name" if "agent_name" in cols else "agent"
             for row in conn.execute(
                 f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "
-                "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
+                f"started_at, updated_at, workspace_path FROM sessions ORDER BY {sort_col} {sql_direction} LIMIT 5000"
             ):
                 workspace_path = row["workspace_path"] or str(ws)
                 rows.append({

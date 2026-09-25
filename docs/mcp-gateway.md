@@ -53,7 +53,16 @@ Or let Prismor do both steps for the current workspace:
 prismor mcp-gateway install       # moves this workspace's .mcp.json servers (backup kept)
 prismor mcp-gateway install --all # every MCP config on this machine
 prismor mcp-gateway uninstall     # restores the original .mcp.json
+prismor mcp-gateway install --claude-desktop # route Claude Desktop MCP servers
+prismor mcp-gateway uninstall --claude-desktop # restore Claude Desktop config
 ```
+
+Claude Desktop uses a machine-wide configuration file. The targeted install
+backs it up as `claude_desktop_config.json.bak`, moves its MCP server
+definitions into Prismor's gateway config, and leaves other Claude settings
+intact. Restart Claude Desktop after installing or uninstalling. The gateway
+only covers MCP servers; Claude's built-in tools and other integrations are
+outside this route.
 
 `--all` migrates every config `prismor discover` can find — Claude Desktop,
 Cursor, Windsurf, VS Code, Cline — not just the workspace's own `.mcp.json`.
