@@ -4,3 +4,6 @@
 advisories/immunity-feed.json -text
 advisories/immunity-feed.json.sig -text
 keys/public.pub -text
+
+# cmd.exe mis-parses labels and blocks in LF batch files.
+*.cmd text eol=crlf

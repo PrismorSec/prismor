@@ -95,7 +95,7 @@ except ImportError:
     sys.exit(1)
 
 from prismor.runtime.feed import load_feed, match_advisories
-from prismor.runtime.hooks import install_hooks, normalize_payload, uninstall_hooks
+from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import (
@@ -3769,7 +3769,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
     hook_dispatch.add_argument("--workspace", help="Workspace path")
-    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose"], required=True)
+    # Every agent install-hooks writes a command for; a hand-kept list here once
+    # left gemini and opencode out, so their hooks died in argparse with exit 2.
+    hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
 
     # ── policy ─────────────────────────────────────────────────────────

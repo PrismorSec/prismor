@@ -30,9 +30,10 @@ tmp/
 temp/
 .prismor/
 
-# Generated hook configs (created by install-hooks, user-specific paths)
-.claude/settings.json
-.cursor/hooks.json
+# Generated hook configs (created by install-hooks, user-specific paths).
+# .claude/settings.json, .cursor/hooks.json, .codex/hooks.json and
+# .github/hooks/prismor.json are the committed dogfood configs (#495).
+.claude/settings.local.json
 .windsurf/hooks.json
 
 # Scaffolded plugin packages (created by install-hooks --agent openclaw/hermes/opencode)

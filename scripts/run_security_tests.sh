@@ -46,6 +46,7 @@ for t in \
   tests/test_mcp_gateway_connect_guard.py \
   tests/test_discover_workspace_mcp.py \
   tests/test_telemetry_receipt_schema.py \
+  tests/test_dogfood_configs.py \
   ; do
   [[ -f "$t" ]] && pytest_targets+=("$t")
 done
