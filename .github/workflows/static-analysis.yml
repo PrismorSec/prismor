@@ -3,7 +3,7 @@ name: Static analysis
 # Lint for errors that break at runtime (syntax errors, undefined names) and
 # run a SAST pass over the runtime. Both gates are scoped to findings that are
 # real defects, so they fail on new problems without flagging existing style.
-# Intentional shell=True sites carry a `# nosec` with the reason.
+# Each deliberate exception carries a `# nosec <id>` with the reason.
 
 on:
   push:
@@ -22,5 +22,5 @@ jobs:
         run: python3 -m pip install --quiet ruff bandit
       - name: Lint (ruff)
         run: ruff check --select E9,F63,F7,F82 --output-format github .
-      - name: SAST (bandit, high severity + high confidence)
-        run: bandit -r prismor adapters -lll -iii -q
+      - name: SAST (bandit, medium severity and up)
+        run: bandit -r prismor adapters -ll -q

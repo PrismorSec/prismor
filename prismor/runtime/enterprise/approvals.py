@@ -101,7 +101,7 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
@@ -125,7 +125,7 @@ def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> T
     req = urllib.request.Request(url, headers=_headers(ident), method="GET")
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
         status = str(data.get("status") or "").lower() or None
         mode = str(data.get("decision_mode") or data.get("decisionMode") or "full").lower()

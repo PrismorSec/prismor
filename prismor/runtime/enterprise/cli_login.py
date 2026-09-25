@@ -30,7 +30,7 @@ def _post(url: str, body: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         headers={"Content-Type": "application/json", "User-Agent": _UA},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -125,7 +125,7 @@ def quota(base: Optional[str] = None, timeout: float = 10.0) -> Optional[Dict[st
         headers={"Authorization": f"Bearer {ident.get('device_key')}", "User-Agent": _UA},
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None

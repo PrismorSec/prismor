@@ -106,7 +106,7 @@ python3 -m pytest tests/ -q
 # Lint + SAST — same gates CI runs
 python3 -m pip install ruff bandit
 ruff check --select E9,F63,F7,F82 .
-bandit -r prismor adapters -lll -iii -q
+bandit -r prismor adapters -ll -q
 
 # If you changed a policy rule
 prismor policy validate prismor/runtime/default_policy.yaml
@@ -132,7 +132,7 @@ Every push and PR runs:
 |---|---|
 | `oss-guard.yml` | No signing keys, secrets, or premium feed content in the public repo |
 | `security-regression.yml` | Cloaking + policy suite, and integration registry consistency |
-| `static-analysis.yml` | `ruff` (syntax errors, undefined names) and `bandit` SAST (high severity) |
+| `static-analysis.yml` | `ruff` (syntax errors, undefined names) and `bandit` SAST (medium severity and up) |
 
 All must pass. A `bandit` finding is fixed, not suppressed; `# nosec` is only for a deliberate case, with the reason on the same line. If `oss-guard` fails, stop and check what you committed before pushing again.
 

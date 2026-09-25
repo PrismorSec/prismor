@@ -378,7 +378,7 @@ def _prismor_analyze(text: str, heuristic_score: float, signals: List[str], t0: 
                      "User-Agent": user_agent()},
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:  # fixed or operator-configured URL  # nosec B310
                 verdict = _parse_verdict(resp.read().decode("utf-8"), t0)
             if verdict is not None:
                 verdict.mode = "api"

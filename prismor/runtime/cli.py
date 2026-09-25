@@ -886,7 +886,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {ident.get('device_key')}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:  # fixed or operator-configured URL  # nosec B310
                 body = _json.loads(resp.read().decode("utf-8"))
             print(f"Exemption requested for {remote}.")
             print(f"  reason: {reason}")

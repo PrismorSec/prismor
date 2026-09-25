@@ -3696,7 +3696,7 @@ def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
         cached = _YAML_CACHE.get(key)
         if cached is not None:
             return _copy.deepcopy(cached)
-        parsed = (yaml.load(text, Loader=_SafeLoader) if _SafeLoader is not None
+        parsed = (yaml.load(text, Loader=_SafeLoader) if _SafeLoader is not None  # SafeLoader/CSafeLoader  # nosec B506
                   else yaml.safe_load(text))
         if len(_YAML_CACHE) >= _YAML_CACHE_MAX:
             _YAML_CACHE.clear()  # tiny working set; a plain reset beats an LRU here

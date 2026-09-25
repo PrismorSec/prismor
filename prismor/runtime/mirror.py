@@ -674,7 +674,7 @@ def _run_webfetch(args: Dict[str, Any], workspace: Path) -> str:
         "Accept": "text/html,text/plain,application/json;q=0.9,*/*;q=0.5",
     })
     try:
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_S) as resp:  # scheme checked http(s) above  # nosec B310
             ctype = (resp.headers.get_content_type() or "").lower()
             charset = resp.headers.get_content_charset() or "utf-8"
             raw = resp.read(MAX_FETCH_BYTES + 1)

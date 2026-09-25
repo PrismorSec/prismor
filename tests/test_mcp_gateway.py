@@ -132,6 +132,11 @@ def test_load_config_errors(tmp_path):
     nocmd.write_text(json.dumps({"mcpServers": {"x": {"args": ["--flag"]}}}))
     with pytest.raises(GatewayConfigError):
         load_gateway_config(nocmd)
+    # A repo-supplied url must not turn the gateway into a local file reader.
+    fileurl = tmp_path / "file.json"
+    fileurl.write_text(json.dumps({"mcpServers": {"x": {"url": "file:///etc/passwd"}}}))
+    with pytest.raises(GatewayConfigError):
+        load_gateway_config(fileurl)
 
 
 def test_parse_inline_server():

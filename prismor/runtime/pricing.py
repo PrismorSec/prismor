@@ -83,7 +83,7 @@ def _fetch_litellm(cache: Path) -> Dict[str, Dict[str, float]]:
     if not fresh and not os.environ.get("PRISMOR_PRICING_OFFLINE"):
         try:
             import urllib.request
-            with urllib.request.urlopen(PRICING_URL, timeout=PRICING_TIMEOUT_SECONDS) as resp:
+            with urllib.request.urlopen(PRICING_URL, timeout=PRICING_TIMEOUT_SECONDS) as resp:  # fixed or operator-configured URL  # nosec B310
                 table = _reduce_litellm(json.loads(resp.read().decode("utf-8")))
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps(table), encoding="utf-8")

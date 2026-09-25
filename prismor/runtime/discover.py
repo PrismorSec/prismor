@@ -1121,7 +1121,7 @@ def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
         # working perfectly against a local server. See prismor/runtime/http_ua.
         from prismor.runtime.http_ua import user_agent as _ua
         request.add_header("User-Agent", _ua())
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return 200 <= resp.status < 300
     except Exception:
         return False

@@ -318,7 +318,7 @@ def _insert_missing_rows_sql(table: str, cols: List[str]) -> str:
     source_cols = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
     row_match = " AND ".join(f"d.{_quote_ident(c)} IS s.{_quote_ident(c)}" for c in cols)
     return (
-        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "
+        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "  # nosec B608
         f"SELECT {source_cols} FROM src.{_quote_ident(table)} AS s "
         f"WHERE NOT EXISTS ("
         f"SELECT 1 FROM main.{_quote_ident(table)} AS d WHERE {row_match}"
@@ -348,7 +348,7 @@ def _merge_sqlite_db_once(src_db: Path, dst_db: Path) -> None:
                 source = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
                 if table in {"sessions", "findings"}:
                     dst.execute(
-                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "
+                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "  # nosec B608
                         f"SELECT {source} FROM src.{_quote_ident(table)} AS s"
                     )
                 else:
@@ -658,7 +658,7 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
                     connection.execute("UPDATE sessions SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
                     for table in ("package_inventory", "token_usage", "tool_output_size", "supply_chain_events"):
                         try:
-                            connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
+                            connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
                         except sqlite3.OperationalError:
                             pass
         connection.commit()
@@ -1914,7 +1914,7 @@ def get_sessions_page(
             cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
             name_col = "agent_name" if "agent_name" in cols else "agent"
             for row in conn.execute(
-                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "
+                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "  # nosec B608
                 "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
             ):
                 workspace_path = row["workspace_path"] or str(ws)
@@ -2120,7 +2120,7 @@ def get_findings_page(
                 {where}
                 ORDER BY COALESCE(te.ts, s.updated_at) DESC
                 LIMIT 5000
-                """,
+                """,  # nosec B608
                 params,
             ):
                 ts_raw = row["trig_ts"] or row["session_updated"] or ""
@@ -2284,7 +2284,7 @@ def get_events_page(
                 LEFT JOIN findings f ON f.session_id = e.session_id AND f.event_index = e.rn
                 {where}
                 ORDER BY e.ts DESC LIMIT 5000
-                """,
+                """,  # nosec B608
                 [fetch_limit] + params,
             ):
                 action_parts = []
@@ -2843,7 +2843,7 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
     try:
         marks = ",".join("?" * len(session_ids))
         for r in conn.execute(
-            "SELECT session_id, model, COUNT(*) as turns,"
+            "SELECT session_id, model, COUNT(*) as turns,"  # nosec B608
             "       COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate,"
@@ -2892,7 +2892,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
     window_args = [f"-{hours} hours"] + ws_args
     try:
         row = conn.execute(
-            "SELECT COALESCE(SUM(input_tokens),0) as inp,"
+            "SELECT COALESCE(SUM(input_tokens),0) as inp,"  # nosec B608
             "       COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate"
@@ -2902,7 +2902,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         by_tool = [
             {"tool": r["tool_name"] or "unknown", "approxTokens": r["tok"] or 0, "calls": r["cnt"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"
+                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"  # nosec B608
                 "  FROM tool_output_size WHERE ts >= datetime('now', ?)" + scope_sql +
                 "  GROUP BY tool_name ORDER BY tok DESC LIMIT ?",
                 window_args + [limit],
@@ -2911,7 +2911,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         top_offenders = [
             {"tool": r["tool_name"] or "unknown", "label": r["label"] or "", "approxTokens": r["approx_tokens"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, label, approx_tokens FROM tool_output_size"
+                "SELECT tool_name, label, approx_tokens FROM tool_output_size"  # nosec B608
                 "  WHERE ts >= datetime('now', ?) AND label != ''" + scope_sql +
                 "  ORDER BY approx_tokens DESC LIMIT ?",
                 window_args + [limit],
@@ -2970,7 +2970,7 @@ def get_agents_overview() -> List[Dict[str, Any]]:
                 FROM sessions
                 WHERE {name_expr} IS NOT NULL AND {name_expr} != ''
                 GROUP BY {name_expr}
-                """
+                """  # nosec B608
             ):
                 name = row["agent_name"] or "unknown"
                 existing = acc.get(name)
@@ -3990,7 +3990,7 @@ def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], li
         where = "session_id IN (%s) AND raw_json LIKE '%%\"extension\"%%'" % ",".join("?" * len(session_ids))
         params = list(session_ids)
     try:
-        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "  # identifiers are constants/quoted, values bound  # nosec B608
                             + where + " ORDER BY id DESC", params)
         for row in rows:
             try:
