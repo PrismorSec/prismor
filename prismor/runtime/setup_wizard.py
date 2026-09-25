@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -283,7 +284,23 @@ def _default_rules() -> List[dict]:
 
 def _detect_agents(target: Path) -> dict:
     home = Path.home()
+    if platform.system() == "Darwin":
+        desktop_config = home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    elif platform.system() == "Windows":
+        desktop_config = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Claude" / "claude_desktop_config.json"
+    else:
+        desktop_config = Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config") / "Claude" / "claude_desktop_config.json"
+    try:
+        desktop_data = json.loads(desktop_config.read_text(encoding="utf-8"))
+        claude_desktop = (
+            isinstance(desktop_data, dict)
+            and isinstance(desktop_data.get("mcpServers"), dict)
+            and bool(desktop_data["mcpServers"])
+        )
+    except (OSError, ValueError, TypeError):
+        claude_desktop = False
     return {
+        "claude-desktop": claude_desktop,
         "claude":   shutil.which("claude") is not None or (target / ".claude").exists() or (home / ".claude").exists(),
         "cursor":   (target / ".cursor").exists() or (home / ".cursor").exists(),
         "windsurf": (target / ".windsurf").exists() or (home / ".codeium").exists(),
@@ -589,8 +606,9 @@ def _mirror_only_agents() -> list:
 _MIRROR_ONLY = _mirror_only_agents()
 
 
-def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
+def _step_agents(target: Path, step: int = 2, total: int = 4) -> dict:
     detected = _detect_agents(target)
+    desktop_selected = bool(detected.get("claude-desktop"))
     agents = [
         {"name": "claude",   "label": "Claude Code", "on": detected.get("claude", False)},
         {"name": "cursor",   "label": "Cursor",      "on": detected.get("cursor", False)},
@@ -655,6 +673,10 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
                          f"{_w('prismor mirror on', BOLD)}{_w(':', DIM)}")
             lines.append(f"    {_w(', '.join(_MIRROR_ONLY), YEL)}")
             lines.append("")
+        desktop_mark = _w("●", GRN) if desktop_selected else _w("○", DIM)
+        desktop_status = "detected" if detected.get("claude-desktop") else "not detected"
+        lines.append(f"  {desktop_mark} Claude Desktop MCP gateway  ({desktop_status})")
+        lines.append(f"    {_w('Press d to toggle machine-wide MCP routing; restart Claude Desktop after setup.', DIM)}")
         sel_gov = gov.get(agents[sel]["name"], {})
         if sel_gov.get("recommended") == "mirror":
             lines.append(f"  {_w('This agent has no hook protocol.', DIM)} "
@@ -685,12 +707,15 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
             lines.append("")
         lines.append("")
         lines.append(_control_line([
-            ("↑↓", "move"), ("space", "toggle"), ("m", "MCP mirror"),
+            ("↑↓", "move"), ("space", "toggle"), ("m", "MCP mirror"), ("d", "Claude Desktop"),
             ("←", "back"), ("enter", "next"),
         ]))
         _render(lines)
 
         key = _read_key()
+        if key in ("d", "D"):
+            desktop_selected = not desktop_selected
+            continue
         if key == _UP:               sel = (sel - 1) % len(agents)
         elif key == _DOWN:           sel = (sel + 1) % len(agents)
         elif key == _SPACE:          agents[sel]["on"] = not agents[sel]["on"]
@@ -708,7 +733,7 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
             if not chosen:
                 chosen = ["claude"]
             mirrors = [a["name"] for a in agents if a["on"] and a.get("mirror")]
-            return {"agents": chosen, "mirror": mirrors}
+            return {"agents": chosen, "mirror": mirrors, "claude_desktop_gateway": desktop_selected}
         elif key in ("q", "Q", "\x03"): _cleanup(); sys.exit(0)
 
 
@@ -1257,7 +1282,7 @@ def _install_skill(target: Path):
         return False, str(e)[:40]
 
 
-def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
+def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", ""), claude_desktop_gateway: bool = False) -> None:
     if not _PLAIN:
         sys.stdout.write(ALT_OFF)
         sys.stdout.write("\033[H\033[J" + HIDE)
@@ -1275,6 +1300,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         except Exception as e:
             return False, str(e)[:40]
     _spinner_run("Registering workspace", _register)
+
+    if claude_desktop_gateway:
+        from prismor.runtime.mcp_gateway import install_claude_desktop_gateway
+        try:
+            print(install_claude_desktop_gateway(mode, target))
+        except Exception as exc:
+            print(_w(f"  Claude Desktop gateway install failed: {exc}", YEL))
 
     # 1. Update Prismor — only for git-clone installs
     prismor_home = os.environ.get("PRISMOR_HOME")
@@ -1643,7 +1675,7 @@ def run_non_interactive(
             print(f"[prismor] Unknown rule id(s) ignored: {', '.join(sorted(unknown))}")
     if agents is None:
         det = _detect_agents(target)
-        agents = [n for n, ok in det.items() if ok] or ["claude"]
+        agents = [n for n, ok in det.items() if ok and n != "claude-desktop"] or ["claude"]
     cloak_tag = ", cloak=yes" if cloak else ""
     scope_tag = f", scope={scope}" if scope != "project" else ""
     print(f"[prismor] Non-interactive setup  (mode={mode}, agents={','.join(agents)}{cloak_tag}{scope_tag})")
@@ -1695,6 +1727,7 @@ def run_wizard(target: Path) -> None:
     gov_mode: Optional[str] = None  # None = not chosen yet; "custom" = rule-by-rule
     agents = None
     mirror_agents = []
+    claude_desktop_gateway = False
     cloak = True
     judge = ("", "")
     scope = "project"
@@ -1742,6 +1775,7 @@ def run_wizard(target: Path) -> None:
                     continue
                 agents = result["agents"]
                 mirror_agents = result["mirror"]
+                claude_desktop_gateway = result.get("claude_desktop_gateway", False)
                 idx += 1
             elif name == "cloak":
                 result = _step_cloak(cloak, step=n, total=total)
@@ -1793,7 +1827,8 @@ def run_wizard(target: Path) -> None:
 
     _raw_off()
     _do_install(target, mode, rules, agents, cloak=cloak, scope=scope,
-                mirror_agents=mirror_agents, gov_mode=gov_mode, judge=judge)
+                mirror_agents=mirror_agents, gov_mode=gov_mode, judge=judge,
+                claude_desktop_gateway=claude_desktop_gateway)
     # After the install output, so the prompt isn't competing with spinners.
     if unlock_pw:
         _prompt_unlock_password()

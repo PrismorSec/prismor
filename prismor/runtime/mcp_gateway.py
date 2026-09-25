@@ -1220,15 +1220,16 @@ class MigrationResult:
         return self.status == "migrated"
 
 
-def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
+def _gateway_entry(mode: str = "enforce", workspace: Optional[Path] = None) -> Dict[str, Any]:
     # The gateway exists to screen tool results; installing it in observe mode
     # would hand the host a connector that logs injections but forwards them
     # anyway. So the written entry pins the mode (default enforce), and the
     # installed .mcp.json actually protects the agent. `mirror on` defaults to
     # enforce for the same reason.
-    return {"command": "prismor",
-            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG),
-                     "--mode", mode]}
+    args = ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG), "--mode", mode]
+    if workspace is not None:
+        args += ["--workspace", str(workspace)]
+    return {"command": "prismor", "args": args}
 
 
 def _is_prismor_entry(name: str, spec: Any) -> bool:
@@ -1260,7 +1261,7 @@ def _absorb(servers: Dict[str, Any]) -> int:
     return len(moved)
 
 
-def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
+def migrate_config(path: Path, mode: str = "enforce", workspace: Optional[Path] = None) -> MigrationResult:
     """Move one config file's MCP servers behind the gateway.
 
     Everything in the file that is not the server block is preserved verbatim —
@@ -1302,11 +1303,13 @@ def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
                                detail="already behind the gateway"
                                if keep else "nothing to move")
 
+    backup = Path(str(path) + ".bak")
+    if backup.exists():
+        return MigrationResult(path, "failed", detail=f"backup already exists at {backup}; restore or move it before retrying")
     moved = _absorb(servers)
     if not moved:
         return MigrationResult(path, "skipped", detail="nothing to move")
 
-    backup = Path(str(path) + ".bak")
     try:
         backup.write_text(raw, encoding="utf-8")
     except OSError as exc:
@@ -1314,7 +1317,7 @@ def migrate_config(path: Path, mode: str = "enforce") -> MigrationResult:
         # trade for governing a server.
         return MigrationResult(path, "failed", detail=f"could not write backup: {exc}")
 
-    data[key] = {"prismor": _gateway_entry(mode), **keep}
+    data[key] = {"prismor": _gateway_entry(mode, workspace), **keep}
     try:
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
@@ -1387,6 +1390,35 @@ def uninstall_gateway(workspace: Path) -> str:
     return f"Restored {mcp_json} from backup. Gateway config left at {DEFAULT_GATEWAY_CONFIG}."
 
 
+def _claude_desktop_config_path() -> Path:
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    if os.name == "nt":
+        return Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming") / "Claude" / "claude_desktop_config.json"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "Claude" / "claude_desktop_config.json"
+
+
+def install_claude_desktop_gateway(mode: str = "enforce", workspace: Optional[Path] = None) -> str:
+    path = _claude_desktop_config_path()
+    result = migrate_config(path, mode, workspace)
+    if result.status == "failed":
+        raise GatewayConfigError(f"{path}: {result.detail}")
+    if result.status == "skipped":
+        return f"Claude Desktop MCP config: {result.detail}."
+    return (f"Moved {result.moved} server(s) behind the Prismor gateway. Restart Claude Desktop to activate it. "
+            "Restore with `prismor mcp-gateway uninstall --claude-desktop`.")
+
+
+def uninstall_claude_desktop_gateway() -> str:
+    path = _claude_desktop_config_path()
+    backup = Path(str(path) + ".bak")
+    if not backup.exists():
+        return f"No Claude Desktop backup found at {backup} — nothing to restore."
+    path.write_text(backup.read_text(encoding="utf-8"), encoding="utf-8")
+    backup.unlink()
+    return f"Restored Claude Desktop config from {backup}. Restart Claude Desktop."
+
+
 # ── CLI entrypoint ───────────────────────────────────────────────────────────
 
 # Interpreters/launchers that say nothing about WHICH server this is. The
@@ -1450,12 +1482,18 @@ def run_gateway(args, workspace: Path) -> int:
         # an explicit `--mode observe` is honoured. Serve keeps its observe
         # default below.
         install_mode = getattr(args, "mode", None) or "enforce"
+        if getattr(args, "claude_desktop", False):
+            print(install_claude_desktop_gateway(install_mode, workspace))
+            return 0
         if getattr(args, "all", False):
             print(_install_everywhere(workspace, install_mode))
             return 0
         print(install_gateway(workspace, install_mode))
         return 0
     if action == "uninstall":
+        if getattr(args, "claude_desktop", False):
+            print(uninstall_claude_desktop_gateway())
+            return 0
         print(uninstall_gateway(workspace))
         return 0
 

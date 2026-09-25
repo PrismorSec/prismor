@@ -3703,6 +3703,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="With install: migrate every MCP config on this machine "
                                 "(Claude Desktop, Cursor, VS Code, …), not just this "
                                 "workspace's .mcp.json")
+    gw_parser.add_argument("--claude-desktop", action="store_true",
+                           help="With install/uninstall: target Claude Desktop's machine-wide MCP config")
     gw_parser.add_argument("--config", help="Downstream servers config (.mcp.json-shaped; "
                            "default: ~/.prismor/mcp-gateway.json)")
     gw_parser.add_argument("--upstream", help="Single upstream shim mode: a URL, or a quoted command "
