@@ -4,19 +4,19 @@
     "PreToolUse": [
       {
         "bash": "sh -c '[ \"$PRISMOR_DOGFOOD\" = 0 ] && exit 0; for py in \"$PRISMOR_DEV_PYTHON\" python3 python; do [ -n \"$py\" ] && \"$py\" -c \"import yaml\" </dev/null 2>/dev/null && exec \"$py\" \"$(git rev-parse --show-toplevel)/scripts/dev-hook.py\" hook-dispatch --agent copilot --mode observe; done; echo \"prismor dogfood: no python with pyyaml found (pip install pyyaml, or set PRISMOR_DEV_PYTHON)\" >&2; exit 2'",
-        "powershell": ".\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe"
+        "powershell": "& .\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe; exit $LASTEXITCODE"
       }
     ],
     "PostToolUse": [
       {
         "bash": "sh -c '[ \"$PRISMOR_DOGFOOD\" = 0 ] && exit 0; for py in \"$PRISMOR_DEV_PYTHON\" python3 python; do [ -n \"$py\" ] && \"$py\" -c \"import yaml\" </dev/null 2>/dev/null && exec \"$py\" \"$(git rev-parse --show-toplevel)/scripts/dev-hook.py\" hook-dispatch --agent copilot --mode observe; done; echo \"prismor dogfood: no python with pyyaml found (pip install pyyaml, or set PRISMOR_DEV_PYTHON)\" >&2; exit 2'",
-        "powershell": ".\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe"
+        "powershell": "& .\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe; exit $LASTEXITCODE"
       }
     ],
     "UserPromptSubmit": [
       {
         "bash": "sh -c '[ \"$PRISMOR_DOGFOOD\" = 0 ] && exit 0; for py in \"$PRISMOR_DEV_PYTHON\" python3 python; do [ -n \"$py\" ] && \"$py\" -c \"import yaml\" </dev/null 2>/dev/null && exec \"$py\" \"$(git rev-parse --show-toplevel)/scripts/dev-hook.py\" hook-dispatch --agent copilot --mode observe; done; echo \"prismor dogfood: no python with pyyaml found (pip install pyyaml, or set PRISMOR_DEV_PYTHON)\" >&2; exit 2'",
-        "powershell": ".\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe"
+        "powershell": "& .\\scripts\\dev-hook.cmd hook-dispatch --agent copilot --mode observe; exit $LASTEXITCODE"
       }
     ]
   }

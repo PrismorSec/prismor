@@ -60,10 +60,11 @@ def dogfood_command(agent, event=""):
 
 
 def windows_command(agent):
-    """The Windows form. Codex runs hooks under PowerShell (or cmd.exe, reports
-    differ) and Copilot under PowerShell; a relative .cmd path parses the same
-    in both, and both run hooks from the project root."""
-    return f".\\scripts\\dev-hook.cmd hook-dispatch --agent {agent} --mode observe"
+    """The Windows form, run by PowerShell (Codex's hook shell on Windows, and
+    Copilot's `powershell` field) from the project root. `-Command` reports
+    only 0/1 for a native command unless told otherwise, and Codex blocks on
+    exit 2 alone, so the launcher's exit code is passed through explicitly."""
+    return f"& .\\scripts\\dev-hook.cmd hook-dispatch --agent {agent} --mode observe; exit $LASTEXITCODE"
 
 
 def expected_config(agent):
@@ -240,7 +241,7 @@ def test_cursor_payload_on_claude_hook_is_skipped(tmp_path):
 # --- Windows: the forms Codex and Copilot run, under each shell they might use --
 
 def _windows_shells():
-    shells = [["cmd", "/d", "/c"], ["powershell", "-NoProfile", "-Command"]]
+    shells = [["powershell", "-NoProfile", "-Command"]]
     if shutil.which("pwsh"):
         shells.append(["pwsh", "-NoProfile", "-Command"])
     return shells
@@ -270,6 +271,23 @@ def test_windows_form_fails_loud_without_python(shell, tmp_path):
         capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=120,
     )
     assert proc.returncode == 2 and "no python with pyyaml" in proc.stderr, (proc.returncode, proc.stderr)
+
+
+@windows_only
+def test_cmd_launcher_itself_under_cmd_exe(tmp_path):
+    # Some Codex builds reportedly spawn hooks through cmd.exe; the launcher
+    # must keep its exit codes there too.
+    system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    launcher = [".\\scripts\\dev-hook.cmd", "hook-dispatch", "--agent", "codex", "--mode", "observe"]
+    ok = subprocess.run(["cmd", "/d", "/c"] + launcher, cwd=ROOT, input=_rm_rf(ROOT), capture_output=True,
+                        encoding="utf-8", errors="replace", env=_env(tmp_path, PRISMOR_DEV_PYTHON=sys.executable),
+                        timeout=180)
+    assert _screened(ok), (ok.returncode, ok.stderr)
+    env = _env(tmp_path, PATH=system32)
+    env.pop("PRISMOR_DEV_PYTHON", None)
+    loud = subprocess.run([shutil.which("cmd"), "/d", "/c"] + launcher, cwd=ROOT, input=_rm_rf(ROOT),
+                          capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=120)
+    assert loud.returncode == 2 and "no python with pyyaml" in loud.stderr, (loud.returncode, loud.stderr)
 
 
 @windows_only
