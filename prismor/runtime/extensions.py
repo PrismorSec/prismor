@@ -919,7 +919,7 @@ def run_wrapped_hook(ext_id: str, command: str) -> int:
     except Exception:
         payload = {}
     started = time.time()
-    proc = subprocess.run(command, shell=True, input=stdin, capture_output=True)  # noqa: S602 - the agent would run this exact string
+    proc = subprocess.run(command, shell=True, input=stdin, capture_output=True)  # noqa: S602 - the agent would run this exact string  # nosec B602
     sys.stdout.buffer.write(proc.stdout)
     sys.stderr.buffer.write(proc.stderr)
     _audit("hook_executed", {"id": f"hook:{ext_id}", "kind": "hook", "name": command[:120],

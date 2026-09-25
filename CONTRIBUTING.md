@@ -103,6 +103,11 @@ bash scripts/run_security_tests.sh
 # Full test suite
 python3 -m pytest tests/ -q
 
+# Lint + SAST — same gates CI runs
+python3 -m pip install ruff bandit
+ruff check --select E9,F63,F7,F82 .
+bandit -r prismor adapters -lll -iii -q
+
 # If you changed a policy rule
 prismor policy validate prismor/runtime/default_policy.yaml
 prismor check "rm -rf /"
@@ -127,8 +132,9 @@ Every push and PR runs:
 |---|---|
 | `oss-guard.yml` | No signing keys, secrets, or premium feed content in the public repo |
 | `security-regression.yml` | Cloaking + policy suite, and integration registry consistency |
+| `static-analysis.yml` | `ruff` (syntax errors, undefined names) and `bandit` SAST (high severity) |
 
-Both must pass. If `oss-guard` fails, stop and check what you committed before pushing again.
+All must pass. A `bandit` finding is fixed, not suppressed; `# nosec` is only for a deliberate case, with the reason on the same line. If `oss-guard` fails, stop and check what you committed before pushing again.
 
 ---
 
@@ -151,7 +157,7 @@ That structure exists because it front-loads the two things a reviewer needs: *d
 ## Reporting bugs and security issues
 
 - **Regular bugs and feature ideas** — open a GitHub issue. Include what you ran, what you expected, and what happened.
-- **Security vulnerabilities in Prismor itself** — do not open a public issue. Report privately via GitHub's security advisory tab on the repository.
+- **Security vulnerabilities in Prismor itself** — do not open a public issue. See [`SECURITY.md`](./SECURITY.md) for how to report privately and what response times to expect.
 - **Code of Conduct concerns** — contact@prismor.dev.
 
 ## License

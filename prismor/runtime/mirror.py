@@ -487,7 +487,7 @@ def _run_bash(args: Dict[str, Any], workspace: Path) -> str:
         timeout_ms = DEFAULT_BASH_TIMEOUT_MS
     timeout_s = max(1.0, min(timeout_ms, MAX_BASH_TIMEOUT_MS) / 1000.0)
     try:
-        proc = subprocess.run(command, shell=True, cwd=str(workspace),
+        proc = subprocess.run(command, shell=True, cwd=str(workspace),  # mirrors the agent's Bash tool  # nosec B602
                               capture_output=True, text=True, timeout=timeout_s,
                               env=dict(os.environ))
     except subprocess.TimeoutExpired:

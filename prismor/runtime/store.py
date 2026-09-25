@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 try:  # POSIX advisory locks; absent on Windows.
     import fcntl
