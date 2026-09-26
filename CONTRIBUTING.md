@@ -2,7 +2,7 @@
 
 Thanks for wanting to contribute. Prismor is a security package for AI coding agents, so a change here can affect what gets blocked, what gets logged, and what leaks. This document tells you how to make a change that gets merged quickly.
 
-Read [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) first. It applies everywhere this project operates.
+Read [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md) first. It applies everywhere this project operates. For roles, approvals, and how decisions get made, see [`GOVERNANCE.md`](./GOVERNANCE.md).
 
 ---
 
