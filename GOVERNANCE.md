@@ -158,6 +158,7 @@ Prismor OSS is developed primarily by Prismor, which also offers commercial prod
 | Name | GitHub | Role | Areas |
 |---|---|---|---|
 | Arnav | [@Ar9av](https://github.com/Ar9av) | Maintainer | All |
+| | [@delta-porygon](https://github.com/delta-porygon) | Maintainer | All |
 
 **Emeritus:** none yet.
 
