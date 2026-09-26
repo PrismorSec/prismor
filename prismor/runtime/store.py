@@ -1370,6 +1370,8 @@ def _extract_mcp_or_tool(raw_json: str) -> Optional[Dict[str, str]]:
     if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
         server = tool_name[len("mcp__"):].split("__", 1)[0]
         return {"kind": "mcp", "name": server}
+    if meta.get("skill"):
+        return {"kind": "skill", "name": str(meta["skill"])}
     if tool_name == "Skill":
         # The skill name lives inside the raw payload's tool_input.
         skill_name = ""

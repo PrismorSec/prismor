@@ -681,7 +681,7 @@ def tag_event(workspace: Path, session_id: str, event: Dict[str, Any]) -> Option
     sess = data["sessions"].get(session_id) or {}
     tag: Optional[Dict[str, Any]] = None
     dirty = False
-    if tool == "Skill":
+    if tool == "Skill" or meta.get("skill"):
         from prismor.runtime.scoped_agent import resolve_skill_name
         name = (resolve_skill_name(event) or "").rpartition(":")[2]
         ext_id = next((eid for eid, link in (sess.get("links") or {}).items()

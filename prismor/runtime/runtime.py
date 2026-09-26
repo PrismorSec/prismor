@@ -227,6 +227,11 @@ def evaluate_tool_call(
             # agent actually reaches for — not just that it uses skills at all.
             for _tag in resolve_tool_tags(event):
                 _capabilities.append({"name": _tag, "source": "observed"})
+            # Codex loads a skill by reading SKILL.md in the shell, so the skill
+            # rides on a Bash event. Inventory it; deny/allow matching stays on
+            # the real tool tag so an allowed skill can never lift a Bash deny.
+            if meta.get("skill"):
+                _capabilities.append({"name": f"Skill:{meta['skill']}", "source": "observed"})
             for _tool in meta.get("available_tools") or []:
                 _capabilities.append({"name": str(_tool), "source": "declared"})
             _scoped = load_scoped_rules(workspace, session_id) if session_id else None
@@ -252,6 +257,13 @@ def evaluate_tool_call(
     _guard_t0 = time.perf_counter()
     _session_seq = len(events) - 1
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
+    # A multi-file patch (Codex apply_patch) is one event with one `path`; every
+    # other file it touches gets the path rules too. Content is dropped so the
+    # content rules, already run above, do not fire twice.
+    for _extra in (meta.get("patch_paths") or [])[1:]:
+        findings.extend(engine.evaluate(
+            {**event, "path": _extra, "content": ""}, _session_seq,
+            session_id=session_id, subject=subject))
 
     # Integrity findings (memory guard, #154) bypass the regex rule engine
     # because verify_memory_files() produces fully-structured findings with
