@@ -28,6 +28,7 @@ from __future__ import annotations
 from prismor.runtime.http_ua import user_agent as _http_user_agent
 
 import base64
+import copy
 import json
 import os
 import subprocess
@@ -631,6 +632,24 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     sig_path = _cached_sig_path()
     if not policy_path.exists() or not sig_path.exists():
         return None
+
+    try:
+        pol_stat = policy_path.stat()
+        sig_stat = sig_path.stat()
+        cache_key = (
+            str(policy_path),
+            str(sig_path),
+            pol_stat.st_mtime_ns,
+            pol_stat.st_size,
+            sig_stat.st_mtime_ns,
+            sig_stat.st_size,
+        )
+    except OSError:
+        return None
+
+    if cache_key in _VERIFIED_POLICY_MEMO:
+        return copy.deepcopy(_VERIFIED_POLICY_MEMO[cache_key])
+
     try:
         payload = policy_path.read_bytes()
         sig_b64 = sig_path.read_text(encoding="utf-8").strip()
@@ -655,7 +674,10 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     except (OSError, ValueError):
         pass
     parsed["_remote_meta"] = meta
-    return parsed
+
+    _VERIFIED_POLICY_MEMO.clear()
+    _VERIFIED_POLICY_MEMO[cache_key] = parsed
+    return copy.deepcopy(parsed)
 
 
 def _cache_is_fresh(ttl: float) -> bool:
@@ -758,13 +780,14 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         write_org_patterns(_extract_cloak_patterns(policy_yaml))
     except Exception as exc:
         sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
-    _meta_path().write_text(json.dumps({
+        _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
         "profile_id": body.get("profile_id"),
         "scope": body.get("scope"),
         "full_capture": full_capture,
     }), encoding="utf-8")
+    clear_policy_cache()
     return True
 
 
