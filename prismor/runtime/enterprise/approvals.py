@@ -185,13 +185,11 @@ def redact_approved_payload(payload: Any, *, workspace: Any = None) -> Any:
     """Strip classified sensitive values from ``payload`` (str / dict / list of
     tool arguments) after an "approve redacted" decision. Uses the same
     classifier as the data-boundary policy so what gets stripped is exactly
-    what the approver saw flagged. Best-effort: on any error the original is
-    returned unchanged (the call was approved; redaction is the extra ask)."""
-    try:
-        from prismor.runtime.data_boundary import redact_payload
-        return redact_payload(payload, workspace=workspace)
-    except Exception:
-        return payload
+    what the approver saw flagged. Fails closed: any error propagates, so the
+    caller blocks the call instead of forwarding the unredacted payload the
+    approver only allowed on condition of redaction."""
+    from prismor.runtime.data_boundary import redact_payload
+    return redact_payload(payload, workspace=workspace)
 
 
 def enqueue_step_up(
