@@ -644,26 +644,29 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
     without resolving symlinks, causing list_sessions to miss rows on platforms
     like macOS where /tmp traverses a symlink.
     """
-    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v1.json"
+    # v2: v1 only collected paths from sessions, skipping orphaned telemetry rows (#509).
+    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
     if marker.exists():
         return
+    tables = ("sessions", "package_inventory", "token_usage", "tool_output_size", "supply_chain_events")
     try:
-        rows = connection.execute(
-            "SELECT DISTINCT workspace_path FROM sessions WHERE workspace_path IS NOT NULL AND workspace_path != ''"
-        ).fetchall()
-        for (wp,) in rows:
-            if wp:
-                resolved = canonical_workspace_path(wp)
-                if resolved and resolved != wp:
-                    connection.execute("UPDATE sessions SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
-                    for table in ("package_inventory", "token_usage", "tool_output_size", "supply_chain_events"):
-                        try:
-                            connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
-                        except sqlite3.OperationalError:
-                            pass
+        paths = set()
+        for table in tables:
+            try:
+                paths.update(wp for (wp,) in connection.execute(f"SELECT DISTINCT workspace_path FROM {table} WHERE workspace_path IS NOT NULL AND workspace_path != ''"))  # identifiers are constants  # nosec B608
+            except sqlite3.OperationalError:
+                pass
+        for wp in paths:
+            resolved = canonical_workspace_path(wp)
+            if resolved and resolved != wp:
+                for table in tables:
+                    try:
+                        connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
         connection.commit()
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+        marker.write_text(json.dumps({"version": 2}, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
