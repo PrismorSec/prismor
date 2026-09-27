@@ -709,7 +709,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if not ident:
         return False
     if _identity.revoked_backoff_active():
-        return False  # key was rejected — back off instead of hammering
+        return False  # key was rejected - back off instead of hammering
     if not force and _cache_is_fresh(ttl):
         return False
 
@@ -718,25 +718,25 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
 
     base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
     url = (
-        f"{base}/api/policy/resolve"
-        f"?device_id={ident.get('device_id')}&org_id={ident.get('org_id')}"
+        f"{base}/api/policy/resolve?"
+        f"device_id={ident.get('device_id')}&org_id={ident.get('org_id')}"
     )
     req = urllib.request.Request(
         url,
         headers={"Authorization": f"Bearer {ident.get('device_key')}"},
         method="GET",
     )
-    req.add_header("User-Agent", _http_user_agent())
+    req.add_header("User-Agent", user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             body = json.loads(resp.read().decode("utf-8"))
         _identity.clear_revoked()
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             _identity.mark_revoked(f"policy fetch rejected ({exc.code})")
             sys.stderr.write(
-                "[prismor] control plane rejected this device's key "
-                f"({exc.code}) — keeping last good policy. Re-enroll with: prismor enroll <token>\n"
+                f"[prismor] control plane rejected this device's key "
+                f"({exc.code}) - keeping last good policy. Re-enroll with: prismor enroll <token>\n"
             )
         else:
             sys.stderr.write(f"[prismor] remote policy fetch failed: {exc}\n")
@@ -750,7 +750,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if not policy_yaml or not signature:
         return False
     if not _verify_signature(policy_yaml.encode("utf-8"), signature):
-        sys.stderr.write("[prismor] fetched remote policy failed verification — discarding\n")
+        sys.stderr.write("[prismor] fetched remote policy failed verification - discarding\n")
         return False
 
     # Developer-facing transparency: detect the org flipping capture mode.
@@ -768,7 +768,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if prev_capture is not None and bool(prev_capture) != full_capture:
         if full_capture:
             sys.stderr.write(
-                "[prismor] NOTICE: your org admin enabled FULL telemetry capture — "
+                "[prismor] NOTICE: your org admin enabled FULL telemetry capture - "
                 "flagged events now include scrubbed content (not just metadata). "
                 "Check `prismor enroll-status` for details.\n"
             )
@@ -782,14 +782,15 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     home.mkdir(parents=True, exist_ok=True)
     cached_policy_path().write_text(policy_yaml, encoding="utf-8")
     _cached_sig_path().write_text(signature, encoding="utf-8")
-    # The cloak hooks are bash and read pattern files, not this YAML: project
+    # The cloak hooks are bash and read pattern files, not this YAML; project
     # the org's secret patterns to a file they load. Verified policy only -
     # this runs after the signature check above. Best-effort, never fatal.
-   try:
-       from prismor.runtime.cloaking_patterns import write_org_patterns
-       write_org_patterns(_extract_cloak_patterns(policy_yaml))
-   except Exception as exc:
-       sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
+        try:
+        from prismor.runtime.cloaking_patterns import write_org_patterns
+        write_org_patterns(_extract_cloak_patterns(policy_yaml))
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
+        
 
     _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
@@ -801,8 +802,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     clear_policy_cache()
     return True
 
-
-
+    
 
 def _extract_cloak_patterns(policy_yaml: str) -> List[str]:
     """The org's ``settings.cloak_patterns`` list. Empty on any parse problem."""
