@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterable, Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from prismor.runtime import perf as _perf
 from prismor.runtime.egress import EgressPolicy
 from prismor.runtime.data_boundary import DataBoundaryPolicy
 
@@ -1281,7 +1282,7 @@ class PolicyEngine:
                 folded_cache[field_name] = folded if folded != value else None
             return folded_cache[field_name]
 
-        for rule in self.rules:
+        for rule in _perf.timed_rules(self.rules, findings):
             matched_via_mcp_alias = False
             # A synthetic "text" event has no rules of its own; route it through
             # the agent-I/O content rules so check_text / `--type text` actually
@@ -1853,10 +1854,12 @@ class PolicyEngine:
             and not os.environ.get("PRISMOR_SEMANTIC_SUBAGENT")
         ):
             try:
-                sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
+                with _perf.stage("semantic_judge"):
+                    sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
                 if sem_finding:
                     findings.append(sem_finding)
             except Exception as exc:
+                _perf.RULES.setdefault("semantic-guard", [0, 0, 0.0, 0])[3] += 1
                 sys.stderr.write(f"[prismor] semantic_guard error: {exc}\n")
 
         # ── Taint tracking: mark session if injection detected ─────────────
@@ -2343,9 +2346,12 @@ class PolicyEngine:
         if len(text) < 12:  # too short to be a meaningful semantic attack
             return None
 
-        result = guard.analyze(text)
+        budget = float(cfg.get("budget_ms") or 0) / 1000
+        result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)
+        if str(getattr(risk, "reason", "")).startswith("[LLM fallback]"):
+            _perf.degraded("semantic_judge:fallback")
         score = float(getattr(risk, "risk_score", 0.0))
 
         warn_t = float(cfg.get("warn_threshold", 0.45))
@@ -3412,6 +3418,29 @@ def _instruction_file(path: str) -> bool:
     if base in _MEMORY_BASENAMES or base == "SKILL.md" or base.upper().startswith("README"):
         return True
     return any(fnmatch(p, g) or fnmatch(p, "*/" + g.lstrip("*/")) for g in _MEMORY_GLOBS)
+
+
+def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
+    """``guard.analyze(text)``, or the heuristic verdict if the judge overruns.
+
+    settings.semantic_guard.budget_ms: a slow judge must not push the hook
+    past the agent's timeout, where the call proceeds unscreened. The verdict
+    is made on time from the heuristic path and the degradation is recorded.
+    """
+    import threading
+    box: List[Any] = []
+    # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
+    # process exits right after, and a CLI judge's own timeout reaps its child.
+    t = threading.Thread(target=lambda: box.append(guard.analyze(text)), daemon=True)
+    t.start()
+    t.join(budget_s)
+    if box:
+        return box[0]
+    from prismor.runtime.semantic_guard import _heuristic_analyze
+    _perf.degraded("semantic_judge:budget")
+    risk = _heuristic_analyze(text)
+    risk.reason = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; " + risk.reason
+    return risk
 
 
 def _semantic_text(event: Dict[str, Any], field_values: Dict[str, str]) -> str:
