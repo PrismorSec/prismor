@@ -26,6 +26,7 @@ hard dependency stays ``pyyaml``.
 from __future__ import annotations
 
 from prismor.runtime.http_ua import user_agent as _http_user_agent
+from typing import Any, Dict, List, Optional, Tuple
 
 import base64
 import copy
@@ -35,10 +36,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 from prismor.runtime.enterprise import identity as _identity
 
+_VERIFIED_POLICY_MEMO: Dict[Tuple[str, str, int, int, int, int, int, int, int, int], Dict[str, Any]] = {}
+
+def clear_policy_cache() -> None:
+    """Explicitly invalidate the in-process memoized remote policy."""
+    global _VERIFIED_POLICY_MEMO
+    _VERIFIED_POLICY_MEMO.clear()
 
 def _public_key_path() -> Path:
     """Bundled Ed25519 trust root (same key that signs the advisory feed).
@@ -633,19 +639,24 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     if not policy_path.exists() or not sig_path.exists():
         return None
 
-    try:
+        try:
         pol_stat = policy_path.stat()
         sig_stat = sig_path.stat()
         cache_key = (
             str(policy_path),
             str(sig_path),
+            pol_stat.st_ino,
+            pol_stat.st_ctime_ns,
             pol_stat.st_mtime_ns,
             pol_stat.st_size,
+            sig_stat.st_ino,
+            sig_stat.st_ctime_ns,
             sig_stat.st_mtime_ns,
             sig_stat.st_size,
         )
     except OSError:
         return None
+
 
     if cache_key in _VERIFIED_POLICY_MEMO:
         return copy.deepcopy(_VERIFIED_POLICY_MEMO[cache_key])
@@ -775,12 +786,13 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     # The cloak hooks are bash and read pattern files, not this YAML: project
     # the org's secret patterns to a file they load. Verified policy only -
     # this runs after the signature check above. Best-effort, never fatal.
-    try:
-        from prismor.runtime.cloaking.patterns import write_org_patterns
-        write_org_patterns(_extract_cloak_patterns(policy_yaml))
-    except Exception as exc:
-        sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
-        _meta_path().write_text(json.dumps({
+   try:
+       from prismor.runtime.cloaking_patterns import write_org_patterns
+       write_org_patterns(_extract_cloak_patterns(policy_yaml))
+   except Exception as exc:
+       sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
+
+    _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
         "profile_id": body.get("profile_id"),
@@ -789,6 +801,8 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     }), encoding="utf-8")
     clear_policy_cache()
     return True
+
+
 
 
 def _extract_cloak_patterns(policy_yaml: str) -> List[str]:
