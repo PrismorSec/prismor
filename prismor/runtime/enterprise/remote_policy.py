@@ -628,18 +628,18 @@ def _verify_signature(payload: bytes, sig_b64: str) -> bool:
 
 def verify_and_load() -> Optional[Dict[str, Any]]:
     """Load and verify the cached remote policy. Returns the parsed policy dict
-    (with a ``_remote_meta`` key) or None if absent / unverifiable.
+    (with a "_remote_meta" key) or None if absent / unverifiable.
 
-    Called by the PolicyEngine on every load — must be cheap and never raise.
+    Called by the PolicyEngine on every load - must be cheap and never raise.
     """
     if _identity.revoked_info():
         return None
     policy_path = cached_policy_path()
-    sig_path = _cached_sig_path()
+    sig_path = cached_sig_path()
     if not policy_path.exists() or not sig_path.exists():
         return None
 
-        try:
+    try:
         pol_stat = policy_path.stat()
         sig_stat = sig_path.stat()
         cache_key = (
@@ -657,7 +657,6 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     except OSError:
         return None
 
-
     if cache_key in _VERIFIED_POLICY_MEMO:
         return copy.deepcopy(_VERIFIED_POLICY_MEMO[cache_key])
 
@@ -668,7 +667,7 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
         return None
 
     if not _verify_signature(payload, sig_b64):
-        sys.stderr.write("[prismor] remote policy signature INVALID — ignoring\n")
+        sys.stderr.write("[prismor] remote policy signature INVALID - ignoring\n")
         return None
 
     try:
