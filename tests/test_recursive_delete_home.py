@@ -50,10 +50,8 @@ def test_never_blocks_under_legacy_category_gating():
     assert legacy_should_block(hits, ev, {"destructive_command"}) is None
 
 
-def test_reports_but_never_blocks_under_enforce_default():
-    from prismor.runtime.hooks import should_block
-    eng = PolicyEngine()
-    eng.default_mode = "enforce"
-    hits = [f for f in eng.evaluate({"type": "shell", "command": f"{RM} /home/ubuntu/x/data"}, 0)
-            if f["ruleId"] == "recursive-delete-home"]
-    assert hits and should_block(hits, {"type": "shell", "agent_event": "PreToolUse"}) is None
+
+def test_default_policy_stays_on_legacy_category_gating():
+    """A rule-level `mode` anywhere flips the default policy out of legacy
+    gating and silently stops secret-access blocking (surface conformance)."""
+    assert PolicyEngine().is_legacy_policy
