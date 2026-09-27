@@ -276,7 +276,7 @@ def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monk
 
     remote_policy.clear_policy_cache()
 
-    with patch.object(remote_policy, "_verify_signature", wraps=remote_policy._verify_signature) as mock_sig:
+    with patch.object(remote_policy, "verify_signature", wraps=remote_policy.verify_signature) as mock_sig:
         
         p1 = remote_policy.verify_and_load()
         assert p1 is not None
@@ -302,4 +302,5 @@ def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monk
         p6 = remote_policy.verify_and_load()
         assert p6 is not None
         assert mock_sig.call_count == 3
+
      
