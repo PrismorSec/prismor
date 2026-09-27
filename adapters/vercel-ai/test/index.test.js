@@ -26,7 +26,8 @@ const ALLOW = { allow: true, reason: null, findings: [], blocking: null, subject
 
 /** Mock fetch that records each request body and allows everything. */
 function recordingFetch(requests) {
-  return async (_url, init) => {
+  return async (url, init) => {
+    if (String(url).endsWith("/v1/redact")) return { ok: true, json: async () => ({ redacted: false }) };
     requests.push({ body: JSON.parse(init.body), headers: init.headers });
     return { ok: true, json: async () => ALLOW };
   };
@@ -218,7 +219,8 @@ test("no subject → no subject field or header sent", async () => {
 test("concurrent requests with different subjects do not bleed", async () => {
   const requests = [];
   await withMockFetch(
-    async (_url, init) => {
+    async (url, init) => {
+      if (String(url).endsWith("/v1/redact")) return { ok: true, json: async () => ({ redacted: false }) };
       requests.push(JSON.parse(init.body));
       await new Promise((r) => setTimeout(r, 5)); // force interleaving
       return { ok: true, json: async () => ALLOW };
@@ -334,4 +336,29 @@ test("langchain: guarding twice is a no-op", async () => {
     await tool.invoke({ url: "https://a.com" });
     assert.equal(requests.length, 1);
   });
+});
+
+// ── Result-side redaction ────────────────────────────────────────────────────
+
+test("tool results are masked through /v1/redact before the model sees them", async () => {
+  await withMockFetch(
+    async (url, init) => String(url).endsWith("/v1/redact")
+      ? { ok: true, json: async () => ({ result: JSON.parse(init.body).result.replace("sk_live_x", "[REDACTED:secret]"), redacted: true }) }
+      : { ok: true, json: async () => ALLOW },
+    async () => {
+      const read = { execute: async () => "STRIPE=sk_live_x" };
+      const tools = prismorTools({ read });
+      assert.equal(await tools.read.execute({}), "STRIPE=[REDACTED:secret]");
+    },
+  );
+});
+
+test("redaction failure returns the original result (never fails the call)", async () => {
+  await withMockFetch(
+    async (url) => { if (String(url).endsWith("/v1/redact")) throw new Error("down"); return { ok: true, json: async () => ALLOW }; },
+    async () => {
+      const read = { execute: async () => "plain" };
+      assert.equal(await prismorTools({ read }).read.execute({}), "plain");
+    },
+  );
 });
