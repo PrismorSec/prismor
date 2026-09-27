@@ -785,13 +785,13 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     # The cloak hooks are bash and read pattern files, not this YAML; project
     # the org's secret patterns to a file they load. Verified policy only -
     # this runs after the signature check above. Best-effort, never fatal.
-        try:
+    try:
         from prismor.runtime.cloaking_patterns import write_org_patterns
         write_org_patterns(_extract_cloak_patterns(policy_yaml))
     except Exception as exc:
         sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
-        
 
+    
     _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
