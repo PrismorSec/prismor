@@ -478,6 +478,24 @@ rules:
       - 'launchctl\s+unload\b'
     action: block
 
+  # ── HIGH (warn): Recursive delete of a directory under the home dir ──
+  # destructive-command deliberately allows routine cleanup, so a recursive
+  # force delete of an arbitrary project or data dir under ~ ran silently
+  # even under enforce. Report it without blocking; build/cache dirs by name
+  # (node_modules, dist, build, .next, target, .venv, ...) stay quiet.
+  - id: recursive-delete-home
+    severity: HIGH
+    category: destructive_command
+    title: Flags rm -rf of a directory under the home directory
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n;&|]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|]*\s-[rR]\b|--recursive\b[^\n;&|]*--force\b|--force\b[^\n;&|]*--recursive\b))[^\n;&|]*\s+["'']?(?:~|\$\{?HOME\}?|/(?:home|Users)/[^/\s"'']+)/(?![^\s"'';&|]*?(?:^|/)?(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)/?(?:["'']|\s|$|;|&|\|))[^\s"'';&|]+'
+    # Report-only even under an enforce-everything org policy: a rule that
+    # cannot tell a real delete from the same text in a heredoc must not block.
+    mode: observe
+    action: warn
+
   # ── CRITICAL: Secret exfiltration ─────────────────────────────────────
   - id: secret-exfiltration
     severity: CRITICAL
