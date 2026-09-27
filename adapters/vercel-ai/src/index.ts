@@ -89,7 +89,7 @@ const FAIL_OPEN_DECISION: PrismorDecision = {
  * doesn't mean "silent."
  */
 function logObserveFindings(decision: PrismorDecision, mode: string, toolName: string): void {
-  if (mode !== "observe") return;
+  if (mode !== "observe" || !decision.allow) return; // actually blocked: the adapter reports that
   const findings = (decision.findings ?? []) as Array<Record<string, unknown>>;
   const wouldBlock = findings.filter((f) => String(f?.mode ?? "observe").toLowerCase() === "enforce");
   for (const f of wouldBlock) {
