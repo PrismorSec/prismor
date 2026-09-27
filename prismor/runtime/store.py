@@ -644,26 +644,29 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
     without resolving symlinks, causing list_sessions to miss rows on platforms
     like macOS where /tmp traverses a symlink.
     """
-    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v1.json"
+    # v2: v1 only collected paths from sessions, skipping orphaned telemetry rows (#509).
+    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
     if marker.exists():
         return
+    tables = ("sessions", "package_inventory", "token_usage", "tool_output_size", "supply_chain_events")
     try:
-        rows = connection.execute(
-            "SELECT DISTINCT workspace_path FROM sessions WHERE workspace_path IS NOT NULL AND workspace_path != ''"
-        ).fetchall()
-        for (wp,) in rows:
-            if wp:
-                resolved = canonical_workspace_path(wp)
-                if resolved and resolved != wp:
-                    connection.execute("UPDATE sessions SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
-                    for table in ("package_inventory", "token_usage", "tool_output_size", "supply_chain_events"):
-                        try:
-                            connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
-                        except sqlite3.OperationalError:
-                            pass
+        paths = set()
+        for table in tables:
+            try:
+                paths.update(wp for (wp,) in connection.execute(f"SELECT DISTINCT workspace_path FROM {table} WHERE workspace_path IS NOT NULL AND workspace_path != ''"))  # identifiers are constants  # nosec B608
+            except sqlite3.OperationalError:
+                pass
+        for wp in paths:
+            resolved = canonical_workspace_path(wp)
+            if resolved and resolved != wp:
+                for table in tables:
+                    try:
+                        connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
         connection.commit()
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+        marker.write_text(json.dumps({"version": 2}, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -753,6 +756,8 @@ def initialize_database(workspace: Path) -> Path:
                 ts TEXT NOT NULL,
                 hook_event TEXT,
                 hook_ms INTEGER,
+                agent TEXT,
+                detail_json TEXT,
                 PRIMARY KEY (session_id, ts)
             );
             """
@@ -2169,12 +2174,17 @@ def get_findings_page(
 _HOOK_TIMINGS_DDL = (
     "CREATE TABLE IF NOT EXISTS hook_timings ("
     "session_id TEXT NOT NULL, ts TEXT NOT NULL, hook_event TEXT, hook_ms INTEGER, "
+    "agent TEXT, detail_json TEXT, "
     "PRIMARY KEY (session_id, ts))"
 )
 
 
-def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int) -> None:
+def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int,
+                       agent: str = "", detail: Optional[Dict[str, Any]] = None) -> None:
     """How long one hook process took, keyed to the event it screened.
+
+    ``detail`` is prismor.runtime.perf.snapshot(): per-stage ms, per-rule
+    counters and degradations (#494).
 
     Kept out of events.raw_json on purpose: every snapshot rewrites the events
     table from the session JSONL, and that JSONL line is appended before policy
@@ -2187,15 +2197,80 @@ def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: st
         conn = sqlite3.connect(get_db_path(workspace), timeout=2)
         try:
             conn.execute(_HOOK_TIMINGS_DDL)
+            for col in ("agent", "detail_json"):  # tables created before #494
+                try:
+                    conn.execute(f"ALTER TABLE hook_timings ADD COLUMN {col} TEXT")  # constant identifiers  # nosec B608
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
-                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms) VALUES (?, ?, ?, ?)",
-                (session_id, ts, hook_event or "", int(hook_ms)),
+                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms, agent, detail_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, ts, hook_event or "", int(hook_ms), agent or "",
+                 json.dumps(detail) if detail else None),
             )
             conn.commit()
         finally:
             conn.close()
     except Exception:
         pass
+
+
+def get_hook_perf(limit: int = 500) -> Dict[str, Any]:
+    """Latency summary of the last ``limit`` hook calls per workspace (#494).
+
+    p50/p95 by agent and event, the slowest stages and rules by total time,
+    rules that raised, and how many calls ran degraded.
+    """
+    calls: List[tuple] = []
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            calls.extend(conn.execute(
+                "SELECT agent, hook_event, hook_ms, detail_json FROM hook_timings "
+                "WHERE hook_ms IS NOT NULL ORDER BY rowid DESC LIMIT ?", (limit,)))
+        except sqlite3.OperationalError:
+            pass  # no table, or one from before the agent/detail columns
+        finally:
+            conn.close()
+
+    def pct(xs: List[int], q: float) -> int:
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(q * len(xs)))]
+
+    groups: Dict[tuple, List[int]] = {}
+    stages: Dict[str, List[float]] = {}
+    rules: Dict[str, List[float]] = {}
+    degraded = 0
+    for agent, event, ms, raw in calls:
+        groups.setdefault((agent or "?", event or "?"), []).append(int(ms))
+        try:
+            d = json.loads(raw) if raw else {}
+        except ValueError:
+            d = {}
+        for name, v in (d.get("stages") or {}).items():
+            stages.setdefault(name, []).append(float(v))
+        for rid, c in (d.get("rules") or {}).items():
+            acc = rules.setdefault(rid, [0, 0, 0.0, 0])
+            for i in range(4):
+                acc[i] += c[i]
+        degraded += bool(d.get("degraded"))
+    return {
+        "calls": len(calls),
+        "degraded": degraded,
+        "byAgentEvent": [
+            {"agent": a, "event": e, "calls": len(xs), "p50": pct(xs, 0.5), "p95": pct(xs, 0.95)}
+            for (a, e), xs in sorted(groups.items())
+        ],
+        "slowestStages": sorted(
+            ({"stage": k, "totalMs": round(sum(v), 1), "p95": round(pct(v, 0.95), 1)} for k, v in stages.items()),
+            key=lambda r: -r["totalMs"])[:5],
+        "slowestRules": sorted(
+            ({"rule": k, "evals": int(c[0]), "matches": int(c[1]), "totalMs": round(c[2], 1), "errors": int(c[3])}
+             for k, c in rules.items()), key=lambda r: -r["totalMs"])[:5],
+        "ruleErrors": sorted(k for k, c in rules.items() if c[3]),
+    }
 
 
 def _hook_timings(conn, session_id: str = "", limit: int = 5000) -> Dict[tuple, Dict[str, Any]]:

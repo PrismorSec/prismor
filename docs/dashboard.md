@@ -37,6 +37,7 @@ across every project you've protected.
 ```bash
 prismor status        # THIS workspace: hooks, mode, cloak, latest session, next step
 prismor status --all  # ALL workspaces: risk, findings, mode, last activity
+prismor status --perf # hook latency: p50/p95, slowest stages and rules
 ```
 
 - **`status`** is the per-workspace health check — run it first every session. It
@@ -45,6 +46,11 @@ prismor status --all  # ALL workspaces: risk, findings, mode, last activity
 - **`status --all`** is the cross-project bird's-eye view: one line per registered
   workspace with its latest risk score, finding count, mode, and how long ago it
   was active. Add `--days N` to change the activity window (default 7).
+- **`status --perf [N]`** summarizes the last N hook calls (default 500): p50/p95
+  by agent and event, the five slowest stages (startup, session analysis, policy
+  load, policy eval, semantic judge, telemetry, ...) and rules, rules that raised,
+  and how many calls ran degraded (a judge over `semantic_guard.budget_ms` or one
+  that fell back to heuristics). `--json` for the raw numbers.
 
 ---
 

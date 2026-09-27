@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from prismor.runtime import perf
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
@@ -178,6 +179,7 @@ def evaluate_tool_call(
         meta["subject"] = subject.as_dict()
     meta.setdefault("agent_name", _agent_name)
 
+    perf.lap()
     if persist:
         append_session_event(workspace, session_id, event)
         events = read_session_events(workspace, session_id)
@@ -200,6 +202,7 @@ def evaluate_tool_call(
             sys.stderr.write(f"[prismor] analysis error: {exc}\n")
     else:
         events = [event]
+    perf.lap("session_analysis")
 
     # Keep the org policy fresh for every caller, not just hook-dispatch: an SDK
     # adapter or eval-server authenticated by PRISMOR_AGENT_KEY never runs
@@ -215,6 +218,7 @@ def evaluate_tool_call(
     engine = PolicyEngine(workspace=workspace)
     if taint_store is not None:
         engine.taint_override = taint_store
+    perf.lap("policy_load")
 
     # Resolve per-agent control (kill-switch, mode override, IAM profile).
     # Runs AFTER engine construction so the org's remote controls — carried in
@@ -260,9 +264,11 @@ def evaluate_tool_call(
     # must not block an unrelated event — see cli.py hook-dispatch rationale).
     # Timed from here through exemptions: the guard-evaluation duration reported
     # in telemetry (excludes session persistence/analysis above).
+    perf.lap("agent_control")
     _guard_t0 = time.perf_counter()
     _session_seq = len(events) - 1
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
+    perf.lap("policy_eval")
 
     # Integrity findings (memory guard, #154) bypass the regex rule engine
     # because verify_memory_files() produces fully-structured findings with
@@ -549,6 +555,7 @@ def evaluate_tool_call(
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
 
     _eval_ms = int((time.perf_counter() - _guard_t0) * 1000)
+    perf.lap("scoped_iam_learning")
 
     if persist and findings:
         try:
@@ -581,6 +588,7 @@ def evaluate_tool_call(
         except Exception:
             pass
 
+    perf.lap("telemetry")
     blocking = should_block(findings, event)
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)

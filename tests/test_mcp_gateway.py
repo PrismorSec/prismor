@@ -670,6 +670,29 @@ def test_call_step_up_approved_redacted(tmp_path, monkeypatch):
     assert forwarded and forwarded[0]["arguments"] == {"email": "[REDACTED:email]"}
 
 
+def test_call_step_up_approved_redacted_blocks_when_redaction_fails(tmp_path, monkeypatch):
+    from prismor.runtime import data_boundary
+    from prismor.runtime.enterprise import approvals as _approvals
+
+    a = stub("crm")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [a])
+    list_tools(gateway, sent)
+    monkeypatch.setattr("prismor.runtime.runtime.evaluate_tool_call",
+                        lambda **k: Decision(allow=False, blocking={
+                            "severity": "HIGH", "title": "held", "ruleId": "pii-to-external",
+                            "category": "data_boundary", "action": "step_up"}))
+    monkeypatch.setattr(_approvals, "await_step_up",
+                        lambda decision, **kw: _approvals.ApprovalOutcome(True, redacted=True))
+
+    def boom(*a, **k):
+        raise RuntimeError("classifier down")
+    monkeypatch.setattr(data_boundary, "redact_payload", boom)
+    gateway._handle_tools_call_safe("C12", {"name": "crm__echo",
+                                           "arguments": {"email": "bob@realco.com"}})
+    assert sent[-1]["result"]["isError"] is True
+    assert not any(m == "tools/call" for m, _ in a.requests)
+
+
 def test_call_step_up_denied_blocks(tmp_path, monkeypatch):
     from prismor.runtime.enterprise import approvals as _approvals
 
