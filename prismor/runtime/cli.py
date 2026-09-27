@@ -95,7 +95,7 @@ except ImportError:
     sys.exit(1)
 
 from prismor.runtime.feed import load_feed, match_advisories
-from prismor.runtime.hooks import install_hooks, normalize_payload, uninstall_hooks
+from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import (
@@ -886,7 +886,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {ident.get('device_key')}"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:  # fixed or operator-configured URL  # nosec B310
                 body = _json.loads(resp.read().decode("utf-8"))
             print(f"Exemption requested for {remote}.")
             print(f"  reason: {reason}")
@@ -1325,6 +1325,26 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     if args.command == "status":
+        if getattr(args, "perf", None):
+            from prismor.runtime.store import get_hook_perf
+            perf = get_hook_perf(limit=args.perf)
+            if args.json:
+                print(json.dumps(perf, indent=2))
+                return
+            print(f"Hook latency, last {perf['calls']} calls ({perf['degraded']} degraded)")
+            for r in perf["byAgentEvent"]:
+                print(f"  {r['agent']:<10} {r['event']:<18} n={r['calls']:<5} p50={r['p50']}ms p95={r['p95']}ms")
+            if perf["slowestStages"]:
+                print("Slowest stages (total ms, p95 ms):")
+                for r in perf["slowestStages"]:
+                    print(f"  {r['stage']:<22} {r['totalMs']:>9} {r['p95']:>8}")
+            if perf["slowestRules"]:
+                print("Slowest rules (total ms, evals, matches, errors):")
+                for r in perf["slowestRules"]:
+                    print(f"  {r['rule']:<34} {r['totalMs']:>9} {r['evals']:>6} {r['matches']:>6} {r['errors']:>5}")
+            if perf["ruleErrors"]:
+                print("Rules that raised: " + ", ".join(perf["ruleErrors"]))
+            return
         if getattr(args, "all", False):
             _print_dashboard(days=getattr(args, "days", 7))
         else:
@@ -1488,6 +1508,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── hook-dispatch (called by IDE hooks) ────────────────────────────
     if args.command == "hook-dispatch":
+        from prismor.runtime import perf as _perf
+        # Interpreter start + imports, from the shim's stamp to here.
+        _perf.STAGES["startup"] = (time.time() - _HOOK_T0) * 1000
+        _perf.lap()
         payload = json.loads(sys.stdin.read() or "{}")
         # A global (~/.claude) hook carries no --workspace: attribute the call
         # to the repo the agent is actually running in (payload cwd → git root),
@@ -1518,6 +1542,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         normalized = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)
         event = normalized["event"]
         _agent_event = str(event.get("agent_event") or "")
+        _perf.lap("normalize")
 
         # Locally paused? Enforcement is suspended but observe-mode screening/
         # telemetry below still runs as normal — pause only silences blocking.
@@ -1576,6 +1601,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write("[prismor] enforcement resumed by your organization.\n")
         except Exception:
             pass
+        _perf.lap("remote_policy")
 
         # (payload / normalized / event were read at the top of hook-dispatch,
         # before the pause check, so the paused path can gate on the event type.)
@@ -1621,6 +1647,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
             except Exception as _scoped_exc:
                 sys.stderr.write(f"[prismor] scoped agent error: {_scoped_exc}\n")
+        _perf.lap("scope_synthesis")
 
         # ── Extension ledger hot path (best-effort, never blocks) ───────────
         # A loaded skill may widen the scope to reading the hosts it names, so
@@ -1646,6 +1673,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _ext.tag_event(workspace, normalized["sessionId"], event)
         except Exception as _ext_exc:
             sys.stderr.write(f"[prismor] extension ledger error: {_ext_exc}\n")
+        _perf.lap("extension_ledger")
 
         # ── Token usage accounting (best-effort, never blocks) ──────────────
         try:
@@ -1653,6 +1681,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             record_from_event(workspace=workspace, session_id=normalized["sessionId"], agent=args.agent, event=event)
         except Exception:
             pass
+        _perf.lap("token_usage")
 
         # Run the shared evaluation pipeline: persists the event, analyzes the
         # session, evaluates policy + scoped rules + IAM + cross-call learning,
@@ -1669,18 +1698,23 @@ def main(argv: Optional[List[str]] = None) -> None:
             session_id=normalized["sessionId"],
             repo_root=repo_root,
         )
+        _perf.lap("decision")
         _current_engine = decision.engine
         current_findings = decision.findings
         blocking = decision.blocking
 
         # Stamp how long this hook process took once it exits -- whichever
-        # path it leaves by (allow, block via sys.exit(2), sandbox rewrite).
+        # path it leaves by (allow, block via sys.exit(2), sandbox rewrite) --
+        # with the per-stage / per-rule breakdown (#494).
         import atexit as _atexit
         from prismor.runtime.store import record_hook_timing as _record_hook_timing
-        _atexit.register(
-            lambda _ws=workspace, _sid=normalized["sessionId"], _ts=str(event.get("ts") or ""), _ev=_agent_event:
-            _record_hook_timing(_ws, _sid, _ts, _ev, int((time.time() - _HOOK_T0) * 1000))
-        )
+
+        def _stamp_timing(_ws=workspace, _sid=normalized["sessionId"], _ts=str(event.get("ts") or ""),
+                          _ev=_agent_event):
+            _perf.lap("output")
+            _record_hook_timing(_ws, _sid, _ts, _ev, int((time.time() - _HOOK_T0) * 1000),
+                                agent=args.agent, detail=_perf.snapshot())
+        _atexit.register(_stamp_timing)
 
         # Every SessionStart notice goes out as ONE hookSpecificOutput below:
         # Claude Code reads the hook's stdout as a single JSON object and
@@ -2025,14 +2059,16 @@ def main(argv: Optional[List[str]] = None) -> None:
                 if _f.get("remediation"):
                     _line += f" → {_f['remediation']}"
                 sys.stderr.write(_line + "\n")
-            # Record as dismissal for learning (observe = user saw but continued).
+            # Record for learning. Nobody decided anything here: observe mode
+            # surfaced the finding and the call ran. The reason says so, so a
+            # later pass never mistakes these rows for human overrides.
             try:
                 from prismor.runtime.learning import record_dismissal as _record_dismissal
                 _record_dismissal(
                     workspace, normalized["sessionId"],
                     top.get("ruleId", "unknown"),
                     top.get("evidence", ""),
-                    "user_skip",
+                    "observe_surfaced",
                 )
             except Exception:
                 pass  # best-effort, don't break the hook
@@ -3566,6 +3602,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--days", type=int, default=7, metavar="N",
         help="With --all: show activity for the last N days (default: 7)",
     )
+    status_parser.add_argument(
+        "--perf", nargs="?", type=int, const=500, metavar="N",
+        help="Hook latency: p50/p95 by agent and event, slowest stages and rules over the last N calls (default 500)",
+    )
+    status_parser.add_argument("--json", action="store_true", help="With --perf: raw JSON")
 
     # ── analyze ────────────────────────────────────────────────────────
     analyze = subparsers.add_parser("analyze", help="Analyze a session (or current session if no --input)")
@@ -3769,7 +3810,9 @@ def build_parser() -> argparse.ArgumentParser:
     # ── hook-dispatch (internal) ───────────────────────────────────────
     hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
     hook_dispatch.add_argument("--workspace", help="Workspace path")
-    hook_dispatch.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose"], required=True)
+    # Every agent install-hooks writes a command for; a hand-kept list here once
+    # left gemini and opencode out, so their hooks died in argparse with exit 2.
+    hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
 
     # ── policy ─────────────────────────────────────────────────────────

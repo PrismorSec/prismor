@@ -316,6 +316,9 @@ settings:
                              # claude/codex judge spawns a process (7-33s) and keeps
                              # the 0.30 band. Set a number here to pin either one.
                              # Hosts with no judge are unaffected.
+    # budget_ms:             # cap on the judge per event, e.g. 1500. Over budget the
+                             # heuristic verdict decides on time and the call is
+                             # recorded `degraded` (see `prismor status --perf`).
     high_threshold: 1.0      # heuristic >= this -> decide without asking the judge.
                              # 1.0 = always ask when a judge is configured; set 0.75
                              # to restore the old skip. Hosts with no judge are

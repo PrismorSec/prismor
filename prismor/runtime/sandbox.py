@@ -24,7 +24,7 @@ DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
     "network": "none",
     "workspace_mount": "rw",
     "read_only_root": True,
-    "tmpfs": ["/tmp:noexec,nosuid,size=256m"],
+    "tmpfs": ["/tmp:noexec,nosuid,size=256m"],  # container tmpfs mount, not a host path  # nosec B108
     "env_allowlist": ["NO_COLOR", "TERM"],
     "resource_limits": {
         "cpus": "1.0",

@@ -357,7 +357,7 @@ _PLACEHOLDER_CREDS = frozenset({
 #: construction — nobody off the machine can use them — and they show up in
 #: docker-compose files, dev scripts and READMEs that people genuinely need to
 #: read back verbatim.
-_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")  # a host list, not a bind  # nosec B104
 
 #: ``{db_pw}`` — a str.format template slot. _PLACEHOLDER_RE covers ``{{...}}``
 #: and ``${...}`` but not the single-brace form used by Python templates.

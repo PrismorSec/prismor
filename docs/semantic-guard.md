@@ -257,6 +257,9 @@ settings:
     high_threshold: 0.75    # heuristic score at or above this → block without LLM call
     warn_threshold: 0.45    # final score ≥ this emits a warn finding
     block_threshold: 0.75   # final score ≥ this emits a block finding
+    budget_ms:              # optional cap on the judge per event (e.g. 1500). Over
+                            # budget, the heuristic verdict decides on time and the
+                            # call is recorded as degraded (`prismor status --perf`).
 ```
 
 ### Modes at a glance

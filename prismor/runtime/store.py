@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
 try:  # POSIX advisory locks; absent on Windows.
     import fcntl
@@ -318,7 +318,7 @@ def _insert_missing_rows_sql(table: str, cols: List[str]) -> str:
     source_cols = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
     row_match = " AND ".join(f"d.{_quote_ident(c)} IS s.{_quote_ident(c)}" for c in cols)
     return (
-        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "
+        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "  # nosec B608
         f"SELECT {source_cols} FROM src.{_quote_ident(table)} AS s "
         f"WHERE NOT EXISTS ("
         f"SELECT 1 FROM main.{_quote_ident(table)} AS d WHERE {row_match}"
@@ -348,7 +348,7 @@ def _merge_sqlite_db_once(src_db: Path, dst_db: Path) -> None:
                 source = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
                 if table in {"sessions", "findings"}:
                     dst.execute(
-                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "
+                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "  # nosec B608
                         f"SELECT {source} FROM src.{_quote_ident(table)} AS s"
                     )
                 else:
@@ -644,26 +644,29 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
     without resolving symlinks, causing list_sessions to miss rows on platforms
     like macOS where /tmp traverses a symlink.
     """
-    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v1.json"
+    # v2: v1 only collected paths from sessions, skipping orphaned telemetry rows (#509).
+    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
     if marker.exists():
         return
+    tables = ("sessions", "package_inventory", "token_usage", "tool_output_size", "supply_chain_events")
     try:
-        rows = connection.execute(
-            "SELECT DISTINCT workspace_path FROM sessions WHERE workspace_path IS NOT NULL AND workspace_path != ''"
-        ).fetchall()
-        for (wp,) in rows:
-            if wp:
-                resolved = canonical_workspace_path(wp)
-                if resolved and resolved != wp:
-                    connection.execute("UPDATE sessions SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
-                    for table in ("package_inventory", "token_usage", "tool_output_size", "supply_chain_events"):
-                        try:
-                            connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))
-                        except sqlite3.OperationalError:
-                            pass
+        paths = set()
+        for table in tables:
+            try:
+                paths.update(wp for (wp,) in connection.execute(f"SELECT DISTINCT workspace_path FROM {table} WHERE workspace_path IS NOT NULL AND workspace_path != ''"))  # identifiers are constants  # nosec B608
+            except sqlite3.OperationalError:
+                pass
+        for wp in paths:
+            resolved = canonical_workspace_path(wp)
+            if resolved and resolved != wp:
+                for table in tables:
+                    try:
+                        connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
         connection.commit()
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+        marker.write_text(json.dumps({"version": 2}, indent=2) + "\n", encoding="utf-8")
     except Exception:
         pass
 
@@ -753,6 +756,8 @@ def initialize_database(workspace: Path) -> Path:
                 ts TEXT NOT NULL,
                 hook_event TEXT,
                 hook_ms INTEGER,
+                agent TEXT,
+                detail_json TEXT,
                 PRIMARY KEY (session_id, ts)
             );
             """
@@ -1914,7 +1919,7 @@ def get_sessions_page(
             cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
             name_col = "agent_name" if "agent_name" in cols else "agent"
             for row in conn.execute(
-                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "
+                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "  # nosec B608
                 "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
             ):
                 workspace_path = row["workspace_path"] or str(ws)
@@ -2120,7 +2125,7 @@ def get_findings_page(
                 {where}
                 ORDER BY COALESCE(te.ts, s.updated_at) DESC
                 LIMIT 5000
-                """,
+                """,  # nosec B608
                 params,
             ):
                 ts_raw = row["trig_ts"] or row["session_updated"] or ""
@@ -2169,12 +2174,17 @@ def get_findings_page(
 _HOOK_TIMINGS_DDL = (
     "CREATE TABLE IF NOT EXISTS hook_timings ("
     "session_id TEXT NOT NULL, ts TEXT NOT NULL, hook_event TEXT, hook_ms INTEGER, "
+    "agent TEXT, detail_json TEXT, "
     "PRIMARY KEY (session_id, ts))"
 )
 
 
-def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int) -> None:
+def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int,
+                       agent: str = "", detail: Optional[Dict[str, Any]] = None) -> None:
     """How long one hook process took, keyed to the event it screened.
+
+    ``detail`` is prismor.runtime.perf.snapshot(): per-stage ms, per-rule
+    counters and degradations (#494).
 
     Kept out of events.raw_json on purpose: every snapshot rewrites the events
     table from the session JSONL, and that JSONL line is appended before policy
@@ -2187,15 +2197,80 @@ def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: st
         conn = sqlite3.connect(get_db_path(workspace), timeout=2)
         try:
             conn.execute(_HOOK_TIMINGS_DDL)
+            for col in ("agent", "detail_json"):  # tables created before #494
+                try:
+                    conn.execute(f"ALTER TABLE hook_timings ADD COLUMN {col} TEXT")  # constant identifiers  # nosec B608
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
-                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms) VALUES (?, ?, ?, ?)",
-                (session_id, ts, hook_event or "", int(hook_ms)),
+                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms, agent, detail_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, ts, hook_event or "", int(hook_ms), agent or "",
+                 json.dumps(detail) if detail else None),
             )
             conn.commit()
         finally:
             conn.close()
     except Exception:
         pass
+
+
+def get_hook_perf(limit: int = 500) -> Dict[str, Any]:
+    """Latency summary of the last ``limit`` hook calls per workspace (#494).
+
+    p50/p95 by agent and event, the slowest stages and rules by total time,
+    rules that raised, and how many calls ran degraded.
+    """
+    calls: List[tuple] = []
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            calls.extend(conn.execute(
+                "SELECT agent, hook_event, hook_ms, detail_json FROM hook_timings "
+                "WHERE hook_ms IS NOT NULL ORDER BY rowid DESC LIMIT ?", (limit,)))
+        except sqlite3.OperationalError:
+            pass  # no table, or one from before the agent/detail columns
+        finally:
+            conn.close()
+
+    def pct(xs: List[int], q: float) -> int:
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(q * len(xs)))]
+
+    groups: Dict[tuple, List[int]] = {}
+    stages: Dict[str, List[float]] = {}
+    rules: Dict[str, List[float]] = {}
+    degraded = 0
+    for agent, event, ms, raw in calls:
+        groups.setdefault((agent or "?", event or "?"), []).append(int(ms))
+        try:
+            d = json.loads(raw) if raw else {}
+        except ValueError:
+            d = {}
+        for name, v in (d.get("stages") or {}).items():
+            stages.setdefault(name, []).append(float(v))
+        for rid, c in (d.get("rules") or {}).items():
+            acc = rules.setdefault(rid, [0, 0, 0.0, 0])
+            for i in range(4):
+                acc[i] += c[i]
+        degraded += bool(d.get("degraded"))
+    return {
+        "calls": len(calls),
+        "degraded": degraded,
+        "byAgentEvent": [
+            {"agent": a, "event": e, "calls": len(xs), "p50": pct(xs, 0.5), "p95": pct(xs, 0.95)}
+            for (a, e), xs in sorted(groups.items())
+        ],
+        "slowestStages": sorted(
+            ({"stage": k, "totalMs": round(sum(v), 1), "p95": round(pct(v, 0.95), 1)} for k, v in stages.items()),
+            key=lambda r: -r["totalMs"])[:5],
+        "slowestRules": sorted(
+            ({"rule": k, "evals": int(c[0]), "matches": int(c[1]), "totalMs": round(c[2], 1), "errors": int(c[3])}
+             for k, c in rules.items()), key=lambda r: -r["totalMs"])[:5],
+        "ruleErrors": sorted(k for k, c in rules.items() if c[3]),
+    }
 
 
 def _hook_timings(conn, session_id: str = "", limit: int = 5000) -> Dict[tuple, Dict[str, Any]]:
@@ -2284,7 +2359,7 @@ def get_events_page(
                 LEFT JOIN findings f ON f.session_id = e.session_id AND f.event_index = e.rn
                 {where}
                 ORDER BY e.ts DESC LIMIT 5000
-                """,
+                """,  # nosec B608
                 [fetch_limit] + params,
             ):
                 action_parts = []
@@ -2843,7 +2918,7 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
     try:
         marks = ",".join("?" * len(session_ids))
         for r in conn.execute(
-            "SELECT session_id, model, COUNT(*) as turns,"
+            "SELECT session_id, model, COUNT(*) as turns,"  # nosec B608
             "       COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate,"
@@ -2892,7 +2967,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
     window_args = [f"-{hours} hours"] + ws_args
     try:
         row = conn.execute(
-            "SELECT COALESCE(SUM(input_tokens),0) as inp,"
+            "SELECT COALESCE(SUM(input_tokens),0) as inp,"  # nosec B608
             "       COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate"
@@ -2902,7 +2977,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         by_tool = [
             {"tool": r["tool_name"] or "unknown", "approxTokens": r["tok"] or 0, "calls": r["cnt"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"
+                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"  # nosec B608
                 "  FROM tool_output_size WHERE ts >= datetime('now', ?)" + scope_sql +
                 "  GROUP BY tool_name ORDER BY tok DESC LIMIT ?",
                 window_args + [limit],
@@ -2911,7 +2986,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         top_offenders = [
             {"tool": r["tool_name"] or "unknown", "label": r["label"] or "", "approxTokens": r["approx_tokens"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, label, approx_tokens FROM tool_output_size"
+                "SELECT tool_name, label, approx_tokens FROM tool_output_size"  # nosec B608
                 "  WHERE ts >= datetime('now', ?) AND label != ''" + scope_sql +
                 "  ORDER BY approx_tokens DESC LIMIT ?",
                 window_args + [limit],
@@ -2970,7 +3045,7 @@ def get_agents_overview() -> List[Dict[str, Any]]:
                 FROM sessions
                 WHERE {name_expr} IS NOT NULL AND {name_expr} != ''
                 GROUP BY {name_expr}
-                """
+                """  # nosec B608
             ):
                 name = row["agent_name"] or "unknown"
                 existing = acc.get(name)
@@ -3990,7 +4065,7 @@ def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], li
         where = "session_id IN (%s) AND raw_json LIKE '%%\"extension\"%%'" % ",".join("?" * len(session_ids))
         params = list(session_ids)
     try:
-        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "  # identifiers are constants/quoted, values bound  # nosec B608
                             + where + " ORDER BY id DESC", params)
         for row in rows:
             try:

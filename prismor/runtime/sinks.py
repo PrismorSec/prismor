@@ -121,7 +121,7 @@ def _dispatch_webhook(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     data = json.dumps(event).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     req.add_header("User-Agent", _http_user_agent())
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
         resp.read(16)  # drain
 
 
@@ -179,7 +179,7 @@ def _dispatch_splunk_hec(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     req.add_header("User-Agent", _http_user_agent())
-    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # fixed or operator-configured URL  # nosec B310
         resp.read(16)
 
 
@@ -203,7 +203,7 @@ def _dispatch_datadog(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     headers = {"DD-API-KEY": str(api_key), "Content-Type": "application/json"}
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     req.add_header("User-Agent", _http_user_agent())
-    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # fixed or operator-configured URL  # nosec B310
         resp.read(16)
 
 
@@ -282,7 +282,7 @@ def _dispatch_otel(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     data = json.dumps(_format_otlp_logs(event)).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     req.add_header("User-Agent", _http_user_agent())
-    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # fixed or operator-configured URL  # nosec B310
         resp.read(16)  # drain
 
 
@@ -506,7 +506,7 @@ def upload_telemetry(
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             resp.read(16)  # drain
         _identity.clear_revoked()
     except urllib.error.HTTPError as exc:

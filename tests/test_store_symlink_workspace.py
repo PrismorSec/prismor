@@ -148,7 +148,7 @@ class TestStoreSymlinkWorkspace(unittest.TestCase):
             conn.commit()
 
             # Remove migration marker if present to re-run
-            marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v1.json"
+            marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
             if marker.exists():
                 marker.unlink()
 
@@ -157,6 +157,35 @@ class TestStoreSymlinkWorkspace(unittest.TestCase):
             row = conn.execute("SELECT workspace_path FROM sessions WHERE session_id = ?", ("to-migrate-session",)).fetchone()
             self.assertEqual(row[0], str(self.real_workspace))
             self.assertTrue(marker.exists())
+        finally:
+            conn.close()
+
+    def test_canonicalize_migration_covers_orphaned_telemetry_rows(self):
+        """Rows in token_usage with no sessions row must still be canonicalized (#509)."""
+        store.record_token_usage(
+            workspace=self.real_workspace,
+            session_id="orphan-session",
+            message_id="msg-orphan",
+            ts="2026-01-01T00:00:00Z",
+            model="claude-3-5-sonnet",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
+        )
+        db_path = store.get_db_path(self.real_workspace)
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("UPDATE token_usage SET workspace_path = ?", (str(self.symlink_workspace),))
+            conn.commit()
+            self.assertIsNone(conn.execute("SELECT 1 FROM sessions WHERE session_id = 'orphan-session'").fetchone())
+            marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
+            marker.unlink(missing_ok=True)
+
+            store._canonicalize_workspace_paths_once(conn, db_path)
+
+            row = conn.execute("SELECT workspace_path FROM token_usage WHERE session_id = 'orphan-session'").fetchone()
+            self.assertEqual(row[0], str(self.real_workspace))
         finally:
             conn.close()
 

@@ -50,7 +50,7 @@ def _post(url: str, body: bytes, headers: Dict[str, str], timeout: float) -> Dic
         req.add_header(k, v)
     t0 = time.perf_counter()
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-supplied URL
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - operator-supplied URL  # nosec B310
             raw = resp.read(64 * 1024)
             status = resp.status
     except urllib.error.HTTPError as exc:

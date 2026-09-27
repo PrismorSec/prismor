@@ -120,6 +120,10 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         return UpstreamSpec(name=name, local=True, transport="local")
     meta = _mcp_endpoint_meta(cfg)
     if meta["url"]:
+        # http(s) only: a project .mcp.json is repo content, and urllib would
+        # happily "POST" to file:///… and hand the file back as the response.
+        if not re.match(r"https?://", meta["url"], re.I):
+            raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
         return UpstreamSpec(name=name, url=meta["url"],
                             transport=meta["transport"] or "http",
@@ -381,7 +385,7 @@ class UpstreamHttp(Upstream):
             self.spec.url, data=json.dumps(body).encode("utf-8"),
             headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
                 sid = resp.headers.get("Mcp-Session-Id")
                 if sid:
                     self._session_id = sid

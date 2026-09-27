@@ -2968,7 +2968,7 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
     return _unmapped_tool_event(base, payload)
 
 def _ephemeral_session_id(agent: str, workspace: Path) -> str:
-    digest = hashlib.sha1(f"{agent}:{workspace}:{os.getpid()}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(f"{agent}:{workspace}:{os.getpid()}".encode("utf-8")).hexdigest()[:12]  # an id, not a security hash  # nosec B324
     return f"{agent}-{digest}"
 
 def _join_edits(edits: List[Dict[str, Any]]) -> str:

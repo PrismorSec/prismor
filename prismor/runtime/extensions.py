@@ -801,7 +801,7 @@ def _raw_fetch(url: str) -> Optional[bytes]:
     try:
         from urllib.request import Request, urlopen
         from prismor.runtime.http_ua import user_agent
-        with urlopen(Request(url, headers={"User-Agent": user_agent()}), timeout=_FETCH_TIMEOUT_S) as resp:  # noqa: S310
+        with urlopen(Request(url, headers={"User-Agent": user_agent()}), timeout=_FETCH_TIMEOUT_S) as resp:  # noqa: S310 - scheme checked http(s) above  # nosec B310
             return resp.read(_MAX_BYTES)
     except Exception:
         return None
@@ -919,7 +919,7 @@ def run_wrapped_hook(ext_id: str, command: str) -> int:
     except Exception:
         payload = {}
     started = time.time()
-    proc = subprocess.run(command, shell=True, input=stdin, capture_output=True)  # noqa: S602 - the agent would run this exact string
+    proc = subprocess.run(command, shell=True, input=stdin, capture_output=True)  # noqa: S602 - the agent would run this exact string  # nosec B602
     sys.stdout.buffer.write(proc.stdout)
     sys.stderr.buffer.write(proc.stderr)
     _audit("hook_executed", {"id": f"hook:{ext_id}", "kind": "hook", "name": command[:120],
@@ -1099,7 +1099,7 @@ def send_report(workspace: Path, *, timeout: int = 5) -> bool:
         req = Request(f"{base}/api/extensions/report", data=json.dumps(body).encode("utf-8"), method="POST",
                       headers={"Content-Type": "application/json", "User-Agent": _ua(),
                                "Authorization": f"Bearer {ident.get('device_key')}"})
-        with urlopen(req, timeout=timeout) as resp:  # noqa: S310 - the enrolled control plane
+        with urlopen(req, timeout=timeout) as resp:  # noqa: S310 - the enrolled control plane  # nosec B310
             return 200 <= resp.status < 300
     except Exception:
         return False
