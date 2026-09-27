@@ -5189,7 +5189,16 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
             from prismor.runtime.enterprise import remote_policy as _remote
             cached = _remote.cached_policy_path()
             if not cached.exists():
-                add("warn", "remote policy", "no cached org policy yet (first pull happens on the next tool call)")
+                # Enrolled with no policy means no telemetry sink and no org
+                # controls, so pull now instead of reporting it as healthy.
+                try:
+                    _remote.fetch(force=True)
+                except Exception:
+                    pass
+            if not cached.exists():
+                add("fail", "remote policy",
+                    "enrolled but no org policy could be pulled — telemetry and console "
+                    "controls stay off until it is (check network access to the control plane)")
             else:
                 sig_path = _remote._cached_sig_path()
                 sig = sig_path.read_text(encoding="utf-8").strip() if sig_path.exists() else ""

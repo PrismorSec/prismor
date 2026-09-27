@@ -201,6 +201,17 @@ def evaluate_tool_call(
     else:
         events = [event]
 
+    # Keep the org policy fresh for every caller, not just hook-dispatch: an SDK
+    # adapter or eval-server authenticated by PRISMOR_AGENT_KEY never runs
+    # `prismor enroll`, so without this it never pulls the policy that carries
+    # its telemetry sink, org mode and console tool denies. Debounced (~30s)
+    # and a no-op when not enrolled, so hook-dispatch calling it too is free.
+    try:
+        from prismor.runtime.enterprise import remote_policy as _remote
+        _remote.check_and_refresh()
+    except Exception:
+        pass
+
     engine = PolicyEngine(workspace=workspace)
     if taint_store is not None:
         engine.taint_override = taint_store
