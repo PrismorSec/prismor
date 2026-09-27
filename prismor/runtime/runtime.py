@@ -137,6 +137,7 @@ def evaluate_tool_call(
     agent_name: str = "",
     taint_store: Optional[Any] = None,
     register_agent: bool = True,
+    flush_at_exit: bool = True,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -162,6 +163,9 @@ def evaluate_tool_call(
             developer's project: the inventory would then mix every tenant's
             agents into one file and put a disk write on the request path.
             Per-agent controls (kill-switch, mode override) are still resolved.
+        flush_at_exit: upload the heartbeat and spooled findings when the
+            process exits, so a short script's activity still reaches the
+            console. Hook-dispatch passes ``False`` (one process per call).
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -573,6 +577,8 @@ def evaluate_tool_call(
                 session_id=session_id,
             )
             heartbeat.maybe_flush()
+            if flush_at_exit:
+                heartbeat.flush_at_exit()
         except Exception:
             pass
 

@@ -1697,6 +1697,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             mode=args.mode,
             session_id=normalized["sessionId"],
             repo_root=repo_root,
+            flush_at_exit=False,  # one process per call: keep the 60s batching
         )
         _perf.lap("decision")
         _current_engine = decision.engine

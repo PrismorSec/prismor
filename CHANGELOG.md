@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- **A short SDK script's activity could never reach the console.** SDK adapters and the eval-server upload tool-call counts and observed findings at most once a minute, on a later tool call. A script that finished sooner left them on disk until the next run on that device, and an ephemeral container never had a next run. These processes now flush once when they exit, with a 3-second timeout. Claude Code's hook, which runs one process per call, keeps the one-minute batching. A process killed by a signal (for example a plain `docker stop`) still skips the exit flush.
+
 ## [1.55.0] — 2026-09-27
 
 ### Added
