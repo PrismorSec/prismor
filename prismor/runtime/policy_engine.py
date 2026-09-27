@@ -725,6 +725,24 @@ class AllowlistEntry:
         return "*" in self.rule_ids or rule_id in self.rule_ids
 
 
+
+# Output of a bare `prismor <status subcommand>` is text Prismor itself wrote
+# (scope/status/doctor explain policy, so they read like "every tool allowed ...
+# re-enable by ..." and the judge scored that as a security bypass). Only these
+# subcommands: `sessions`, `agents transcript` and friends replay untrusted
+# session content and must stay judged. No shell metacharacters, so nothing
+# else's output can ride along in the same call.
+_PRISMOR_STATUS_CMD = re.compile(
+    r"^\s*(?:\S*/)?(?:prismor|immunity-agent)"
+    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*|\s+--?(?:version|help))?\s*$"
+)
+
+
+def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
+    if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
+        return False
+    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
+
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""
 
@@ -2335,6 +2353,8 @@ class PolicyEngine:
             return None
 
         cfg = self.semantic_guard_config
+        if _is_prismor_status_output(event):
+            return None
         # _extract_fields joins prompt/response/content/stdout/stderr into
         # combined_text; command is normalized separately. Configurable
         # fields are kept in the YAML for future granularity, but the
