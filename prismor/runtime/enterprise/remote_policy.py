@@ -635,7 +635,7 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     if _identity.revoked_info():
         return None
     policy_path = cached_policy_path()
-    sig_path = cached_sig_path()
+    sig_path = _cached_sig_path()
     if not policy_path.exists() or not sig_path.exists():
         return None
 
