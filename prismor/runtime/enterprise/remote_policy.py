@@ -726,7 +726,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         headers={"Authorization": f"Bearer {ident.get('device_key')}"},
         method="GET",
     )
-    req.add_header("User-Agent", user_agent())
+    req.add_header("User-Agent", _http_user_agent())
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
