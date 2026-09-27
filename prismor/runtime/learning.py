@@ -636,7 +636,7 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
                   WHERE f.session_id = e.session_id
                     AND f.evidence LIKE '%' || SUBSTR(e.command_text, 1, 40) || '%'
               )
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
         ).fetchall()
     finally:
         conn.close()
@@ -726,7 +726,7 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
             GROUP BY rule_id
             HAVING cnt >= ?
             ORDER BY cnt DESC
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
             (threshold,),
         ).fetchall()
     finally:
