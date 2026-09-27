@@ -5346,9 +5346,21 @@ def _print_status_overview(workspace: Path) -> None:
         elif _m == "observe" and mode is None:
             mode = "observe"
 
+    # On an enrolled device the signed org policy outranks the hook's local
+    # --mode (runtime.evaluate_tool_call), so report what actually applies.
+    mode_source = ""
+    try:
+        from prismor.runtime.enterprise import identity as _identity, remote_policy as _remote
+        if _identity.is_enrolled():
+            _org = ((_remote.verify_and_load() or {}).get("settings") or {}).get("default_mode")
+            if _org in ("enforce", "observe"):
+                mode, mode_source = _org, f" — org policy v{_remote.current_version()}"
+    except Exception:
+        pass
+
     if agents_with_hooks:
         mode_color = _GREEN if mode == "enforce" else _YELLOW
-        mode_str = _color(mode or "unknown", mode_color)
+        mode_str = _color(mode or "unknown", mode_color) + mode_source
         if hooks_by_scope["project"] and hooks_by_scope["global"]:
             scope_str = "project + global"
         elif hooks_by_scope["global"]:
