@@ -43,6 +43,7 @@ prismor
 │   ├─ setup                  Interactive onboarding wizard (TUI)
 │   ├─ install-hooks          Wire Prismor hooks into an agent/IDE
 │   ├─ uninstall-hooks        Remove hooks
+│   ├─ hookd [status|stop|restart]  Warm hook daemon (starts itself on the next hook call)
 │   ├─ update                 Self-update check / upgrade
 │   └─ status [--all]         Health check (this workspace / all workspaces)
 │
@@ -334,6 +335,12 @@ outside all of this, the same as every other Prismor control.
 | `prismor tags lint [file]` | `--workspace` | Validate every rule expression in a policy file. Exit `1` on errors. |
 | `prismor tags test` | `--session <id>`, `--last N`, `--rule "<expr>"`, `--fail-on-hit` | Dry-run tag rules against recorded session logs: prints WOULD BLOCK / WOULD WARN per call, touches no enforcement state. `--rule` adds what-if candidates. |
 
+### hookd
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor hookd [status\|stop\|restart]` | — | The warm hook daemon. Every tool call's hook connects to it over an owner-only Unix socket under `~/.prismor/run/`, and it forks a pre-loaded copy of Prismor to evaluate that call: same code, same verdict, without paying for interpreter start-up, imports and policy parsing each time. Telemetry uploads run after the verdict is returned instead of before. The first hook call starts it. It exits after 30 idle minutes or when Prismor's code on disk changes. If it is absent or can't answer, the hook evaluates in-process exactly as before, so stopping it never weakens enforcement. `status` lists running daemons; `stop` and `restart` stop them (the next hook call starts a fresh one). Linux and macOS; Windows always runs in-process. When `PRISMOR_HOME` is too long for a Unix socket path, the socket goes in a short owner-only `/tmp/prismor-<uid>-<hash>/` instead. |
+
 ### eval-server
 
 | Command | Key flags | Description |
@@ -484,6 +491,8 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | Variable | Used by | Effect |
 |---|---|---|
 | `PRISMOR_MODE` | `setup --non-interactive` | Default enforcement mode (`observe` / `enforce`). |
+| `PRISMOR_HOOKD` | every hook call | `0` evaluates hooks in-process and never uses the warm daemon; `manual` uses a running daemon but never starts one. Unset: start on demand. |
+| `PRISMOR_HOOKD_IDLE` | `hookd` | Seconds of inactivity before the daemon exits (default 1800). |
 | `PRISMOR_HOOK_REQUIRED` | a `--portable` hook | When set, a hook that cannot find `prismor` blocks the tool call instead of warning and allowing. Set it on hosted agent environments. |
 | `PRISMOR_CLOAK` | `setup --non-interactive` | Enable cloaking (`1`/`true`/`yes`/`on`). |
 | `PRISMOR_WORKSPACE` | all commands | Override the resolved workspace path. |

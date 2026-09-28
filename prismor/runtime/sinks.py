@@ -477,6 +477,13 @@ def upload_telemetry(
     never stall a developer's tool call; records that miss the window land in
     the spool and ride along with the next upload, so nothing is lost.
     """
+    from prismor.runtime import hookd as _hookd
+
+    if _hookd.deferring():
+        # In the warm daemon the upload runs after the verdict is delivered.
+        _hookd.run_or_defer(upload_telemetry, records, timeout=timeout, url_base=url_base)
+        return
+
     import urllib.request
     import urllib.error
 
