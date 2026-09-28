@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- **A download that reached disk through a variable, a pipe or a command substitution was not marked untrusted** (#446). The provenance scanner split shell commands on whitespace, so `VAR=$(curl …); printf "%s" "$VAR" > f` read as an assignment and a `printf`, `curl … | tee f` as a write with no fetch, and `curl -o a.html; echo hi > b.md` as a write to `a.html;`. The next agent to read such a file then treated a remote payload as clean local content. The scanner now tokenizes shell operators, lifts `$(…)`, backticks and `<(…)` out and scans them on their own, and follows the fetched bytes into the variable they are assigned to, down a pipeline, and into an unquoted heredoc that expands them. A quoted heredoc or single-quoted string that merely spells out `$(curl …)` is still the agent's own text, a `#` comment is dropped, and a stderr redirect (`2>err.log`, `2>/dev/null`) is not a write of downloaded content.
+
 ## [1.55.1] — 2026-09-27
 
 ### Fixed

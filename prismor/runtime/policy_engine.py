@@ -2031,6 +2031,7 @@ class PolicyEngine:
                 _prov_cwd = self.workspace
                 _prov_reads: List[str] = []
                 _prov_writes: List[str] = []
+                _prov_fetched: Set[str] = set()
                 _prov_chain = ""
                 if _tt_cfg.get("provenance_enabled", True):
                     from prismor.runtime import provenance as _prov
@@ -2045,10 +2046,13 @@ class PolicyEngine:
                     elif event_type == "file_write":
                         _prov_writes = [str(event.get("path") or "")]
                     elif event_type == "shell":
-                        _r, _w = _prov.shell_paths(
+                        # One scan serves the reads, the writes and the
+                        # downloads below; it is the costly part of the check.
+                        _sc = _prov.shell_scan(
                             str(event.get("command") or ""), _prov_cwd
                         )
-                        _prov_reads, _prov_writes = sorted(_r), sorted(_w)
+                        _prov_reads, _prov_writes = sorted(_sc.reads), sorted(_sc.writes)
+                        _prov_fetched = _sc.fetched
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -2267,15 +2271,11 @@ class PolicyEngine:
                     # session had read before it. Without this a shell-only
                     # agent -- Codex reaches the web through Bash, never through
                     # a tagged fetch tool -- writes untracked files.
-                    _fetched = (
-                        _prov.fetch_targets(str(event.get("command") or ""), _prov_cwd)
-                        if event_type == "shell" else set()
-                    )
                     for _wp in _prov_writes:
                         if not _wp:
                             continue
                         _wt = sorted(
-                            set(_carry) | ({UNTRUSTED} if _wp in _fetched else set())
+                            set(_carry) | ({UNTRUSTED} if _wp in _prov_fetched else set())
                         )
                         # An empty tag set still has to reach the store when
                         # this session is the one that stamped the file: that
