@@ -87,9 +87,9 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
         elif current_agent == "cursor":
             config = _merge_cursor(config, command)
         elif current_agent == "openclaw":
-            config = _merge_openclaw(config, command, repo_root)
+            config = _merge_openclaw(config, command, repo_root, mode)
         elif current_agent == "hermes":
-            config = _merge_hermes(config, command, repo_root)
+            config = _merge_hermes(config, command, repo_root, mode)
         elif current_agent == "codex":
             config = _merge_codex(config, command)
         elif current_agent == "copilot":
@@ -112,7 +112,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             # grandparent (.../plugins/prismor/hooks/hooks.json -> .../plugins/prismor/).
             config = _merge_goose(config, command, config_path.parent.parent)
         elif current_agent == "opencode":
-            config = _merge_opencode(config, command, repo_root)
+            config = _merge_opencode(config, command, repo_root, mode)
         elif current_agent == "gemini":
             config = _merge_gemini(config, command)
         else:
@@ -541,6 +541,12 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_gemini(payload, session_id, workspace)
     else:
         event = _normalize_cursor(payload, session_id)
+    # Gateway shims send Date.now() (epoch ms). Stored ts are ISO strings, and a
+    # numeric one broke every later sort in the session ("'<' not supported
+    # between str and int"), which the dispatcher then failed open on.
+    if isinstance(event, dict) and isinstance(event.get("ts"), (int, float)) and not isinstance(event["ts"], bool):
+        secs = event["ts"] / 1000 if event["ts"] > 1e11 else event["ts"]
+        event["ts"] = datetime.fromtimestamp(secs, timezone.utc).isoformat()
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
         event["command"] = _strip_prismor_scrub_wrapper(event["command"])
     if isinstance(event, dict):
@@ -919,10 +925,10 @@ def _strip_windsurf(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any]
     return {**config, "hooks": hooks}, removed
 
 
-def _merge_openclaw(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
+def _merge_openclaw(config: Dict[str, Any], command: str, repo_root: Path, mode: str = "observe") -> Dict[str, Any]:
     # 1. Scaffold the plugin package
     plugin_dir = repo_root / "prismor" / "runtime" / "openclaw-plugin"
-    _scaffold_openclaw_plugin(plugin_dir, command)
+    _scaffold_openclaw_plugin(plugin_dir, command, mode)
 
     # 2. Register plugin path in config
     plugins = list(config.get("plugins", []))
@@ -932,7 +938,7 @@ def _merge_openclaw(config: Dict[str, Any], command: str, repo_root: Path) -> Di
 
     # 3. Scaffold internal hook for message:received
     hooks_dir = Path.home() / ".openclaw" / "hooks" / "prismor"
-    _scaffold_openclaw_internal_hook(hooks_dir, command)
+    _scaffold_openclaw_internal_hook(hooks_dir, command, mode)
 
     return {**config, "plugins": plugins}
 
@@ -944,10 +950,10 @@ def _strip_openclaw(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any]
     return {**config, "plugins": filtered}, removed
 
 
-def _merge_opencode(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
+def _merge_opencode(config: Dict[str, Any], command: str, repo_root: Path, mode: str = "observe") -> Dict[str, Any]:
     # 1. Scaffold the opencode plugin
     plugin_dir = repo_root / "prismor" / "runtime" / "opencode-plugin"
-    _scaffold_opencode_plugin(plugin_dir, command)
+    _scaffold_opencode_plugin(plugin_dir, command, mode)
 
     # 2. Register plugin path in opencode.json config
     plugins = list(config.get("plugins", []))
@@ -965,54 +971,100 @@ def _strip_opencode(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any]
     return {**config, "plugins": filtered}, removed
 
 
-_OPENCODE_PLUGIN_JS = """\
+# Shared head of every in-process gateway shim (OpenClaw, Hermes, OpenCode), #488.
+# These gateways serve many channels from one Node event loop, so the check is
+# an async spawn: a synchronous one froze every conversation for the length of
+# each tool call. And "could not evaluate" (timeout, missing binary, crash) is
+# no longer a silent allow: it is logged, then resolved by FAILURE_MODE, which
+# install bakes as deny under --mode enforce and allow under observe. Tool and
+# event names go through raw; hooks.py normalizes them.
+_GATEWAY_RUNNER_JS = """\
 "use strict";
 
-const { execSync } = require("child_process");
+const { spawn } = require("child_process");
 
-const PRISMOR_COMMAND = "__PRISMOR_COMMAND__";
+const PRISMOR_COMMAND = __PRISMOR_COMMAND__;
+const TIMEOUT_MS = Number(process.env.PRISMOR_GATEWAY_TIMEOUT_MS) || 10000;
+const FAILURE_MODE = process.env.PRISMOR_GATEWAY_FAILURE_MODE || __FAILURE_MODE__;
 
-function dispatch(payload) {
-  try {
-    execSync(PRISMOR_COMMAND, {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
-    });
-  } catch (err) {
-    if (err.status === 2) {
-      const stderr = (err.stderr || "").toString().trim();
-      throw new Error(stderr || "Blocked by Prismor");
+// Exit 0 = allowed; exit 2 with Prismor's block line = blocked; anything else
+// = could not evaluate. The marker matters: Python itself exits 2 when it
+// cannot open the dispatch script, which must not pass for a verdict.
+const BLOCK_LINE = /^Prismor (blocked|requires approval|could not safely)/m;
+
+function runPrismor(payload) {
+  return new Promise(function (resolve) {
+    let child, timer, done = false, stderr = "";
+    const finish = function (r) {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(r);
+    };
+    try {
+      child = spawn(PRISMOR_COMMAND, { shell: true, stdio: ["pipe", "ignore", "pipe"] });
+    } catch (err) {
+      return finish({ error: String(err && err.message || err) });
     }
-  }
+    timer = setTimeout(function () {
+      child.kill("SIGKILL");
+      finish({ error: "timed out after " + TIMEOUT_MS + "ms" });
+    }, TIMEOUT_MS);
+    child.stderr.on("data", function (d) { stderr += d; });
+    child.on("error", function (err) { finish({ error: err.code || err.message }); });
+    child.on("close", function (code, signal) {
+      const detail = stderr.trim();
+      if (code === 0) return finish({ allowed: true });
+      if (code === 2 && BLOCK_LINE.test(detail)) return finish({ blocked: true, reason: detail });
+      finish({ error: (signal ? "killed by " + signal : "exit " + code) + (detail ? ": " + detail.slice(0, 500) : "") });
+    });
+    child.stdin.on("error", function () {});  // EPIPE when the command dies before reading
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+// pre: a pre-tool event, the only kind failure_mode=deny may block.
+async function verdict(payload, pre) {
+  const r = await runPrismor(payload);
+  if (r.blocked) return { block: true, reason: r.reason };
+  if (r.allowed) return { block: false };
+  const deny = pre && FAILURE_MODE === "deny";
+  console.error("[prismor] could not evaluate " + payload.hookEvent + " (" + r.error + "); failure_mode=" +
+    FAILURE_MODE + ", " + (deny ? "blocking" : "allowing"));
+  return deny ? { block: true, reason: "Prismor could not evaluate this call: " + r.error } : { block: false };
+}
+"""
+
+
+def _render_gateway_js(body: str, command: str, mode: str) -> str:
+    return (_GATEWAY_RUNNER_JS + body).replace(
+        "__PRISMOR_COMMAND__", json.dumps(command)  # the command carries its own quotes
+    ).replace("__FAILURE_MODE__", json.dumps("deny" if mode == "enforce" else "allow"))
+
+
+_OPENCODE_PLUGIN_JS = """
+function check(hookEvent, input) {
+  return verdict({
+    hookEvent: hookEvent,
+    toolName: (input && input.tool) || "",
+    toolInput: (input && (input.args || input.input)) || {},
+    sessionId: (input && input.sessionId) || "",
+    timestamp: Date.now(),
+  }, hookEvent === "tool.execute.before").then(function (r) {
+    if (r.block) throw new Error(r.reason);
+  });
 }
 
 module.exports = function ({ project, client, $, directory, worktree }) {
   return {
-    "tool.execute.before": async function (input, output) {
-      dispatch({
-        hookEvent: "tool.execute.before",
-        toolName: (input && input.tool) || "",
-        toolInput: (input && (input.args || input.input)) || {},
-        sessionId: (input && input.sessionId) || "",
-        timestamp: Date.now(),
-      });
-    },
-    "tool.execute.after": async function (input, output) {
-      dispatch({
-        hookEvent: "tool.execute.after",
-        toolName: (input && input.tool) || "",
-        toolInput: (input && (input.args || input.input)) || {},
-        sessionId: (input && input.sessionId) || "",
-        timestamp: Date.now(),
-      });
-    },
+    "tool.execute.before": function (input, output) { return check("tool.execute.before", input); },
+    "tool.execute.after": function (input, output) { return check("tool.execute.after", input); },
   };
 };
 """
 
 
-def _scaffold_opencode_plugin(plugin_dir: Path, command: str) -> None:
+def _scaffold_opencode_plugin(plugin_dir: Path, command: str, mode: str = "observe") -> None:
     plugin_dir.mkdir(parents=True, exist_ok=True)
     pkg = {
         "name": "@prismor/opencode-prismor",
@@ -1021,55 +1073,31 @@ def _scaffold_opencode_plugin(plugin_dir: Path, command: str) -> None:
         "main": "index.js",
     }
     (plugin_dir / "package.json").write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
-    js = _OPENCODE_PLUGIN_JS.replace("__PRISMOR_COMMAND__", command)
-    (plugin_dir / "index.js").write_text(js, encoding="utf-8")
+    (plugin_dir / "index.js").write_text(_render_gateway_js(_OPENCODE_PLUGIN_JS, command, mode), encoding="utf-8")
 
 
 
-_OPENCLAW_PLUGIN_JS = """\
-"use strict";
-
-const { execSync } = require("child_process");
-
-const PRISMOR_COMMAND = "__PRISMOR_COMMAND__";
-
-function dispatch(payload) {
-  try {
-    execSync(PRISMOR_COMMAND, {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
-    });
-    return { block: false };
-  } catch (err) {
-    if (err.status === 2) {
-      const stderr = (err.stderr || "").toString().trim();
-      return { block: true, reason: stderr || "Blocked by Prismor" };
-    }
-    return { block: false };
-  }
-}
-
+_OPENCLAW_PLUGIN_JS = """
 exports.before_tool_call = function (event) {
-  return dispatch({
+  return verdict({
     hookEvent: "before_tool_call",
     toolName: event.toolName || "",
     toolInput: event.toolInput || {},
     sessionId: event.sessionId || "",
     agentId: event.agentId || "",
     timestamp: event.timestamp || Date.now(),
-  });
+  }, true);
 };
 
 exports.message_sending = function (event) {
-  return dispatch({
+  return verdict({
     hookEvent: "message_sending",
     toolName: "__message__",
     toolInput: { content: event.content || "" },
     sessionId: event.sessionId || "",
     agentId: event.agentId || "",
     timestamp: event.timestamp || Date.now(),
-  });
+  }, false);
 };
 """
 
@@ -1081,14 +1109,10 @@ Prismor prompt injection detection hook.
 Scans inbound messages for prompt injection patterns.
 """
 
-_OPENCLAW_HOOK_JS = """\
-"use strict";
-const { execSync } = require("child_process");
-
-const PRISMOR_COMMAND = "__PRISMOR_COMMAND__";
-
+# Internal hooks cannot block; a failed check is still logged by verdict().
+_OPENCLAW_HOOK_JS = """
 module.exports = function (event) {
-  var payload = {
+  return verdict({
     hookEvent: "message_received",
     toolName: "__message__",
     toolInput: {
@@ -1097,21 +1121,12 @@ module.exports = function (event) {
     },
     sessionId: event.sessionKey || "",
     timestamp: event.timestamp || Date.now(),
-  };
-  try {
-    execSync(PRISMOR_COMMAND, {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
-    });
-  } catch (err) {
-    // Internal hooks cannot block — stderr warnings still surface
-  }
+  }, false).then(function () {});
 };
 """
 
 
-def _scaffold_openclaw_plugin(plugin_dir: Path, command: str) -> None:
+def _scaffold_openclaw_plugin(plugin_dir: Path, command: str, mode: str = "observe") -> None:
     plugin_dir.mkdir(parents=True, exist_ok=True)
     pkg = {
         "name": "@prismor/openclaw-prismor",
@@ -1126,21 +1141,19 @@ def _scaffold_openclaw_plugin(plugin_dir: Path, command: str) -> None:
         },
     }
     (plugin_dir / "package.json").write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
-    js = _OPENCLAW_PLUGIN_JS.replace("__PRISMOR_COMMAND__", command)
-    (plugin_dir / "index.js").write_text(js, encoding="utf-8")
+    (plugin_dir / "index.js").write_text(_render_gateway_js(_OPENCLAW_PLUGIN_JS, command, mode), encoding="utf-8")
 
 
-def _scaffold_openclaw_internal_hook(hooks_dir: Path, command: str) -> None:
+def _scaffold_openclaw_internal_hook(hooks_dir: Path, command: str, mode: str = "observe") -> None:
     hooks_dir.mkdir(parents=True, exist_ok=True)
     (hooks_dir / "HOOK.md").write_text(_OPENCLAW_HOOK_MD, encoding="utf-8")
-    js = _OPENCLAW_HOOK_JS.replace("__PRISMOR_COMMAND__", command)
-    (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
+    (hooks_dir / "handler.js").write_text(_render_gateway_js(_OPENCLAW_HOOK_JS, command, mode), encoding="utf-8")
 
 
-def _merge_hermes(config: Dict[str, Any], command: str, repo_root: Path) -> Dict[str, Any]:
+def _merge_hermes(config: Dict[str, Any], command: str, repo_root: Path, mode: str = "observe") -> Dict[str, Any]:
     # 1. Scaffold the plugin package
     plugin_dir = repo_root / "prismor" / "runtime" / "hermes-plugin"
-    _scaffold_hermes_plugin(plugin_dir, command)
+    _scaffold_hermes_plugin(plugin_dir, command, mode)
 
     # 2. Register plugin path in config
     plugins = list(config.get("plugins", []))
@@ -1150,7 +1163,7 @@ def _merge_hermes(config: Dict[str, Any], command: str, repo_root: Path) -> Dict
 
     # 3. Scaffold internal hook for message:received
     hooks_dir = Path.home() / ".hermes" / "hooks" / "prismor"
-    _scaffold_hermes_internal_hook(hooks_dir, command)
+    _scaffold_hermes_internal_hook(hooks_dir, command, mode)
 
     return {**config, "plugins": plugins}
 
@@ -1162,50 +1175,27 @@ def _strip_hermes(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], 
     return {**config, "plugins": filtered}, removed
 
 
-_HERMES_PLUGIN_JS = """\
-"use strict";
-
-const { execSync } = require("child_process");
-
-const PRISMOR_COMMAND = "__PRISMOR_COMMAND__";
-
-function dispatch(payload) {
-  try {
-    execSync(PRISMOR_COMMAND, {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
-    });
-    return { block: false };
-  } catch (err) {
-    if (err.status === 2) {
-      const stderr = (err.stderr || "").toString().trim();
-      return { block: true, reason: stderr || "Blocked by Prismor" };
-    }
-    return { block: false };
-  }
-}
-
+_HERMES_PLUGIN_JS = """
 exports.before_tool_call = function (event) {
-  return dispatch({
+  return verdict({
     hookEvent: "before_tool_call",
     toolName: event.toolName || "",
     toolInput: event.toolInput || {},
     sessionId: event.sessionId || "",
     gatewayId: event.gatewayId || "",
     timestamp: event.timestamp || Date.now(),
-  });
+  }, true);
 };
 
 exports.message_sending = function (event) {
-  return dispatch({
+  return verdict({
     hookEvent: "message_sending",
     toolName: "__message__",
     toolInput: { content: event.content || "" },
     sessionId: event.sessionId || "",
     gatewayId: event.gatewayId || "",
     timestamp: event.timestamp || Date.now(),
-  });
+  }, false);
 };
 """
 
@@ -1218,37 +1208,10 @@ Scans inbound messages for prompt injection patterns before they reach
 the model.
 """
 
-_HERMES_HOOK_JS = """\
-"use strict";
-const { execSync } = require("child_process");
-
-const PRISMOR_COMMAND = "__PRISMOR_COMMAND__";
-
-module.exports = function (event) {
-  var payload = {
-    hookEvent: "message_received",
-    toolName: "__message__",
-    toolInput: {
-      content: (event.context && event.context.content) || "",
-      from: (event.context && event.context.from) || "",
-    },
-    sessionId: event.sessionKey || "",
-    timestamp: event.timestamp || Date.now(),
-  };
-  try {
-    execSync(PRISMOR_COMMAND, {
-      input: JSON.stringify(payload),
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 10000,
-    });
-  } catch (err) {
-    // Internal hooks cannot block — stderr warnings still surface
-  }
-};
-"""
+_HERMES_HOOK_JS = _OPENCLAW_HOOK_JS
 
 
-def _scaffold_hermes_plugin(plugin_dir: Path, command: str) -> None:
+def _scaffold_hermes_plugin(plugin_dir: Path, command: str, mode: str = "observe") -> None:
     plugin_dir.mkdir(parents=True, exist_ok=True)
     pkg = {
         "name": "@prismor/hermes-prismor",
@@ -1263,15 +1226,13 @@ def _scaffold_hermes_plugin(plugin_dir: Path, command: str) -> None:
         },
     }
     (plugin_dir / "package.json").write_text(json.dumps(pkg, indent=2) + "\n", encoding="utf-8")
-    js = _HERMES_PLUGIN_JS.replace("__PRISMOR_COMMAND__", command)
-    (plugin_dir / "index.js").write_text(js, encoding="utf-8")
+    (plugin_dir / "index.js").write_text(_render_gateway_js(_HERMES_PLUGIN_JS, command, mode), encoding="utf-8")
 
 
-def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
+def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str, mode: str = "observe") -> None:
     hooks_dir.mkdir(parents=True, exist_ok=True)
     (hooks_dir / "HOOK.md").write_text(_HERMES_HOOK_MD, encoding="utf-8")
-    js = _HERMES_HOOK_JS.replace("__PRISMOR_COMMAND__", command)
-    (hooks_dir / "handler.js").write_text(js, encoding="utf-8")
+    (hooks_dir / "handler.js").write_text(_render_gateway_js(_HERMES_HOOK_JS, command, mode), encoding="utf-8")
 
 
 def _merge_copilot(config: Dict[str, Any], command: str) -> Dict[str, Any]:
@@ -2980,5 +2941,6 @@ def _is_pre_action(agent_event: str) -> bool:
     return (
         lower.startswith("pre")
         or lower.startswith("before")
+        or lower.endswith(".before")  # OpenCode's tool.execute.before
         or agent_event in {"PreToolUse", "UserPromptSubmit", "PermissionRequest"}
     )
