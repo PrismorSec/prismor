@@ -628,7 +628,7 @@ agents:
     events: [tool_call]
     blocking: throw
     normalizer: null
-    notes: "TypeScript prismorTool/prismorTools wraps tool.execute(); calls POST /v1/evaluate on the eval-server sidecar before each tool runs. Fails open if eval-server is unreachable. npm install prismor-vercel."
+    notes: "TypeScript prismorTool/prismorTools wraps tool.execute() (and prismorLangChainTools wraps LangChain JS invoke()); built on the prismor-sdk client, which calls POST /v1/evaluate on the eval-server sidecar before each tool runs. Fails closed in enforce mode and open in observe mode when the eval-server is unreachable (failMode overrides). npm install prismor-warden."
     sources: ["https://sdk.vercel.ai/docs/foundations/tools"]
 
   # ── HTTP eval-server (language-agnostic) ──────────────────────────────────

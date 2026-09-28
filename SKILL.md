@@ -158,8 +158,8 @@ After install, **verify** by re-running `prismor status`. The `Hooks:` line shou
 |---|---|
 | OpenAI Agents SDK, LangChain/LangGraph (Python + JS), CrewAI, browser-use | [`docs/frameworks-overview.md`](./docs/frameworks-overview.md) |
 | Pydantic AI, AutoGen Core, Agno, Semantic Kernel, Google ADK, BeeAI, Claude Agent SDK | `docs/frameworks-<name>.md` |
-| Vercel AI SDK, Mastra (TypeScript) | [`docs/frameworks-vercel-ai.md`](./docs/frameworks-vercel-ai.md), [`docs/frameworks-mastra.md`](./docs/frameworks-mastra.md) |
-| Any Python agent without a framework adapter | [`docs/sdk-clients.md`](./docs/sdk-clients.md) — `prismor.sdk.PrismorClient` |
+| Vercel AI SDK, Mastra (TypeScript; both on the `prismor-sdk` npm client) | [`docs/frameworks-vercel-ai.md`](./docs/frameworks-vercel-ai.md), [`docs/frameworks-mastra.md`](./docs/frameworks-mastra.md) |
+| Any Python or TypeScript agent without a framework adapter | [`docs/sdk-clients.md`](./docs/sdk-clients.md) — `prismor.sdk.PrismorClient` / npm `prismor-sdk` |
 | Any other language, over HTTP | `prismor eval-server` — see [`docs/decision-contract.md`](./docs/decision-contract.md) |
 
 These adapters ship inside the `prismor` package — no separate install. They default to **observe**; the user opts into enforce explicitly. Adapters screen tool *calls* and redact tool *results*. Wrap each request in `use_subject("user:alice")` so a multi-tenant agent gets per-user attribution, IAM profiles, and suspension.

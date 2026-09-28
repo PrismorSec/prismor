@@ -20,8 +20,8 @@ Per [docs/frameworks-overview.md](docs/frameworks-overview.md) (merged 2026-07-2
 | LangChain / LangGraph | `adapters/langchain` on `prismor.sdk` (+ JS via `prismor-warden` npm) | `tool.func` / `tool.invoke` before execution | `pip install "prismor[langchain]"` / `npm install prismor-warden` |
 | CrewAI | `adapters/crewai` on `prismor.sdk` | `tool.func` → `tool._run` → `tool.run` before execution | `pip install "prismor[crewai]"` |
 | AutoGen Core (Microsoft) | `adapters/autogen-core` | `InterventionHandler.on_send` before a `FunctionCall` reaches a `ToolAgent` | `pip install "prismor[autogen-core]"` |
-| Vercel AI SDK | `prismor-warden` (npm) | `tool.execute` before the tool body runs | `npm install prismor-warden` |
-| Mastra | `adapters/mastra` (`prismor-mastra` npm) | `tool.execute` before the tool body runs | `npm install prismor-mastra` |
+| Vercel AI SDK | `prismor-warden` (npm, on `prismor-sdk`) | `tool.execute` before the tool body runs | `npm install prismor-warden` |
+| Mastra | `adapters/mastra` (`prismor-mastra` npm, on `prismor-sdk`) | `tool.execute` before the tool body runs | `npm install prismor-mastra` |
 
 Prismor also has adapters for 9 frameworks outside the original 25 (OpenAI Agents SDK, browser-use, Pydantic AI, Agno, Semantic Kernel, Google ADK, BeeAI, Claude Code Agent SDK) — not tracked in this file since they weren't in scope, see the overview doc.
 

@@ -22,16 +22,16 @@ on your existing agent or controller object, with no changes to your tool logic.
 | Any Python agent (no adapter) | Python | `pip install prismor` | `PrismorClient().guard(fn)` | `use_subject("user:alice")` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
 | LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
-| Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` | `subject: "user:alice"` |
+| Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` | `useSubject("user:alice", fn)` |
+| Any TypeScript/JS agent (no adapter) | TypeScript | `npm install prismor-sdk` | `new PrismorClient().guard(fn, { toolName })` | `useSubject("user:alice", fn)` |
 | Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
 
 > The Python adapters ship inside the `prismor` package (no separate PyPI
 > packages) — each extra just pulls the framework itself.
-> `prismor[frameworks]` installs all of them. Vercel AI SDK / LangChain JS
-> ship as the `prismor-warden` npm package; Mastra ships separately as
-> `prismor-mastra` since it wraps tools directly rather than going through
-> an eval-server client — both are genuinely separate packages since a
-> Python wheel can't bundle TypeScript.
+> `prismor[frameworks]` installs all of them. The TypeScript side ships as
+> npm packages, since a Python wheel can't bundle TypeScript: the
+> `prismor-sdk` client, plus `prismor-warden` (Vercel AI SDK / LangChain JS)
+> and `prismor-mastra` as thin wrappers over it.
 
 The multi-tenant pattern is the same in every language: guard once at startup
 with no bound subject, then wrap each request with `use_subject` (Python) or
@@ -65,9 +65,11 @@ Regardless of framework, every adapter does the same three things:
    `observe` mode findings are recorded but the call always proceeds.
 
 The OpenAI Agents, LangChain, CrewAI and browser-use adapters are thin layers
-over `prismor.sdk.PrismorClient`, which does exactly these three things for any
-callable — see [sdk-clients.md](sdk-clients.md) to guard an agent that has no
-framework adapter, or to add an `on_policy_block` callback to one that does.
+over `prismor.sdk.PrismorClient`, and the `prismor-warden` and `prismor-mastra`
+npm packages over the `prismor-sdk` client; each does exactly these three things
+for any callable — see [sdk-clients.md](sdk-clients.md) to guard an agent that
+has no framework adapter, or to add an `on_policy_block` / `onPolicyBlock`
+callback to one that does.
 
 ## Hook points by framework
 
@@ -122,7 +124,7 @@ Validated live on an Ubuntu EC2 instance with real OpenAI function calls:
 
 | Language | Adapter size | Dependencies |
 |---|---|---|
-| TypeScript (Vercel AI SDK) | ~80 lines | `npm install prismor-warden` |
+| TypeScript (`prismor-sdk`; Vercel AI SDK, Mastra on top of it) | thin wrappers over the client | `npm install prismor-sdk` / `prismor-warden` / `prismor-mastra` |
 | Node.js (raw) | ~25 lines | built-in `fetch` |
 | Ruby | ~20 lines | stdlib `Net::HTTP` |
 | Java 21 | ~25 lines | stdlib `java.net.http` |
@@ -246,7 +248,7 @@ choosing which client a request belongs to is your app's authentication job.
 
 ## Per-framework guides
 
-- [SDK client](sdk-clients.md) — `prismor.sdk.PrismorClient`: check, guard, approvals, redaction, `on_policy_block`
+- [SDK clients (Python + TypeScript)](sdk-clients.md) — `prismor.sdk.PrismorClient` and npm `prismor-sdk`: check, guard, approvals, redaction, `on_policy_block`
 - [OpenAI Agents SDK](frameworks-openai-agents.md) — `guard_agent`, `prismor_guard`, FunctionTool patching
 - [LangChain / LangGraph](frameworks-langchain.md) — `guard_tools`, `PrismorCallbackHandler`
 - [CrewAI](frameworks-crewai.md) — `guard_tools`, BaseTool and structured tool support

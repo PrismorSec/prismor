@@ -4,7 +4,10 @@ Prismor adapter for the [Vercel AI SDK](https://sdk.vercel.ai).
 
 Wraps tool `execute` functions to call the Prismor HTTP eval-server before
 the tool body runs. Works with any framework that uses the Vercel AI SDK —
-Next.js, Remix, Node.js, edge runtimes.
+Next.js, Remix, Node.js, edge runtimes. Built on the
+[`prismor-sdk`](https://www.npmjs.com/package/prismor-sdk) client: every
+`PrismorClient` option works here, and `PrismorClient` itself is re-exported
+for tools that are not Vercel AI SDK tools.
 
 ## Prerequisites
 
@@ -117,14 +120,19 @@ the run recovers gracefully. All options (`failMode`, `timeoutMs`, `subject`,
 If the eval-server cannot answer (not running, crashed, timeout), the adapter
 follows `failMode`:
 
-- `mode: "enforce"` (default) **fails closed** — the tool call is blocked with
+- `mode: "enforce"` **fails closed** — the tool call is blocked with
   `PrismorBlocked`. An enforced policy (e.g. a suspended user) holds even when
   the sidecar is down.
-- `mode: "observe"` fails open — monitoring never breaks the app.
+- `mode: "observe"` (the default) fails open — monitoring never breaks the app.
 - Set `failMode: "open"` or `"closed"` explicitly to override either default.
 
 > **Changed in 0.3.0:** enforce mode previously failed open. Pass
 > `failMode: "open"` to restore the old behavior.
+
+> **Changed in 0.4.0:** built on `prismor-sdk`. New options `onPolicyBlock`,
+> `raiseOnBlock`, `sessionId`, `budget` and `metadata`; `PrismorDecision` now
+> carries the full wire shape (`verdict`, `rule_id`, `contract_version`, …).
+> Every existing import and default is unchanged.
 
 ## Options
 
@@ -133,10 +141,15 @@ follows `failMode`:
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
 | `apiKey` | `string` | `$PRISMOR_EVAL_KEY` | Bearer token for an auth-enabled eval-server |
 | `subject` | `string` | `""` | End-user: `"user:alice"` or `"user=alice;team=data"` |
-| `mode` | `"enforce"\|"observe"` | `"enforce"` | Enforce blocks; observe logs only |
+| `mode` | `"enforce"\|"observe"` | `"observe"` | Enforce blocks; observe logs only |
 | `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
 | `timeoutMs` | `number` | `10000` | Max wait for the eval-server per call |
 | `workspace` | `string` | `process.cwd()` | Project path for policy/IAM lookup |
 | `agent` | `string` | `"vercel-ai"` | Agent identifier in telemetry |
 | `agentName` | `string` | same as `agent` | Per-instance name for kill-switch / per-agent controls |
 | `eventType` | `string` | `"shell"` | Event type: `shell`, `network`, `file_write`, … |
+| `sessionId` | `string` | `vercel-ai-<pid>-<n>` per wrapped tool | Session the calls are recorded under |
+| `budget` | `unknown` | — | Recorded as `metadata.budget` on every event; no rule enforces it yet |
+| `metadata` | `object` | — | Extra metadata merged into the event by the eval-server (its own keys win) |
+| `onPolicyBlock` | `(decision, ctx) => unknown` | — | Called on a denial; its return value becomes the tool result instead of a throw |
+| `raiseOnBlock` | `boolean` | `true` | `false` returns the `⛔ Prismor blocked …` string instead of throwing |

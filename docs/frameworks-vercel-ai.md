@@ -1,6 +1,6 @@
 # Vercel AI SDK — Prismor adapter
 
-The Vercel AI SDK adapter (`prismor`) is a TypeScript package that
+The Vercel AI SDK adapter (`prismor-warden`) is a TypeScript package that
 intercepts every tool `execute()` call before it runs. It is the reference
 implementation of the **HTTP adapter pattern**: a thin language-native client
 calls the Prismor **eval-server** (a sidecar Python process) to evaluate each
@@ -17,8 +17,9 @@ flowchart TD
     DEC -->|true| RUN["call original execute()"]
 ```
 
-The Python runtime stays canonical. The TypeScript adapter is ~80 lines of
-HTTP client code with no Prismor Python dependency.
+The Python runtime stays canonical. The TypeScript adapter is a thin wrapper
+over the [`prismor-sdk`](sdk-clients.md#typescript-prismor-sdk) client, with no
+Prismor Python dependency.
 
 ## Prerequisites
 
@@ -143,6 +144,7 @@ Users without an explicit IAM profile fall through to org-wide defaults.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
+| `apiKey` | `string` | `$PRISMOR_EVAL_KEY` | Bearer token for an auth-enabled eval-server |
 | `subject` | `string` | `""` | End-user identity: `"user:alice"` (overrides `useSubject()`) |
 | `mode` | `"enforce"\|"observe"` | `"observe"` | Enforce blocks; observe logs only |
 | `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
@@ -151,6 +153,11 @@ Users without an explicit IAM profile fall through to org-wide defaults.
 | `agent` | `string` | `"vercel-ai"` | Agent label in telemetry |
 | `agentName` | `string` | same as `agent` | Per-instance name for kill-switch / per-agent controls |
 | `eventType` | `string` | `"shell"` | `shell`, `network`, `file_write`, `file_read` |
+| `sessionId` | `string` | `vercel-ai-<pid>-<n>` per wrapped tool | Session the calls are recorded under |
+| `budget` | `unknown` | — | Recorded as `metadata.budget` on every event; no rule enforces it yet |
+| `metadata` | `object` | — | Extra metadata merged into the event by the eval-server (its own keys win) |
+| `onPolicyBlock` | `(decision, ctx) => unknown` | — | Called on a denial; its return value becomes the tool result instead of a throw |
+| `raiseOnBlock` | `boolean` | `true` | `false` returns the `⛔ Prismor blocked …` string instead of throwing |
 
 ## Event type mapping
 
@@ -364,6 +371,7 @@ input unchanged with `"redacted": false`. Uses the same bearer auth as
 ## See also
 
 - [Framework adapters overview](frameworks-overview.md) — comparison table, hook points, IAM quick-start
+- [SDK clients](sdk-clients.md) — the `prismor-sdk` client this adapter is built on
 - [CLI reference — eval-server](cli-reference.md#eval-server)
 - [IAM](iam.md) — per-user permission profiles
 - [Prismor policy engine](prismor-runtime.md) — policy YAML, rule schema, observe vs enforce

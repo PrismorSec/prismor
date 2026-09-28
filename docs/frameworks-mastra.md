@@ -23,7 +23,9 @@ logging showing `execute` firing *after* `abort()` was called.
 Instead, `prismorTool`/`prismorTools` wrap a tool's `execute` function
 directly — the same pattern the CrewAI/LangChain adapters use — which
 **is** reliable: the wrapped function is what Mastra actually calls, so a
-thrown error genuinely prevents the tool body from running.
+thrown error genuinely prevents the tool body from running. Since 0.2.0 the
+wrapper is built on the [`prismor-sdk`](https://www.npmjs.com/package/prismor-sdk)
+client; every `PrismorClient` option works here.
 
 ## Install
 
@@ -73,6 +75,31 @@ result, so the conversation continues with the denial visible. `mode:
 eval-server is unreachable (`"closed"` in enforce mode by default — a
 policy suspension must hold even when the sidecar is down).
 
+## Options
+
+Every `PrismorClient` option from `prismor-sdk` is accepted:
+
+| Option | Default | Description |
+|---|---|---|
+| `evalUrl` | `http://127.0.0.1:7071` | Eval-server URL |
+| `apiKey` | `$PRISMOR_EVAL_KEY` | Bearer token for an auth-enabled eval-server |
+| `mode` | `"enforce"` | Enforce blocks; observe logs only (this package keeps `enforce` as its default) |
+| `failMode` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
+| `subject` | resolved per call | `"user:alice"`; else the ambient `useSubject()`, else `$PRISMOR_SUBJECT` |
+| `agent` / `agentName` | `"mastra"` / same as `agent` | Telemetry id / per-instance name (kill-switch) |
+| `sessionId` | `mastra-<pid>-<n>` per wrapped tool | Session the calls are recorded under |
+| `budget`, `metadata` | — | Recorded on every event; no rule enforces a budget yet |
+| `onPolicyBlock` | — | `(decision, ctx) => result`: called on a denial instead of throwing |
+| `raiseOnBlock` | `true` | `false` returns the `⛔ Prismor blocked …` string instead of throwing |
+| `timeoutMs`, `workspace`, `eventType` | `10000`, `process.cwd()`, `"shell"` | |
+
+> **Changed in 0.2.0:** built on `prismor-sdk`. `PrismorBlocked` now carries
+> `.decision` and its message is `Blocked by Prismor: <reason>`; tool results
+> are masked through the eval-server's `/v1/redact` before the model sees
+> them; observe mode prints what enforce mode would block; the subject and
+> agent name are sent as headers and `useSubject()` is exported. The
+> `enforce` default is unchanged.
+
 ## Per-user control
 
 `subject` follows the same convention as the Vercel AI SDK adapter's
@@ -90,5 +117,6 @@ JavaScript implementation ever ran; a benign command executed normally.
 ## See also
 
 - [Framework adapters overview](frameworks-overview.md)
+- [SDK clients](sdk-clients.md) — the `prismor-sdk` client this adapter is built on
 - [Vercel AI SDK integration](frameworks-vercel-ai.md) — the reference HTTP adapter pattern this one follows
 - [IAM](iam.md) — per-user permission profiles

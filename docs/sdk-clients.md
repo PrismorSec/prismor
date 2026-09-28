@@ -171,11 +171,129 @@ keys win. `check_event(event)` evaluates a pre-built event.
 Every adapter accepts `on_policy_block=` and re-exports the one shared
 `PrismorBlocked`, so `except PrismorBlocked` works whichever adapter raised it.
 
-## TypeScript
+## TypeScript: `prismor-sdk`
 
-A standalone TypeScript client (`prismor-sdk` on npm) is the next step on this
-page. Today the `prismor-warden` (Vercel AI SDK, LangChain JS) and
-`prismor-mastra` packages talk to the local eval-server over HTTP; see
-[sdk-integration.md](sdk-integration.md#vercel-ai-sdk--any-language-http) for
-the `POST /v1/evaluate` contract, whose simple form now also accepts
-`metadata` and `budget`.
+```bash
+npm install prismor-sdk                          # Node 18+, no runtime dependencies, CommonJS + types
+prismor eval-server --port 7071 --workspace .    # the sidecar (pip install prismor)
+```
+
+TypeScript cannot run the Python policy engine in-process, so the client
+talks to the **eval-server**, a local sidecar that calls the same
+`evaluate_tool_call` and answers with the decision's wire form. Set
+`PRISMOR_AGENT_KEY` on the eval-server process (not the app) to connect it
+to the console; beyond loopback, run it with `--api-key` and pass `apiKey`.
+
+### Guard a function
+
+```ts
+import { PrismorClient, PrismorBlocked } from "prismor-sdk";
+
+const client = new PrismorClient({ mode: "enforce" });
+const runShell = client.guard(async ({ command }) => exec(command), { toolName: "run_shell" });
+
+await runShell({ command: "ls" });         // allowed: runs, result redacted
+await runShell({ command: "rm -rf /" });   // denied: throws PrismorBlocked, tool never runs
+```
+
+`guard` evaluates the first call argument (pass `args: (...callArgs) => …`
+to pick something else, as the LangChain wrapper does for a `ToolCall`
+envelope), then runs the function and masks its result through
+`/v1/redact`. The wrapper is always async.
+
+### Check without guarding
+
+```ts
+const decision = await client.check("run_shell", { command: "rm -rf /" });
+decision.allow          // false
+decision.verdict        // "block" | "step_up" | "defer" | "modify" | "allow"
+decision.rule_id        // "destructive-command"
+decision.reason         // "[CRITICAL] …"
+decision.findings       // every finding
+```
+
+`check` never throws on a denial. Arguments must be an object; anything
+else is sent as `{ value }`.
+
+### Handle a block
+
+```ts
+// 1. Decide in the app: the callback's return value is the tool's result.
+new PrismorClient({ mode: "enforce", onPolicyBlock: (decision, ctx) =>
+  `Not allowed: ${decision.reason} (tool ${ctx.toolName})` });
+
+// 2. Default: throw. `err.decision` carries the verdict.
+try { await runShell({ command: "rm -rf /" }); }
+catch (err) { if (err instanceof PrismorBlocked) console.log(err.decision.rule_id); }
+
+// 3. Return the denial string the model sees instead of throwing.
+new PrismorClient({ mode: "enforce", raiseOnBlock: false });
+```
+
+`ctx` is `{ toolName, args, sessionId }`. An exception thrown by the
+callback propagates.
+
+### When the eval-server cannot answer
+
+Enforce mode **fails closed** (the call is denied with a synthetic
+`allow: false` decision and one `console.error` line); observe mode **fails
+open** (allowed, one `console.warn`). `failMode: "open" | "closed"` overrides
+either default; `timeoutMs` (default 10 s) bounds the wait.
+
+### Subjects, sessions and budgets
+
+```ts
+import { useSubject } from "prismor-sdk";
+
+const client = new PrismorClient({
+  agent: "support-bot", agentName: "support-bot-eu",
+  sessionId: "conv-42", budget: { max_tool_calls: 50 },
+});
+
+app.post("/chat", (req, res) =>
+  useSubject(`user:${req.user.id}`, () => handle(req, res)));   // every check inside is attributed
+
+await client.check("run_shell", { command: "ls" }, { sessionId: "conv-43", budget: 10 });
+```
+
+- **Subject** priority: `subject` on the call → `subject` on the client →
+  the ambient `useSubject()` scope (AsyncLocalStorage; concurrent requests
+  cannot bleed) → `PRISMOR_SUBJECT`. It is sent in the body and as the
+  `X-Prismor-Subject` header.
+- **Session** defaults to `<agent>-<pid>-<n>` per client; the framework
+  wrappers build one client per wrapped tool.
+- **Budget** and **metadata** are merged into the event's metadata by the
+  eval-server (its own keys win). **No built-in rule enforces a budget yet.**
+
+### Redaction, health, contract
+
+`client.redact(value)` masks a value through `/v1/redact` (best effort;
+`guard` does it for every result). `client.health()` and
+`client.contract()` read `/health` and `/v1/contract`, so an app can check
+the sidecar and its `contract_version` at startup.
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `evalUrl` | `http://127.0.0.1:7071` | the eval-server |
+| `apiKey` | `PRISMOR_EVAL_KEY` | bearer token when the server runs with `--api-key` |
+| `workspace` | `process.cwd()` | forwarded to the policy engine |
+| `agent` / `agentName` | `"sdk"` / same as `agent` | framework id / per-instance name (kill-switch) |
+| `mode` | `"observe"` | `"enforce"` blocks; `"observe"` logs what would block |
+| `failMode` | closed in enforce, open in observe | what to do when the server cannot answer |
+| `timeoutMs` | `10000` | per-request bound |
+| `subject`, `sessionId`, `eventType` | see above / `<agent>-<pid>-<n>` / `"shell"` | |
+| `budget`, `metadata` | — | recorded on every event |
+| `onPolicyBlock(decision, ctx)` | — | its return value becomes the tool result on a denial |
+| `raiseOnBlock` | `true` | `false` returns the `⛔ Prismor blocked …` string |
+| `fetch` | the global `fetch`, resolved at call time | injectable transport (tests) |
+
+### Built on it
+
+[`prismor-warden`](frameworks-vercel-ai.md) (Vercel AI SDK, LangChain JS /
+LangGraph JS) and [`prismor-mastra`](frameworks-mastra.md) are thin wrappers:
+each wrapped tool gets a `PrismorClient` with the framework's `agent` id and
+`guard` around its `execute` / `invoke`. Every `PrismorClient` option is
+accepted by their `prismorTools(...)` / `prismorTool(...)` calls, and they
+re-export `PrismorClient`, `PrismorBlocked` and `useSubject`.

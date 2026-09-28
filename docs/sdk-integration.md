@@ -71,6 +71,8 @@ Priority: explicit `subject=` arg → `use_subject` context → `PRISMOR_SUBJECT
 | CrewAI | `tool.func` / `_run` / `run` | `guard_tools([...], subject=...)` |
 | browser-use | `Registry.execute_action` | `guard_controller(controller, subject=...)` |
 | Vercel AI (TS) | `tool.execute` → HTTP | `prismorTools({...}, { subject })` |
+| Mastra (TS) | `tool.execute` → HTTP | `prismorTool(name, tool, { subject })` |
+| Any TS/JS (`prismor-sdk`) | `client.guard(fn)` → HTTP | `new PrismorClient().guard(fn, { toolName })` |
 
 ### OpenAI Agents
 ```python
@@ -103,10 +105,14 @@ with use_subject("user:alice"):
     await Agent(task="…", llm=llm, controller=controller).run()
 ```
 
-### Vercel AI SDK / any language (HTTP)
+### TypeScript (`prismor-sdk`, Vercel AI SDK, Mastra) / any language (HTTP)
 Run the sidecar: `prismor eval-server --port 7071 --workspace .`
 ```ts
-import { prismorTools } from "prismor-warden";
+import { PrismorClient } from "prismor-sdk";            // any TS/JS agent
+const client = new PrismorClient({ mode: "enforce" });
+const runShell = client.guard(async ({ command }) => exec(command), { toolName: "run_shell" });
+
+import { prismorTools } from "prismor-warden";          // Vercel AI SDK, built on prismor-sdk
 const tools = prismorTools({ run_shell, search_web }, { subject: `user:${userId}` });
 await generateText({ model, tools, prompt });
 ```
@@ -125,8 +131,8 @@ as `metadata.budget`; no rule enforces a budget yet.
 
 ## Failure behavior
 
-The eval-server is local. If it is unreachable, the TypeScript adapters fail
-**closed** in enforce mode and **open** in observe mode (override with `failMode`):
+The eval-server is local. If it is unreachable, the TypeScript client
+(`prismor-sdk`) and the adapters built on it fail **closed** in enforce mode and **open** in observe mode (override with `failMode`):
 an enforced suspension must hold even when the sidecar is down, while observe-mode
 monitoring must never break the app. The Python client is in-process, so there is
 no transport to fail; its headless approval flow fails closed on any error. For
