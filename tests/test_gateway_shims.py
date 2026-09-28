@@ -110,3 +110,10 @@ def test_epoch_ms_timestamp_becomes_iso(tmp_path, agent):
                "sessionId": "s", "timestamp": 1790575660000}
     ts = hooks.normalize_payload(agent=agent, payload=payload, workspace=tmp_path)["event"]["ts"]
     assert ts.startswith("2026-09-")
+
+
+@pytest.mark.parametrize("agent", hooks._SUPPORTED_AGENTS)
+def test_every_dispatchable_agent_can_be_installed(agent):
+    from prismor.runtime.cli import build_parser
+    for cmd in ("install-hooks", "uninstall-hooks"):
+        assert build_parser().parse_args([cmd, "--agent", agent]).agent == agent

@@ -589,7 +589,7 @@ rules:
     fields: [combined_text]
     patterns:
       # Instruction override — direct phrase attacks
-      - '(ignore\s+(all\s+)?(any\s+)?(previous\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|exfiltrat(e|ion)|print\s+.*(secret|token|key|credential|password)|show\s+.*(token|secret|key|credential|password)|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?)|jailbreak)'
+      - '(ignore\s+(all\s+)?(any\s+)?(previous\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|exfiltrate\s+(the|all|this|these|any|every|your|my|our)\b|(?<!never\s)(?<!not\s)(?<!n''t\s)print\s+[^\n]{0,60}(secret|token|key|credential|password)|(?<!never\s)(?<!not\s)(?<!n''t\s)show\s+[^\n]{0,60}(token|secret|key|credential|password)|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?)|jailbreak)'
       # System-prompt / instruction extraction via non-trigger verbs (repeat, translate, summarize, print, extract, inspect…)
       - '(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|print|extract|inspect|dump|display|output)\s+.{0,60}((system|developer|initiali[sz]ation|internal)[\s-]*prompt|(your|hidden)\s+(instructions?|guidelines?|rules?|config\w*)|instructions?\s+you\s+(received|were\s+given)|internal\s+config\w*|conversation\s+history|hidden\s+context)'
       # Memory / persistence poisoning — durable state injection to subvert future sessions

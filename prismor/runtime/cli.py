@@ -3709,7 +3709,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
-    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    # Same list hook-dispatch accepts; a hand-kept copy here left out opencode and gemini.
+    install_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
     install_parser.add_argument("--portable", action="store_true", help="Write a hook command with no machine-specific paths, for a config file committed to the repo and cloned onto a hosted agent's VM (needs sh)")
@@ -3724,7 +3725,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`prismor cloak install`.",
     )
     uninstall_parser.add_argument("--workspace", help="Workspace path")
-    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    uninstall_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope")
 
     # ── mcp-gateway ────────────────────────────────────────────────────
