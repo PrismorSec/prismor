@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+## [1.55.3] — 2026-09-28
+
+### Fixed
+- **`prismor dashboard` printed a `BrokenPipeError` traceback when the browser dropped a request.** Closing or refreshing the tab while a poll was in flight left the server writing to a closed socket. The handler meant to silence this was defined on the request handler, where the server never calls it. It now lives on the server: a client disconnect is dropped quietly and any other error still prints.
+- **The scoped agent's keyword fallback denied every write** (#527). Without `ANTHROPIC_API_KEY`, Edit/MultiEdit/Write were allowed only when the prompt used one of ten edit verbs, so "continue" or "make the dashboard simpler" blocked all writes with `[HIGH]` false positives while Bash (`cat > file`) stayed allowed. Writes are now always allowed in static mode; path and content rules still screen them.
+
 ## [1.55.2] — 2026-09-28
 
 ### Fixed

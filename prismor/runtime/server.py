@@ -33,6 +33,7 @@ Write endpoints (human-only — localhost):
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1003,8 +1004,13 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         self._send_json({"error": "not found"}, status=404)
 
+
+class _DashboardServer(ThreadingHTTPServer):
     def handle_error(self, request: Any, client_address: Any) -> None:
-        pass
+        # The browser closed the socket mid-response (tab closed, poll aborted).
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
 
 
 def run_server(
@@ -1028,7 +1034,7 @@ def run_server(
     import errno as _errno
     while True:
         try:
-            server = ThreadingHTTPServer((host, port), PrismorRequestHandler)
+            server = _DashboardServer((host, port), PrismorRequestHandler)
             break
         except OSError as exc:
             if exc.errno == _errno.EADDRINUSE:
