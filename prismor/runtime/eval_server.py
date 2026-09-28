@@ -23,7 +23,9 @@ Request body (POST /v1/evaluate):
       "session_id": "req-abc123",        # optional
       "subject":    "user:alice",        # optional — user:<id> or user=x;team=y
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
-      "workspace":  "/path/to/project"   # optional, overrides server default
+      "workspace":  "/path/to/project",  # optional, overrides server default
+      "metadata":   {"trace_id": "..."},  # optional — merged into event metadata (server-set keys win)
+      "budget":     {"max_calls": 3}      # optional — recorded as metadata.budget; no rule enforces it yet
     }
 
     X-Prismor-Agent-Name header also accepted (takes precedence over body field).
@@ -71,10 +73,26 @@ def _build_event(
     session_id: str,
     subject_str: Optional[str],
     available_tools: Optional[list[str]] = None,
+    metadata: Optional[dict] = None,
+    budget: Any = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
     # Serialize arguments to a single value string (values only — for regex matching)
     value = " ".join(str(v) for v in arguments.values() if v is not None).strip()
+    # Caller metadata first (a trace id, a budget); the server-stamped keys win
+    # so a client cannot relabel the surface, the tool or the subject.
+    meta: dict = dict(metadata or {})
+    meta.update({
+        "tool_name": tool_name,
+        "framework": agent,
+        "args": list(arguments.values()),
+        "kwargs": arguments,
+        "subject": subject_str,
+        "available_tools": available_tools or [],
+        "surface": "eval-server",
+    })
+    if budget is not None:
+        meta["budget"] = budget
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
@@ -82,15 +100,7 @@ def _build_event(
         "agent_event": "PreToolUse",
         "type": event_type,
         field: value,
-        "metadata": {
-            "tool_name": tool_name,
-            "framework": agent,
-            "args": list(arguments.values()),
-            "kwargs": arguments,
-            "subject": subject_str,
-            "available_tools": available_tools or [],
-            "surface": "eval-server",
-        },
+        "metadata": meta,
     }
 
 
@@ -121,7 +131,11 @@ class EvalHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, "
+            "X-Prismor-Agent-Name, X-Warden-Agent-Name",
+        )
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -226,6 +240,13 @@ class EvalHandler(BaseHTTPRequestHandler):
         ws_str: Optional[str] = body.get("workspace")
         workspace = Path(ws_str) if ws_str else self.workspace
 
+        # Free-form caller metadata (a trace id, a budget) rides along on the
+        # event; the server-stamped keys still win inside _build_event.
+        metadata = body.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            self._send_json({"error": "metadata must be an object"}, 400)
+            return
+
         event = _build_event(
             tool_name=tool_name,
             arguments=arguments,
@@ -235,6 +256,8 @@ class EvalHandler(BaseHTTPRequestHandler):
             subject_str=subject_str,
             available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
             if isinstance(body.get("available_tools"), list) else [],
+            metadata=metadata,
+            budget=body.get("budget"),
         )
 
         try:
@@ -275,6 +298,8 @@ class EvalHandler(BaseHTTPRequestHandler):
         event.setdefault("agent", agent)
         event.setdefault("agent_event", "PreToolUse")
         event.setdefault("metadata", {}).setdefault("surface", "eval-server")
+        if body.get("budget") is not None:
+            event["metadata"].setdefault("budget", body["budget"])
         try:
             decision = evaluate_tool_call(
                 event=event,
