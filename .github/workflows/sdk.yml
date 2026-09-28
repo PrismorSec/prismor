@@ -1,10 +1,15 @@
 name: SDK clients
 
 # The client SDKs and the framework adapters built on them. Until this
-# workflow, no CI job ran the adapter suites at all. langchain-core and
-# openai-agents are installed so those two adapter suites run instead of
+# workflow, no CI job ran the adapter suites at all.
+#
+# python-sdk: prismor.sdk and the four Python adapters on it. langchain-core
+# and openai-agents are installed so those two adapter suites run instead of
 # skipping; crewai and browser-use are too heavy for this gate and keep their
 # importorskip.
+# ts-sdk: prismor-sdk (sdk/ts) and the two npm adapters on it. The SDK builds
+# first because the adapters compile against its emitted .d.ts (the root
+# `npm run build` orders that), and every suite imports its package's dist/.
 
 on:
   push:
@@ -50,3 +55,24 @@ jobs:
           done
           python3 -m pip install --quiet --force-reinstall --no-deps dist/prismor-*.whl
           cd / && python3 -c "from prismor.sdk import PrismorClient, PrismorBlocked; from prismor.langchain import PrismorBlocked as L; assert L is PrismorBlocked; print('wheel ok')"
+
+  ts-sdk:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ["18", "20"]   # 18 = the declared engines floor; 20 = what the release workflow uses
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck --workspaces
+      - run: npm test --workspaces
+
+      - name: Published file lists contain only what they should
+        run: npm pack --dry-run --workspaces

@@ -1,23 +1,23 @@
-name: Release Adapters
+name: Release npm packages
 
-# Publishes the framework adapter packages that are NOT part of the main
-# `prismor` wheel — i.e. the TypeScript/npm ones. Every Python framework
-# adapter (langchain, crewai, openai-agents, browser-use, pydantic-ai,
-# autogen-core, agno, semantic-kernel, google-adk, beeai,
-# claude-agent-sdk) ships *inside* the main `prismor` package instead —
-# see pyproject.toml's `packages` / `force-include` / optional-dependencies
-# — so `pip install "prismor[beeai]"` is the only install path; there is no
-# separate `prismor-beeai` PyPI package, deliberately. (An earlier version
-# of this workflow tried to publish standalone PyPI packages for every
-# adapter and failed uniformly with PyPI's "non-user identities cannot
-# create new projects" error — because none of those package names were
-# ever meant to have a real PyPI project behind them; the READMEs always
-# documented the `prismor[...]` extras path, not a standalone install.)
+# Publishes the TypeScript packages: the prismor-sdk client (sdk/ts) first,
+# then the two adapters built on it — prismor-warden (adapters/vercel-ai) and
+# prismor-mastra (adapters/mastra). Every Python framework adapter ships
+# *inside* the main `prismor` wheel instead — see pyproject.toml's `packages`
+# / `force-include` / optional-dependencies — so `pip install "prismor[beeai]"`
+# is the only install path; there is no separate `prismor-beeai` PyPI package,
+# deliberately. (An earlier version of this workflow tried to publish
+# standalone PyPI packages for every adapter and failed uniformly with PyPI's
+# "non-user identities cannot create new projects" error — because none of
+# those package names were ever meant to have a real PyPI project behind
+# them; the READMEs always documented the `prismor[...]` extras path.)
 #
-# npm side: set an automation token as the NPM_TOKEN repo secret; the job
-# skips cleanly when it's absent. Publishes prismor-vercel and
-# prismor-mastra — genuinely separate packages since a Python wheel can't
-# bundle TypeScript.
+# The tag only triggers the run; versions come from each package.json, so
+# bump them in the PR before tagging (tag as `adapters-v<sdk version>`). A
+# version that is already on the registry is skipped, so re-running to ship
+# one package is safe. Set an npm automation token as the NPM_TOKEN repo
+# secret; the jobs skip cleanly when it is absent. `--provenance` links each
+# tarball to this workflow run (hence id-token: write).
 
 on:
   workflow_dispatch:
@@ -27,9 +27,50 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
-  npm:
+  sdk:
+    runs-on: ubuntu-latest
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip when NPM_TOKEN is not configured
+        if: env.NPM_TOKEN == ''
+        run: echo "NPM_TOKEN secret not set — skipping npm publish." && exit 0
+
+      - uses: actions/setup-node@v4
+        if: env.NPM_TOKEN != ''
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Build and test every package
+        if: env.NPM_TOKEN != ''
+        run: |
+          npm ci
+          npm run build
+          npm test --workspaces
+
+      - name: Publish prismor-sdk
+        if: env.NPM_TOKEN != ''
+        run: |
+          V=$(node -p "require('./sdk/ts/package.json').version")
+          if [ -n "$(npm view "prismor-sdk@$V" version 2>/dev/null)" ]; then
+            echo "prismor-sdk@$V is already on the registry — skipping"
+          else
+            npm publish -w sdk/ts --provenance --access public
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  adapters:
+    # After the SDK: the adapters depend on "prismor-sdk": "^0.1.0" from the
+    # registry, and the workspace symlink never enters a tarball.
+    needs: sdk
     runs-on: ubuntu-latest
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -49,13 +90,23 @@ jobs:
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
+          cache: npm
 
-      - name: Build and publish ${{ matrix.adapter }}
+      - name: Build (the adapter compiles against the SDK's emitted types)
         if: env.NPM_TOKEN != ''
-        working-directory: adapters/${{ matrix.adapter }}
         run: |
-          npm install
+          npm ci
           npm run build
-          npm publish --access public
+
+      - name: Publish ${{ matrix.adapter }}
+        if: env.NPM_TOKEN != ''
+        run: |
+          NAME=$(node -p "require('./adapters/${{ matrix.adapter }}/package.json').name")
+          V=$(node -p "require('./adapters/${{ matrix.adapter }}/package.json').version")
+          if [ -n "$(npm view "$NAME@$V" version 2>/dev/null)" ]; then
+            echo "$NAME@$V is already on the registry — skipping"
+          else
+            npm publish -w adapters/${{ matrix.adapter }} --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
