@@ -1,0 +1,52 @@
+name: SDK clients
+
+# The client SDKs and the framework adapters built on them. Until this
+# workflow, no CI job ran the adapter suites at all. langchain-core and
+# openai-agents are installed so those two adapter suites run instead of
+# skipping; crewai and browser-use are too heavy for this gate and keep their
+# importorskip.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the runtime, test deps and two light frameworks
+        run: python3 -m pip install --quiet -e . pytest pyyaml langchain-core openai-agents
+
+      - name: SDK client + adapter regression net
+        run: >
+          python3 -m pytest -q -p no:randomly -rs
+          tests/test_sdk_client.py tests/test_eval_server_metadata.py
+          tests/test_langchain_adapter.py tests/test_crewai_adapter.py
+          tests/test_openai_agents_adapter.py tests/test_browser_use_adapter.py
+          tests/test_adapter_enforce_regression.py tests/test_adapter_result_redaction.py
+          tests/test_framework_adapters.py tests/test_adapter_shim_guard.py
+          tests/test_sdk_policy_pull.py tests/test_eval_server_redact.py
+          tests/test_surface_conformance.py
+
+      - name: Wheel built from the sdist ships prismor.sdk and its doc
+        # release.yml builds the wheel FROM the sdist, so a path missing from
+        # the sdist include list silently vanishes from the published wheel
+        # (the 1.14.1 bug). Prove the client and its doc page made it.
+        run: |
+          python3 -m pip install --quiet build
+          python3 -m build --outdir dist
+          for f in prismor/sdk/__init__.py prismor/sdk/client.py prismor/runtime/data/docs/sdk-clients.md; do
+            unzip -l dist/prismor-*.whl | grep -q "$f" || { echo "missing from wheel: $f"; exit 1; }
+          done
+          python3 -m pip install --quiet --force-reinstall --no-deps dist/prismor-*.whl
+          cd / && python3 -c "from prismor.sdk import PrismorClient, PrismorBlocked; from prismor.langchain import PrismorBlocked as L; assert L is PrismorBlocked; print('wheel ok')"
