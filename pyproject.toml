@@ -185,6 +185,7 @@ packages = [
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
 "docs/query-your-data.md" = "prismor/runtime/data/docs/query-your-data.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
+"docs/sdk-clients.md" = "prismor/runtime/data/docs/sdk-clients.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"
 "docs/skill-scanner.md" = "prismor/runtime/data/docs/skill-scanner.md"
@@ -199,6 +200,9 @@ packages = [
 [tool.hatch.build.targets.sdist]
 include = [
     "prismor/runtime/",
+    # The SDK client subpackage (prismor.sdk). The wheel is built FROM this
+    # sdist in CI, so it has to ride along here like the adapters do.
+    "prismor/sdk/",
     "supplychain/",
     # The wheel is built FROM the sdist in CI — the bundled framework adapters
     # (impl modules + namespace shims) must ride along or the published wheel
