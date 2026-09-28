@@ -2,11 +2,12 @@ MIT License
 
 Copyright (c) 2026 Prismor
 
-The framework adapters in this directory (prismor-langchain,
-prismor-crewai, prismor-openai, prismor-browser-use,
-and the npm package `prismor`) are licensed under MIT — the most permissive terms — so
-the ecosystem can integrate and vendor them with zero friction. The Prismor
-runtime they call into is licensed separately at the repository root.
+The framework adapters in this directory (the Python adapters, and the npm
+packages `prismor-warden` and `prismor-mastra`) are licensed under MIT — the
+most permissive terms — so the ecosystem can integrate and vendor them with
+zero friction. The `prismor-sdk` client in `sdk/ts/` carries the same MIT
+text. The Prismor runtime they call into is licensed separately at the
+repository root.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

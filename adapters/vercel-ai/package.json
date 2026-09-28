@@ -1,7 +1,7 @@
 {
   "name": "prismor-warden",
-  "version": "0.3.0",
-  "description": "Prismor for JS/TS agents \u2014 policy-controlled tool calls for the Vercel AI SDK via the Prismor eval-server",
+  "version": "0.4.0",
+  "description": "Prismor for JS/TS agents \u2014 policy-controlled tool calls for the Vercel AI SDK and LangChain JS, built on prismor-sdk",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -21,9 +21,11 @@
       "optional": true
     }
   },
+  "dependencies": {
+    "prismor-sdk": "^0.1.0"
+  },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "ai": "^7.0.51",
     "@types/node": "^20.0.0"
   },
   "keywords": [
