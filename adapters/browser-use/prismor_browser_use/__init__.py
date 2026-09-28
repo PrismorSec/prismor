@@ -9,7 +9,7 @@ browser-use dispatches all actions through a single method:
 ``Registry.execute_action(action_name, params, ...)``.  This adapter patches
 that method on the controller's registry so every action — navigation,
 clicks, form input, file ops — is evaluated before Playwright touches the
-browser.
+browser. A thin layer over :class:`prismor.sdk.PrismorClient`.
 
 Easy path::
 
@@ -34,13 +34,12 @@ from __future__ import annotations
 
 import functools
 import os
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
-from prismor.runtime.redaction import redact_tool_result
-from prismor.runtime.principal import Subject, resolve_subject, use_subject
-from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
+from prismor.runtime.principal import Subject, use_subject
+from prismor.runtime.runtime import Decision, evaluate_tool_call
+from prismor.sdk import BlockContext, PrismorBlocked, PrismorClient
 
 __all__ = ["guard_controller", "use_subject", "PrismorBlocked"]
 
@@ -65,10 +64,18 @@ _FILE_ACTIONS = {
 }
 
 
-class PrismorBlocked(Exception):
-    def __init__(self, reason: str, decision: Optional[Decision] = None) -> None:
-        super().__init__(reason or "blocked by Prismor policy")
-        self.decision = decision
+def _evaluate(**kwargs: Any) -> Decision:
+    """Resolve ``evaluate_tool_call`` through this module's global at call time.
+
+    A test (or an app) that patches ``prismor.browser_use.evaluate_tool_call``
+    keeps seeing every call, whether the patch lands before or after guarding.
+    """
+    return evaluate_tool_call(**kwargs)
+
+
+def _action_denial(decision: Decision, ctx: BlockContext) -> str:
+    """Default block rendering: the string browser-use surfaces back to the LLM."""
+    return f"⛔ Prismor blocked action '{ctx.tool_name}': {decision.reason or 'policy violation'}"
 
 
 def _extract_event_fields(action_name: str, params: Any) -> tuple[str, str, str]:
@@ -102,30 +109,6 @@ def _extract_event_fields(action_name: str, params: Any) -> tuple[str, str, str]
     return "shell", "command", " ".join(parts)
 
 
-def _build_event(
-    *,
-    action_name: str,
-    params: Any,
-    session_id: str,
-    agent: str,
-    subject: Optional[Subject],
-) -> dict:
-    event_type, field, value = _extract_event_fields(action_name, params)
-    return {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "session_id": session_id,
-        "agent": agent,
-        "agent_event": "PreToolUse",
-        "type": event_type,
-        field: value,
-        "metadata": {
-            "tool_name": action_name,
-            "framework": "browser-use",
-            "subject": subject.as_dict() if subject else None,
-        },
-    }
-
-
 def guard_controller(
     controller: Any,
     *,
@@ -138,25 +121,27 @@ def guard_controller(
     raise_on_block: bool = False,
     approvals: bool = True,
     goal: Optional[str] = None,
+    on_policy_block: Optional[Callable[[Decision, BlockContext], Any]] = None,
 ) -> Any:
     """Patch ``controller.registry.execute_action`` to route every browser
     action through the Prismor policy engine before Playwright executes it.
 
     Pass ``goal="..."`` to also capture the agent's intent so
     ``evaluate_tool_call`` enforces task-alignment for this headless agent (R2/R3).
+    A denied action returns a denial string to the model by default,
+    ``raise_on_block=True`` raises :class:`PrismorBlocked`, and
+    ``on_policy_block(decision, ctx)`` lets the app decide what it sees instead.
     Returns the same controller object.
     """
+    client = PrismorClient(
+        workspace=workspace, agent=agent, agent_name=name, mode=mode,
+        session_id=session_id or f"browser-use-{os.getpid()}", subject=subject,
+        approvals=approvals, raise_on_block=raise_on_block,
+        on_policy_block=on_policy_block or (None if raise_on_block else _action_denial),
+        framework="browser-use", evaluate=_evaluate,
+    )
     if goal:
-        try:
-            from prismor.runtime.intent import capture_intent
-            capture_intent(
-                goal,
-                workspace=Path(workspace) if workspace else Path.cwd(),
-                session_id=session_id or f"browser-use-{os.getpid()}",
-                agent=agent,
-            )
-        except Exception:
-            pass
+        client.declare_tools(goal=goal)
     registry = getattr(controller, "registry", None)
     if registry is None:
         raise TypeError("controller has no .registry — is this a browser-use Controller?")
@@ -165,61 +150,31 @@ def guard_controller(
         return controller
 
     original_execute = registry.execute_action
-    ws = Path(workspace) if workspace else Path.cwd()
-    sid = session_id or f"browser-use-{os.getpid()}"
-    _agent_name = name  # per-instance label
 
     @functools.wraps(original_execute)
     async def _guarded_execute(action_name: str, params: Any, **kwargs: Any) -> Any:
-        resolved = resolve_subject(subject)
-        event = _build_event(
-            action_name=action_name,
-            params=params,
-            session_id=sid,
-            agent=agent,
-            subject=resolved,
-        )
-        decision = evaluate_tool_call(
-            event=event,
-            workspace=ws,
-            agent=agent,
-            agent_name=_agent_name,
-            mode=mode,
-            session_id=sid,
-            subject=resolved,
-        )
-        log_observe_findings(decision, mode=mode, tool_name=action_name)
+        # params may be a pydantic model, so only the extracted value goes into
+        # the event; the session store serialises every event as JSON.
+        event_type, _field, value = _extract_event_fields(action_name, params)
+        decision = client.check(action_name, payload=value, event_type=event_type)
 
         if not decision.allow:  # honor the runtime decision (incl. org kill-switch / forced-enforce), not the app-passed mode
             # Headless STEP_UP → post an approval request and block until an admin
             # decides. Approve → proceed; deny/timeout/not-enrolled → fail closed.
-            if approvals:
-                try:
-                    from prismor.runtime.enterprise import approvals as _approvals
-                    # async variant: the poll must not park the event loop that
-                    # is also driving the CDP socket, or the browser times out
-                    # before the human decides.
-                    outcome = await _approvals.await_step_up_async(decision, agent=agent, session_id=sid)
-                    if outcome:
-                        if getattr(outcome, "redacted", False):
-                            # "Approve redacted": strip flagged values on-device first.
-                            params = _approvals.redact_approved_payload(params, workspace=ws)
-                        return redact_tool_result(
-                            await original_execute(action_name, params, **kwargs),
-                            workspace=ws, engine=decision.engine)
-                except Exception:
-                    pass
-            reason = decision.reason or "policy violation"
-            if raise_on_block:
-                raise PrismorBlocked(reason, decision)
-            # Return a string error — browser-use surfaces this back to the LLM
-            return f"⛔ Prismor blocked action '{action_name}': {reason}"
+            # The async variant waits in a worker thread: the poll must not park
+            # the event loop that is also driving the CDP socket, or the browser
+            # times out before the human decides.
+            res = await client.resolve_block_async(decision, args=(params,))
+            if not res.approved:
+                # Return a string error — browser-use surfaces this back to the LLM
+                return client.on_blocked(
+                    decision, BlockContext(action_name, (params,), dict(kwargs), client.session_id, None),
+                )
+            params = res.args[0]  # "approve redacted" stripped the flagged values
 
         # An allowed action still returns a page's content — redact it before
         # browser-use hands the ActionResult back to the model.
-        return redact_tool_result(
-            await original_execute(action_name, params, **kwargs), workspace=ws,
-            engine=decision.engine)
+        return client.redact(await original_execute(action_name, params, **kwargs), decision)
 
     registry.execute_action = _guarded_execute
     registry.__prismor_guarded__ = True
