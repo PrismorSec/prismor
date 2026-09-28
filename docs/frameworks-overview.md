@@ -19,6 +19,7 @@ on your existing agent or controller object, with no changes to your tool logic.
 | Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` | `subject="user:alice"` |
 | BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` | `subject="user:alice"` |
 | Claude Code Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` | `subject="user:alice"` |
+| Any Python agent (no adapter) | Python | `pip install prismor` | `PrismorClient().guard(fn)` | `use_subject("user:alice")` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
 | LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
 | Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` | `subject: "user:alice"` |
@@ -62,6 +63,11 @@ Regardless of framework, every adapter does the same three things:
 3. **Block or allow** — in `enforce` mode a denied call returns a denial string
    to the model (the run recovers gracefully) or raises `PrismorBlocked`. In
    `observe` mode findings are recorded but the call always proceeds.
+
+The OpenAI Agents, LangChain, CrewAI and browser-use adapters are thin layers
+over `prismor.sdk.PrismorClient`, which does exactly these three things for any
+callable — see [sdk-clients.md](sdk-clients.md) to guard an agent that has no
+framework adapter, or to add an `on_policy_block` callback to one that does.
 
 ## Hook points by framework
 
@@ -240,6 +246,7 @@ choosing which client a request belongs to is your app's authentication job.
 
 ## Per-framework guides
 
+- [SDK client](sdk-clients.md) — `prismor.sdk.PrismorClient`: check, guard, approvals, redaction, `on_policy_block`
 - [OpenAI Agents SDK](frameworks-openai-agents.md) — `guard_agent`, `prismor_guard`, FunctionTool patching
 - [LangChain / LangGraph](frameworks-langchain.md) — `guard_tools`, `PrismorCallbackHandler`
 - [CrewAI](frameworks-crewai.md) — `guard_tools`, BaseTool and structured tool support

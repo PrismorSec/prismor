@@ -159,6 +159,7 @@ After install, **verify** by re-running `prismor status`. The `Hooks:` line shou
 | OpenAI Agents SDK, LangChain/LangGraph (Python + JS), CrewAI, browser-use | [`docs/frameworks-overview.md`](./docs/frameworks-overview.md) |
 | Pydantic AI, AutoGen Core, Agno, Semantic Kernel, Google ADK, BeeAI, Claude Agent SDK | `docs/frameworks-<name>.md` |
 | Vercel AI SDK, Mastra (TypeScript) | [`docs/frameworks-vercel-ai.md`](./docs/frameworks-vercel-ai.md), [`docs/frameworks-mastra.md`](./docs/frameworks-mastra.md) |
+| Any Python agent without a framework adapter | [`docs/sdk-clients.md`](./docs/sdk-clients.md) — `prismor.sdk.PrismorClient` |
 | Any other language, over HTTP | `prismor eval-server` — see [`docs/decision-contract.md`](./docs/decision-contract.md) |
 
 These adapters ship inside the `prismor` package — no separate install. They default to **observe**; the user opts into enforce explicitly. Adapters screen tool *calls* and redact tool *results*. Wrap each request in `use_subject("user:alice")` so a multi-tenant agent gets per-user attribution, IAM profiles, and suspension.
@@ -673,6 +674,7 @@ Start here for the full command map: [`docs/cli-reference.md`](./docs/cli-refere
 **Frameworks and agents**
 - [`docs/frameworks-overview.md`](./docs/frameworks-overview.md): every adapter and the shared `use_subject()` pattern
 - [`docs/sdk-integration.md`](./docs/sdk-integration.md): how an adapter wraps the tool-execution boundary
+- [`docs/sdk-clients.md`](./docs/sdk-clients.md): `PrismorClient`, the check/enforce client the adapters are built on
 - [`docs/hermes.md`](./docs/hermes.md): Hermes Agent integration
 - [`docs/openclaw.md`](./docs/openclaw.md): OpenClaw runtime integration
 

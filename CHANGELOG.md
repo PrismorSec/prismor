@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Added
+- **A standalone Python client for the policy pipeline.** `from prismor.sdk import PrismorClient` gives any Python agent the check/enforce surface the framework adapters use: `check()` returns a `Decision` and never raises, `guard()` wraps a sync or async callable, `resolve_block()` runs the headless approval flow and fails closed, `on_policy_block` lets the app decide what a blocked call returns, `redact()` masks tool output, and `declare_tools()` registers the roster and goal. A session id and a free-form `budget` pass through to every event (the budget is recorded, not yet enforced). The LangChain, CrewAI, OpenAI Agents and browser-use adapters are now thin layers over it, with unchanged imports and behavior; they gain an `on_policy_block=` option and share one `PrismorBlocked` class. See [docs/sdk-clients.md](docs/sdk-clients.md).
+- **The eval-server's simple `POST /v1/evaluate` form accepts `metadata` and `budget`.** They are merged into the event's metadata (the server-set keys win), so an HTTP client can carry a trace id or a budget the way the in-process client does. The CORS preflight now allows `X-Prismor-Agent-Name`.
+
+### Fixed
+- **Four adapters wrote `prompt` and `tool_result` events under `content`.** Category rules still matched, but a rule scoped to `fields: [response]` never did for LangChain, CrewAI, OpenAI Agents or browser-use. They now use the contract's `prompt` / `response` fields like the hooks and the eval-server.
+- **A tool error after an approval read as a policy block** in the OpenAI Agents FunctionTool and browser-use paths, because the approval wait and the tool call shared one fail-closed `try`. The error now propagates, as it already did for LangChain and CrewAI.
+- **`prismor_guard()` dropped the `name=` label for OpenAI Agents `FunctionTool` objects**, so a tool guarded one at a time never carried its per-instance agent name to the dashboard kill-switch. `guard_agent()` was unaffected.
+
 ## [1.55.1] — 2026-09-27
 
 ### Fixed

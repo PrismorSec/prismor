@@ -275,7 +275,7 @@ it arrives.
 | Coding-agent hooks | an agent's entire tool surface | yes | Claude/Qwen | no |
 | MCP gateway | every MCP server behind one connector | yes | yes | yes |
 | Mirrored built-ins | the agent's own Bash/Read/Write, over MCP | yes | yes | yes |
-| Framework SDK adapters | in-process agents (13 frameworks) | yes | no | no |
+| Framework SDK adapters, `prismor.sdk` client | in-process agents (13 frameworks, any Python callable) | yes | no | yes |
 | `prismor eval-server` | non-Python callers, external proxies | yes | yes | yes |
 | Inference-hook channel | hosted transcript-turn webhook | yes | no | no |
 

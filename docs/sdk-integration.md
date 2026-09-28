@@ -4,15 +4,17 @@ Prismor guards production framework agents at the **tool-execution boundary**. A
 adapter wraps the one function a framework calls to run a tool, and routes that
 call through the **local Prismor runtime** before the tool body executes.
 
-See also: [docs/connecting-to-the-platform.md](connecting-to-the-platform.md)
+See also: [docs/sdk-clients.md](sdk-clients.md) (the `PrismorClient` the
+adapters are built on) · [docs/connecting-to-the-platform.md](connecting-to-the-platform.md)
 (the runtime — not the SDK — is what connects to the platform) ·
 [docs/frameworks-overview.md](frameworks-overview.md).
 
 ## The one rule: the SDK talks to the LOCAL RUNTIME, never the control plane
 
 Every adapter funnels into `prismor.runtime.runtime.evaluate_tool_call(...)` →
-`Decision{allow, findings, reason, subject}`. Python adapters import and call it
-in-process; non-Python adapters POST to a local sidecar (`prismor/runtime/eval_server.py`)
+`Decision{allow, findings, reason, subject}`. Python adapters call it in-process
+through `prismor.sdk.PrismorClient` ([sdk-clients.md](sdk-clients.md)); non-Python
+adapters POST to a local sidecar (`prismor/runtime/eval_server.py`)
 that calls the same function. The runtime evaluates policy locally and is the
 *only* component that phones home (telemetry, heartbeat, signed-policy pull). The
 SDK has no control-plane credentials and no control-plane URL.
@@ -41,10 +43,10 @@ re-derive the verdict from a locally-passed `mode`, or an org override can be
 bypassed.
 
 The canonical event every adapter builds is identical in shape
-(`prismor/runtime/hooks.py`): `{ ts, session_id, agent, agent_event, type, command|path|
-url|content, metadata{tool_name, framework, args, kwargs} }`. `type` selects the
-matched field: `shell→command`, `file_read|file_write→path`, `network→url`,
-`prompt|tool_result→content`.
+(`prismor/runtime/contract.py`): `{ ts, session_id, agent, agent_event, type, command|path|
+url|prompt|response, metadata{tool_name, framework, args, kwargs} }`. `type` selects the
+matched field (`contract.TYPE_FIELD`): `shell→command`, `file_read|file_write→path`,
+`network→url`, `prompt→prompt`, `tool_result→response`.
 
 ## Multi-tenant subjects
 
@@ -112,19 +114,24 @@ await generateText({ model, tools, prompt });
 ```json
 { "tool_name":"run_shell", "arguments":{"command":"rm -rf /"},
   "event_type":"shell", "agent":"vercel-ai", "mode":"enforce",
-  "session_id":"req-1", "subject":"user:alice", "workspace":"/srv/app" }
+  "session_id":"req-1", "subject":"user:alice", "workspace":"/srv/app",
+  "metadata":{"trace_id":"req-1"}, "budget":{"max_calls":3} }
 ```
-→ `200 {"allow":false,"reason":"[HIGH] …","findings":[…],"subject":{…}}`. Subject
-and agent name may also be sent as `X-Prismor-Subject` / `X-Prismor-Agent-Name`
-headers.
+→ `200 {"allow":false,"verdict":"block","rule_id":"…","reason":"[HIGH] …","findings":[…],"subject":{…}}`.
+Subject and agent name may also be sent as `X-Prismor-Subject` / `X-Prismor-Agent-Name`
+headers. `metadata` (optional object) is merged into the event's metadata — the
+server-set keys (`surface`, `tool_name`, `subject`) win — and `budget` is recorded
+as `metadata.budget`; no rule enforces a budget yet.
 
 ## Failure behavior
 
-The eval-server is local; if it is unreachable the HTTP client treats the call as
-allowed so an infrastructure fault never breaks the agent. **Note:** failure
-handling is not yet uniform across all adapters — a known open item, with an
-intended single policy. For non-loopback binds of the eval-server, an auth
-follow-up is also planned.
+The eval-server is local. If it is unreachable, the TypeScript adapters fail
+**closed** in enforce mode and **open** in observe mode (override with `failMode`):
+an enforced suspension must hold even when the sidecar is down, while observe-mode
+monitoring must never break the app. The Python client is in-process, so there is
+no transport to fail; its headless approval flow fails closed on any error. For
+non-loopback binds of the eval-server, bearer auth (`--api-key` / `PRISMOR_EVAL_KEY`)
+is required.
 
 ## Licensing
 
