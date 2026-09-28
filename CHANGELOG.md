@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [1.55.2] — 2026-09-28
+
 ### Fixed
 - **A download that reached disk through a variable, a pipe or a command substitution was not marked untrusted** (#446). The provenance scanner split shell commands on whitespace, so `VAR=$(curl …); printf "%s" "$VAR" > f` read as an assignment and a `printf`, `curl … | tee f` as a write with no fetch, and `curl -o a.html; echo hi > b.md` as a write to `a.html;`. The next agent to read such a file then treated a remote payload as clean local content. The scanner now tokenizes shell operators, lifts `$(…)`, backticks and `<(…)` out and scans them on their own, and follows the fetched bytes into the variable they are assigned to, down a pipeline, and into an unquoted heredoc that expands them. A quoted heredoc or single-quoted string that merely spells out `$(curl …)` is still the agent's own text, a `#` comment is dropped, and a stderr redirect (`2>err.log`, `2>/dev/null`) is not a write of downloaded content.
 - **Copying an untrusted file with `cp`, `mv` or `cat a > b` dropped its untrusted mark** (#443). Before marking a write untrusted, the engine checks that the untrusted text appears in what is written. For a shell command that is the command line, which holds paths, not content, so the copy was recorded clean and the next agent to read it could take a critical action unchallenged. A shell command that reads a file already marked untrusted now marks what it writes, whichever session wrote the source.
