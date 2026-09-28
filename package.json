@@ -3,6 +3,17 @@
   "version": "1.13.0",
   "description": "Runtime security for AI coding agents: policy enforcement, secret prevention, and supply-chain blocking.",
   "license": "Apache-2.0",
+  "private": true,
+  "workspaces": [
+    "sdk/ts",
+    "adapters/vercel-ai",
+    "adapters/mastra"
+  ],
+  "scripts": {
+    "build": "npm run build -w sdk/ts && npm run build -w adapters/vercel-ai -w adapters/mastra",
+    "typecheck": "npm run build -w sdk/ts && npm run typecheck --workspaces",
+    "test": "npm run build && npm test --workspaces"
+  },
   "keywords": [
     "agent-skill",
     "skills",

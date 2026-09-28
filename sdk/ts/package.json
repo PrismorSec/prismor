@@ -1,0 +1,41 @@
+{
+  "name": "prismor-sdk",
+  "version": "0.1.0",
+  "description": "Prismor client SDK for TypeScript/JavaScript agents — policy-check tool calls through the Prismor eval-server",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "prismor",
+    "ai-security",
+    "agent",
+    "tool-call",
+    "policy",
+    "sdk"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PrismorSec/prismor.git",
+    "directory": "sdk/ts"
+  },
+  "homepage": "https://prismor.dev/docs/sdk-clients"
+}
