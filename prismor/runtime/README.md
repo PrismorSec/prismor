@@ -37,6 +37,7 @@ python3 prismor/runtime/cli.py analyze --input prismor/runtime/examples/sample-s
 | `install-hooks --agent <agent>` | Install Prismor hooks into agent config |
 | `uninstall-hooks --agent <agent>` | Remove Prismor hooks from agent config |
 | `hook-dispatch --agent <agent>` | Internal: called by hooks to evaluate events in real time |
+| `hookd [status\|stop\|restart]` | Warm hook daemon that `hook-dispatch` hands calls to (see `hookd.py`); starts on demand, `PRISMOR_HOOKD=0` disables |
 
 All commands accept `--workspace <path>` to specify the project directory.
 

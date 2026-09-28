@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Changed
+- **Hooks answer from a warm daemon.** Every tool call used to start a fresh Python process that imported the whole runtime, re-parsed the policy and uploaded telemetry before it returned a verdict. The hook now hands the call to `hookd`, a daemon that keeps Prismor loaded and forks a copy per call, so the call runs the same code with the agent's own environment, working directory and stdin, and gets the same verdict. Telemetry is sent after the verdict instead of before. Through the OpenClaw plugin on a small Linux box, the median check went from 752ms to 377ms; the hook process itself now costs about 40ms. The first hook call starts the daemon. It exits after 30 idle minutes or when Prismor's code on disk changes. If it is missing, stale or dies mid-call, the hook evaluates in-process exactly as before, so a broken daemon slows a call down but never weakens it. `prismor hookd status|stop|restart` manages it, and `PRISMOR_HOOKD=0` turns it off. Linux and macOS only; Windows still evaluates in-process. See [cli-reference.md](docs/cli-reference.md#hookd).
+
+### Fixed
+- **Every Python process on the machine paid for Prismor's semantic guard.** The wheel's `.pth` start-up hook imports `prismor.runtime`, and that package eagerly imported both semantic-guard modules, about 50ms on every interpreter launch whether or not it ever touched Prismor. They are now imported on first use.
+
 ## [1.55.1] — 2026-09-27
 
 ### Fixed

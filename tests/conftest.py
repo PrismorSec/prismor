@@ -178,6 +178,9 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
 
     os.environ["HOME"] = str(_sandbox_home)
     os.environ["PRISMOR_HOME"] = str(tmp_path_factory.mktemp("prismor-home"))
+    # Hook calls run in-process: a test that runs hook-dispatch must not leave
+    # a warm daemon (hookd.py) behind. tests/test_hookd.py opts back in.
+    os.environ["PRISMOR_HOOKD"] = "0"
 
     # A module that provisioned its own home at import time keeps it.
     module = getattr(request.node, "parent", None)

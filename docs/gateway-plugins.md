@@ -79,6 +79,20 @@ To reproduce it, temporarily rename `~/.prismor/hook-dispatch.py`, or set `PRISM
 
 Five calls from five channels ran together and the loop kept ticking the whole time. With the old synchronous plugin, the loop couldn't tick at all until each check finished.
 
+### 4. Faster with the warm daemon (hookd)
+
+The process the plugin starts is now a thin client. It hands the call to `hookd`, which keeps Prismor loaded and forks a copy per call, so the check skips interpreter start-up, imports and policy parsing. The first call starts the daemon. If the daemon is missing or can't answer, the check runs in-process as before: slower, never weaker.
+
+![same plugin and calls with PRISMOR_HOOKD=0 and with hookd: p50 752ms vs 377ms, destructive command blocked both ways; hookd status and stop](gateway-plugins/hookd.png)
+
+```bash
+prismor hookd status     # is a daemon running, and how many calls has it served
+prismor hookd stop       # the next hook call starts a fresh one
+PRISMOR_HOOKD=0          # on the gateway process: never use the daemon
+```
+
+The plugin still starts one small Python process per call (about 40ms). It doesn't talk to the socket itself, so the daemon's key, environment and fallback rules live in one place.
+
 ## Troubleshooting
 
 | You see | Meaning | Fix |
