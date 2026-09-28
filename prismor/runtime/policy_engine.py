@@ -2032,6 +2032,7 @@ class PolicyEngine:
                 _prov_reads: List[str] = []
                 _prov_writes: List[str] = []
                 _prov_fetched: Set[str] = set()
+                _prov_copied = False
                 _prov_chain = ""
                 if _tt_cfg.get("provenance_enabled", True):
                     from prismor.runtime import provenance as _prov
@@ -2053,6 +2054,19 @@ class PolicyEngine:
                         )
                         _prov_reads, _prov_writes = sorted(_sc.reads), sorted(_sc.writes)
                         _prov_fetched = _sc.fetched
+                        # `cp`, `mv`, `cat a > b`: bytes from a file already
+                        # marked untrusted, whoever wrote it (#443). The
+                        # command line holds paths, not the content, so the
+                        # influence check below can never see them.
+                        # ponytail: command-wide, not per pipeline; `cat a;
+                        # echo x > b` marks b too. Per-segment flow if that
+                        # over-marks in practice.
+                        _prov_copied = any(
+                            UNTRUSTED in (
+                                (_prov_known.get(_rp) or {}).get("tags") or ()
+                            )
+                            for _rp in _prov_reads
+                        )
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -2275,7 +2289,8 @@ class PolicyEngine:
                         if not _wp:
                             continue
                         _wt = sorted(
-                            set(_carry) | ({UNTRUSTED} if _wp in _prov_fetched else set())
+                            set(_carry)
+                            | ({UNTRUSTED} if _prov_copied or _wp in _prov_fetched else set())
                         )
                         # An empty tag set still has to reach the store when
                         # this session is the one that stamped the file: that

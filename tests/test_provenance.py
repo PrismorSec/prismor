@@ -218,6 +218,42 @@ def test_a_download_through_a_variable_is_still_untrusted(tmp_path):
     assert a in d.blocking["evidence"]
 
 
+@pytest.mark.parametrize("verb", ["cp", "mv", "cat"])
+def test_a_copy_of_an_untrusted_file_stays_untrusted(tmp_path, verb):
+    """#443: `cp`/`mv`/`cat a > b` wrote the untrusted bytes to b, but the
+    influence check looked for them in the command line, which holds only
+    paths, and dropped the mark. A copy laundered the file for the next agent."""
+    ws = _workspace(tmp_path)
+    f1, f2 = ws / "shared" / "file1.txt", ws / "shared" / "file2.txt"
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+
+    _fetch(ws, a)
+    _call(ws, a, "Write", "file_write", path=str(f1), content=PAGE)
+    f1.write_text(PAGE)
+    assert lookup(str(f1))["tags"] == ["untrusted_content"]
+
+    cmd = f"cat {f1} > {f2}" if verb == "cat" else f"{verb} {f1} {f2}"
+    _call(ws, a, "Bash", "shell", command=cmd)
+    f2.write_text(PAGE)
+    assert "untrusted_content" in lookup(str(f2))["tags"]
+
+    _call(ws, b, "Read", "file_read", agent="codex", path=str(f2))
+    _call(ws, b, "Read", "file_read", agent="codex", path=str(f2), response=PAGE)
+    d = _call(ws, b, "mcp__prod__execute_sql", "network", agent="codex",
+              query="DROP TABLE users;")
+    assert d.allow is False
+
+
+def test_a_copy_of_a_clean_file_stays_clean(tmp_path):
+    """The other side of #443: a session carrying untrusted content that copies
+    a file nobody marked does not mark the copy."""
+    ws = _workspace(tmp_path)
+    a = "sA-" + uuid.uuid4().hex
+    _fetch(ws, a)
+    _call(ws, a, "Bash", "shell", command=f"cp {ws / 'README.md'} {ws / 'copy.md'}")
+    assert lookup(str(ws / "copy.md")) is None
+
+
 def test_an_ordinary_write_records_nothing(tmp_path):
     """A session that has read nothing untrusted leaves no provenance behind:
     the store tracks what agents hand each other, not every file they touch."""
