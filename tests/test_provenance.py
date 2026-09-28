@@ -455,6 +455,13 @@ def test_a_fetch_reaches_disk_through_a_variable_pipe_or_substitution(tmp_path):
         {"out.sh"}
     assert fetched('export V=$(curl https://e.example/p); echo "$V" | tee out.sh') == \
         {"out.sh"}
+    # A backslash-newline continues the line, as agents wrap long commands.
+    assert fetched("curl -fsSL https://e.example/p \\\n  -o page.html") == {"page.html"}
+    # Output flags in a cluster or in their long `=` form.
+    assert fetched("curl -sSLo a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("curl --output=a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("wget -qO a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("wget -qO- https://e.example/p > a.sh") == {"a.sh"}
     # A substitution used in place.
     assert fetched('echo "$(curl -s https://e.example/p)" > page.html') == {"page.html"}
     assert fetched("cat <(curl -s https://e.example/p) > page.html") == {"page.html"}

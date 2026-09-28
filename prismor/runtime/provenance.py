@@ -257,6 +257,11 @@ def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
 _WRITE_FLAGS = {"-o", "--output", "-O", "--output-document"}
 _COPY_CMDS = {"cp", "mv", "install"}
 _FETCH_CMDS = {"curl", "wget"}
+# The short flag naming the output file, ending a cluster (`curl -sSLo f`,
+# `wget -qO f`). ponytail: only as the last letter of the cluster; an
+# attached value (`-sof`) is not followed.
+_OUT_SHORT = {"curl": "o", "wget": "O"}
+_OUT_LONG = ("--output=", "--output-document=")
 _READ_CMDS = {"read", "mapfile", "readarray"}
 _ASSIGN_CMDS = {"export", "local", "declare", "readonly", "typeset"}
 # Words that come before the command without being it.
@@ -332,7 +337,9 @@ def _lift_expansions(text: str, mark) -> str:
         c = text[i]
         if c == "\\":
             nxt = text[i + 1:i + 2]
-            out.append("\\" + ("" if nxt == "$" else nxt))
+            # A backslash-newline is a line continuation: the shell drops both.
+            if nxt != "\n":
+                out.append("\\" + ("" if nxt == "$" else nxt))
             i += 2
         elif c == '"':
             in_double = not in_double
@@ -543,8 +550,10 @@ class _Scanner:
 
     def path(self, tok: str) -> str:
         """``tok`` as an artifact key, or "" when it cannot be one. A device
-        (`/dev/null`, `/dev/stderr`) is not an artifact."""
-        if not _word(tok):
+        (`/dev/null`, `/dev/stderr`) is not an artifact. Checked before
+        resolving too: on Linux `/dev/stderr` resolves through /proc to a pipe
+        or a deleted file, not to anything under /dev."""
+        if not _word(tok) or tok.startswith("/dev/"):
             return ""
         key = resolve(tok, self.cwd)
         return "" if key.startswith("/dev/") else key
@@ -598,6 +607,14 @@ class _Scanner:
                     elif tok in _SKIP_NEXT:
                         skip_next = True
                     elif tok in _WRITE_FLAGS and cmd in _FETCH_CMDS:
+                        seg_writes.add(self.path(nxt))
+                        skip_next = True
+                    elif cmd in _FETCH_CMDS and tok.startswith(_OUT_LONG):
+                        seg_writes.add(self.path(tok.split("=", 1)[1]))
+                    elif (
+                        cmd in _FETCH_CMDS and len(tok) > 2 and tok[1:].isalpha()
+                        and tok[0] == "-" and tok[-1] == _OUT_SHORT[cmd]
+                    ):
                         seg_writes.add(self.path(nxt))
                         skip_next = True
                     elif _word(tok) and not tok.startswith("-"):
