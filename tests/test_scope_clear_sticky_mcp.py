@@ -182,7 +182,7 @@ def test_undiscovered_mcp_server_is_not_denied_by_omission(home, tmp_path):
     assert not _blocked_by_scope(r), r.stderr
     # …but the built-in scope is still enforced for built-in tools.
     payload = {"session_id": sid, "cwd": str(ws), "hook_event_name": "PreToolUse",
-               "tool_name": "Write", "tool_input": {"file_path": str(ws / "a.txt"), "content": "x"}}
+               "tool_name": "WebFetch", "tool_input": {"url": "https://example.com", "prompt": "x"}}
     r = _cli("hook-dispatch", "--agent", "claude", "--workspace", str(ws), "--mode", "enforce",
              cwd=ws, stdin=json.dumps(payload))
     assert _blocked_by_scope(r), r.stderr

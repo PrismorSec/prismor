@@ -105,7 +105,7 @@ def test_static_rules_keep_bash_and_merge_widens():
     first = sa._static_fallback_rules("What does this repo do? Summarize README.md",
                                       ["Bash", "Read", "Edit", "Write", "WebFetch"])
     assert "Bash" in first["allowed_tools"] and "Read" in first["allowed_tools"]
-    assert "Edit" in first["deny_tools"] and first["deny_network"] is False  # static never guesses network
+    assert "WebFetch" in first["deny_tools"] and first["deny_network"] is False  # static never guesses network
     second = sa._static_fallback_rules("Now fix the typo in README.md and fetch the changelog from the url",
                                        ["Bash", "Read", "Edit", "Write", "WebFetch"])
     merged = sa.merge_scoped_rules(first, second)
@@ -131,11 +131,11 @@ def test_hook_dispatch_widens_scope_on_second_prompt(home, tmp_path):
     r = prompt("What does this repo do?")
     assert r.returncode == 0, r.stderr
     rules = sa.load_scoped_rules(ws, "sess-w")
-    assert "Edit" in rules["deny_tools"]
-    r = prompt("Now edit README.md and add a line")
+    assert "WebFetch" in rules["deny_tools"]
+    r = prompt("Now fetch the changelog from the url")
     assert r.returncode == 0, r.stderr
     rules = sa.load_scoped_rules(ws, "sess-w")
-    assert "Edit" in rules["allowed_tools"] and "Edit" not in rules["deny_tools"]
+    assert "WebFetch" in rules["allowed_tools"] and "WebFetch" not in rules["deny_tools"]
     assert rules["prompts_seen"] == 2
     # operator edit freezes it
     rules["operator_edited"] = True; rules["allowed_tools"] = ["Read"]; rules["deny_tools"] = ["Bash"]
@@ -205,3 +205,13 @@ def test_scope_flag_accepts_both_spellings(home, tmp_path):
     assert _cli("install-hooks", "--agent", "claude", "--scope", "global", cwd=ws).returncode == 0
     assert _cli("uninstall-hooks", "--agent", "claude", "--scope", "global", cwd=ws).returncode == 0
     assert _cli("cloak", "status", "--scope", "global", cwd=ws).returncode == 0
+
+
+def test_static_rules_never_deny_writes():
+    """#527: a missed edit verb ("make it simpler", "continue") denied every write; Bash writes anyway."""
+    tools = ["Bash", "Read", "Edit", "MultiEdit", "Write"]
+    for goal in ("check how to make the UI and colors of the dashboard better and try to make it simpler",
+                 "continue", "What does this repo do?"):
+        rules = sa._static_fallback_rules(goal, tools)
+        assert {"Edit", "MultiEdit", "Write"} <= set(rules["allowed_tools"]), goal
+        assert rules["deny_tools"] == [], goal

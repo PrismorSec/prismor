@@ -87,7 +87,7 @@ def test_static_fallback_allows_read_only_discovery():
     rules = _static_fallback_rules("summarize the readme", BUILTIN_SCOPE_TOOLS)
     for tool in ("Read", "Bash", "Glob", "Grep"):
         assert tool in rules["allowed_tools"], tool
-    assert "Write" in rules["deny_tools"]
+    assert "WebFetch" in rules["deny_tools"]
 
 
 # ── the family-glob regression ───────────────────────────────────────────────

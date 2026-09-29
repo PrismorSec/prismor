@@ -1,6 +1,6 @@
 """Prismor local session-security utility."""
 
-__version__ = "1.55.1"
+__version__ = "1.55.3"
 
 __all__ = [
     "__version__",
