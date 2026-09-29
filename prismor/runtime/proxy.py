@@ -779,10 +779,31 @@ class Screen:
         try:
             from prismor.runtime.redaction import redact_text
             out, _ = redact_text(text, workspace=self.workspace,
-                                 data_boundary=self.mode == "enforce")
+                                 data_boundary=self.mode == "enforce",
+                                 engine=self._redact_engine())
             return out
         except Exception:
             return text
+
+    #: How long one policy engine serves ``redact``. A request body is masked
+    #: string by string, and a coding agent's body holds thousands of strings
+    #: (system prompt, tool schemas, history). A fresh engine per string cost
+    #: two ``git config`` subprocesses each: ~100s of overhead on a one-word
+    #: Claude Code prompt. A few seconds keeps policy edits prompt.
+    _ENGINE_TTL = 5.0
+
+    def _redact_engine(self) -> Any:
+        cached = getattr(self, "_engine_cache", None)
+        now = time.monotonic()
+        if cached and now - cached[1] < self._ENGINE_TTL:
+            return cached[0]
+        try:
+            from prismor.runtime.policy_engine import PolicyEngine
+            engine = PolicyEngine(workspace=self.workspace)
+        except Exception:
+            return None  # redact_text builds its own; masking must not fail open
+        self._engine_cache = (engine, now)
+        return engine
 
 
 # ── cloud-provider credentials ───────────────────────────────────────────────
@@ -1025,6 +1046,7 @@ class StreamScreen:
         self._tool_json: List[str] = []
         self._tool_index: int = 0
         self._holding = False
+        self._released = False            # an allowed tool call went out this turn
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
         self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
@@ -1165,6 +1187,15 @@ class StreamScreen:
         if not self._holding:
             if etype == "content_block_delta":
                 return _rewrite_text_delta(chunk, event, self.screen.redact)
+            delta = event.get("delta") or {}
+            if (etype == "message_delta" and self.blocked and not self._released
+                    and delta.get("stop_reason") == "tool_use"):
+                # Every tool call this turn was denied. Leaving "tool_use"
+                # makes the client wait for a call that is not there: Claude
+                # Code retries, fails "tool call could not be parsed", and
+                # ends the session instead of reading the refusal.
+                delta["stop_reason"] = "end_turn"
+                return _sse_reframe(chunk, event)
             return chunk
 
         self._pending.append(chunk)
@@ -1313,6 +1344,7 @@ class StreamScreen:
         held, self._pending = b"".join(self._pending), []
         self._holding = False
         if reason is None:
+            self._released = True
             return held
         self.blocked.append(reason)
         sys.stderr.write(f"[prismor-proxy] {reason} (tool={self._tool_name})\n")

@@ -797,3 +797,51 @@ def test_streaming_request_error_body_is_buffered_and_redacted(monkeypatch, tmp_
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
+
+
+def test_redact_reuses_one_engine_across_strings(monkeypatch, tmp_path):
+    """Masking a big request body must not build a policy engine per string."""
+    from prismor.runtime import policy_engine
+    built = []
+    real = policy_engine.PolicyEngine
+
+    class Counting(real):
+        def __init__(self, *a, **k):
+            built.append(1)
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(policy_engine, "PolicyEngine", Counting)
+    s = Screen(workspace=tmp_path, mode="enforce", session_id="t")
+    body = {"messages": [{"content": f"line {i}"} for i in range(200)]}
+    proxy_mod._mask_in_place(body, s.redact)
+    assert len(built) == 1
+    assert body["messages"][199]["content"] == "line 199"
+
+
+def _anthropic_turn(stream, command):
+    out = b""
+    out += stream.feed(_sse("content_block_start",
+                            {"type": "content_block_start", "index": 0,
+                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    out += stream.feed(_sse("content_block_delta",
+                            {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "input_json_delta",
+                                       "partial_json": json.dumps({"command": command})}}))
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    out += stream.feed(_sse("message_delta",
+                            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}))
+    return out
+
+
+def test_denied_stream_turn_ends_instead_of_promising_a_tool(monkeypatch, tmp_path):
+    """Caught on st3ve: Claude Code died on "tool call could not be parsed"."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "rm -rf /")
+    assert b'"stop_reason": "end_turn"' in out
+    assert b'"tool_use"' not in out.split(b"message_delta")[-1]
+
+
+def test_allowed_stream_turn_keeps_tool_use(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "ls")
+    assert b'"stop_reason": "tool_use"' in out
