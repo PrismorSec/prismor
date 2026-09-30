@@ -849,3 +849,15 @@ def test_install_honours_relocated_prismor_home(tmp_path):
     entry = json.loads((ws / ".mcp.json").read_text())["mcpServers"]["prismor"]
     assert entry["args"][entry["args"].index("--config") + 1] == str(home / "mcp-gateway.json")
     assert entry["env"] == {"PRISMOR_HOME": str(home)}
+
+
+def test_install_reports_the_new_inventory_right_away(tmp_path, monkeypatch):
+    """#279: after install the console kept showing the moved servers as
+    ungoverned until the next daily discovery report."""
+    import prismor.runtime.discover as disc
+    calls = []
+    monkeypatch.setattr(disc, "maybe_report_background", lambda ws, force=False: calls.append(force))
+    monkeypatch.setattr(gw_mod, "DEFAULT_GATEWAY_CONFIG", tmp_path / "gw.json")
+    (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"fs": {"command": "npx"}}}))
+    gw_mod.install_gateway(tmp_path)
+    assert calls == [True]

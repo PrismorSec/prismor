@@ -1392,6 +1392,11 @@ def install_gateway(workspace: Path, mode: str = "enforce") -> str:
     # gateway, install silently downgrades a working set of MCP servers to none
     # until the developer clicks through a dialog they were never told about.
     # Same reasoning, same mechanism, as `prismor mirror on`.
+    try:  # tell the console now that these servers are governed (#279)
+        from prismor.runtime.discover import maybe_report_background
+        maybe_report_background(workspace, force=True)
+    except Exception:
+        pass
     note = ""
     try:
         from prismor.runtime.mirror_cli import _approve_project_server
@@ -1466,6 +1471,12 @@ def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
             lines.append(f"  FAILED    {r.path}  — {r.detail}")
         else:
             lines.append(f"  skipped   {r.path}  — {r.detail}")
+    if total:
+        try:
+            from prismor.runtime.discover import maybe_report_background
+            maybe_report_background(workspace, force=True)
+        except Exception:
+            pass
     head = (f"Moved {total} server(s) into {DEFAULT_GATEWAY_CONFIG} "
             f"from {sum(1 for r in results if r.ok)} config file(s).")
     return head + "\n" + "\n".join(lines)
