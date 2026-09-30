@@ -92,6 +92,28 @@ map:
   disable-security-controls:
     - owasp-agentic-t10:T03
     - eu-ai-act:ART15
+  sudo-command:
+    - owasp-agentic-t10:T03
+
+  # ── Change control / excessive agency ───────────────────────────────
+  git-push-protected-branch:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  terraform-state-change:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  kubectl-cluster-change:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  helm-release-change:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  cloud-cli-mutation:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
+  gh-remote-mutation:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
   agent-config-tampering:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T03

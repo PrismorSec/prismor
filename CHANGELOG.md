@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Added
+- **Change-control rules for commands that touch shared infrastructure.** Seven new rules flag `git push` to main/master, terraform/tofu/terragrunt `apply`/`destroy`/state surgery, `kubectl`/`oc` changes to a cluster, `helm` install/upgrade/uninstall/rollback, `aws`/`gcloud`/`az` commands that create, change or delete resources, `gh` commands that merge PRs, run workflows, publish releases or delete repos, and any command run through `sudo`/`doas`. Read-only siblings (`terraform plan`, `kubectl get`, `aws … describe-*`, `gh pr create`, `sudo -l`) stay quiet, and a command that only appears inside a commit message or `grep` does not match. The rules ship as `action: warn` in a new `change_control` category, which is not a blocking category, so they are reported but never block by default. To block one, give its id `mode: enforce` in `.prismor/policy.yaml`.
+
 ## [1.55.3] — 2026-09-28
 
 ### Fixed
