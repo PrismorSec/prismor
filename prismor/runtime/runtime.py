@@ -772,7 +772,11 @@ def _dispatch_telemetry(
                 repo = ws.detect_git_remote(workspace)
             except Exception:
                 repo = None
-        sink_dispatch(
+        from prismor.runtime.hookd import run_or_defer
+
+        # Off the verdict path when running in the warm daemon (hookd.py).
+        run_or_defer(
+            sink_dispatch,
             findings,
             engine.outputs,
             extra={

@@ -86,7 +86,7 @@ class TestMergeOpenCode(unittest.TestCase):
         self.assertTrue((plugin_dir / "index.js").exists())
 
         index_js = (plugin_dir / "index.js").read_text()
-        self.assertIn(_COMMAND, index_js)
+        self.assertIn(json.dumps(_COMMAND), index_js)
         self.assertIn("tool.execute.before", index_js)
         self.assertIn("tool.execute.after", index_js)
 

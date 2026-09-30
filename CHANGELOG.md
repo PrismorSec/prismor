@@ -1,5 +1,16 @@
 ## [Unreleased]
 
+### Changed
+- **Hooks answer from a warm daemon.** Every tool call used to start a fresh Python process that imported the whole runtime, re-parsed the policy and uploaded telemetry before it returned a verdict. The hook now hands the call to `hookd`, a daemon that keeps Prismor loaded and forks a copy per call, so the call runs the same code with the agent's own environment, working directory and stdin, and gets the same verdict. Telemetry is sent after the verdict instead of before. Through the OpenClaw plugin on a small Linux box, the median check went from 752ms to 377ms; the hook process itself now costs about 40ms. The first hook call starts the daemon. It exits after 30 idle minutes or when Prismor's code on disk changes. If it is missing, stale or dies mid-call, the hook evaluates in-process exactly as before, so a broken daemon slows a call down but never weakens it. `prismor hookd status|stop|restart` manages it, and `PRISMOR_HOOKD=0` turns it off. Linux and macOS only; Windows still evaluates in-process. See [cli-reference.md](docs/cli-reference.md#hookd).
+
+### Fixed
+- **The OpenClaw, Hermes and OpenCode plugins never loaded, froze the gateway, and failed open** (#488). The hook command was pasted raw into a JavaScript string it broke, so every generated plugin was a `SyntaxError`. Once fixed, the plugin ran Prismor with `execSync`, freezing every channel on the gateway for each check, and a timeout, missing binary or crash allowed the call with no log. The check is now asynchronous. A check that can't finish logs `[prismor] could not evaluate …` and follows `failure_mode`: blocked under `--mode enforce`, allowed under observe (`PRISMOR_GATEWAY_FAILURE_MODE`, `PRISMOR_GATEWAY_TIMEOUT_MS`). Re-run `prismor install-hooks` for these agents to regenerate the plugin. See [gateway-plugins.md](docs/gateway-plugins.md).
+- **OpenCode tool calls were never blocked.** `tool.execute.before` wasn't treated as a pre-tool event.
+- **Gateway sessions stopped recording after their first call.** The plugins send numeric timestamps, which crashed session analysis next to stored ISO ones. Verdicts were unaffected.
+- **`install-hooks --agent` rejected `opencode` and `gemini`.**
+- **`prompt-injection` flagged security-minded instruction files.** Patterns are matched across the whole text, so "show" early in a CLAUDE.md or AGENTS.md and "key" anywhere later matched, as did "never print secrets" and any mention of "exfiltration". The gap is now one line, negated phrases don't count, and "exfiltrate" needs an object.
+- **Every Python process on the machine paid for Prismor's semantic guard.** The wheel's `.pth` start-up hook imports `prismor.runtime`, and that package eagerly imported both semantic-guard modules, about 50ms on every interpreter launch whether or not it ever touched Prismor. They are now imported on first use.
+
 ## [1.55.3] — 2026-09-28
 
 ### Fixed

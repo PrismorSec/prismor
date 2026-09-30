@@ -28,7 +28,7 @@ prismor install-hooks --agent openclaw --scope project --mode enforce
 
 For project scope, Prismor writes `.openclaw/plugins.json` and scaffolds the Prismor plugin under `prismor/runtime/openclaw-plugin/`. For user scope, it registers the plugin in `~/.openclaw/config.json`.
 
-The integration uses OpenClaw plugin hooks for tool activity and an internal `message:received` hook under `~/.openclaw/hooks/prismor/` for inbound-message scanning. When policy blocks a tool action, the Prismor dispatcher returns a non-zero result and the plugin blocks the call with the associated reason.
+The integration uses OpenClaw plugin hooks for tool activity and an internal `message:received` hook under `~/.openclaw/hooks/prismor/` for inbound-message scanning. The plugin runs the check in the background, so other channels keep working while it runs. When policy blocks a tool action, the plugin blocks the call with Prismor's reason. When Prismor can't answer (timeout, missing binary), the plugin logs why and applies `failure_mode`: blocked under `--mode enforce`, allowed under observe. See [Gateway plugins](gateway-plugins.md) for the details and a screenshot walkthrough you can reproduce.
 
 Verify a project-scope installation with:
 

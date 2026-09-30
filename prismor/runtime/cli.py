@@ -323,8 +323,14 @@ def _run_memory(args) -> None:
     raise SystemExit(2)
 
 
+# Built once by the warm hook daemon (hookd.py) so each forked hook call skips
+# rebuilding the whole argparse tree. build_parser() reads no environment or
+# cwd, so one instance is valid for every call. None in a normal process.
+_PARSER: Optional[argparse.ArgumentParser] = None
+
+
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = build_parser()
+    parser = _PARSER or build_parser()
     args = parser.parse_args(argv)
     # `--scope user` and `--scope global` are the same thing (hooks in $HOME);
     # both spellings are accepted everywhere so users need not remember which
@@ -1505,6 +1511,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         except GatewayConfigError as exc:
             sys.stderr.write(f"[prismor] {exc}\n")
             sys.exit(2)
+
+    if args.command == "hookd":
+        from prismor.runtime import hookd as _hookd
+        sys.exit(_hookd.cli_main(args.action))
 
     # ── hook-dispatch (called by IDE hooks) ────────────────────────────
     if args.command == "hook-dispatch":
@@ -3709,7 +3719,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
-    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    # Same list hook-dispatch accepts; a hand-kept copy here left out opencode and gemini.
+    install_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
     install_parser.add_argument("--portable", action="store_true", help="Write a hook command with no machine-specific paths, for a config file committed to the repo and cloned onto a hosted agent's VM (needs sh)")
@@ -3724,7 +3735,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`prismor cloak install`.",
     )
     uninstall_parser.add_argument("--workspace", help="Workspace path")
-    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    uninstall_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope")
 
     # ── mcp-gateway ────────────────────────────────────────────────────
@@ -3815,6 +3826,13 @@ def build_parser() -> argparse.ArgumentParser:
     # left gemini and opencode out, so their hooks died in argparse with exit 2.
     hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
+
+    # ── hookd (warm hook daemon) ───────────────────────────────────────
+    hookd_parser = subparsers.add_parser(
+        "hookd",
+        help="Warm hook daemon: status, stop, restart (starts itself on the next hook call)",
+    )
+    hookd_parser.add_argument("action", choices=["status", "stop", "restart"], nargs="?", default="status")
 
     # ── policy ─────────────────────────────────────────────────────────
     allow_parser = subparsers.add_parser(

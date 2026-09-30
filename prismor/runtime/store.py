@@ -16,6 +16,22 @@ except ImportError:  # pragma: no cover - platform dependent
     fcntl = None  # type: ignore[assignment]
 
 
+def try_lock_exclusive(fd: int) -> bool:
+    """Take a non-blocking exclusive lock on ``fd`` for as long as it stays open.
+
+    Unlike :func:`_locked` this is not best effort: False means "someone else
+    holds it" (or locking is unavailable), and the caller must not proceed as
+    the owner. Used for single-instance guards such as the hook daemon.
+    """
+    if fcntl is None:
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
 @contextmanager
 def _locked(handle) -> Iterator[None]:
     """Hold an exclusive advisory lock on an open file for the block.

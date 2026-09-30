@@ -151,6 +151,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
+    # Hook calls go to the warm daemon first (see hookd.py). None means it
+    # produced no verdict, and the call runs in-process below exactly as before.
+    if argv and argv[0] == "hook-dispatch":
+        from prismor.runtime import hookd
+
+        code = hookd.dispatch(argv)
+        if code is not None:
+            sys.exit(code)
+
     _deprecation_notice()
     if argv and argv[0] != "hook-dispatch":
         _update_notice()
@@ -185,7 +194,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Any genuine prismor top-level command (domains, shortcuts, and any future
     # prismor subcommand) forwards straight through: `prismor <cmd> ...`.
-    if cmd in _prismor_commands():
+    # hook-dispatch skips the command-table introspection, which builds the
+    # whole argparse tree just to confirm a name that is always valid.
+    if cmd == "hook-dispatch" or cmd in _prismor_commands():
         from prismor.runtime.cli import main as prismor_main
         prismor_main([cmd, *rest])
         return
@@ -202,7 +213,7 @@ _HELP_GROUPS = [
     ("Policy & scoping",     ["policy", "tags", "scope", "iam", "egress", "agents", "learn"]),
     ("Secrets",              ["cloak", "sweep", "canary"]),
     ("Scanning & audit",     ["audit", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
-    ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy",
+    ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "hookd", "mirror", "mcp-gateway", "proxy",
                               "sandbox", "inference-hook", "eval-server"]),
     ("Sessions & evidence",  ["sessions", "session", "analyze", "ingest", "tokens", "trail", "attest", "query"]),
     ("Org enrollment",       ["enroll", "enroll-status", "workspace", "exempt", "logout"]),
