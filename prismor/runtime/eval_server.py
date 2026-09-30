@@ -43,6 +43,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import signal
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -316,6 +317,17 @@ def run_eval_server(
     print(f"[prismor] workspace: {ws}")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
+
+    def _stop(signum, _frame):  # noqa: ARG001
+        # SIGTERM is how systemd, containers and k8s stop a server. Unhandled it
+        # kills the process without running the atexit heartbeat flush, so the
+        # console lost every clean call since the last upload (#543).
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):
+        pass  # not the main thread, or the platform lacks the signal
     try:
         server.serve_forever()
     except KeyboardInterrupt:

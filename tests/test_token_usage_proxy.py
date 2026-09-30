@@ -24,7 +24,7 @@ from prismor.runtime.proxy import Screen, StreamScreen  # noqa: E402
 def captured_rows(monkeypatch):
     rows = []
     monkeypatch.setattr(tu, "_record",
-                        lambda workspace, session_id, agent, row: rows.append(row))
+                        lambda workspace, session_id, agent, row, **kw: rows.append(row))
     return rows
 
 
@@ -134,3 +134,28 @@ def test_proxy_usage_gets_a_timestamp(captured_rows):
     tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a", model="m",
                         usage={"input_tokens": 3, "output_tokens": 1}, message_id="resp_1")
     assert captured_rows[0]["ts"]
+
+
+def test_usage_record_carries_the_proxy_agent_name(monkeypatch):
+    """#543: without agent_name every metered turn showed up in the console as a
+    second, unnamed 'prismor-proxy' agent next to the --agent-name one."""
+    from prismor.runtime import store
+    from prismor.runtime.enterprise import identity, telemetry_spool
+    spooled = []
+    monkeypatch.setattr(store, "record_token_usage", lambda **k: True)
+    monkeypatch.setattr(identity, "is_enrolled", lambda: True)
+    monkeypatch.setattr(telemetry_spool, "append", lambda recs: spooled.extend(recs))
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="prismor-proxy",
+                        agent_name="data-analyst", model="gpt-5-mini",
+                        usage=OPENAI_CHAT, message_id="m1")
+    assert [(r["agent"], r["agent_name"]) for r in spooled] == [("prismor-proxy", "data-analyst")]
+
+
+def test_stream_meter_passes_the_screen_agent_name(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tu, "record_llm_usage", lambda **kw: calls.append(kw))
+    screen = Screen(workspace=Path("/x"), mode="observe", session_id="sess", agent_name="data-analyst")
+    stream = StreamScreen(screen, "openai", "model", None)
+    stream._usage = dict(OPENAI_CHAT)
+    stream.meter()
+    assert calls and calls[0]["agent_name"] == "data-analyst"

@@ -155,7 +155,8 @@ def _provider(model: str) -> str:
     return "unknown"
 
 
-def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any]) -> None:
+def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any],
+            agent_name: str = "") -> None:
     """Store one turn; when new and the device is enrolled, also spool an
     ``llm_usage`` telemetry record (same shape the LLM gateway lane emits) so
     the control plane can show tokens and spend per session. It rides the
@@ -178,6 +179,9 @@ def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any]) -
             "verdict": "observed",
             "title": "Model turn metered",
             "agent": agent,
+            # The instance label (proxy --agent-name): without it every metered
+            # turn surfaced in the console as a second, unnamed agent (#543).
+            "agent_name": agent_name or None,
             "session_id": session_id,
             "provider": provider,
             "model": row["model"],
@@ -283,7 +287,7 @@ def _output_size(event: Dict[str, Any]) -> int:
 
 def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
                      model: str, usage: Dict[str, Any], message_id: str,
-                     ts: str = "") -> None:
+                     ts: str = "", agent_name: str = "") -> None:
     """Record a provider ``usage`` block seen on the proxy lane.
 
     Normalizes the providers' differing field names so the LLM lane populates
@@ -320,7 +324,7 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
             "cache_read_tokens": pick("cache_read_input_tokens", "cachedContentTokenCount") or int(cached or 0),
             "cache_creation_tokens": pick("cache_creation_input_tokens"),
             "cache_1h_tokens": 0,
-        })
+        }, agent_name=agent_name)
     except Exception:
         pass
 
