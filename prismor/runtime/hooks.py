@@ -128,7 +128,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             # dispatched. So this always targets $CODEX_HOME (Codex's own home-dir
             # override, default ~/.codex) even when scope == "project" (hooks.json
             # itself is correctly scoped).
-            codex_home = Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
+            codex_home = _codex_home()
             _ensure_codex_hooks_feature_enabled(codex_home / "config.toml")
     return results
 
@@ -168,7 +168,7 @@ def codex_hook_trust(workspace: Path, codex_home: Optional[Path] = None) -> Dict
     that event never dispatches. Text-based: the record's exact hash is Codex's
     business; its presence is what we can know.
     """
-    home = codex_home or (Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex")
+    home = codex_home or _codex_home()
     candidates = {
         "project": (workspace / ".codex" / "hooks.json").resolve(),
         "global": (home / "hooks.json").resolve(),
@@ -647,6 +647,11 @@ def legacy_should_block(
     return None
 
 
+def _codex_home() -> Path:
+    """Codex's home dir: $CODEX_HOME, default ~/.codex."""
+    return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
+
+
 def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     home = Path.home()
     if scope == "project":
@@ -693,7 +698,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     if agent == "hermes":
         return home / ".hermes" / "config.json"
     if agent == "codex":
-        return home / ".codex" / "hooks.json"
+        # Codex's global config lives in $CODEX_HOME (#539), not always ~/.codex.
+        return _codex_home() / "hooks.json"
     if agent == "copilot":
         return home / ".copilot" / "hooks" / "prismor.json"
     if agent == "grok":
