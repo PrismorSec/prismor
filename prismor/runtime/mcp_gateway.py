@@ -876,7 +876,7 @@ class Gateway:
             # (or leaked secret) the withhold exists to keep out of its context.
             self._reply(req_id, _blocked_result(
                 "[Prismor] response withheld", withhold,
-                unblock=self._unblock_text(withhold, route),
+                unblock=self._unblock_text(withhold, route, arguments=arguments),
                 include_evidence=False))
             return
 
@@ -912,7 +912,8 @@ class Gateway:
             f"({blocking.get('ruleId') or blocking.get('title')}) — "
             f"passing through: {why}\n")
 
-    def _unblock_text(self, blocking: Dict[str, Any], route: "_Route") -> str:
+    def _unblock_text(self, blocking: Dict[str, Any], route: "_Route",
+                      arguments: Optional[Dict[str, Any]] = None) -> str:
         """The hook layer tells the human how to lift a block (narrowest first:
         `prismor allow <rule>` … `prismor pause`). The gateway said nothing,
         so a mirrored block read as a dead end — the person at the keyboard
@@ -920,6 +921,21 @@ class Gateway:
         ended with the whole mirror being ripped out by hand. Same text here,
         plus the mirror's own two exits."""
         lines: List[str] = []
+        if arguments is not None:
+            # Withheld RESULT (#540): the evidence is the tool output, so an
+            # allow pattern built from it names the output's first line (the
+            # first file of a batch read, a file's heading), not the injected
+            # span, and allowing it would let the injection through too. Offer
+            # no pattern; say which call was withheld so the human knows what
+            # to review.
+            blocking = {**blocking, "evidence": ""}
+            args = json.dumps(arguments, ensure_ascii=False, default=str)
+            if len(args) > 300:
+                args = args[:300] + "…"
+            lines.append(
+                f"Withheld output of {route.server}__{route.tool}({args}). "
+                "Review what that call returned before allowing anything: an allow "
+                "rule for this output would also let the flagged content through.")
         try:
             from prismor.runtime import unblock as _unblock
             from prismor.runtime.enterprise import identity as _identity
