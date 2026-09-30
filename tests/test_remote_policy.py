@@ -263,7 +263,6 @@ def test_tool_tags_sig_changes_when_an_agent_overlay_changes(tmp_path, monkeypat
     ))
     assert remote_policy._current_tool_tags_sig() != before
  
-
 def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monkeypatch):
     """Calling verify_and_load multiple times on unchanged files must reuse the in-process
     memo, bypassing repeated signature checks and YAML parsing (#478)."""
@@ -276,7 +275,7 @@ def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monk
 
     remote_policy.clear_policy_cache()
 
-    with patch.object(remote_policy, "verify_signature", wraps=remote_policy.verify_signature) as mock_sig:
+    with patch.object(remote_policy, "_verify_signature", wraps=remote_policy._verify_signature) as mock_sig:
         
         p1 = remote_policy.verify_and_load()
         assert p1 is not None
@@ -302,5 +301,3 @@ def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monk
         p6 = remote_policy.verify_and_load()
         assert p6 is not None
         assert mock_sig.call_count == 3
-
-     
