@@ -27,6 +27,7 @@ dropped and replaced by a hash. The test-suite asserts this invariant.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -122,22 +123,53 @@ _UNIXPATH_RE = re.compile(r"(?:~|\.)?(?:/[\w.\-@+]+){1,}/?")
 _HOST_RE = re.compile(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b")
 
 
+@functools.lru_cache(maxsize=1)
+def _catalog_titles() -> tuple:
+    """Titles of the bundled rules, longest first. They are static catalog
+    text, so redaction must not touch them: "chmod/chown -R" and "agent I/O"
+    were being uploaded as "chmod[path] -R" and "agent I[path]" (#278)."""
+    try:
+        import yaml
+        from prismor.runtime.policy_engine import _DEFAULT_POLICY_PATH
+        rules = (yaml.safe_load(_DEFAULT_POLICY_PATH.read_text(encoding="utf-8")) or {}).get("rules") or []
+        titles = {str(r.get("title")) for r in rules if isinstance(r, dict) and r.get("title")}
+    except Exception:
+        return ()
+    return tuple(sorted(titles, key=len, reverse=True))
+
+
 def _safe_title(title: Any, scrubbers: List[re.Pattern[str]]) -> Any:
     """Strip secrets / URLs / file paths / hostnames from a title so a redacted
-    record carries only the static, non-sensitive description."""
+    record carries only the static, non-sensitive description.
+
+    A bundled rule title inside it (whole, or embedded as in "Possible evasion
+    of: <title>" or "<title> (in <origin>)") is kept verbatim; only the rest is
+    scrubbed."""
     if not isinstance(title, str) or not title:
         return title
-    t = scrub(title, scrubbers)
+    kept: List[str] = []
+
+    def _hold(m: "re.Match[str]") -> str:
+        kept.append(m.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    t = title
+    for static in _catalog_titles():
+        if static in t:
+            t = re.sub(re.escape(static), _hold, t)
+    t = scrub(t, scrubbers)
     t = _URL_RE.sub("[url]", t)
     t = _WINPATH_RE.sub("[path]", t)
     t = _UNIXPATH_RE.sub("[path]", t)
     t = _HOST_RE.sub("[host]", t)
-    return t
+    return re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], t)
 
 
 def _title_has_leak(title: Any) -> bool:
     if not isinstance(title, str) or not title:
         return False
+    for static in _catalog_titles():  # policy text, not captured data
+        title = title.replace(static, "")
     return bool(_URL_RE.search(title) or _WINPATH_RE.search(title)
                 or _UNIXPATH_RE.search(title) or _HOST_RE.search(title))
 

@@ -53,3 +53,23 @@ class TestTitleRedaction(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── #278: bundled rule titles are policy text, never redacted ────────────────
+
+def test_catalog_rule_titles_survive_redaction():
+    from prismor.runtime.enterprise.telemetry import _catalog_titles, _safe_title, _title_has_leak
+    titles = _catalog_titles()
+    chmod = next(t for t in titles if "chmod/chown" in t)
+    io = next(t for t in titles if "agent I/O" in t)
+    for t in (chmod, io, f"Possible evasion of: {chmod}"):
+        assert _safe_title(t, []) == t
+        assert not _title_has_leak(t)
+
+
+def test_dynamic_part_next_to_a_rule_title_is_still_scrubbed():
+    from prismor.runtime.enterprise.telemetry import _catalog_titles, _safe_title, _title_has_leak
+    rule = next(t for t in _catalog_titles() if "chmod/chown" in t)
+    out = _safe_title(f"{rule} (in /home/alice/secret-project/run.sh)", [])
+    assert out == f"{rule} (in [path])"
+    assert _title_has_leak(f"{rule} (in /home/alice/x.sh)")
