@@ -392,6 +392,12 @@ def _dispatch_prismor(
         **extra,
         "device_id": ident.get("device_id"),
     }
+    try:
+        from prismor.runtime.enterprise import remote_policy as _rp
+        device_extra["policy_version"] = _rp.current_version()
+        device_extra["policy_profile_id"] = _rp.current_profile_id()
+    except Exception:
+        pass
     records = []
     for finding in findings:
         rec = _telemetry.build_record(

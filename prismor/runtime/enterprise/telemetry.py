@@ -245,6 +245,13 @@ def build_record(
         "repo": extra.get("repo"),
         "workspace_path": extra.get("workspace"),
         "policy_scope": extra.get("policy_scope") or "org",
+        # Which signed org policy was in force when this call was decided
+        # (version + profile id from the verified remote-policy cache). Null on
+        # local-only policy. Opaque int/id, not user data — survives redaction,
+        # and lets the console explain old events against the policy that
+        # actually decided them rather than whatever is current.
+        "policy_version": extra.get("policy_version"),
+        "policy_profile_id": extra.get("policy_profile_id"),
         # Title: in redacted mode sanitized to its static description (paths /
         # hosts / URLs / secrets stripped); in full mode the raw (secret-scrubbed)
         # title. Forwarded so the dashboard is human-readable without raw evidence.

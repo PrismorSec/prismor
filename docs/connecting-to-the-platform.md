@@ -139,7 +139,7 @@ records via `telemetry.build_record()` and runs `assert_redacted()` before uploa
 - **Redacted mode (default):** metadata + enums + hashes only — severity,
   category, rule_id, event type, agent, verdict, a *static* rule title
   (paths/hosts/URLs/secrets stripped), a 16-char `evidence_hash`, tool_name,
-  managed-repo context, policy_scope, device_id, session_id, subject (principal
+  managed-repo context, policy_scope, the applied org policy version + profile id, device_id, session_id, subject (principal
   ids). **Never sent:** commands, stdout/stderr, file paths, URLs, file contents,
   prompts, responses, payloads, matched evidence.
 - **Full capture (admin opt-in, per-org):** additionally ships evidence/content,
