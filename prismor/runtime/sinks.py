@@ -31,7 +31,8 @@ Supported sink types (configured under ``settings.outputs`` in policy.yaml):
 
 Each sink receives one JSON event per finding. Dispatch is best-effort
 and non-blocking — a sink failure logs a warning but never blocks the
-user's tool call.
+user's tool call. The event's ``title`` and ``evidence`` are secret-scrubbed
+(``_scrub_for_sink``) before any generic sink sees them.
 
 The ``prismor`` sink is special: instead of the generic SIEM event built by
 ``_build_event``, it forwards the privacy-bounded record from
@@ -44,6 +45,7 @@ from prismor.runtime.http_ua import user_agent as _http_user_agent
 
 import json
 import os
+import re
 import socket
 import sys
 from datetime import datetime, timezone
@@ -79,6 +81,37 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
+_SCRUB_FAILED = "[redacted: scrub failed]"
+# Header / key=value credentials the cloak catalog has no fixed shape for
+# (``Authorization: Bearer ...``, ``password=...``).
+_KV_SECRET = re.compile(
+    r"(?i)\b(bearer|token|secret|password|passwd|api[_-]?key)([\s=:\"']+)[^\s\"']{8,}")
+
+
+def _scrub_for_sink(value: Any) -> Any:
+    """Strip secret-shaped substrings before a value leaves for an external sink.
+
+    Same pattern set the prismor sink scrubs with in full capture (built-in,
+    custom and org cloak patterns) plus registered cloak values, connection-URL
+    passwords and header/key=value credentials. Fails closed: any error yields
+    a fixed placeholder, never the raw value.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    try:
+        from prismor.runtime.cloaking.patterns import all_patterns
+        from prismor.runtime.cloaking.runtime import scrub_text
+        from prismor.runtime.enterprise import telemetry as _telemetry
+        from prismor.runtime.redaction import _URL_PASSWORD
+
+        out = scrub_text(value)
+        out = _telemetry.scrub(out, _telemetry._compile_scrubbers(all_patterns()))
+        out = _URL_PASSWORD.sub(r"\1[REDACTED]\3", out)
+        return _KV_SECRET.sub(r"\1\2[REDACTED]", out)
+    except Exception:
+        return _SCRUB_FAILED
+
+
 def _build_event(finding: Dict[str, Any], extra: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     event: Dict[str, Any] = {
         "@timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -88,8 +121,8 @@ def _build_event(finding: Dict[str, Any], extra: Optional[Dict[str, Any]] = None
         "category": finding.get("category"),
         "rule_id": finding.get("ruleId"),
         "action": finding.get("action"),
-        "title": finding.get("title"),
-        "evidence": finding.get("evidence"),
+        "title": _scrub_for_sink(finding.get("title")),
+        "evidence": _scrub_for_sink(finding.get("evidence")),
         "session_id": (finding.get("id") or "").split(":", 1)[0] if ":" in (finding.get("id") or "") else None,
         "finding_id": finding.get("id"),
     }
