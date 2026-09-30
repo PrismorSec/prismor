@@ -55,6 +55,8 @@ import json
 import os
 import re
 import subprocess
+import contextlib
+import io
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -1612,6 +1614,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         # "what does this repo do?" is no longer Read-only forever once the
         # user says "now fix it". (Narrowing is the operator's job: IAM or the
         # dashboard's per-session denies, which merge_scoped_rules preserves.)
+        # The scoped-agent notice is held until the decision: a blocked prompt's
+        # stderr IS the block reason on Codex, and the notice buried it (#541).
+        _scoped_notice = io.StringIO()
         if event.get("agent_event") == "UserPromptSubmit":
             try:
                 from prismor.runtime.scoped_agent import (
@@ -1634,17 +1639,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # can never put an MCP tool in scope and every MCP call is
                     # denied by omission, whatever the prompt asks for.
                     _available_tools = _available_tools_for_scope(workspace, args.agent)
-                    _scoped_rules = _synthesize_scoped(
-                        goal=event["prompt"],
-                        available_tools=_available_tools,
-                        workspace=workspace,
-                    )
+                    with contextlib.redirect_stderr(_scoped_notice):
+                        _scoped_rules = _synthesize_scoped(
+                            goal=event["prompt"],
+                            available_tools=_available_tools,
+                            workspace=workspace,
+                        )
                     if _scoped_rules:
                         _scoped_rules = _agent_invariants(_scoped_rules, args.agent)
                         if _existing_scoped is not None:
                             _scoped_rules = _merge_scoped(_existing_scoped, _scoped_rules)
                         _save_scoped(workspace, normalized["sessionId"], _scoped_rules)
-                        sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
+                        _scoped_notice.write(_format_scoped_box(_scoped_rules) + "\n")
             except Exception as _scoped_exc:
                 sys.stderr.write(f"[prismor] scoped agent error: {_scoped_exc}\n")
         _perf.lap("scope_synthesis")
@@ -1703,6 +1709,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         _current_engine = decision.engine
         current_findings = decision.findings
         blocking = decision.blocking
+        if blocking is None and _scoped_notice.getvalue():
+            sys.stderr.write(_scoped_notice.getvalue())
 
         # Stamp how long this hook process took once it exits -- whichever
         # path it leaves by (allow, block via sys.exit(2), sandbox rewrite) --

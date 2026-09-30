@@ -576,6 +576,23 @@ def _default_block_categories() -> set:
     return cats
 
 
+def _own_prompt_injection(finding: Dict[str, Any], event: Dict[str, Any]) -> bool:
+    """A visible prompt-injection match on the person's own prompt (#541).
+
+    Injection is content that did not come from the principal; on
+    UserPromptSubmit the person at the keyboard IS the principal, so "print
+    ~/.aws/credentials" there is a request, not an injection. The actions it
+    asks for are screened at PreToolUse where they happen. Still reported,
+    never blocks. Hidden-text injection keeps blocking: the person may not
+    have seen what they pasted.
+    """
+    return (
+        str(event.get("agent_event", "")) == "UserPromptSubmit"
+        and finding.get("category") == "prompt_injection"
+        and finding.get("ruleId") != "prompt-injection-hidden"
+    )
+
+
 def should_block(
     findings: List[Dict[str, Any]],
     event: Dict[str, Any],
@@ -595,7 +612,7 @@ def should_block(
     for finding in findings:
         # A match inside inert text (commit message, PR body, grep pattern)
         # describes an action instead of performing it -- report, never block.
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
@@ -633,7 +650,7 @@ def legacy_should_block(
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
     for finding in findings:
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("action") or BLOCK).lower() not in VERDICTS:
             continue

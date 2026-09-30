@@ -632,6 +632,13 @@ def evaluate_tool_call(
                 event,
             )
 
+    # The finding that actually blocks reports as enforced. The legacy bridge
+    # blocks by category while the finding still carries the rule's observe
+    # mode, and the telemetry verdict is read from that mode, so the console
+    # showed a stopped prompt as "allowed" (#541).
+    if blocking is not None:
+        blocking["mode"] = "enforce"
+
     _dispatch_telemetry(
         engine=engine,
         findings=findings,
