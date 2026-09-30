@@ -14,7 +14,9 @@ a JSON permission object, or a raised exception).
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -124,6 +126,41 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 _NO_PROJECT_AGENTS = frozenset({"prismor-proxy"})
 
 
+_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
+_READ_TOOL = re.compile(r"read|open|cat|load|view|get_?file", re.I)
+_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file", re.I)
+
+
+def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
+    """Treat an SDK tool that only takes a file path as the file access it is.
+
+    Adapters default every tool to ``shell``, so ``read_file(path=".env")``
+    arrived as a "shell command" consisting of a bare path and none of the
+    file-read secret rules could see it (#542). Only adapter events (they carry
+    ``metadata.framework``) with a single path argument and a read/write-named
+    tool are re-typed; anything with a command argument stays shell.
+    """
+    meta = event.get("metadata") or {}
+    if event.get("type") != "shell" or not meta.get("framework"):
+        return
+    kwargs = meta.get("kwargs") or {}
+    if set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
+        try:  # OpenAI Agents SDK FunctionTools hand over one JSON string
+            kwargs = json.loads(kwargs["input"])
+        except ValueError:
+            return
+    if not isinstance(kwargs, dict):
+        return
+    paths = [v for k, v in kwargs.items() if k.lower() in _PATH_ARGS and isinstance(v, str) and v]
+    if len(paths) != 1 or any(k.lower() in ("command", "cmd", "script") for k in kwargs):
+        return
+    name = str(meta.get("tool_name") or "")
+    kind = "file_read" if _READ_TOOL.search(name) else "file_write" if _WRITE_TOOL.search(name) else ""
+    if kind:
+        event["type"] = kind
+        event["path"] = paths[0]
+
+
 def evaluate_tool_call(
     *,
     event: Dict[str, Any],
@@ -176,6 +213,8 @@ def evaluate_tool_call(
     subject = subject or resolve_subject()
     # Normalise agent_name: default to the framework id for backward compat.
     _agent_name = agent_name or agent
+
+    _retype_adapter_file_call(event)
 
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})
