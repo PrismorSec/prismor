@@ -10,6 +10,7 @@ against the dependency-free demo server in examples/mcp-block-demo/.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -793,3 +794,26 @@ def test_downstream_results_are_redacted_too(tmp_path, monkeypatch):
         "R1", {"name": "filesystem__read_text_file", "arguments": {"path": ".env"}})
     body = json.dumps(sent[-1])
     assert secret not in body
+
+
+def test_install_honours_relocated_prismor_home(tmp_path):
+    """#537: install must write the gateway config into $PRISMOR_HOME, not the
+    real ~/.prismor, and pin that home into the .mcp.json entry so the host
+    launches the gateway under the same identity."""
+    import subprocess
+    home, fake_user_home, ws = tmp_path / "devhome", tmp_path / "user", tmp_path / "ws"
+    ws.mkdir(); fake_user_home.mkdir()
+    (ws / ".mcp.json").write_text(json.dumps(
+        {"mcpServers": {"fs": {"command": "npx", "args": ["-y", "server-fs"]}}}))
+    env = dict(os.environ, PRISMOR_HOME=str(home), HOME=str(fake_user_home))
+    env.pop("PRISMOR_WORKSPACE", None)
+    proc = subprocess.run(
+        [sys.executable, "-m", "prismor.runtime.immunity_cli", "mcp-gateway", "install",
+         "--workspace", str(ws)], env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads((home / "mcp-gateway.json").read_text())["mcpServers"] == {
+        "fs": {"command": "npx", "args": ["-y", "server-fs"]}}
+    assert not (fake_user_home / ".prismor" / "mcp-gateway.json").exists()
+    entry = json.loads((ws / ".mcp.json").read_text())["mcpServers"]["prismor"]
+    assert entry["args"][entry["args"].index("--config") + 1] == str(home / "mcp-gateway.json")
+    assert entry["env"] == {"PRISMOR_HOME": str(home)}

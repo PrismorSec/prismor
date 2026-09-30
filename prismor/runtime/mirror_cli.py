@@ -240,23 +240,12 @@ def _server_entry(workspace: Path, mode: str) -> Dict[str, Any]:
             "--mode", mode]
     args += ["--workspace", str(workspace)]
     env = {"PYTHONPATH": str(repo_root)}
-    # Pin a relocated Prismor home into the entry. The host launches this server
-    # from its own environment, not the shell that ran `prismor mirror on`, so a
-    # $PRISMOR_HOME set in the developer's profile does not reach it. The
-    # gateway would then read a DIFFERENT home than the CLI and the hooks: the
-    # pause marker it consults would not be the one `prismor pause` writes (so
-    # pausing would silently fail to reach the mirror), and the already-screened
-    # marker would not be the one hook-dispatch reads (so every mirrored call
-    # would be screened and logged twice). Only written when the home is
-    # actually relocated, so a default install keeps a clean entry.
-    home = os.environ.get("PRISMOR_HOME")
-    if home:
-        try:
-            relocated = Path(home).expanduser().resolve() != (Path.home() / ".prismor").resolve()
-        except OSError:
-            relocated = True
-        if relocated:
-            env["PRISMOR_HOME"] = str(Path(home).expanduser())
+    # Pin a relocated Prismor home into the entry: otherwise the pause marker
+    # the gateway consults would not be the one `prismor pause` writes, and the
+    # already-screened marker would not be the one hook-dispatch reads (every
+    # mirrored call screened and logged twice). See store.relocated_home_env.
+    from prismor.runtime.store import relocated_home_env
+    env.update(relocated_home_env())
     return {
         "command": sys.executable or "python3",
         "args": args,

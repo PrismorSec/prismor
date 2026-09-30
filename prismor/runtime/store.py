@@ -126,6 +126,25 @@ def prismor_home() -> Path:
     return Path(os.environ.get("PRISMOR_HOME", str(Path.home() / ".prismor")))
 
 
+def relocated_home_env() -> Dict[str, str]:
+    """``{"PRISMOR_HOME": ...}`` when the home is relocated, else ``{}``.
+
+    For MCP server entries Prismor writes into agent configs. The host launches
+    them from its own environment, not the shell that ran the installer, so a
+    relocated $PRISMOR_HOME has to be pinned into the entry or the server runs
+    under a different identity and policy than the CLI and the hooks. A default
+    install keeps a clean entry.
+    """
+    home = os.environ.get("PRISMOR_HOME")
+    if not home:
+        return {}
+    try:
+        relocated = Path(home).expanduser().resolve() != (Path.home() / ".prismor").resolve()
+    except OSError:
+        relocated = True
+    return {"PRISMOR_HOME": str(Path(home).expanduser())} if relocated else {}
+
+
 # ── Re-cloaking: never persist a raw secret value to the audit store ─────────
 #
 # A decloak hook substitutes the real secret into a command for execution. The

@@ -1198,7 +1198,12 @@ def _blocked_result(prefix: str, blocking: Dict[str, Any],
 
 # ── install / uninstall helper ───────────────────────────────────────────────
 
-DEFAULT_GATEWAY_CONFIG = Path.home() / ".prismor" / "mcp-gateway.json"
+# Lives in the Prismor home, so a relocated $PRISMOR_HOME (a second identity on
+# a shared box, CI, a test rig) gets its own gateway config instead of writing
+# into the real user's ~/.prismor.
+from prismor.runtime.store import prismor_home as _prismor_home, relocated_home_env as _relocated_home_env
+
+DEFAULT_GATEWAY_CONFIG = _prismor_home() / "mcp-gateway.json"
 
 
 # Top-level keys an MCP server block is declared under. ``mcpServers`` is the
@@ -1230,9 +1235,13 @@ def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
     # anyway. So the written entry pins the mode (default enforce), and the
     # installed .mcp.json actually protects the agent. `mirror on` defaults to
     # enforce for the same reason.
-    return {"command": "prismor",
-            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG),
-                     "--mode", mode]}
+    entry: Dict[str, Any] = {
+        "command": "prismor",
+        "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG), "--mode", mode]}
+    env = _relocated_home_env()
+    if env:
+        entry["env"] = env
+    return entry
 
 
 def _is_prismor_entry(name: str, spec: Any) -> bool:
