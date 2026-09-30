@@ -1338,11 +1338,33 @@ class PolicyEngine:
             if event_type == "shell" and matched_evidence:
                 try:
                     from prismor.runtime.shell_context import (
-                        is_inert_match, is_remote_payload)
-                    _m = rule.patterns.search(matched_evidence)
+                        is_inert_match,
+                        is_remote_payload,
+                        quoted_spans,
+                    )
+                    # Rules match against a normalized command so command
+                    # substitutions expose their executable payload
+                    # (``echo "$(rm -rf /)"`` -> ``echo " rm -rf / "``).
+                    # Context, however, must be judged against the raw command:
+                    # double quotes still execute ``$(...)`` and backticks
+                    # before text sinks such as echo/printf receive arguments.
+                    # Falling back keeps unicode-folded and non-command cases
+                    # conservative when the raw text no longer matches.
+                    _context_text = str(event.get("command") or "")
+                    _m = rule.patterns.search(_context_text)
+                    if _m is None:
+                        has_executable_quoted_span = any(
+                            is_payload and is_closed
+                            for _start, _end, is_payload, is_closed in quoted_spans(
+                                _context_text
+                            )
+                        )
+                        if not has_executable_quoted_span:
+                            _context_text = matched_evidence
+                            _m = rule.patterns.search(_context_text)
                     if _m is not None:
                         context_inert = is_inert_match(
-                            matched_evidence, _m.start(), _m.end()
+                            _context_text, _m.start(), _m.end()
                         )
                         # A self-protection rule guards THIS install. When the
                         # match sits inside an ssh/docker/kubectl payload it
@@ -1353,7 +1375,7 @@ class PolicyEngine:
                         # still destroys a real machine (issue #344).
                         if not context_inert and rule.id in _LOCAL_JURISDICTION_RULE_IDS:
                             context_inert = is_remote_payload(
-                                matched_evidence, _m.start(), _m.end()
+                                _context_text, _m.start(), _m.end()
                             )
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")

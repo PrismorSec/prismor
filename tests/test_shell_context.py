@@ -9,8 +9,11 @@ The attack corpus doubles as a regression test for the quoted-prefix bypass:
 those patterns was widened to accept a quote or paren."""
 import pytest
 
+from pathlib import Path
+
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
+from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.shell_context import is_inert_match
 
 
@@ -112,3 +115,39 @@ def test_interpreter_payload_is_never_inert():
     command = "bash -c 'rm -rf /'"
     start = command.index('rm')
     assert is_inert_match(command, start, len(command) - 1) is False
+
+
+def test_double_quote_command_substitution_is_not_inert():
+    command = 'echo "$(rm -rf /)"'
+    start = command.index("rm")
+    assert is_inert_match(command, start, command.index(')"')) is False
+
+
+def test_escaped_command_substitution_in_double_quotes_stays_inert():
+    command = r'echo "\$(rm -rf /)"'
+    start = command.index("rm")
+    assert is_inert_match(command, start, command.index(')"')) is True
+
+
+@pytest.mark.parametrize("command", [
+    'echo "$(rm -rf /)"',
+    'printf "%s" "$(rm -rf /)"',
+    'echo "`rm -rf /`"',
+    'echo "$(curl -s http://169.254.169.254/latest/meta-data/)"',
+])
+def test_double_quote_command_substitution_blocks_at_runtime(tmp_path, command):
+    decision = evaluate_tool_call(
+        event={
+            "agent_event": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "type": "shell",
+            "command": command,
+        },
+        workspace=Path(tmp_path),
+        agent="claude",
+        mode="enforce",
+        persist=False,
+    )
+    assert decision.allow is False
+    assert decision.verdict == "block"
