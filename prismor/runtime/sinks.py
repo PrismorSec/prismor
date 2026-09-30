@@ -46,6 +46,7 @@ import json
 import os
 import socket
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -358,6 +359,56 @@ def _format_ocsf(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _seal(rec: Dict[str, Any]) -> None:
+    """Chain-link and sign a telemetry record in place.
+
+    Tamper-evident chain link. Best-effort: a chain failure degrades to an
+    unchained record (reported, not fatal) — telemetry must never block on
+    chain state. Then an Ed25519 signature over {hash, ts, identity}: binds the
+    immutable chain hash to the receipt's identity claims (non-repudiation + R6
+    identity binding). Best-effort — no-op without `cryptography`, never fatal.
+    """
+    try:
+        from prismor.runtime.enterprise import chain as _chain
+        seq, prev_hash, digest = _chain.next_link(rec)
+        rec["chain_seq"] = seq
+        rec["prev_hash"] = prev_hash
+        rec["hash"] = digest
+    except Exception:
+        pass
+    try:
+        from prismor.runtime.enterprise import receipt_signing as _signing
+        _signing.sign_record(rec)
+    except Exception:
+        pass
+
+
+def _dropped_record(drops: Dict[str, Any], device_id: Any) -> Dict[str, Any]:
+    """One content-free record reporting spool records lost while offline, so
+    the console's chain gap has a cause. Window and count go in ``title`` too:
+    ``detail`` is only stored for full-capture orgs."""
+    import uuid
+    count = int(drops.get("count") or 0)
+    first, last = drops.get("first_ts"), drops.get("last_ts")
+    title = f"Offline telemetry spool dropped {count} record(s)"
+    if first and last:
+        title += f" from {first} to {last}"
+    rec = {
+        "schema": "prismor.runtime.telemetry.v1",
+        "event_id": "evt_" + uuid.uuid4().hex,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "type": "telemetry_dropped",
+        "verdict": "observed",
+        "title": title,
+        "device_id": device_id,
+        "count": count,
+        "redacted": True,
+        "detail": {"dropped": count, "first_ts": first, "last_ts": last},
+    }
+    _seal(rec)
+    return rec
+
+
 def _dispatch_prismor(
     cfg: Dict[str, Any],
     findings: List[Dict[str, Any]],
@@ -402,25 +453,7 @@ def _dispatch_prismor(
             scrub_patterns=scrub_patterns,
         )
         _telemetry.assert_redacted(rec)  # fail closed if redacted path leaks
-        # Tamper-evident chain link. Best-effort: a chain failure degrades to
-        # an unchained record (reported, not fatal) — telemetry must never
-        # block on chain state.
-        try:
-            from prismor.runtime.enterprise import chain as _chain
-            seq, prev_hash, digest = _chain.next_link(rec)
-            rec["chain_seq"] = seq
-            rec["prev_hash"] = prev_hash
-            rec["hash"] = digest
-        except Exception:
-            pass
-        # Ed25519 signature over {hash, ts, identity}: binds the immutable chain
-        # hash to the receipt's identity claims (non-repudiation + R6 identity
-        # binding). Best-effort — no-op without `cryptography`, and never fatal.
-        try:
-            from prismor.runtime.enterprise import receipt_signing as _signing
-            _signing.sign_record(rec)
-        except Exception:
-            pass
+        _seal(rec)
         records.append(rec)
 
     if not records:
@@ -487,6 +520,14 @@ def upload_telemetry(
     if not ident or _identity.revoked_backoff_active():
         return
 
+    # After a network/5xx failure, don't pay a connect timeout on every hook
+    # call: spool and let a later call (heartbeat tick, flush) retry once the
+    # backoff lapses. Blocked verdicts bypass it — an alert must be attempted.
+    now = time.time()
+    if _spool.backoff_active(now) and not any(r.get("verdict") == "blocked" for r in records):
+        _spool.append(records)
+        return
+
     # Server caps batches at 500 events.
     batch = _spool.drain(limit=max(0, 500 - len(records))) + records
     if not batch:
@@ -509,6 +550,7 @@ def upload_telemetry(
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             resp.read(16)  # drain
         _identity.clear_revoked()
+        _spool.clear_backoff()
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
             # The control plane rejected our device key: revoked (or deleted).
@@ -520,10 +562,23 @@ def upload_telemetry(
             )
             return
         _spool.append(batch)
+        if exc.code >= 500:
+            _spool.note_upload_failure(now)
         raise
     except (urllib.error.URLError, OSError):
         _spool.append(batch)
+        _spool.note_upload_failure(now)
         raise
+
+    # Back online: report anything the spool had to drop while we weren't, as
+    # one chained + signed record. The counter is reset as it's taken; if this
+    # upload fails the record rides the spool like any other.
+    drops = _spool.take_drops()
+    if drops:
+        try:
+            upload_telemetry([_dropped_record(drops, ident.get("device_id"))], timeout=timeout)
+        except Exception:
+            pass
 
 
 _DISPATCHERS = {
