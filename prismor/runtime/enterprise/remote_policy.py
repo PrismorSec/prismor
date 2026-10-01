@@ -26,7 +26,6 @@ hard dependency stays ``pyyaml``.
 from __future__ import annotations
 
 from prismor.runtime.http_ua import user_agent as _http_user_agent
-from typing import Any, Dict, List, Optional, Tuple
 
 import base64
 import copy
@@ -36,15 +35,20 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from prismor.runtime.enterprise import identity as _identity
 
-_VERIFIED_POLICY_MEMO: Dict[Tuple[str, str, int, int, int, int, int, int, int, int], Dict[str, Any]] = {}
+# One verified+parsed policy, keyed on the exact bytes that were verified (plus
+# the trust root), so a hook call that loads the policy ~9 times runs openssl
+# and the YAML parse once (#478). Content-keyed, so a rewritten file can never
+# be served from a stale entry and no invalidation is needed.
+_VERIFIED: Dict[tuple, Dict[str, Any]] = {}
+
 
 def clear_policy_cache() -> None:
-    """Explicitly invalidate the in-process memoized remote policy."""
-    global _VERIFIED_POLICY_MEMO
-    _VERIFIED_POLICY_MEMO.clear()
+    _VERIFIED.clear()
+
 
 def _public_key_path() -> Path:
     """Bundled Ed25519 trust root (same key that signs the advisory feed).
@@ -628,9 +632,9 @@ def _verify_signature(payload: bytes, sig_b64: str) -> bool:
 
 def verify_and_load() -> Optional[Dict[str, Any]]:
     """Load and verify the cached remote policy. Returns the parsed policy dict
-    (with a "_remote_meta" key) or None if absent / unverifiable.
+    (with a ``_remote_meta`` key) or None if absent / unverifiable.
 
-    Called by the PolicyEngine on every load - must be cheap and never raise.
+    Called by the PolicyEngine on every load — must be cheap and never raise.
     """
     if _identity.revoked_info():
         return None
@@ -638,45 +642,29 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     sig_path = _cached_sig_path()
     if not policy_path.exists() or not sig_path.exists():
         return None
-
-    try:
-        pol_stat = policy_path.stat()
-        sig_stat = sig_path.stat()
-        cache_key = (
-            str(policy_path),
-            str(sig_path),
-            pol_stat.st_ino,
-            pol_stat.st_ctime_ns,
-            pol_stat.st_mtime_ns,
-            pol_stat.st_size,
-            sig_stat.st_ino,
-            sig_stat.st_ctime_ns,
-            sig_stat.st_mtime_ns,
-            sig_stat.st_size,
-        )
-    except OSError:
-        return None
-
-    if cache_key in _VERIFIED_POLICY_MEMO:
-        return copy.deepcopy(_VERIFIED_POLICY_MEMO[cache_key])
-
     try:
         payload = policy_path.read_bytes()
         sig_b64 = sig_path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
 
-    if not _verify_signature(payload, sig_b64):
-        sys.stderr.write("[prismor] remote policy signature INVALID - ignoring\n")
-        return None
-
-    try:
-        import yaml
-        parsed = yaml.safe_load(payload.decode("utf-8"))
-    except Exception:
-        return None
-    if not isinstance(parsed, dict):
-        return None
+    key = (str(_public_key_path()), payload, sig_b64)
+    parsed = _VERIFIED.get(key)
+    if parsed is None:
+        if not _verify_signature(payload, sig_b64):
+            sys.stderr.write("[prismor] remote policy signature INVALID — ignoring\n")
+            return None
+        try:
+            import yaml
+            parsed = yaml.safe_load(payload.decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        _VERIFIED.clear()
+        _VERIFIED[key] = parsed
+    # Callers mutate the result (pop "_remote_meta", etc.); never hand out the memo.
+    parsed = copy.deepcopy(parsed)
 
     meta = {}
     try:
@@ -684,10 +672,7 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     except (OSError, ValueError):
         pass
     parsed["_remote_meta"] = meta
-
-    _VERIFIED_POLICY_MEMO.clear()
-    _VERIFIED_POLICY_MEMO[cache_key] = parsed
-    return copy.deepcopy(parsed)
+    return parsed
 
 
 def _cache_is_fresh(ttl: float) -> bool:
@@ -709,7 +694,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if not ident:
         return False
     if _identity.revoked_backoff_active():
-        return False  # key was rejected - back off instead of hammering
+        return False  # key was rejected — back off instead of hammering
     if not force and _cache_is_fresh(ttl):
         return False
 
@@ -718,8 +703,8 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
 
     base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
     url = (
-        f"{base}/api/policy/resolve?"
-        f"device_id={ident.get('device_id')}&org_id={ident.get('org_id')}"
+        f"{base}/api/policy/resolve"
+        f"?device_id={ident.get('device_id')}&org_id={ident.get('org_id')}"
     )
     req = urllib.request.Request(
         url,
@@ -735,8 +720,8 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         if exc.code in (401, 403):
             _identity.mark_revoked(f"policy fetch rejected ({exc.code})")
             sys.stderr.write(
-                f"[prismor] control plane rejected this device's key "
-                f"({exc.code}) - keeping last good policy. Re-enroll with: prismor enroll <token>\n"
+                "[prismor] control plane rejected this device's key "
+                f"({exc.code}) — keeping last good policy. Re-enroll with: prismor enroll <token>\n"
             )
         else:
             sys.stderr.write(f"[prismor] remote policy fetch failed: {exc}\n")
@@ -750,7 +735,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if not policy_yaml or not signature:
         return False
     if not _verify_signature(policy_yaml.encode("utf-8"), signature):
-        sys.stderr.write("[prismor] fetched remote policy failed verification - discarding\n")
+        sys.stderr.write("[prismor] fetched remote policy failed verification — discarding\n")
         return False
 
     # Developer-facing transparency: detect the org flipping capture mode.
@@ -768,7 +753,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     if prev_capture is not None and bool(prev_capture) != full_capture:
         if full_capture:
             sys.stderr.write(
-                "[prismor] NOTICE: your org admin enabled FULL telemetry capture - "
+                "[prismor] NOTICE: your org admin enabled FULL telemetry capture — "
                 "flagged events now include scrubbed content (not just metadata). "
                 "Check `prismor enroll-status` for details.\n"
             )
@@ -782,16 +767,14 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     home.mkdir(parents=True, exist_ok=True)
     cached_policy_path().write_text(policy_yaml, encoding="utf-8")
     _cached_sig_path().write_text(signature, encoding="utf-8")
-    # The cloak hooks are bash and read pattern files, not this YAML; project
+    # The cloak hooks are bash and read pattern files, not this YAML: project
     # the org's secret patterns to a file they load. Verified policy only -
     # this runs after the signature check above. Best-effort, never fatal.
     try:
-        from prismor.runtime.cloaking_patterns import write_org_patterns
+        from prismor.runtime.cloaking.patterns import write_org_patterns
         write_org_patterns(_extract_cloak_patterns(policy_yaml))
     except Exception as exc:
         sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
-
-    
     _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
@@ -799,10 +782,8 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         "scope": body.get("scope"),
         "full_capture": full_capture,
     }), encoding="utf-8")
-    clear_policy_cache()
     return True
 
-    
 
 def _extract_cloak_patterns(policy_yaml: str) -> List[str]:
     """The org's ``settings.cloak_patterns`` list. Empty on any parse problem."""

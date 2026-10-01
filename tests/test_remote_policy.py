@@ -17,11 +17,28 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PRIVATE_KEY = REPO_ROOT / "keys" / "private.pem"
+_EPHEMERAL = None  # set when the real signing key is absent (CI, forks)
 
-pytestmark = pytest.mark.skipif(
-    not PRIVATE_KEY.exists(),
-    reason="signing key not available in this checkout",
-)
+
+@pytest.fixture(autouse=True)
+def _trust_root(tmp_path_factory, monkeypatch):
+    """Sign with the real key when present; otherwise mint an ephemeral Ed25519
+    pair and point the verifier at it, so this module runs everywhere instead of
+    silently skipping."""
+    global PRIVATE_KEY, _EPHEMERAL
+    from prismor.runtime.enterprise import remote_policy
+    remote_policy.clear_policy_cache()
+    if (REPO_ROOT / "keys" / "private.pem").exists():
+        return
+    if _EPHEMERAL is None:
+        d = tmp_path_factory.mktemp("trust-root")
+        subprocess.run(["openssl", "genpkey", "-algorithm", "ed25519",
+                        "-out", str(d / "private.pem")], check=True, capture_output=True)
+        subprocess.run(["openssl", "pkey", "-in", str(d / "private.pem"), "-pubout",
+                        "-out", str(d / "public.pub")], check=True, capture_output=True)
+        _EPHEMERAL = d
+    PRIVATE_KEY = _EPHEMERAL / "private.pem"
+    monkeypatch.setattr(remote_policy, "_public_key_path", lambda: _EPHEMERAL / "public.pub")
 
 
 def _sign(payload: bytes) -> str:
@@ -262,42 +279,42 @@ def test_tool_tags_sig_changes_when_an_agent_overlay_changes(tmp_path, monkeypat
         "          Bash: [critical_action, private_data]",
     ))
     assert remote_policy._current_tool_tags_sig() != before
- 
-def test_verify_and_load_memoization_avoids_repeated_verification(tmp_path, monkeypatch):
-    """Calling verify_and_load multiple times on unchanged files must reuse the in-process
-    memo, bypassing repeated signature checks and YAML parsing (#478)."""
-    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / ".prismor"))
-    _write_remote(tmp_path / ".prismor", REMOTE_POLICY)
-    _enroll()
 
-    from unittest.mock import patch
+
+def test_verify_and_load_verifies_once_per_content(tmp_path, monkeypatch):
+    """A hook call loads the policy ~9 times; openssl must run once per distinct
+    signed content, callers must not be able to corrupt the memo, and a rewritten
+    or tampered file must be re-verified (#478)."""
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / ".prismor"))
+    home = tmp_path / ".prismor"
+    _write_remote(home, REMOTE_POLICY)
+    _enroll()
     from prismor.runtime.enterprise import remote_policy
 
-    remote_policy.clear_policy_cache()
+    calls = []
+    real = remote_policy._verify_signature
+    monkeypatch.setattr(remote_policy, "_verify_signature",
+                        lambda p, s: calls.append(1) or real(p, s))
 
-    with patch.object(remote_policy, "_verify_signature", wraps=remote_policy._verify_signature) as mock_sig:
-        
-        p1 = remote_policy.verify_and_load()
-        assert p1 is not None
-        assert mock_sig.call_count == 1
+    p1 = remote_policy.verify_and_load()
+    assert p1 is not None and len(calls) == 1
+    p1["settings"]["block_categories"].append("mutated")
+    p1.pop("_remote_meta")
+    p2 = remote_policy.verify_and_load()
+    assert len(calls) == 1
+    assert "mutated" not in p2["settings"]["block_categories"]
+    assert p2["_remote_meta"]["version"] == 7
 
-        p2 = remote_policy.verify_and_load()
-        p3 = remote_policy.verify_and_load()
-        assert p2 == p1
-        assert p3 == p1
-        assert mock_sig.call_count == 1
+    # Meta is read fresh: a refreshed meta file shows up without re-verifying.
+    (home / "remote-policy.meta.json").write_text(json.dumps({"version": 8}))
+    assert remote_policy.verify_and_load()["_remote_meta"]["version"] == 8
+    assert len(calls) == 1
 
-        p1["mutated_field"] = True
-        p4 = remote_policy.verify_and_load()
-        assert "mutated_field" not in p4
-        assert mock_sig.call_count == 1
-     
-        _write_remote(tmp_path / ".prismor", AGENT_CONTROL_POLICY)
-        p5 = remote_policy.verify_and_load()
-        assert p5 is not None
-        assert mock_sig.call_count == 2
-       
-        remote_policy.clear_policy_cache()
-        p6 = remote_policy.verify_and_load()
-        assert p6 is not None
-        assert mock_sig.call_count == 3
+    # New signed content is verified again.
+    _write_remote(home, AGENT_CONTROL_POLICY)
+    assert remote_policy.verify_and_load() is not None and len(calls) == 2
+
+    # Tampered content with the old signature: re-verified and rejected, even
+    # though a verified policy was memoized a moment ago.
+    (home / "remote-policy.yaml").write_text(AGENT_CONTROL_POLICY + "\n# x\n")
+    assert remote_policy.verify_and_load() is None and len(calls) == 3
