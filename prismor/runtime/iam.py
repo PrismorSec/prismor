@@ -240,6 +240,9 @@ def _merge_remote_subject_controls(
             remote_denies = [t for t in (ctl.get("deny_tools") or []) if isinstance(t, str)]
             deny = list(dict.fromkeys(list(base.get("deny_tools") or []) + remote_denies))
             merged = {**base, "deny_tools": deny}
+        # Console-resolved email/name, so a block names a person, not an id.
+        if isinstance(ctl.get("label"), str) and ctl["label"].strip():
+            merged["__label__"] = ctl["label"].strip()
         agents[key] = merged
         changed = True
     if not changed:
@@ -304,10 +307,11 @@ def check_iam(
         # The shared scoped-rules copy says "for this session", which misleads
         # for identity-keyed profiles: a user:<id> deny follows the user across
         # every session and agent. Name the actual scope in user-facing text.
+        who_id = profile.get("__label__") or agent_id[5:]
         if agent_id.startswith("user:"):
-            scope = f"for user '{agent_id[5:]}'"
+            scope = f"for user '{who_id}'"
         elif agent_id.startswith("team:"):
-            scope = f"for team '{agent_id[5:]}'"
+            scope = f"for team '{who_id}'"
         else:
             scope = f"for agent identity '{agent_id}'"
         for key in ("title", "evidence"):

@@ -488,14 +488,15 @@ def evaluate_tool_call(
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
+                        _label = "org" if _scope == "org" else f"org {_scope}"
                         if _d.get("action") == "step_up":
                             findings.append(make_agent_tool_step_up_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}"))
+                                scope_label=_label))
                         else:
                             findings.append(make_agent_tool_deny_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}", rule_id="org-tool-deny"))
+                                scope_label=_label, rule_id="org-tool-deny"))
                         break
         except Exception as exc:
             sys.stderr.write(f"[prismor] org tool-deny error: {exc}\n")

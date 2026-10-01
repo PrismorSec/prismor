@@ -2579,8 +2579,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()
-            print("Next step: register your first secret with")
-            print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
+            _n = len(list_secrets())
+            if _n:
+                print(f"{_n} secret(s) already registered — see {_color('prismor cloak list', _CYAN)}")
+            else:
+                print("Next step: register your first secret with")
+                print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
             return
 
         if sub == "uninstall":

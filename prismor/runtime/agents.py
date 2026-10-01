@@ -517,7 +517,14 @@ def make_agent_tool_deny_finding(
         "title": f"[agent:{name}] Tool '{tool}' is denied ({scope_label} scope)",
         "evidence": f"tool '{tool}' is on the {scope_label} deny list",
         "eventIndex": 0,
-        "remediation": "Lift it from the dashboard Tool Call panel or edit .prismor/agents.yaml",
+        "remediation": (
+            "An org admin set this: lift it in the Prismor console under MCP Hub → Tools "
+            "(or Policies → Tool access)"
+            if rule_id == "org-tool-deny"
+            # agent scope merges local agents.yaml with the org's agent_controls
+            else "Remove it from deny_tools (or global_deny_tools) in .prismor/agents.yaml, "
+            "or from the agent's tool list in the Prismor console if your org set it"
+        ),
     }
 
 
