@@ -23,8 +23,8 @@ server name, so trifecta globs / org tool denies / control-plane matchers apply 
 
 ## Medium priority
 
-### Dashboard subject filter
-Data is already captured and tagged per-user in findings/events (field: `subject`). The dashboard (`prismor/runtime/server.py` `/api/findings`, `/api/events`) and `prismor/runtime/dashboard.html` don't yet expose a subject filter or column. Add:
+### ~~Dashboard subject filter~~ — DONE
+Data is already captured and tagged per-user in findings/events (field: `subject`). Exposed via:
 - `?subject=user:alice` query param on `/api/findings` / `/api/events`
 - A "User" column in the findings table
 - A user dropdown filter in `dashboard.html`
