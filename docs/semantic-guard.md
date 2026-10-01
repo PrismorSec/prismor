@@ -433,9 +433,14 @@ prismor audit judge --json
 - **Results** go to the local `judge_audit` table (`prismor query "SELECT *
   FROM judge_audit WHERE verdict='flagged'"`). Each flagged call also produces
   one telemetry record through the configured sinks: `type: judge_audit`,
-  `rule_id: judge-audit`, `verdict: observed`, the judge's category. In
-  redacted mode it carries no call content or reason text; it is chained and
-  signed like every other record. Nothing is blocked retroactively.
+  `rule_id: judge-audit`, `verdict: observed`, the tool name, the audited
+  call's key (`audited_event`, `<session_id>:<event_index>`), the judge's
+  `risk_score`, category and `model`, and a severity (`MEDIUM`, `HIGH` at or
+  over `block_threshold`). In redacted mode it carries no call content or
+  reason text; under full capture the reason is in `detail`, scrubbed. It is
+  chained and signed like every other record, and lands in the console's
+  review queue, where labels measure the judge's precision. Nothing is
+  blocked retroactively.
 
 Defaults live under `semantic_guard.audit` and only apply when the command runs:
 

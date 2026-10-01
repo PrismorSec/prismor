@@ -224,24 +224,33 @@ def run(
                        "tool": tool, "risk_score": round(risk.risk_score, 3),
                        "category": risk.category, "reason": risk.reason}
                 report["flagged"].append(hit)
-                _emit(engine, hit, raw, c, severity="HIGH" if risk.risk_score >= block_t else "MEDIUM")
+                _emit(engine, hit, raw, c, model=model, severity=severity(risk.risk_score, block_t))
     finally:
         conn.close()
     return report
 
 
-def _emit(engine: Any, hit: Dict[str, Any], raw: Dict[str, Any], c: Dict[str, Any], severity: str) -> None:
+def severity(risk_score: float, block_t: float) -> str:
+    """Flagged (>= warn) maps to MEDIUM, at or over the block line to HIGH.
+    Observe-only, so it stays a notch under what the live layer would say."""
+    return "HIGH" if risk_score >= block_t else "MEDIUM"
+
+
+def _emit(engine: Any, hit: Dict[str, Any], raw: Dict[str, Any], c: Dict[str, Any],
+          *, model: str, severity: str) -> None:
     """One observe-only record per flagged call through the normal sink path.
 
     The event handed to the sinks is content-free on purpose (type, tool name,
     tool_use_id): the prismor sink chains, signs and assert_redacted()s it like
     any other record, and even under full capture there is no call content to
-    ship. The judge's reason rides as evidence: hashed in redacted mode.
+    ship. The judge's reason rides as evidence: hashed in redacted mode, under
+    detail (scrubbed) in full capture, since it can echo the call. Everything
+    the reviewer needs otherwise is an id, an enum or a number (judgeAudit).
     """
     if not getattr(engine, "outputs", None):
         return
     from prismor.runtime.enterprise.telemetry import _tool_use_id
-    from prismor.runtime.sinks import dispatch
+    from prismor.runtime.sinks import _scrub_for_sink, dispatch
 
     finding = {
         "id": f"{c['session_id']}:{RULE_ID}-{c['event_index']}",
@@ -249,9 +258,10 @@ def _emit(engine: Any, hit: Dict[str, Any], raw: Dict[str, Any], c: Dict[str, An
         "category": hit["category"],
         "severity": severity,
         "title": "Judge audit flagged an allowed tool call",
-        "evidence": hit["reason"],
+        "evidence": _scrub_for_sink(hit["reason"]),  # the judge may echo the call
         "action": "warn",
         "mode": "observe",
+        "judgeAudit": {"auditedEvent": c["event_id"], "riskScore": hit["risk_score"], "model": model},
     }
     event = {"type": "judge_audit",
              "metadata": {"tool_name": hit["tool"], "tool_use_id": _tool_use_id(raw)}}
