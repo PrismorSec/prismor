@@ -27,6 +27,7 @@ dropped and replaced by a hash. The test-suite asserts this invariant.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -44,6 +45,32 @@ _SENSITIVE_EVENT_FIELDS = (
 )
 
 _REDACTED = "[REDACTED]"
+
+# Deployment labels: which environment (prod/staging/dev/ci) and which release
+# of the agent (git sha, app version) produced an event. Operator-set config,
+# not captured content, so they ride in redacted mode. Anything that fails
+# validation is dropped rather than coerced.
+_ENVIRONMENT_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
+_RELEASE_RE = re.compile(r"^[!-~]{1,64}$")  # printable ASCII, no whitespace
+
+
+def deployment_labels() -> Dict[str, Optional[str]]:
+    """``environment`` / ``release`` from ``PRISMOR_ENVIRONMENT`` /
+    ``PRISMOR_RELEASE``; null when unset or invalid."""
+    import logging
+    import os
+
+    out: Dict[str, Optional[str]] = {}
+    for key, var, pattern in (
+        ("environment", "PRISMOR_ENVIRONMENT", _ENVIRONMENT_RE),
+        ("release", "PRISMOR_RELEASE", _RELEASE_RE),
+    ):
+        value = os.environ.get(var) or None
+        if value is not None and not pattern.match(value):
+            logging.getLogger(__name__).debug("ignoring invalid %s", var)
+            value = None
+        out[key] = value
+    return out
 
 
 def _now_iso() -> str:
@@ -122,22 +149,53 @@ _UNIXPATH_RE = re.compile(r"(?:~|\.)?(?:/[\w.\-@+]+){1,}/?")
 _HOST_RE = re.compile(r"\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b")
 
 
+@functools.lru_cache(maxsize=1)
+def _catalog_titles() -> tuple:
+    """Titles of the bundled rules, longest first. They are static catalog
+    text, so redaction must not touch them: "chmod/chown -R" and "agent I/O"
+    were being uploaded as "chmod[path] -R" and "agent I[path]" (#278)."""
+    try:
+        import yaml
+        from prismor.runtime.policy_engine import _DEFAULT_POLICY_PATH
+        rules = (yaml.safe_load(_DEFAULT_POLICY_PATH.read_text(encoding="utf-8")) or {}).get("rules") or []
+        titles = {str(r.get("title")) for r in rules if isinstance(r, dict) and r.get("title")}
+    except Exception:
+        return ()
+    return tuple(sorted(titles, key=len, reverse=True))
+
+
 def _safe_title(title: Any, scrubbers: List[re.Pattern[str]]) -> Any:
     """Strip secrets / URLs / file paths / hostnames from a title so a redacted
-    record carries only the static, non-sensitive description."""
+    record carries only the static, non-sensitive description.
+
+    A bundled rule title inside it (whole, or embedded as in "Possible evasion
+    of: <title>" or "<title> (in <origin>)") is kept verbatim; only the rest is
+    scrubbed."""
     if not isinstance(title, str) or not title:
         return title
-    t = scrub(title, scrubbers)
+    kept: List[str] = []
+
+    def _hold(m: "re.Match[str]") -> str:
+        kept.append(m.group(0))
+        return f"\x00{len(kept) - 1}\x00"
+
+    t = title
+    for static in _catalog_titles():
+        if static in t:
+            t = re.sub(re.escape(static), _hold, t)
+    t = scrub(t, scrubbers)
     t = _URL_RE.sub("[url]", t)
     t = _WINPATH_RE.sub("[path]", t)
     t = _UNIXPATH_RE.sub("[path]", t)
     t = _HOST_RE.sub("[host]", t)
-    return t
+    return re.sub(r"\x00(\d+)\x00", lambda m: kept[int(m.group(1))], t)
 
 
 def _title_has_leak(title: Any) -> bool:
     if not isinstance(title, str) or not title:
         return False
+    for static in _catalog_titles():  # policy text, not captured data
+        title = title.replace(static, "")
     return bool(_URL_RE.search(title) or _WINPATH_RE.search(title)
                 or _UNIXPATH_RE.search(title) or _HOST_RE.search(title))
 
@@ -213,6 +271,17 @@ def build_record(
         "repo": extra.get("repo"),
         "workspace_path": extra.get("workspace"),
         "policy_scope": extra.get("policy_scope") or "org",
+        # Which signed org policy was in force when this call was decided
+        # (version + profile id from the verified remote-policy cache). Null on
+        # local-only policy. Opaque int/id, not user data — survives redaction,
+        # and lets the console explain old events against the policy that
+        # actually decided them rather than whatever is current.
+        "policy_version": extra.get("policy_version"),
+        "policy_profile_id": extra.get("policy_profile_id"),
+        # Deployment labels (validated in deployment_labels()). Operator config,
+        # not user data, so they survive redaction.
+        "environment": extra.get("environment"),
+        "release": extra.get("release"),
         # Title: in redacted mode sanitized to its static description (paths /
         # hosts / URLs / secrets stripped); in full mode the raw (secret-scrubbed)
         # title. Forwarded so the dashboard is human-readable without raw evidence.

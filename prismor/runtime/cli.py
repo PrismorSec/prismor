@@ -7,6 +7,7 @@ Commands:
   deps          Check workspace dependencies against threat feed
   audit         Full security posture check across all Prismor subsystems
   audit --fix   Auto-remediate fixable issues
+  audit judge   LLM judge reviews a sample of ALLOWED tool calls after the fact
   status        One-shot health check for this workspace (--all for every workspace)
   doctor        Health-check every runtime subsystem (hooks, policy, signature, enrollment, sink, chain); --json for scripts
   analyze       Analyze a JSONL session file
@@ -55,6 +56,8 @@ import json
 import os
 import re
 import subprocess
+import contextlib
+import io
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -1213,6 +1216,36 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     # ── audit: full security posture check ──────────────────────────
+    if args.command == "audit" and getattr(args, "target", None) == "judge":
+        from prismor.runtime import judge_audit as _ja
+        try:
+            report = _ja.run(workspace, since=args.since, sample=args.sample,
+                             max_n=args.max_n, dry_run=args.dry_run)
+        except (_ja.JudgeNotConfigured, ValueError) as exc:
+            sys.stderr.write(f"prismor audit judge: {exc}\n")
+            raise SystemExit(2)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"Judge audit: {report['eligible']} allowed call(s) in the last {report['window']}, "
+                  f"{report['sampled']} sampled at {report['sample_rate']:g} (max {report['max']})")
+            if report["dry_run"]:
+                for ev in report["events"]:
+                    print(f"  would judge  {ev['event_id']}  {ev['ts']}  {ev['type']}")
+                print("Dry run: no judge calls made.")
+            else:
+                print(f"Judged {report['judged']}, flagged {len(report['flagged'])}"
+                      + (f", {report['unjudged']} unjudged (judge failed or over budget; retried next run)"
+                         if report["unjudged"] else ""))
+                for hit in report["flagged"]:
+                    print(_color(f"  FLAGGED  {hit['event_id']}  {hit['tool']}  "
+                                 f"{hit['category']} {hit['risk_score']:.2f}", _YELLOW))
+                    print(f"           {hit['reason']}")
+                if report["flagged"]:
+                    print("Allowed calls are never blocked retroactively. Inspect one with: "
+                          "prismor query \"SELECT * FROM judge_audit WHERE verdict='flagged'\"")
+        return
+
     if args.command == "audit":
         from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
@@ -1612,6 +1645,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         # "what does this repo do?" is no longer Read-only forever once the
         # user says "now fix it". (Narrowing is the operator's job: IAM or the
         # dashboard's per-session denies, which merge_scoped_rules preserves.)
+        # The scoped-agent notice is held until the decision: a blocked prompt's
+        # stderr IS the block reason on Codex, and the notice buried it (#541).
+        _scoped_notice = io.StringIO()
         if event.get("agent_event") == "UserPromptSubmit":
             try:
                 from prismor.runtime.scoped_agent import (
@@ -1634,17 +1670,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # can never put an MCP tool in scope and every MCP call is
                     # denied by omission, whatever the prompt asks for.
                     _available_tools = _available_tools_for_scope(workspace, args.agent)
-                    _scoped_rules = _synthesize_scoped(
-                        goal=event["prompt"],
-                        available_tools=_available_tools,
-                        workspace=workspace,
-                    )
+                    with contextlib.redirect_stderr(_scoped_notice):
+                        _scoped_rules = _synthesize_scoped(
+                            goal=event["prompt"],
+                            available_tools=_available_tools,
+                            workspace=workspace,
+                        )
                     if _scoped_rules:
                         _scoped_rules = _agent_invariants(_scoped_rules, args.agent)
                         if _existing_scoped is not None:
                             _scoped_rules = _merge_scoped(_existing_scoped, _scoped_rules)
                         _save_scoped(workspace, normalized["sessionId"], _scoped_rules)
-                        sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
+                        _scoped_notice.write(_format_scoped_box(_scoped_rules) + "\n")
             except Exception as _scoped_exc:
                 sys.stderr.write(f"[prismor] scoped agent error: {_scoped_exc}\n")
         _perf.lap("scope_synthesis")
@@ -1697,11 +1734,14 @@ def main(argv: Optional[List[str]] = None) -> None:
             mode=args.mode,
             session_id=normalized["sessionId"],
             repo_root=repo_root,
+            flush_at_exit=False,  # one process per call: keep the 60s batching
         )
         _perf.lap("decision")
         _current_engine = decision.engine
         current_findings = decision.findings
         blocking = decision.blocking
+        if blocking is None and _scoped_notice.getvalue():
+            sys.stderr.write(_scoped_notice.getvalue())
 
         # Stamp how long this hook process took once it exits -- whichever
         # path it leaves by (allow, block via sys.exit(2), sandbox rewrite) --
@@ -2570,8 +2610,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()
-            print("Next step: register your first secret with")
-            print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
+            _n = len(list_secrets())
+            if _n:
+                print(f"{_n} secret(s) already registered — see {_color('prismor cloak list', _CYAN)}")
+            else:
+                print("Next step: register your first secret with")
+                print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
             return
 
         if sub == "uninstall":
@@ -3467,10 +3511,21 @@ def build_parser() -> argparse.ArgumentParser:
     deps_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── audit ──────────────────────────────────────────────────────────
-    audit_parser = subparsers.add_parser("audit", help="Full security posture audit across all Prismor subsystems")
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Full security posture audit; `audit judge` has the LLM judge review a sample of allowed calls",
+    )
+    audit_parser.add_argument(
+        "target", nargs="?", choices=["judge"],
+        help="judge: sampled after-the-fact judge review of ALLOWED tool calls in the local store",
+    )
     audit_parser.add_argument("--workspace", help="Workspace path")
     audit_parser.add_argument("--fix", action="store_true", help="Auto-remediate fixable issues")
     audit_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    audit_parser.add_argument("--since", help="[judge] window to audit, e.g. 30m, 24h, 7d (default: semantic_guard.audit.window, 24h)")
+    audit_parser.add_argument("--sample", type=float, help="[judge] fraction of allowed calls to judge, 0-1 (default 0.05)")
+    audit_parser.add_argument("--max", type=int, dest="max_n", metavar="N", help="[judge] cap on judge calls this run (default 50)")
+    audit_parser.add_argument("--dry-run", action="store_true", help="[judge] show what would be judged; no judge calls")
 
     # ── query / docs ────────────────────────────────────────────────────
     query_parser = subparsers.add_parser(
@@ -5230,7 +5285,16 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
             from prismor.runtime.enterprise import remote_policy as _remote
             cached = _remote.cached_policy_path()
             if not cached.exists():
-                add("warn", "remote policy", "no cached org policy yet (first pull happens on the next tool call)")
+                # Enrolled with no policy means no telemetry sink and no org
+                # controls, so pull now instead of reporting it as healthy.
+                try:
+                    _remote.fetch(force=True)
+                except Exception:
+                    pass
+            if not cached.exists():
+                add("fail", "remote policy",
+                    "enrolled but no org policy could be pulled — telemetry and console "
+                    "controls stay off until it is (check network access to the control plane)")
             else:
                 sig_path = _remote._cached_sig_path()
                 sig = sig_path.read_text(encoding="utf-8").strip() if sig_path.exists() else ""
@@ -5378,9 +5442,21 @@ def _print_status_overview(workspace: Path) -> None:
         elif _m == "observe" and mode is None:
             mode = "observe"
 
+    # On an enrolled device the signed org policy outranks the hook's local
+    # --mode (runtime.evaluate_tool_call), so report what actually applies.
+    mode_source = ""
+    try:
+        from prismor.runtime.enterprise import identity as _identity, remote_policy as _remote
+        if _identity.is_enrolled():
+            _org = ((_remote.verify_and_load() or {}).get("settings") or {}).get("default_mode")
+            if _org in ("enforce", "observe"):
+                mode, mode_source = _org, f" — org policy v{_remote.current_version()}"
+    except Exception:
+        pass
+
     if agents_with_hooks:
         mode_color = _GREEN if mode == "enforce" else _YELLOW
-        mode_str = _color(mode or "unknown", mode_color)
+        mode_str = _color(mode or "unknown", mode_color) + mode_source
         if hooks_by_scope["project"] and hooks_by_scope["global"]:
             scope_str = "project + global"
         elif hooks_by_scope["global"]:

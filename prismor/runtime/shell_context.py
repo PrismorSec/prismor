@@ -13,7 +13,7 @@ the pipeline) keeps blocking.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, NamedTuple, Tuple
 
 # Commands whose quoted argument is executed, not printed. A match inside one of
 # these payloads is code and must never be downgraded.
@@ -113,21 +113,53 @@ def _outside_quotes(command: str, spans) -> str:
     return "".join(chars)
 
 
-_HEREDOC_OPEN = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n")
+# `<<EOF`, `<<-EOF`, `<< "EOF"`, `<<\EOF`; not the `<<<` of a here-string.
+_HEREDOC_OPEN = re.compile(
+    r"(?<!<)(?P<op><<-?\s*(?P<q>['\"\\]?)(?P<d>[A-Za-z_][A-Za-z0-9_]*)['\"]?)[^\n]*\n"
+)
 # Commands whose heredoc body is data: written to a file or printed, never run.
 _HEREDOC_SINKS = frozenset({"cat", "tee"})
 
 
-def heredoc_spans(command: str) -> List[Tuple[int, int, str]]:
-    """``(body_start, body_end, opener_line)`` for every closed heredoc."""
-    out: List[Tuple[int, int, str]] = []
+class Heredoc(NamedTuple):
+    """One closed heredoc; the offsets index the command it was found in."""
+
+    start: int  # the ``<<``
+    op_end: int  # just past the delimiter word
+    body_start: int  # first character of the body
+    body_end: int  # start of the closing delimiter line
+    end: int  # end of the closing delimiter line
+    expands: bool  # unquoted delimiter: the shell expands the body
+
+
+def heredocs(command: str) -> List[Heredoc]:
+    """Every closed heredoc, left to right. A ``<<`` inside another's body
+    is body text, not an opener. This is the one heredoc grammar; the
+    provenance scanner reads it too."""
+    out: List[Heredoc] = []
+    pos = 0
     for m in _HEREDOC_OPEN.finditer(command):
-        close = re.compile(r"^\s*" + re.escape(m.group(2)) + r"\s*$", re.M).search(command, m.end())
+        if m.start() < pos:
+            continue
+        close = re.compile(
+            r"^\s*" + re.escape(m.group("d")) + r"\s*$", re.M
+        ).search(command, m.end())
         if close is None:
             continue
-        opener = command[:m.start()].rsplit("\n", 1)[-1]
-        out.append((m.end(), close.start(), opener))
+        out.append(Heredoc(
+            m.start(), m.end("op"), m.end(), close.start(), close.end(),
+            not m.group("q"),
+        ))
+        pos = close.end()
     return out
+
+
+def heredoc_spans(command: str) -> List[Tuple[int, int, str]]:
+    """``(body_start, body_end, opener_line)`` for every closed heredoc."""
+    return [
+        (h.body_start, h.body_end, command[:h.start].rsplit("\n", 1)[-1])
+        for h in heredocs(command)
+    ]
 
 
 def _blank(text: str, spans) -> str:

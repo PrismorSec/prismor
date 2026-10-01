@@ -156,6 +156,12 @@ def _base_command(command: str) -> str:
     return parts[0] if parts else ""
 
 
+def _drops_only(command: str, blocked: str) -> bool:
+    """True when ``command`` is ``blocked`` with some segments removed."""
+    segs = set(normalize_command_structure(command).split(" | "))
+    return bool(segs) and segs < set(normalize_command_structure(blocked).split(" | "))
+
+
 # ── Dismissal tracking ─────────────────────────────────────────────────────
 
 def record_dismissal(
@@ -259,6 +265,15 @@ def detect_evasion(
 
             # Must share the same base command
             if _base_command(blocked_cmd) != base:
+                continue
+
+            # Every segment of this command already appeared in the blocked
+            # one: the agent dropped the part that was blocked and kept the
+            # rest (`mkdir -p x && chmod -R 777 x && ls` -> `mkdir -p x && ls`).
+            # That is compliance, not evasion. A real evasion brings a segment
+            # the blocked command did not have (`mkdir -p -m 777 x`), so it
+            # still reaches the similarity check.
+            if _drops_only(command, blocked_cmd):
                 continue
 
             similarity = command_structural_similarity(command, blocked_cmd)
@@ -636,7 +651,7 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
                   WHERE f.session_id = e.session_id
                     AND f.evidence LIKE '%' || SUBSTR(e.command_text, 1, 40) || '%'
               )
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
         ).fetchall()
     finally:
         conn.close()
@@ -726,7 +741,7 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
             GROUP BY rule_id
             HAVING cnt >= ?
             ORDER BY cnt DESC
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
             (threshold,),
         ).fetchall()
     finally:

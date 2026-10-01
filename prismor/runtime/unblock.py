@@ -185,6 +185,14 @@ def _subsystem_steps(
         steps.append("2. Check which layer paused it: prismor agents list")
         return steps
 
+    if rule_id == "org-tool-deny":
+        # Org policy merges last, so `prismor allow` or agents.yaml can't lift it.
+        return [
+            "This tool is on your org's deny list; local overrides do not apply to it.",
+            f"1. {finding.get('remediation')}",
+            '2. Or ask an admin for an exemption: prismor exempt request --reason "<why>"',
+        ]
+
     if rule_id == "iam":
         path = str((workspace / ".prismor" / "iam.yaml")) if workspace else ".prismor/iam.yaml"
         return [

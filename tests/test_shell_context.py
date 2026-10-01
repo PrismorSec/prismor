@@ -147,3 +147,25 @@ def test_apostrophe_in_heredoc_body_cannot_hide_trailing_interpreter():
 def test_unclosed_heredoc_is_live():
     cmd = "cat > /tmp/s/x.sh <<'SH'\nrm -rf /\n"
     assert not is_inert_match(cmd, *_pos(cmd, "rm -rf /"))
+
+
+def test_heredocs_report_expansion_and_skip_openers_inside_a_body():
+    """One heredoc grammar serves the inert-match check and the provenance
+    scanner. A quoted delimiter means a literal body; a `<<` inside a body is
+    text, not a second heredoc; a here-string is not a heredoc at all."""
+    from prismor.runtime.shell_context import heredocs, heredoc_spans
+
+    cmd = "cat > a <<'EOF'\nx <<EOF\nEOF\ncat <<EOF | tee b\n$V\nEOF\n"
+    hs = heredocs(cmd)
+    assert [(cmd[h.start:h.op_end], cmd[h.body_start:h.body_end], h.expands) for h in hs] == [
+        ("<<'EOF'", "x <<EOF\n", False),
+        ("<<EOF", "$V\n", True),
+    ]
+    assert [cmd[h.body_end:h.end].strip() for h in hs] == ["EOF", "EOF"]
+    assert heredoc_spans(cmd) == [
+        (hs[0].body_start, hs[0].body_end, "cat > a "),
+        (hs[1].body_start, hs[1].body_end, "cat "),
+    ]
+    assert heredocs("cat <<<'not a heredoc'\nEOF\n") == []
+    assert heredocs("cat <<\\EOF\nbody\nEOF\n")[0].expands is False
+

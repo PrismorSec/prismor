@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 try:  # POSIX advisory locks; absent on Windows.
     import fcntl
@@ -124,6 +124,25 @@ def prismor_home() -> Path:
     PrismorSec/prismor#131 for the inconsistency this replaces.
     """
     return Path(os.environ.get("PRISMOR_HOME", str(Path.home() / ".prismor")))
+
+
+def relocated_home_env() -> Dict[str, str]:
+    """``{"PRISMOR_HOME": ...}`` when the home is relocated, else ``{}``.
+
+    For MCP server entries Prismor writes into agent configs. The host launches
+    them from its own environment, not the shell that ran the installer, so a
+    relocated $PRISMOR_HOME has to be pinned into the entry or the server runs
+    under a different identity and policy than the CLI and the hooks. A default
+    install keeps a clean entry.
+    """
+    home = os.environ.get("PRISMOR_HOME")
+    if not home:
+        return {}
+    try:
+        relocated = Path(home).expanduser().resolve() != (Path.home() / ".prismor").resolve()
+    except OSError:
+        relocated = True
+    return {"PRISMOR_HOME": str(Path(home).expanduser())} if relocated else {}
 
 
 # ── Re-cloaking: never persist a raw secret value to the audit store ─────────
@@ -786,6 +805,8 @@ def initialize_database(workspace: Path) -> Path:
         )
         from prismor.runtime.learning import initialize_learning_tables
         initialize_learning_tables(connection)
+        from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
+        connection.executescript(_JUDGE_AUDIT_DDL)
 
         connection.commit()
     finally:
@@ -2177,6 +2198,7 @@ _HOOK_TIMINGS_DDL = (
     "agent TEXT, detail_json TEXT, "
     "PRIMARY KEY (session_id, ts))"
 )
+_HOOK_TIMINGS_MIGRATED: Set[Path] = set()
 
 
 def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int,
@@ -2193,15 +2215,18 @@ def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: st
     """
     if not session_id or not ts:
         return
+    db_path = get_db_path(workspace)
     try:
-        conn = sqlite3.connect(get_db_path(workspace), timeout=2)
+        conn = sqlite3.connect(db_path, timeout=2)
         try:
             conn.execute(_HOOK_TIMINGS_DDL)
-            for col in ("agent", "detail_json"):  # tables created before #494
-                try:
-                    conn.execute(f"ALTER TABLE hook_timings ADD COLUMN {col} TEXT")  # constant identifiers  # nosec B608
-                except sqlite3.OperationalError:
-                    pass
+            if db_path not in _HOOK_TIMINGS_MIGRATED:
+                for col in ("agent", "detail_json"):  # tables created before #494
+                    try:
+                        conn.execute(f"ALTER TABLE hook_timings ADD COLUMN {col} TEXT")  # constant identifiers  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
+                _HOOK_TIMINGS_MIGRATED.add(db_path)
             conn.execute(
                 "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms, agent, detail_json) "
                 "VALUES (?, ?, ?, ?, ?, ?)",

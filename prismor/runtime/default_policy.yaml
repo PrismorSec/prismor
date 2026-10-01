@@ -481,6 +481,24 @@ rules:
       - 'launchctl\s+unload\b'
     action: block
 
+  # ── HIGH (warn): Recursive delete of a directory under the home dir ──
+  # destructive-command deliberately allows routine cleanup, so a recursive
+  # force delete of an arbitrary project or data dir under ~ ran silently
+  # even under enforce. action: warn reports it without blocking (it cannot
+  # tell a real delete from the same text in a heredoc). Do NOT give it a
+  # rule-level `mode`: any rule mode opts this whole file out of legacy
+  # category gating (PolicyEngine.is_legacy_policy) and secret-access etc.
+  # stop blocking. Build/cache dirs by name stay quiet.
+  - id: recursive-delete-home
+    severity: HIGH
+    category: destructive_command
+    title: Flags rm -rf of a directory under the home directory
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n;&|]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|]*\s-[rR]\b|--recursive\b[^\n;&|]*--force\b|--force\b[^\n;&|]*--recursive\b))[^\n;&|]*\s+["'']?(?:~|\$\{?HOME\}?|/(?:home|Users)/[^/\s"'']+)/(?![^\s"'';&|]*?(?:^|/)?(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)/?(?:["'']|\s|$|;|&|\|))[^\s"'';&|]+'
+    action: warn
+
   # ── CRITICAL: Secret exfiltration ─────────────────────────────────────
   - id: secret-exfiltration
     severity: CRITICAL
@@ -1950,5 +1968,101 @@ rules:
       - '\biptables\s+-P\s+\w+\s+ACCEPT\b'
       - '\bnft\s+flush\s+ruleset\b'
     action: block
+
+  # ── HIGH (warn): Change control — shared infra, prod branches, cloud ──
+  # Not attacks: ordinary commands that change something other people depend
+  # on. Category change_control is NOT in block_categories and every rule is
+  # action: warn, so by default these are reported (audit log, console),
+  # never blocked. To make one blocking, enforce it in .prismor/policy.yaml:
+  #   rules: [{id: terraform-state-change, mode: enforce}]
+  # (action: block or adding the category to block_categories is NOT enough:
+  # the legacy gate honors action: warn as a report inside any category.)
+  # Do not give these rules a `mode` here; see recursive-delete-home.
+  # Every pattern is anchored at command position (line start, after a shell
+  # separator, or behind sudo/env/VAR=) so a commit message, grep, or doc that
+  # merely mentions the command does not match.
+  - id: git-push-protected-branch
+    severity: HIGH
+    category: change_control
+    title: Flags git push straight to main/master
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # names main/master as the destination ref: `origin main`, `HEAD:main`,
+      # `+main`, `:main` (deletion). ponytail: a bare `git push` while checked
+      # out on main is invisible to a regex; needs the hook to read the branch.
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?git(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+push\b[^\n;&|]*?[\s:+](?:refs/heads/)?(?:main|master)(?=\s|$|[;&|)])'
+    action: warn
+
+  - id: terraform-state-change
+    severity: HIGH
+    category: change_control
+    title: Flags terraform/tofu/terragrunt apply, destroy, import and state surgery
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:rm|mv|push|replace-provider)|workspace\s+delete|run-all\s+(?:apply|destroy))(?=\s|$|[;&|)])'
+    action: warn
+
+  - id: kubectl-cluster-change
+    severity: HIGH
+    category: change_control
+    title: Flags kubectl/oc commands that change cluster state (apply, delete, scale, drain…)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:kubectl|oc)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:apply|create|delete|patch|replace|edit|scale|autoscale|expose|drain|cordon|uncordon|taint|label|annotate|set\s+\S+|rollout\s+(?:restart|undo|pause|resume))(?=\s|$|[;&|)])'
+    action: warn
+
+  - id: helm-release-change
+    severity: HIGH
+    category: change_control
+    title: Flags helm install, upgrade, uninstall and rollback
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?helm(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:install|upgrade|uninstall|delete|rollback)(?=\s|$|[;&|)])'
+    action: warn
+
+  - id: cloud-cli-mutation
+    severity: HIGH
+    category: change_control
+    title: Flags aws/gcloud/az commands that create, change or delete cloud resources
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # aws <service> <verb>-…: terminate-instances, delete-bucket, put-object…
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?aws(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+[a-z][\w-]*\s+(?:create|delete|put|update|modify|terminate|stop|start|run|reboot|remove|attach|detach|register|deregister|authorize|revoke|enable|disable|restore|reset|replace|invoke|publish|send|cancel|import|associate|disassociate|tag|untag)(?:-[\w-]+)?(?=\s|$|[;&|)])'
+      # aws s3 rm/rb, and cp/mv/sync whose destination is a bucket (an upload)
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?aws(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+s3\s+(?:rm|rb)(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?aws(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+s3\s+(?:cp|mv|sync)\s+(?!s3://)[^\s;&|]+\s+s3://'
+      # gcloud [alpha|beta] <group…> <verb>: compute instances delete, run deploy
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gcloud(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*(?:\s+[a-z][\w-]*){1,4}?\s+(?:create|delete|update|patch|deploy|undelete|rollback|resize|reset|stop|start|import|disable|enable|set-iam-policy|add-iam-policy-binding|remove-iam-policy-binding)(?=\s|$|[;&|)])'
+      # az <group…> <verb>: group delete, vm deallocate, role assignment create
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?az(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*(?:\s+[a-z][\w-]*){1,4}?\s+(?:create|delete|update|purge|deploy|deallocate|restart|stop|start|scale|swap|upgrade|import|assign|revoke|grant)(?=\s|$|[;&|)])'
+    action: warn
+
+  - id: gh-remote-mutation
+    severity: HIGH
+    category: change_control
+    title: Flags gh commands that merge PRs, run workflows, publish releases or delete repos
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # `gh pr create` / `gh issue comment` are normal agent work and stay quiet.
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:pr\s+(?:merge|close)|workflow\s+(?:run|enable|disable)|run\s+(?:rerun|cancel|delete)|release\s+(?:create|delete|edit|upload)|repo\s+(?:delete|archive|rename|edit)|secret\s+(?:set|delete|remove)|variable\s+(?:set|delete)|issue\s+(?:delete|transfer))(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+api\b[^\n;&|]*(?:-X\s*|--method[=\s]\s*)(?:POST|PUT|PATCH|DELETE)\b'
+    action: warn
+
+  - id: sudo-command
+    severity: MEDIUM
+    category: change_control
+    title: Flags any command run through sudo/doas
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # sudo -l/-v/-k and --help/--version do not elevate anything.
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
+    action: warn
 
 allowlists: []

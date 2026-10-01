@@ -1145,7 +1145,13 @@ _AGENT_CONTEXT_BLOCK = (
     "| Install packages safely | `prismor supplychain <pm> install <pkg>` |\n"
     "| Pre-check a risky command | `prismor check \"<cmd>\"` |\n"
     "| Scan for dep vulnerabilities | `prismor deps` |\n"
-    "| Harden package config | `prismor supplychain harden` |\n\n"
+    "| Harden package config | `prismor supplychain harden` |\n"
+    "| Test a host before reaching it | `prismor egress test <host>` |\n"
+    "| Ask what Prismor blocked | `prismor query --schema`, then `prismor query \"SELECT …\"` |\n\n"
+    "Secrets are referenced as `@@SECRET:<name>@@`; never inline a real value.\n\n"
+    "If Prismor blocks a call, don't reword and retry, and don't pause or edit "
+    "`.prismor/` to get past it. Relay the printed unblock steps to the user; "
+    "they are the user's to run.\n\n"
     "Full decision tree: `.claude/skills/immunity-agent/SKILL.md`\n"
 )
 

@@ -14,7 +14,9 @@ a JSON permission object, or a raised exception).
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -124,6 +126,41 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 _NO_PROJECT_AGENTS = frozenset({"prismor-proxy"})
 
 
+_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
+_READ_TOOL = re.compile(r"read|open|cat|load|view|get_?file", re.I)
+_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file", re.I)
+
+
+def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
+    """Treat an SDK tool that only takes a file path as the file access it is.
+
+    Adapters default every tool to ``shell``, so ``read_file(path=".env")``
+    arrived as a "shell command" consisting of a bare path and none of the
+    file-read secret rules could see it (#542). Only adapter events (they carry
+    ``metadata.framework``) with a single path argument and a read/write-named
+    tool are re-typed; anything with a command argument stays shell.
+    """
+    meta = event.get("metadata") or {}
+    if event.get("type") != "shell" or not meta.get("framework"):
+        return
+    kwargs = meta.get("kwargs") or {}
+    if set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
+        try:  # OpenAI Agents SDK FunctionTools hand over one JSON string
+            kwargs = json.loads(kwargs["input"])
+        except ValueError:
+            return
+    if not isinstance(kwargs, dict):
+        return
+    paths = [v for k, v in kwargs.items() if k.lower() in _PATH_ARGS and isinstance(v, str) and v]
+    if len(paths) != 1 or any(k.lower() in ("command", "cmd", "script") for k in kwargs):
+        return
+    name = str(meta.get("tool_name") or "")
+    kind = "file_read" if _READ_TOOL.search(name) else "file_write" if _WRITE_TOOL.search(name) else ""
+    if kind:
+        event["type"] = kind
+        event["path"] = paths[0]
+
+
 def evaluate_tool_call(
     *,
     event: Dict[str, Any],
@@ -137,6 +174,7 @@ def evaluate_tool_call(
     agent_name: str = "",
     taint_store: Optional[Any] = None,
     register_agent: bool = True,
+    flush_at_exit: bool = True,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -162,6 +200,9 @@ def evaluate_tool_call(
             developer's project: the inventory would then mix every tenant's
             agents into one file and put a disk write on the request path.
             Per-agent controls (kill-switch, mode override) are still resolved.
+        flush_at_exit: upload the heartbeat and spooled findings when the
+            process exits, so a short script's activity still reaches the
+            console. Hook-dispatch passes ``False`` (one process per call).
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -172,6 +213,8 @@ def evaluate_tool_call(
     subject = subject or resolve_subject()
     # Normalise agent_name: default to the framework id for backward compat.
     _agent_name = agent_name or agent
+
+    _retype_adapter_file_call(event)
 
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})
@@ -203,6 +246,17 @@ def evaluate_tool_call(
     else:
         events = [event]
     perf.lap("session_analysis")
+
+    # Keep the org policy fresh for every caller, not just hook-dispatch: an SDK
+    # adapter or eval-server authenticated by PRISMOR_AGENT_KEY never runs
+    # `prismor enroll`, so without this it never pulls the policy that carries
+    # its telemetry sink, org mode and console tool denies. Debounced (~30s)
+    # and a no-op when not enrolled, so hook-dispatch calling it too is free.
+    try:
+        from prismor.runtime.enterprise import remote_policy as _remote
+        _remote.check_and_refresh()
+    except Exception:
+        pass
 
     engine = PolicyEngine(workspace=workspace)
     if taint_store is not None:
@@ -434,14 +488,15 @@ def evaluate_tool_call(
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
+                        _label = "org" if _scope == "org" else f"org {_scope}"
                         if _d.get("action") == "step_up":
                             findings.append(make_agent_tool_step_up_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}"))
+                                scope_label=_label))
                         else:
                             findings.append(make_agent_tool_deny_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}", rule_id="org-tool-deny"))
+                                scope_label=_label, rule_id="org-tool-deny"))
                         break
         except Exception as exc:
             sys.stderr.write(f"[prismor] org tool-deny error: {exc}\n")
@@ -552,20 +607,6 @@ def evaluate_tool_call(
         except Exception as exc:
             sys.stderr.write(f"[prismor] finding persistence error: {exc}\n")
 
-    _dispatch_telemetry(
-        engine=engine,
-        findings=findings,
-        event=event,
-        workspace=workspace,
-        agent=agent,
-        agent_name=_agent_name if _agent_name != agent else None,
-        mode=mode,
-        session_id=session_id,
-        subject=subject,
-        eval_ms=_eval_ms,
-        session_seq=_session_seq,
-    )
-
     # Per-call inspected-volume heartbeat (org observability), managed repos only.
     if getattr(engine, "workspace_managed", False):
         try:
@@ -576,6 +617,8 @@ def evaluate_tool_call(
                 session_id=session_id,
             )
             heartbeat.maybe_flush()
+            if flush_at_exit:
+                heartbeat.flush_at_exit()
         except Exception:
             pass
 
@@ -628,6 +671,30 @@ def evaluate_tool_call(
                  if f.get("category") == "agent-control" or f.get("authoritative")],
                 event,
             )
+
+    # The finding that actually blocks reports as enforced. The legacy bridge
+    # blocks by category while the finding still carries the rule's observe
+    # mode, and the telemetry verdict is read from that mode, so the console
+    # showed a stopped prompt as "allowed" (#541).
+    if blocking is not None:
+        blocking["mode"] = "enforce"
+
+    _dispatch_telemetry(
+        engine=engine,
+        findings=findings,
+        event=event,
+        workspace=workspace,
+        agent=agent,
+        agent_name=_agent_name if _agent_name != agent else None,
+        # The effective mode, not the caller's: an enrolled device (or an
+        # always-enforced category) blocks even under a local observe, and
+        # the console reads mode=observe as "would block".
+        mode="enforce" if blocking is not None else mode,
+        session_id=session_id,
+        subject=subject,
+        eval_ms=_eval_ms,
+        session_seq=_session_seq,
+    )
 
     # Tamper-evident signed audit trail: one chained + signed record per
     # evaluated call — every verdict, not just findings — so the local trail
@@ -688,8 +755,8 @@ def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") 
     enforce. Call this right after ``evaluate_tool_call`` in every adapter so
     "observe" doesn't mean "silent."
     """
-    if mode != "observe":
-        return
+    if mode != "observe" or not decision.allow:
+        return  # the call was actually blocked; the adapter reports that itself
     would_block = [f for f in decision.findings if str(f.get("mode", "observe")).lower() == "enforce"]
     if not would_block:
         return

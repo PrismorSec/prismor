@@ -27,8 +27,12 @@ test, not by sharing code.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+
+_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:)([^\s@/]+)(@)")
 
 
 def redact_text(
@@ -61,6 +65,12 @@ def redact_text(
         text = scrub_text(text)
     except Exception:
         pass
+
+    # A password inside a connection URL (postgres://user:pass@host) is a
+    # secret wherever it appears; the cloak vault only knows registered values
+    # and the data-boundary classifier did not treat it as one (#542). Runs
+    # with cloak masking, i.e. also while policy is paused.
+    text = _URL_PASSWORD.sub(r"\1[REDACTED:secret]\3", text)
 
     if data_boundary:
         try:

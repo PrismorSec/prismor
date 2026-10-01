@@ -144,3 +144,44 @@ def test_failed_flush_lands_in_spool():
     assert spooled[0]["count"] == 3
     # Counters were reset — the count lives in the spool, not both places.
     assert json.loads(heartbeat._counter_path().read_text())["counters"] == {}
+
+
+def test_short_script_flushes_at_exit(tmp_path):
+    """A script that exits inside the first FLUSH_INTERVAL still uploads its
+    count: flush_at_exit sends it as the interpreter shuts down."""
+    import http.server
+    import os
+    import subprocess
+    import sys
+    import threading
+
+    bodies = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            bodies.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        _enroll(api_base=f"http://127.0.0.1:{srv.server_port}")
+        script = (
+            "from prismor.runtime.enterprise import heartbeat\n"
+            "heartbeat.flush_at_exit()\n"
+            "heartbeat.flush_at_exit()  # idempotent\n"
+            "for _ in range(4): heartbeat.record_call(agent='openai-agents', session_id='s9')\n"
+            "assert heartbeat.maybe_flush() is False  # still inside the window\n"
+        )
+        subprocess.run([sys.executable, "-c", script], check=True, env=dict(os.environ), timeout=30)
+    finally:
+        srv.shutdown()
+
+    assert len(bodies) == 1  # registered once, one upload
+    (rec,) = bodies[0]["events"]
+    assert rec["type"] == "agent_activity" and rec["count"] == 4

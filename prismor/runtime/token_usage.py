@@ -128,6 +128,8 @@ def _iter_codex_usage(path: Path, session_id: str) -> Iterator[Dict[str, Any]]:
                 "cache_read_tokens": cached,
                 "cache_creation_tokens": int(delta.get("cache_write_input_tokens") or 0),
                 "cache_1h_tokens": 0,
+                # Already inside output_tokens; reported, never billed twice.
+                "reasoning_tokens": int(delta.get("reasoning_output_tokens") or 0),
             }
             if any(row[k] for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens")):
                 yield row
@@ -155,11 +157,14 @@ def _provider(model: str) -> str:
     return "unknown"
 
 
-def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any]) -> None:
+def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any],
+            agent_name: str = "") -> None:
     """Store one turn; when new and the device is enrolled, also spool an
     ``llm_usage`` telemetry record (same shape the LLM gateway lane emits) so
     the control plane can show tokens and spend per session. It rides the
     heartbeat's next flush, never a request of its own."""
+    reasoning = int(row.get("reasoning_tokens") or 0)
+    row = {k: v for k, v in row.items() if k != "reasoning_tokens"}  # not a store column
     if not store.record_token_usage(workspace=workspace, session_id=session_id, **row):
         return
     try:
@@ -178,6 +183,9 @@ def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any]) -
             "verdict": "observed",
             "title": "Model turn metered",
             "agent": agent,
+            # The instance label (proxy --agent-name): without it every metered
+            # turn surfaced in the console as a second, unnamed agent (#543).
+            "agent_name": agent_name or None,
             "session_id": session_id,
             "provider": provider,
             "model": row["model"],
@@ -185,7 +193,7 @@ def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any]) -
             "usage": {
                 "model": row["model"], "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
                 "cache_read_tokens": row["cache_read_tokens"], "cache_write_tokens": row["cache_creation_tokens"],
-                "cache_1h_tokens": row["cache_1h_tokens"],
+                "cache_1h_tokens": row["cache_1h_tokens"], "reasoning_tokens": reasoning,
             },
             "cost_usd": cost_usd(tokens, row["model"], fetch=False),
             "redacted": True,
@@ -283,7 +291,7 @@ def _output_size(event: Dict[str, Any]) -> int:
 
 def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
                      model: str, usage: Dict[str, Any], message_id: str,
-                     ts: str = "") -> None:
+                     ts: str = "", agent_name: str = "") -> None:
     """Record a provider ``usage`` block seen on the proxy lane.
 
     Normalizes the providers' differing field names so the LLM lane populates
@@ -293,6 +301,12 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
     ``prompt_tokens_details.cached_tokens``), OpenAI Responses
     ``input_tokens``/``output_tokens`` (+ ``input_tokens_details``), and Gemini
     ``promptTokenCount``/``candidatesTokenCount``/``cachedContentTokenCount``.
+
+    Buckets are made disjoint before pricing: OpenAI and Gemini count cached
+    tokens INSIDE the prompt total (Anthropic keeps them apart), so the cached
+    share is subtracted from input or it would be billed twice. Reasoning is
+    reported separately: OpenAI's is already inside output_tokens, Gemini's
+    ``thoughtsTokenCount`` is not and is billed as output.
     Deduped on ``message_id``; an empty usage block or missing id records
     nothing. Best-effort — never raises."""
     if not isinstance(usage, dict) or not usage or not message_id:
@@ -307,20 +321,30 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
                 return int(value)
         return 0
 
-    details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
-    cached = details.get("cached_tokens") if isinstance(details, dict) else 0
+    def sub(key: str, name: str) -> int:
+        block = usage.get(key)
+        value = block.get(name) if isinstance(block, dict) else None
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    # Cached tokens that the provider counts inside the prompt total.
+    included = (sub("prompt_tokens_details", "cached_tokens") or sub("input_tokens_details", "cached_tokens")
+                or pick("cachedContentTokenCount"))
+    thoughts = pick("thoughtsTokenCount")  # Gemini: separate from candidates, billed as output
+    reasoning = (sub("completion_tokens_details", "reasoning_tokens")
+                 or sub("output_tokens_details", "reasoning_tokens") or thoughts)
     try:
         _record(workspace, session_id, agent, {
             # An empty ts falls outside every time-windowed cost query.
             "ts": ts or datetime.now(timezone.utc).isoformat(),
             "message_id": message_id,
             "model": model,
-            "input_tokens": pick("input_tokens", "prompt_tokens", "promptTokenCount"),
-            "output_tokens": pick("output_tokens", "completion_tokens", "candidatesTokenCount"),
-            "cache_read_tokens": pick("cache_read_input_tokens", "cachedContentTokenCount") or int(cached or 0),
+            "input_tokens": max(0, pick("input_tokens", "prompt_tokens", "promptTokenCount") - included),
+            "output_tokens": pick("output_tokens", "completion_tokens", "candidatesTokenCount") + thoughts,
+            "cache_read_tokens": pick("cache_read_input_tokens") or included,
             "cache_creation_tokens": pick("cache_creation_input_tokens"),
-            "cache_1h_tokens": 0,
-        })
+            "cache_1h_tokens": sub("cache_creation", "ephemeral_1h_input_tokens"),
+            "reasoning_tokens": reasoning,
+        }, agent_name=agent_name)
     except Exception:
         pass
 

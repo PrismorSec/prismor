@@ -70,6 +70,13 @@ workspace databases. The only external resources are a Chart.js CDN link and the
 Inter / JetBrains Mono webfonts (Google Fonts) loaded by the browser; the data
 never leaves your machine.
 
+The API answers only its own page: requests from another site's origin, or
+with a non-loopback `Host` header, get a 403. Bound to anything other than
+loopback (`--host 0.0.0.0`), it also requires a token. The startup line prints
+`http://<host>:<port>/?token=…`; opening that URL sets a cookie, and scripts send
+`Authorization: Bearer <token>`. Set `PRISMOR_DASHBOARD_TOKEN` to pin the
+token instead of getting a random one per start.
+
 | Endpoint | Returns |
 |---|---|
 | `GET /` | The HTML dashboard |

@@ -726,6 +726,24 @@ class AllowlistEntry:
         return "*" in self.rule_ids or rule_id in self.rule_ids
 
 
+
+# Output of a bare `prismor <status subcommand>` is text Prismor itself wrote
+# (scope/status/doctor explain policy, so they read like "every tool allowed ...
+# re-enable by ..." and the judge scored that as a security bypass). Only these
+# subcommands: `sessions`, `agents transcript` and friends replay untrusted
+# session content and must stay judged. No shell metacharacters, so nothing
+# else's output can ride along in the same call.
+_PRISMOR_STATUS_CMD = re.compile(
+    r"^\s*(?:\S*/)?(?:prismor|immunity-agent)"
+    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*|\s+--?(?:version|help))?\s*$"
+)
+
+
+def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
+    if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
+        return False
+    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
+
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""
 
@@ -2013,6 +2031,8 @@ class PolicyEngine:
                 _prov_cwd = self.workspace
                 _prov_reads: List[str] = []
                 _prov_writes: List[str] = []
+                _prov_fetched: Set[str] = set()
+                _prov_copied = False
                 _prov_chain = ""
                 if _tt_cfg.get("provenance_enabled", True):
                     from prismor.runtime import provenance as _prov
@@ -2027,10 +2047,26 @@ class PolicyEngine:
                     elif event_type == "file_write":
                         _prov_writes = [str(event.get("path") or "")]
                     elif event_type == "shell":
-                        _r, _w = _prov.shell_paths(
+                        # One scan serves the reads, the writes and the
+                        # downloads below; it is the costly part of the check.
+                        _sc = _prov.shell_scan(
                             str(event.get("command") or ""), _prov_cwd
                         )
-                        _prov_reads, _prov_writes = sorted(_r), sorted(_w)
+                        _prov_reads, _prov_writes = sorted(_sc.reads), sorted(_sc.writes)
+                        _prov_fetched = _sc.fetched
+                        # `cp`, `mv`, `cat a > b`: bytes from a file already
+                        # marked untrusted, whoever wrote it (#443). The
+                        # command line holds paths, not the content, so the
+                        # influence check below can never see them.
+                        # ponytail: command-wide, not per pipeline; `cat a;
+                        # echo x > b` marks b too. Per-segment flow if that
+                        # over-marks in practice.
+                        _prov_copied = any(
+                            UNTRUSTED in (
+                                (_prov_known.get(_rp) or {}).get("tags") or ()
+                            )
+                            for _rp in _prov_reads
+                        )
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -2249,15 +2285,12 @@ class PolicyEngine:
                     # session had read before it. Without this a shell-only
                     # agent -- Codex reaches the web through Bash, never through
                     # a tagged fetch tool -- writes untracked files.
-                    _fetched = (
-                        _prov.fetch_targets(str(event.get("command") or ""), _prov_cwd)
-                        if event_type == "shell" else set()
-                    )
                     for _wp in _prov_writes:
                         if not _wp:
                             continue
                         _wt = sorted(
-                            set(_carry) | ({UNTRUSTED} if _wp in _fetched else set())
+                            set(_carry)
+                            | ({UNTRUSTED} if _prov_copied or _wp in _prov_fetched else set())
                         )
                         # An empty tag set still has to reach the store when
                         # this session is the one that stamped the file: that
@@ -2338,6 +2371,8 @@ class PolicyEngine:
             return None
 
         cfg = self.semantic_guard_config
+        if _is_prismor_status_output(event):
+            return None
         # _extract_fields joins prompt/response/content/stdout/stderr into
         # combined_text; command is normalized separately. Configurable
         # fields are kept in the YAML for future granularity, but the
@@ -3431,15 +3466,28 @@ def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     box: List[Any] = []
     # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
     # process exits right after, and a CLI judge's own timeout reaps its child.
-    t = threading.Thread(target=lambda: box.append(guard.analyze(text)), daemon=True)
+    def _run() -> None:
+        try:
+            box.append(guard.analyze(text))
+        except Exception as exc:
+            import sys
+            sys.stderr.write(f"[prismor] semantic_guard judge error: {exc}\n")
+
+    t = threading.Thread(target=_run, daemon=True)
     t.start()
     t.join(budget_s)
     if box:
         return box[0]
     from prismor.runtime.semantic_guard import _heuristic_analyze
-    _perf.degraded("semantic_judge:budget")
+    if t.is_alive():
+        _perf.degraded("semantic_judge:budget")
+        prefix = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; "
+    else:
+        _perf.degraded("semantic_judge:error")
+        _perf.RULES.setdefault("semantic-guard", [0, 0, 0.0, 0])[3] += 1
+        prefix = "[LLM error] judge crashed; "
     risk = _heuristic_analyze(text)
-    risk.reason = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; " + risk.reason
+    risk.reason = prefix + risk.reason
     return risk
 
 

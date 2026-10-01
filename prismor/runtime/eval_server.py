@@ -9,6 +9,8 @@ Usage:
 
 Endpoints:
     POST /v1/evaluate   → evaluate a tool call, return allow/block decision
+    POST /v1/redact     → {"result": <any JSON>} → the same value with cloaked
+                          secrets / data-boundary values masked, + "redacted"
     GET  /health        → {"status": "ok", "ts": "<iso>"}
 
 Request body (POST /v1/evaluate):
@@ -41,6 +43,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import signal
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -147,7 +150,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/evaluate":
+        if self.path not in ("/v1/evaluate", "/v1/redact"):
             self._send_json({"error": "not found"}, 404)
             return
 
@@ -163,6 +166,21 @@ class EvalHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except Exception as exc:
             self._send_json({"error": f"invalid JSON: {exc}"}, 400)
+            return
+
+        if self.path == "/v1/redact":
+            # Result-side masking for adapters that cannot import Python (the
+            # TypeScript one): the same redact_tool_result the in-process
+            # adapters run on a tool's return value before the model sees it.
+            from prismor.runtime.redaction import redact_payload_values
+            ws_str = body.get("workspace")
+            try:
+                result, changed = redact_payload_values(
+                    body.get("result"), workspace=Path(ws_str) if ws_str else self.workspace)
+            except Exception as exc:
+                self._send_json({"error": f"redaction error: {exc}"}, 500)
+                return
+            self._send_json({"result": result, "redacted": changed})
             return
 
         # A caller that has already normalized (an external proxy shaping MCP
@@ -299,6 +317,17 @@ def run_eval_server(
     print(f"[prismor] workspace: {ws}")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
+
+    def _stop(signum, _frame):  # noqa: ARG001
+        # SIGTERM is how systemd, containers and k8s stop a server. Unhandled it
+        # kills the process without running the atexit heartbeat flush, so the
+        # console lost every clean call since the last upload (#543).
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):
+        pass  # not the main thread, or the platform lacks the signal
     try:
         server.serve_forever()
     except KeyboardInterrupt:

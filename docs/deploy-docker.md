@@ -77,6 +77,9 @@ readable without a control plane at all:
 docker compose exec prismor prismor dashboard --no-open --host 0.0.0.0
 ```
 
+Bound off loopback, the dashboard requires a token: open the
+`/?token=…` URL it prints (or set `PRISMOR_DASHBOARD_TOKEN`).
+
 A governed n8n agent shows up as its own session, under the agent name the
 surface reports:
 
