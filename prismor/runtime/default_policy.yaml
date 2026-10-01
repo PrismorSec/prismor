@@ -667,6 +667,24 @@ rules:
       - '(^|/)(\.env(\..*)?|\.npmrc|\.pypirc|id_rsa|id_ed25519|known_hosts|authorized_keys|credentials|config\.json|secrets?)(/|$)|(^|/)\.(aws|ssh|gnupg)(/|$)'
     action: block
 
+  # ── HIGH: Secret file dumped through the shell ────────────────────────
+  # secret-access only sees the Read tool's path, so `cat .env` through Bash
+  # sent a live key into the model's context with no finding at all (#248).
+  # Same files, read verbs that print contents. Quiet for .env.example-style
+  # templates, presence and names-only checks (grep -q/-c/-l/-o, cut -f1),
+  # which the cloak guidance itself recommends, values captured into a shell
+  # variable via $(...) (never printed), and writes: the file must be an
+  # argument of the read command, before any redirect or heredoc.
+  - id: secret-file-shell-read
+    severity: HIGH
+    category: secret_access
+    title: Flags printing .env, SSH keys or cloud credentials through the shell
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\s;&|]|(?<!\$)\()(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|sed|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/])(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws/credentials)(?=$|[\s"'';&|)])'
+    action: block
+
   # ── HIGH: Suspicious network destinations ─────────────────────────────
   - id: suspicious-network
     severity: HIGH

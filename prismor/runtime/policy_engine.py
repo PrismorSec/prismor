@@ -1459,6 +1459,16 @@ class PolicyEngine:
                             context_inert = is_remote_payload(
                                 _context_text, _m.start(), _m.end()
                             )
+                    # Context is judged on the first raw match. In a multi-line
+                    # command that can be an inert heredoc body while a later
+                    # line performs the same action for real
+                    # (`cat > n.md <<'EOF' ... cat .env ... EOF` then `cat .env`),
+                    # so stay inert only when EVERY raw match is inert.
+                    if context_inert and "\n" in _context_text:
+                        context_inert = all(
+                            is_inert_match(_context_text, m.start(), m.end())
+                            for m in rule.patterns.finditer(_context_text)
+                        )
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False
