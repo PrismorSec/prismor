@@ -330,6 +330,18 @@ def build_record(
         if isinstance(_prov.get("eventIndex"), int):
             record["provenance_seq"] = _prov.get("eventIndex")
 
+    # Judge audit (judge_audit.py): which allowed call the judge reviewed
+    # ("<session_id>:<event_index>"), its score and the model that judged.
+    # An id, a number and a model name: survive redaction. The judge's
+    # free-text reason rides as evidence, so it is hashed here and only
+    # ships (scrubbed) under detail in full capture.
+    _judge = finding.get("judgeAudit")
+    if isinstance(_judge, dict):
+        record["audited_event"] = str(_judge.get("auditedEvent") or "")[:200] or None
+        if isinstance(_judge.get("riskScore"), (int, float)):
+            record["risk_score"] = round(float(_judge["riskScore"]), 3)
+        record["model"] = str(_judge.get("model") or "")[:80] or None
+
     if full_capture:
         if finding.get("destHost"):
             record["dest_host"] = scrub(str(finding.get("destHost")), scrubbers)
