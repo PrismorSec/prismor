@@ -805,6 +805,8 @@ def initialize_database(workspace: Path) -> Path:
         )
         from prismor.runtime.learning import initialize_learning_tables
         initialize_learning_tables(connection)
+        from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
+        connection.executescript(_JUDGE_AUDIT_DDL)
 
         connection.commit()
     finally:

@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Added
+- **`prismor audit judge`: the LLM judge reviews a sample of ALLOWED tool calls after the fact.** The judge is too slow for every hook call, so calls the regex rules let through were never seen by a model. This command takes a deterministic sample (hash of the event id against `--sample`, default 5%) of allowed pre-call events from the local store in the window (`--since`, default 24h), skips Prismor self-test sessions and calls already audited, scrubs secrets, and sends each one to the configured judge (at most `--max`, default 50, per run). Verdicts are stored in a new `judge_audit` table. Each flagged call is printed and sent as one content-free `judge_audit` record (`verdict: observed`) through the normal sinks, chained and signed. Nothing is blocked retroactively, and hook latency is unchanged. Exits 2 when no judge is configured. Defaults: `semantic_guard.audit`.
+
 ## [1.56.0] — 2026-09-30
 
 ### Added

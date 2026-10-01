@@ -63,6 +63,7 @@ prismor
 │
 ├─ Visibility (audit & forensics)
 │   ├─ audit                  Full posture audit (--fix to remediate)
+│   ├─ audit judge            LLM judge reviews a sample of ALLOWED calls after the fact
 │   ├─ scan                   Scan MCP servers & skills for risk
 │   ├─ extensions <action>    list · why · approve · wrap-hooks — what puts instructions or code into the agent
 │   ├─ deps                   Check project deps vs. threat feed
@@ -371,6 +372,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
+| `prismor audit judge` | `--since 24h`, `--sample 0.05`, `--max 50`, `--dry-run`, `--json`, `--workspace` | Has the configured LLM judge review a deterministic sample of tool calls the rules ALLOWED, after the fact, from the local store. Results go to the `judge_audit` table; flagged calls are printed and sent as one content-free `judge_audit` record each. Never blocks. Exits 2 when no judge is configured. See [Semantic Guard](semantic-guard.md#auditing-allowed-calls). |
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
 | `prismor extensions [list\|why\|approve\|wrap-hooks\|unwrap-hooks]` | `--kind`, `--json`, `--workspace` | Inventory of skills, plugins, third-party hooks and MCP servers with origin, installer, capabilities and the documents they caused to be fetched. See [Extension Ledger](extensions.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
