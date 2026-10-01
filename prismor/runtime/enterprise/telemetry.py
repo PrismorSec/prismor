@@ -46,6 +46,32 @@ _SENSITIVE_EVENT_FIELDS = (
 
 _REDACTED = "[REDACTED]"
 
+# Deployment labels: which environment (prod/staging/dev/ci) and which release
+# of the agent (git sha, app version) produced an event. Operator-set config,
+# not captured content, so they ride in redacted mode. Anything that fails
+# validation is dropped rather than coerced.
+_ENVIRONMENT_RE = re.compile(r"^[a-z0-9_-]{1,40}$")
+_RELEASE_RE = re.compile(r"^[!-~]{1,64}$")  # printable ASCII, no whitespace
+
+
+def deployment_labels() -> Dict[str, Optional[str]]:
+    """``environment`` / ``release`` from ``PRISMOR_ENVIRONMENT`` /
+    ``PRISMOR_RELEASE``; null when unset or invalid."""
+    import logging
+    import os
+
+    out: Dict[str, Optional[str]] = {}
+    for key, var, pattern in (
+        ("environment", "PRISMOR_ENVIRONMENT", _ENVIRONMENT_RE),
+        ("release", "PRISMOR_RELEASE", _RELEASE_RE),
+    ):
+        value = os.environ.get(var) or None
+        if value is not None and not pattern.match(value):
+            logging.getLogger(__name__).debug("ignoring invalid %s", var)
+            value = None
+        out[key] = value
+    return out
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -252,6 +278,10 @@ def build_record(
         # actually decided them rather than whatever is current.
         "policy_version": extra.get("policy_version"),
         "policy_profile_id": extra.get("policy_profile_id"),
+        # Deployment labels (validated in deployment_labels()). Operator config,
+        # not user data, so they survive redaction.
+        "environment": extra.get("environment"),
+        "release": extra.get("release"),
         # Title: in redacted mode sanitized to its static description (paths /
         # hosts / URLs / secrets stripped); in full mode the raw (secret-scrubbed)
         # title. Forwarded so the dashboard is human-readable without raw evidence.

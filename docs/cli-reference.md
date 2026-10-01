@@ -488,6 +488,8 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | `PRISMOR_CLOAK` | `setup --non-interactive` | Enable cloaking (`1`/`true`/`yes`/`on`). |
 | `PRISMOR_WORKSPACE` | all commands | Override the resolved workspace path. |
 | `PRISMOR_AGENT_ID` | `iam` | Active agent identity for IAM enforcement. See [IAM](iam.md). |
+| `PRISMOR_ENVIRONMENT` | telemetry | Deployment environment label on every event (`prod`, `staging`, `ci`...). Lowercase `[a-z0-9_-]`, max 40; invalid values are dropped. |
+| `PRISMOR_RELEASE` | telemetry | Agent release label on every event (git sha, app version). Printable, no whitespace, max 64; invalid values are dropped. |
 | `PRISMOR_SWEEP_PASS` | `sweep` | Vault passphrase for non-interactive runs. |
 | `EDITOR` | `scope edit` | Editor for scoped-rule editing. |
 

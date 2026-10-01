@@ -270,7 +270,7 @@ def _format_otlp_logs(event: Dict[str, Any]) -> Dict[str, Any]:
     # Everything _build_event and its `extra` produced, minus the fields already
     # carried by dedicated log-record/resource slots, becomes an attribute — so
     # runtime extras (agent, mode, workspace, subject) ride along untouched.
-    skip = {"@timestamp", "severity", "title", "source", "hostname"}
+    skip = {"@timestamp", "severity", "title", "source", "hostname", "environment", "release"}
     attributes = [
         _otlp_attr(f"prismor.{k}", v)
         for k, v in event.items()
@@ -282,6 +282,12 @@ def _format_otlp_logs(event: Dict[str, Any]) -> Dict[str, Any]:
             "resource": {"attributes": [
                 _otlp_attr("service.name", "prismor"),
                 _otlp_attr("host.name", event.get("hostname") or _hostname()),
+            ] + [
+                # Standard semantic-convention slots for the deployment labels.
+                _otlp_attr(k, event[f]) for k, f in (
+                    ("deployment.environment.name", "environment"),
+                    ("service.version", "release"),
+                ) if event.get(f)
             ]},
             "scopeLogs": [{
                 "scope": {"name": "prismor.runtime.sinks"},
@@ -645,7 +651,8 @@ def dispatch(
     """
     if not findings or not sinks:
         return
-    extra = extra or {}
+    from prismor.runtime.enterprise import telemetry as _telemetry
+    extra = {**_telemetry.deployment_labels(), **(extra or {})}
 
     # First-party control-plane sinks are batched separately.
     prismor_sinks = [s for s in sinks if str((s or {}).get("type", "")).lower() == "prismor"]
