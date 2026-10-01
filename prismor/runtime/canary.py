@@ -253,7 +253,7 @@ def beacon(entry: Dict[str, Any], event: str, context: Optional[Dict[str, Any]] 
         req = urllib.request.Request(
             url, data=data, headers={"Content-Type": "application/json"}, method="POST"
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=5) as resp:  # fixed or operator-configured URL  # nosec B310
             return 200 <= resp.status < 300
     except Exception:
         return False

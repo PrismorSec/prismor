@@ -32,7 +32,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from prismor.runtime.policy_engine import (
     _CORE_BLOCK_CATEGORIES,
     _NON_OVERRIDABLE_RULE_IDS,
-    _SELF_PROTECTION_RULE_IDS,
     is_self_protection_rule,
 )
 

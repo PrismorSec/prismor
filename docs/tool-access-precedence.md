@@ -12,8 +12,8 @@ and [docs/policy-layers-and-exemptions.md](policy-layers-and-exemptions.md).*
 **Org policy is authoritative.** An admin's decision on `prismor.dev` (Admin →
 Connections → an agent's Tool access panel) always wins over a developer's
 local `.prismor/agents.yaml` deny list and over a session's synthesized scope
-(`prismor scope edit`, the scoped-agent allowlist, the local MCP Playground
-toggle):
+(`prismor scope edit`, the scoped-agent allowlist, the dashboard's MCP Servers
+toggles):
 
 ```
   kill switch  ── agent paused (local OR org) ── ALWAYS blocks, no override

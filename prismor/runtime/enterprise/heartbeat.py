@@ -22,6 +22,7 @@ raise into the hook path.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import sys
 import time
@@ -38,6 +39,11 @@ FLUSH_INTERVAL = 60.0
 # devices); overflow folds into the framework-level key so volume is never lost,
 # only its per-instance attribution past the cap.
 MAX_COUNTER_KEYS = 64
+
+# Exit flush: short, so a dead control plane can't hold the process open long.
+EXIT_FLUSH_TIMEOUT = 3.0
+
+_exit_flush_registered = False
 
 
 def _counter_path() -> Path:
@@ -107,7 +113,7 @@ def record_call(
         pass
 
 
-def maybe_flush(now: Optional[float] = None) -> bool:
+def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float = 6.0) -> bool:
     """Upload the accumulated counts as one agent_activity record *per agent
     instance*, at most once per FLUSH_INTERVAL. Returns True if a flush was
     attempted. Never raises.
@@ -115,6 +121,7 @@ def maybe_flush(now: Optional[float] = None) -> bool:
     Counters are reset *before* the upload; on failure the records land in the
     offline spool (see sinks.upload_telemetry), so counts are never lost and
     never double-sent. All per-instance records ship in one batched upload.
+    ``force`` skips the interval (process exit).
     """
     ident = _identity.load_identity()
     if not ident or _identity.revoked_backoff_active():
@@ -131,7 +138,7 @@ def maybe_flush(now: Optional[float] = None) -> bool:
             counters: Dict[str, Any] = data.get("counters", {}) or {}
             last = float(data.get("last_flush", 0))
             t = time.time() if now is None else now
-            if (t - last) < FLUSH_INTERVAL:
+            if not force and (t - last) < FLUSH_INTERVAL:
                 return False
             import uuid
             for key, slot in counters.items():
@@ -170,7 +177,25 @@ def maybe_flush(now: Optional[float] = None) -> bool:
     # one POST each. This tick is what ships them.
     try:
         from prismor.runtime.sinks import upload_telemetry
-        upload_telemetry(records)
+        upload_telemetry(records, timeout=timeout)
     except Exception as exc:  # spooled by upload_telemetry; just note it
         sys.stderr.write(f"[prismor] heartbeat upload deferred: {exc}\n")
     return True
+
+
+def flush_at_exit() -> None:
+    """Flush counts and spooled findings when this process exits.
+
+    For long-lived callers (SDK adapters, eval-server): a script that finishes
+    inside the first FLUSH_INTERVAL would otherwise leave its activity on disk
+    until some later call on this device, which for an ephemeral container is
+    never. Registered once per process. Hook-dispatch (one process per tool
+    call) must not use this, or every call becomes a POST.
+    """
+    global _exit_flush_registered
+    if _exit_flush_registered:
+        return
+    _exit_flush_registered = True
+    # ponytail: atexit misses SIGTERM/SIGKILL (a plain `docker stop`); add a
+    # signal hook only if deployed agents report missing tails.
+    atexit.register(maybe_flush, force=True, timeout=EXIT_FLUSH_TIMEOUT)

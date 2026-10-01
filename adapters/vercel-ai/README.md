@@ -30,7 +30,7 @@ import { prismorTools } from "prismor-warden";
 
 const run_shell = tool({
   description: "Run a shell command",
-  parameters: z.object({ command: z.string() }),
+  inputSchema: z.object({ command: z.string() }),
   execute: async ({ command }) => {
     // ... your implementation
   },
@@ -40,7 +40,7 @@ const run_shell = tool({
 const tools = prismorTools({ run_shell }, { subject: `user:${userId}` });
 
 const result = await generateText({
-  model: openai("gpt-4o-mini"),
+  model: openai("gpt-5-mini"),
   tools,
   prompt: "List the files in the current directory",
 });

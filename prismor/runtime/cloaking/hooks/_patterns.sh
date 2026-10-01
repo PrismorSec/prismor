@@ -26,6 +26,13 @@ prismor_custom_patterns_file() {
   fi
 }
 
+# Patterns pushed by the org's signed policy; written by the Python runtime on
+# policy refresh (cloaking/patterns.py: write_org_patterns). Deliberately not
+# env-overridable - it only ever comes from a verified policy.
+prismor_org_patterns_file() {
+  printf '%s' "${PRISMOR_HOME:-$HOME/.prismor}/cloak_patterns.org.txt"
+}
+
 prismor_secrets_dir() {
   if [[ -n "${PRISMOR_SECRETS_DIR:-}" ]]; then
     printf '%s' "$PRISMOR_SECRETS_DIR"
@@ -35,11 +42,11 @@ prismor_secrets_dir() {
 }
 
 # Populate the global `PATTERNS` array. Built-ins first (most specific),
-# then user patterns appended. Comment (`#`) and blank lines are skipped.
+# then user patterns, then org-pushed patterns appended. Comment (`#`) and blank lines are skipped.
 prismor_load_patterns() {
   PATTERNS=()
   local file line
-  for file in "$_PRISMOR_BUILTIN_PATTERNS" "$(prismor_custom_patterns_file)"; do
+  for file in "$_PRISMOR_BUILTIN_PATTERNS" "$(prismor_custom_patterns_file)" "$(prismor_org_patterns_file)"; do
     [[ -f "$file" ]] || continue
     while IFS= read -r line || [[ -n "$line" ]]; do
       # Strip nothing — patterns may contain leading spaces only if intended;

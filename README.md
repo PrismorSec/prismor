@@ -2,6 +2,7 @@
 <p align="center">
   <a href="https://pypi.org/project/prismor/"><img src="https://img.shields.io/pypi/v/prismor" alt="PyPI"/></a>
   <a href="https://github.com/PrismorSec/prismor/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
+  <a href="https://www.bestpractices.dev/projects/14922"><img src="https://www.bestpractices.dev/projects/14922/badge" alt="OpenSSF Best Practices" /></a>
   <a href="https://github.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome" /></a>
   <a href="https://x.com/prismor_dev"><img src="https://img.shields.io/badge/@prismor__dev-black?logo=x&logoColor=white" alt="X" /></a>
   <a href="https://deepwiki.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/DeepWiki-prismor-blue?logo=bookstack&logoColor=white" alt="DeepWiki" /></a>
@@ -78,12 +79,14 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
 - 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
 - 🛰️ [MCP Gateway](docs/mcp-gateway.md) is a single MCP connector that fronts every other MCP server you use — each `tools/call` is policy-evaluated before it forwards and each response is injection-scanned before the model sees it, so a poisoned tool result never becomes context. `prismor mcp-gateway install` moves an existing `.mcp.json` behind it
+- 🧭 [Prompt Guardrails](docs/prompt-guardrails.md) add plain-language rules to the agent's context, such as "never push to main", set per agent in the console and tuned per session; a running session picks up an edit on its next prompt
 - 🛤️ [LLM Proxy](docs/llm-proxy.md) governs an agent Prismor cannot hook, through the one thing every agent has: its model traffic. Point it at `prismor proxy` with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or the Google Gen AI SDK's `HttpOptions(base_url=...)` and nothing else about the agent changes. Every tool call the model *proposes* — Anthropic `tool_use`, OpenAI `tool_calls`, Gemini `functionCall` — is reshaped into the same event a `Bash` hook produces and judged by the same rule, with streamed calls held until they can be judged
 - [Claude Inference Hooks](docs/inference-hook.md) makes Prismor the AI security server behind Claude Enterprise: Anthropic sends every governed prompt from claude.ai, Claude Code and Cowork to `prismor inference-hook serve`, which runs your policy on the transcript and answers allow/deny before the model runs — signed requests (Standard Webhooks), fail-closed, shadow mode, nothing to install on user devices. `prismor inference-hook test` sends signed sample frames to check the wiring
 - 🏷️ [Tool Tags](docs/tool-tags.md) classify tools by capability (read, write, network, exec) so a rule can say "nothing that reads private data may also reach the network" instead of naming every tool one by one — MCP tools self-declare via `_meta`, and `prismor tags` lists, tests, and lints the rule expressions
 - 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries, practical setup, best practices, threat model, and cleanup for leaked secrets
 - 🦞 [OpenClaw Integration](docs/openclaw.md) covers runtime hooks, prompt-injection scanning, and project or user-scope setup for OpenClaw
 - 🤖 [Hermes Agent Cloaking](docs/hermes.md) covers Hermes-specific secret cloaking with pip entry-point auto-discovery, filesystem install, and pre_gateway_dispatch paste guard
+- ☁️ [Hosted Agent VMs](docs/cloud-agents.md) governs agents that run on a machine you never log into (Claude Code on the web, Cursor cloud agents, Copilot coding agent, OpenHands Cloud, Codex cloud, Replicas): the platform's setup script installs the binary, and `install-hooks --portable` writes a hook config that is safe to commit
 - 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
 - 🪤 [Canary](docs/canary.md) plants honeytoken credential files that trip a CRITICAL finding the moment an agent reads them, catching recon behavior
 - 🪪 [IAM](docs/iam.md) gives each agent a named identity and least-privilege permission profile when several agents share a workspace
@@ -385,7 +388,7 @@ prismor uninstall-hooks --agent all --scope project      # every supported agent
 | OpenClaw | `<workspace>/.openclaw/plugins.json` | `~/.openclaw/config.json` |
 | Hermes | `<workspace>/.hermes/plugins.json` | `~/.hermes/config.json` |
 | Codex | `<workspace>/.codex/hooks.json` | `~/.codex/hooks.json` |
-| Copilot | `<workspace>/.github/copilot/hooks.json` | `~/.copilot/hooks.json` |
+| Copilot | `<workspace>/.github/hooks/prismor.json` | `~/.copilot/hooks/prismor.json` |
 | Grok Build | `<workspace>/.grok/hooks/prismor.json` | `~/.grok/hooks/prismor.json` |
 | Kiro CLI | `<workspace>/.kiro/agents/kiro_default.json` | `~/.kiro/agents/kiro_default.json` |
 | Crush | `<workspace>/crush.json` | `~/.config/crush/crush.json` |

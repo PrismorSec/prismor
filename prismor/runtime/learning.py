@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -157,6 +156,12 @@ def _base_command(command: str) -> str:
     return parts[0] if parts else ""
 
 
+def _drops_only(command: str, blocked: str) -> bool:
+    """True when ``command`` is ``blocked`` with some segments removed."""
+    segs = set(normalize_command_structure(command).split(" | "))
+    return bool(segs) and segs < set(normalize_command_structure(blocked).split(" | "))
+
+
 # ── Dismissal tracking ─────────────────────────────────────────────────────
 
 def record_dismissal(
@@ -260,6 +265,15 @@ def detect_evasion(
 
             # Must share the same base command
             if _base_command(blocked_cmd) != base:
+                continue
+
+            # Every segment of this command already appeared in the blocked
+            # one: the agent dropped the part that was blocked and kept the
+            # rest (`mkdir -p x && chmod -R 777 x && ls` -> `mkdir -p x && ls`).
+            # That is compliance, not evasion. A real evasion brings a segment
+            # the blocked command did not have (`mkdir -p -m 777 x`), so it
+            # still reaches the similarity check.
+            if _drops_only(command, blocked_cmd):
                 continue
 
             similarity = command_structural_similarity(command, blocked_cmd)
@@ -625,18 +639,19 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
         # A finding's event_index corresponds to the event's position
         # within its session (0-based row number by id order).
         rows = conn.execute(
-            """
+            f"""
             SELECT e.command_text, e.session_id
             FROM events e
             WHERE e.type = 'shell'
               AND e.command_text IS NOT NULL
               AND e.command_text != ''
+              AND e.session_id NOT IN ({_FIXTURE_SESSIONS_SQL})
               AND NOT EXISTS (
                   SELECT 1 FROM findings f
                   WHERE f.session_id = e.session_id
                     AND f.evidence LIKE '%' || SUBSTR(e.command_text, 1, 40) || '%'
               )
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
         ).fetchall()
     finally:
         conn.close()
@@ -687,10 +702,27 @@ def mine_patterns(workspace: Path, min_support: int = 3) -> List[Dict[str, Any]]
 
 # ── False positive tracking ────────────────────────────────────────────────
 
+# Sessions that drive Prismor itself -- its hook, its engine, its benchmarks --
+# feed it attacks on purpose. Their findings are correct and must never teach
+# the learner that an attack is routine. On the maintainer's own laptop these
+# were 9% of sessions and half of all findings.
+_FIXTURE_SESSIONS_SQL = """
+    SELECT DISTINCT session_id FROM events
+    WHERE type = 'shell' AND (
+        command_text LIKE '%hook-dispatch%'
+        OR command_text LIKE '%immunity_cli%'
+        OR command_text LIKE '%PolicyEngine%'
+        OR command_text LIKE '%PreToolUse%'
+        OR command_text LIKE '%prismor check %'
+    )
+"""
+
+
 def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
     """Find rules that have been dismissed more than threshold times.
 
     Returns a list of dicts with rule_id, dismissal_count, and recommendation.
+    Self-test sessions (see ``_FIXTURE_SESSIONS_SQL``) are excluded.
     """
     db_path = get_db_path(workspace)
     if not db_path.exists():
@@ -700,15 +732,16 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     try:
         initialize_learning_tables(conn)
         rows = conn.execute(
-            """
+            f"""
             SELECT rule_id, COUNT(*) as cnt,
                    GROUP_CONCAT(DISTINCT reason) as reasons,
                    GROUP_CONCAT(evidence, '|||') as evidences
             FROM dismissals
+            WHERE session_id NOT IN ({_FIXTURE_SESSIONS_SQL})
             GROUP BY rule_id
             HAVING cnt >= ?
             ORDER BY cnt DESC
-            """,
+            """,  # nosec B608 - only interpolates the _FIXTURE_SESSIONS_SQL constant
             (threshold,),
         ).fetchall()
     finally:

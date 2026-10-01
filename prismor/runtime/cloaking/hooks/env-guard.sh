@@ -92,7 +92,7 @@ cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
 
 # The sanctioned ingestion path (`prismor cloak add --env-file`, list, ...)
 # names the file but never prints values — always allowed.
-if [[ "$cmd" =~ (^|[[:space:]])prismor[[:space:]]+cloak([[:space:]]|$) ]]; then
+if [[ "$cmd" =~ (^|[[:space:]])([/A-Za-z0-9_.-]*/)?prismer([[:space:]]+cloak([[:space:]]|$)|$) ]]; then
   exit 0
 fi
 

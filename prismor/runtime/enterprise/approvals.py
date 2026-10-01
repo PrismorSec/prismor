@@ -101,7 +101,7 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
@@ -125,7 +125,7 @@ def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> T
     req = urllib.request.Request(url, headers=_headers(ident), method="GET")
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
         status = str(data.get("status") or "").lower() or None
         mode = str(data.get("decision_mode") or data.get("decisionMode") or "full").lower()
@@ -185,13 +185,11 @@ def redact_approved_payload(payload: Any, *, workspace: Any = None) -> Any:
     """Strip classified sensitive values from ``payload`` (str / dict / list of
     tool arguments) after an "approve redacted" decision. Uses the same
     classifier as the data-boundary policy so what gets stripped is exactly
-    what the approver saw flagged. Best-effort: on any error the original is
-    returned unchanged (the call was approved; redaction is the extra ask)."""
-    try:
-        from prismor.runtime.data_boundary import redact_payload
-        return redact_payload(payload, workspace=workspace)
-    except Exception:
-        return payload
+    what the approver saw flagged. Fails closed: any error propagates, so the
+    caller blocks the call instead of forwarding the unredacted payload the
+    approver only allowed on condition of redaction."""
+    from prismor.runtime.data_boundary import redact_payload
+    return redact_payload(payload, workspace=workspace)
 
 
 def enqueue_step_up(

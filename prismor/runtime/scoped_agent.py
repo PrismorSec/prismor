@@ -123,6 +123,20 @@ def _scope_never_saw(tool: str, rules: Dict[str, Any]) -> bool:
     return not _mentions_mcp(rules.get("allowed_tools", []), rules.get("deny_tools", []))
 
 
+def _never_offered(tool: str, rules: Dict[str, Any]) -> bool:
+    """Could the synthesiser have put this tool in scope at all? An allowlist
+    only means something for tools it was offered. ``Skill`` (how Claude loads a
+    skill) is never in the inventory, so every synthesised scope used to deny
+    it by omission the moment the hook started seeing skill calls. Explicit
+    ``deny_tools`` entries and operator-edited scopes are judged before this."""
+    if is_mcp_tool(tool):
+        return _scope_never_saw(tool, rules)
+    # Only a synthesised scope records an inventory. An IAM profile or any other
+    # hand-written allowlist has none, and stays authoritative over every tool.
+    inventory = rules.get("inventory")
+    return isinstance(inventory, list) and tool not in inventory
+
+
 def _read_json(path: Path) -> Any:
     try:
         if path.stat().st_size > _MAX_MCP_CONFIG_BYTES:
@@ -550,11 +564,15 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     # cannot tell "summarize the README" from "summarize, then run the tests",
     # and shell is how agents do almost anything (Codex has no Read tool at
     # all — it reads files with `cat`). Dangerous shell is the base policy's
-    # job; the static scope only decides writes and network.
+    # job.
     # Glob and Grep ride with Read: they are read-only discovery, an agent
     # cannot orient without them, and denying them while allowing Read and
     # Bash buys nothing (the same listing is one `ls` or `grep` away).
-    allowed = {"Read", "Bash", "Glob", "Grep"}
+    # Writes are allowed for the same reason (#527): with Bash allowed, denying
+    # Write stops nothing (`cat > file`), while a missed edit verb ("make the
+    # dashboard simpler", "continue") denied every write until a later prompt
+    # happened to name one. Path and content rules still screen every write.
+    allowed = {"Read", "Bash", "Glob", "Grep", "Edit", "MultiEdit", "Write"}
     # Never deny network from keywords. A ten-word vocabulary cannot tell
     # "check if we have the gists locally" (which then runs `gh api`) from an
     # offline task, and every miss blocked a routine `gh`/`curl`/`git push`
@@ -562,20 +580,9 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     # The egress policy is the network control; the LLM path still scopes it.
     deny_network = False
 
-    # Detect task intent from keywords
-    edit_keywords = {"edit", "fix", "refactor", "update", "change", "modify", "add", "implement", "create", "write"}
-    test_keywords = {"test", "run", "execute", "build", "compile", "lint", "check"}
     network_keywords = {"fetch", "download", "install", "deploy", "push", "pull", "clone", "api", "http", "url"}
-    search_keywords = {"search", "find", "grep", "look"}
-
-    if any(kw in goal_lower for kw in edit_keywords):
-        allowed.update({"Edit", "MultiEdit", "Write", "Bash"})
-    if any(kw in goal_lower for kw in test_keywords):
-        allowed.update({"Bash"})
     if any(kw in goal_lower for kw in network_keywords):
         allowed.update({"WebFetch", "WebSearch"})
-    if any(kw in goal_lower for kw in search_keywords):
-        allowed.update({"Bash"})  # for grep/find
 
     # MCP tool families: allow a family when the prompt names its server
     # ("query posthog for ..." → mcp__plugin_posthog_posthog__*).
@@ -715,6 +722,15 @@ def check_scoped_rules(
     event_type = event.get("type", "")
     tool_name = _resolve_tool_name(event)
 
+    # A skill the agent loaded may name hosts to read (its docs). That is the
+    # one thing untrusted skill text can widen, and only to those hosts: the
+    # scope is synthesised from the prompt alone and never sees the skill body,
+    # so without this it denies the fetches the user's own request depends on.
+    # A human-edited scope stays authoritative (checked inside).
+    from .extensions import fetch_allowed_by_skill
+    if fetch_allowed_by_skill(rules, event):
+        return None
+
     # Tool check
     if tool_name:
         allowed = rules.get("allowed_tools", [])
@@ -753,7 +769,7 @@ def check_scoped_rules(
         # prior allowlist, so the deny does not silently turn into an allowlist
         # that blocks every other tool.
         if "*" not in allowed:
-            if (is_mcp_tool(tool_name) and _scope_never_saw(tool_name, rules)
+            if (_never_offered(tool_name, rules)
                     and not rules.get("operator_edited")):
                 # An auto-synthesised scope whose inventory never included this
                 # server (undiscovered connector, server added mid-session).

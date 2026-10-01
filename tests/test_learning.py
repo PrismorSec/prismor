@@ -114,3 +114,34 @@ class TestAcceptCandidateWritesValidPolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixtureSessionsExcluded(unittest.TestCase):
+    """Sessions that drive Prismor's own hook or engine feed it attacks on
+    purpose; their findings must not count as false positives."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.workspace = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _session(self, sid: str, command: str):
+        events = [{"type": "shell", "command": command, "ts": "2026-01-01T00:00:00Z"}]
+        analysis = analyze_events(events, repo_root=self.workspace, workspace=self.workspace)
+        save_session_snapshot(
+            workspace=self.workspace, session_id=sid, agent="claude",
+            source="ingest", repo_url=None, events=events, analysis=analysis,
+        )
+
+    def test_fixture_session_dismissals_are_not_false_positives(self):
+        from prismor.runtime.learning import record_dismissal, track_false_positives
+        self._session("fixture", "printf '{}' | prismor hook-dispatch --agent claude")
+        self._session("real", "npm run build")
+        for _ in range(6):
+            record_dismissal(self.workspace, "fixture", "r-fixture", "rm -rf /", "observe_surfaced")
+            record_dismissal(self.workspace, "real", "r-real", "rm -rf .next", "observe_surfaced")
+        rules = {r["rule_id"] for r in track_false_positives(self.workspace, threshold=5)}
+        self.assertIn("r-real", rules)
+        self.assertNotIn("r-fixture", rules)

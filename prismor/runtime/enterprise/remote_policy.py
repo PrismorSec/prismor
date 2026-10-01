@@ -28,15 +28,26 @@ from __future__ import annotations
 from prismor.runtime.http_ua import user_agent as _http_user_agent
 
 import base64
+import copy
 import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from prismor.runtime.enterprise import identity as _identity
+
+# One verified+parsed policy, keyed on the exact bytes that were verified (plus
+# the trust root), so a hook call that loads the policy ~9 times runs openssl
+# and the YAML parse once (#478). Content-keyed, so a rewritten file can never
+# be served from a stale entry and no invalidation is needed.
+_VERIFIED: Dict[tuple, Dict[str, Any]] = {}
+
+
+def clear_policy_cache() -> None:
+    _VERIFIED.clear()
 
 
 def _public_key_path() -> Path:
@@ -156,7 +167,7 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
         _identity.clear_revoked()
     except urllib.error.HTTPError as exc:
@@ -277,7 +288,14 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_self_edit_sig is not None
         and str(latest_self_edit_sig) != str(_current_self_edit_sig())
     )
-    if (version_changed or profile_changed or capture_changed
+    # Prompt guardrails (settings.prompt_guardrails) are served without a
+    # version bump; an admin's edit reaches the agent's next prompt.
+    latest_guardrails_sig = body.get("promptGuardrailsSig")
+    guardrails_changed = (
+        latest_guardrails_sig is not None
+        and str(latest_guardrails_sig) != str(_current_prompt_guardrails_sig())
+    )
+    if (version_changed or profile_changed or capture_changed or guardrails_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
@@ -518,6 +536,22 @@ def _current_egress_sig() -> str:
         return ""
 
 
+def _current_prompt_guardrails_sig() -> str:
+    """Canonical JSON of settings.prompt_guardrails → sha256 → 16 hex, matching
+    the server's promptGuardrailsSig. ensure_ascii=False because the server
+    hashes JavaScript's JSON.stringify, which leaves non-ASCII text unescaped."""
+    try:
+        pol = verify_and_load()
+        block = ((pol or {}).get("settings") or {}).get("prompt_guardrails")
+        if not isinstance(block, dict) or not block:
+            return ""
+        import hashlib
+        blob = json.dumps(block, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
 def _current_tool_tags_sig() -> str:
     """Signature of the cached policy's tool-tag config, matching the server's
     ``toolTagsSig`` format (canonical JSON of settings.tool_tags → sha256 → 16
@@ -614,17 +648,23 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
     except OSError:
         return None
 
-    if not _verify_signature(payload, sig_b64):
-        sys.stderr.write("[prismor] remote policy signature INVALID — ignoring\n")
-        return None
-
-    try:
-        import yaml
-        parsed = yaml.safe_load(payload.decode("utf-8"))
-    except Exception:
-        return None
-    if not isinstance(parsed, dict):
-        return None
+    key = (str(_public_key_path()), payload, sig_b64)
+    parsed = _VERIFIED.get(key)
+    if parsed is None:
+        if not _verify_signature(payload, sig_b64):
+            sys.stderr.write("[prismor] remote policy signature INVALID — ignoring\n")
+            return None
+        try:
+            import yaml
+            parsed = yaml.safe_load(payload.decode("utf-8"))
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        _VERIFIED.clear()
+        _VERIFIED[key] = parsed
+    # Callers mutate the result (pop "_remote_meta", etc.); never hand out the memo.
+    parsed = copy.deepcopy(parsed)
 
     meta = {}
     try:
@@ -673,7 +713,7 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
         _identity.clear_revoked()
     except urllib.error.HTTPError as exc:
@@ -727,6 +767,14 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     home.mkdir(parents=True, exist_ok=True)
     cached_policy_path().write_text(policy_yaml, encoding="utf-8")
     _cached_sig_path().write_text(signature, encoding="utf-8")
+    # The cloak hooks are bash and read pattern files, not this YAML: project
+    # the org's secret patterns to a file they load. Verified policy only -
+    # this runs after the signature check above. Best-effort, never fatal.
+    try:
+        from prismor.runtime.cloaking.patterns import write_org_patterns
+        write_org_patterns(_extract_cloak_patterns(policy_yaml))
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
     _meta_path().write_text(json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
@@ -735,6 +783,17 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         "full_capture": full_capture,
     }), encoding="utf-8")
     return True
+
+
+def _extract_cloak_patterns(policy_yaml: str) -> List[str]:
+    """The org's ``settings.cloak_patterns`` list. Empty on any parse problem."""
+    try:
+        import yaml
+        parsed = yaml.safe_load(policy_yaml)
+        pats = (((parsed or {}).get("settings") or {}).get("cloak_patterns")) or []
+        return [str(p) for p in pats if p] if isinstance(pats, list) else []
+    except Exception:
+        return []
 
 
 def _extract_full_capture(policy_yaml: str) -> bool:

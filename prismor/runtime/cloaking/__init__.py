@@ -27,6 +27,9 @@ from prismor.runtime.cloaking.hermes_installer import (
 from prismor.runtime.cloaking.patterns import (
     add_pattern,
     all_patterns,
+    list_org_patterns,
+    org_patterns_file,
+    write_org_patterns,
     builtin_patterns,
     custom_patterns_file,
     list_custom_patterns,
@@ -59,5 +62,8 @@ __all__ = [
     "list_custom_patterns",
     "builtin_patterns",
     "all_patterns",
+    "list_org_patterns",
+    "org_patterns_file",
+    "write_org_patterns",
     "custom_patterns_file",
 ]

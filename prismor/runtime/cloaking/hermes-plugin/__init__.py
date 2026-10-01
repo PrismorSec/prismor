@@ -9,10 +9,16 @@ When immunity-agent is pip-installed, Hermes discovers the same
 ``register()`` via the ``hermes_agent.plugins`` entry-point group
 (defined in ``pyproject.toml``), pointing directly to the shared module
 at ``prismor.runtime.cloaking.hermes_plugin_entry:register``.
+
+Everything below the docstring is a verbatim copy of that module, kept
+self-contained so the plugin loads even when Hermes' interpreter cannot
+import ``prismor``. tests/test_hermes_plugin_sync.py fails if they drift.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import re
@@ -58,13 +64,19 @@ def _secrets_dir() -> Path:
 
 
 def _read_secret(name: str) -> Optional[str]:
-    """Read a secret value by placeholder name. Returns None if missing."""
-    try:
-        path = _secrets_dir() / name
-        if path.exists() and path.is_file():
-            return path.read_text(encoding="utf-8").strip()
-    except Exception:
-        pass
+    """Read a secret value by placeholder name. Returns None if missing.
+
+    Searches the root secrets dir first, then falls back to the
+    auto_vault subdirectory so paste-guard-auto-vaulted secrets
+    (stored under auto_vault/auto_*) are resolvable by name.
+    """
+    for base in (_secrets_dir(), _vault_path()):
+        try:
+            path = base / name
+            if path.exists() and path.is_file():
+                return path.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
     return None
 
 
@@ -75,7 +87,6 @@ def _vault_path() -> Path:
 
 def _hash_value(value: str) -> str:
     """Deterministic hash for auto-vault naming."""
-    import hashlib
     return hashlib.sha256(value.encode()).hexdigest()[:12]
 
 
@@ -207,8 +218,6 @@ def on_pre_tool_call(
     tool_call_id: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Pre-tool-call hook: handle secret placeholders and raw secret detection."""
-    import json
-
     search_text = json.dumps(args) if args else ""
 
     if not search_text:
@@ -247,24 +256,23 @@ def on_pre_tool_call(
                 },
             }
 
-    # Phase 2: Raw secret detection
+    # Phase 2: Raw secret detection - always block, regardless of vault state.
+    # If already vaulted we surface the *existing* placeholder name so the agent
+    # learns the canonical reference rather than getting a second auto_ name.
     raw_matches = _scan_for_raw_secrets(search_text)
     for value in raw_matches:
         existing = _is_already_vaulted(value)
-        if existing:
-            continue
-
-        placeholder_name = _vault_secret(value)
-        logger.info(
-            "Vaulted raw secret under auto_%s (tool=%s, session=%s)",
-            placeholder_name, tool_name, session_id,
-        )
+        placeholder_name = existing if existing else _vault_secret(value)
+        if not existing:
+            logger.info(
+                "Vaulted raw secret under auto_%s (tool=%s, session=%s)",
+                placeholder_name, tool_name, session_id,
+            )
         return {
             "action": "block",
             "message": (
                 f"Raw secret detected in tool call. "
-                f"Use @@SECRET:{placeholder_name}@@ instead. "
-                f"Run: prismor cloak add {placeholder_name}"
+                f"Use @@SECRET:{placeholder_name}@@ instead."
             ),
         }
 

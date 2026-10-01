@@ -72,6 +72,15 @@ rules: []
 allowlists: []
 ```
 
+Or flip it without editing the file — `prismor sandbox on` / `prismor sandbox
+off` sets `settings.sandbox.enabled` and leaves the rest of the block alone,
+which is also how you turn containment off again without unwinding a mode:
+
+```bash
+prismor sandbox on
+prismor sandbox off
+```
+
 Check readiness:
 
 ```bash

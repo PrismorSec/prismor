@@ -137,11 +137,11 @@ Prismor integrates with Hermes at two complementary layers:
 
 ### GitHub Copilot CLI
 
-- **Config:** `~/.copilot/hooks.json` (user) or `.github/copilot/hooks.json` (project).
-- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmitted`.
+- **Config:** `~/.copilot/hooks/prismor.json` (user) or `.github/hooks/prismor.json` (project). Copilot loads only `*.json` files in those directories.
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`. With PascalCase event names Copilot sends Claude-shaped payloads.
 - **Blocking:** hook emits `{"permissionDecision": "deny", "permissionDecisionReason": "..."}` on stdout. Exit-2 convention is not used — Copilot reads the JSON response instead.
 - **Static layer:** `--allow-tool` / `--deny-tool` / `--allow-all-tools` CLI flags apply before the hook fires (deny beats allow). Useful as defense-in-depth.
-- **Payload note:** `toolArgs` arrives as a JSON-encoded string; `_normalize_copilot()` parses it before evaluation.
+- **Payload note:** arguments arrive in `tool_input` (PascalCase events) or `toolArgs` (camelCase events), as an object or as raw `apply_patch` text. File tools use Copilot's keys: `{path}`, `{path, file_text}`, `{path, old_str, new_str}`. Captured live on Copilot CLI 1.0.88; see `tests/test_copilot_normalizer.py`.
 - **Code:** `prismor/runtime/hooks.py` `_merge_copilot()`, `_strip_copilot()`, `_normalize_copilot()`.
 
 ### Codex (OpenAI)

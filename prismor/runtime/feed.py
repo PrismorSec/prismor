@@ -20,6 +20,7 @@ CATEGORY_TO_FEED_TYPES = {
     "path_traversal": {"data_exfiltration"},
     "skill_risk": {"unsafe_tool_execution", "policy_bypass", "prompt_injection"},
     "network_isolation": {"data_exfiltration", "unsafe_tool_execution"},
+    "change_control": {"unsafe_tool_execution"},
 }
 
 

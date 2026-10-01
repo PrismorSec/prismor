@@ -89,7 +89,7 @@ const FAIL_OPEN_DECISION: PrismorDecision = {
  * doesn't mean "silent."
  */
 function logObserveFindings(decision: PrismorDecision, mode: string, toolName: string): void {
-  if (mode !== "observe") return;
+  if (mode !== "observe" || !decision.allow) return; // actually blocked: the adapter reports that
   const findings = (decision.findings ?? []) as Array<Record<string, unknown>>;
   const wouldBlock = findings.filter((f) => String(f?.mode ?? "observe").toLowerCase() === "enforce");
   for (const f of wouldBlock) {
@@ -232,6 +232,31 @@ async function evaluate(
   return res.json() as Promise<PrismorDecision>;
 }
 
+/**
+ * Mask cloaked secrets and data-boundary values in a tool's return value before
+ * the model sees it — the result-side step the Python adapters run in-process.
+ * Best effort: any failure returns the value unchanged, never fails the call.
+ */
+async function redactResult(value: unknown, opts: Required<PrismorOptions>): Promise<unknown> {
+  if (value === undefined || value === null) return value;
+  try {
+    const res = await fetch(`${opts.evalUrl}/v1/redact`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
+      },
+      body: JSON.stringify({ result: value, workspace: opts.workspace }),
+      signal: timeoutSignal(opts.timeoutMs),
+    });
+    if (!res.ok) return value;
+    const body = (await res.json()) as { result?: unknown; redacted?: boolean };
+    return body && body.redacted && "result" in body ? body.result : value;
+  } catch {
+    return value;
+  }
+}
+
 function resolveOpts(opts: PrismorOptions): Required<PrismorOptions> {
   const agent = opts.agent ?? "vercel-ai";
   const mode = opts.mode ?? "observe";
@@ -277,7 +302,7 @@ export function prismorTool<
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
-    return original(args, ctx);
+    return redactResult(await original(args, ctx), resolved);
   };
 
   return { ...tool, execute: guarded };
@@ -348,7 +373,7 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
-    return original(input, config);
+    return redactResult(await original(input, config), resolved);
   };
   (tool as any).__prismor_guarded__ = true;
   return tool;

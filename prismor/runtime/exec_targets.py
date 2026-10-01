@@ -30,7 +30,7 @@ import json
 import re
 import shlex
 from pathlib import Path
-from typing import Dict, Iterable, List, NamedTuple, Optional, Set, Tuple
+from typing import Iterable, List, NamedTuple, Optional, Set
 
 # Interpreters whose first non-flag argument is a script to run.
 _SCRIPT_INTERPRETERS = frozenset({

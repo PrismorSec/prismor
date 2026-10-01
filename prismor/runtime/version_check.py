@@ -49,7 +49,7 @@ def fetch_latest(timeout: float = _TIMEOUT) -> Optional[str]:
     import urllib.request
 
     try:
-        with urllib.request.urlopen(
+        with urllib.request.urlopen(  # fixed or operator-configured URL  # nosec B310
             f"https://pypi.org/pypi/{_PACKAGE}/json", timeout=timeout
         ) as resp:
             return json.loads(resp.read())["info"]["version"]

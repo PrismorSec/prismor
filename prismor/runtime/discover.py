@@ -1121,7 +1121,7 @@ def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
         # working perfectly against a local server. See prismor/runtime/http_ua.
         from prismor.runtime.http_ua import user_agent as _ua
         request.add_header("User-Agent", _ua())
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             return 200 <= resp.status < 300
     except Exception:
         return False
@@ -1180,7 +1180,7 @@ def _stamp_report(now: Optional[float] = None) -> None:
         pass
 
 
-def maybe_report_background(workspace: Path) -> bool:
+def maybe_report_background(workspace: Path, force: bool = False) -> bool:
     """Spawn a detached inventory report if one is due. Returns True if spawned.
 
     Runs out-of-process on purpose. A full scan is a few hundred milliseconds
@@ -1191,12 +1191,16 @@ def maybe_report_background(workspace: Path) -> bool:
     The marker is written *before* the spawn, not after: several hooks can fire
     at once, and a marker written by the child would let all of them decide
     they were due and start a scan each.
+
+    ``force`` skips the due check, for a change the console should see now: a
+    gateway install moves servers behind the gateway, and until the next daily
+    report the console kept showing them as ungoverned (#279).
     """
     try:
         from prismor.runtime.enterprise import identity as _identity
         if not _identity.is_enrolled():
             return False
-        if not report_due():
+        if not force and not report_due():
             return False
         _stamp_report()
 

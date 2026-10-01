@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple, Union
 
 try:  # POSIX advisory locks; absent on Windows.
     import fcntl
@@ -126,6 +126,25 @@ def prismor_home() -> Path:
     return Path(os.environ.get("PRISMOR_HOME", str(Path.home() / ".prismor")))
 
 
+def relocated_home_env() -> Dict[str, str]:
+    """``{"PRISMOR_HOME": ...}`` when the home is relocated, else ``{}``.
+
+    For MCP server entries Prismor writes into agent configs. The host launches
+    them from its own environment, not the shell that ran the installer, so a
+    relocated $PRISMOR_HOME has to be pinned into the entry or the server runs
+    under a different identity and policy than the CLI and the hooks. A default
+    install keeps a clean entry.
+    """
+    home = os.environ.get("PRISMOR_HOME")
+    if not home:
+        return {}
+    try:
+        relocated = Path(home).expanduser().resolve() != (Path.home() / ".prismor").resolve()
+    except OSError:
+        relocated = True
+    return {"PRISMOR_HOME": str(Path(home).expanduser())} if relocated else {}
+
+
 # ── Re-cloaking: never persist a raw secret value to the audit store ─────────
 #
 # A decloak hook substitutes the real secret into a command for execution. The
@@ -194,9 +213,25 @@ def _registry_path() -> Path:
     return prismor_home() / "workspaces.json"
 
 
+def canonical_workspace_path(workspace: Optional[Union[Path, str]]) -> str:
+    """Return the resolved, canonical path string for a workspace.
+
+    Resolves symlinks so that query and write paths agree regardless of
+    whether PRISMOR_HOME or --workspace traversed a symlink (e.g. macOS /tmp
+    -> /private/tmp, bind mounts, symlinked home dirs).
+    """
+    if not workspace:
+        return ""
+    p = Path(workspace) if isinstance(workspace, str) else workspace
+    try:
+        return str(p.resolve())
+    except OSError:
+        return str(p)
+
+
 def register_workspace(workspace: Path) -> None:
     """Add a workspace to the global registry (idempotent)."""
-    ws = str(workspace.resolve())
+    ws = canonical_workspace_path(workspace)
     reg = _registry_path()
     paths: List[str] = []
     if reg.exists():
@@ -302,7 +337,7 @@ def _insert_missing_rows_sql(table: str, cols: List[str]) -> str:
     source_cols = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
     row_match = " AND ".join(f"d.{_quote_ident(c)} IS s.{_quote_ident(c)}" for c in cols)
     return (
-        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "
+        f"INSERT INTO {_quote_ident(table)} ({quoted_cols}) "  # nosec B608
         f"SELECT {source_cols} FROM src.{_quote_ident(table)} AS s "
         f"WHERE NOT EXISTS ("
         f"SELECT 1 FROM main.{_quote_ident(table)} AS d WHERE {row_match}"
@@ -332,7 +367,7 @@ def _merge_sqlite_db_once(src_db: Path, dst_db: Path) -> None:
                 source = ", ".join(f"s.{_quote_ident(c)}" for c in cols)
                 if table in {"sessions", "findings"}:
                     dst.execute(
-                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "
+                        f"INSERT OR REPLACE INTO {_quote_ident(table)} ({quoted}) "  # nosec B608
                         f"SELECT {source} FROM src.{_quote_ident(table)} AS s"
                     )
                 else:
@@ -539,6 +574,7 @@ def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]
 # SQLite can't ADD COLUMN NOT NULL without a default, and fresh DBs already get
 # the constraint via CREATE TABLE.
 _EXPECTED_COLUMNS: Dict[str, List[tuple]] = {
+    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0")],
     "sessions": [
         ("session_id", "TEXT"), ("agent", "TEXT"), ("agent_name", "TEXT"),
         ("source", "TEXT"), ("workspace_path", "TEXT"), ("repo_url", "TEXT"),
@@ -620,6 +656,40 @@ def _dedupe_runtime_events_once(connection: sqlite3.Connection, db_path: Path) -
         pass
 
 
+def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: Path) -> None:
+    """Canonicalize (resolve symlinks) any legacy workspace_path rows.
+
+    Fixes PrismorSec/prismor#416: earlier versions wrote raw str(workspace)
+    without resolving symlinks, causing list_sessions to miss rows on platforms
+    like macOS where /tmp traverses a symlink.
+    """
+    # v2: v1 only collected paths from sessions, skipping orphaned telemetry rows (#509).
+    marker = db_path.parent / "migrations" / "runtime-state" / "canonicalize-workspace-paths-v2.json"
+    if marker.exists():
+        return
+    tables = ("sessions", "package_inventory", "token_usage", "tool_output_size", "supply_chain_events")
+    try:
+        paths = set()
+        for table in tables:
+            try:
+                paths.update(wp for (wp,) in connection.execute(f"SELECT DISTINCT workspace_path FROM {table} WHERE workspace_path IS NOT NULL AND workspace_path != ''"))  # identifiers are constants  # nosec B608
+            except sqlite3.OperationalError:
+                pass
+        for wp in paths:
+            resolved = canonical_workspace_path(wp)
+            if resolved and resolved != wp:
+                for table in tables:
+                    try:
+                        connection.execute(f"UPDATE {table} SET workspace_path = ? WHERE workspace_path = ?", (resolved, wp))  # identifiers are constants/quoted, values bound  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
+        connection.commit()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"version": 2}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def initialize_database(workspace: Path) -> Path:
     ensure_data_dirs(workspace)
     db_path = get_db_path(workspace)
@@ -686,7 +756,8 @@ def initialize_database(workspace: Path) -> Path:
                 input_tokens INTEGER,
                 output_tokens INTEGER,
                 cache_read_tokens INTEGER,
-                cache_creation_tokens INTEGER
+                cache_creation_tokens INTEGER,
+                cache_1h_tokens INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS tool_output_size (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -699,12 +770,22 @@ def initialize_database(workspace: Path) -> Path:
                 size_chars INTEGER,
                 approx_tokens INTEGER
             );
+            CREATE TABLE IF NOT EXISTS hook_timings (
+                session_id TEXT NOT NULL,
+                ts TEXT NOT NULL,
+                hook_event TEXT,
+                hook_ms INTEGER,
+                agent TEXT,
+                detail_json TEXT,
+                PRIMARY KEY (session_id, ts)
+            );
             """
         )
         # Migrate before creating indexes — old DBs may be missing columns the
         # indexes reference (e.g. supply_chain_events.session_id).
         _migrate_schema(connection)
         _dedupe_runtime_events_once(connection, db_path)
+        _canonicalize_workspace_paths_once(connection, db_path)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
@@ -724,6 +805,8 @@ def initialize_database(workspace: Path) -> Path:
         )
         from prismor.runtime.learning import initialize_learning_tables
         initialize_learning_tables(connection)
+        from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
+        connection.executescript(_JUDGE_AUDIT_DDL)
 
         connection.commit()
     finally:
@@ -765,7 +848,7 @@ def save_session_snapshot(
                 agent,
                 agent_name or agent,
                 source,
-                str(workspace),
+                canonical_workspace_path(workspace),
                 repo_url,
                 started_at,
                 updated_at,
@@ -859,6 +942,12 @@ def save_session_snapshot(
                     json.dumps(
                         {
                             "feedMatches": analysis.get("feedMatches", []),
+                            # Without these a warn-only finding reads back as a
+                            # block: the dashboard can't tell the two apart.
+                            "ruleId": finding.get("ruleId") or finding.get("rule_id"),
+                            "action": finding.get("action"),
+                            "mode": finding.get("mode"),
+                            "pattern": finding.get("pattern"),
                         }
                     ),
                 )
@@ -869,6 +958,15 @@ def save_session_snapshot(
     finally:
         connection.close()
     return db_path
+
+
+def _enforced(finding: Dict[str, Any]) -> bool:
+    """Whether a finding stopped the call. A mode other than ``enforce`` or an
+    action other than ``block`` only warned. Missing fields (rows written before
+    they were stored) count as a block, as they always have. Mirrors the
+    dashboard's ``flowVerdict``."""
+    mode, action = finding.get("mode"), finding.get("action")
+    return not (mode and mode != "enforce") and not (action and action != "block")
 
 
 def persist_runtime_findings(
@@ -984,10 +1082,8 @@ def list_sessions(workspace: Path, limit: int = 20, *, all_workspaces: bool = Fa
                 (limit,),
             ).fetchall()
         else:
-            try:
-                ws_key = str(workspace.resolve())
-            except OSError:
-                ws_key = str(workspace)
+            ws_key = canonical_workspace_path(workspace)
+            ws_raw = str(workspace)
             rows = connection.execute(
                 """
                 SELECT session_id, agent, source, workspace_path, repo_url, started_at, updated_at, risk_score, findings_count, summary_json
@@ -996,8 +1092,32 @@ def list_sessions(workspace: Path, limit: int = 20, *, all_workspaces: bool = Fa
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """,
-                (ws_key, str(workspace), limit),
+                (ws_key, ws_raw, limit),
             ).fetchall()
+            if len(rows) < limit:
+                seen_ids = {r["session_id"] for r in rows}
+                candidates = connection.execute(
+                    """
+                    SELECT session_id, agent, source, workspace_path, repo_url, started_at, updated_at, risk_score, findings_count, summary_json
+                    FROM sessions
+                    WHERE workspace_path IS NOT NULL AND workspace_path != '' AND workspace_path != ? AND workspace_path != ?
+                    ORDER BY updated_at DESC
+                    LIMIT 500
+                    """,
+                    (ws_key, ws_raw),
+                ).fetchall()
+                extra_rows = []
+                for cand in candidates:
+                    if cand["session_id"] in seen_ids:
+                        continue
+                    wp = cand["workspace_path"]
+                    if canonical_workspace_path(wp) == ws_key:
+                        extra_rows.append(cand)
+                        seen_ids.add(cand["session_id"])
+                        if len(rows) + len(extra_rows) >= limit:
+                            break
+                if extra_rows:
+                    rows = sorted(list(rows) + extra_rows, key=lambda r: r["updated_at"] or "", reverse=True)[:limit]
     finally:
         connection.close()
     return [_session_from_row(row) for row in rows]
@@ -1253,11 +1373,6 @@ def _absolute_time_store(ts: str) -> str:
         return ts
 
 
-def _ts_pair(ts: str) -> Dict[str, str]:
-    """Return ``{"rel": "2h ago", "abs": "2026-06-06 14:23:05 UTC"}`` for a ts."""
-    return {"rel": _relative_time_store(ts) if ts else "", "abs": _absolute_time_store(ts)}
-
-
 def _extract_mcp_or_tool(raw_json: str) -> Optional[Dict[str, str]]:
     """Identify whether an event was an MCP server call or a skill/tool call.
 
@@ -1340,6 +1455,33 @@ def _state_query_workspaces() -> List[Path]:
     return []
 
 
+def get_hook_latency_ms(limit: int = 5000) -> List[int]:
+    """Recent per-call hook durations (ms) across every registered workspace.
+
+    Feeds the /metrics latency summary. The hook dispatcher is a separate
+    short-lived process from the dashboard server, so the timings it stamps on
+    exit are readable only through the store. Returns [] on DBs written before
+    the hook_timings table existed.
+    """
+    samples: List[int] = []
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            rows = conn.execute(
+                "SELECT hook_ms FROM hook_timings WHERE hook_ms IS NOT NULL "
+                "ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            samples.extend(int(r[0]) for r in rows)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    return samples
+
+
 def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
     """Query all registered workspace DBs and return dashboard-shaped data.
 
@@ -1373,7 +1515,6 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
 
     live_events_raw: List[Dict[str, Any]] = []
     top_users_acc: Dict[str, Dict[str, Any]] = {}
-    top_mcp_acc: Dict[str, Dict[str, Any]] = {}
     severity_breakdown: Counter = Counter()
 
     for ws in workspaces:
@@ -1770,8 +1911,21 @@ def get_sessions_page(
     limit: int = 20,
     sort: str = "updatedAt",
     direction: str = "desc",
+    agent: str = "",
+    workspace: str = "",
+    search: str = "",
+    findings: str = "",
+    min_risk: int = 0,
+    since_hours: int = 0,
 ) -> Dict[str, Any]:
-    """Return a paginated list of sessions across all registered workspaces."""
+    """Return a paginated list of sessions across all registered workspaces.
+
+    Filters apply before paging: ``agent`` and ``workspace`` match exactly,
+    ``search`` is a substring of the session id, ``findings`` is ``with`` or
+    ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
+    keeps sessions active within that window. ``facets`` lists the agents and
+    workspaces of the unfiltered set so a picker can offer every value.
+    """
     sort_col = _VALID_SESSION_SORTS.get(sort, "updated_at")
     reverse = direction.lower() != "asc"
     workspaces = _state_query_workspaces()
@@ -1786,7 +1940,7 @@ def get_sessions_page(
             cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
             name_col = "agent_name" if "agent_name" in cols else "agent"
             for row in conn.execute(
-                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "
+                f"SELECT session_id, agent, {name_col} as agent_name, source, risk_score, findings_count, "  # nosec B608
                 "started_at, updated_at, workspace_path FROM sessions LIMIT 5000"
             ):
                 workspace_path = row["workspace_path"] or str(ws)
@@ -1802,6 +1956,7 @@ def get_sessions_page(
                     "updatedAt": _relative_time_store(row["updated_at"]) if row["updated_at"] else "",
                     "updatedAtAbs": _absolute_time_store(row["updated_at"] or ""),
                     "_sortRaw": row[sort_col] or "",
+                    "_updatedRaw": row["updated_at"] or "",
                     "workspace": workspace_path,
                     "workspaceName": Path(workspace_path).name if workspace_path else "",
                 })
@@ -1809,6 +1964,42 @@ def get_sessions_page(
             pass
         finally:
             conn.close()
+
+    facets = {
+        "agents": sorted({r["agent"] for r in rows}),
+        "workspaces": sorted(
+            {(r["workspace"], r["workspaceName"]) for r in rows}, key=lambda w: (w[1].lower(), w[0])
+        ),
+    }
+    facets["workspaces"] = [{"path": p, "name": n} for p, n in facets["workspaces"]]
+
+    from datetime import datetime, timezone, timedelta
+    cutoff = None
+    if since_hours and since_hours > 0:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+
+    def _active_since(raw: str) -> bool:
+        if cutoff is None:
+            return True
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt >= cutoff
+        except Exception:
+            return False
+
+    needle = (search or "").strip().lower()
+    rows = [
+        r for r in rows
+        if (not agent or r["agent"] == agent)
+        and (not workspace or r["workspace"] == workspace)
+        and (not needle or needle in r["sessionId"].lower())
+        and (findings != "with" or r["findingsCount"] > 0)
+        and (findings != "clean" or r["findingsCount"] == 0)
+        and (not min_risk or r["riskScore"] >= min_risk)
+        and _active_since(r["_updatedRaw"])
+    ]
 
     rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
     total = len(rows)
@@ -1819,8 +2010,71 @@ def get_sessions_page(
     items = rows[offset: offset + limit]
     for r in items:
         r.pop("_sortRaw", None)
+        r.pop("_updatedRaw", None)
 
-    return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit}
+    return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit, "facets": facets}
+
+
+def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
+    """Per-MCP-server usage over the window: calls, blocked calls, distinct
+    sessions, last call, and the same per tool. Keyed by server name as the
+    agent saw it (``mcp__<server>__<tool>``)."""
+    usage: Dict[str, Dict[str, Any]] = {}
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            for row in conn.execute(
+                """
+                SELECT e.raw_json, e.ts, e.session_id, f.finding_id IS NOT NULL as blocked
+                FROM events e
+                LEFT JOIN findings f ON f.session_id = e.session_id
+                                    AND f.event_index = (
+                                      SELECT COUNT(*) FROM events e2
+                                      WHERE e2.session_id = e.session_id AND e2.id < e.id
+                                    )
+                WHERE e.type != 'supply_chain' AND e.ts >= datetime('now', ?)
+                LIMIT 20000
+                """,
+                (f"-{hours} hours",),
+            ):
+                info = _extract_mcp_or_tool(row["raw_json"] or "")
+                if not info or info["kind"] != "mcp":
+                    continue
+                tool = ""
+                try:
+                    meta = (json.loads(row["raw_json"]).get("metadata") or {})
+                    tn = str(meta.get("tool_name") or "")
+                    if tn.startswith("mcp__") and "__" in tn[5:]:
+                        tool = tn[5:].split("__", 1)[1]
+                except Exception:
+                    tool = ""
+                srv = usage.setdefault(info["name"], {
+                    "calls": 0, "blocked": 0, "sessions": set(), "last_ts": "", "tools": {}})
+                srv["calls"] += 1
+                srv["blocked"] += 1 if row["blocked"] else 0
+                srv["sessions"].add(row["session_id"])
+                ts = row["ts"] or ""
+                if ts > srv["last_ts"]:
+                    srv["last_ts"] = ts
+                if tool:
+                    t = srv["tools"].setdefault(tool, {"calls": 0, "blocked": 0, "last_ts": ""})
+                    t["calls"] += 1
+                    t["blocked"] += 1 if row["blocked"] else 0
+                    if ts > t["last_ts"]:
+                        t["last_ts"] = ts
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    for srv in usage.values():
+        srv["sessions"] = len(srv["sessions"])
+        srv["last"] = _relative_time_store(srv["last_ts"]) if srv["last_ts"] else ""
+        srv["lastAbs"] = _absolute_time_store(srv["last_ts"]) if srv["last_ts"] else ""
+        for t in srv["tools"].values():
+            t["last"] = _relative_time_store(t["last_ts"]) if t["last_ts"] else ""
+    return usage
 
 
 def get_findings_page(
@@ -1892,7 +2146,7 @@ def get_findings_page(
                 {where}
                 ORDER BY COALESCE(te.ts, s.updated_at) DESC
                 LIMIT 5000
-                """,
+                """,  # nosec B608
                 params,
             ):
                 ts_raw = row["trig_ts"] or row["session_updated"] or ""
@@ -1938,6 +2192,130 @@ def get_findings_page(
     }
 
 
+_HOOK_TIMINGS_DDL = (
+    "CREATE TABLE IF NOT EXISTS hook_timings ("
+    "session_id TEXT NOT NULL, ts TEXT NOT NULL, hook_event TEXT, hook_ms INTEGER, "
+    "agent TEXT, detail_json TEXT, "
+    "PRIMARY KEY (session_id, ts))"
+)
+_HOOK_TIMINGS_MIGRATED: Set[Path] = set()
+
+
+def record_hook_timing(workspace: Path, session_id: str, ts: str, hook_event: str, hook_ms: int,
+                       agent: str = "", detail: Optional[Dict[str, Any]] = None) -> None:
+    """How long one hook process took, keyed to the event it screened.
+
+    ``detail`` is prismor.runtime.perf.snapshot(): per-stage ms, per-rule
+    counters and degradations (#494).
+
+    Kept out of events.raw_json on purpose: every snapshot rewrites the events
+    table from the session JSONL, and that JSONL line is appended before policy
+    runs, so nothing in it can hold the total. Best-effort: a failure here must
+    never surface in the agent's hook output.
+    """
+    if not session_id or not ts:
+        return
+    db_path = get_db_path(workspace)
+    try:
+        conn = sqlite3.connect(db_path, timeout=2)
+        try:
+            conn.execute(_HOOK_TIMINGS_DDL)
+            if db_path not in _HOOK_TIMINGS_MIGRATED:
+                for col in ("agent", "detail_json"):  # tables created before #494
+                    try:
+                        conn.execute(f"ALTER TABLE hook_timings ADD COLUMN {col} TEXT")  # constant identifiers  # nosec B608
+                    except sqlite3.OperationalError:
+                        pass
+                _HOOK_TIMINGS_MIGRATED.add(db_path)
+            conn.execute(
+                "INSERT OR REPLACE INTO hook_timings (session_id, ts, hook_event, hook_ms, agent, detail_json) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, ts, hook_event or "", int(hook_ms), agent or "",
+                 json.dumps(detail) if detail else None),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def get_hook_perf(limit: int = 500) -> Dict[str, Any]:
+    """Latency summary of the last ``limit`` hook calls per workspace (#494).
+
+    p50/p95 by agent and event, the slowest stages and rules by total time,
+    rules that raised, and how many calls ran degraded.
+    """
+    calls: List[tuple] = []
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            calls.extend(conn.execute(
+                "SELECT agent, hook_event, hook_ms, detail_json FROM hook_timings "
+                "WHERE hook_ms IS NOT NULL ORDER BY rowid DESC LIMIT ?", (limit,)))
+        except sqlite3.OperationalError:
+            pass  # no table, or one from before the agent/detail columns
+        finally:
+            conn.close()
+
+    def pct(xs: List[int], q: float) -> int:
+        xs = sorted(xs)
+        return xs[min(len(xs) - 1, int(q * len(xs)))]
+
+    groups: Dict[tuple, List[int]] = {}
+    stages: Dict[str, List[float]] = {}
+    rules: Dict[str, List[float]] = {}
+    degraded = 0
+    for agent, event, ms, raw in calls:
+        groups.setdefault((agent or "?", event or "?"), []).append(int(ms))
+        try:
+            d = json.loads(raw) if raw else {}
+        except ValueError:
+            d = {}
+        for name, v in (d.get("stages") or {}).items():
+            stages.setdefault(name, []).append(float(v))
+        for rid, c in (d.get("rules") or {}).items():
+            acc = rules.setdefault(rid, [0, 0, 0.0, 0])
+            for i in range(4):
+                acc[i] += c[i]
+        degraded += bool(d.get("degraded"))
+    return {
+        "calls": len(calls),
+        "degraded": degraded,
+        "byAgentEvent": [
+            {"agent": a, "event": e, "calls": len(xs), "p50": pct(xs, 0.5), "p95": pct(xs, 0.95)}
+            for (a, e), xs in sorted(groups.items())
+        ],
+        "slowestStages": sorted(
+            ({"stage": k, "totalMs": round(sum(v), 1), "p95": round(pct(v, 0.95), 1)} for k, v in stages.items()),
+            key=lambda r: -r["totalMs"])[:5],
+        "slowestRules": sorted(
+            ({"rule": k, "evals": int(c[0]), "matches": int(c[1]), "totalMs": round(c[2], 1), "errors": int(c[3])}
+             for k, c in rules.items()), key=lambda r: -r["totalMs"])[:5],
+        "ruleErrors": sorted(k for k, c in rules.items() if c[3]),
+    }
+
+
+def _hook_timings(conn, session_id: str = "", limit: int = 5000) -> Dict[tuple, Dict[str, Any]]:
+    """(session_id, ts) -> {hookEvent, hookMs}; {} on a DB written before the table existed."""
+    try:
+        if session_id:
+            rows = conn.execute(
+                "SELECT session_id, ts, hook_event, hook_ms FROM hook_timings WHERE session_id = ?",
+                (session_id,),
+            )
+        else:
+            rows = conn.execute(
+                "SELECT session_id, ts, hook_event, hook_ms FROM hook_timings ORDER BY rowid DESC LIMIT ?",
+                (limit,),
+            )
+        return {(r[0], r[1]): {"hookEvent": r[2] or "", "hookMs": r[3]} for r in rows}
+    except sqlite3.OperationalError:
+        return {}
+
+
 def get_events_page(
     page: int = 1,
     limit: int = 30,
@@ -1954,6 +2332,7 @@ def get_events_page(
         if conn is None:
             continue
         try:
+            timings = _hook_timings(conn)
             where_clauses: List[str] = []
             params: List[Any] = []
             limit = max(1, min(limit, 200))
@@ -2005,7 +2384,7 @@ def get_events_page(
                 LEFT JOIN findings f ON f.session_id = e.session_id AND f.event_index = e.rn
                 {where}
                 ORDER BY e.ts DESC LIMIT 5000
-                """,
+                """,  # nosec B608
                 [fetch_limit] + params,
             ):
                 action_parts = []
@@ -2057,9 +2436,12 @@ def get_events_page(
                                 verdict_value = "blocked"
                     except Exception:
                         pass
+                if verdict_value == "blocked" and not _enforced(enrichment):
+                    verdict_value = "warned"
                 if detail:
                     action_parts.append(detail[:80])
                 ts_raw = row["ts"] or ""
+                timing = timings.get((row["session_id"], ts_raw)) or {}
                 rows.append({
                     "ts": _relative_time_store(ts_raw) if ts_raw else "",
                     "tsAbs": _absolute_time_store(ts_raw),
@@ -2067,6 +2449,8 @@ def get_events_page(
                     "agent": row["agent"] or "unknown",
                     "action": ": ".join(action_parts) if action_parts else "event",
                     "toolTag": tool_tag,
+                    "agentEvent": (raw.get("agent_event") if isinstance(raw, dict) else "") or "",
+                    "hookMs": timing.get("hookMs"),
                     "actionType": row["action_type"] or "",
                     "verdict": verdict_value,
                     "severity": (severity or "low").lower(),
@@ -2100,8 +2484,10 @@ def get_events_page(
     deduped.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
     if verdict == "blocked":
         deduped = [ev for ev in deduped if ev.get("verdict") == "blocked"]
+    elif verdict == "warned":
+        deduped = [ev for ev in deduped if ev.get("verdict") == "warned"]
     elif verdict == "allowed":
-        deduped = [ev for ev in deduped if ev.get("verdict") != "blocked"]
+        deduped = [ev for ev in deduped if ev.get("verdict") == "allowed"]
 
     all_agents = sorted({ev["agent"] for ev in deduped})
     total = len(deduped)
@@ -2156,7 +2542,7 @@ def write_supply_chain_event(
                 ) VALUES (?, 'immunity-cli', 'supply_chain', ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    session_id, str(workspace), ts, ts,
+                    session_id, canonical_workspace_path(workspace), ts, ts,
                     max_score, n_findings,
                     json.dumps({
                         "ecosystem": ecosystem,
@@ -2200,7 +2586,7 @@ def write_supply_chain_event(
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        ts, str(workspace), ecosystem,
+                        ts, canonical_workspace_path(workspace), ecosystem,
                         v.spec.name,
                         getattr(v.spec, "version", None) or getattr(v.meta, "version", None) or "",
                         install_cmd,
@@ -2465,16 +2851,18 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
     }
 
 
-def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> None:
+def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> int:
+    """Rows written (0 on any failure, or when INSERT OR IGNORE hit a duplicate)."""
     try:
         connection = sqlite3.connect(initialize_database(workspace))
         try:
-            connection.execute(sql, params)
+            written = connection.execute(sql, params).rowcount
             connection.commit()
+            return max(0, written)
         finally:
             connection.close()
     except Exception:
-        pass
+        return 0
 
 
 def record_token_usage(
@@ -2488,28 +2876,29 @@ def record_token_usage(
     output_tokens: int,
     cache_read_tokens: int,
     cache_creation_tokens: int,
-) -> None:
+    cache_1h_tokens: int = 0,
+) -> bool:
     """Record one assistant turn's real Anthropic token usage. Fail-open.
 
     Deduped on ``message_id`` — a single assistant turn can trigger several
     PostToolUse hooks (parallel tool calls), which would otherwise count the
-    same turn's usage multiple times.
+    same turn's usage multiple times. Returns True only for a new row.
     """
     if not message_id:
-        return
-    _insert_fail_open(
+        return False
+    return bool(_insert_fail_open(
         workspace,
         """
         INSERT OR IGNORE INTO token_usage (
             message_id, session_id, workspace_path, ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            message_id, session_id, str(workspace), ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+            message_id, session_id, canonical_workspace_path(workspace), ts, model,
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
         ),
-    )
+    ))
 
 
 def record_tool_output_size(
@@ -2534,8 +2923,44 @@ def record_tool_output_size(
             session_id, workspace_path, ts, agent, tool_name, label, size_chars, approx_tokens
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, str(workspace), ts, agent, tool_name, label, size_chars, size_chars // 4),
+        (session_id, canonical_workspace_path(workspace), ts, agent, tool_name, label, size_chars, size_chars // 4),
     )
+
+
+def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Per-session, per-model token sums: {session_id: {"by_model": {...}, "turns": n}}.
+
+    Sessions with no rows are absent from the result (caller decides
+    "unknown" vs "$0"). Reads the shared home DB, which every workspace
+    writes to.
+    """
+    if not session_ids:
+        return {}
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        marks = ",".join("?" * len(session_ids))
+        for r in conn.execute(
+            "SELECT session_id, model, COUNT(*) as turns,"  # nosec B608
+            "       COALESCE(SUM(input_tokens),0) as inp, COALESCE(SUM(output_tokens),0) as out,"
+            "       COALESCE(SUM(cache_read_tokens),0) as cread,"
+            "       COALESCE(SUM(cache_creation_tokens),0) as ccreate,"
+            "       COALESCE(SUM(cache_1h_tokens),0) as c1h"
+            f"  FROM token_usage WHERE session_id IN ({marks}) GROUP BY session_id, model"
+            "  HAVING inp + out + cread + ccreate > 0",  # older rows from zero-usage placeholder turns
+            list(session_ids),
+        ):
+            entry = out.setdefault(r["session_id"], {"by_model": {}, "turns": 0})
+            entry["turns"] += r["turns"]
+            entry["by_model"][r["model"] or "unknown"] = {
+                "input": r["inp"], "output": r["out"], "cache_read": r["cread"],
+                "cache_5m": r["ccreate"] - r["c1h"], "cache_1h": r["c1h"],
+            }
+    finally:
+        conn.close()
+    return out
 
 
 def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: int = 8) -> Dict[str, Any]:
@@ -2552,11 +2977,22 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
             "cacheCreationTokens": 0, "cacheHitRate": 0.0, "totalTokens": 0,
             "byTool": [], "topOffenders": [],
         }
-    scope_sql = " AND workspace_path = ?" if workspace else ""
-    window_args = [f"-{hours} hours"] + ([str(workspace)] if workspace else [])
+    ws_key = canonical_workspace_path(workspace) if workspace else ""
+    raw_key = str(workspace) if workspace else ""
+    if workspace:
+        if ws_key and raw_key and ws_key != raw_key:
+            scope_sql = " AND (workspace_path = ? OR workspace_path = ?)"
+            ws_args = [ws_key, raw_key]
+        else:
+            scope_sql = " AND workspace_path = ?"
+            ws_args = [ws_key or raw_key]
+    else:
+        scope_sql = ""
+        ws_args = []
+    window_args = [f"-{hours} hours"] + ws_args
     try:
         row = conn.execute(
-            "SELECT COALESCE(SUM(input_tokens),0) as inp,"
+            "SELECT COALESCE(SUM(input_tokens),0) as inp,"  # nosec B608
             "       COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate"
@@ -2566,7 +3002,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         by_tool = [
             {"tool": r["tool_name"] or "unknown", "approxTokens": r["tok"] or 0, "calls": r["cnt"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"
+                "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"  # nosec B608
                 "  FROM tool_output_size WHERE ts >= datetime('now', ?)" + scope_sql +
                 "  GROUP BY tool_name ORDER BY tok DESC LIMIT ?",
                 window_args + [limit],
@@ -2575,7 +3011,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
         top_offenders = [
             {"tool": r["tool_name"] or "unknown", "label": r["label"] or "", "approxTokens": r["approx_tokens"] or 0}
             for r in conn.execute(
-                "SELECT tool_name, label, approx_tokens FROM tool_output_size"
+                "SELECT tool_name, label, approx_tokens FROM tool_output_size"  # nosec B608
                 "  WHERE ts >= datetime('now', ?) AND label != ''" + scope_sql +
                 "  ORDER BY approx_tokens DESC LIMIT ?",
                 window_args + [limit],
@@ -2600,7 +3036,6 @@ def get_agents_overview() -> List[Dict[str, Any]]:
     Groups across all registered workspace DBs. Falls back gracefully when
     the agent_name column doesn't exist yet (pre-migration DBs).
     """
-    from collections import Counter
     workspaces = _state_query_workspaces()
 
     # agent_name → {framework, last_seen, total_calls, blocked_calls}
@@ -2635,7 +3070,7 @@ def get_agents_overview() -> List[Dict[str, Any]]:
                 FROM sessions
                 WHERE {name_expr} IS NOT NULL AND {name_expr} != ''
                 GROUP BY {name_expr}
-                """
+                """  # nosec B608
             ):
                 name = row["agent_name"] or "unknown"
                 existing = acc.get(name)
@@ -3403,10 +3838,13 @@ def _drop_duplicate_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     repeat (the agent running `ls` twice) is either slower than the window or
     genuinely worth showing twice.
     """
-    seen: Dict[Tuple[str, str], float] = {}
+    seen: Dict[Tuple[str, str, str], float] = {}
     out: List[Dict[str, Any]] = []
     for ev in events:
-        key = (str(ev.get("type") or ""), str(ev.get("action") or "")[:400])
+        # The phase is part of the key: a fast command's Pre and Post rows land
+        # inside the window too, and collapsing them dropped the Pre row -- the
+        # one carrying the verdict -- before _merge_tool_phases could fold them.
+        key = (str(ev.get("type") or ""), str(ev.get("agentEvent") or ""), str(ev.get("action") or "")[:400])
         stamp = _epoch_of(ev.get("_tsRaw"))
         previous = seen.get(key)
         if previous is not None and stamp is not None and abs(previous - stamp) <= _DUPLICATE_WINDOW_S:
@@ -3453,6 +3891,8 @@ def _merge_tool_phases(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if value and field not in (ev.get("artifacts") or {}):
                     ev.setdefault("artifacts", {})[field] = value
             ev["phases"] = ["PreToolUse", "PostToolUse"]
+            ev["postHookMs"] = post.get("hookMs")
+            ev["postHookInput"] = post.get("hookInput")
         merged.append(ev)
     # A Post with no Pre in this window is still something that happened.
     for leftover in pending.values():
@@ -3522,6 +3962,67 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes // 60}h {minutes % 60}m"
 
 
+def _transcript_hook_runs(transcript: str) -> List[Dict[str, Any]]:
+    """Every hook the agent ran, as Claude Code logs it in the transcript: one
+    attachment per hook command, with its duration and exit code. Prismor only
+    sees its own hook, so this is the one place the third-party ones show up."""
+    runs: List[Dict[str, Any]] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"hook_' not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                att = rec.get("attachment") if isinstance(rec, dict) else None
+                if not isinstance(att, dict) or not str(att.get("type") or "").startswith("hook_"):
+                    continue
+                try:
+                    ms = int(att.get("durationMs"))
+                except (TypeError, ValueError):
+                    ms = None
+                runs.append({"toolUseId": att.get("toolUseID") or "", "event": att.get("hookEvent") or "",
+                             "name": att.get("hookName") or "", "command": str(att.get("command") or "")[:400],
+                             "ms": ms, "exit": str(att.get("exitCode") if att.get("exitCode") is not None else ""),
+                             "ok": att.get("type") == "hook_success", "ts": rec.get("timestamp") or "",
+                             # What the hook sent back: stdout/stderr as printed,
+                             # content as the agent put it in the model's context.
+                             **{k: str(att.get(k) or "")[:4000] for k in ("stdout", "stderr", "content")}})
+    except OSError:
+        return []
+    return runs
+
+
+_TOOL_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure"]
+
+
+def _attach_hook_runs(events: List[Dict[str, Any]], transcript: str) -> None:
+    """Give each row the hooks that ran for it, in order: a tool call gets its
+    PreToolUse and PostToolUse hooks by tool_use_id; a session or prompt row
+    gets the hooks of its own event that ran around it."""
+    if not transcript:
+        return
+    runs = _transcript_hook_runs(transcript)
+    by_call: Dict[str, List[Dict[str, Any]]] = {}
+    for run in runs:
+        if run["event"] in _TOOL_HOOK_EVENTS:
+            by_call.setdefault(run["toolUseId"], []).append(run)
+            continue
+        # A prompt or session hook has no tool_use_id, and the transcript
+        # stamps it when the turn lands, after the hooks ran: the nearest row of
+        # the same event within a minute is the one it served.
+        at = _epoch_of(run["ts"])
+        rows = [ev for ev in events if ev.get("agentEvent") == run["event"] and _epoch_of(ev.get("_tsRaw"))]
+        near = min(rows, key=lambda ev: abs(_epoch_of(ev.get("_tsRaw")) - at), default=None) if at else None
+        if near is not None and abs(_epoch_of(near.get("_tsRaw")) - at) <= 60:
+            near.setdefault("hookRuns", []).append(run)
+    for ev in events:
+        if ev.get("toolUseId") in by_call:
+            ev["hookRuns"] = sorted(by_call[ev["toolUseId"]], key=lambda r: (_TOOL_HOOK_EVENTS.index(r["event"]), r["ts"]))
+
+
 def _attach_task_durations(
     events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
 ) -> None:
@@ -3571,6 +4072,53 @@ def _attach_task_durations(
             first_seen[task_id] = ended
 
 
+def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], limit: int = 200) -> List[Dict[str, Any]]:
+    """The tool calls an extension caused in the given sessions (every session
+    when ``session_ids`` is None, a multi-second scan), newest first, with the
+    input the agent passed to each one."""
+    db = prismor_home() / "prismor.db"
+    if not ext_ids or session_ids == [] or not db.exists():
+        return []
+    conn = _connect_ro(db)
+    if conn is None:
+        return []
+    wanted, out, seen = set(ext_ids), [], set()
+    if session_ids is None:
+        where = "(" + " OR ".join(["raw_json LIKE ?"] * len(wanted)) + ")"
+        params = ['%"id": ' + json.dumps(i) + "%" for i in wanted]
+    else:
+        where = "session_id IN (%s) AND raw_json LIKE '%%\"extension\"%%'" % ",".join("?" * len(session_ids))
+        params = list(session_ids)
+    try:
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "  # identifiers are constants/quoted, values bound  # nosec B608
+                            + where + " ORDER BY id DESC", params)
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except ValueError:
+                continue
+            meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            ext = meta.get("extension") if isinstance(meta.get("extension"), dict) else {}
+            if ext.get("id") not in wanted:
+                continue
+            hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            # The dispatcher can store one call twice; the tool_use_id says so.
+            if hook.get("tool_use_id"):
+                if hook["tool_use_id"] in seen:
+                    continue
+                seen.add(hook["tool_use_id"])
+            out.append({"session": row["session_id"], "ts": row["ts"], "agent": raw.get("agent") or "",
+                        "tool": meta.get("tool_name") or hook.get("tool_name") or raw.get("type") or "",
+                        "via": ext.get("via") or "",
+                        "input": json.dumps(hook.get("tool_input", raw.get("command") or raw.get("url") or ""),
+                                            indent=1, default=str)[:4000]})
+            if len(out) >= limit:
+                break
+    finally:
+        conn.close()
+    return out
+
+
 def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any]:
     """Return scoped rules + recent blocked findings for a session."""
     from prismor.runtime.scoped_agent import load_scoped_rules, check_scoped_rules
@@ -3582,28 +4130,34 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
     # notification can say how long the work took and what actually launched
     # it, instead of quoting an opaque id.
     tool_calls: Dict[str, Dict[str, str]] = {}
+    transcript = ""
     db = prismor_home() / "prismor.db"
     if db.exists():
         try:
             conn = sqlite3.connect(str(db), check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            timings = _hook_timings(conn, session_id)
             cur = conn.cursor()
             cur.execute(
                 """
+                WITH numbered AS (
+                    SELECT ts, ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                    FROM events WHERE session_id = ?
+                )
                 SELECT f.title, f.category, f.severity, f.evidence, e.ts
                 FROM findings f
-                LEFT JOIN events e
-                  ON e.session_id = f.session_id
-                 AND (
-                   SELECT COUNT(*)
-                   FROM events e2
-                   WHERE e2.session_id = e.session_id
-                     AND e2.id < e.id
-                 ) = COALESCE(f.event_index, 0)
+                LEFT JOIN numbered e ON e.rn = COALESCE(f.event_index, 0)
                 WHERE f.session_id = ?
+                  -- warn/observe findings let the call through; not blocks.
+                  AND NOT (json_valid(f.enrichment_json) AND (
+                      COALESCE(NULLIF(json_extract(f.enrichment_json, '$.mode'), ''), 'enforce') <> 'enforce'
+                      OR COALESCE(NULLIF(json_extract(f.enrichment_json, '$.action'), ''), 'block') <> 'block'))
                 ORDER BY e.ts DESC LIMIT 5
                 """,
-                (session_id,),
+                # Numbering the session's events once is linear. Counting the
+                # earlier events per (finding, event) pair was cubic and took
+                # ~9s on a session with 800 findings, past the page's timeout.
+                (session_id, session_id),
             )
             recent_blocked = [
                 {"title": r[0], "category": r[1], "severity": r[2], "evidence": r[3], "ts": r[4]}
@@ -3636,6 +4190,8 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 meta = raw.get("metadata", {}) if isinstance(raw, dict) else {}
                 tool_tag = meta.get("tool_name") if isinstance(meta, dict) else ""
                 hook_payload = meta.get("raw") if isinstance(meta, dict) else None
+                if isinstance(hook_payload, dict) and hook_payload.get("transcript_path"):
+                    transcript = transcript or str(hook_payload["transcript_path"])
                 if isinstance(hook_payload, dict) and hook_payload.get("tool_use_id"):
                     # Rows arrive newest first, so the last write is the call itself.
                     tool_calls[str(hook_payload["tool_use_id"])] = {
@@ -3672,6 +4228,8 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                             "source": "inferred-scoped",
                         }
                         verdict = "blocked"
+                if verdict == "blocked" and not _enforced(enrichment):
+                    verdict = "warned"
                 artifacts = event_artifacts(raw)
                 # A prompt has no command, path or url, so the trail used to
                 # describe the most informative event in a session as the bare
@@ -3684,10 +4242,15 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "tsAbs": _absolute_time_store(row["ts"]),
                     "type": row["type"] or "",
                     "agentEvent": row["agent_event"] or "",
+                    "hookMs": (timings.get((session_id, row["ts"])) or {}).get("hookMs"),
                     "lane": event_lane(row["type"] or "", meta if isinstance(meta, dict) else {}),
                     "artifacts": artifacts,
                     "toolTag": tool_tag or "",
-                    "action": (f"{row['type']}: {' '.join(str(detail).split())[:300]}"
+                    "extension": meta.get("extension") if isinstance(meta, dict) else None,
+                    "toolUseId": hook_payload.get("tool_use_id") if isinstance(hook_payload, dict) else None,
+                    # The JSON every hook of this event got on stdin.
+                    "hookInput": json.dumps(hook_payload, indent=1, default=str)[:6000] if isinstance(hook_payload, dict) else "",
+                    "action": (f"{row['type']}: {' '.join(str(detail).split())[:4000]}"
                                if detail else (row["type"] or "event")),
                     "verdict": verdict,
                     "severity": (severity or "low").lower(),
@@ -3705,17 +4268,19 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                 })
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
             _attach_task_durations(recent_events, tool_calls)
+            _attach_hook_runs(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
-            for item in recent_events:
-                item.pop("_tsRaw", None)
+            # Dedupe on the raw timestamp: recent_blocked carries it, while an
+            # event's "ts" is relative ("1m ago"), so the two never matched and
+            # every block was listed twice.
             block_keys = {
                 (item.get("title") or "", item.get("evidence") or "", item.get("ts") or "")
                 for item in recent_blocked
             }
             for item in recent_events:
+                policy = item.get("policy") or {}
                 if item.get("verdict") != "blocked":
                     continue
-                policy = item.get("policy") or {}
                 block = {
                     "title": policy.get("title") or "Blocked by runtime policy",
                     "category": policy.get("category") or "runtime_policy",
@@ -3723,10 +4288,12 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                     "evidence": policy.get("evidence") or item.get("action") or "",
                     "ts": item.get("ts") or "",
                 }
-                key = (block["title"], block["evidence"], block["ts"])
+                key = (block["title"], block["evidence"], item.get("_tsRaw") or "")
                 if key not in block_keys:
                     recent_blocked.append(block)
                     block_keys.add(key)
+            for item in recent_events:
+                item.pop("_tsRaw", None)
             conn.close()
         except Exception:
             pass

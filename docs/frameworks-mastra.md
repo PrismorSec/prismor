@@ -37,6 +37,16 @@ Start the eval-server once, alongside your app:
 prismor eval-server --port 7071
 ```
 
+## Connect to the console
+
+To see this agent's tool calls in the Prismor console and control it from there:
+
+1. In the console, open **Agents**. Under **SDK & deployed agents**, enter a workload name and click **Mint agent key**. The key is shown once, so put it in your deployment's secret manager.
+2. Set it as `PRISMOR_AGENT_KEY` in the environment of the `prismor eval-server` process. The TypeScript adapter never sees the key; the eval-server evaluates, reports and pulls policy.
+3. Run the agent. Its first guarded tool call pulls your org's signed policy and starts reporting, and the agent appears in the console under that workload name. Changes you make in the console (mode, blocked tools) reach it on its next tool call, at most about 30 seconds later.
+
+Without a key the eval-server still enforces your local policy but reports nothing. To check the connection, run `prismor doctor` on the eval-server host with the same `PRISMOR_AGENT_KEY` set.
+
 ## Use
 
 ```ts

@@ -42,9 +42,7 @@ that vendor was just fetched (the "follow the SKILL.md" shape).
 
 from __future__ import annotations
 
-import json
 import re
-import shlex
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
 
@@ -359,7 +357,7 @@ _PLACEHOLDER_CREDS = frozenset({
 #: construction — nobody off the machine can use them — and they show up in
 #: docker-compose files, dev scripts and READMEs that people genuinely need to
 #: read back verbatim.
-_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal")  # a host list, not a bind  # nosec B104
 
 #: ``{db_pw}`` — a str.format template slot. _PLACEHOLDER_RE covers ``{{...}}``
 #: and ``${...}`` but not the single-brace form used by Python templates.

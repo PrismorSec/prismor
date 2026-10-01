@@ -37,6 +37,7 @@ across every project you've protected.
 ```bash
 prismor status        # THIS workspace: hooks, mode, cloak, latest session, next step
 prismor status --all  # ALL workspaces: risk, findings, mode, last activity
+prismor status --perf # hook latency: p50/p95, slowest stages and rules
 ```
 
 - **`status`** is the per-workspace health check — run it first every session. It
@@ -45,6 +46,11 @@ prismor status --all  # ALL workspaces: risk, findings, mode, last activity
 - **`status --all`** is the cross-project bird's-eye view: one line per registered
   workspace with its latest risk score, finding count, mode, and how long ago it
   was active. Add `--days N` to change the activity window (default 7).
+- **`status --perf [N]`** summarizes the last N hook calls (default 500): p50/p95
+  by agent and event, the five slowest stages (startup, session analysis, policy
+  load, policy eval, semantic judge, telemetry, ...) and rules, rules that raised,
+  and how many calls ran degraded (a judge over `semantic_guard.budget_ms` or one
+  that fell back to heuristics). `--json` for the raw numbers.
 
 ---
 
@@ -64,6 +70,13 @@ workspace databases. The only external resources are a Chart.js CDN link and the
 Inter / JetBrains Mono webfonts (Google Fonts) loaded by the browser; the data
 never leaves your machine.
 
+The API answers only its own page: requests from another site's origin, or
+with a non-loopback `Host` header, get a 403. Bound to anything other than
+loopback (`--host 0.0.0.0`), it also requires a token. The startup line prints
+`http://<host>:<port>/?token=…`; opening that URL sets a cookie, and scripts send
+`Authorization: Bearer <token>`. Set `PRISMOR_DASHBOARD_TOKEN` to pin the
+token instead of getting a random one per start.
+
 | Endpoint | Returns |
 |---|---|
 | `GET /` | The HTML dashboard |
@@ -78,9 +91,19 @@ never leaves your machine.
 | `GET /api/policy` | Effective policy state: mode, blocking/total rule counts, `explicitSelection`, editability |
 | `GET/PUT /api/policy/egress` | Read / edit `settings.egress` (`{action: set|add|remove, …}`); hostnames are validated |
 | `PUT /api/policy/rules` | Toggle rule enable/mode from the Policy tab |
+| `GET /api/docs` | The docs shipped with this install — the list, one page (`?name=<file>.md`), or a search (`?q=…`) |
 
 If you run `dashboard` before installing hooks anywhere, it warns that no workspaces
 are registered yet — install hooks in a project first to collect data.
+
+### Docs tab
+
+The Markdown docs that shipped with your install, browsable and searchable
+without leaving the dashboard — search matches every word of the query against
+a line and shows the matching lines. Offline-friendly: the pages are read from
+the installed package, not fetched. The **MCP Servers** tab links into it when
+nothing is going through Prismor yet, alongside the `prismor mcp-gateway
+install` / `prismor mirror on` commands that wire it up.
 
 ### Policy tab
 
@@ -155,6 +178,21 @@ Every shell command, file read/write, web fetch, and user prompt is captured, so
 `prismor session <id>` is your forensic timeline for a specific incident — what
 the agent did, in order, and which findings fired.
 
+### Cost per session
+
+Each row in `prismor sessions` carries an estimated spend (`cost=$5.38 est`),
+and `prismor tokens --session <id>` breaks it down by model, with input,
+output, and cache read/write tokens (1-hour cache writes are priced
+separately). Usage is read from the agent's own transcript — Claude Code's
+`~/.claude/projects/*/<session>.jsonl` and Codex's `~/.codex/sessions`
+rollouts — and priced from LiteLLM's public price list, refreshed at most once
+every 12 hours into `~/.prismor/pricing-cache.json` (a built-in snapshot covers
+offline machines; `PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a
+`~/.prismor/pricing.json` (`{"model": {"input", "output", "cache_read",
+"cache_write"}}` in USD per 1M tokens) to add or override a rate. `cost=?`
+means no transcript is on this machine for that agent; `—` means the model has
+no known price.
+
 ---
 
 ## Offline analysis: `analyze` and `ingest`
@@ -207,4 +245,5 @@ at all. See [Transcript Ingest](transcript-ingest.md).
 - [Prismor](prismor-runtime.md) — session-log schema and the audit command
 - [Transcript Ingest](transcript-ingest.md) — reconstructing pre-install activity
 - [Learning](learning.md) — mines this same history for new rules
+- [Query your data](query-your-data.md) — the store's schema and read-only SQL access for you and your agent
 - [CLI Reference](cli-reference.md) — all commands at a glance

@@ -11,6 +11,10 @@ Properties:
 
 * **Bounded.** The spool keeps at most ``SPOOL_MAX_RECORDS`` records (oldest
   dropped first); a runaway outage can't grow an unbounded file.
+* **Accounted.** Every record dropped (cap eviction or age expiry) is counted
+  in a sidecar (``telemetry-spool-drops.json``) with its first/last ``ts``, so
+  the next successful upload can report the gap instead of leaving a silent
+  hole in the audit trail (see sinks.upload_telemetry).
 * **Concurrent-safe.** Hook invocations from parallel agent processes
   serialize on an ``fcntl`` lock around every read-modify-write.
 * **Privacy-preserving.** Records are spooled *after* the telemetry redaction
@@ -110,16 +114,77 @@ def _write_records(path: Path, records: List[Dict[str, Any]]) -> None:
         pass
 
 
+def drops_path() -> Path:
+    return _identity.prismor_home() / "telemetry-spool-drops.json"
+
+
+def backoff_path() -> Path:
+    return _identity.prismor_home() / "telemetry-backoff.json"
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_json(path: Path, data: Dict[str, Any]) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    os.replace(tmp, path)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _count_dropped(before: List[Dict[str, Any]], kept: List[Dict[str, Any]]) -> None:
+    """Add the records in ``before`` that aren't in ``kept`` to the drop
+    counter. Caller holds the spool lock."""
+    kept_ids = {id(r) for r in kept}
+    dropped = [r for r in before if id(r) not in kept_ids]
+    if not dropped:
+        return
+    path = drops_path()
+    state = _read_json(path)
+    stamps = sorted(str(r["ts"]) for r in dropped if r.get("ts"))
+    state["count"] = int(state.get("count") or 0) + len(dropped)
+    if stamps:
+        if not state.get("first_ts") or stamps[0] < state["first_ts"]:
+            state["first_ts"] = stamps[0]
+        if not state.get("last_ts") or stamps[-1] > state["last_ts"]:
+            state["last_ts"] = stamps[-1]
+    _write_json(path, state)
+
+
+def take_drops() -> Dict[str, Any]:
+    """Return and reset the drop counter ({count, first_ts, last_ts}), or {}
+    when nothing was dropped. Never raises."""
+    path = drops_path()
+    if not path.exists():
+        return {}
+    try:
+        with _locked(spool_path()):
+            state = _read_json(path)
+            path.unlink()
+    except OSError:
+        return {}
+    return state if int(state.get("count") or 0) > 0 else {}
+
+
 def append(records: List[Dict[str, Any]]) -> None:
     """Spool records for a later upload, keeping at most SPOOL_MAX_RECORDS
-    (oldest dropped first). Never raises."""
+    (oldest dropped first, and counted). Never raises."""
     if not records:
         return
     path = spool_path()
     try:
         with _locked(path):
-            existing = _read_records(path)
-            merged = _fresh(existing + records)[-SPOOL_MAX_RECORDS:]
+            combined = _read_records(path) + records
+            merged = _fresh(combined)[-SPOOL_MAX_RECORDS:]
+            _count_dropped(combined, merged)
             _write_records(path, merged)
     except OSError:
         pass
@@ -137,7 +202,9 @@ def drain(limit: int) -> List[Dict[str, Any]]:
         return []
     try:
         with _locked(path):
-            records = _fresh(_read_records(path))
+            everything = _read_records(path)
+            records = _fresh(everything)
+            _count_dropped(everything, records)
             if not records:
                 _write_records(path, [])
                 return []
@@ -154,3 +221,31 @@ def pending_count() -> int:
     if not path.exists():
         return 0
     return len(_read_records(path))
+
+
+# Upload backoff after network/5xx failures, so an offline device doesn't pay
+# a connect timeout on every hook call. Records are spooled meanwhile.
+BACKOFF_BASE_SECONDS = 5.0
+BACKOFF_MAX_SECONDS = 300.0
+
+
+def backoff_active(now: float) -> bool:
+    return now < float(_read_json(backoff_path()).get("next_at") or 0)
+
+
+def note_upload_failure(now: float) -> None:
+    """Push the next attempt out exponentially (capped). Never raises."""
+    path = backoff_path()
+    try:
+        failures = int(_read_json(path).get("failures") or 0) + 1
+        delay = min(BACKOFF_MAX_SECONDS, BACKOFF_BASE_SECONDS * 2 ** min(failures - 1, 16))
+        _write_json(path, {"failures": failures, "next_at": now + delay})
+    except OSError:
+        pass
+
+
+def clear_backoff() -> None:
+    try:
+        backoff_path().unlink()
+    except OSError:
+        pass

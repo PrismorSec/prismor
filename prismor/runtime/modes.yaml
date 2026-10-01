@@ -207,12 +207,14 @@ modes:
         # the fetched page named is influence. See docs/tool-tags.md.
         - "critical_action with untrusted_influence -> block"
         - "untrusted_content then critical_action -> warn"
+    # Off by default: containment is opt-in, not something adopting a posture
+    # turns on under you. `prismor sandbox on` flips it, and the settings below
+    # are what it turns on. Ring 2 -- `none` would cut the network this mode's
+    # whole egress allowlist exists to describe, so every install would fail
+    # and the allowlist would never be consulted.
     sandbox:
-      enabled: true
+      enabled: false
       mode: enforce
-      # Ring 2. `none` would cut the network this mode's whole egress allowlist
-      # exists to describe, so every install would fail and the allowlist would
-      # never be consulted.
       network: allowlist
       read_only_root: true
       workspace_mount: rw
@@ -234,7 +236,6 @@ modes:
       - "Supply chain        : BLOCKED. Confusion, URL installs, and typosquats denied."
       - "Read-only work      : FREE. Inspection commands never prompt."
     friction:
-      - "Wants Docker        : without it the sandbox observes; rules still enforce."
       - "Network destinations: a vendor API outside the list needs an explicit entry."
       - "Private registries  : an internal index URL is denied, not prompted."
       - "Dependency changes  : adding a package prompts for approval."
@@ -247,7 +248,10 @@ modes:
       a control on trusted ones. Secrets reaching the model's context are also
       out of scope here — data_boundary screens what leaves through a tool
       call, while keeping a value out of the transcript needs `prismor cloak
-      add`, which is per-secret enrollment a mode cannot perform for you.
+      add`, which is per-secret enrollment a mode cannot perform for you. Commands
+      also run on the host, not in a container: this mode decides whether a
+      command may run, not what it can reach once it does. `prismor sandbox on`
+      adds that second layer.
     # Measured, not judged — see the note on trusted-workspace.
     friction_index: 9
     recommended_for: "Feature branches, PR review, open-source contribution."
@@ -300,8 +304,9 @@ modes:
         - "private_data with external_comms -> block"
         - "critical_action with untrusted_influence -> block"
         - "untrusted_content then critical_action -> warn"
+    # Off by default, like every mode but regulated-airgap -- see dev-safe.
     sandbox:
-      enabled: true
+      enabled: false
       mode: observe           # non-root, workspace-scoped; observe so builds run
       network: bridge
       read_only_root: false

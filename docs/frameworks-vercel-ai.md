@@ -41,6 +41,16 @@ The server exposes:
 npm install prismor-warden
 ```
 
+## Connect to the console
+
+To see this agent's tool calls in the Prismor console and control it from there:
+
+1. In the console, open **Agents**. Under **SDK & deployed agents**, enter a workload name and click **Mint agent key**. The key is shown once, so put it in your deployment's secret manager.
+2. Set it as `PRISMOR_AGENT_KEY` in the environment of the `prismor eval-server` process. The TypeScript adapter never sees the key; the eval-server evaluates, reports and pulls policy.
+3. Run the agent. Its first guarded tool call pulls your org's signed policy and starts reporting, and the agent appears in the console under that workload name. Changes you make in the console (mode, blocked tools) reach it on its next tool call, at most about 30 seconds later.
+
+Without a key the eval-server still enforces your local policy but reports nothing. To check the connection, run `prismor doctor` on the eval-server host with the same `PRISMOR_AGENT_KEY` set.
+
 ## Quick start
 
 ```typescript
@@ -51,21 +61,30 @@ import { prismorTools } from "prismor-warden";
 
 const run_shell = tool({
   description: "Execute a shell command",
-  parameters: z.object({ command: z.string() }),
+  inputSchema: z.object({ command: z.string() }),
   execute: async ({ command }) => { /* your implementation */ },
 });
 
 const fetch_url = tool({
   description: "Fetch a URL",
-  parameters: z.object({ url: z.string() }),
+  inputSchema: z.object({ url: z.string() }),
   execute: async ({ url }) => { /* your implementation */ },
 });
 
 // Wrap all tools once, at module scope — every execute() is now policy-checked
 const tools = prismorTools({ run_shell, fetch_url });
 
-const result = await generateText({ model: openai("gpt-4o-mini"), tools, prompt });
+const result = await generateText({ model: openai("gpt-5-mini"), tools, prompt });
 ```
+
+The example uses the AI SDK 5+ `tool({ inputSchema })` form; on AI SDK 4 and
+earlier the same field is called `parameters`. The adapter only wraps
+`execute`, so it works with either.
+
+Each tool's return value is also sent to the eval-server's `POST /v1/redact`
+before the model sees it, so cloaked secrets and data-boundary values (an API
+key printed by `cat .env`, say) come back masked. If that call fails, the
+original value is returned unchanged; redaction never fails a tool call.
 
 ## Blocking dangerous calls
 
@@ -222,9 +241,43 @@ const tools = prismorTools(myTools, { mode: "observe" });
 const tools = prismorTools(myTools, { mode: "enforce" });
 ```
 
-Start in `observe` to understand your agent's blast radius without disrupting
-users. Switch to `enforce` once confident. Policy is YAML — change it without
-redeploying TypeScript code.
+**Which mode wins.** Once the eval-server runs with a `PRISMOR_AGENT_KEY`, your
+org's policy in the console decides what blocks. The adapter's `mode` cannot
+switch off a rule the console set to enforce, and `mode: "enforce"` does not
+turn on rules the console left in observe. The adapter's `mode` still picks the
+default `failMode` (closed in enforce, open in observe). Without a key, the
+eval-server's local policy decides and `mode: "observe"` stops every block
+except the kill switch.
+
+Start in `observe` to see your agent's blast radius without disrupting users,
+then switch to `enforce`. Policy is YAML or console-managed, so you can change
+it without redeploying TypeScript code.
+
+## Running on Vercel
+
+A Vercel Function can't run a Python process next to your code, so the
+eval-server has to run somewhere else: a container or VM you control. There:
+
+```bash
+PRISMOR_AGENT_KEY=... prismor eval-server --host 0.0.0.0 --port 7071 --api-key "$PRISMOR_EVAL_KEY"
+```
+
+In your Vercel project, point the adapter at it and use enforce, so an
+unreachable eval-server blocks instead of allowing:
+
+```typescript
+const tools = prismorTools(myTools, {
+  evalUrl: process.env.PRISMOR_EVAL_URL,   // https://prismor-eval.example.com
+  apiKey: process.env.PRISMOR_EVAL_KEY,
+  mode: "enforce",
+});
+```
+
+Put TLS in front of it (any reverse proxy). Every tool call then costs two
+round trips to that host, one to evaluate and one to redact the result. The
+alternative is routing model traffic through [`prismor proxy`](llm-proxy.md),
+which screens the tool calls the model proposes; it is also a separate
+process, not something that runs inside a Vercel Function.
 
 ## LangChain JS / LangGraph JS
 
@@ -291,6 +344,16 @@ Subject can also be passed via `X-Prismor-Subject` header (takes precedence over
 ```
 
 `allow: true` → proceed; `allow: false` + enforce mode → block and surface `reason` to the user.
+
+### `POST /v1/redact`
+
+```json
+{ "result": { "stdout": "STRIPE_KEY=sk_live_..." }, "workspace": "/path/to/project" }
+```
+
+Returns `{ "result": <same shape, secrets masked>, "redacted": true }`, or the
+input unchanged with `"redacted": false`. Uses the same bearer auth as
+`/v1/evaluate`. The adapter calls it on every tool result.
 
 ### `GET /health`
 

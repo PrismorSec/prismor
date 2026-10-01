@@ -153,6 +153,17 @@ def test_bash_ingest_command_allowed():
     check("`prismor cloak add --env-file` is allowed", res is None, str(res))
 
 
+def test_bash_path_invoked_ingest_allowed():
+    for cmd in (
+        "/venv/bin/prismer cloak add --env-file .env",
+        "/Users/x/.local/pipx/venvs/prismer/bin/prismer cloak add --env-file .env",
+        "~/.local/bin/prismer cloak list",
+        "./venv/bin/prismer cloak add --env-file .env",
+    ):
+        res = bash_call(cmd)
+        check(f"path-invoked `{cmd}` is allowed", res is None, str(res))
+
+
 def test_bash_unrelated_command_allowed():
     res = bash_call("cat notes.txt")
     check("`cat notes.txt` is allowed", res is None, str(res))
@@ -161,6 +172,15 @@ def test_bash_unrelated_command_allowed():
 def test_bash_absolute_path_denied():
     res = bash_call(f"cat {_WS}/.env")
     check("absolute-path `cat` of unimported .env is denied", denied(res), str(res))
+
+
+def test_bash_prismer_mention_negative_denied():
+    for cmd in (
+        f"echo prismer cloaking is nice; cat {_WS}/.env",
+        f"/bin/cat {_WS}/.env",
+    ):
+        res = bash_call(cmd)
+        check(f"non-exempt read denied: `{cmd}`", denied(res), str(res))
 
 
 # ── stand-down after import ─────────────────────────────────────────────────
@@ -201,8 +221,10 @@ def main() -> int:
         test_bash_presence_grep_allowed,
         test_bash_append_allowed,
         test_bash_ingest_command_allowed,
+        test_bash_path_invoked_ingest_allowed,
         test_bash_unrelated_command_allowed,
         test_bash_absolute_path_denied,
+        test_bash_prismer_mention_negative_denied,
         test_stands_down_once_imported,
     ]:
         fn()

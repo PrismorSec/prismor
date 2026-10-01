@@ -55,7 +55,46 @@ $ docker exec n8n wget -qO- http://host.docker.internal:7080/health
 {"status": "ok", "surface": "llm-proxy", "mode": "enforce"}
 ```
 
-Running n8n outside Docker? Use `http://127.0.0.1:7080/v1` instead.
+Running n8n outside Docker? Use `http://127.0.0.1:7080/v1` instead. On Linux,
+`host.docker.internal` resolves only if the container was started with
+`--add-host=host.docker.internal:host-gateway`, which cannot be added to a
+running container. Rather than recreate n8n, use the bridge gateway address
+wherever this page says `host.docker.internal`:
+
+```console
+$ docker network inspect bridge --format '{{range .IPAM.Config}}{{.Gateway}}{{end}}'
+172.17.0.1
+```
+
+### Give n8n a key of its own
+
+Relaying the credential is fine on a laptop, but it leaves the real provider key
+in n8n's credential store. A virtual key takes it back out: n8n holds a
+throwaway string and the proxy swaps in the real credential on the way upstream.
+
+`$PRISMOR_HOME/proxy.json` — `~/.prismor/proxy.json` unless you moved it:
+
+```json
+{
+  "default_upstream": "openai",
+  "keys": {
+    "pk_n8n_local": { "subject": "n8n-prod", "upstream": "openai" }
+  }
+}
+```
+
+There is no `upstreams` block because the built-in `openai` upstream already
+points at `https://api.openai.com` and reads the real key from `OPENAI_API_KEY`
+in the proxy's own environment. Set the n8n credential's API key to
+`pk_n8n_local`, restart the proxy, and the banner should read `virtual keys: 1`
+rather than `auth pass-through (no virtual keys configured)` — that line is how
+you know the file was found, and no other path is consulted.
+
+`subject` is what the workflow's records are attributed to, so the trail reads
+`n8n-prod` rather than `anonymous`. Cutting n8n off is then deleting that one
+key and restarting, with nothing else that uses the real credential touched; an
+unrecognised key is refused at the proxy with `401` and never reaches the
+provider. [The LLM proxy](llm-proxy.md) has the full schema.
 
 ## What it screens
 
@@ -148,14 +187,52 @@ other services. On macOS, a launch agent is enough:
 `--agent-name` registers this proxy as a named agent instance, which is what
 gives you the per-agent kill switch and per-agent policy in the console.
 
+To stop enforcing without unwiring anything, `prismor pause` drops to observe
+for 24 hours and `prismor resume` restores it. To remove the proxy from the
+path entirely, set the credential's **Base URL** back to empty and put the real
+API key back.
+
 ## Where the verdicts show up
 
 Each governed turn is a session of its own, under the name the surface reports,
 readable in `prismor dashboard` and — once the machine is enrolled — in the
-console. The session view shows the turn as policy saw it and lets you apply a
+console. On the box running the proxy, the audit trail is the fastest look,
+one line per decision, allowed and blocked alike:
+
+```console
+$ prismor --workspace ~/.prismor/surfaces/proxy trail show
+[0] 2026-09-15T07:10:33 · allowed   n8n-prod  llm_request  ...list what is in the temp fo
+[1] 2026-09-15T07:10:33 · allowed   n8n-prod  Bash         ls -la /tmp
+[2] 2026-09-15T07:10:33 · allowed   n8n-prod  llm_request  ...do a full cleanup of the di
+[3] 2026-09-15T07:10:33 ✗ blocked   n8n-prod  Bash         rm -rf / --no-preserve-root
+```
+
+The `--workspace` is not optional: the proxy keeps its policy and its sessions
+in `$PRISMOR_HOME/surfaces/proxy`, and `prismor sessions` run from anywhere
+else reads a different workspace. Each entry is chained to the one before it by
+hash, so the log cannot be quietly edited after the fact.
+
+This is also the dry run. In `--mode observe` a decision that would have
+blocked is recorded as `warned` with the rules that matched, so a day of
+ordinary work tells you what enforcement will cost before it costs it. If real
+work is in that list, narrow the rule rather than the mode: `prismor
+--workspace ~/.prismor/surfaces/proxy allow` writes the smallest exception for
+a block that just happened, and `policy edit` toggles rules wholesale. The session view shows the turn as policy saw it and lets you apply a
 rule for that tool to this session, this agent, or every agent, which is the
 fastest way to tune a policy you are still deciding on. Screenshots and the
 sink configuration are in [deploy-docker.md](deploy-docker.md).
+
+## When it does not work
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| n8n's **Test** cannot connect | proxy bound to loopback | restart it with `--host 0.0.0.0` |
+| `host.docker.internal` unreachable | Linux Docker without the host-gateway alias | use the bridge gateway IP |
+| **Unauthorized** in n8n | the key n8n sends is not in `keys` | check `proxy.json`, and that the banner says `virtual keys: 1` |
+| banner says `auth pass-through` | `proxy.json` is not at `$PRISMOR_HOME/proxy.json` | move it there; nowhere else is read |
+| every call is refused | the proxy was pointed at a repo whose `CLAUDE.md` quotes attack strings | drop `--workspace`; the default is deliberately neutral |
+| an edit to policy or `proxy.json` does nothing | both are read once, at startup | restart the proxy |
+| `curl` prints nothing at all | `-s` also hides connection errors | use `curl -sS` |
 
 ## What this does not cover
 

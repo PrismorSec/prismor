@@ -78,6 +78,18 @@ class _IamTestBase(unittest.TestCase):
         return set(PolicyEngine(workspace=self.tmp).block_categories)
 
 
+class TestSubjectLabel(_IamTestBase):
+    def test_org_deny_names_console_label_not_raw_id(self):
+        from prismor.runtime.principal import Subject
+        os.environ.pop("PRISMOR_AGENT_ID", None)
+        ev = {"type": "shell", "command": "ls", "metadata": {"tool_name": "Bash"}}
+        ctl = {"user:XFz991": {"deny_tools": ["Bash"], "label": "Dana Reyes"}}
+        f = iam_mod.check_iam(workspace=self.tmp, event=ev, session_id="s",
+                              subject=Subject(user_id="XFz991"), remote_controls=ctl)
+        self.assertIsNotNone(f)
+        self.assertIn("user 'Dana Reyes'", f["title"])
+
+
 class TestCheckIamFinding(_IamTestBase):
     def test_denied_write_produces_iam_finding(self):
         os.environ["PRISMOR_AGENT_ID"] = "readonly-bot"

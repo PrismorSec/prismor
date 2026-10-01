@@ -12,8 +12,9 @@ implementation:
 2. **Filesystem plugin** — when installed via ``prismor cloak install
    --agent hermes``, the plugin directory is copied to
    ``~/.hermes/plugins/prismor-cloak/`` with its own
-   ``plugin.yaml`` + ``__init__.py``. The ``__init__.py`` re-exports the
-   ``register()`` function from here.
+   ``plugin.yaml`` + ``__init__.py``. That ``__init__.py`` carries a
+   verbatim copy of this module's code (enforced by
+   tests/test_hermes_plugin_sync.py).
 
 Both paths converge on the same hook registration logic below.
 """

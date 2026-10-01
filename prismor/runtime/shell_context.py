@@ -13,7 +13,7 @@ the pipeline) keeps blocking.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, NamedTuple, Tuple
 
 # Commands whose quoted argument is executed, not printed. A match inside one of
 # these payloads is code and must never be downgraded.
@@ -137,27 +137,104 @@ def _outside_quotes(command: str, spans) -> str:
     return "".join(chars)
 
 
-def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
-    """True when the match lies wholly inside an inert quoted argument.
+# `<<EOF`, `<<-EOF`, `<< "EOF"`, `<<\EOF`; not the `<<<` of a here-string.
+_HEREDOC_OPEN = re.compile(
+    r"(?<!<)(?P<op><<-?\s*(?P<q>['\"\\]?)(?P<d>[A-Za-z_][A-Za-z0-9_]*)['\"]?)[^\n]*\n"
+)
+# Commands whose heredoc body is data: written to a file or printed, never run.
+_HEREDOC_SINKS = frozenset({"cat", "tee"})
 
-    All of the following must hold, else the finding stands:
+
+class Heredoc(NamedTuple):
+    """One closed heredoc; the offsets index the command it was found in."""
+
+    start: int  # the ``<<``
+    op_end: int  # just past the delimiter word
+    body_start: int  # first character of the body
+    body_end: int  # start of the closing delimiter line
+    end: int  # end of the closing delimiter line
+    expands: bool  # unquoted delimiter: the shell expands the body
+
+
+def heredocs(command: str) -> List[Heredoc]:
+    """Every closed heredoc, left to right. A ``<<`` inside another's body
+    is body text, not an opener. This is the one heredoc grammar; the
+    provenance scanner reads it too."""
+    out: List[Heredoc] = []
+    pos = 0
+    for m in _HEREDOC_OPEN.finditer(command):
+        if m.start() < pos:
+            continue
+        close = re.compile(
+            r"^\s*" + re.escape(m.group("d")) + r"\s*$", re.M
+        ).search(command, m.end())
+        if close is None:
+            continue
+        out.append(Heredoc(
+            m.start(), m.end("op"), m.end(), close.start(), close.end(),
+            not m.group("q"),
+        ))
+        pos = close.end()
+    return out
+
+
+def heredoc_spans(command: str) -> List[Tuple[int, int, str]]:
+    """``(body_start, body_end, opener_line)`` for every closed heredoc."""
+    return [
+        (h.body_start, h.body_end, command[:h.start].rsplit("\n", 1)[-1])
+        for h in heredocs(command)
+    ]
+
+
+def _blank(text: str, spans) -> str:
+    chars = list(text)
+    for start, end, *_ in spans:
+        for k in range(start, min(end, len(chars))):
+            chars[k] = " "
+    return "".join(chars)
+
+
+def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
+    """True when the match lies wholly inside inert text.
+
+    Two inert forms. A quoted argument, where all of the following must hold:
       * the match is inside a closed, non-payload quoted span;
       * no interpreter appears anywhere in the command (blocks the
         ``echo "..." | bash`` form, where quoted text is still executed);
       * the enclosing pipeline segment has no redirect (``echo "..." > run.sh``
         writes the text to a script rather than displaying it);
       * that segment starts with a known text-emitting command.
+
+    Or a heredoc body whose opener is ``cat`` or ``tee`` -- a script being
+    written to a file or printed, not run. ``bash <<EOF`` feeds the body to an
+    interpreter and stays live, and so does ``cat > x.py <<EOF ... EOF &&
+    python3 x.py``: the interpreter rule above scans the whole command, so a
+    body that is executed later in the same call is never inert. A body that
+    is written now and run in a later call is staged-execution's job.
     """
     if match_start < 0 or match_end > len(command):
         return False
-    spans = quoted_spans(command)
-    if not spans:
-        return False
-    bare = _outside_quotes(command, spans)
+    hspans = heredoc_spans(command)
+    # Blank heredoc bodies before quote scanning: an apostrophe inside a
+    # script body would otherwise open a span that swallows the rest of the
+    # command, hiding a trailing ``; python3 x.py`` from the interpreter check.
+    spans = quoted_spans(_blank(command, hspans))
+    bare = _blank(_outside_quotes(command, spans), hspans)
 
     for word in bare.replace(_SEPARATORS[0], " ").replace(_SEPARATORS[1], " ").replace(_SEPARATORS[2], " ").split():
         if word.rsplit("/", 1)[-1] in _INTERPRETERS:
             return False
+
+    for body_start, body_end, opener in hspans:
+        if body_start <= match_start and match_end <= body_end:
+            segment = opener
+            for sep in _SEPARATORS:
+                segment = segment.split(sep)[-1]
+            tokens = segment.split()
+            return bool(tokens) and tokens[0].rsplit("/", 1)[-1] in _HEREDOC_SINKS
+
+    if not spans:
+        return False
 
     for start, end, is_payload, is_closed in spans:
         if is_payload or not is_closed:

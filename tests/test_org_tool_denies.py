@@ -198,3 +198,13 @@ def test_tool_denies_sig_matches_server_format(monkeypatch):
     ])
     expected = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
     assert rp._current_tool_denies_sig() == expected
+
+
+def test_org_deny_copy_names_console_not_local_override(tmp_path, monkeypatch):
+    from prismor.runtime.unblock import unblock_steps
+    d = _eval(tmp_path, monkeypatch, [{"id": "t9", "tool": "Bash", "action": "deny", "scope": "org"}])
+    f = next(f for f in d.findings if f.get("ruleId") == "org-tool-deny")
+    assert "org org" not in f["title"] + f["evidence"]
+    assert "MCP Hub" in f["remediation"] and "Tool Call panel" not in f["remediation"]
+    steps = "\n".join(unblock_steps(f, workspace=tmp_path))
+    assert "prismor allow" not in steps and "MCP Hub" in steps

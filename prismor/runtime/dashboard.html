@@ -7,15 +7,65 @@
 <link rel="icon" type="image/png" href="https://prismor.dev/Prismor_Logo.png" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<style>
+/* The Docs page is a frame, not a document: the search bar stays put and the
+   list and the reader scroll independently -- reading a long page must not
+   scroll the index of pages away. */
+body:has(#page-docs.page.active) .prismor-cta{display:none}
+#page-docs.page.active{display:flex;flex-direction:column;height:calc(100vh - var(--topbar-h));overflow:hidden}
+.docs-layout{flex:1;min-height:0;display:grid;grid-template-columns:minmax(240px,1fr) 2fr;gap:16px}
+.docs-layout>.card{min-height:0;display:flex;flex-direction:column;overflow:hidden;margin:0}
+#docsList{flex:1;min-height:0;overflow-y:auto;margin:0 -6px;padding:0 6px}
+.docs-search{display:flex;align-items:center;gap:10px;height:40px;padding:0 14px;margin-bottom:14px;
+  border:1px solid var(--gray-200);border-radius:10px;background:var(--surface)}
+.docs-search:focus-within{border-color:var(--accent)}
+.docs-search .icon{width:15px;height:15px;flex:none;color:var(--gray-500)}
+.docs-search input{flex:1;min-width:0;border:none;outline:none;background:none;
+  font-family:inherit;font-size:13px;color:var(--gray-900)}
+.docs-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+.docs-count{font-size:11px;color:var(--gray-500);white-space:nowrap}
+.docs-clear{border:none;background:none;color:var(--gray-500);cursor:pointer;font-size:16px;line-height:1;padding:0 2px}
+.docs-clear:hover{color:var(--gray-900)}
+.doc-row{padding:9px 10px;border-radius:8px;cursor:pointer}
+.doc-row:hover{background:var(--gray-100)}
+.doc-row.sel{background:var(--gray-100);box-shadow:inset 2px 0 0 var(--accent)}
+.doc-row-title{font-size:13px;font-weight:600}
+.doc-row-name{font:11px var(--font-mono);color:var(--gray-500);margin-top:2px}
+.doc-row-hit{font-size:11.5px;color:var(--gray-500);margin-top:3px;line-height:1.55;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.doc-row-hit mark{background:rgba(242,84,45,.18);color:inherit;border-radius:3px;padding:0 1px}
+/* Fills the card's width: the reader's gutters are the card's own padding on
+   both sides, plus a little room on the right for its scrollbar. */
+.doc-body{flex:1;min-height:0;overflow-y:auto;font-size:13px;line-height:1.7;padding-right:10px}
+/* The dashboard's reset zeroes paragraph margins and list padding, which turns
+   a rendered doc into one unbroken block with invisible bullets. */
+.doc-body p{margin:10px 0}
+.doc-body ul,.doc-body ol{margin:10px 0;padding-left:22px}
+.doc-body li{margin:4px 0}
+.doc-body li>p{margin:0}
+.doc-body blockquote{margin:12px 0;padding:2px 0 2px 12px;border-left:2px solid var(--gray-200);color:var(--gray-500)}
+.doc-body hr{border:none;border-top:1px solid var(--gray-200);margin:20px 0}
+.doc-body>:first-child{margin-top:0}
+.doc-body h1{font-size:20px;margin:0 0 12px}
+.doc-body h2{font-size:16px;margin:22px 0 8px}
+.doc-body h3{font-size:14px;margin:18px 0 6px}
+.doc-body pre,.doc-cmd{background:var(--gray-100);padding:10px 12px;border-radius:8px;overflow:auto;font:12px var(--font-mono);white-space:pre}
+.doc-body code{font:12px var(--font-mono)}
+.doc-body table{border-collapse:collapse;font-size:12px}
+.doc-body td,.doc-body th{border:1px solid var(--gray-200);padding:5px 8px;text-align:left}
+.doc-body img{max-width:100%}
+.mcp-hint a,.doc-body a{color:var(--accent);text-decoration:underline}
+</style>
 <script>
   (function () {
     try {
-      var theme = localStorage.getItem('prismor-dashboard-theme') || 'dark';
-      document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+      var theme = localStorage.getItem('prismor-dashboard-theme') || 'light';
+      document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
     } catch (_) {
-      document.documentElement.setAttribute('data-theme', 'dark');
+      document.documentElement.setAttribute('data-theme', 'light');
     }
   })();
 </script>
@@ -484,6 +534,10 @@
     display:inline-block; margin-right:8px; padding:1px 6px; border-radius:999px;
     font-size:10px; font-weight:600; letter-spacing:.02em;
     background:#eef2ff; color:#4338ca; vertical-align:middle;
+  }
+  .hook-pill {
+    display:inline-block; padding:0 5px; border-radius:999px; font-size:9px; font-weight:600;
+    letter-spacing:.02em; background:var(--gray-100); color:var(--gray-500); vertical-align:middle;
   }
 
   /* ── Policy Control tab ── */
@@ -997,7 +1051,7 @@
   .agent-hero {
     display:flex; align-items:center; gap:16px; flex-wrap:wrap;
     padding:18px 20px; margin-bottom:18px;
-    background:linear-gradient(135deg,#fff, var(--gray-50));
+    background:linear-gradient(135deg,var(--surface), var(--gray-50));
     border:1px solid var(--gray-200); border-radius:14px;
   }
   .agent-avatar {
@@ -1006,6 +1060,8 @@
     background:var(--gray-900); color:#fff; font-weight:700; font-size:20px;
   }
   .agent-avatar.blocked { background:#b91c1c; }
+  .agent-avatar.has-ico { background:var(--surface); border:1px solid var(--gray-200); }
+  .agent-avatar .agent-ico { width:28px; height:28px; margin:0; }
   .agent-hero-main { flex:1; min-width:180px; }
   .agent-hero-name { font-size:18px; font-weight:700; color:var(--gray-900); display:flex; align-items:center; gap:10px; }
   .agent-hero-sub { font-size:12px; color:var(--gray-500); margin-top:3px; }
@@ -1019,7 +1075,7 @@
   .agent-stats { display:flex; gap:10px; flex-wrap:wrap; margin-bottom:18px; }
   .agent-stat {
     flex:1; min-width:120px; padding:14px 16px; border:1px solid var(--gray-200);
-    border-radius:12px; background:#fff;
+    border-radius:12px; background:var(--surface);
   }
   .agent-stat-label { font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--gray-400); font-weight:600; }
   .agent-stat-value { font-size:24px; font-weight:700; color:var(--gray-900); margin-top:4px; }
@@ -1045,6 +1101,89 @@
   .tp-deny.on  { background:#fee2e2; color:#b91c1c; border-color:#fecaca; }
   .mcp-kind { font-size:11px; font-weight:600; color:var(--gray-500); background:var(--gray-100); border-radius:999px; padding:2px 9px; margin-left:2px; }
   .mcp-kind-mirror { color:#a16207; background:#fef9c3; }
+  .ext-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
+  .ext-stat { background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; padding:12px 14px; }
+  .ext-stat b { display:block; color:var(--gray-900); font-size:22px; font-weight:700; line-height:1.1; }
+  .ext-stat span { font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:.04em; }
+  .ext-stat em { font-style:normal; font-size:11px; font-weight:600; color:#b45309; margin-left:6px; }
+  .ext-views { display:inline-flex; gap:2px; padding:3px; margin-bottom:14px; border:1px solid var(--gray-200); border-radius:9px; background:var(--gray-100); }
+  .ext-view { font-size:12.5px; font-weight:600; padding:6px 14px; border-radius:6px; border:0; background:none; color:var(--gray-500); cursor:pointer; }
+  .ext-view.on { background:var(--surface); color:var(--gray-900); box-shadow:0 1px 2px rgba(0,0,0,.12); }
+  .ext-view small { font-weight:600; color:var(--gray-400); margin-left:5px; }
+  .ext-use { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; padding:10px 12px; cursor:pointer; }
+  .ext-use:hover { background:var(--gray-100); border-radius:10px; }
+  .ext-use-id { font-family:var(--mono,ui-monospace,monospace); font-size:12px; color:var(--gray-900); font-weight:600; }
+  .ext-use-meta { font-size:11px; color:var(--gray-400); margin-left:auto; white-space:nowrap; }
+  .ext-agent { font-size:10.5px; font-weight:700; border-radius:4px; padding:1px 6px; background:rgba(59,130,246,.14); color:#3b82f6; flex:none; }
+  .ext-quiet { font-size:11px; color:var(--gray-500); }
+  .ext-never { font-size:10.5px; font-weight:600; border-radius:999px; padding:1px 8px; border:1px dashed var(--gray-300); color:var(--gray-500); flex:none; }
+  .ext-agent-card { padding:14px; }
+  .ext-agent-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .agent-ico { width:16px; height:16px; vertical-align:-3px; margin-right:5px; flex:none; }
+  .ext-agent .agent-ico { width:11px; height:11px; vertical-align:-1px; margin-right:3px; }
+  html[data-theme="dark"] .agent-ico.l, html:not([data-theme="dark"]) .agent-ico.d { display:none; }
+  .extd-agents { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:10px; }
+  .extd-agent { border:1px solid var(--gray-200); border-radius:8px; padding:10px 12px; background:var(--surface); }
+  .extd-agent b { font-size:14px; color:var(--gray-900); display:flex; align-items:center; }
+  .extd-agent small { display:block; color:var(--gray-500); font-size:11.5px; margin-top:4px; }
+  .extd-call { border-top:1px solid var(--gray-100); padding:8px 2px; }
+  .extd-call-head { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; color:var(--gray-600); }
+  .extd-call-head code { font-size:12px; color:var(--gray-900); }
+  .extd-call pre { margin:6px 0 0; padding:8px 10px; border-radius:6px; background:var(--gray-50); color:var(--gray-800);
+    font-size:11.5px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .ext-agent-head b { font-size:15px; color:var(--gray-900); }
+  .ext-agent-nums { display:flex; flex-wrap:wrap; gap:18px; margin-bottom:10px; }
+  .ext-agent-nums div { font-size:11px; color:var(--gray-500); }
+  .ext-agent-nums div b { display:block; font-size:18px; color:var(--gray-900); }
+  .ext-agent-nums div.warn b { color:#d97706; }
+  .ext-chipline { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:6px; }
+  .ext-chipline em { font-style:normal; font-size:11px; color:var(--gray-400); width:74px; flex:none; }
+  .ext-layout { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:16px; align-items:start; }
+  @media (max-width: 980px) { .ext-layout { grid-template-columns:1fr; } }
+  .ext-filters { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .ext-filter { font-size:12px; font-weight:600; padding:4px 11px; border-radius:999px; border:1px solid var(--gray-200); background:var(--surface); color:var(--gray-500); cursor:pointer; }
+  .ext-filter.on { background:var(--gray-900); color:var(--surface); border-color:transparent; }
+  .ext-row { background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; margin-bottom:8px; }
+  .ext-row.review { border-left:3px solid #f59e0b; }
+  .ext-head { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; min-width:0; }
+  .ext-name { color:var(--gray-900); font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .ext-origin { font-size:11px; color:var(--gray-400); font-family:var(--mono,ui-monospace,monospace); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
+  .ext-badge { font-size:10px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; border-radius:4px; padding:2px 6px; flex:none; }
+  .ext-badge.new, .ext-badge.changed { background:rgba(245,158,11,.18); color:#d97706; }
+  .ext-badge.approved { background:rgba(34,197,94,.16); color:#16a34a; }
+  .ext-badge.unchanged { background:var(--gray-100); color:var(--gray-500); }
+  .ext-kind { font-size:10px; font-weight:700; text-transform:uppercase; color:var(--gray-500); border:1px solid var(--gray-200); border-radius:4px; padding:1px 5px; flex:none; }
+  .ext-cap { font-size:10.5px; font-weight:600; border-radius:999px; padding:1px 8px; background:var(--gray-100); color:var(--gray-500); flex:none; }
+  .ext-cap.remote_instructions, .ext-cap.network { background:rgba(239,68,68,.15); color:#ef4444; }
+  .ext-cap.runs_code, .ext-cap.declares_hooks { background:rgba(249,115,22,.15); color:#f97316; }
+  .ext-body { border-top:1px solid var(--gray-100); padding:10px 12px 12px; font-size:12px; display:none; }
+  .ext-row.open .ext-body { display:block; }
+  .ext-kv { display:grid; grid-template-columns:110px minmax(0,1fr); gap:4px 10px; }
+  .ext-kv dt { color:var(--gray-400); }
+  .ext-kv dd { margin:0; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; overflow-wrap:anywhere; }
+  .ext-approve { margin-top:10px; font-size:12px; font-weight:600; padding:5px 12px; border-radius:6px; border:1px solid #16a34a; background:rgba(34,197,94,.12); color:#16a34a; cursor:pointer; }
+  .ext-ev { display:grid; grid-template-columns:8px minmax(0,1fr); gap:10px; padding:8px 0; border-bottom:1px solid var(--gray-100); font-size:12px; }
+  .ext-ev:last-child { border-bottom:0; }
+  .ext-ev i { width:8px; height:8px; border-radius:50%; margin-top:5px; background:var(--gray-300); }
+  .ext-ev.extension_installed i, .ext-ev.extension_changed i { background:#f59e0b; }
+  .ext-ev.remote_ref_drift i, .ext-ev.remote_ref_flagged i { background:#ef4444; }
+  .ext-ev.extension_invoked i { background:#3b82f6; }
+  .ext-cause { display:inline-flex; align-items:center; gap:4px; flex:none; font-size:10.5px; font-weight:600; border-radius:999px;
+    padding:1px 8px; margin-left:6px; background:var(--gray-100); color:var(--gray-600); cursor:pointer; white-space:nowrap; }
+  .ext-cause .icon { width:11px; height:11px; }
+  .ext-cause.unreviewed { background:rgba(245,158,11,.18); color:#d97706; }
+  .ext-sess { color:#3b82f6; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+  .sess-ran-under { margin:0 0 14px; padding:12px 14px 6px; background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; font-size:12px; }
+  .sess-ran-under[hidden] { display:none; }
+  .sess-ran-under .ext-row { background:none; }
+  .sess-ext-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin-bottom:10px; }
+  .sess-ext-hooks { margin:0 0 8px; }
+  .sess-ext-hooks summary { cursor:pointer; color:var(--gray-500); font-weight:600; padding:4px 2px 8px; }
+  .sess-ran-title { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--gray-400); }
+  .sess-ran-group { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px; }
+  .sess-ran-group em { font-style:normal; color:var(--gray-500); margin-right:2px; }
+  .sess-ran-docs { font-weight:600; color:var(--gray-600); margin-left:6px; }
+  .ext-ev small { display:block; color:var(--gray-400); font-size:11px; overflow-wrap:anywhere; }
   .mcp-hint { font-size:11.5px; color:var(--gray-500); margin-top:8px; line-height:1.5; }
   .tp-toggle { position:relative; width:38px; height:22px; border-radius:999px; border:1px solid var(--gray-200); background:var(--gray-100); cursor:pointer; padding:0; transition:background .12s; }
   .tp-toggle.on { background:#22c55e; border-color:#16a34a; }
@@ -1065,7 +1204,16 @@
   .session-hero-id { font-family:var(--font-mono); font-size:14px; font-weight:600; color:var(--gray-900); margin-top:3px; word-break:break-all; }
   .session-hero-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
 
-  .session-layout { display:grid; grid-template-columns:1fr 340px; gap:16px; align-items:start; }
+  .session-layout { display:grid; grid-template-columns:minmax(0,1fr) clamp(360px, 36%, 520px); gap:16px; align-items:start; }
+  /* Long values (commands, prompts, regexes, hooks) get the full panel width
+     under their label instead of a 60% column beside it. */
+  .drawer-rule-row.stack { flex-direction:column; gap:4px; }
+  .drawer-rule-row.stack > .drawer-rule-label { min-width:0; font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
+  .drawer-rule-row.stack > div { width:100%; }
+  .drawer-code { font-family:var(--font-mono); font-size:11px; line-height:1.5; color:var(--gray-800); background:var(--surface);
+    border:1px solid var(--gray-200); border-radius:6px; padding:6px 8px; max-height:180px; overflow:auto;
+    white-space:pre-wrap; overflow-wrap:anywhere; }
+  .drawer-rule-row details > summary { cursor:pointer; color:#3b82f6; font-size:11px; margin-bottom:4px; }
   .session-layout > div { min-width:0; }
   @media (max-width:900px){ .session-layout { grid-template-columns:1fr; } }
 
@@ -1133,6 +1281,26 @@
     color:var(--gray-500); background:var(--gray-100); border-radius:5px; padding:1px 6px; }
   .tree-text { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--gray-700); }
   .tree-leaf.blocked .tree-text { color:var(--danger-ink); font-weight:600; }
+  .hook-chip { flex:none; font-size:10px; font-weight:600; border-radius:999px; padding:1px 7px; margin-left:6px;
+    background:var(--gray-100); color:var(--gray-600); font-variant-numeric:tabular-nums; }
+  .hook-chip.slow { background:rgba(217,119,6,.14); color:#d97706; }
+  .hook-chip.fail { background:rgba(220,38,38,.12); color:#dc2626; }
+  .hook-runs { margin-top:4px; }
+  .hook-phase { font-size:10.5px; font-weight:700; color:var(--gray-500); margin:8px 0 3px; text-transform:uppercase; letter-spacing:.04em; }
+  .hook-run { font-size:11px; margin-bottom:5px; }
+  .hook-run > summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 8px; align-items:center; cursor:pointer; list-style:none; }
+  .hook-run > summary::-webkit-details-marker { display:none; }
+  .hook-run[open] > summary code { color:#3b82f6; }
+  .hook-io { font-size:11px; color:var(--gray-600); margin:6px 0 0; }
+  .hook-io em { font-style:normal; font-weight:600; color:var(--gray-500); display:block; margin-bottom:2px; }
+  .hook-io pre { margin:0; padding:6px 8px; border-radius:6px; background:var(--gray-50); color:var(--gray-800); font-size:10.5px;
+    max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .hook-sent { font-size:11px; margin:0 0 6px; } .hook-sent summary { cursor:pointer; color:#3b82f6; }
+  .hook-run code { font-size:11px; color:var(--gray-800); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hook-run .ms { text-align:right; color:var(--gray-600); font-variant-numeric:tabular-nums; }
+  .hook-run .bar { grid-column:1 / -1; height:3px; border-radius:2px; background:var(--gray-100); }
+  .hook-run .bar i { display:block; height:100%; border-radius:2px; background:#3b82f6; }
+  .hook-run.slow .bar i { background:#d97706; } .hook-run.fail .bar i { background:#dc2626; }
   .tree-ts { margin-left:auto; flex:none; font-size:10px; color:var(--gray-400); font-variant-numeric:tabular-nums; }
   .flow-legend { display:flex; gap:12px; font-size:10px; color:var(--gray-500); }
   .flow-legend span { display:inline-flex; align-items:center; gap:4px; }
@@ -1189,7 +1357,7 @@
   .flow-empty { padding:40px 20px; text-align:center; color:var(--gray-400); font-size:12px; }
 
   /* node detail side panel */
-  .node-panel { border:1px solid var(--gray-200); border-radius:14px; background:var(--surface); padding:16px; position:sticky; top:16px; }
+  .node-panel { border:1px solid var(--gray-200); border-radius:14px; background:var(--surface); padding:16px 18px; position:sticky; top:16px; }
   .node-panel-empty { color:var(--gray-400); font-size:12px; text-align:center; padding:24px 8px; }
   .node-panel h4 { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--gray-400); font-weight:700; margin:0 0 10px; }
   .node-actions { margin-top:14px; padding-top:14px; border-top:1px solid var(--gray-100); }
@@ -1530,7 +1698,7 @@
      and the detail panel stay put and only the trail scrolls. A 600-event
      session used to push its own controls -- and the panel showing the row you
      just clicked -- off the top of the screen. */
-  #page-session.page {
+  #page-session.page.active {
     display: flex; flex-direction: column; gap: 0;
     height: calc(100vh - var(--topbar-h)); overflow: hidden;
   }
@@ -1539,6 +1707,24 @@
   #page-session .flow-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
   #page-session #sessFlowCanvas { flex: 1; min-height: 0; overflow-y: auto; }
   #page-session .node-panel { position: static; min-height: 0; overflow-y: auto; }
+  /* The trail is what this page is for. Everything above it is one line
+     each -- a 450px stack of hero + extensions left a 350px window to scroll
+     a 600-event session through. */
+  #page-session .view-topbar { margin-bottom: 8px; }
+  #page-session .session-hero { padding: 10px 16px; margin-bottom: 8px; gap: 10px; }
+  #page-session .session-hero-title { display: none; }
+  #page-session .session-hero-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  #page-session .session-hero-id { margin-top: 0; font-size: 13px; }
+  #page-session .session-hero-meta { margin-top: 0; }
+  #page-session .sess-ran-under { margin-bottom: 8px; padding: 0 14px; }
+  .sess-ext-all > summary { list-style: none; cursor: pointer; padding: 9px 0; margin: 0; }
+  .sess-ext-all > summary::-webkit-details-marker { display: none; }
+  .sess-ext-toggle { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--gray-500); }
+  .sess-ext-all[open] > summary { border-bottom: 1px solid var(--gray-100); margin-bottom: 10px; }
+  .sess-ext-all[open] .sess-ext-toggle::after { content: ' \25B4'; }
+  .sess-ext-all:not([open]) .sess-ext-toggle::after { content: ' \25BE'; }
+  .sess-ext-all > .ext-row:last-child, .sess-ext-all > .sess-ext-hooks:last-child { margin-bottom: 10px; }
+  #page-session .flow-head { padding: 9px 14px; }
 
   @media (max-width: 900px) {
     .tab-nav { width: 60px; }
@@ -1703,12 +1889,351 @@
     background: var(--surface); border-color: var(--gray-200); color: var(--gray-700);
   }
 
-  .match-hit{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+  .match-hit{font-family:var(--font-mono);font-size:10.5px;line-height:1.5;
     color:var(--gray-800);background:rgba(220,38,38,.09);border:1px solid rgba(220,38,38,.22);
     border-radius:4px;padding:4px 6px;word-break:break-all;max-height:120px;overflow:auto}
-  .match-pattern{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;line-height:1.5;
+  .match-pattern{font-family:var(--font-mono);font-size:10.5px;line-height:1.5;
     color:var(--gray-600);background:var(--gray-100);border-radius:4px;padding:4px 6px;word-break:break-all}
   mark.match-mark{background:rgba(220,38,38,.22);color:inherit;border-radius:2px;padding:0 1px}
+
+  /* ═══════════════════════════════════════════════════════════════════
+     LEDGER LAYER — light-first editorial console: brand + breadcrumb top
+     bar under a thin accent stripe, grouped sidebar with counts, a hero
+     with a pass-rate ring, hairline-divided KPI strip and a numbered
+     "one tool call" strip. Hairlines instead of shadows, navy ink, one
+     green for pass / one red for intercept. Appended last so single-
+     selector overrides win on source order (same convention as above).
+     ═══════════════════════════════════════════════════════════════════ */
+  :root {
+    --ink: #1f2a3c; --ink-2: #4a5566; --muted: #7a8494;
+    --hairline: #e3e7eb; --hairline-strong: #cfd5dc;
+    --ok: #2f7d4f; --ok-soft: #eef7f1; --ok-btn: #5cbf8a;
+    --warn: #d9a524; --bad: #b3372b; --stripe: #7c3aed;
+
+    --gray-50: #f7f9fa; --gray-100: #f1f3f5; --gray-200: var(--hairline);
+    --gray-300: var(--hairline-strong); --gray-400: var(--muted); --gray-500: #6a7484;
+    --gray-600: var(--ink-2); --gray-700: #334052; --gray-800: #26324a; --gray-900: var(--ink);
+
+    --app-bg: #ffffff; --surface: #ffffff; --surface-muted: #f7f9fa; --surface-strong: #ffffff;
+    --accent: var(--ink); --md-primary: var(--ink); --md-primary-d: #111a2a; --md-primary-soft: #edf1f4;
+    --pink-600: var(--bad); --purple: var(--ink); --green-500: var(--ok); --danger-ink: var(--bad);
+    --md-e1: none; --md-e2: none; --md-e3: 0 16px 48px rgba(31,42,60,.14);
+    --md-radius: 8px; --md-radius-sm: 6px;
+    --sidebar-w: 236px; --topbar-h: 56px; --stripe-h: 5px;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    --chart-text: var(--muted); --chart-grid: #eef1f4;
+    --chart-passed: #9aa7b8; --chart-intercepted: var(--bad);
+    --chart-bar-warm: var(--bad); --chart-bar-cool: #3f5470; --chart-bar-hot: var(--bad);
+    --chart-palette-1: var(--ok); --chart-palette-2: var(--warn); --chart-palette-3: var(--bad);
+    --chart-palette-4: #3f5470; --chart-palette-5: #9aa7b8; --chart-palette-6: #d6dce3;
+  }
+  html[data-theme="dark"] {
+    --ink: #eef1f5; --ink-2: #b6bec9; --muted: #7f8896;
+    --hairline: #262c35; --hairline-strong: #353d48;
+    --ok: #4fae78; --ok-soft: rgba(79,174,120,.10); --ok-btn: #3f9a67;
+    --warn: #e0b23a; --bad: #e0685a; --stripe: #8b5cf6;
+    --gray-50: #14181d; --gray-100: #1a1f26; --gray-200: var(--hairline); --gray-300: var(--hairline-strong);
+    --gray-400: var(--muted); --gray-500: #99a2ae; --gray-600: var(--ink-2); --gray-700: #d3d9e1;
+    --gray-800: #e4e8ee; --gray-900: var(--ink);
+    --app-bg: #0e1116; --surface: #0e1116; --surface-muted: #14181d; --surface-strong: #1a1f26;
+    --accent: var(--ink); --md-primary: var(--ink); --md-primary-d: #ffffff; --md-primary-soft: #1a1f26;
+    --pink-600: var(--bad); --purple: var(--ink); --green-500: var(--ok); --danger-ink: #f2a1a1;
+    --md-e3: 0 16px 48px rgba(0,0,0,.6);
+    --chart-text: var(--muted); --chart-grid: #1c222a; --chart-passed: #5d6b7d; --chart-intercepted: var(--bad);
+    --chart-bar-warm: var(--bad); --chart-bar-cool: #7e93ad; --chart-bar-hot: var(--bad);
+    --chart-palette-1: var(--ok); --chart-palette-2: var(--warn); --chart-palette-3: var(--bad);
+    --chart-palette-4: #7e93ad; --chart-palette-5: #5d6b7d; --chart-palette-6: #353d48;
+  }
+  body { color: var(--ink-2); }
+
+  /* accent stripe across the very top, above the bar */
+  .topbar {
+    margin-left: 0; height: calc(var(--topbar-h) + var(--stripe-h)); padding: 0 20px;
+    border-top: var(--stripe-h) solid var(--stripe); border-bottom: 1px solid var(--hairline);
+  }
+  .topbar-left { gap: 12px; }
+  .topbar-brand { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; padding-right: 8px; }
+  .topbar-brand .topbar-logo { display: block; width: 24px; height: 24px; }
+  .topbar-brand .sidebar-brand-name { font-size: 16px; font-weight: 700; color: var(--ink); letter-spacing: -.01em; }
+  .breadcrumb-sep { color: var(--hairline-strong); font-size: 15px; }
+  .topbar h1 { font-size: 15px; font-weight: 500; color: var(--ink-2); }
+  #breadcrumbLabel { font-size: 15px; font-weight: 500; color: var(--ink); }
+  .topbar-right { gap: 10px; }
+  .last-updated { font-size: 11.5px; color: var(--muted); }
+  .badge { font-size: 11px; padding: 3px 9px; }
+  .badge-live { background: var(--ok-soft); color: var(--ok); }
+  .mode-chip { font-size: 10.5px; padding: 4px 10px; }
+  .theme-toggle, .upgrade-btn {
+    font-size: 12.5px; font-weight: 500; padding: 7px 12px; border-radius: 6px;
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink-2); box-shadow: none;
+    text-transform: none; letter-spacing: 0;
+  }
+  .theme-toggle:hover, .upgrade-btn:hover { background: var(--gray-100); color: var(--ink); box-shadow: none; opacity: 1; }
+  .upgrade-btn .icon { color: var(--ink-2); width: 15px; height: 15px; }
+  html[data-theme="dark"] .upgrade-btn { background: var(--surface); color: var(--ink-2); border-color: var(--hairline); }
+  html[data-theme="dark"] .theme-toggle-dot { background: var(--warn); box-shadow: 0 0 0 3px var(--gray-100); }
+
+  /* sidebar sits under the bar, grouped, counts on the right */
+  .tab-nav {
+    top: calc(var(--topbar-h) + var(--stripe-h)); padding: 6px 10px 20px; gap: 1px;
+    background: var(--surface); border-right: 1px solid var(--hairline);
+  }
+  .nav-group {
+    font-size: 10.5px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); padding: 18px 12px 6px;
+  }
+  .tab-nav .tab-btn {
+    padding: 9px 12px; border-radius: 8px; font-size: 14px; font-weight: 500; color: var(--ink);
+    border: 1px solid transparent; gap: 12px;
+  }
+  .tab-nav .tab-btn .icon { width: 17px; height: 17px; color: var(--ink-2); }
+  .tab-nav .tab-btn:hover { background: var(--gray-50); color: var(--ink); }
+  .tab-nav .tab-btn.active {
+    background: var(--md-primary-soft); color: var(--ink); border-color: transparent; box-shadow: none; border-radius: 8px;
+  }
+  .tab-nav .tab-btn.active .icon { color: var(--ink); }
+  .tab-count { margin-left: auto; font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tab-count:empty { display: none; }
+  .tab-lock { margin-left: auto; opacity: .55; }
+  .tab-lock .icon { width: 13px; height: 13px; }
+  .topbar, .page, .prismor-cta { margin-left: 0; }
+  .page, .prismor-cta { margin-left: var(--sidebar-w); }
+  .page { padding: 12px 40px 48px; }
+  #page-docs.page.active, #page-session.page.active { height: calc(100vh - var(--topbar-h) - var(--stripe-h)); }
+
+  /* hero */
+  .hero {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 48px; align-items: center;
+    padding: 56px 0 40px;
+  }
+  .hero h1 { font-size: 46px; font-weight: 600; letter-spacing: -.028em; line-height: 1.08; color: var(--ink); }
+  .hero p { font-size: 17.5px; line-height: 1.55; color: var(--ink-2); margin: 18px 0 28px; max-width: 580px; }
+  .hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+  .attn-title { font-size: 34px; margin-top: 6px; }
+  .attn-list { list-style: none; margin: 14px 0 0; padding: 0; display: grid; gap: 8px; max-width: 580px; }
+  .attn-list li { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--gray-200); border-radius: 10px; background: var(--surface); font-size: 13px; }
+  .attn-list li.link { cursor: pointer; } .attn-list li.link:hover { border-color: var(--gray-400); }
+  .attn-list li b { color: var(--ink); font-weight: 600; } .attn-list li span { color: var(--ink-2); font-size: 12.5px; }
+  .attn-sub { font-size: 12.5px !important; margin: 16px 0 18px !important; color: var(--muted) !important; }
+  .help { display: inline-block; font-style: normal; font-size: 9px; line-height: 12px; width: 13px; height: 13px; text-align: center; border-radius: 50%; border: 1px solid currentColor; opacity: .55; cursor: help; vertical-align: 1px; margin-left: 2px; }
+  .kpi-strip .kpi-delta.neutral .up, .kpi-strip .kpi-delta.neutral .down { color: var(--muted); }
+  .how-it-works { margin-bottom: 28px; } .how-it-works > summary { list-style: none; cursor: pointer; display: flex; gap: 10px; align-items: center; }
+  .how-it-works > summary::-webkit-details-marker { display: none; } .how-it-works[open] > summary { margin-bottom: 14px; }
+  .how-it-works:not([open]) .sess-ext-toggle::after { content: ' \25BE'; } .how-it-works[open] .sess-ext-toggle::after { content: ' \25B4'; }
+  .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
+  .ext-stat small { display: block; font-size: 11px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+  .ext-review-note { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--gray-500); max-width: 460px; vertical-align: middle; }
+  .btn-ok, .btn-line {
+    font: 600 14px var(--font-ui); padding: 11px 16px; border-radius: 6px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 9px; line-height: 1; transition: background .15s;
+  }
+  .btn-ok { background: var(--ok-btn); color: #fff; border: 1px solid var(--ok-btn); }
+  .btn-ok:hover { background: var(--ok); border-color: var(--ok); }
+  .btn-line { background: var(--surface); color: var(--ink); border: 1px solid var(--hairline-strong); }
+  .btn-line:hover { background: var(--gray-50); }
+  .btn-ok .icon, .btn-line .icon { width: 15px; height: 15px; }
+  .ring-wrap { display: flex; align-items: center; gap: 40px; }
+  .ring { position: relative; width: 196px; height: 196px; }
+  .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+  .ring-pct { font-size: 38px; font-weight: 600; letter-spacing: -.02em; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
+  .ring-pct small { font-size: 19px; font-weight: 500; margin-left: 1px; }
+  .ring-cap { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+  .ring-legend { display: grid; gap: 14px; font-size: 14.5px; color: var(--ink-2); min-width: 210px; }
+  .ring-legend > div { display: flex; align-items: center; gap: 10px; }
+  .ring-legend b { margin-left: auto; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .ring-legend-sep { height: 1px; background: var(--hairline); margin: 2px 0; }
+  .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+  /* hairline KPI strip */
+  .strip-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; }
+  .kpi-label { font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+  .kpi-strip {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin-bottom: 40px;
+  }
+  .kpi-strip > div { padding: 28px 28px 30px; border-left: 1px solid var(--hairline); min-width: 0; }
+  .kpi-strip > div:first-child { border-left: none; padding-left: 0; }
+  .kpi-big { font-size: 34px; font-weight: 500; letter-spacing: -.02em; color: var(--ink); margin: 16px 0 12px; line-height: 1; font-variant-numeric: tabular-nums; }
+  .kpi-sub, .kpi-strip .kpi-delta { font-size: 13.5px; color: var(--muted); margin-top: 0; }
+  .kpi-strip .kpi-delta .up { color: var(--bad); } .kpi-strip .kpi-delta .down { color: var(--ok); }
+
+  /* the five-step strip */
+  .steps-label { font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .steps {
+    display: grid; grid-template-columns: repeat(5, 1fr); background: var(--surface);
+    border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; margin-bottom: 36px;
+  }
+  .step { padding: 24px 22px 22px; border-left: 1px solid var(--hairline); position: relative; min-width: 0; }
+  .step:first-child { border-left: none; }
+  .step.hi { background: var(--ok-soft); }
+  .step:not(:last-child)::after {
+    content: ''; position: absolute; top: 50%; right: -7px; width: 12px; height: 12px; z-index: 1;
+    border-top: 1px solid var(--hairline); border-right: 1px solid var(--hairline);
+    background: inherit; transform: translateY(-50%) rotate(45deg);
+  }
+  .step:not(.hi):not(:last-child)::after { background: var(--surface); }
+  .step-n { font: 12px var(--font-mono); color: var(--muted); }
+  .step-t { font-size: 17px; font-weight: 600; color: var(--ink); margin: 14px 0 6px; }
+  .step-d { font-size: 13.5px; line-height: 1.5; color: var(--ink-2); min-height: 40px; }
+  .step-f { border-top: 1px solid var(--hairline); margin-top: 18px; padding-top: 12px; font: 12.5px var(--font-mono); color: var(--ink-2); }
+  .step.hi .step-f { border-top-color: rgba(47,125,79,.18); }
+
+  /* surfaces: hairlines, no elevation; titles read as headings */
+  .card, .agent-hero, .agent-stat, .agent-ctrl-card, .session-hero, .node-panel, .flow-card, .flow-node {
+    border: 1px solid var(--hairline); box-shadow: none; border-radius: 8px;
+  }
+  .card:hover, .agent-stat:hover, .flow-node:hover { box-shadow: none; }
+  .card { padding: 20px 22px; }
+  .card-title { font-size: 15px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; margin-bottom: 14px; }
+  .section { margin: 36px 0 14px 0; }
+  .section h2 { font-size: 11px; font-weight: 500; letter-spacing: .14em; color: var(--muted); }
+  .section .rule { display: none; }
+  .section .hint { font-size: 12px; color: var(--muted); }
+  th { font-size: 10.5px; letter-spacing: .1em; color: var(--muted); border-bottom-color: var(--hairline); }
+  td { font-size: 12.5px; color: var(--ink-2); border-bottom-color: var(--gray-100); }
+  tbody tr:hover td { background: var(--gray-50); }
+  .kpi-value { color: var(--ink); }
+  .empty { font-size: 12px; }
+  .sev-critical { background: #fbeeec; color: var(--bad); border-color: #f1cfcb; }
+  .sev-high { background: #fbf3e4; color: #9a6b0c; border-color: #efdcae; }
+  .sev-medium { background: var(--gray-100); color: var(--ink-2); border-color: var(--hairline); }
+  .event-dot.blocked, .trail-dot.blocked { background: var(--bad); }
+  .event-dot.warned, .trail-dot.warned { background: #f59e0b; }
+  .event-dot.allowed { background: var(--ok); }
+  .fsel, .finput, .rules-search { background: var(--surface); border-color: var(--hairline-strong); color: var(--ink); }
+  .btn-primary { background: var(--ink); color: #fff; box-shadow: none; text-transform: none; letter-spacing: 0; }
+  .btn-primary:hover { background: var(--md-primary-d); box-shadow: none; }
+  html[data-theme="dark"] .btn-primary { background: var(--ink); color: #0e1116; }
+  html[data-theme="dark"] .btn-primary:hover { background: #ffffff; }
+  .prismor-cta { background: var(--ink); border-color: var(--ink); box-shadow: none; border-radius: 8px; margin: 20px 40px 0 calc(var(--sidebar-w) + 40px); }
+  html[data-theme="dark"] .prismor-cta { color: #0e1116; }
+  html[data-theme="dark"] .prismor-cta-text strong { color: #0e1116; }
+  html[data-theme="dark"] .prismor-cta-text span { color: rgba(14,17,22,.7); }
+  html[data-theme="dark"] .prismor-cta-btn { background: #0e1116; color: var(--ink); }
+  #loadingScreen { background: var(--app-bg); }
+
+  /* policy page */
+  .prec-details { border: 1px solid var(--hairline); border-radius: 8px; margin-bottom: 18px; background: var(--surface); }
+  .prec-details > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 14px; padding: 14px 18px;
+  }
+  .prec-details > summary::-webkit-details-marker { display: none; }
+  .prec-summary { font-size: 14px; font-weight: 500; color: var(--ink); flex: 1; }
+  .prec-toggle { font-size: 12.5px; color: var(--muted); }
+  .prec-details[open] > summary { border-bottom: 1px solid var(--hairline); }
+  .prec-details[open] .prec-toggle::after { content: ' · hide'; }
+  .prec-details .drawer-event-card { border: none; background: var(--surface); border-radius: 0 0 8px 8px; padding: 16px 18px; margin: 0; }
+  .prec-details .drawer-event-card > .drawer-section-title,
+  .prec-details .drawer-event-card > .drawer-section-title + div { display: none; }
+  .policy-scope-nav { background: none; padding: 0; gap: 4px; border-bottom: 1px solid var(--hairline); border-radius: 0; margin-bottom: 22px; align-items: center; }
+  .policy-scope-btn { font-size: 13.5px; padding: 10px 12px; border-radius: 0; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .policy-scope-btn.active { background: none; box-shadow: none; color: var(--ink); border-bottom-color: var(--ink); }
+  .policy-scope-sep {
+    font-size: 10.5px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+    margin-left: 22px; padding-right: 6px; border-left: 1px solid var(--hairline); padding-left: 18px;
+  }
+  .rules-legend { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; font-size: 13px; color: var(--ink-2); margin: 2px 0 14px; }
+  .rules-legend > span { display: inline-flex; align-items: center; gap: 7px; }
+  .rules-legend-note { flex-basis: 100%; font-size: 12.5px; color: var(--muted); }
+  .rules-filters { display: flex; gap: 4px; }
+  .rules-filters .fbtn { font-size: 12px; padding: 6px 10px; }
+  .rules-filters .fbtn.active { background: var(--md-primary-soft); color: var(--ink); border-color: transparent; }
+  .rules-toolbar { gap: 10px; }
+  .rules-count { font-size: 12.5px; }
+  .rules-list { max-height: none; overflow: visible; }
+  .rule-row { padding: 12px 16px; gap: 14px; }
+  .rule-row.locked { background: var(--surface-muted); }
+  .rule-id { font-size: 13px; }
+  .rule-title { font-size: 12.5px; white-space: normal; }
+  .rule-sev { min-width: 64px; text-align: center; }
+  .rules-actions {
+    position: sticky; bottom: 0; margin-top: 0; padding: 12px 0 14px; background: var(--surface);
+    border-top: 1px solid var(--hairline);
+  }
+  .rules-actions:not(.dirty) .btn-primary, .rules-actions:not(.dirty) #rulesDiscard { opacity: .45; }
+  .yaml-editor { font-family: var(--font-mono); font-size: 12px; border-radius: 8px; }
+
+  /* sessions: filter bar */
+  .sess-filters { margin: 0 0 16px; gap: 8px; }
+  .sess-filters .finput { width: 220px; }
+  .sess-filters .finput, .sess-filters .fsel { font-size: 12.5px; padding: 7px 10px; border-radius: 6px; }
+  .sess-filters .finput::-webkit-search-cancel-button { -webkit-appearance: none; }
+  .sess-filters .fbtn { font-size: 12px; padding: 7px 10px; }
+
+  /* mcp servers */
+  .mcp-summary { margin-bottom: 28px; }
+  .mcp-card { margin-bottom: 16px; }
+  .mcp-card-direct { border-color: #efdcae; }
+  .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .mcp-avatar { width: 28px; height: 28px; border-radius: 7px; background: var(--md-primary-soft); color: var(--ink); display: inline-grid; place-items: center; font-weight: 700; font-size: 13px; }
+  .mcp-name { font-family: var(--font-mono); font-size: 15px; font-weight: 600; }
+  .mcp-head-right { margin-left: auto; }
+  .mcp-kind { font-size: 11px; font-weight: 500; }
+  .mcp-kind-gw { color: var(--ok); background: var(--ok-soft); }
+  .mcp-kind-mirror { color: #6d4c0c; background: #fbf3e4; }
+  .mcp-kind-direct { color: var(--bad); background: #fbeeec; }
+  .mcp-kind-seen { color: #3f5470; background: #eef2f6; }
+  .mcp-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--ink-2); margin: 4px 0; min-width: 0; }
+  .mcp-meta code { font-family: var(--font-mono); font-size: 11.5px; background: var(--gray-100); border-radius: 4px; padding: 2px 6px; max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-meta-k { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .mcp-meta-src { color: var(--muted); font-size: 12px; }
+  .mcp-muted { color: var(--muted); }
+  .mcp-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin: 14px 0; }
+  .mcp-usage > div { padding: 12px 16px; border-left: 1px solid var(--hairline); }
+  .mcp-usage > div:first-child { border-left: none; padding-left: 0; }
+  .mcp-num { font-size: 22px; font-weight: 500; color: var(--ink); margin: 6px 0 2px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+  .mcp-usage .kpi-sub { font-size: 12px; }
+  .mcp-findings { margin: 0 0 12px 18px; font-size: 12.5px; color: var(--ink-2); line-height: 1.55; }
+  .mcp-fix { margin: 0 0 14px; }
+  .mcp-fix .doc-cmd { margin-top: 8px; }
+  .tp-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--gray-100); }
+  .tp-row:last-child { border-bottom: none; }
+  .tp-tool { font-family: var(--font-mono); font-size: 12.5px; color: var(--ink); min-width: 0; }
+  .tp-stats { display: inline-flex; gap: 12px; font-size: 12px; color: var(--ink-2); margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .tp-blocked { color: var(--bad); }
+  .tp-btns { margin-left: 0; }
+
+  /* extensions: long hook paths wrap inside the lifecycle card */
+  .ext-layout > * { min-width: 0; }
+  .ext-timeline, .ext-ev, .ext-ev b, .ext-ev span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+  .ext-ev b { font-weight: 600; }
+
+  /* docs: collapsible page list */
+  .docs-pages-head { display: flex; align-items: center; justify-content: space-between; }
+  .docs-collapse {
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink-2); cursor: pointer;
+    width: 26px; height: 26px; border-radius: 6px; font-size: 18px; line-height: 1; padding: 0 0 2px;
+  }
+  .docs-collapse:hover { background: var(--gray-100); color: var(--ink); }
+  .docs-layout.collapsed { grid-template-columns: 48px 1fr; }
+  .docs-layout.collapsed .docs-pages { padding: 12px 10px; }
+  .docs-layout.collapsed .docs-pages-head { margin: 0; justify-content: center; }
+  .docs-layout.collapsed .docs-pages-head > span, .docs-layout.collapsed #docsList { display: none; }
+
+  @media (max-width: 1200px) {
+    .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 36px; }
+    .hero h1 { font-size: 36px; }
+    .steps { grid-template-columns: repeat(2, 1fr); }
+    .step:nth-child(3), .step:nth-child(5) { border-left: none; }
+    .step { border-top: 1px solid var(--hairline); }
+    .step:nth-child(-n+2) { border-top: none; }
+    .step::after { display: none; }
+  }
+  @media (max-width: 900px) {
+    .nav-group, .tab-count { display: none; }
+    .tab-nav .tab-btn { justify-content: center; padding: 10px 0; }
+    .page, .prismor-cta { margin-left: 60px; }
+    .prismor-cta { margin-left: 76px; margin-right: 16px; }
+    .page { padding: 12px 16px 32px; }
+    .kpi-strip { grid-template-columns: 1fr 1fr; }
+    .kpi-strip > div { padding: 18px 16px; }
+    .kpi-strip > div:nth-child(odd) { border-left: none; padding-left: 0; }
+    .kpi-strip > div:nth-child(n+3) { border-top: 1px solid var(--hairline); }
+    .steps { grid-template-columns: 1fr; }
+    .step { border-left: none; }
+    .ring-wrap { flex-direction: column; align-items: flex-start; gap: 20px; }
+  }
 </style>
 </head>
 <body>
@@ -1735,6 +2260,7 @@
   <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
   <symbol id="i-merge" viewBox="0 0 24 24"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></symbol>
+  <symbol id="i-puzzle" viewBox="0 0 24 24"><path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
   <symbol id="i-sparkles" viewBox="0 0 24 24"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.3L3 16"/><path d="M3 21v-5h5"/><path d="M3 12A9 9 0 0 1 18.5 5.7L21 8"/><path d="M21 3v5h-5"/></symbol>
@@ -1745,38 +2271,46 @@
   <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
   <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+  <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
 </svg>
 
 <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════ -->
 <div class="tab-nav">
-  <div class="sidebar-brand">
-    <img class="topbar-logo" src="https://prismor.dev/Prismor_Logo.png" alt="Prismor" />
-    <span class="sidebar-brand-name">Prismor</span>
-  </div>
-  <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
-          title="Effective enforcement mode — click to manage in Policy Control">
-    <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
-  </button>
+  <div class="nav-group">Run</div>
   <button class="tab-btn active" data-tab="overview" data-label="Overview"><svg class="icon"><use href="#i-home"/></svg><span>Overview</span></button>
-  <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span></button>
-  <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span></button>
+  <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span><span class="tab-count" id="navSessions"></span></button>
+  <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span><span class="tab-count" id="navAgents"></span></button>
+  <div class="nav-group">Policy</div>
+  <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
-  <button class="tab-btn" data-tab="mcp" data-label="MCP Playground"><svg class="icon"><use href="#i-database"/></svg><span>MCP Playground</span></button>
-  <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span></button>
+  <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
+  <div class="nav-group">Govern</div>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
+  <div class="nav-group">Platform</div>
+  <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
 </div>
 
 <!-- ═══ TOP BAR (breadcrumb) ══════════════════════════════════════ -->
 <div class="topbar">
   <div class="topbar-left">
-    <h1>Local Prismor</h1>
+    <a class="topbar-brand" href="#" onclick="document.querySelector('.tab-btn[data-tab=&quot;overview&quot;]')?.click();return false">
+      <img class="topbar-logo" src="https://prismor.dev/Prismor_Logo.png" alt="Prismor" />
+      <span class="sidebar-brand-name">Prismor</span>
+    </a>
+    <span class="breadcrumb-sep">/</span>
+    <h1>Local</h1>
     <span class="breadcrumb-sep">/</span>
     <span id="breadcrumbLabel">Overview</span>
   </div>
   <div class="topbar-right">
     <span id="lastUpdated" class="last-updated"></span>
     <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
+    <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
+            title="Effective enforcement mode — click to manage in Policy Control">
+      <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
+    </button>
     <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
       <span class="theme-toggle-dot"></span>
       <span id="themeToggleLabel">Dark</span>
@@ -1789,29 +2323,52 @@
 <!-- ═══ PAGE: MCP PLAYGROUND ══════════════════════════════════════ -->
 <div id="page-mcpservers" class="page">
   <div class="section"><h2>MCP Servers</h2><div class="rule"></div>
-    <span class="hint">Every MCP server Prismor fronts, and how each tool is handled. Allow runs it; Ask requires human approval (step-up); Deny blocks it. Applies across all agents.</span>
+    <span class="hint">every MCP server declared on this machine: where it is configured, whether its calls pass through Prismor, what it has been doing in the last 7 days, and how each tool is handled</span>
   </div>
+  <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
   <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
 </div>
 
-<div id="page-mcp" class="page">
-  <div class="section"><h2>MCP Playground</h2><div class="rule"></div>
-    <span class="hint">Claude Code tool access — every call is evaluated by Prismor before delivery.</span>
+<div id="page-extensions" class="page">
+  <div class="section"><h2>Extensions</h2><div class="rule"></div>
+    <span class="hint">Skills, plugins, MCP servers and third-party hooks: anything installed on this machine that can put instructions or code into an agent. Prismor records each one when it first appears and again when its files change, so you can read it once and know it has not moved since.</span>
   </div>
-  <div class="grid grid-1-2">
-    <div class="card">
-      <div class="card-title">Demo MCP server</div>
-      <div id="mcpServerMeta" style="font:12px var(--font-mono);color:var(--gray-600);margin-bottom:14px">Loading…</div>
-      <div class="bar"><input id="mcpNewTool" class="fsel" style="flex:1" placeholder="e.g. lookup_customer" />
-        <button class="btn-primary" onclick="mcpAddTool()">Add tool</button></div>
-      <div id="mcpTools"></div>
-      <button class="btn-ghost" style="margin-top:14px" onclick="mcpReset()">Reset playground</button>
+  <div id="extSummary" class="ext-summary"></div>
+  <div class="ext-views" id="extViews"></div>
+  <div class="ext-layout">
+    <div>
+      <div class="ext-filters" id="extFilters"></div>
+      <div id="extList"><div class="empty">Loading extensions…</div></div>
+    </div>
+    <div class="card ext-timeline">
+      <div class="card-title" title="Every install, change and invocation, hash-chained so an entry cannot be edited after the fact.">What changed, when <i class="help">?</i></div>
+      <div id="extEvents"><div class="empty">No extension events yet.</div></div>
+    </div>
+  </div>
+</div>
+
+<div id="page-docs" class="page">
+  <div class="section"><h2>Docs</h2><div class="rule"></div>
+    <span class="hint">The Prismor docs shipped with this install — browse or search without leaving the dashboard.</span>
+  </div>
+  <div class="docs-search">
+    <svg class="icon"><use href="#i-search"/></svg>
+    <input id="docsSearch" type="search" spellcheck="false" autocomplete="off"
+           placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
+    <span id="docsCount" class="docs-count"></span>
+    <button id="docsClear" class="docs-clear" title="Clear" hidden onclick="docsClearSearch()">×</button>
+    <button class="btn-ghost" id="docsAskAgent" onclick="docsCopyAgentPrompt()"
+            title="Copy a prompt that teaches your agent to query this store read-only">Ask your agent</button>
+  </div>
+  <div class="docs-layout" id="docsLayout">
+    <div class="card docs-pages">
+      <div class="card-title docs-pages-head"><span>Pages</span>
+        <button id="docsCollapseBtn" class="docs-collapse" type="button" onclick="toggleDocsPages()" title="Hide the page list">&lsaquo;</button>
+      </div>
+      <div id="docsList"><div class="empty">Loading docs…</div></div>
     </div>
     <div class="card">
-      <div class="card-title">Delivery log</div>
-      <p style="font-size:11px;color:var(--gray-500);line-height:1.55;margin-bottom:12px">Enabled/denied writes the project-level policy for the <code>claude</code> agent and syncs the tool into active session scopes. A denied call is recorded by Prismor but never reaches the local MCP server.</p>
-      <div id="mcpResult" style="font-size:12px;color:var(--gray-500);margin-bottom:12px">Choose a tool to invoke it.</div>
-      <div id="mcpDelivered" style="font:12px var(--font-mono);color:var(--gray-600)"></div>
+      <div id="docsBody" class="doc-body"><div class="empty">Pick a page to read it here.</div></div>
     </div>
   </div>
 </div>
@@ -1820,8 +2377,33 @@
 <!-- PAGE: OVERVIEW                                                 -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div id="page-overview" class="page active">
-  <div class="period-row">
-    Period:
+  <section class="hero">
+    <div>
+      <div class="kpi-label">Needs attention</div>
+      <h1 id="attnTitle" class="attn-title">Checking…</h1>
+      <ul id="attnList" class="attn-list"></ul>
+      <p class="attn-sub">Prismor screens every tool call your agents make on this machine and decides it against the policy in force before it runs. Words used here: a <b>call</b> is one tool use; the <b>decision</b> is allowed, warned or blocked; a <b>rule fired</b> is one policy rule that matched, block or not.</p>
+      <div class="hero-actions">
+        <button class="btn-ok" onclick="document.querySelector('.tab-btn[data-tab=&quot;sessions&quot;]')?.click()"><svg class="icon"><use href="#i-play"/></svg> Open sessions</button>
+        <button class="btn-line" onclick="gotoPolicy()"><svg class="icon"><use href="#i-shield"/></svg> Policy control</button>
+      </div>
+    </div>
+    <div class="ring-wrap">
+      <div class="ring">
+        <canvas id="ringChart"></canvas>
+        <div class="ring-center"><div class="ring-pct" id="ringPct">–</div><div class="ring-cap">allowed</div></div>
+      </div>
+      <div class="ring-legend">
+        <div><span class="sw" style="background:var(--ok)"></span>Allowed<b id="ringPassed">-</b></div>
+        <div><span class="sw" style="background:var(--bad)"></span>Blocked<b id="ringBlocked">-</b></div>
+        <div class="ring-legend-sep"></div>
+        <div title="Every policy rule that matched a call in this window, including warn-only rules that did not block anything.">Rules fired <i class="help">?</i><b id="ringFindings">-</b></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="strip-head">
+    <span class="kpi-label">Agent activity · <span id="hintActivity">last 7 days</span></span>
     <select id="globalDays" class="fsel">
       <option value="1" selected>Last 1 day</option>
       <option value="7">Last 7 days</option>
@@ -1830,34 +2412,23 @@
       <option value="90">Last 90 days</option>
     </select>
   </div>
-
-  <div class="section">
-    <h2>Agent Activity</h2><div class="rule"></div><span id="hintActivity" class="hint">last 7 days</span>
+  <div class="kpi-strip">
+    <div><div class="kpi-label" title="Tool calls that went through a Prismor hook and got a decision.">Calls screened <i class="help">?</i></div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta neutral"></div></div>
+    <div><div class="kpi-label" title="Calls a rule stopped before they ran. Warn-only matches are not counted here.">Blocked <i class="help">?</i></div><div id="kpiDangerous" class="kpi-big">-</div><div id="kpiDangerousDelta" class="kpi-sub kpi-delta"></div></div>
+    <div><div class="kpi-label" title="Sessions with at least one call in this window.">Sessions <i class="help">?</i></div><div id="kpiSessions" class="kpi-big">-</div><div class="kpi-sub"><span id="kpiAgentCount">–</span> agents registered on this machine</div></div>
+    <div><div class="kpi-label" title="Every rule match, blocking or not, by the severity the rule carries. One call can fire several rules.">Rules fired <i class="help">?</i></div><div id="kpiFindings" class="kpi-big">-</div><div class="kpi-sub"><span id="sevCritical">-</span> critical · <span id="sevHigh">-</span> high · <span id="sevMedium">-</span> medium · <span id="sevLow">-</span> low</div></div>
   </div>
 
-  <div class="grid grid-3">
-    <div class="card">
-      <div class="card-title">Active Sessions</div>
-      <div id="kpiSessions" class="kpi-value">-</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Tool Calls Inspected</div>
-      <div id="kpiToolCalls" class="kpi-value">-</div>
-      <div id="kpiToolsDelta" class="kpi-delta"></div>
-    </div>
-    <div class="card">
-      <div class="card-title">Dangerous Cmds Prevented</div>
-      <div id="kpiDangerous" class="kpi-value accent">-</div>
-      <div id="kpiDangerousDelta" class="kpi-delta"></div>
-    </div>
+  <details class="how-it-works">
+  <summary class="steps-label">How Prismor decides one tool call <span class="sess-ext-toggle">show</span></summary>
+  <div class="steps">
+    <div class="step"><div class="step-n">01</div><div class="step-t">Request</div><div class="step-d">The agent asks. Nothing has run yet.</div><div class="step-f" id="stepReq">–</div></div>
+    <div class="step"><div class="step-n">02</div><div class="step-t">Identity</div><div class="step-d">Which agent, which session, which workspace.</div><div class="step-f" id="stepId">–</div></div>
+    <div class="step"><div class="step-n">03</div><div class="step-t">Policy</div><div class="step-d">The rules in force are evaluated locally, as code.</div><div class="step-f" id="stepPol">–</div></div>
+    <div class="step hi"><div class="step-n">04</div><div class="step-t">Decision</div><div class="step-d">Allowed, warned, or blocked, before anything runs.</div><div class="step-f" id="stepDec">–</div></div>
+    <div class="step"><div class="step-n">05</div><div class="step-t">Evidence</div><div class="step-d">Recorded to the local ledger, synced when enrolled.</div><div class="step-f" id="stepEv">–</div></div>
   </div>
-
-  <div class="grid grid-4">
-    <div class="card sev-card critical"><div class="sev-label">Critical</div><div id="sevCritical" class="sev-count">-</div></div>
-    <div class="card sev-card high">    <div class="sev-label">High</div>    <div id="sevHigh"     class="sev-count">-</div></div>
-    <div class="card sev-card medium">  <div class="sev-label">Medium</div>  <div id="sevMedium"   class="sev-count">-</div></div>
-    <div class="card sev-card low">     <div class="sev-label">Low</div>     <div id="sevLow"      class="sev-count">-</div></div>
-  </div>
+  </details>
 
   <div class="card">
     <div class="bar" style="margin-bottom:14px">
@@ -2024,6 +2595,7 @@
       <div class="bar">
         <button class="fbtn active" data-verdict="">All</button>
         <button class="fbtn" data-verdict="blocked">Blocked</button>
+        <button class="fbtn" data-verdict="warned">Warned</button>
         <button class="fbtn" data-verdict="allowed">Allowed</button>
         <div class="bar-sep"></div>
         <label>Agent</label>
@@ -2096,6 +2668,31 @@
 
   <div id="enrollBannerSess"></div>
 
+  <div class="bar sess-filters" id="sessFilters">
+    <input id="sfSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Session id contains…" />
+    <select id="sfAgent" class="fsel"><option value="">All agents</option></select>
+    <select id="sfWorkspace" class="fsel"><option value="">All workspaces</option></select>
+    <select id="sfFindings" class="fsel">
+      <option value="">Any findings</option>
+      <option value="with">With findings</option>
+      <option value="clean">Clean only</option>
+    </select>
+    <select id="sfRisk" class="fsel">
+      <option value="0">Any risk</option>
+      <option value="30">Risk ≥ 30</option>
+      <option value="60">Risk ≥ 60</option>
+      <option value="80">Risk ≥ 80</option>
+    </select>
+    <select id="sfSince" class="fsel">
+      <option value="0">Any time</option>
+      <option value="1">Active in last hour</option>
+      <option value="24">Last 24 hours</option>
+      <option value="168">Last 7 days</option>
+      <option value="720">Last 30 days</option>
+    </select>
+    <button class="fbtn" id="sfClear" hidden>Clear filters</button>
+  </div>
+
   <div class="card" style="margin-bottom:16px">
     <div class="bar" style="margin-bottom:16px">
       <span id="scSessCount" class="result-count"></span>
@@ -2158,6 +2755,32 @@
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- PAGE: AGENT DETAIL (sub-view)                                 -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="page-extension" class="page">
+  <div class="view-topbar">
+    <button class="view-back" onclick="goBack()">← Back</button>
+    <div class="crumbs">
+      <a onclick="document.querySelector('.tab-btn[data-tab=&quot;extensions&quot;]')?.click()">Extensions</a><span class="sep">/</span>
+      <span id="extdCrumb">Extension</span>
+    </div>
+  </div>
+  <div id="extdHead" class="card" style="margin-bottom:16px"></div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-title" style="margin-bottom:10px">Agents that used it</div>
+    <div id="extdAgents"></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="bar" style="margin-bottom:6px">
+      <div class="card-title" title="The input the agent passed on every tool call this extension caused.">Calls and the context passed <i class="help">?</i></div>
+      <div class="bar-right"><span id="extdCallCount" class="result-count"></span></div>
+    </div>
+    <div id="extdCalls"></div>
+  </div>
+  <div class="card">
+    <div class="card-title" style="margin-bottom:6px">Sessions</div>
+    <div id="extdSessions"></div>
+  </div>
+</div>
+
 <div id="page-agent" class="page">
   <div class="view-topbar">
     <button class="view-back" onclick="goBack()">← Back</button>
@@ -2187,6 +2810,14 @@
   <div class="card agent-ctrl-card" id="agentControlsCard">
     <div class="card-title" style="margin-bottom:6px">Controls</div>
     <div id="agentControls"></div>
+  </div>
+
+  <div class="card" id="agentExtCard" style="margin-bottom:16px" hidden>
+    <div class="bar" style="margin-bottom:10px">
+      <div class="card-title">Extensions this agent loads</div>
+      <div class="bar-right"><a class="ext-sess" onclick="openExtensionsFor(_agentViewName)">open in ledger</a></div>
+    </div>
+    <div id="agentExtBody"></div>
   </div>
 
   <div class="card">
@@ -2228,6 +2859,8 @@
     <div class="sess-ctrl-btns" id="sessFlowActions"></div>
   </div>
 
+  <div id="sessRanUnder" class="sess-ran-under" hidden></div>
+
   <div class="session-layout">
     <div>
       <div class="flow-card">
@@ -2261,40 +2894,48 @@
 
   <div id="enrollBanner"></div>
   <div id="workspaceBanner"></div>
-  <div id="policyPrecedenceCard" class="drawer-event-card" style="margin-bottom:14px"></div>
+  <details class="prec-details" id="precDetails">
+    <summary>
+      <span class="kpi-label">Which policy governs</span>
+      <span id="precSummary" class="prec-summary">Loading…</span>
+      <span class="prec-toggle">Show the four layers</span>
+    </summary>
+    <div id="policyPrecedenceCard" class="drawer-event-card"></div>
+  </details>
 
   <div class="policy-scope-nav">
     <button class="policy-scope-btn active" data-pscope="rules">Rules</button>
     <button class="policy-scope-btn" data-pscope="egress">Network egress</button>
-    <button class="policy-scope-btn" data-pscope="global">Global</button>
+    <span class="policy-scope-sep">YAML files</span>
     <button class="policy-scope-btn" data-pscope="project">Project</button>
+    <button class="policy-scope-btn" data-pscope="global">Global</button>
     <button class="policy-scope-btn" data-pscope="enterprise">Enterprise</button>
     <button class="policy-scope-btn" data-pscope="effective">Effective (merged)</button>
   </div>
 
   <!-- Per-rule toggle list (project-scoped) -->
   <div id="pscope-rules" class="policy-scope-pane active">
-    <div class="banner banner-info">
-      <span class="banner-icon"><svg class="icon"><use href="#i-shield"/></svg></span>
-      <div class="banner-text">
-        <strong>Detection rules</strong>
-        Turning a rule <em>off</em> stops it being evaluated at all. A rule that is on either
-        <span class="rule-verdict blocks">blocks</span> — it stops the call — or
-        <span class="rule-verdict reports">reports</span> it and lets it through; which one is decided by
-        the policy's enforce selection, not by these toggles. Core safety-floor rules stay pinned on even if
-        a project tries to disable them. Saved to <code>.prismor/policy.yaml</code>; live agents pick it up within
-        30&nbsp;s.
-      </div>
+    <div class="rules-legend">
+      <span><span class="rule-verdict blocks">blocks</span> stops the call</span>
+      <span><span class="rule-verdict reports">reports</span> records it, the call proceeds</span>
+      <span><span class="rule-lock"><svg class="icon"><use href="#i-lock"/></svg> Pinned</span> safety floor, cannot be turned off</span>
+      <span class="rules-legend-note">A toggle decides whether a rule runs at all. Whether it blocks or reports comes from the policy's enforce selection. Saved to the project policy file; agents pick it up within 30&nbsp;s.</span>
     </div>
     <div class="rules-toolbar">
       <input id="rulesSearch" class="rules-search" type="text" spellcheck="false"
              placeholder="Search rules by name, category, or description…" />
+      <div class="rules-filters" id="rulesFilters">
+        <button class="fbtn active" data-rf="all">All</button>
+        <button class="fbtn" data-rf="blocks">Blocking</button>
+        <button class="fbtn" data-rf="reports">Reporting</button>
+        <button class="fbtn" data-rf="off">Off</button>
+      </div>
       <span id="rulesCount" class="rules-count">—</span>
-      <button class="btn-ghost" id="rulesAll">Enable editable</button>
-      <button class="btn-ghost" id="rulesNone">Disable editable</button>
+      <button class="btn-ghost" id="rulesAll" title="Turn on every rule that is not pinned">All on</button>
+      <button class="btn-ghost" id="rulesNone" title="Turn off every rule that is not pinned">All off</button>
     </div>
     <div id="rulesList" class="rules-list"><div class="empty">Loading…</div></div>
-    <div class="policy-actions">
+    <div class="policy-actions rules-actions" id="rulesActions">
       <button class="btn-primary" id="rulesSave">Save rules</button>
       <button class="btn-ghost" id="rulesDiscard">Discard changes</button>
       <span id="rulesSaveStatus" class="policy-status"></span>
@@ -2622,6 +3263,9 @@ function chartTheme() {
     barWarm: read('--chart-bar-warm', '#F9E5A6'),
     barCool: read('--chart-bar-cool', '#A8D5F7'),
     barHot: read('--chart-bar-hot', '#FCA5A5'),
+    ok: read('--ok', '#2e7d4f'),
+    bad: read('--bad', '#b3372b'),
+    surface: read('--surface', '#ffffff'),
     palette: [
       read('--chart-palette-1', '#B4A5F6'),
       read('--chart-palette-2', '#E8BAEE'),
@@ -2651,6 +3295,11 @@ function syncChartTheme() {
   if (donutChart) {
     donutChart.data.datasets[0].backgroundColor = COLORS;
     donutChart.update('none');
+  }
+  if (ringChart) {
+    ringChart.data.datasets[0].backgroundColor = [theme.ok, theme.bad];
+    ringChart.data.datasets[0].borderColor = theme.surface;
+    ringChart.update('none');
   }
   if (lineChart) {
     lineChart.data.datasets[0].borderColor = theme.passed;
@@ -2732,7 +3381,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       // Render from cache instantly, refresh in background
       if (_sessCtrlCache) {
         renderSessionControl(_sessCtrlCache.items, _serverWorkspace);
-        document.getElementById('scSessCount').textContent = fmtNum(_sessCtrlCache.total) + ' sessions';
+        document.getElementById('scSessCount').textContent = sessCountLabel(_sessCtrlCache.total);
         buildPager('scSessPager', _sessCtrlData, () => loadSessionControl());
         if (_wsCache) renderEnrollBanners((_wsCache).enrollment);
         renderSessions(_sessCtrlCache.items);
@@ -2750,27 +3399,419 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       loadAgents();           // silent background refresh
     }
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
-    if (btn.dataset.tab === 'mcp') loadMcpPlayground();
+    if (btn.dataset.tab === 'extensions') loadExtensions();
+    if (btn.dataset.tab === 'docs') loadDocs();
   });
 });
 
-let _mcpPlayground = null;
-async function loadMcpPlayground() {
-  try { _mcpPlayground = await apiFetch('/api/mcp-playground'); renderMcpPlayground(_mcpPlayground); }
-  catch (e) { toast('Could not load MCP playground: ' + e.message, true); }
+// ── Docs: browse and search the Markdown docs shipped with this install ───
+function toggleDocsPages(force) {
+  const l = document.getElementById('docsLayout');
+  const collapsed = force == null ? !l.classList.contains('collapsed') : !!force;
+  l.classList.toggle('collapsed', collapsed);
+  const b = document.getElementById('docsCollapseBtn');
+  b.innerHTML = collapsed ? '&rsaquo;' : '&lsaquo;';
+  b.title = collapsed ? 'Show the page list' : 'Hide the page list';
+  try { localStorage.setItem('prismor-docs-pages-collapsed', collapsed ? '1' : '0'); } catch (_) {}
 }
-function renderMcpPlayground(data) {
-  document.getElementById('mcpServerMeta').textContent = data.server + ' · session ' + data.sessionId;
-  const tools = data.tools || [];
-  document.getElementById('mcpTools').innerHTML = tools.map(t =>
-    '<div class="drawer-rule-row" style="padding:8px 0;border-bottom:1px solid var(--gray-100)">' +
-    '<code>' + safe(t.name) + '</code><span style="margin-left:auto;display:flex;gap:8px;align-items:center">' +
-    '<label style="font-size:11px"><input type="checkbox" ' + (t.enabled ? 'checked' : '') + ' onchange="mcpSetEnabled(\'' + safeJsArg(t.name) + '\', this.checked)"> enabled</label>' +
-    '<button class="btn-ghost" style="padding:4px 8px" onclick="mcpCall(\'' + safeJsArg(t.name) + '\')">Invoke</button></span></div>').join('');
-  const calls = data.delivered || [];
-  document.getElementById('mcpDelivered').textContent = calls.length ? 'Delivered: ' + calls.join(', ') : 'No calls delivered yet.';
+try { if (localStorage.getItem('prismor-docs-pages-collapsed') === '1') toggleDocsPages(true); } catch (_) {}
+let _docsCache = null;
+let _docOpen = null;
+async function loadDocs() {
+  const el = document.getElementById('docsList');
+  try {
+    const data = await apiFetch('/api/docs');
+    _docsCache = data.docs || [];
+    // Typed into the box while the list was still loading — that search wins.
+    if (!document.getElementById('docsSearch').value.trim())
+      renderDocsList(_docsCache.map(d => ({name: d.name, title: d.title})));
+  } catch (e) {
+    el.innerHTML = '<div class="empty">Docs are not bundled with this install. Read them at ' +
+      '<a href="https://prismor.dev/docs" target="_blank" rel="noopener">prismor.dev/docs</a>.</div>';
+  }
 }
+// A raw Markdown line is not a search result: "### 1. Permission scope
+// (`owasp-llm-top10:LLM06`)" and a table row of pipes read as noise. Strip the
+// syntax, keep the sentence, and mark the words that matched.
+function docSnippet(line) {
+  return String(line || '')
+    .replace(/^[\s>#*+-]+/, '')          // heading / quote / bullet markers
+    .replace(/^\|\s*|\s*\|$/g, '')       // table row edges
+    .replace(/\s*\|\s*/g, ' · ')         // table cell separators
+    .replace(/`+/g, '')                  // code spans
+    .replace(/\*\*|__/g, '')             // bold
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')  // links -> their text
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+function docHighlight(text, terms) {
+  let html = safeAttr(text);
+  for (const t of terms) {
+    if (t.length < 2) continue;
+    const re = new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi');
+    html = html.replace(re, '<mark>$1</mark>');
+  }
+  return html;
+}
+function renderDocsList(items, query) {
+  const el = document.getElementById('docsList');
+  const terms = (query || '').toLowerCase().split(/\s+/).filter(Boolean).map(t => safeAttr(t));
+  const count = document.getElementById('docsCount');
+  if (count) count.textContent = query
+    ? items.length + (items.length === 1 ? ' page' : ' pages')
+    : '';
+  document.getElementById('docsClear').hidden = !query;
+  if (!items.length) {
+    el.innerHTML = '<div class="empty">No page mentions ' + safe(query || '') + '.</div>';
+    return;
+  }
+  el.innerHTML = items.map(d =>
+    '<div class="doc-row' + (d.name === _docOpen ? ' sel' : '') + '" data-name="' + safeAttr(d.name) + '"' +
+      ' onclick="openDoc(\'' + safeJsArg(d.name) + '\')">' +
+      '<div class="doc-row-title">' + safe(d.title) + '</div>' +
+      (d.hits && d.hits.length
+        ? d.hits.map(h => '<div class="doc-row-hit">' + docHighlight(docSnippet(h.snippet), terms) + '</div>').join('')
+        : '<div class="doc-row-name">' + safe(d.name) + '</div>') +
+    '</div>').join('');
+}
+async function docsCopyAgentPrompt() {
+  try {
+    const data = await apiFetch('/api/query-prompt');
+    await navigator.clipboard.writeText(data.prompt);
+    toast('Prompt copied — paste it into your agent and finish the last line.');
+    openDoc('query-your-data.md');
+  } catch (e) {
+    toast('Could not copy: ' + (e && e.message || e), true);
+  }
+}
+
+function docsClearSearch() {
+  const inp = document.getElementById('docsSearch');
+  inp.value = '';
+  renderDocsList(_docsCache || []);
+  inp.focus();
+}
+async function openDoc(name) {
+  const body = document.getElementById('docsBody');
+  // Called from the MCP Servers page too — make sure the reader is visible.
+  document.querySelector('.tab-btn[data-tab="docs"]')?.click();
+  body.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const doc = await apiFetch('/api/docs?name=' + encodeURIComponent(name));
+    _docOpen = name;
+    document.querySelectorAll('#docsList .doc-row').forEach(r =>
+      r.classList.toggle('sel', r.dataset.name === name));
+    document.getElementById('docsBody').scrollTop = 0;
+    body.innerHTML = window.marked
+      ? window.marked.parse(doc.markdown)
+      : '<pre style="white-space:pre-wrap">' + safe(doc.markdown) + '</pre>';
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Could not open ' + safe(name) + ': ' + safe(e.message) + '</div>';
+  }
+}
+let _docsSearchTimer;
+document.getElementById('docsSearch')?.addEventListener('input', (ev) => {
+  const q = ev.target.value.trim();
+  clearTimeout(_docsSearchTimer);
+  _docsSearchTimer = setTimeout(async () => {
+    if (!q) { renderDocsList(_docsCache || []); return; }
+    try {
+      const data = await apiFetch('/api/docs?q=' + encodeURIComponent(q));
+      renderDocsList(data.results || [], q);
+    } catch (e) { /* keep the current list */ }
+  }, 200);
+});
+
 // ── MCP Servers: one registry of every server Prismor fronts ──────────────
+// A tool call an extension caused carries that extension; an unreviewed one is
+// the thing a responder most needs to notice, so it is the loud variant.
+function extCauseChip(x) {
+  if (!x || !x.id) return '';
+  return '<span class="ext-cause' + (x.reviewed ? '' : ' unreviewed') + '" title="' +
+    safeAttr((x.kind || 'extension') + ' ' + (x.name || '') + (x.via ? ' · ' + x.via : '') + (x.reviewed ? '' : ' · not reviewed')) +
+    '" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(x.id) + '\')">' +
+    '<svg class="icon"><use href="#i-puzzle"/></svg>' + safe(x.name || x.id) + '</span>';
+}
+// Agent marks from thesvg.org. Monochrome marks ship a light and a dark
+// variant; both are rendered and CSS shows the one that fits the theme.
+const _AGENT_SVG = {claude:'claude-code', 'claude-code':'claude-code', 'claude-desktop':'claude', 'claude-agent-sdk':'anthropic',
+  codex:'codex', cursor:'cursor', copilot:'github-copilot', windsurf:'windsurf', gemini:'gemini-cli', opencode:'opencode',
+  openclaw:'openclaw', hermes:'hermes', grok:'grok', qwen:'qwen', kiro:'kiro', openhands:'openhands', continue:'continue',
+  'openai-agents':'openai', langchain:'langchain', crewai:'crewai', 'pydantic-ai':'pydantic', mastra:'mastra',
+  'google-adk':'google', 'autogen-core':'microsoft', 'semantic-kernel':'microsoft', n8n:'n8n'};
+const _AGENT_SVG_MONO = new Set(['codex', 'cursor', 'github-copilot', 'windsurf', 'grok', 'qwen', 'openai', 'anthropic']);
+function agentIcon(name, fallback) {
+  const key = n => String(n || '').toLowerCase().trim().replace(/\s+/g, '-');
+  const slug = _AGENT_SVG[key(name)] || _AGENT_SVG[key(fallback)];
+  if (!slug) return '';
+  const img = (v, c) => '<img class="agent-ico' + c + '" src="https://thesvg.org/icons/' + slug + '/' + v + '.svg" alt="" onerror="this.remove()">';
+  return _AGENT_SVG_MONO.has(slug) ? img('light', ' l') + img('dark', ' d') : img('default', '');
+}
+// ── Extension page: who used it and what they passed it ──
+let _extViewId = null, _extDetail = null;
+async function openExtension(id, isBack) {
+  if (!isBack) { recordView({view:'extension', id: id}); _pushCurrentView(); }
+  _extViewId = id; _extDetail = null;
+  showSubPage('page-extension');
+  document.getElementById('extdCrumb').textContent = id;
+  ['extdHead', 'extdAgents', 'extdCalls', 'extdSessions'].forEach(k => document.getElementById(k).innerHTML = '<div class="empty">Loading…</div>');
+  try {
+    if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
+  } catch (e) { /* the page still shows usage without the ledger row */ }
+  if (_extViewId === id) loadExtensionDetail(id, false);
+}
+async function loadExtensionDetail(id, history) {
+  const row = ((_extCache || {}).rows || []).find(r => r.id === id) || {id: id, name: id.replace(/^.*[#:]/, ''), kind: id.split(':')[0]};
+  const ids = [id].concat(((_extCache || {}).rows || []).filter(r => r.parent === id).map(r => r.id));
+  renderExtensionHead(row);
+  if (history) document.getElementById('extdCalls').innerHTML = '<div class="empty">Searching every recorded call… this takes a few seconds.</div>';
+  try {
+    const d = await apiFetch('/api/extensions/detail?' + ids.map(i => 'id=' + encodeURIComponent(i)).join('&') + (history ? '&history=1' : '') +
+      (_serverWorkspace ? '&workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 60000});
+    if (_extViewId !== id) return;
+    _extDetail = {...d, history: history};
+    renderExtensionDetail(row);
+  } catch (e) {
+    document.getElementById('extdCalls').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  }
+}
+function renderExtensionHead(r) {
+  document.getElementById('extdCrumb').textContent = r.name || r.id;
+  const kv = [['Id', r.id], ['Loaded by', (r.agents || []).map(extAgentName).join(', ')], ['Path', r.path], ['Origin', r.origin],
+    ['Installed by', extBy(r.installed_by)], ['First seen', r.first_seen ? extWhen(r.first_seen) : ''], ['Hosts named', (r.hosts || []).join(', ')],
+    ['Command', r.command], ['Part of', r.parent], ['Hash', (r.sha256 || '').slice(0, 16)]]
+    .filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+  const reviewed = r.status === 'approved' || (r.status && !r.needs_review);
+  document.getElementById('extdHead').innerHTML =
+    '<div class="ext-agent-head"><span class="ext-badge ' + (reviewed ? 'approved' : 'new') + '">' + (reviewed ? 'reviewed' : 'unreviewed') + '</span>' +
+      '<span class="ext-kind">' + safe(r.kind || '') + '</span><b>' + safe(r.name || r.id) + '</b>' +
+      (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') + '</div>' +
+    '<dl class="ext-kv">' + kv + '</dl>' +
+    (r.status && r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '');
+}
+function renderExtensionDetail(row) {
+  const d = _extDetail;
+  document.getElementById('extdAgents').innerHTML = (d.agents || []).length ? '<div class="extd-agents">' + d.agents.map(a =>
+    '<div class="extd-agent" style="cursor:pointer" onclick="openAgentView(\'' + safeJsArg(a.agent) + '\')"><b>' + agentIcon(a.agent) + safe(extAgentName(a.agent)) + '</b>' +
+      '<small>' + a.sessions + ' session' + (a.sessions === 1 ? '' : 's') + ' · ' + a.calls + ' call' + (a.calls === 1 ? '' : 's') + '</small>' +
+      (a.last ? '<small>last ' + safe(extWhen(a.last)) + '</small>' : '') + '</div>').join('') + '</div>'
+    : '<div class="empty">No recorded session has used it' + (d.history ? '.' : ' in the last 50 sessions the ledger keeps.') + '</div>';
+  const more = d.history ? '' : ' <a class="ext-sess" onclick="loadExtensionDetail(\'' + safeJsArg(_extViewId) + '\', true)">search full history</a>';
+  document.getElementById('extdCallCount').innerHTML = (d.calls || []).length + ' call' + ((d.calls || []).length === 1 ? '' : 's') + more;
+  const agentOf = Object.fromEntries((d.sessions || []).map(s => [s.session, s.agent]));
+  document.getElementById('extdCalls').innerHTML = (d.calls || []).length ? d.calls.map(c => {
+    const agent = agentOf[c.session] || c.agent || 'any';
+    return '<div class="extd-call"><div class="extd-call-head"><span class="ext-agent">' + agentIcon(agent) + safe(extAgentName(agent)) + '</span>' +
+      '<code>' + safe(String(c.tool).replace(/^mcp__.*?__/, '')) + '</code>' +
+      '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(c.session) + '\')">session ' + safe(String(c.session).slice(0, 8)) + '</a>' +
+      '<span class="ext-quiet">' + safe(extWhen(c.ts)) + (c.via ? ' · ' + safe(c.via) : '') + '</span></div>' +
+      (c.input && c.input !== '""' && c.input !== '{}' ? '<pre>' + safe(c.input) + '</pre>' : '<div class="ext-quiet" style="margin-top:4px">no input</div>') + '</div>';
+  }).join('') : '<div class="empty">' + (row.kind === 'hook' ? 'A hook runs around calls rather than causing them, so it has no calls of its own.' : 'No tool call traced to it yet.') + '</div>';
+  document.getElementById('extdSessions').innerHTML = (d.sessions || []).length ? d.sessions.map(s =>
+    '<div class="ext-row"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
+      '<span class="ext-agent">' + agentIcon(s.agent) + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      '<span class="ext-quiet">' + safe(s.role === 'invoked' ? 'loaded it' : s.role === 'ambient' ? 'ran around every call' : 'called its tools') + '</span>' +
+      '<span class="ext-use-meta">' + safe(extWhen(s.ts)) + '</span></div></div>').join('')
+    : '<div class="empty">None recorded.</div>';
+}
+function openExtensionsFor(agent, filter) {
+  _extView = 'installed'; _extAgent = agent || ''; _extFilter = filter || 'all'; _extOpen = {};
+  document.querySelector('.tab-btn[data-tab="extensions"]')?.click();
+}
+// The session page answers "what was this run under" on its own: every
+// extension with its origin, what it can do, the calls it caused here and the
+// documents it sent the agent to, reviewable in place.
+let _sessExt = null, _sessExtOpen = {};
+async function loadSessionExtensions(sessionId, ws) {
+  const el = document.getElementById('sessRanUnder');
+  el.hidden = true; el.innerHTML = ''; _sessExt = null; _sessExtOpen = {};
+  try {
+    const d = await apiFetch('/api/extensions/session?id=' + encodeURIComponent(sessionId) + (ws ? '&workspace=' + encodeURIComponent(ws) : ''));
+    if (!_sessionViewState || _sessionViewState.sessionId !== sessionId) return;
+    _sessExt = d;
+    (d.extensions || []).forEach(x => { if (x.role !== 'ambient' && !x.reviewed) _sessExtOpen[x.id] = true; });
+    renderSessionExtensions();
+  } catch (e) { /* the session view works without it */ }
+}
+function sessExtRow(x, calls) {
+  const mine = calls.filter(ev => ev.extension && ev.extension.id === x.id);
+  const blocked = mine.filter(ev => flowVerdict(ev) === 'block').length;
+  const kv = [['Origin', x.origin], ['Installed by', extBy(x.installed_by)], ['Path', x.path], ['Command', x.command],
+    ['Hosts named', (x.hosts || []).join(', ')]].filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+  const docs = (x.documents || []).map(doc => '<dt>Read here</dt><dd>' + safe(doc.url) + (doc.sha256 ? ' · sha256 ' + safe(String(doc.sha256).slice(0, 12)) + ' · ' + doc.bytes + ' bytes' : '') +
+    (doc.last_changed ? ' · <b style="color:#ef4444">changed ' + safe(extWhen(doc.last_changed)) + '</b>' : '') + '</dd>').join('');
+  const id = safeJsArg(x.id);
+  return '<div class="ext-row' + (x.reviewed ? '' : ' review') + (_sessExtOpen[x.id] ? ' open' : '') + '">' +
+    '<div class="ext-head" onclick="_sessExtOpen[\'' + id + '\']=!_sessExtOpen[\'' + id + '\'];renderSessionExtensions()">' +
+      '<span class="ext-badge ' + (x.reviewed ? 'approved' : 'new') + '">' + (x.reviewed ? 'reviewed' : 'unreviewed') + '</span>' +
+      '<span class="ext-kind">' + safe(x.kind) + '</span><span class="ext-name">' + safe(x.name) + '</span>' +
+      (x.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
+      (x.role === 'ambient' ? '' : '<span class="ext-quiet">' + (mine.length ? 'caused ' + mine.length + ' call' + (mine.length === 1 ? '' : 's') + ' here' + (blocked ? ', ' + blocked + ' blocked' : '') : 'no calls traced to it') + '</span>') +
+      '<span class="ext-origin">' + safe(x.origin || '') + '</span></div>' +
+    '<div class="ext-body"><dl class="ext-kv">' + kv + docs + '</dl>' +
+      (x.reviewed ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>') +
+      ' <a class="ext-sess" style="margin-left:10px" onclick="openExtension(\'' + id + '\')">open in ledger</a></div></div>';
+}
+function renderSessionExtensions() {
+  const el = document.getElementById('sessRanUnder'), d = _sessExt;
+  if (!el || !d || !(d.extensions || []).length) return;
+  const calls = (_sessionViewState && _sessionViewState.data && _sessionViewState.data.recent_events) || [];
+  const used = d.extensions.filter(x => x.role !== 'ambient'), hooks = d.extensions.filter(x => x.role === 'ambient');
+  const unrev = used.filter(x => !x.reviewed).length;
+  el.innerHTML = '<details class="sess-ext-all"' + (_sessExtOpen.__all ? ' open' : '') + ' ontoggle="_sessExtOpen.__all=this.open"><summary class="sess-ext-head"><span class="sess-ran-title">Extensions in this session</span>' +
+      '<span class="ext-quiet">' + (used.length ? used.length + ' loaded' + (unrev ? ', <b style="color:#d97706">' + unrev + ' never reviewed</b>' : '') : 'none loaded') +
+      (hooks.length ? ' · ' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') + ' ran around every call' : '') +
+      ((d.fetched || []).length ? ' · ' + d.fetched.length + ' document' + (d.fetched.length === 1 ? '' : 's') + ' read on a skill\'s say-so' : '') + '</span><span class="sess-ext-toggle">details</span></summary>' +
+    used.map(x => sessExtRow(x, calls)).join('') +
+    (hooks.length ? '<details class="sess-ext-hooks"' + (_sessExtOpen.__hooks ? ' open' : '') + ' ontoggle="_sessExtOpen.__hooks=this.open"><summary>' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') +
+      (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '') + '</details>';
+  el.hidden = false;
+}
+
+// ── Extensions: the ledger of what puts instructions or code into the agent ──
+let _extCache = null, _extFilter = 'review', _extOpen = {}, _extView = 'installed', _extAgent = '';
+async function loadExtensions() {
+  const ws = _serverWorkspace || '';
+  try {
+    _extCache = await apiFetch('/api/extensions' + (ws ? '?workspace=' + encodeURIComponent(ws) : ''), {timeoutMs: 20000});
+    if (!(_extCache.rows || []).some(r => r.needs_review) && _extFilter === 'review') _extFilter = 'all';
+    // Nothing has run yet on a fresh install: the inventory is the only thing to show.
+    if (!(_extCache.sessions || []).length && _extView === 'sessions') _extView = 'installed';
+    renderExtensions();
+  } catch (e) {
+    document.getElementById('extList').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  }
+}
+function extWhen(ts) { try { return new Date(ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ts || ''; } }
+function extBy(by) { return !by ? '' : by === 'out-of-band' ? 'installed outside any agent session (a person, a script or another tool)' : by === 'baseline' ? 'already present when Prismor first looked' : by === 'observed' ? 'seen in use · no config file describes it' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
+function extAgentName(a) { return a === 'any' || !a ? 'any agent' : a; }
+function extUseChips(s) {
+  return (s.used || []).map(extCauseChip).join('') +
+    (s.hooks ? '<span class="ext-quiet">+ ' + s.hooks + ' hook' + (s.hooks === 1 ? '' : 's') + '</span>' : '') +
+    (s.documents ? '<span class="ext-quiet">· read ' + s.documents + ' document' + (s.documents === 1 ? '' : 's') + ' on a skill\'s say-so</span>' : '');
+}
+function renderExtSessions(d) {
+  const all = (d.sessions || []).filter(s => !_extAgent || s.agent === _extAgent);
+  const list = all.filter(s => (s.used || []).length), quiet = all.length - list.length;
+  const note = quiet ? '<div class="ext-quiet" style="padding:6px 2px 10px">' + quiet + ' session' + (quiet === 1 ? '' : 's') + ' loaded no extension (only the third-party hooks that run around every call) and ' + (quiet === 1 ? 'is' : 'are') + ' not listed.</div>' : '';
+  return list.length ? note + list.map(s =>
+    '<div class="ext-row' + (s.unreviewed ? ' review' : '') + '"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
+      '<span class="ext-agent">' + agentIcon(s.agent) + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      ((s.used || []).length ? extUseChips(s) : '<span class="ext-quiet">loaded nothing' + (s.hooks ? ' · ' + s.hooks + ' third-party hook' + (s.hooks === 1 ? '' : 's') + ' ran around it' : '') + '</span>') +
+      '<span class="ext-use-meta">' + safe(extWhen(s.ts)) + '</span></div></div>').join('')
+    : '<div class="empty">No session has run under an extension yet.</div>';
+}
+function extAgentBody(a, d) {
+  const mine = d.rows.filter(r => (r.agents || ['any']).some(x => x === a.agent || x === 'any'));
+  const used = mine.filter(r => (r.used_in || []).length && r.kind !== 'plugin');
+  const idle = mine.filter((r, i) => r.never_used && r.kind !== 'plugin' && mine.findIndex(o => o.never_used && o.kind !== 'plugin' && o.name === r.name) === i);
+  const chip = r => extCauseChip({id: r.id, kind: r.kind, name: r.name, reviewed: !r.needs_review, via: (r.used_in || []).length + ' session(s)'});
+  const nums = [['Sessions', a.sessions], ['Ran unreviewed', a.unreviewed_sessions, 1], ['Installed', a.installed], ['Never used', a.never_used], ['To review', a.review, 1]];
+  return '<div class="ext-agent-nums">' + nums.map(([l, v, w]) => '<div' + (w && v ? ' class="warn"' : '') + '><b>' + (v || 0) + '</b>' + l + '</div>').join('') + '</div>' +
+    (used.length ? '<div class="ext-chipline"><em>Used</em>' + used.map(chip).join('') + '</div>' : '') +
+    (idle.length ? '<div class="ext-chipline"><em>Never used</em>' + idle.slice(0, 8).map(r => '<span class="ext-never" onclick="openExtension(\'' + safeJsArg(r.id) + '\')" style="cursor:pointer">' + safe(r.name) + '</span>').join('') +
+      (idle.length > 8 ? '<a class="ext-sess" onclick="openExtensionsFor(\'' + safeJsArg(a.agent) + '\',\'never_used\')">+' + (idle.length - 8) + ' more</a>' : '') + '</div>' : '');
+}
+function renderExtAgents(d) {
+  return (d.agents || []).length ? d.agents.map(a =>
+    '<div class="ext-row ext-agent-card' + (a.unreviewed_sessions ? ' review' : '') + '"><div class="ext-agent-head"><b>' + agentIcon(a.agent) + safe(extAgentName(a.agent)) + '</b>' +
+      '<a class="ext-sess" onclick="_extView=\'sessions\';_extAgent=\'' + safeJsArg(a.agent) + '\';renderExtensions()">sessions</a>' +
+      '<a class="ext-sess" onclick="openExtensionsFor(\'' + safeJsArg(a.agent) + '\')">installed</a></div>' + extAgentBody(a, d) + '</div>').join('')
+    : '<div class="empty">No agents yet.</div>';
+}
+async function renderAgentExtensions(agentName) {
+  const card = document.getElementById('agentExtCard');
+  card.hidden = true;
+  try {
+    if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
+    const a = (_extCache.agents || []).find(x => x.agent === agentName);
+    if (!a || _agentViewName !== agentName) return;
+    document.getElementById('agentExtBody').innerHTML = extAgentBody(a, _extCache);
+    card.hidden = false;
+  } catch (e) { /* the agent page works without it */ }
+}
+function renderExtensions() {
+  const d = _extCache || {rows: [], events: [], counts: {}};
+  const kinds = [['skill','Skills'],['plugin','Plugins'],['hook','Third-party hooks'],['mcp','MCP servers']];
+  const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
+  const review = d.rows.filter(r => r.needs_review).length, idle = d.rows.filter(r => r.never_used).length;
+  document.getElementById('extSummary').innerHTML = [
+    [review, 'Need review', 'New or changed since anyone looked. Read each one, then mark it reviewed.', review ? 'warn' : '', "_extView='installed';_extFilter='review';renderExtensions()"],
+    [d.rows.filter(r => (r.used_in || []).length).length, 'Used by a session', 'Loaded by at least one recorded agent session.', '', "_extView='installed';_extFilter='all';renderExtensions()"],
+    [d.rows.length, 'Installed on this machine', idle + ' never used by any session', '', "_extView='installed';_extFilter='all';renderExtensions()"],
+    [unrev, 'Sessions that ran unreviewed code', unrev ? 'An agent loaded something nobody had read yet.' : 'Every session so far loaded only reviewed extensions.', unrev ? 'warn' : '', "_extView='sessions';renderExtensions()"]]
+    .map(([n, label, sub, cls, go]) => '<div class="ext-stat ' + cls + '" onclick="' + go + '"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
+  document.getElementById('extViews').innerHTML = [['sessions', 'By session', sess.length], ['agents', 'By agent', (d.agents || []).length], ['installed', 'Installed', d.rows.length]]
+    .map(([k, l, n]) => '<button class="ext-view' + (_extView === k ? ' on' : '') + '" onclick="_extView=\'' + k + '\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
+  const agentPick = _extView === 'agents' ? '' : '<select class="fsel" style="margin-right:6px" onchange="_extAgent=this.value;renderExtensions()"><option value="">All agents</option>' +
+    (d.agents || []).filter(a => a.agent !== 'any').map(a => '<option value="' + safeAttr(a.agent) + '"' + (_extAgent === a.agent ? ' selected' : '') + '>' + safe(a.agent) + '</option>').join('') + '</select>';
+  const filters = [['review','Needs review (' + review + ')'],['all','All'],['never_used','Never used (' + idle + ')'],['remote_instructions','Reads remote instructions'],['runs_code','Runs code'],['network','Talks to the network']]
+    .concat(kinds.map(([k, l]) => [k, l]));
+  document.getElementById('extFilters').innerHTML = agentPick + (_extView !== 'installed' ? '' : filters.map(([k, l]) =>
+    '<button class="ext-filter' + (_extFilter === k ? ' on' : '') + '" onclick="_extFilter=\'' + k + '\';renderExtensions()">' + safe(l) + '</button>').join(''));
+  if (_extView !== 'installed') {
+    document.getElementById('extList').innerHTML = _extView === 'sessions' ? renderExtSessions(d) : renderExtAgents(d);
+    return renderExtEvents(d);
+  }
+  const rows = d.rows.filter(r => !_extAgent || (r.agents || ['any']).some(x => x === _extAgent || x === 'any')).filter(r => _extFilter === 'all' ? true
+    : _extFilter === 'never_used' ? r.never_used
+    : _extFilter === 'review' ? r.needs_review
+    : ['skill','plugin','hook','mcp'].includes(_extFilter) ? r.kind === _extFilter
+    : (r.capabilities || []).includes(_extFilter))
+    .sort((a, b) => (b.needs_review - a.needs_review) || a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  document.getElementById('extList').innerHTML = rows.length ? rows.slice(0, 300).map(r => {
+    const rev = r.needs_review;
+    const kv = [['Id', r.id], ['Loaded by', (r.agents || []).map(extAgentName).join(', ')], ['Path', r.path], ['Origin', r.origin], ['Installed by', extBy(r.installed_by)],
+      ['First seen', r.first_seen ? extWhen(r.first_seen) : ''], ['Hosts named', (r.hosts || []).join(', ')],
+      ['Command', r.command], ['Part of', r.parent], ['Hash', (r.sha256 || '').slice(0, 16)]]
+      .filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+    const used = (r.invocations || []).slice(-5).reverse().map(i =>
+      '<dt>Invoked</dt><dd><a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(i.session) + '\')">session ' +
+      safe(String(i.session).slice(0, 8)) + '</a> · ' + safe(extWhen(i.ts)) + '</dd>').join('');
+    const docs = (r.remote_refs || []).map(x =>
+      '<dt>Fetched</dt><dd>' + safe(x.url) + ' · sha256 ' + safe(String(x.sha256).slice(0, 12)) + ' · ' + x.bytes + ' bytes' +
+      (x.last_changed ? ' · <b style="color:#b91c1c">changed ' + safe(extWhen(x.last_changed)) + '</b>' : '') + '</dd>').join('');
+    return '<div class="ext-row' + (rev ? ' review' : '') + (_extOpen[r.id] ? ' open' : '') + '">' +
+      '<div class="ext-head" onclick="_extOpen[\'' + safeJsArg(r.id) + '\']=!_extOpen[\'' + safeJsArg(r.id) + '\'];renderExtensions()">' +
+        '<span class="ext-badge ' + safeAttr(r.needs_review && r.status === 'unchanged' ? 'new' : r.status) + '">' + safe(r.status === 'unchanged' ? (r.needs_review ? 'unreviewed' : 'seen') : r.status) + '</span>' +
+        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name" style="cursor:pointer;text-decoration:underline dotted" title="Open its page" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(r.id) + '\')">' + safe(r.name) + '</span>' +
+        (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
+        (r.never_used ? '<span class="ext-never">never used</span>' : (r.used_in || []).length ? '<span class="ext-quiet">' + r.used_in.length + ' session' + (r.used_in.length === 1 ? '' : 's') + '</span>' : '') +
+        '<span class="ext-origin">' + safe(r.origin || '') + '</span>' +
+        (r.agents || []).filter(a => a !== 'any').map(a => '<span class="ext-agent">' + agentIcon(a) + safe(a) + '</span>').join('') + '</div>' +
+      '<div class="ext-body"><dl class="ext-kv">' + kv + used + docs + '</dl>' +
+        (r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '') +
+      '</div></div>';
+  }).join('') + (rows.length > 300 ? '<div class="empty">Showing 300 of ' + rows.length + '. Narrow with a filter.</div>' : '')
+    : '<div class="empty">Nothing here. ' + (_extFilter === 'review' ? 'Every extension on this machine has been seen before.' : '') + '</div>';
+  renderExtEvents(d);
+}
+function renderExtEvents(d) {
+  const label = {extension_installed: 'installed', extension_changed: 'changed', extension_invoked: 'invoked',
+    remote_ref_drift: 'remote document changed', remote_ref_flagged: 'remote document flagged', hook_executed: 'hook ran'};
+  document.getElementById('extEvents').innerHTML = (d.events || []).length ? d.events.map(e => {
+    const det = e.detail || {};
+    const extra = [det.url, det.children_new ? 'with ' + det.children_new.length + ' new inside' : '',
+      det.children_changed ? det.children_changed.length + ' changed inside' : '',
+      det.rules ? 'rules: ' + det.rules.join(', ') : '', det.exit_code != null ? 'exit ' + det.exit_code + ' · ' + det.ms + 'ms' : '',
+      e.event === 'extension_installed' ? extBy(e.installed_by) : '', e.session_id ? 'session ' + String(e.session_id).slice(0, 8) : '']
+      .filter(Boolean).join(' · ');
+    return '<div class="ext-ev ' + safeAttr(e.event) + '"><i></i><div><b>' + safe(e.kind) + ' ' + safe(e.name) + '</b> ' + safe(label[e.event] || e.event) +
+      '<small>' + safe(extWhen(e.ts)) + (e.origin ? ' · ' + safe(e.origin === 'out-of-band' ? 'outside any session' : e.origin) : '') + '</small>' + (extra ? '<small>' + safe(extra) + '</small>' : '') + '</div></div>';
+  }).join('') : '<div class="empty">No extension events yet. The first sync records what is already installed as the baseline.</div>';
+}
+async function extApprove(id) {
+  try {
+    await apiFetch('/api/extensions/approve', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({id: id, workspace: _serverWorkspace || undefined})});
+    toast('Marked reviewed');
+    _extCache = null;
+    if (_sessionViewState && _sessExt && document.getElementById('page-session')?.classList.contains('active')) loadSessionExtensions(_sessionViewState.sessionId, _sessionViewState.workspace);
+    else if (document.getElementById('page-extension')?.classList.contains('active')) openExtension(id, true);
+    else loadExtensions();
+  } catch (e) { toast('✗ ' + e.message, true); }
+}
+
 async function loadMcpServers() {
   const el = document.getElementById('mcpServersList');
   try {
@@ -2785,11 +3826,73 @@ async function loadMcpServers() {
 let _mcpServersCache = [];
 function renderMcpServers() {
   const el = document.getElementById('mcpServersList');
+  const sum = document.getElementById('mcpSummary');
   const servers = _mcpServersCache;
-  if (!servers.length) { el.innerHTML = '<div class="empty">No MCP servers configured. Point your agent\'s .mcp.json at <code>prismor mcp-gateway</code>.</div>'; return; }
-  el.innerHTML = servers.map(s =>
-    s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)
-  ).join('');
+  if (!servers.length) { el.innerHTML = mcpSetupHelp(); if (sum) sum.hidden = true; return; }
+  const governed = servers.filter(s => s.kind !== 'direct').length;
+  const idle = servers.filter(s => !((s.usage || {}).calls)).length;
+  const direct = servers.length - governed;
+  const calls = servers.reduce((n, s) => n + ((s.usage || {}).calls || 0), 0);
+  const blocked = servers.reduce((n, s) => n + ((s.usage || {}).blocked || 0), 0);
+  const tools = servers.reduce((n, s) => n + (s.tools || []).length, 0);
+  if (sum) {
+    sum.hidden = false;
+    sum.innerHTML =
+      '<div><div class="kpi-label">Servers</div><div class="kpi-big">' + servers.length + '</div><div class="kpi-sub">' + governed + ' screened · ' + direct + ' direct · ' + idle + ' idle this week</div></div>' +
+      '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>' +
+      '<div><div class="kpi-label">Calls · 7 days</div><div class="kpi-big">' + fmtNum(calls) + '</div><div class="kpi-sub">across every server below</div></div>' +
+      '<div><div class="kpi-label">Blocked · 7 days</div><div class="kpi-big">' + fmtNum(blocked) + '</div><div class="kpi-sub">' + (calls ? (Math.round(blocked / calls * 1000) / 10) + '% of calls' : 'no calls recorded') + '</div></div>';
+  }
+  const order = { mirror: 0, gateway: 1, remote: 2, seen: 3, direct: 4 };
+  // Mirror first, then whatever the agents actually use; idle servers sink.
+  const nCalls = s => (s.usage || {}).calls || 0;
+  el.innerHTML = servers.slice().sort((a, b) => (order[a.kind] === 0) !== (order[b.kind] === 0) ? (order[a.kind] - order[b.kind]) : (nCalls(b) - nCalls(a)) || (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name))
+    .map(s => s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)).join('');
+}
+
+// Shared card chrome: kind chip, risk chip, where it is declared, week's usage.
+function mcpKindChip(s) {
+  if (s.kind === 'mirror') return '<span class="mcp-kind mcp-kind-mirror" title="Prismor serves the agent\'s built-in tools itself, so they are screened and redacted">mirror · built-ins</span>';
+  if (s.kind === 'direct') return '<span class="mcp-kind mcp-kind-direct" title="Declared in a config the agent reads directly; its calls never reach Prismor">direct · ungoverned</span>';
+  if (s.kind === 'gateway') return '<span class="mcp-kind mcp-kind-gw" title="Routed through prismor mcp-gateway: every call is screened before it runs and every result scanned before the model sees it">behind the gateway</span>';
+  if (s.kind === 'seen') return '<span class="mcp-kind mcp-kind-seen" title="No config Prismor scans declares it; the hooks saw the agent call it, so its calls are screened like any other tool">seen in calls · hook-screened</span>';
+  return '<span class="mcp-kind mcp-kind-gw" title="Its tools are in this workspace\'s policy scope; calls are screened by the hooks">in policy scope</span>';
+}
+function mcpRiskChip(s) {
+  const r = s.risk || 'none';
+  return r === 'none' ? '' : '<span class="rule-sev ' + r.toUpperCase() + '" title="Risk from the config scan">' + r + '</span>';
+}
+function mcpDeclaredMarkup(s) {
+  const decl = s.declared_in || [];
+  if (!decl.length) return '<div class="mcp-meta mcp-muted">Not declared in any config Prismor scans' + (s.kind === 'mirror' ? ' — served in-process by the gateway.' : (s.kind === 'seen' ? ' — known only from calls the agent made.' : ' — listed because this workspace\'s policy scope names it.')) + '</div>';
+  return decl.map(d => {
+    const how = d.url ? '<code>' + safe(d.url) + '</code>' : (d.command ? '<code>' + safe(d.command) + '</code>' : '');
+    return '<div class="mcp-meta">' +
+      '<span class="mcp-meta-k">' + safe(d.transport || 'stdio') + '</span>' + how +
+      '<span class="mcp-meta-src" title="' + safeAttr(d.source) + '">' + safe(d.agent) + ' · ' + safe(d.source.split('/').slice(-2).join('/')) + (d.workspace_scoped ? ' · came with the repo' : '') + '</span>' +
+    '</div>';
+  }).join('');
+}
+function mcpUsageMarkup(s) {
+  const u = s.usage || {};
+  const cell = (k, v, sub) => '<div><div class="kpi-label">' + k + '</div><div class="mcp-num">' + v + '</div>' + (sub ? '<div class="kpi-sub">' + sub + '</div>' : '') + '</div>';
+  return '<div class="mcp-usage">' +
+    cell('Calls · 7d', fmtNum(u.calls || 0)) +
+    cell('Blocked', fmtNum(u.blocked || 0), u.calls ? (Math.round((u.blocked||0) / u.calls * 1000) / 10) + '%' : '') +
+    cell('Sessions', fmtNum(u.sessions || 0)) +
+    cell('Last call', u.last ? '<span title="' + safeAttr(u.lastAbs || '') + '">' + safe(u.last) + '</span>' : '<span class="mcp-muted">never</span>') +
+  '</div>';
+}
+function mcpFindingsMarkup(s) {
+  const f = s.findings || [];
+  if (!f.length) return '';
+  return '<ul class="mcp-findings">' + f.map(x => '<li>' + safe(x) + '</li>').join('') + '</ul>';
+}
+function mcpCardHead(s, extra) {
+  return '<div class="card-title mcp-head">' +
+    '<span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span>' +
+    '<span class="mcp-name">' + safe(s.name) + '</span>' + mcpKindChip(s) + mcpRiskChip(s) +
+    '<span class="mcp-head-right">' + (extra || '') + '</span></div>';
 }
 
 // The mirror: front-of-house controls. A Governing / Pass-through switch (screen
@@ -2814,7 +3917,7 @@ function renderMirrorCard(s) {
       ' onclick="mcpToolEnable(\'' + safeAttr(s.name) + '\',\'' + safeAttr(t.name) + '\',' + (on ? 'true' : 'false') + ')">' +
       '<span class="tp-knob"></span></button>';
     return '<div class="tp-row' + (governing ? '' : ' tp-row-off') + '">' +
-      '<span class="tp-tool">' + safe(t.name) + '</span>' + toggle + '</div>';
+      '<span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) + toggle + '</div>';
   }).join('');
   let hint;
   if (paused) {
@@ -2829,31 +3932,62 @@ function renderMirrorCard(s) {
     hint = 'Pass-through — the mirror still serves the tools below but runs them exactly as the natives would ' +
       '(logged, not blocked or redacted). Flip back to Governing here, or <code>prismor mirror passthrough off</code>.';
   }
-  return '<div class="card" style="margin-bottom:16px">' +
-    '<div class="card-title" style="display:flex;align-items:center;gap:10px">' +
-      '<span class="badge" style="width:24px;height:24px;border-radius:6px;background:var(--gray-100);display:inline-grid;place-items:center;font-weight:700;font-size:12px">P</span>' +
-      safe(s.name) + '<span class="mcp-kind mcp-kind-mirror">mirror · built-ins</span>' +
-      '<span style="margin-left:auto">' + ovBtn + '</span></div>' +
+  return '<div class="card mcp-card">' + mcpCardHead(s, ovBtn) +
+    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) +
     '<div class="mcp-hint">' + hint + '</div>' +
     '<div class="tp-grid" style="margin-top:10px">' + rows + '</div></div>';
 }
 
+function mcpToolStats(t) {
+  const c = t.calls || 0, bl = t.blocked || 0;
+  return '<span class="tp-stats">' +
+    (c ? '<span title="calls in the last 7 days">' + fmtNum(c) + ' calls</span>' : '<span class="mcp-muted">no calls yet</span>') +
+    (bl ? '<span class="tp-blocked" title="blocked in the last 7 days">' + fmtNum(bl) + ' blocked</span>' : '') +
+    (t.last ? '<span class="mcp-muted">' + safe(t.last) + '</span>' : '') +
+  '</span>';
+}
 function renderRemoteCard(s) {
+  const direct = s.kind === 'direct';
   const rows = (s.tools || []).length ? (s.tools || []).map(t => {
     const st = t.state || 'allow';
     const btn = (val, label, title) =>
       '<button class="tp-btn tp-' + val + (st === val ? ' on' : '') + '" title="' + title + '" ' +
         'onclick="mcpToolSet(\'' + safeAttr(t.tag) + '\',\'' + val + '\')">' + label + '</button>';
-    return '<div class="tp-row"><span class="tp-tool">' + safe(t.name) + '</span>' +
+    return '<div class="tp-row"><span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) +
       '<span class="tp-btns">' + btn('allow','Allow','Runs without prompting') +
         btn('ask','Ask','Requires human approval (step-up)') +
         btn('deny','Deny','Blocked in real time') + '</span></div>';
-  }).join('') : '<div class="tp-row" style="color:var(--gray-400);font-size:12px">No tools with a policy yet — they appear here once the agent uses them.</div>';
-  return '<div class="card" style="margin-bottom:16px">' +
-    '<div class="card-title" style="display:flex;align-items:center;gap:10px">' +
-      '<span class="badge" style="width:24px;height:24px;border-radius:6px;background:var(--gray-100);display:inline-grid;place-items:center;font-weight:700;font-size:12px">P</span>' +
-      safe(s.name) + '<span class="mcp-kind">remote</span></div>' +
-    '<div class="tp-grid" style="margin-top:12px">' + rows + '</div></div>';
+  }).join('') : '<div class="tp-row mcp-muted" style="font-size:12.5px">' +
+      (direct ? 'Prismor never sees this server\'s calls, so there is nothing to govern here yet.'
+              : 'No tools seen or governed yet — they appear here the first time the agent calls one, or when you set a policy.') + '</div>';
+  const fix = direct
+    ? '<div class="banner banner-warn mcp-fix"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
+        '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config. Front it so every call is screened first:' +
+        '<pre class="doc-cmd">prismor mcp-gateway install --all</pre></div></div>'
+    : '';
+  return '<div class="card mcp-card' + (direct ? ' mcp-card-direct' : '') + '">' + mcpCardHead(s) +
+    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) + fix +
+    '<div class="tp-grid">' + rows + '</div></div>';
+}
+
+// Nothing is wired up yet — say how to wire it, rather than showing an
+// empty page. Both halves are one command each.
+function mcpSetupHelp() {
+  return '<div class="card">' +
+    '<div class="card-title">No MCP servers are going through Prismor yet</div>' +
+    '<div class="mcp-hint" style="margin-bottom:14px">Prismor governs MCP tools two ways. Run either (or both) in your project, then reopen this page.</div>' +
+    '<div style="margin-bottom:16px">' +
+      '<b style="font-size:13px">1 · Front your MCP servers with the gateway</b>' +
+      '<div class="mcp-hint">Moves this workspace\'s <code>.mcp.json</code> servers behind <code>prismor mcp-gateway</code> (a <code>.bak</code> is kept). Every tool call is policy-screened before it runs and every result scanned for injection before the model sees it.</div>' +
+      '<pre class="doc-cmd">prismor mcp-gateway install        # this workspace\nprismor mcp-gateway install --all  # every MCP config on this machine\nprismor mcp-gateway uninstall      # restore the original .mcp.json</pre>' +
+    '</div>' +
+    '<div style="margin-bottom:16px">' +
+      '<b style="font-size:13px">2 · Mirror the agent\'s built-in tools</b>' +
+      '<div class="mcp-hint">Serves Bash/Read/Write over MCP so the built-ins are screened and their output redacted too. Takes effect in the next session.</div>' +
+      '<pre class="doc-cmd">prismor mirror on\nprismor mirror status</pre>' +
+    '</div>' +
+    '<div class="mcp-hint">Configs Prismor will not guess at (Zed\'s <code>context_servers</code>, Codex\'s TOML) are reported and left untouched — move those by hand. Full walkthrough: <a href="#" onclick="openDoc(\'mcp-gateway.md\');return false">MCP Gateway docs</a>.</div>' +
+    '</div>';
 }
 
 async function mcpOverrideSet(server, current) {
@@ -2897,24 +4031,6 @@ async function mcpToolSet(tag, action) {
     toast('✓ ' + tag + ' → ' + action);
   } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
 }
-
-async function mcpRequest(body) {
-  const result = await apiFetch('/api/mcp-playground', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-  if (result.state) _mcpPlayground = result.state; else _mcpPlayground = result;
-  renderMcpPlayground(_mcpPlayground); return result;
-}
-async function mcpAddTool() {
-  const input = document.getElementById('mcpNewTool'), name = input.value.trim(); if (!name) return;
-  try { await mcpRequest({action:'add', name}); input.value = ''; toast('MCP tool added'); } catch (e) { toast(e.message, true); }
-}
-async function mcpSetEnabled(name, enabled) {
-  try { await mcpRequest({action:'set-enabled', name, enabled}); toast(name + (enabled ? ' enabled' : ' denied')); } catch (e) { toast(e.message, true); }
-}
-async function mcpCall(name) {
-  try { const r = await mcpRequest({action:'call', name}); document.getElementById('mcpResult').textContent = r.allowed ? name + ' allowed and delivered.' : name + ' blocked before delivery: ' + (r.reason || 'denied by policy'); toast(r.allowed ? 'MCP call delivered' : 'MCP call blocked', !r.allowed); }
-  catch (e) { toast(e.message, true); }
-}
-async function mcpReset() { try { await mcpRequest({action:'reset'}); document.getElementById('mcpResult').textContent = 'Playground reset.'; } catch (e) { toast(e.message, true); } }
 
 // ── Toast (non-blocking feedback — replaces alert()) ──────────────────────
 let _toastTimer;
@@ -2981,6 +4097,8 @@ function updateModeChip(data) {
             || 'observe';
   chip.className = 'mode-chip ' + (mode === 'enforce' ? 'enforce' : 'observe');
   label.textContent = mode;
+  _navMode = mode; if (eff.total) _navRules = eff.total;
+  syncNavCounts();
   if (mode === 'enforce') {
     chip.title = eff.blocking
       ? 'Enforce — ' + eff.blocking + ' of ' + eff.total + ' rules block in real time. Click to manage.'
@@ -3084,7 +4202,7 @@ function renderDrawerContent(sessId, ws, data) {
   if (_drawerSelectedEvent) {
     const ev = _drawerSelectedEvent;
     const policy = ev.policy || {};
-    const blocked = ev.verdict === 'blocked' || policy.action === 'block';
+    const blocked = ev.verdict === 'blocked';
     const categoryLabel = CAT_LABELS[policy.category] || policy.category || '';
     const evSec = document.createElement('div');
     evSec.className = 'drawer-section';
@@ -3103,7 +4221,7 @@ function renderDrawerContent(sessId, ws, data) {
         (policy.ruleId || policy.title || policy.evidence || categoryLabel ?
           '<div class="drawer-policy-card ' + (blocked ? '' : 'allowed') + '">' +
             '<div class="drawer-rule-row"><span class="drawer-rule-label">Policy</span>' +
-              '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">' + safe(policy.ruleId || policy.id || 'runtime-policy') + '</div>' +
+              '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">' + safe(ruleLabel(policy.ruleId || policy.id || 'runtime-policy')) + '</div>' +
               (categoryLabel ? '<div style="font-size:10px;color:var(--gray-500);margin-top:2px">' + safe(categoryLabel) + '</div>' : '') + '</div></div>' +
             (policy.title ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">' + safe(policy.title) + '</div></div>' : '') +
             (policy.evidence ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">' + safe(policy.evidence) + '</div></div>' : '') +
@@ -3137,7 +4255,7 @@ function renderDrawerContent(sessId, ws, data) {
         const policy = item.policy || {};
         const blocked = item.verdict === 'blocked';
         return '<div class="trail-row">' +
-          '<span class="trail-dot ' + (blocked ? 'blocked' : 'allowed') + '"></span>' +
+          '<span class="trail-dot ' + (blocked ? 'blocked' : item.verdict === 'warned' ? 'warned' : 'allowed') + '"></span>' +
           '<div class="trail-main">' +
             '<div class="trail-meta">' +
               '<span>' + safe(item.ts || '') + '</span>' +
@@ -3213,8 +4331,8 @@ function renderDrawerContent(sessId, ws, data) {
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   } else {
     footerEl.innerHTML =
-      '<button class="drawer-toggle pause" onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause Prismor</button>' +
-      '<button class="drawer-toggle clear" onclick="drawerAction(\'clear\')">Clear scope</button>' +
+      '<button class="drawer-toggle pause" title="Stop screening this session: nothing is blocked or flagged until you resume." onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause Prismor</button>' +
+      '<button class="drawer-toggle clear" title="Drop the per-session tool scope Prismor derived from the prompt. Global and project policy still apply." onclick="drawerAction(\'clear\')">Clear scope</button>' +
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   }
 }
@@ -3588,6 +4706,7 @@ function _pushCurrentView(){
   const ap = document.querySelector('.page.active');
   const id = ap ? ap.id : null;
   if (id === 'page-agent' && _agentViewName){ const n=_agentViewName; _backStack.push(()=>openAgentView(n, true)); }
+  else if (id === 'page-extension' && _extViewId){ const x=_extViewId; _backStack.push(()=>openExtension(x, true)); }
   else if (id === 'page-session' && _sessionViewState){ const sx=_sessionViewState.sessionId, wx=_sessionViewState.workspace; _backStack.push(()=>openSessionView(sx, wx, true)); }
   else { const tb=document.querySelector('.tab-btn.active'); const t=tb?tb.dataset.tab:'sessions'; _backStack.push(()=>document.querySelector('.tab-btn[data-tab="'+t+'"]')?.click()); }
 }
@@ -3604,12 +4723,14 @@ function currentViewState(){
     return {view:'session', id:_sessionViewState.sessionId, ws:_sessionViewState.workspace || ''};
   }
   if (id === 'page-agent' && _agentViewName) return {view:'agent', name:_agentViewName};
+  if (id === 'page-extension' && _extViewId) return {view:'extension', id:_extViewId};
   const tab = document.querySelector('.tab-btn.active');
   return {view:'tab', tab: tab ? tab.dataset.tab : 'sessions'};
 }
 function hashForView(st){
   if (st.view === 'session') return '#/session/' + encodeURIComponent(st.id);
   if (st.view === 'agent')   return '#/agent/'   + encodeURIComponent(st.name);
+  if (st.view === 'extension') return '#/extension/' + encodeURIComponent(st.id);
   return '#/' + (st.tab || 'sessions');
 }
 function recordView(st, replace){
@@ -3621,9 +4742,9 @@ function recordView(st, replace){
   } catch(e){ /* file:// and other historyless contexts */ }
 }
 function parseHash(){
-  const m = /^#\/(session|agent)\/(.+)$/.exec(location.hash || '');
-  if (m) return m[1] === 'session'
-    ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
+  const m = /^#\/(session|agent|extension)\/(.+)$/.exec(location.hash || '');
+  if (m) return m[1] === 'session' ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
+    : m[1] === 'extension' ? {view:'extension', id:decodeURIComponent(m[2])}
     : {view:'agent', name:decodeURIComponent(m[2])};
   const t = /^#\/([a-z-]+)$/.exec(location.hash || '');
   return t ? {view:'tab', tab:t[1]} : null;
@@ -3634,6 +4755,7 @@ function applyViewState(st){
   try {
     if (st.view === 'session') openSessionView(st.id, st.ws || '', true);
     else if (st.view === 'agent') openAgentView(st.name, true);
+    else if (st.view === 'extension') openExtension(st.id, true);
     else document.querySelector('.tab-btn[data-tab="' + (st.tab || 'sessions') + '"]')?.click();
   } finally {
     // The tab click is synchronous; the view opens are not, but they only
@@ -3680,6 +4802,7 @@ async function openAgentView(agentName, isBack){
   renderAgentHero(agentName);
   renderAgentControls(agentName);
   renderAgentSessions(agentName);
+  renderAgentExtensions(agentName);
 }
 function renderAgentSwitch(current){
   const sel = document.getElementById('agentViewSelect');
@@ -3698,7 +4821,9 @@ function renderAgentHero(agentName){
   const sessions = _allSessionsCache.filter(s=>sessionBelongsToAgent(s, agentName));
   const findings = sessions.reduce((n,s)=>n+(s.findingsCount||0),0);
   if (a){
-    avatar.className = 'agent-avatar' + (a.enabled?'':' blocked');
+    const ico = agentIcon(agentName, a.framework);
+    if (ico) avatar.innerHTML = ico;
+    avatar.className = 'agent-avatar' + (ico ? ' has-ico' : '') + (a.enabled?'':' blocked');
     status.innerHTML = a.enabled
       ? '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>'
       : '<span class="status-pill status-blocked"><span class="status-dot"></span>Blocked</span>';
@@ -3818,6 +4943,7 @@ function renderAgentSessions(agentName){
 // ── Session flow view ──────────────────────────────────────────────────
 function flowVerdict(ev){
   const p = ev.policy || {};
+  if (ev.verdict === 'warned') return 'warn';
   if (ev.verdict === 'blocked'){
     if (p.mode && p.mode !== 'enforce') return 'warn';
     if (p.action && p.action !== 'block') return 'warn';
@@ -3838,6 +4964,7 @@ async function openSessionView(sessionId, workspace, isBack){
   document.getElementById('sessFlowCanvas').innerHTML = '<div class="flow-empty">Loading session flow…</div>';
   document.getElementById('sessNodePanel').innerHTML = '<div class="node-panel-empty">Loading…</div>';
 
+  loadSessionExtensions(sessionId, ws);
   await ensureAllSessions(false);
   const sess = _allSessionsCache.find(s=>s.sessionId===sessionId);
   const agent = sess ? sess.agent : '';
@@ -3852,6 +4979,7 @@ async function openSessionView(sessionId, workspace, isBack){
     if (_sessionViewState.sessionId !== sessionId) return;
     _sessionViewState.data = data;
     renderSessionView(data);
+    renderSessionExtensions();
   } catch(e){
     document.getElementById('sessFlowCanvas').innerHTML = '<div class="flow-empty" style="color:#b91c1c">Failed to load session: '+safe(e.message)+'</div>';
   }
@@ -3866,7 +4994,7 @@ function renderSessionView(data){
   let pills = '';
   if (agent) pills += '<span class="agent-pill link" onclick="openAgentView(\''+safeAttr(agent)+'\')">'+safe(agent)+'</span>';
   if (paused) pills += '<span class="status-pill status-paused"><span class="status-dot"></span>Immunity Paused</span>';
-  else if (scoped) pills += '<span class="status-pill status-scoped"><span class="status-dot"></span>Scoped</span>';
+  else if (scoped) pills += '<span class="status-pill status-scoped" title="Prismor derived a tool scope from the prompt: only the tools, paths and hosts the task needs are allowed in this session."><span class="status-dot"></span>Scoped <i class="help">?</i></span>';
   else pills += '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>';
   if (blocks.length) pills += '<span class="status-pill status-blocked"><span class="status-dot"></span>'+blocks.length+' block'+(blocks.length===1?'':'s')+'</span>';
   document.getElementById('sessFlowMeta').innerHTML = pills;
@@ -3933,7 +5061,10 @@ function eventSummary(ev){
   // the previous answer each time and the recognisable part is buried.
   const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.content
     || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
-  return String(raw).replace(/\s+/g,' ').trim().slice(0,300);
+  // Agents prefix nearly every command with `cd <repo> &&`; in a row 90 chars
+  // wide that prefix is all a reader sees. The panel still shows it in full.
+  const text = (a.command || ev.type === 'shell') ? String(raw).replace(/^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*/, '') : String(raw);
+  return text.replace(/\s+/g,' ').trim().slice(0,300);
 }
 // What makes two prompts the same turn. One user message can produce several
 // model requests -- ask, run the tool, send the result back for the answer --
@@ -4001,7 +5132,8 @@ function treeLeafEl(ev, idx){
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
-    '<span class="tree-ts">'+safe(ev.ts||'')+'</span>';
+    extCauseChip(ev.extension)+hookChip(ev)+
+    '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
 function renderSessionFlow(trail){
@@ -4056,6 +5188,12 @@ function renderNodePanelDefault(data){
   }
   panel.innerHTML=html;
 }
+// A session-scoped rule is stored as "<session id>:<rule>-<n>"; the id is
+// the row you are already looking at, so it only obscures the rule's name.
+function ruleLabel(id){
+  const m = String(id||'').match(/^[0-9a-f-]{20,}:(.+?)(?:-\d+)?$/);
+  return m ? m[1] + ' (session-scoped rule)' : id;
+}
 function renderNodePanel(ev){
   const panel=document.getElementById('sessNodePanel');
   const policy=ev.policy||{};
@@ -4071,24 +5209,28 @@ function renderNodePanel(ev){
       '<div class="drawer-rule-row"><span class="drawer-rule-label">Tool tag</span>'+
         '<span class="scoped-tag tag-net">'+safe(ev.toolTag||ev.type||'unknown')+'</span></div>'+
       '<div class="drawer-rule-row"><span class="drawer-rule-label">Type</span>'+
-        '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+
+        '<span class="scoped-tag tag-allow">'+safe(ev.type||'event')+'</span></div>'+      ((ev.agentEvent || ev.hookMs != null) ? '<div class="drawer-rule-row"><span class="drawer-rule-label">Hook</span>'+
+        '<span style="font-size:11px;color:var(--gray-600)">'+safe(ev.agentEvent||'hook')+(ev.hookMs != null ? ' '+fmtMs(ev.hookMs) : '')+
+        (ev.postHookMs != null ? ' &middot; PostToolUse '+fmtMs(ev.postHookMs) : '')+'</span></div>' : '')+
+      hookRunsHtml(ev)+
+      (ev.extension ? '<div class="drawer-rule-row stack"><span class="drawer-rule-label">Caused by</span>'+
+        '<div style="font-size:11px;line-height:1.5;color:var(--gray-600)">'+extCauseChip(ev.extension)+
+        '<div>The '+safe(ev.extension.kind)+' '+safe(ev.extension.via||'caused this call')+'.'+
+        (ev.extension.reviewed ? '' : ' No human has reviewed it.')+'</div></div></div>' : '')+
       '<div class="drawer-rule-row" style="align-items:flex-start"><span class="drawer-rule-label">When</span>'+
         '<div style="font-size:11px;color:var(--gray-600)">'+safe(ev.tsAbs||ev.ts||'')+'</div></div>'+
-      '<div class="drawer-rule-row" style="align-items:flex-start;margin-bottom:0"><span class="drawer-rule-label">Action</span>'+
-        '<div style="font-size:11px;color:var(--gray-600);line-height:1.5;word-break:break-word">'+safe(ev.action||'')+'</div></div>'+
+      '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">Action</span>'+
+        '<div class="drawer-code">'+safe(ev.action||'')+'</div></div>'+
       ((policy.ruleId||policy.title||policy.evidence||categoryLabel)?
         '<div class="drawer-policy-card '+({allow:'allowed',warn:'warned',block:''})[v]+'">'+
           '<div class="drawer-rule-row"><span class="drawer-rule-label">Policy</span>'+
             '<div><div style="font-size:11px;font-weight:600;color:var(--gray-800)">'+safe(policy.ruleId||policy.id||'runtime-policy')+'</div>'+
             (categoryLabel?'<div style="font-size:10px;color:var(--gray-500);margin-top:2px">'+safe(categoryLabel)+'</div>':'')+'</div></div>'+
-          (policy.title?'<div class="drawer-rule-row"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
-          (policy.matched?'<div class="drawer-rule-row"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
-          (policy.pattern?'<div class="drawer-rule-row"><span class="drawer-rule-label">Pattern</span><div class="match-pattern">'+safe(policy.pattern)+'</div></div>':'')+
-          (policy.evidence?'<div class="drawer-rule-row"><span class="drawer-rule-label">Reason</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4;word-break:break-word">'+highlightHit(policy.evidence, policy.matched)+'</div></div>':'')+
-          '<div class="drawer-rule-row" style="margin-bottom:0"><span class="drawer-rule-label">Mode</span>'+
-            '<span class="scoped-tag '+(policy.mode==='enforce'?'tag-deny':'tag-net')+'">'+safe(policy.mode||(v==='block'?'enforce':'observe'))+'</span>'+
-            (policy.action?'<span class="scoped-tag '+(policy.action==='block'?'tag-deny':'tag-allow')+'">'+safe(policy.action)+'</span>':'')+
-          '</div>'+
+          (policy.title?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Rule</span><div style="font-size:11px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
+          (policy.matched?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
+          (policy.pattern?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Pattern</span><div><details><summary>Show the regex ('+String(policy.pattern).length+' chars)</summary><div class="match-pattern">'+safe(policy.pattern)+'</div></details></div></div>':'')+
+          (policy.evidence?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Why it matched</span>'+reasonHtml(policy)+'</div>':'')+
+          '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">What happened</span>'+modeHtml(policy, v)+'</div>'+
         '</div>':'')+
     '</div>';
   panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
@@ -4113,6 +5255,27 @@ const ARTIFACT_FIELDS = [
 // Which characters tripped the rule. The evidence is the whole command, so
 // without marking the hit a reader is left diffing a 400-character line
 // against a regex by eye.
+// The semantic pre-screen writes its evidence as the judge prompt itself
+// ("Heuristic pre-screen score: … Text to evaluate: …", cut at 220 chars).
+// Say what it means instead; the evaluated text is in Artefacts, whole.
+function reasonHtml(policy){
+  const ev = String(policy.evidence || '');
+  const m = ev.match(/Heuristic pre-screen score:\s*([\d.]+)\s*Heuristic signals found:\s*([^\n]*)/);
+  if (!m) return '<div class="drawer-code">' + highlightHit(ev, policy.matched) + '</div>';
+  const score = parseFloat(m[1]), signals = m[2].trim() === 'none' ? [] : m[2].split(',').map(x => x.trim().replace(/_/g, ' ')).filter(Boolean);
+  return '<div style="font-size:11.5px;line-height:1.5;color:var(--gray-700)">The text scored <b>' + Math.round(score * 100) + '/100</b> on the ' +
+    'prompt-injection pre-screen' + (signals.length ? ', because it looks like: ' + signals.map(x => '<span class="scoped-tag tag-net">' + safe(x) + '</span>').join(' ') : '') + '.' +
+    '<div style="color:var(--gray-500);margin-top:4px">The full text it read is under <a class="ext-sess" onclick="document.querySelector(\'#sessNodePanel .art-row\')?.scrollIntoView({behavior:\'smooth\'})">Artefacts</a>.</div></div>';
+}
+// Mode is how Prismor runs; action is what the rule asks for. Two tags side by
+// side ("observe" "block") read as a contradiction, so say what happened.
+function modeHtml(policy, v){
+  const mode = policy.mode || (v === 'block' ? 'enforce' : 'observe'), act = policy.action || '';
+  const text = v === 'block' ? 'Blocked. The rule says ' + (act || 'block') + ' and Prismor is enforcing.'
+    : act === 'block' && mode === 'observe' ? 'Only logged. The rule says block, but Prismor is in observe mode, so the call went through.'
+    : 'Logged as a warning' + (act ? ' (rule action: ' + act + ')' : '') + '. The call went through.';
+  return '<div style="font-size:11.5px;line-height:1.5;color:var(--gray-700)">' + safe(text) + '</div>';
+}
 function highlightHit(text, hit){
   const body = String(text||'');
   if (!hit) return safe(body);
@@ -4201,13 +5364,18 @@ async function applyNodePolicy(action, scope){
 
 
 // ── Charts ────────────────────────────────────────────────────────────────
-let donutChart, lineChart, agentBarChart, toolBarChart, mcpBarChart, scEcoBarChart;
+let donutChart, ringChart, lineChart, agentBarChart, toolBarChart, mcpBarChart, scEcoBarChart;
 function initCharts() {
   const theme = chartTheme();
   COLORS = theme.palette;
   Chart.defaults.font.family = '"Inter", -apple-system, BlinkMacSystemFont, sans-serif';
   Chart.defaults.font.size = 10;
   Chart.defaults.color = theme.text;
+  ringChart = new Chart(document.getElementById('ringChart'), {
+    type:'doughnut',
+    data:{labels:['Allowed','Blocked'],datasets:[{data:[],backgroundColor:[theme.ok,theme.bad],borderWidth:2,borderColor:theme.surface}]},
+    options:{cutout:'82%',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}},
+  });
   donutChart = new Chart(document.getElementById('donutChart'), {
     type:'doughnut',
     data:{labels:[],datasets:[{data:[],backgroundColor:COLORS,borderWidth:0}]},
@@ -4217,7 +5385,7 @@ function initCharts() {
     type:'line',
     data:{labels:[],datasets:[
       {label:'Passed',data:[],borderColor:theme.passed,borderWidth:1.5,pointRadius:0,tension:0.3},
-      {label:'Intercepted',data:[],borderColor:theme.intercepted,borderWidth:2,pointRadius:0,tension:0.3},
+      {label:'Blocked',data:[],borderColor:theme.intercepted,borderWidth:2,pointRadius:0,tension:0.3},
     ]},
     options:{responsive:true,maintainAspectRatio:false,
       scales:{x:{grid:{display:false},ticks:{callback:v=>String(v).slice(5),color:theme.text}},y:{grid:{color:theme.grid},ticks:{color:theme.text}}},
@@ -4261,21 +5429,66 @@ function initCharts() {
 
 // ── Sessions (overview table) ─────────────────────────────────────────────
 const sessState = {page:1,limit:20,sort:'updatedAt',dir:'desc',total:0,pages:1};
+
+// One filter bar, both lists: the control list up top and the full log below
+// read the same query, so narrowing to one agent narrows what you can pause.
+const SESS_FILTER_IDS = {q:'sfSearch', agent:'sfAgent', workspace:'sfWorkspace', findings:'sfFindings', min_risk:'sfRisk', since_hours:'sfSince'};
+function sessFilterQuery() {
+  return Object.entries(SESS_FILTER_IDS).map(([k, id]) => {
+    const v = (document.getElementById(id)?.value || '').trim();
+    return v && v !== '0' ? '&' + k + '=' + encodeURIComponent(v) : '';
+  }).join('');
+}
+function sessFiltersActive() { return sessFilterQuery() !== ''; }
+let _sessFacetsFilled = false;
+function fillSessFacets(facets) {
+  if (_sessFacetsFilled || !facets) return;
+  const fill = (id, items, first) => {
+    const sel = document.getElementById(id); if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">' + first + '</option>' + items.map(o =>
+      '<option value="' + safeAttr(o.value) + '">' + safe(o.label) + '</option>').join('');
+    sel.value = cur;
+  };
+  fill('sfAgent', (facets.agents || []).map(a => ({value:a, label:a})), 'All agents');
+  fill('sfWorkspace', (facets.workspaces || []).map(w => ({value:w.path, label:w.name || w.path})), 'All workspaces');
+  _sessFacetsFilled = (facets.agents || []).length > 0;
+}
+function sessCountLabel(total) {
+  return fmtNum(total) + ' session' + (total === 1 ? '' : 's') + (sessFiltersActive() ? ' match' : '');
+}
+Object.values(SESS_FILTER_IDS).forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', () => {
+    sessState.page = 1; _sessCtrlData.page = 1;
+    document.getElementById('sfClear').hidden = !sessFiltersActive();
+    loadSessions(); loadSessionControl();
+  });
+});
+document.getElementById('sfClear').addEventListener('click', () => {
+  Object.values(SESS_FILTER_IDS).forEach(id => { const el = document.getElementById(id); if (el) el.value = el.tagName === 'INPUT' ? '' : el.options[0].value; });
+  document.getElementById('sfClear').hidden = true;
+  sessState.page = 1; _sessCtrlData.page = 1;
+  loadSessions(); loadSessionControl();
+});
+
 async function loadSessions() {
   const {page,limit,sort,dir} = sessState;
   try {
-    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}`);
+    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}` + sessFilterQuery());
     sessState.page=data.page; sessState.pages=data.pages; sessState.total=data.total;
+    fillSessFacets(data.facets);
     renderSessions(data.items);
     buildPager('sessPager',sessState,loadSessions);
-    document.getElementById('sessCount').textContent=fmtNum(data.total)+' sessions';
+    document.getElementById('sessCount').textContent=sessCountLabel(data.total);
     updateSessHeaders();
   } catch(e){console.error('[prismor] sessions:',e);}
 }
 function renderSessions(rows) {
   const tbody=document.getElementById('sessBody');
   renderOverviewSessions(rows.slice(0, 5));
-  if(!rows.length){tbody.innerHTML='<tr><td colspan="7" class="empty">No sessions yet</td></tr>';return;}
+  if(!rows.length){tbody.innerHTML='<tr><td colspan="7" class="empty">'+(sessFiltersActive()?'No sessions match these filters.':'No sessions yet')+'</td></tr>';return;}
   tbody.innerHTML=rows.map(s=>{
     const rc=riskClass(s.riskScore);
     const srcCls=s.source==='supply_chain'?'supply':'';
@@ -4428,6 +5641,65 @@ async function loadEvents(){
     if (_eventsAbort === controller) _eventsAbort = null;
   }
 }
+// Hook wall time as the harness saw it: process start to exit.
+function fmtMs(ms){ if (ms == null) return ''; return ms < 1000 ? ms+' ms' : (ms/1000).toFixed(1)+' s'; }
+// Third-party hooks per row, from the agent's own transcript. Hooks of one
+// event run in parallel, so the slowest one is the wait the agent saw.
+const HOOK_SLOW_MS = 2000;
+function fmtDur(ms){
+  if (ms == null) return '–';
+  if (ms < 1000) return ms + ' ms';
+  const sec = ms / 1000;
+  return sec < 60 ? sec.toFixed(1) + ' s' : Math.floor(sec / 60) + ' min ' + Math.round(sec % 60) + ' s';
+}
+function hookLabel(cmd){
+  const c = String(cmd||'');
+  if (/hook-dispatch/.test(c)) return 'prismor hook-dispatch';
+  const script = c.match(/[^\s"'=]+\.(?:sh|py|js|mjs|ts|rb)\b/);
+  return script ? script[0].split('/').slice(-2).join('/') : c.slice(0, 60);
+}
+function hookPhaseStats(runs){
+  const slowest = Math.max(0, ...runs.map(r => r.ms || 0));
+  return {slowest, fail: runs.some(r => !r.ok || (r.exit && r.exit !== '0'))};
+}
+function hookChip(ev){
+  const runs = ev.hookRuns || [];
+  if (!runs.length) return '';
+  const phases = {};
+  runs.forEach(r => (phases[r.event] = phases[r.event] || []).push(r));
+  const wait = Object.values(phases).reduce((n, p) => n + hookPhaseStats(p).slowest, 0);
+  const fail = runs.some(r => !r.ok || (r.exit && r.exit !== '0'));
+  return '<span class="hook-chip' + (fail ? ' fail' : wait >= HOOK_SLOW_MS ? ' slow' : '') + '" title="' +
+    safeAttr(runs.map(r => r.event + ' ' + hookLabel(r.command) + ' ' + fmtDur(r.ms)).join('\n')) + '">' +
+    runs.length + ' hook' + (runs.length === 1 ? '' : 's') + ' · ' + fmtDur(wait) + '</span>';
+}
+function hookRunsHtml(ev){
+  const runs = ev.hookRuns || [];
+  if (!runs.length) return '';
+  const max = Math.max(1, ...runs.map(r => r.ms || 0));
+  const phases = [];
+  runs.forEach(r => { let p = phases.find(x => x.event === r.event); if (!p) phases.push(p = {event: r.event, runs: []}); p.runs.push(r); });
+  const block = (label, text) => text ? '<div class="hook-io"><em>' + label + '</em><pre>' + safe(prettyJson(text)) + '</pre></div>' : '';
+  return '<div class="drawer-rule-row stack"><span class="drawer-rule-label" title="As the agent logged them. Hooks of one event run in parallel, so the slowest is the wait.">Hooks</span><div class="hook-runs" style="flex:1;min-width:0">' +
+    phases.map(p => { const st = hookPhaseStats(p.runs);
+      const input = p.event === 'PostToolUse' ? ev.postHookInput : p.event === 'PreToolUse' || p.event === ev.agentEvent ? ev.hookInput : '';
+      return '<div class="hook-phase">' + safe(p.event) + ' · ' + p.runs.length + ' ran at once · agent waited ' + fmtDur(st.slowest) + '</div>' +
+        (input ? '<details class="hook-sent"><summary>What every ' + safe(p.event) + ' hook received</summary>' + block('stdin', input) + '</details>' : '') +
+        p.runs.map(r => { const bad = !r.ok || (r.exit && r.exit !== '0'), slow = (r.ms || 0) >= HOOK_SLOW_MS;
+          const out = block('Sent back (stdout)', r.stdout) + block('Errors (stderr)', r.stderr) + block('Added to the model\'s context', r.content);
+          return '<details class="hook-run' + (bad ? ' fail' : slow ? ' slow' : '') + '"><summary><code>' + safe(hookLabel(r.command)) + '</code>' +
+            '<span class="ms">' + fmtDur(r.ms) + (bad ? ' · exit ' + safe(r.exit || '?') : '') + '</span>' +
+            '<span class="bar"><i style="width:' + Math.max(2, Math.round(100 * (r.ms || 0) / max)) + '%"></i></span></summary>' +
+            '<div class="hook-io"><em>Command</em><pre>' + safe(r.command) + '</pre></div>' +
+            '<div class="hook-io"><em>Took</em> ' + fmtDur(r.ms) + ' · exit ' + safe(r.exit || '0') + (r.ok ? '' : ' · the agent logged it as an error') + '</div>' +
+            (out || '<div class="hook-io"><em>Sent back nothing</em></div>') + '</details>'; }).join(''); }).join('') +
+    '</div></div>';
+}
+function prettyJson(t){ try { return JSON.stringify(JSON.parse(t), null, 1); } catch (e) { return t; } }
+function hookMeta(name, ms){
+  if (!name && ms == null) return '';
+  return ' &middot; '+(name ? '<span class="hook-pill">'+safe(name)+'</span>' : '')+(ms != null ? ' '+fmtMs(ms) : '');
+}
 function renderEvents(rows){
   const container=document.getElementById('evtContainer');
   if(!rows.length){container.innerHTML='<div class="empty">No events match the current filters</div>';return;}
@@ -4448,6 +5720,7 @@ function renderEvents(rows){
           (ev.tsAbs?'<span class="ts-hover" title="'+safeAttr(ev.tsAbs)+'">'+safe(ev.ts)+'</span>':safe(ev.ts))+
           ' &middot; <strong style="color:var(--gray-600)">'+safe(ev.agent)+'</strong>'+
           (sid ? ' &middot; <span class="event-sess-id" title="'+safeAttr(sid)+'">'+safe(shortId(sid,18))+'</span>' : '')+
+          hookMeta(ev.agentEvent, ev.hookMs)+
         '</div>'+
         '<div class="event-action">'+toolTag+safe(ev.action)+'</div>'+
       '</div>'+
@@ -4485,6 +5758,26 @@ document.getElementById('evtAgent').addEventListener('change',e=>{evtState.agent
 document.getElementById('evtLimit').addEventListener('change',e=>{evtState.limit=parseInt(e.target.value,10);evtState.page=1;loadEvents();});
 
 // ── Stats ─────────────────────────────────────────────────────────────────
+// What needs a person, first. Numbers describe; this list says what to do.
+let _attn = {ext: null};
+function renderAttention(k){
+  const items = [];
+  const win = String(k.days)==='1' ? 'last 24 hours' : 'last '+k.days+' days';
+  if (k.blocked) items.push({n:k.blocked, t:'call'+(k.blocked===1?'':'s')+' blocked in the '+win, d:'See which rule stopped each one and whether it was right.', go:"document.querySelector('.tab-btn[data-tab=\\'sessions\\']')?.click()"});
+  const ext = _attn.ext;
+  if (ext && ext.review) items.push({n:ext.review, t:'extension'+(ext.review===1?'':'s')+' waiting for review', d:'New or changed skills, MCP servers and hooks that put instructions into your agents. Read them once and mark reviewed.', go:"_extView='installed';_extFilter='review';document.querySelector('.tab-btn[data-tab=\\'extensions\\']')?.click()"});
+  if (!k.total) items.push({n:'', t:'No calls screened yet', d:'Run an agent in a hooked workspace, or run `prismor setup` to install the hooks.', go:''});
+  // Headline is the first item; its own "what to do" line leads the list.
+  document.getElementById('attnTitle').textContent = items.length ? (items[0].n ? fmtNum(items[0].n)+' '+items[0].t : items[0].t) : 'All clear';
+  document.getElementById('attnList').innerHTML = items.map((i, idx) =>
+    '<li'+(i.go?' onclick="'+i.go+'" class="link"':'')+'>'+(idx ? '<b>'+(i.n!==''?fmtNum(i.n)+' ':'')+safe(i.t)+'</b>' : '')+'<span>'+safe(i.d)+(i.go?' &rarr;':'')+'</span></li>').join('')
+    + (!items.length ? '<li><span>Nothing blocked in this window and every extension has been reviewed.</span></li>' : '');
+  if (!ext){
+    apiFetch('/api/extensions'+(_serverWorkspace?'?workspace='+encodeURIComponent(_serverWorkspace):''), {timeoutMs:20000})
+      .then(d => { _extCache = d; const c = d.counts||{}; _attn.ext = {review: Object.values(c).reduce((a,x)=>a+(x.review||0),0)}; renderAttention(k); })
+      .catch(()=>{ _attn.ext = {review:0}; });
+  }
+}
 async function loadStats(){
   try{
     const days=document.getElementById('globalDays').value;
@@ -4512,6 +5805,22 @@ async function loadStats(){
     document.getElementById('sevHigh').textContent=fmtNum(sv.high||0);
     document.getElementById('sevMedium').textContent=fmtNum(sv.medium||0);
     document.getElementById('sevLow').textContent=fmtNum(sv.low||0);
+    const total=k.toolCallsInspected24h||0, blocked=k.dangerousCommandsPrevented24h||0, passed=Math.max(0,total-blocked);
+    const pctText=total?(Math.round(passed/total*1000)/10)+'%':'–';
+    const findings=(sv.critical||0)+(sv.high||0)+(sv.medium||0)+(sv.low||0);
+    document.getElementById('ringPct').innerHTML=total?pctText.replace('%','<small>%</small>'):'–';
+    document.getElementById('ringPassed').textContent=fmtNum(passed);
+    document.getElementById('ringBlocked').textContent=fmtNum(blocked);
+    document.getElementById('ringFindings').textContent=fmtNum(findings);
+    document.getElementById('kpiFindings').textContent=fmtNum(findings);
+    renderAttention({blocked, total, findings, days});
+    ringChart.data.datasets[0].data=total?[passed,blocked]:[1,0];
+    ringChart.update();
+    document.getElementById('stepReq').textContent=fmtNum(total)+' inspected';
+    document.getElementById('stepDec').textContent=pctText+' passed';
+    document.getElementById('stepEv').textContent=fmtNum(findings)+' findings';
+    _navSessions=k.activeSessions||0;
+    syncNavCounts();
     const threats=data.threatsByCategory||{};
     const catKeys=Object.keys(CAT_LABELS);
     donutChart.data.labels=catKeys.map(k=>CAT_LABELS[k]);
@@ -4614,6 +5923,20 @@ document.getElementById('globalDays').addEventListener('change',()=>{loadStats()
 // AGENTS TAB — per-agent kill switch, mode override, IAM profile
 // ══════════════════════════════════════════════════════════════════════════
 let _agentsCache = null;
+// Sidebar counts and the step-strip footers read from three loaders that land
+// in any order, so each one just re-renders whatever is known so far.
+let _navSessions = null, _navRules = null, _navMode = null;
+function syncNavCounts() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v == null ? '' : fmtNum(v); };
+  const agents = _agentsCache ? (_agentsCache.agents || []).length : null;
+  set('navAgents', agents); set('navSessions', _navSessions); set('navRules', _navRules);
+  set('kpiAgentCount', agents);
+  const n = v => v == null ? '–' : fmtNum(v);
+  const idEl = document.getElementById('stepId');
+  if (idEl) idEl.textContent = n(agents) + ' agents · ' + n(_navSessions) + ' sessions';
+  const polEl = document.getElementById('stepPol');
+  if (polEl) polEl.textContent = (_navRules == null ? '–' : fmtNum(_navRules) + ' rules') + (_navMode ? ' · ' + _navMode : '');
+}
 
 function fmtLastSeen(iso) {
   if (!iso) return '—';
@@ -4631,6 +5954,7 @@ async function loadAgents() {
     const data = await apiFetch('/api/agents');
     _agentsCache = data;
     renderAgents(data);
+    syncNavCounts();
   } catch (e) {
     console.error('[prismor] agents:', e);
     if (!_agentsCache) {
@@ -4675,7 +5999,7 @@ function renderAgents(data) {
         '<option value="' + safeAttr(p) + '"' + (a.iam_profile === p ? ' selected' : '') + '>' + safe(p) + '</option>'))
       .join('');
     return '<tr class="' + (a.enabled ? '' : 'agent-off') + '">' +
-      '<td><span class="agent-name link" onclick="openAgentView(\'' + safeAttr(a.name) + '\')">' + safe(a.name) + '</span>' +
+      '<td>' + agentIcon(a.name, a.framework) + '<span class="agent-name link" onclick="openAgentView(\'' + safeAttr(a.name) + '\')">' + safe(a.name) + '</span>' +
         (a.framework && a.framework !== a.name ? ' <span class="agent-pill">' + safe(a.framework) + '</span>' : '') + '</td>' +
       '<td>' + status + '</td>' +
       '<td><select class="fsel" onchange="agentSet(\'' + safeAttr(a.name) + '\',{mode:this.value||null})">' + modeOpts + '</select></td>' +
@@ -4778,14 +6102,15 @@ async function loadSessionControl() {
   const ws = activeWorkspace();
   const { page, limit } = _sessCtrlData;
   try {
-    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=updatedAt&dir=desc`);
+    const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=updatedAt&dir=desc` + sessFilterQuery());
+    fillSessFacets(data.facets);
     _sessCtrlData.items = data.items || [];
     _sessCtrlData.total = data.total || 0;
     _sessCtrlData.pages = data.pages || 1;
     _sessCtrlData.page = data.page || 1;
     _sessCtrlCache = { items: data.items || [], total: data.total || 0, pages: data.pages || 1, page: data.page || 1 };
     renderSessionControl(data.items || [], ws);
-    document.getElementById('scSessCount').textContent = fmtNum(data.total || 0) + ' sessions';
+    document.getElementById('scSessCount').textContent = sessCountLabel(data.total || 0);
     buildPager('scSessPager', _sessCtrlData, () => loadSessionControl());
   } catch(e) { console.error('[prismor] session-ctrl:', e); }
   loadSessions();
@@ -4794,10 +6119,14 @@ async function loadSessionControl() {
 function statusPill(item, scoped) {
   const paused = scoped && scoped.paused;
   const hasScoped = !!scoped;
-  const hasBlocks = item.findingsCount > 0;
+  // blockCount when the caller knows real blocks; the sessions list only has
+  // findingsCount, which includes warnings, so it says "findings".
+  const n = item.blockCount != null ? item.blockCount : item.findingsCount;
+  const noun = item.blockCount != null ? 'block' : 'finding';
+  const hasBlocks = n > 0;
   if (paused) return '<span class="status-pill status-paused"><span class="status-dot"></span>Paused</span>';
   if (hasScoped) return '<span class="status-pill status-scoped"><span class="status-dot"></span>Scoped</span>';
-  if (hasBlocks) return '<span class="status-pill status-blocked"><span class="status-dot"></span>' + item.findingsCount + ' blocks</span>';
+  if (hasBlocks) return '<span class="status-pill status-blocked"><span class="status-dot"></span>' + n + ' ' + noun + (n === 1 ? '' : 's') + '</span>';
   return '<span class="status-pill status-active"><span class="status-dot"></span>Active</span>';
 }
 
@@ -4848,7 +6177,7 @@ async function toggleSessDetail(detailId, sessId, ws, idx) {
     renderSessDetail(detail, data, idx);
     // Update pill
     const pill = document.getElementById('pill-' + idx);
-    if (pill) pill.innerHTML = statusPill({findingsCount: (data.recent_blocked||[]).length}, data.scoped);
+    if (pill) pill.innerHTML = statusPill({blockCount: (data.recent_blocked||[]).length}, data.scoped);
   } catch(e) {
     detail.innerHTML = '<div style="font-size:11px;color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
   }
@@ -4911,7 +6240,7 @@ async function sessAction(sessId, action, workspace, idx) {
       const data = await apiFetch(`/api/sessions/${encodeURIComponent(sessId)}/control${params}`);
       renderSessDetail(detail, data, idx);
       const pill = document.getElementById('pill-' + idx);
-      if (pill) pill.innerHTML = statusPill({findingsCount:(data.recent_blocked||[]).length}, data.scoped);
+      if (pill) pill.innerHTML = statusPill({blockCount:(data.recent_blocked||[]).length}, data.scoped);
     }
     toast({pause:'Session paused — protection off', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
   } catch(e) {
@@ -5001,6 +6330,13 @@ function renderPolicyTab(data) {
         intro: 'Highest active layer wins. Click Open to jump straight to the governing layer.',
       },
     );
+    const chain = (data.precedence || {}).chain || [];
+    const win = chain.find(e => e.winning) || chain.find(e => e.exists);
+    const eff = data.effective || {};
+    const sum = document.getElementById('precSummary');
+    if (sum) sum.textContent = !win ? 'No policy layers loaded yet.'
+      : (win.label || win.scope) + ' governs · ' + (win.mode || eff.mode || 'observe')
+        + (eff.total ? ' · ' + (eff.blocking || 0) + ' of ' + eff.total + ' rules block' : '');
   }
 
   // Global
@@ -5159,13 +6495,22 @@ function _rulesDirty() {
   return _rulesCatalog.some(r => _rulesState[r.id] !== r.enabled);
 }
 
+let _rulesFilter = 'all';
 function renderRules() {
   const q = (document.getElementById('rulesSearch').value || '').toLowerCase();
   const list = document.getElementById('rulesList');
-  const vis = _rulesCatalog.filter(r =>
+  const passesFilter = r => {
+    const on = _rulesState[r.id];
+    if (_rulesFilter === 'blocks') return on && r.blocks;
+    if (_rulesFilter === 'reports') return on && !r.blocks;
+    if (_rulesFilter === 'off') return !on;
+    return true;
+  };
+  const vis = _rulesCatalog.filter(r => passesFilter(r) && (
     !q || r.id.toLowerCase().includes(q)
        || (r.title || '').toLowerCase().includes(q)
-       || (r.category || '').toLowerCase().includes(q));
+       || (r.category || '').toLowerCase().includes(q)));
+  document.getElementById('rulesActions')?.classList.toggle('dirty', _rulesDirty());
   const onCount = _rulesCatalog.filter(r => _rulesState[r.id]).length;
   const lockedCount = _rulesCatalog.filter(r => r.locked).length;
   // "78/78 on" is true and useless when only seven of them stop anything.
@@ -5212,6 +6557,11 @@ function renderRules() {
 }
 
 document.getElementById('rulesSearch').addEventListener('input', renderRules);
+document.querySelectorAll('#rulesFilters .fbtn').forEach(b => b.addEventListener('click', () => {
+  _rulesFilter = b.dataset.rf;
+  document.querySelectorAll('#rulesFilters .fbtn').forEach(x => x.classList.toggle('active', x === b));
+  renderRules();
+}));
 document.getElementById('rulesAll').addEventListener('click', () => {
   _rulesCatalog.forEach(r => { if (!r.locked) _rulesState[r.id] = true; }); renderRules();
 });

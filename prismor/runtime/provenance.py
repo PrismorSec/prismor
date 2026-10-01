@@ -35,9 +35,10 @@ Scope and its limits are deliberate:
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 # Tags that describe a CALL rather than its content, and so must not travel
 # with the artifact. "This agent ran a destructive command" is not a property
@@ -240,124 +241,434 @@ def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
 # to it -- verified in the lab, where a two-agent `curl -o` / `cat` / `psql`
 # handoff produced complete logs and an empty ledger.
 #
-# ponytail: token scan, not a shell grammar. Redirects, tee, curl/wget output
-# flags and cp/mv destinations cover what agents actually write with; a
-# subshell or an in-script write is missed. Upgrade to a real parse only if
-# something in the corpus needs it.
+# A token scan, not a shell grammar, but one that follows where fetched bytes
+# can go (#446). Operators are tokens of their own, so `-o a.html; echo` names
+# `a.html` and not `a.html;`. A command substitution is lifted out and scanned
+# on its own, and the word it sat in carries whatever it fetched: assigned to
+# a variable, that name carries for the rest of the command; on a pipe, every
+# segment downstream carries. A quoted heredoc body (`<<'EOF'`) is literal
+# text and is skipped, so a script that merely mentions `$(curl ...)` is not a
+# download; an unquoted body expands and is checked for what it references.
+# Not followed, by choice: `eval`, arrays, `printf -v`, a wrapper that takes
+# arguments of its own (`xargs`, `timeout 30`), a group's redirect (`{ curl
+# u; } > f`) and a fetched file re-read later in the same command (`curl -o f
+# && cp f g`), which the store covers across calls.
 
 _WRITE_FLAGS = {"-o", "--output", "-O", "--output-document"}
 _COPY_CMDS = {"cp", "mv", "install"}
 _FETCH_CMDS = {"curl", "wget"}
+# The short flag naming the output file, ending a cluster (`curl -sSLo f`,
+# `wget -qO f`). ponytail: only as the last letter of the cluster; an
+# attached value (`-sof`) is not followed.
+_OUT_SHORT = {"curl": "o", "wget": "O"}
+_OUT_LONG = ("--output=", "--output-document=")
+_READ_CMDS = {"read", "mapfile", "readarray"}
+_ASSIGN_CMDS = {"export", "local", "declare", "readonly", "typeset"}
+# Words that come before the command without being it.
+_PREFIX_WORDS = {
+    "(", "{", "!", "if", "then", "else", "elif", "while", "until", "do",
+    "time", "sudo", "env", "nohup", "command", "exec", "builtin",
+}
+
+_PUNCT = "();<>|&\n"
+# Longest first; anything else in a run of punctuation is a single character.
+_OPERATORS = ("<<<", ">>", "<<", "&&", "||", ";;", ">&", "<&", "&>", "|&", ">|")
+_COMMAND_SEPARATORS = {";", ";;", "&&", "||", "&", "\n"}
+_PIPES = {"|", "|&"}
+_WRITE_REDIRECTS = {">", ">>", "&>", ">|"}
+_SKIP_NEXT = {"<<", "<<<", ">&", "<&"}  # heredoc delimiter, here-string, fd dup
+_WORD_START = " \t\n;|&("  # what can come right before a comment or an fd
+
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.DOTALL)
+_VAR_RE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+# A lifted expansion is replaced by a NUL-framed index. NUL cannot occur in a
+# real argv, so a marker can never be mistaken for the agent's own text.
+_MARK = "\x00"
+_MARK_RE = re.compile("\x00(\\d+)\x00")
+_MAX_DEPTH = 4
 
 
-def _segments(tokens: List[str]) -> List[List[str]]:
+class ShellScan(NamedTuple):
+    """What one shell command touches, as resolved artifact keys."""
+
+    reads: Set[str]
+    writes: Set[str]
+    fetched: Set[str]  # the writes that are a fetch landing on disk
+
+
+def _closing_paren(text: str, start: int) -> int:
+    """Index of the ``)`` matching the ``(`` at ``start``, or -1. A paren
+    inside quotes does not count."""
+    depth = 0
+    i, n = start, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            j = text.find(c, i + 1)
+            if j < 0:
+                return -1
+            i = j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _lift_expansions(text: str, mark) -> str:
+    """``text`` with every ``$(...)``, ``<(...)``, ``>(...)`` and backtick
+    span replaced by a marker for the command inside it, and with the shell's
+    own reading applied where the tokenizer cannot see it: a single-quoted
+    span expands nothing (its ``$`` goes, so no variable is read into it), a
+    ``#`` comment goes, and a redirect of a descriptor other than stdin or
+    stdout (``2>err``, ``2>&1``) goes with its target, since what it writes
+    is not the command's output."""
+    out: List[str] = []
+    i, n = 0, len(text)
+    in_double = False
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            nxt = text[i + 1:i + 2]
+            # A backslash-newline is a line continuation: the shell drops both.
+            if nxt != "\n":
+                out.append("\\" + ("" if nxt == "$" else nxt))
+            i += 2
+        elif c == '"':
+            in_double = not in_double
+            out.append(c)
+            i += 1
+        elif c == "'" and not in_double:
+            j = text.find("'", i + 1)
+            j = n if j < 0 else j + 1
+            out.append(text[i:j].replace("$", ""))
+            i = j
+        elif c == "`":
+            j = text.find("`", i + 1)
+            if j < 0:
+                out.append(text[i:])
+                break
+            out.append(mark("cmd", text[i + 1:j]))
+            i = j + 1
+        elif c in "$<>" and text.startswith("(", i + 1):
+            j = _closing_paren(text, i + 1)
+            if j < 0:
+                out.append(text[i:])
+                break
+            out.append(mark("cmd", text[i + 2:j]))
+            i = j + 1
+        elif in_double:
+            out.append(c)
+            i += 1
+        elif c == "#" and (i == 0 or text[i - 1] in _WORD_START):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+        elif (
+            c.isdigit() and (i == 0 or text[i - 1] in _WORD_START)
+            and text[i + 1:i + 2] in ("<", ">")
+        ):
+            j = i + 1
+            while j < n and text[j] in "<>&|":
+                j += 1
+            if c in "01":
+                out.append(text[i + 1:j])
+            else:
+                while j < n and text[j] in " \t":
+                    j += 1
+                if j < n and text[j] in "'\"":
+                    k = text.find(text[j], j + 1)
+                    j = n if k < 0 else k + 1
+                while j < n and text[j] not in " \t\n;|&()<>":
+                    j += 1
+            i = j
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _lift(command: str, parts: List[Tuple[str, str]]) -> str:
+    """``command`` with its expansions moved into ``parts`` and markers left
+    in their place. A part is ``("cmd", text)`` for a command substitution or
+    ``("text", body)`` for a heredoc body the shell expands."""
+    from prismor.runtime.shell_context import heredocs
+
+    def mark(kind: str, text: str) -> str:
+        parts.append((kind, text))
+        return f"{_MARK}{len(parts) - 1}{_MARK}"
+
+    pieces: List[str] = []
+    pos = 0
+    for h in heredocs(command):
+        # The body becomes one word right after its `<<EOF`, so it belongs to
+        # the command that reads it and not to whatever else shares the line.
+        pieces.append(command[pos:h.op_end])
+        if h.expands:
+            body = _lift_expansions(command[h.body_start:h.body_end], mark)
+            pieces.append(" " + mark("text", body))
+        pieces.append(command[h.op_end:h.body_start - 1])
+        pos = h.end
+    pieces.append(command[pos:])
+    return _lift_expansions("".join(pieces), mark)
+
+
+def _split_operators(run: str) -> List[str]:
+    out: List[str] = []
+    i = 0
+    while i < len(run):
+        for op in _OPERATORS:
+            if run.startswith(op, i):
+                out.append(op)
+                i += len(op)
+                break
+        else:
+            out.append(run[i])
+            i += 1
+    return out
+
+
+def _tokenize(command: str) -> List[str]:
+    """shlex words, with every shell operator as a token of its own. Raises
+    ``ValueError`` on an unbalanced quote, as ``shlex.split`` does."""
+    import shlex
+
+    lex = shlex.shlex(command, posix=True, punctuation_chars=_PUNCT)
+    lex.whitespace = " \t\r"  # a newline separates commands
+    lex.whitespace_split = True
+    lex.commenters = ""
+    tokens: List[str] = []
+    for tok in lex:
+        if tok and all(ch in _PUNCT for ch in tok):
+            tokens.extend(_split_operators(tok))
+        else:
+            tokens.append(tok)
+    return tokens
+
+
+def _pipelines(tokens: List[str]) -> List[List[List[str]]]:
+    """Commands, split at ``;`` ``&&`` ``||`` ``&`` and newlines, each a list
+    of pipe segments."""
+    pipelines: List[List[List[str]]] = []
+    pipeline: List[List[str]] = []
     seg: List[str] = []
-    out: List[List[str]] = []
     for t in tokens:
-        if t in ("|", "||", "&&", ";", "&"):
+        if t in _PIPES or t in _COMMAND_SEPARATORS:
             if seg:
-                out.append(seg)
+                pipeline.append(seg)
             seg = []
+            if t in _COMMAND_SEPARATORS:
+                if pipeline:
+                    pipelines.append(pipeline)
+                pipeline = []
         else:
             seg.append(t)
     if seg:
-        out.append(seg)
-    return out
+        pipeline.append(seg)
+    if pipeline:
+        pipelines.append(pipeline)
+    return pipelines
 
 
-def _scan(command: str, cwd: Optional[Path]) -> Dict[str, Set[str]]:
+def _word(tok: str) -> bool:
+    """A token that can name a path: not an operator, not a lifted expansion,
+    not the ``-`` that stands for stdin or stdout."""
+    return (
+        bool(tok) and tok != "-" and _MARK not in tok
+        and not all(ch in _PUNCT for ch in tok)
+    )
+
+
+def shell_scan(command: str, cwd: Optional[Path] = None) -> ShellScan:
     """One pass over a command: read candidates, write targets, and which of
-    those writes are a fetch landing on disk."""
-    import shlex
+    those writes are a fetch landing on disk.
 
-    out: Dict[str, Set[str]] = {"reads": set(), "writes": set(), "fetched": set()}
-    if not command:
-        return out
-    try:
-        tokens = shlex.split(command, posix=True)
-    except ValueError:
-        return out
-
-    for seg in _segments(tokens):
-        if not seg:
-            continue
-        i = 0
-        # Skip leading VAR=value assignments and env/sudo wrappers.
-        while i < len(seg) and ("=" in seg[i] and not seg[i].startswith("-")):
-            i += 1
-        cmd = os.path.basename(seg[i]) if i < len(seg) else ""
-        args = seg[i + 1:] if i < len(seg) else []
-        seg_writes: Set[str] = set()
-
-        positional: List[str] = []
-        skip_next = False
-        for j, tok in enumerate(args):
-            if skip_next:
-                skip_next = False
-                continue
-            if tok in (">", ">>"):
-                if j + 1 < len(args):
-                    seg_writes.add(resolve(args[j + 1], cwd))
-                skip_next = True
-            elif tok == "<":
-                if j + 1 < len(args):
-                    out["reads"].add(resolve(args[j + 1], cwd))
-                skip_next = True
-            elif tok in _WRITE_FLAGS and cmd in _FETCH_CMDS:
-                if j + 1 < len(args):
-                    seg_writes.add(resolve(args[j + 1], cwd))
-                skip_next = True
-            elif tok.startswith("-"):
-                continue
-            else:
-                positional.append(tok)
-
-        if cmd == "tee":
-            seg_writes |= {resolve(a, cwd) for a in positional}
-        elif cmd in _COPY_CMDS and len(positional) >= 2:
-            out["reads"] |= {resolve(a, cwd) for a in positional[:-1]}
-            seg_writes.add(resolve(positional[-1], cwd))
-        elif cmd not in _FETCH_CMDS:
-            for a in positional:
-                key = resolve(a, cwd)
-                try:
-                    if os.path.isfile(key):
-                        out["reads"].add(key)
-                except Exception:
-                    pass
-
-        out["writes"] |= seg_writes
-        if cmd in _FETCH_CMDS:
-            # Whatever this segment wrote is off-machine content, whether it
-            # got there through -o or through a redirect. The session need not
-            # have read anything untrusted for the FILE to be untrusted: for a
-            # shell-only agent this is the fetch.
-            out["fetched"] |= seg_writes
-
-    for key in out:
-        out[key].discard("")
-    out["reads"] -= out["writes"]
+    Read candidates are generous on purpose: any argument that exists as a
+    file counts, because a candidate that was never written by a tracked
+    agent finds no entry and costs one dict lookup. Write candidates are
+    strict, because a wrong one would mark an unrelated file as carrying
+    another agent's content.
+    """
+    scanner = _Scanner(cwd)
+    if command:
+        try:
+            # No real argv holds a NUL, so after this every marker is ours.
+            scanner.scan(command.replace(_MARK, ""), 0)
+        except Exception:
+            # A scanner bug must not become a silently unscreened call: keep
+            # whatever was found before it.
+            pass
+    out = scanner.out
+    for paths in out:
+        paths.discard("")
+    out.reads.difference_update(out.writes)
     return out
+
+
+class _Scanner:
+    """One command's scan: its results, the variables holding fetched content
+    so far, and the lifted expansions. Nested scans share all of it, so a
+    marker means the same thing wherever it lands -- a heredoc inside a
+    ``$(...)`` sits in the inner command's text but was lifted by the outer
+    pass."""
+
+    def __init__(self, cwd: Optional[Path]) -> None:
+        self.cwd = cwd
+        self.out = ShellScan(set(), set(), set())
+        self.tainted: Set[str] = set()
+        self.parts: List[Tuple[str, str]] = []
+        self.evaluated: Dict[int, bool] = {}
+
+    def carries(self, tok: str, depth: int) -> bool:
+        """Whether expanding this word yields fetched content."""
+        for m in _MARK_RE.finditer(tok):
+            n = int(m.group(1))
+            if n not in self.evaluated:
+                kind, text = self.parts[n]
+                if depth >= _MAX_DEPTH:
+                    self.evaluated[n] = False
+                elif kind == "cmd":
+                    self.evaluated[n] = self.scan(text, depth + 1)
+                else:
+                    self.evaluated[n] = self.carries(text, depth)
+            if self.evaluated[n]:
+                return True
+        return any(v in self.tainted for v in _VAR_RE.findall(tok))
+
+    def assign(self, m, depth: int) -> None:
+        name, append, value = m.group(1), m.group(2), m.group(3)
+        if self.carries(value, depth):
+            self.tainted.add(name)
+        elif not append:
+            self.tainted.discard(name)
+
+    def path(self, tok: str) -> str:
+        """``tok`` as an artifact key, or "" when it cannot be one. A device
+        (`/dev/null`, `/dev/stderr`) is not an artifact. Checked before
+        resolving too: on Linux `/dev/stderr` resolves through /proc to a pipe
+        or a deleted file, not to anything under /dev."""
+        if not _word(tok) or tok.startswith("/dev/"):
+            return ""
+        key = resolve(tok, self.cwd)
+        return "" if key.startswith("/dev/") else key
+
+    def scan(self, command: str, depth: int) -> bool:
+        """Scan ``command``. True when it puts fetched content on its output,
+        which is what a ``$(...)`` around it hands to the enclosing word."""
+        try:
+            tokens = _tokenize(_lift(command, self.parts))
+        except ValueError:
+            return False
+        out = self.out
+
+        fetched_any = False
+        for pipeline in _pipelines(tokens):
+            carrying = False  # fetched bytes on the pipe from upstream
+            for seg in pipeline:
+                i = 0
+                while i < len(seg):
+                    m = _ASSIGN_RE.match(seg[i])
+                    if m:
+                        self.assign(m, depth)
+                    elif not (
+                        seg[i] in _PREFIX_WORDS
+                        and i + 1 < len(seg) and _word(seg[i + 1])
+                    ):
+                        break
+                    i += 1
+                cmd = os.path.basename(seg[i]) if i < len(seg) else ""
+                args = seg[i + 1:]
+                if cmd in _ASSIGN_CMDS:
+                    for a in args:
+                        m = _ASSIGN_RE.match(a)
+                        if m:
+                            self.assign(m, depth)
+                seg_writes: Set[str] = set()
+
+                positional: List[str] = []
+                skip_next = False
+                for j, tok in enumerate(args):
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    nxt = args[j + 1] if j + 1 < len(args) else ""
+                    if tok in _WRITE_REDIRECTS:
+                        seg_writes.add(self.path(nxt))
+                        skip_next = True
+                    elif tok == "<":
+                        out.reads.add(self.path(nxt))
+                        skip_next = True
+                    elif tok in _SKIP_NEXT:
+                        skip_next = True
+                    elif tok in _WRITE_FLAGS and cmd in _FETCH_CMDS:
+                        seg_writes.add(self.path(nxt))
+                        skip_next = True
+                    elif cmd in _FETCH_CMDS and tok.startswith(_OUT_LONG):
+                        seg_writes.add(self.path(tok.split("=", 1)[1]))
+                    elif (
+                        cmd in _FETCH_CMDS and len(tok) > 2 and tok[1:].isalpha()
+                        and tok[0] == "-" and tok[-1] == _OUT_SHORT[cmd]
+                    ):
+                        seg_writes.add(self.path(nxt))
+                        skip_next = True
+                    elif _word(tok) and not tok.startswith("-"):
+                        positional.append(tok)
+
+                # Fetched content reaches this segment from a fetch it runs,
+                # from the pipe, or from a word that expands to one.
+                seg_carries = (
+                    carrying or cmd in _FETCH_CMDS
+                    or any(self.carries(t, depth) for t in seg)
+                )
+                if cmd in _READ_CMDS and seg_carries:
+                    self.tainted.update(positional)
+
+                if cmd == "tee":
+                    seg_writes |= {self.path(a) for a in positional}
+                elif cmd in _COPY_CMDS and len(positional) >= 2:
+                    out.reads.update(self.path(a) for a in positional[:-1])
+                    seg_writes.add(self.path(positional[-1]))
+                elif cmd not in _FETCH_CMDS:
+                    for a in positional:
+                        key = self.path(a)
+                        try:
+                            if key and os.path.isfile(key):
+                                out.reads.add(key)
+                        except Exception:
+                            pass
+
+                out.writes.update(seg_writes)
+                if seg_carries:
+                    # Whatever this segment wrote is off-machine content,
+                    # whether it got there through -o, a redirect, a pipe or
+                    # a variable. The session need not have read anything
+                    # untrusted for the FILE to be untrusted: for a
+                    # shell-only agent this is the fetch.
+                    out.fetched.update(seg_writes)
+                    fetched_any = True
+                carrying = seg_carries
+        return fetched_any
 
 
 def shell_paths(command: str, cwd: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:
-    """``(reads, writes)`` for one shell command, as resolved artifact keys.
-
-    Read candidates are generous on purpose: any argument that exists as a file
-    counts, because a candidate that was never written by a tracked agent finds
-    no entry and costs one dict lookup. Write candidates are strict, because a
-    wrong one would mark an unrelated file as carrying another agent's content.
-    """
-    scan = _scan(command, cwd)
-    return scan["reads"], scan["writes"]
+    """``(reads, writes)`` for one shell command, as resolved artifact keys."""
+    scan = shell_scan(command, cwd)
+    return scan.reads, scan.writes
 
 
 def fetch_targets(command: str, cwd: Optional[Path] = None) -> Set[str]:
-    """Files this command downloads onto disk (``curl -o``, ``wget > f``, ...).
+    """Files this command downloads onto disk: ``curl -o f``, ``wget > f``,
+    ``curl u | tee f``, ``v=$(curl u); echo "$v" > f``.
 
     These carry ``untrusted_content`` on their own account rather than
     inheriting it from the writing session, which is what makes the mechanism
     work for an agent that never calls a tagged fetch tool -- Codex reaches the
     web through Bash, so without this its downloads are untracked.
     """
-    return _scan(command, cwd)["fetched"]
+    return shell_scan(command, cwd).fetched

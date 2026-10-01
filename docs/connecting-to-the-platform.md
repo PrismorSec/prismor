@@ -139,13 +139,29 @@ records via `telemetry.build_record()` and runs `assert_redacted()` before uploa
 - **Redacted mode (default):** metadata + enums + hashes only — severity,
   category, rule_id, event type, agent, verdict, a *static* rule title
   (paths/hosts/URLs/secrets stripped), a 16-char `evidence_hash`, tool_name,
-  managed-repo context, policy_scope, device_id, session_id, subject (principal
-  ids). **Never sent:** commands, stdout/stderr, file paths, URLs, file contents,
+  managed-repo context, policy_scope, the applied org policy version + profile id, device_id, session_id, subject (principal
+  ids), and the deployment labels `environment` / `release` (below). **Never sent:** commands, stdout/stderr, file paths, URLs, file contents,
   prompts, responses, payloads, matched evidence.
 - **Full capture (admin opt-in, per-org):** additionally ships evidence/content,
   still scrubbed through the cloaking secret patterns so registered secrets never
   leave. A flip is surfaced to the developer via a stderr `NOTICE` and in
   `prismor enroll-status` (`capture: FULL`).
+
+### Environment and release labels
+
+Every record (and every generic sink event) carries `environment` and
+`release`, so the console can filter events and sessions by deployment and
+show which release started misbehaving. Set them in the agent's environment:
+
+```bash
+PRISMOR_ENVIRONMENT=prod        # lowercase [a-z0-9_-], up to 40 chars
+PRISMOR_RELEASE=9f2c1ab         # git sha or app version: printable, no whitespace, up to 64 chars
+```
+
+Values that fail validation are dropped (sent as null), never rewritten. Both
+are operator config, not captured content, so they ship in redacted mode. The
+OTel sink also sets them as the resource attributes
+`deployment.environment.name` and `service.version`.
 
 Upload: `POST /api/telemetry/ingest`. An offline **spool** gives at-least-once
 delivery, written *after* redaction. Short hot-path timeout (~6s) ⇒ a slow

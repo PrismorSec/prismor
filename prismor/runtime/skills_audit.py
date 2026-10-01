@@ -27,7 +27,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 __all__ = ["audit_skills", "approve_skill", "discover_skill_files", "format_audit"]
 
@@ -74,8 +74,25 @@ def _baseline_path(workspace: Path) -> Path:
     return get_data_dir(workspace) / "skills_baseline.json"
 
 
+def _scan_cache_path(workspace: Path) -> Path:
+    from prismor.runtime.store import get_data_dir
+    return get_data_dir(workspace) / "skills_scan_cache.json"
+
+
+def _rules_fingerprint(engine: Any) -> str:
+    """Changes whenever a rule that can fire on a skill manifest changes."""
+    rules = sorted(
+        (r.id, r.severity, r.action, r.enabled, r.mode, list(r.raw_patterns))
+        for r in getattr(engine, "rules", []) if "skill_manifest" in r.event_types
+    )
+    return hashlib.sha256(json.dumps(rules, default=str).encode()).hexdigest()[:16]
+
+
 def _load_baseline(workspace: Path) -> Dict[str, Any]:
-    p = _baseline_path(workspace)
+    return _load_json(_baseline_path(workspace))
+
+
+def _load_json(p: Path) -> Dict[str, Any]:
     if not p.exists():
         return {}
     try:
@@ -86,7 +103,10 @@ def _load_baseline(workspace: Path) -> Dict[str, Any]:
 
 
 def _save_baseline(workspace: Path, data: Dict[str, Any]) -> None:
-    p = _baseline_path(workspace)
+    _save_json(_baseline_path(workspace), data)
+
+
+def _save_json(p: Path, data: Dict[str, Any]) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
@@ -137,6 +157,12 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
         from prismor.runtime.policy_engine import PolicyEngine
         engine = PolicyEngine(workspace=workspace)
     baseline = _load_baseline(workspace)
+    # Evaluating every rule over every SKILL.md takes tens of seconds on a
+    # machine with a few plugin marketplaces, on the SessionStart path. A
+    # skill's findings only change when its bytes or the skill rules do.
+    cache = _load_json(_scan_cache_path(workspace))
+    fresh_cache: Dict[str, Any] = {}
+    rules_fp = _rules_fingerprint(engine)
     now = datetime.now(timezone.utc).isoformat()
     rows: List[Dict[str, Any]] = []
     changed_baseline = False
@@ -160,19 +186,23 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
         else:
             status = "changed"
 
-        try:
-            findings = engine.evaluate(
-                {"type": "skill_manifest", "content": text, "prompt": text, "path": key,
-                 "_bulk_scan": True},
-                idx, session_id="",
-            )
-        except Exception:
-            findings = []
-        findings = [
-            {"ruleId": f.get("ruleId"), "severity": f.get("severity"), "title": f.get("title"),
-             "action": f.get("action")}
-            for f in findings
-        ]
+        cache_key = f"{digest}:{rules_fp}"
+        findings = cache.get(cache_key)
+        if not isinstance(findings, list):
+            try:
+                findings = engine.evaluate(
+                    {"type": "skill_manifest", "content": text, "prompt": text, "path": key,
+                     "_bulk_scan": True},
+                    idx, session_id="",
+                )
+            except Exception:
+                findings = []
+            findings = [
+                {"ruleId": f.get("ruleId"), "severity": f.get("severity"), "title": f.get("title"),
+                 "action": f.get("action")}
+                for f in findings
+            ]
+        fresh_cache[cache_key] = findings
         rows.append({
             "path": key,
             "name": fm.get("name") or path.parent.name,
@@ -186,6 +216,11 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
 
     if record and changed_baseline:
         _save_baseline(workspace, baseline)
+    if fresh_cache != cache:
+        try:
+            _save_json(_scan_cache_path(workspace), fresh_cache)
+        except OSError:
+            pass
     return rows
 
 

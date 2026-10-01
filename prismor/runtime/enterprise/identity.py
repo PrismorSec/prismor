@@ -20,7 +20,6 @@ from prismor.runtime.http_ua import user_agent as _http_user_agent
 
 import json
 import os
-import stat
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -202,7 +201,7 @@ def verify_remote(timeout: float = 6.0) -> Dict[str, Any]:
     except Exception:
         pass
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -292,7 +291,7 @@ def enroll(token: str, base: Optional[str] = None, label: Optional[str] = None,
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200] if exc.fp else ""

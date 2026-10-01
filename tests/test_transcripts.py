@@ -730,8 +730,11 @@ def test_backfill_offer_runs_when_accepted(
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "empty"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
     _offer(tmp_path, choice=True)
-    out = capsys.readouterr().out
-    assert "Would BLOCK" in out
+    captured = capsys.readouterr()
+    assert "Would BLOCK" in captured.out
+    # The heads-up goes to stderr, sized before the slow part starts.
+    assert "Replaying 1 transcripts" in captured.err
+    assert "under a minute" in captured.err
 
     connection = sqlite3.connect(str(get_db_path(tmp_path / "ws")))
     stored = connection.execute(
@@ -739,6 +742,23 @@ def test_backfill_offer_runs_when_accepted(
     ).fetchone()[0]
     connection.close()
     assert stored == 1, "accepting the offer must persist the reconstruction"
+
+
+def test_sweep_reports_progress_per_transcript(claude_home, tmp_path):
+    from prismor.runtime.transcripts.driver import SweepOptions, pending, sweep
+
+    ticks = []
+    options = SweepOptions(
+        workspace=tmp_path,
+        repo_root=tmp_path,
+        agents=["claude"],
+        persist=False,
+        progress=lambda done, events: ticks.append((done, events)),
+    )
+    todo = pending(options)
+    result = sweep(options)
+    assert len(ticks) == len(todo) == 1
+    assert ticks[-1] == (1, result.total_events)
 
 
 def test_setup_parser_accepts_backfill_flags():

@@ -15,7 +15,7 @@ where they can intercept and what they can do there:
 | **Mirror** | the agent's own built-ins, served over MCP | yes | yes | yes |
 | **SDK adapters** | in-process framework agents | yes | no | no |
 | **eval-server** | non-Python callers and external proxies | yes | yes | yes |
-| **LLM proxy** | the agent's model traffic, including agents with no hooks | yes | yes | yes |
+| **LLM proxy** | the agent's model traffic and A2A agent-to-agent calls, including agents with no hooks | yes | yes | yes |
 | **Inference hook** | a hosted transcript-turn channel | yes | no | no |
 
 Run `prismor surfaces` to see which of these are switched on for each agent

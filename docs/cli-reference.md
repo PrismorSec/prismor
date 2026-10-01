@@ -8,7 +8,9 @@ links to the dedicated deep-dive doc for that capability.
 prismor <command> [options...]
 prismor <domain> <action> [options...]
 prismor --help               # the same map, in your terminal
-prismor <command> --help     # help for one command
+prismor help                 # browse it interactively: type to filter, enter for details
+prismor help <command>       # help for one command (same as prismor <command> --help)
+prismor help <word>          # search commands and sub-commands, e.g. prismor help secret
 ```
 
 There are two shapes:
@@ -61,7 +63,9 @@ prismor
 │
 ├─ Visibility (audit & forensics)
 │   ├─ audit                  Full posture audit (--fix to remediate)
+│   ├─ audit judge            LLM judge reviews a sample of ALLOWED calls after the fact
 │   ├─ scan                   Scan MCP servers & skills for risk
+│   ├─ extensions <action>    list · why · approve · wrap-hooks — what puts instructions or code into the agent
 │   ├─ deps                   Check project deps vs. threat feed
 │   ├─ analyze / ingest       Run the engine over a JSONL session
 │   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
@@ -103,7 +107,7 @@ prismor
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak`, `--judge <claude\|codex\|api>`, `--judge-model` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK`, `PRISMOR_JUDGE`, `PRISMOR_JUDGE_MODEL` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, picks which login judges uncertain events (see [Semantic Guard](semantic-guard.md)), and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). |
-| `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. |
+| `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>`, `--portable` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. `--portable` writes a command with no machine-specific paths, so the file can be committed and cloned onto a hosted agent's VM — see [cloud-agents.md](cloud-agents.md). |
 | `prismor uninstall-hooks` | `--agent <name\|all>`, `--scope` | Removes Prismor hooks for an agent. For `claude`/`all`, this also removes cloaking hooks (`prismor cloak install`) — secrets are no longer protected at the tool boundary until you reinstall with `prismor cloak install`. |
 | `prismor status` | `--workspace`, `--all`, `--days N` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. |
 | `prismor update` | `--check` | Check for (or install) a newer prismor release. |
@@ -212,28 +216,31 @@ the default there tags every workspace read as untrusted, which turns
 `untrusted_content then critical_action -> block` into "read anything, then do
 anything" and denies every call after the session's first read.
 
-#### Modes that need a container runtime
+#### Containment is opt-in
 
-`dev-safe` enforces its sandbox, and `cli.py` **blocks** a shell call outright
-when an enforcing sandbox has no runtime behind it — it does not silently run
-unsandboxed. On a host without Docker that means every command fails, so
-`mode apply` preflights and refuses rather than letting you find out one command
-at a time:
+Adopting a mode does not start routing your shell commands through Docker.
+`dev-safe` and `trusted-workspace` both ship `sandbox.enabled: false`: they
+compile a sandbox configuration (ring, network, mounts, limits) and leave it
+switched off, so the mode changes what may run without changing where it runs.
 
-```
-$ prismor mode apply dev-safe
-prismor mode: mode 'dev-safe' enforces a Docker sandbox and this host cannot
-reach one (docker CLI not found). Every shell command would be blocked, not just
-sandboxed. Options: start or install Docker; apply with --observe …
+```bash
+prismor sandbox on      # containment on, using the settings the mode compiled
+prismor sandbox off     # back to running on the host
+prismor sandbox status  # what is configured, and whether Docker can back it
 ```
 
-`trusted-workspace` sets `sandbox.mode: observe`, so a missing runtime degrades
-to a warning and the mode works anywhere. `regulated-airgap` enforces a sandbox
-but denies the Bash tool, so no shell event ever reaches the sandbox gate and it
-too runs on a host without Docker.
+Only the field flips, so an off/on round trip keeps the ring, network and
+limits the mode chose. `regulated-airgap` is the exception and ships its
+sandbox on — containment is what that posture *is*.
 
-`mode show` re-checks at read time, which is what catches a runtime that
-disappeared *after* the mode was applied.
+Once it is on, a missing container runtime matters. `cli.py` **blocks** a shell
+call outright when an enforcing sandbox has no runtime behind it — it does not
+silently run unsandboxed — so `mode apply` preflights and degrades the sandbox
+axis to `observe` rather than leaving every command to fail one at a time. The
+rest of the posture (rules, egress, tag rules) still lands, and `mode show`
+re-checks at read time to catch a runtime that disappeared *after* the mode was
+applied. `regulated-airgap` enforces a sandbox but denies the Bash tool, so no
+shell event ever reaches the sandbox gate and it too runs without Docker.
 
 **Known limitation:** the sandbox gate is wired for the Claude adapter only. On
 other agents the sandbox axis is not applied, even though `mode explain` still
@@ -365,7 +372,9 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
+| `prismor audit judge` | `--since 24h`, `--sample 0.05`, `--max 50`, `--dry-run`, `--json`, `--workspace` | Has the configured LLM judge review a deterministic sample of tool calls the rules ALLOWED, after the fact, from the local store. Results go to the `judge_audit` table; flagged calls are printed and sent as one content-free `judge_audit` record each. Never blocks. Exits 2 when no judge is configured. See [Semantic Guard](semantic-guard.md#auditing-allowed-calls). |
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
+| `prismor extensions [list\|why\|approve\|wrap-hooks\|unwrap-hooks]` | `--kind`, `--json`, `--workspace` | Inventory of skills, plugins, third-party hooks and MCP servers with origin, installer, capabilities and the documents they caused to be fetched. See [Extension Ledger](extensions.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
 | `prismor analyze [FILE]` | `--input`, `--json`, `--sarif` | Run the engine over a JSONL session (or the most recent one). SARIF output feeds GitHub Code Scanning. |
 | `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a single pre-normalized JSONL session and store it in the local DB. |
@@ -384,6 +393,8 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor discover [all\|agents\|mcp\|keys]` | `--fix`, `--yes`, `--fix-mode`, `--json`, `--report`, `--no-file-scan`, `--fail-on-shadow`, `--workspace` | Sweep this host for the AI surface running outside Prismor's coverage (shadow AI): agents without hooks, MCP servers not routed through the gateway, and provider keys not registered with Cloak. Ends with a coverage score. Pass a section to limit the report; `--fail-on-shadow` exits 1 for CI; `--report` sends the inventory to your organization console for the fleet-wide Shadow AI view (enrolled devices only, and a no-op otherwise). `--fix` governs what it found — hooks the unmanaged agents, moves MCP servers behind the gateway (any config declaring `mcpServers`/`servers`, not just the workspace's), imports dotenv keys into Cloak — printing the plan and asking first (`--yes` to skip the prompt, `--fix-mode enforce` to install in enforce). Without `--fix` it is read-only; credential-shaped values in MCP URLs and argv are redacted before they reach output. On an enrolled device each reported finding also carries whether it is fixable and the command that fixes it, so the console can show what is actionable today. See [Host discovery](attestation-bundle.md#host-discovery). |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
+| `prismor query "SQL"` | `--schema`, `--path`, `--workspace`, `--limit`, `--format json\|jsonl\|table` | Read-only SQL over the local session store (SELECT/WITH/EXPLAIN only, output redacted). See [Query your data](query-your-data.md). |
+| `prismor docs [NAME]` | | Print a bundled doc page in the terminal, or list them. |
 | `prismor serve` | `--port`, `--host`, `--no-open` | _Deprecated_ alias of `dashboard --no-open` (headless server only). |
 
 ---
@@ -475,9 +486,12 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | Variable | Used by | Effect |
 |---|---|---|
 | `PRISMOR_MODE` | `setup --non-interactive` | Default enforcement mode (`observe` / `enforce`). |
+| `PRISMOR_HOOK_REQUIRED` | a `--portable` hook | When set, a hook that cannot find `prismor` blocks the tool call instead of warning and allowing. Set it on hosted agent environments. |
 | `PRISMOR_CLOAK` | `setup --non-interactive` | Enable cloaking (`1`/`true`/`yes`/`on`). |
 | `PRISMOR_WORKSPACE` | all commands | Override the resolved workspace path. |
 | `PRISMOR_AGENT_ID` | `iam` | Active agent identity for IAM enforcement. See [IAM](iam.md). |
+| `PRISMOR_ENVIRONMENT` | telemetry | Deployment environment label on every event (`prod`, `staging`, `ci`...). Lowercase `[a-z0-9_-]`, max 40; invalid values are dropped. |
+| `PRISMOR_RELEASE` | telemetry | Agent release label on every event (git sha, app version). Printable, no whitespace, max 64; invalid values are dropped. |
 | `PRISMOR_SWEEP_PASS` | `sweep` | Vault passphrase for non-interactive runs. |
 | `EDITOR` | `scope edit` | Editor for scoped-rule editing. |
 

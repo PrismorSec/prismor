@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Iterable, Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+from prismor.runtime import perf as _perf
 from prismor.runtime.egress import EgressPolicy
 from prismor.runtime.data_boundary import DataBoundaryPolicy
 
@@ -394,6 +395,25 @@ def _check_cloaked_secrets_in_url(url: str) -> Optional[str]:
     return _check_cloaked_secrets_in_text(url)
 
 
+_LEADING_FLAGS_RE = re.compile(r"^\(\?([aiLmsux]+)\)")
+
+
+def _alternation(patterns) -> str:
+    """Join patterns into one alternation without breaking inline flags.
+
+    A pattern may start with a global flag like ``(?i)``, which is only legal at
+    the very start of an expression; wrapped as ``(?:(?i)...)`` inside a join it
+    raises "global flags not at the start" and takes down every rule in the
+    engine. Scope such flags to their own pattern instead, ``(?i:...)``.
+    """
+    parts = []
+    for p in patterns:
+        m = _LEADING_FLAGS_RE.match(p)
+        scoped = m and set(m.group(1)) <= set("imsx")
+        parts.append(f"(?{m.group(1)}:{p[m.end():]})" if scoped else f"(?:{p})")
+    return "|".join(parts)
+
+
 _QUANT_ANY_RE = re.compile(r'\bany\s+of\s*\(', re.IGNORECASE)
 _QUANT_ALL_RE = re.compile(r'\ball\s+of\s*\(', re.IGNORECASE)
 _QUANT_N_RE = re.compile(r'\b(\d+)\s+of\s*\(', re.IGNORECASE)
@@ -507,11 +527,15 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
-        "pattern_groups", "condition",
+        "pattern_groups", "condition", "layer",
     )
 
     def __init__(self, raw: Dict[str, Any]) -> None:
         self.id: str = raw["id"]
+        # Which policy layer last wrote this rule: default, project,
+        # remote (signed org) or exemption. Answers "why is this rule
+        # here, and who set it to that?" without reading four files.
+        self.layer: str = str(raw.get("_layer") or "default")
         self.severity: str = raw["severity"]
         self.category: str = raw["category"]
         self.title: str = raw["title"]
@@ -578,7 +602,7 @@ class CompiledRule:
         # newlines — prevents evasion via embedded newlines. The individual
         # pattern strings are kept so a finding can report which one fired.
         self.raw_patterns: List[str] = effective
-        joined = "|".join(f"(?:{p})" for p in effective)
+        joined = _alternation(effective)
         self.patterns: re.Pattern[str] = re.compile(
             joined, re.IGNORECASE | re.DOTALL
         )
@@ -607,7 +631,7 @@ class CompiledRule:
                         continue
                     try:
                         groups[str(gname)] = re.compile(
-                            "|".join(f"(?:{p})" for p in plist), re.IGNORECASE | re.DOTALL)
+                            _alternation(plist), re.IGNORECASE | re.DOTALL)
                     except re.error as exc:
                         sys.stderr.write(
                             f"[prismor] rule '{self.id}': ignoring invalid pattern group "
@@ -693,7 +717,7 @@ class AllowlistEntry:
         _t = str(raw.get("type", "allow")).lower()
         self.type: str = _t if _t in ("allow", "veto") else "allow"
         self.raw_patterns: List[str] = [str(p) for p in raw["patterns"]]
-        joined = "|".join(f"(?:{p})" for p in raw["patterns"])
+        joined = _alternation(raw["patterns"])
         self.patterns: re.Pattern[str] = re.compile(joined, re.IGNORECASE)
 
     def applies_to(self, rule_id: str) -> bool:
@@ -701,6 +725,24 @@ class AllowlistEntry:
             return False
         return "*" in self.rule_ids or rule_id in self.rule_ids
 
+
+
+# Output of a bare `prismor <status subcommand>` is text Prismor itself wrote
+# (scope/status/doctor explain policy, so they read like "every tool allowed ...
+# re-enable by ..." and the judge scored that as a security bypass). Only these
+# subcommands: `sessions`, `agents transcript` and friends replay untrusted
+# session content and must stay judged. No shell metacharacters, so nothing
+# else's output can ride along in the same call.
+_PRISMOR_STATUS_CMD = re.compile(
+    r"^\s*(?:\S*/)?(?:prismor|immunity-agent)"
+    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*|\s+--?(?:version|help))?\s*$"
+)
+
+
+def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
+    if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
+        return False
+    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
 
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""
@@ -778,15 +820,39 @@ class PolicyEngine:
         explicitly declares action: "warn" is honored as a warning even inside a
         core category — otherwise a warn-intended rule silently hard-blocks.
         """
+        return self.explain_mode(rule)[0]
+
+    def explain_mode(self, rule: "CompiledRule") -> Tuple[str, str]:
+        """``(mode, why)`` -- the same decision as :meth:`_resolve_mode`, plus
+        the reason in words.
+
+        Kept as the single source of truth precisely because the answer is not
+        obvious: a rule can carry ``action: block`` and still only warn, and
+        working out which of five levers decided that meant reading this file,
+        ``hooks.should_block`` and the policy YAML together.
+        """
         if rule.id in _SELF_PROTECTION_RULE_IDS:
-            return "enforce"
+            return "enforce", "self-protection rule — always enforces"
         if (
             rule.action == "block"
             and (rule.id in _NON_OVERRIDABLE_RULE_IDS or rule.category in _CORE_BLOCK_CATEGORIES)
             and not self.explicit_selection
         ):
-            return "enforce"
-        return self.device_mode or rule.mode or self.default_mode
+            why = ("safety floor: non-overridable rule id"
+                   if rule.id in _NON_OVERRIDABLE_RULE_IDS
+                   else f"safety floor: core block category {rule.category!r}")
+            return "enforce", why
+        floor_waived = (
+            rule.action == "block"
+            and (rule.id in _NON_OVERRIDABLE_RULE_IDS or rule.category in _CORE_BLOCK_CATEGORIES)
+            and self.explicit_selection
+        )
+        note = " (floor waived: settings.selection is explicit)" if floor_waived else ""
+        if self.device_mode:
+            return self.device_mode, f"device mode override{note}"
+        if rule.mode:
+            return rule.mode, f"rule sets mode: {rule.mode}{note}"
+        return self.default_mode, f"policy default_mode: {self.default_mode}{note}"
 
     def _match_exemption(self, workspace: Optional[Path], settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Find an admin-granted, non-expired exemption matching this workspace's
@@ -877,6 +943,7 @@ class PolicyEngine:
                     _adds = list(dict.fromkeys([*(default.get("add_patterns") or []), *(rule.get("add_patterns") or [])]))
                     if _adds:
                         merged["add_patterns"] = _adds
+                    merged["_layer"] = source
                     rules_by_id[rule_id] = merged
                     continue
             # Field-level merge so a sparse overlay (e.g. just {id, mode: enforce})
@@ -892,6 +959,7 @@ class PolicyEngine:
                     _u = list(dict.fromkeys([*(existing.get(_k) or []), *(rule.get(_k) or [])]))
                     if _u:
                         merged[_k] = _u
+                merged["_layer"] = source
                 rules_by_id[rule["id"]] = merged
             else:
                 # No existing rule with this id. Treat it as a brand-new rule only
@@ -908,6 +976,7 @@ class PolicyEngine:
                         f"complete new rule — missing {', '.join(_missing)})\n"
                     )
                     continue
+                rule["_layer"] = source
                 rules_by_id[rule["id"]] = rule
         allowlist_raw.extend(override_raw.get("allowlists", []) or [])
         override_settings = dict(override_raw.get("settings", {}) or {})
@@ -956,6 +1025,7 @@ class PolicyEngine:
         # Start with default rules indexed by id.
         rules_by_id: Dict[str, Dict[str, Any]] = {}
         for rule in default_raw.get("rules", []):
+            rule["_layer"] = "default"
             rules_by_id[rule["id"]] = rule
 
         allowlist_raw: List[Dict[str, Any]] = list(default_raw.get("allowlists", []) or [])
@@ -1024,6 +1094,10 @@ class PolicyEngine:
         # tighten-only merge with the local agents.yaml.
         _ac = settings.get("agent_controls")
         self.agent_controls: Dict[str, Any] = _ac if isinstance(_ac, dict) else {}
+        # Operator-written prompt guardrails (per agent, tuned per session),
+        # added to the model's context by the hook layer — see guardrails.py.
+        _pg = settings.get("prompt_guardrails")
+        self.prompt_guardrails: Dict[str, Any] = _pg if isinstance(_pg, dict) else {}
         # Per-event rule exemptions (relax/flag a rule for a specific user,
         # device, or session) from the verified signed policy. A list matched at
         # evaluation time against the current context (see runtime), NOT a
@@ -1088,7 +1162,7 @@ class PolicyEngine:
 
         manifest_pats: List[str] = settings.get("manifest_patterns", []) or []
         if manifest_pats:
-            joined = "|".join(f"(?:{p})" for p in manifest_pats)
+            joined = _alternation(manifest_pats)
             self._manifest_re = re.compile(joined, re.IGNORECASE)
 
         # Legacy flat allowlist — still read verbatim so scanner.py and any
@@ -1190,6 +1264,7 @@ class PolicyEngine:
         index: int,
         session_id: str = "",
         subject: Optional[Any] = None,
+        include_suppressed: bool = False,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -1225,7 +1300,7 @@ class PolicyEngine:
                 folded_cache[field_name] = folded if folded != value else None
             return folded_cache[field_name]
 
-        for rule in self.rules:
+        for rule in _perf.timed_rules(self.rules, findings):
             matched_via_mcp_alias = False
             # A synthetic "text" event has no rules of its own; route it through
             # the agent-I/O content rules so check_text / `--type text` actually
@@ -1317,9 +1392,16 @@ class PolicyEngine:
             if matched_evidence is None:
                 continue
 
-            # Check allowlist.
-            if self._is_allowlisted(rule.id, matched_evidence):
-                continue
+            # Check allowlist. An explaining caller asks for the suppressed
+            # ones too, tagged with the entry that swallowed them; the default
+            # stays exactly as before for the enforcement path.
+            _allow = self.allowlist_match(rule.id, matched_evidence)
+            if _allow is not None:
+                if not include_suppressed:
+                    continue
+                _suppressed_by = {"id": _allow.id, "reason": _allow.reason}
+            else:
+                _suppressed_by = None
 
             # Per-rule severity overrides (configured in YAML, not hardcoded).
             severity = rule.severity
@@ -1418,6 +1500,12 @@ class PolicyEngine:
             # never event content, so redacted telemetry may carry it.
             if evasion:
                 finding["evasion"] = evasion
+
+            # Only present for an explaining caller (include_suppressed): this
+            # finding matched but an allowlist swallowed it. The enforcement
+            # path never sees these, so the finding shape there is unchanged.
+            if _suppressed_by is not None:
+                finding["suppressedBy"] = _suppressed_by
 
             findings.append(finding)
 
@@ -1806,10 +1894,12 @@ class PolicyEngine:
             and not os.environ.get("PRISMOR_SEMANTIC_SUBAGENT")
         ):
             try:
-                sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
+                with _perf.stage("semantic_judge"):
+                    sem_finding = self._run_semantic_layer(event, field_values, index, session_id)
                 if sem_finding:
                     findings.append(sem_finding)
             except Exception as exc:
+                _perf.RULES.setdefault("semantic-guard", [0, 0, 0.0, 0])[3] += 1
                 sys.stderr.write(f"[prismor] semantic_guard error: {exc}\n")
 
         # ── Taint tracking: mark session if injection detected ─────────────
@@ -1820,9 +1910,15 @@ class PolicyEngine:
         # the session's taint file from disk, and doing that once per line of a
         # script is hundreds of needless reads. The originating shell event
         # still marks once, from this same findings list, after the script scan.
+        # Only a *confirmed* injection taints: an LLM judge's verdict, or a
+        # CRITICAL structural hit (injection hidden in HTML). The regex rule
+        # and the keyword heuristic both fire on any page that merely talks
+        # about jailbreaks or exfiltration, and tainting on them turned every
+        # later GET into a CRITICAL "secret exfil" (#404).
         taint = None if event.get("_script_line") else self._get_taint(session_id)
         if taint is not None and any(
-            f.get("category") in ("prompt_injection", "prompt_injection_semantic")
+            (f.get("category") == "prompt_injection_semantic" and f.get("judged"))
+            or (f.get("category") == "prompt_injection" and f.get("severity") == "CRITICAL")
             for f in findings
         ):
             taint.mark_injection(index)
@@ -1957,6 +2053,8 @@ class PolicyEngine:
                 _prov_cwd = self.workspace
                 _prov_reads: List[str] = []
                 _prov_writes: List[str] = []
+                _prov_fetched: Set[str] = set()
+                _prov_copied = False
                 _prov_chain = ""
                 if _tt_cfg.get("provenance_enabled", True):
                     from prismor.runtime import provenance as _prov
@@ -1971,10 +2069,26 @@ class PolicyEngine:
                     elif event_type == "file_write":
                         _prov_writes = [str(event.get("path") or "")]
                     elif event_type == "shell":
-                        _r, _w = _prov.shell_paths(
+                        # One scan serves the reads, the writes and the
+                        # downloads below; it is the costly part of the check.
+                        _sc = _prov.shell_scan(
                             str(event.get("command") or ""), _prov_cwd
                         )
-                        _prov_reads, _prov_writes = sorted(_r), sorted(_w)
+                        _prov_reads, _prov_writes = sorted(_sc.reads), sorted(_sc.writes)
+                        _prov_fetched = _sc.fetched
+                        # `cp`, `mv`, `cat a > b`: bytes from a file already
+                        # marked untrusted, whoever wrote it (#443). The
+                        # command line holds paths, not the content, so the
+                        # influence check below can never see them.
+                        # ponytail: command-wide, not per pipeline; `cat a;
+                        # echo x > b` marks b too. Per-segment flow if that
+                        # over-marks in practice.
+                        _prov_copied = any(
+                            UNTRUSTED in (
+                                (_prov_known.get(_rp) or {}).get("tags") or ()
+                            )
+                            for _rp in _prov_reads
+                        )
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -2193,15 +2307,12 @@ class PolicyEngine:
                     # session had read before it. Without this a shell-only
                     # agent -- Codex reaches the web through Bash, never through
                     # a tagged fetch tool -- writes untracked files.
-                    _fetched = (
-                        _prov.fetch_targets(str(event.get("command") or ""), _prov_cwd)
-                        if event_type == "shell" else set()
-                    )
                     for _wp in _prov_writes:
                         if not _wp:
                             continue
                         _wt = sorted(
-                            set(_carry) | ({UNTRUSTED} if _wp in _fetched else set())
+                            set(_carry)
+                            | ({UNTRUSTED} if _prov_copied or _wp in _prov_fetched else set())
                         )
                         # An empty tag set still has to reach the store when
                         # this session is the one that stamped the file: that
@@ -2282,6 +2393,8 @@ class PolicyEngine:
             return None
 
         cfg = self.semantic_guard_config
+        if _is_prismor_status_output(event):
+            return None
         # _extract_fields joins prompt/response/content/stdout/stderr into
         # combined_text; command is normalized separately. Configurable
         # fields are kept in the YAML for future granularity, but the
@@ -2290,9 +2403,12 @@ class PolicyEngine:
         if len(text) < 12:  # too short to be a meaningful semantic attack
             return None
 
-        result = guard.analyze(text)
+        budget = float(cfg.get("budget_ms") or 0) / 1000
+        result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)
+        if str(getattr(risk, "reason", "")).startswith("[LLM fallback]"):
+            _perf.degraded("semantic_judge:fallback")
         score = float(getattr(risk, "risk_score", 0.0))
 
         warn_t = float(cfg.get("warn_threshold", 0.45))
@@ -2317,6 +2433,9 @@ class PolicyEngine:
         reason = getattr(risk, "reason", "")
         sem_cat = getattr(risk, "category", "unknown")
         evidence = f"category={sem_cat} score={score:.2f} reason={reason}"
+        # True only when an LLM judge answered; a heuristic-only verdict is a
+        # keyword hit, not a judgement (taint marking keys off this).
+        judged = str(getattr(risk, "mode", "")) in ("api", "local_llm", "hybrid_api", "hybrid_local_llm")
 
         return {
             "id": prefixed_id,
@@ -2327,6 +2446,7 @@ class PolicyEngine:
             "eventIndex": index,
             "ruleId": rule_id,
             "action": action,
+            "judged": judged,
             # Same provenance tag the rule findings carry (#155).
             "source": _EVENT_SOURCE.get(str(event.get("type", "")), str(event.get("type", ""))),
         }
@@ -2870,6 +2990,15 @@ class PolicyEngine:
         return self.evaluate(event, 0)
 
     def _is_allowlisted(self, rule_id: str, evidence: str) -> bool:
+        return self.allowlist_match(rule_id, evidence) is not None
+
+    def allowlist_match(self, rule_id: str, evidence: str) -> Optional["AllowlistEntry"]:
+        """The allowlist entry suppressing this finding, or None.
+
+        Returning the entry rather than a bool is what lets a reader see *which*
+        exception swallowed a match: a silently dropped finding is
+        indistinguishable from a rule that never fired.
+        """
         # Vetoes are resolved first and unconditionally: a veto that matches
         # means no allowlist may suppress this finding, whatever order the
         # entries appear in the merged policy. Without the two passes a
@@ -2877,11 +3006,11 @@ class PolicyEngine:
         # project-level allowlist could out-rank an org-level veto.
         for entry in self.allowlists:
             if entry.type == "veto" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
-                return False
+                return None
         for entry in self.allowlists:
             if entry.type == "allow" and entry.applies_to(rule_id) and entry.patterns.search(evidence):
-                return True
-        return False
+                return entry
+        return None
 
     @property
     def egress_allowlist(self) -> List[str]:
@@ -3348,6 +3477,42 @@ def _instruction_file(path: str) -> bool:
     return any(fnmatch(p, g) or fnmatch(p, "*/" + g.lstrip("*/")) for g in _MEMORY_GLOBS)
 
 
+def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
+    """``guard.analyze(text)``, or the heuristic verdict if the judge overruns.
+
+    settings.semantic_guard.budget_ms: a slow judge must not push the hook
+    past the agent's timeout, where the call proceeds unscreened. The verdict
+    is made on time from the heuristic path and the degradation is recorded.
+    """
+    import threading
+    box: List[Any] = []
+    # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
+    # process exits right after, and a CLI judge's own timeout reaps its child.
+    def _run() -> None:
+        try:
+            box.append(guard.analyze(text))
+        except Exception as exc:
+            import sys
+            sys.stderr.write(f"[prismor] semantic_guard judge error: {exc}\n")
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(budget_s)
+    if box:
+        return box[0]
+    from prismor.runtime.semantic_guard import _heuristic_analyze
+    if t.is_alive():
+        _perf.degraded("semantic_judge:budget")
+        prefix = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; "
+    else:
+        _perf.degraded("semantic_judge:error")
+        _perf.RULES.setdefault("semantic-guard", [0, 0, 0.0, 0])[3] += 1
+        prefix = "[LLM error] judge crashed; "
+    risk = _heuristic_analyze(text)
+    risk.reason = prefix + risk.reason
+    return risk
+
+
 def _semantic_text(event: Dict[str, Any], field_values: Dict[str, str]) -> str:
     """The text the prompt-injection layer should read for this event.
 
@@ -3630,7 +3795,7 @@ def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
         cached = _YAML_CACHE.get(key)
         if cached is not None:
             return _copy.deepcopy(cached)
-        parsed = (yaml.load(text, Loader=_SafeLoader) if _SafeLoader is not None
+        parsed = (yaml.load(text, Loader=_SafeLoader) if _SafeLoader is not None  # SafeLoader/CSafeLoader  # nosec B506
                   else yaml.safe_load(text))
         if len(_YAML_CACHE) >= _YAML_CACHE_MAX:
             _YAML_CACHE.clear()  # tiny working set; a plain reset beats an LRU here

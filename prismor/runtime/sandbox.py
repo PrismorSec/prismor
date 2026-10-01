@@ -6,7 +6,6 @@ is allowed, then this module constrains where the allowed command executes.
 from __future__ import annotations
 
 import base64
-import json
 import os
 import shlex
 import shutil
@@ -25,7 +24,7 @@ DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
     "network": "none",
     "workspace_mount": "rw",
     "read_only_root": True,
-    "tmpfs": ["/tmp:noexec,nosuid,size=256m"],
+    "tmpfs": ["/tmp:noexec,nosuid,size=256m"],  # container tmpfs mount, not a host path  # nosec B108
     "env_allowlist": ["NO_COLOR", "TERM"],
     "resource_limits": {
         "cpus": "1.0",
@@ -129,10 +128,6 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if not isinstance(cfg.get("resource_limits"), dict):
         cfg["resource_limits"] = {}
     return cfg
-
-
-def is_enabled(raw: Optional[Dict[str, Any]]) -> bool:
-    return bool(effective_config(raw).get("enabled"))
 
 
 def docker_status() -> Dict[str, Any]:
@@ -281,6 +276,30 @@ def run(command: str, *, workspace: Path, config: Dict[str, Any]) -> int:
     except OSError as exc:
         sys.stderr.write(f"Prismor sandbox failed: {exc}\n")
         return 127
+
+
+def set_enabled(workspace: Path, enabled: bool) -> Path:
+    """Flip ``settings.sandbox.enabled`` in the workspace policy, in place.
+
+    Only the one field is touched, so the rest of the sandbox block a mode
+    compiled (ring, network, limits) survives an off/on round trip.
+    """
+    from prismor.runtime.egress_cli import (
+        _load_policy_file, _policy_path, _save_policy_file,
+    )
+
+    data = _load_policy_file(workspace)
+    settings = data.get("settings")
+    if not isinstance(settings, dict):
+        settings = {}
+        data["settings"] = settings
+    block = settings.get("sandbox")
+    if not isinstance(block, dict):
+        block = {}
+        settings["sandbox"] = block
+    block["enabled"] = bool(enabled)
+    _save_policy_file(workspace, data)
+    return _policy_path(workspace)
 
 
 def status_report(config: Dict[str, Any]) -> Dict[str, Any]:

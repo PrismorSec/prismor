@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,16 @@ from prismor.runtime.proxy import (  # noqa: E402
     response_tool_calls,
 )
 from prismor.runtime.runtime import Decision  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _stop_proxy_snapshot_writers():
+    """Daemon snapshot writers outlive a test's Screen unless stopped."""
+    proxy_mod.Screen._stop_writers()
+    proxy_mod.Screen._all.clear()
+    yield
+    proxy_mod.Screen._stop_writers()
+    proxy_mod.Screen._all.clear()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -230,6 +241,104 @@ def test_openai_stream_holds_tool_calls(monkeypatch, tmp_path):
     assert b"Blocked by Prismor" in out
 
 
+def _responses_call(stream, name, args, index=0):
+    """Feed one streamed Responses API function_call item, as gpt-6-luna emits it."""
+    item = {"id": "fc_1", "type": "function_call", "name": name,
+            "call_id": "call_1", "arguments": ""}
+    out = stream.feed(_sse("response.output_item.added", {
+        "type": "response.output_item.added", "output_index": index, "item": item}))
+    out += stream.feed(_sse("response.function_call_arguments.delta", {
+        "type": "response.function_call_arguments.delta", "output_index": index,
+        "item_id": "fc_1", "delta": args}))
+    out += stream.feed(_sse("response.function_call_arguments.done", {
+        "type": "response.function_call_arguments.done", "output_index": index,
+        "item_id": "fc_1", "arguments": args}))
+    assert out == b"", "a function_call item must stay held until it is judged"
+    return out + stream.feed(_sse("response.output_item.done", {
+        "type": "response.output_item.done", "output_index": index,
+        "item": {**item, "status": "completed", "arguments": args}}))
+
+
+def test_responses_stream_replaces_denied_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = _responses_call(stream, "Bash", '{"command": "rm -rf /"}', index=1)
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+    frames = [json.loads(l[len("data: "):]) for l in out.decode().splitlines()
+              if l.startswith("data: ")]
+    assert {f["output_index"] for f in frames} == {1}
+
+    # response.completed repeats the whole output, denied call included.
+    out = stream.feed(_sse("response.completed", {"type": "response.completed", "response": {
+        "id": "resp_1", "status": "completed", "usage": {"input_tokens": 5, "output_tokens": 2},
+        "output": [{"type": "function_call", "name": "Bash",
+                    "arguments": '{"command": "rm -rf /"}'}]}}))
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+
+
+def test_responses_stream_releases_allowed_call(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = _responses_call(stream, "Bash", '{"command": "ls"}')
+    assert out.count(b"event: ") == 4 and b"function_call_arguments.delta" in out
+    assert not stream.blocked
+
+
+def test_responses_stream_redacts_text_and_meters_usage(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    monkeypatch.setattr(screen, "redact", lambda s: s.replace("sk-live-123", "[CLOAKED]"))
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    out = stream.feed(_sse("response.output_text.delta", {
+        "type": "response.output_text.delta", "delta": "key is sk-live-123"}))
+    assert b"sk-live-123" not in out and out.startswith(b"event: response.output_text.delta")
+
+    calls = []
+    monkeypatch.setattr("prismor.runtime.token_usage.record_llm_usage",
+                        lambda **kw: calls.append(kw))
+    stream.feed(_sse("response.completed", {"type": "response.completed", "response": {
+        "id": "resp_9", "usage": {"input_tokens": 7, "output_tokens": 3}, "output": []}}))
+    stream.meter()
+    assert calls[0]["usage"]["input_tokens"] == 7 and calls[0]["message_id"] == "resp_9"
+
+
+def test_openai_stream_judges_parallel_calls_separately(monkeypatch, tmp_path):
+    """Parallel calls interleave by index. Concatenating their arguments made
+    one unparseable blob that policy couldn't read, so a denied call riding
+    next to an allowed one streamed straight through in enforce mode."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-5.5", None)
+    frame = lambda obj: b"data: " + json.dumps(obj).encode() + b"\n\n"
+    out = stream.feed(frame({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "c0", "function": {"name": "Bash", "arguments": '{"command": '}},
+        {"index": 1, "id": "c1", "function": {"name": "Bash", "arguments": '{"command": "rm'}}]}}]}))
+    out += stream.feed(frame({"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "function": {"arguments": '"ls"}'}},
+        {"index": 1, "function": {"arguments": ' -rf /"}'}}]}}]}))
+    out += stream.feed(frame({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}))
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+    calls = [c for l in out.decode().splitlines() if l.startswith("data: ")
+             for c in json.loads(l[6:])["choices"][0]["delta"].get("tool_calls", [])]
+    assert [(c["index"], c["id"], c["function"]["arguments"]) for c in calls] == \
+        [(0, "c0", '{"command": "ls"}')]
+
+
+def test_truncated_stream_drops_unjudged_call_in_enforce(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    stream.feed(_sse("content_block_start", {"type": "content_block_start", "index": 0,
+                                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    stream.feed(_sse("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                             "delta": {"type": "input_json_delta",
+                                                       "partial_json": '{"command": "rm -rf /'}}))
+    assert stream.flush() == b"" and stream.blocked
+
+    observe, _ = _screen(monkeypatch, tmp_path, mode="observe")
+    stream = StreamScreen(observe, "anthropic", "m", None)
+    stream.feed(_sse("content_block_start", {"type": "content_block_start", "index": 0,
+                                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    assert stream.flush() != b"", "observe mode never withholds"
+
+
 def test_stream_survives_garbage_frames(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path)
     stream = StreamScreen(screen, "anthropic", "m", None)
@@ -258,6 +367,29 @@ def test_strip_blocked_calls_openai_drops_only_the_denied_one():
     assert "Blocked by Prismor" in out["choices"][0]["message"]["content"]
 
 
+def test_strip_blocked_calls_responses_api_replaces_the_denied_item():
+    # gpt-6-luna forces /v1/responses for any tool use, and a denied call lives
+    # as a top-level output item there, not inside a message.
+    body = {"status": "completed", "output": [
+        {"type": "function_call", "name": "fetch_url", "arguments": '{"url":"http://203.0.113.9/x"}'},
+        {"type": "function_call", "name": "read_file", "arguments": '{"path":"a"}'}]}
+    out = _strip_blocked_calls("openai", body, {"fetch_url": "Blocked by Prismor: raw IP"})
+    kinds = [(i["type"], i.get("name")) for i in out["output"]]
+    assert ("function_call", "fetch_url") not in kinds
+    assert ("function_call", "read_file") in kinds
+    assert any(i["type"] == "message" and "Blocked by Prismor" in i["content"][0]["text"] for i in out["output"])
+
+
+def test_strip_blocked_calls_responses_api_all_denied_completes():
+    body = {"status": "completed", "output": [
+        {"type": "function_call", "name": "fetch_url", "arguments": "{}"}]}
+    out = _strip_blocked_calls("openai", body, {"fetch_url": "Blocked by Prismor: nope"})
+    assert not [i for i in out["output"] if i["type"] == "function_call"]
+    assert out["status"] == "completed"
+    # Clients validate every output item's id; the Vercel AI SDK throws without it.
+    assert all(isinstance(i.get("id"), str) and i["id"] for i in out["output"])
+
+
 # ── config / virtual keys ────────────────────────────────────────────────────
 
 def test_default_upstreams_present():
@@ -275,6 +407,35 @@ def test_virtual_key_resolution():
     cfg = ProxyConfig({"keys": {"psk_live_abc": {"subject": "user:alice"}}})
     assert cfg.resolve_key("psk_live_abc") == {"subject": "user:alice"}
     assert cfg.resolve_key("psk_live_wrong") is None
+
+
+def test_local_openai_compatible_upstream_can_override_base_url():
+    cfg = ProxyConfig({"upstreams": {
+        "openai": {"base_url": "http://host.docker.internal:11434"},
+    }})
+    assert cfg.upstream("openai")["base_url"] == "http://host.docker.internal:11434"
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_upstream_auth_status_headers_are_distinguishable(monkeypatch, tmp_path, status):
+    sent = []
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = None
+    handler.wfile = type("Writer", (), {"write": lambda self, body: None})()
+    monkeypatch.setattr(handler, "send_response", lambda code: sent.append(("status", code)))
+    monkeypatch.setattr(handler, "send_header", lambda key, value: sent.append((key, value)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    response = type("Response", (), {
+        "status": status,
+        "read": lambda self: b'{"error":"unauthorized"}',
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_buffered(
+        handler, response, "openai", "model", False, None, "openai")
+
+    assert ("X-Prismor-Upstream", "openai") in sent
+    assert ("X-Prismor-Upstream-Status", str(status)) in sent
 
 
 def test_bad_config_raises():
@@ -359,26 +520,52 @@ def test_unrouted_path_follows_the_credential_the_client_presented():
     assert _provider_for("/v1/models", {}) == "anthropic"  # config default
 
 
-def test_short_session_is_snapshotted_on_shutdown(monkeypatch, tmp_path):
-    """A session shorter than the rebuild interval must still be visible.
-
-    The rebuild is periodic because re-analysing the whole log on every event
-    is quadratic for a long-lived surface. But a proxy session is often one
-    chat turn -- the n8n agent that produced a blocked install command logged
-    five events -- so periodic-only left a session log on disk and no session
-    in `prismor sessions`, the dashboard or the console.
-    """
+def test_debounced_snapshot_coalesces_and_fires_without_shutdown(monkeypatch, tmp_path):
+    """A burst of events triggers one rebuild after the quiet period."""
+    monkeypatch.setattr(proxy_mod, "SNAPSHOT_DEBOUNCE", 0.05)
     screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
                               session_id="short-session", agent_name="n8n")
     saved = []
     monkeypatch.setattr(proxy_mod.Screen, "_snapshot_one",
                         lambda self, sid: saved.append(sid))
 
+    ev = {"type": "prompt", "prompt": "hello", "session_id": "short-session"}
+    for _ in range(3):
+        screen._persist(ev)
+    assert saved == [], "rebuild must wait for the debounce window"
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and not saved:
+        time.sleep(0.02)
+    assert saved == ["short-session"]
+    assert len(saved) == 1, "three events in one burst must coalesce"
+
+
+def test_shutdown_still_flushes_inside_debounce_window(monkeypatch, tmp_path):
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe",
+                              session_id="short-session", agent_name="n8n")
+    saved = []
+    monkeypatch.setattr(proxy_mod.Screen, "_snapshot_one",
+                        lambda self, sid: saved.append(sid))
+    monkeypatch.setattr(proxy_mod, "SNAPSHOT_DEBOUNCE", 60.0)
+
     screen._persist({"type": "prompt", "prompt": "hello", "session_id": "short-session"})
-    assert saved == [], "no periodic rebuild is due after one event"
+    assert saved == []
 
     screen.snapshot()
     assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"
+
+
+def test_openai_style_tool_names_are_screened_as_native_calls(tmp_path):
+    # A proposed `bash`/`shell` call must reach the command rules, not the
+    # generic payload path: that is where ~/.ssh/id_rsa gets caught.
+    screen = proxy_mod.Screen(workspace=tmp_path, mode="observe", session_id="s", agent_name="t")
+    for name, args, want in [("bash", {"command": "cat ~/.ssh/id_rsa"}, "cat ~/.ssh/id_rsa"),
+                             ("shell", {"cmd": ["bash", "-lc", "ls -la"]}, "bash -lc 'ls -la'")]:
+        ev = screen.tool_event(name, args, "openai", "m", None)
+        assert ev["type"] == "shell" and ev["command"] == want
+    assert screen.tool_event("read_file", {"path": "/etc/passwd"}, "openai", "m", None)["path"] == "/etc/passwd"
+    assert screen.tool_event("lookup_weather", {"city": "x"}, "openai", "m", None)["type"] == "tool_result"
 
 
 def test_prompt_parts_separate_what_the_person_said(tmp_path):
@@ -521,6 +708,140 @@ def test_google_upstream_default():
     assert spec["base_url"] == "https://generativelanguage.googleapis.com"
     assert spec["auth_header"] == "x-goog-api-key"
 
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500])
+def test_relay_buffered_redacts_upstream_error_bodies(monkeypatch, status):
+    """Credentials echoed in 4xx/5xx error payloads must be redacted."""
+    secret = "dummy_test_key_12345"
+    redacted_marker = "[REDACTED]"
+
+    sent_headers = []
+    sent_payload = []
+
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = type("FakeScreen", (), {
+        "redact": lambda self, text: text.replace(secret, redacted_marker)
+    })()
+    handler.wfile = type("Writer", (), {
+        "write": lambda self, body: sent_payload.append(body)
+    })()
+
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda key, value: sent_headers.append((key, value)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+
+    raw_error = json.dumps({
+        "error": {
+            "type": "invalid_request_error",
+            "message": f"Rejected request containing key {secret}",
+            "details": {"key_echo": secret},
+        }
+    }).encode("utf-8")
+
+    response = type("Response", (), {
+        "status": status,
+        "read": lambda self: raw_error,
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_buffered(
+        handler, response, "anthropic", "claude-3-5-sonnet", True, None, "anthropic"
+    )
+
+    assert len(sent_payload) == 1
+    output_str = sent_payload[0].decode("utf-8")
+    assert secret not in output_str, "Secret leaked in error body"
+    assert redacted_marker in output_str
+
+def _redacting_screen(monkeypatch, tmp_path, secret):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    monkeypatch.setattr(screen, "redact", lambda text: text.replace(secret, "[REDACTED]"))
+    return screen
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "google"])
+def test_stream_redacts_in_stream_error_frames(monkeypatch, tmp_path, provider):
+    secret = "dummy_test_key_12345"
+    screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    stream = StreamScreen(screen, provider, "m", None)
+    out = stream.feed(_sse("error", {"type": "error",
+                                     "error": {"message": f"bad key {secret}"}}))
+    assert secret.encode() not in out
+    assert out.startswith(b"event: error\n") and b"[REDACTED]" in out
+
+
+def test_streaming_request_error_body_is_buffered_and_redacted(monkeypatch, tmp_path):
+    """A 4xx to a stream request is plain JSON; it must not bypass redaction."""
+    secret = "dummy_test_key_12345"
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    written, headers = [], []
+    handler.wfile = type("Writer", (), {"write": lambda self, b: written.append(b)})()
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda k, v: headers.append((k, v)))
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    body = json.dumps({"error": {"message": f"invalid key {secret}"}}).encode()
+    chunks = [body, b""]
+    response = type("Response", (), {
+        "status": 401,
+        "read": lambda self, *a: chunks.pop(0) if chunks else b"",
+        "getheaders": lambda self: [("Content-Type", "application/json")],
+    })()
+
+    proxy_mod.ProxyHandler._relay_stream(handler, response, "anthropic", "m", None,
+                                         "anthropic")
+
+    out = b"".join(written)
+    assert secret.encode() not in out and b"[REDACTED]" in out
+    assert ("Transfer-Encoding", "chunked") not in headers
+
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:randomly"]))
+
+
+def test_redact_reuses_one_engine_across_strings(monkeypatch, tmp_path):
+    """Masking a big request body must not build a policy engine per string."""
+    from prismor.runtime import policy_engine
+    built = []
+    real = policy_engine.PolicyEngine
+
+    class Counting(real):
+        def __init__(self, *a, **k):
+            built.append(1)
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(policy_engine, "PolicyEngine", Counting)
+    s = Screen(workspace=tmp_path, mode="enforce", session_id="t")
+    body = {"messages": [{"content": f"line {i}"} for i in range(200)]}
+    proxy_mod._mask_in_place(body, s.redact)
+    assert len(built) == 1
+    assert body["messages"][199]["content"] == "line 199"
+
+
+def _anthropic_turn(stream, command):
+    out = b""
+    out += stream.feed(_sse("content_block_start",
+                            {"type": "content_block_start", "index": 0,
+                             "content_block": {"type": "tool_use", "name": "Bash"}}))
+    out += stream.feed(_sse("content_block_delta",
+                            {"type": "content_block_delta", "index": 0,
+                             "delta": {"type": "input_json_delta",
+                                       "partial_json": json.dumps({"command": command})}}))
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    out += stream.feed(_sse("message_delta",
+                            {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}))
+    return out
+
+
+def test_denied_stream_turn_ends_instead_of_promising_a_tool(monkeypatch, tmp_path):
+    """Caught on st3ve: Claude Code died on "tool call could not be parsed"."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "rm -rf /")
+    assert b'"stop_reason": "end_turn"' in out
+    assert b'"tool_use"' not in out.split(b"message_delta")[-1]
+
+
+def test_allowed_stream_turn_keeps_tool_use(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "ls")
+    assert b'"stop_reason": "tool_use"' in out

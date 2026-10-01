@@ -52,7 +52,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from prismor.runtime.policy_engine import InMemoryTaintStore
 from prismor.runtime.principal import resolve_subject

@@ -87,6 +87,20 @@ def test_codex_provider_missing_cli_degrades_to_heuristics(no_keys, tmp_path):
     assert not g.analyze(UNCERTAIN).escalated
 
 
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_missing_cli_uses_the_hosted_judge_when_enrolled(no_keys, tmp_path, monkeypatch, provider):
+    from prismor.runtime.enterprise import identity
+    monkeypatch.setattr(identity, "is_enrolled", lambda: True)
+    g = SemanticGuardV2(cli_path=str(tmp_path / "nope"), provider=provider)
+    assert g._provider == "prismor" and g.mode == "hybrid_api"
+    assert g._low > 0          # keeps the CLI's narrow band, not judge-everything
+
+
+def test_missing_cli_unenrolled_still_degrades_to_heuristics(no_keys, tmp_path):
+    g = SemanticGuardV2(cli_path=str(tmp_path / "nope"), provider="claude")
+    assert g.mode == "heuristic_only"
+
+
 def test_codex_cli_failure_falls_back_to_heuristic(no_keys, tmp_path):
     cli = _fake_cli(tmp_path / "codex", "exit 1")
     res = SemanticGuardV2(cli_path=cli, provider="codex").analyze(UNCERTAIN)

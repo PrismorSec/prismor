@@ -257,6 +257,9 @@ settings:
     high_threshold: 0.75    # heuristic score at or above this → block without LLM call
     warn_threshold: 0.45    # final score ≥ this emits a warn finding
     block_threshold: 0.75   # final score ≥ this emits a block finding
+    budget_ms:              # optional cap on the judge per event (e.g. 1500). Over
+                            # budget, the heuristic verdict decides on time and the
+                            # call is recorded as degraded (`prismor status --perf`).
 ```
 
 ### Modes at a glance
@@ -398,6 +401,55 @@ When the semantic guard triggers, it emits a finding with:
 
 These findings participate in standard Prismor output: dashboard, telemetry
 sinks, session taint tracking, and `prismor status`.
+
+## Auditing allowed calls
+
+The hook path cannot afford the judge on every call, so what the regex rules
+let through is never looked at by a model. `prismor audit judge` closes that
+gap offline: it takes a sample of the calls the rules **allowed** (no finding
+at all), asks the configured judge about each one, and reports what it would
+have flagged. Hook latency is untouched.
+
+```bash
+prismor audit judge                          # last 24h, 5% sample, at most 50 judge calls
+prismor audit judge --since 7d --sample 0.2 --max 100
+prismor audit judge --dry-run                # what would be judged; no judge calls
+prismor audit judge --json
+```
+
+- **What is judged:** pre-call tool events in the window with no finding,
+  excluding Prismor self-test sessions (the same exclusion `prismor learn`
+  uses). Prompts and tool output are not re-judged.
+- **Sampling** is by a hash of the event id (`<session_id>:<event_index>`)
+  against the rate, so reruns pick the same events; events already in
+  `judge_audit` are skipped.
+- **The judge** is the one the hooks use (`provider`, `model`, `cli_path`,
+  `budget_ms`), told to judge every sampled call. A call the judge fails on or
+  that overruns `budget_ms` is not recorded and is retried next run. With no
+  judge configured the command exits 2 and says so.
+- **Privacy:** the call (tool name + input, at most 3,000 characters) is
+  scrubbed of registered secrets, data-boundary values and secret-shaped
+  strings before it reaches the judge, the hosted one included.
+- **Results** go to the local `judge_audit` table (`prismor query "SELECT *
+  FROM judge_audit WHERE verdict='flagged'"`). Each flagged call also produces
+  one telemetry record through the configured sinks: `type: judge_audit`,
+  `rule_id: judge-audit`, `verdict: observed`, the judge's category. In
+  redacted mode it carries no call content or reason text; it is chained and
+  signed like every other record. Nothing is blocked retroactively.
+
+Defaults live under `semantic_guard.audit` and only apply when the command runs:
+
+```yaml
+settings:
+  semantic_guard:
+    audit:
+      sample_rate: 0.05   # --sample
+      max_per_run: 50     # --max; also the cap on hosted-judge calls per run
+      window: 24h         # --since
+```
+
+To run it on a schedule, use cron (or any scheduler), e.g.
+`0 3 * * * prismor audit judge --workspace ~/code/app`.
 
 ## Troubleshooting
 

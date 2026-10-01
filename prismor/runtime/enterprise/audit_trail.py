@@ -132,6 +132,10 @@ def _append(record: Dict[str, Any]) -> Dict[str, Any]:
     so a crash between the two produces a verifiable seq gap rather than a
     forked seq. Raises on I/O failure; the caller decides best-effort vs strict.
     """
+    # Every record type carries free text (block evidence, approval reasons,
+    # extension detail) — scrub once here, before the record is hashed and
+    # signed, since a chained line can never be redacted afterwards.
+    record.update(_scrub(record))
     state_file = state_path()
     with _locked(state_file):
         state = _read_state(state_file)
@@ -191,13 +195,17 @@ def _tool_name(event: Dict[str, Any]) -> Optional[str]:
 def _scrubbed_view(event: Dict[str, Any]) -> Dict[str, Any]:
     """Secret-scrubbed copy of the event minus ``metadata`` (whose ``raw``
     duplicates the entire hook payload)."""
-    view = {k: v for k, v in event.items() if k != "metadata"}
+    return _scrub({k: v for k, v in event.items() if k != "metadata"})
+
+
+def _scrub(obj: Any) -> Any:
+    """Replace registered secret values with their placeholders. Must run
+    before any truncation: a secret cut at the cap no longer matches."""
     try:
         from prismor.runtime.store import _recloak_event
-        view = _recloak_event(view)
+        return _recloak_event({"v": obj})["v"]
     except Exception:
-        pass
-    return view
+        return obj
 
 
 def _input_summary(view: Dict[str, Any]) -> Optional[str]:
@@ -217,7 +225,7 @@ def _stated_intent(event: Dict[str, Any]) -> Optional[str]:
         if isinstance(tool_input, dict):
             desc = tool_input.get("description")
             if isinstance(desc, str) and desc.strip():
-                return desc[:_SUMMARY_CAP]
+                return _scrub(desc)[:_SUMMARY_CAP]
     return None
 
 
@@ -285,6 +293,8 @@ def append_action_record(
         "input_summary": _input_summary(view),
         "evidence_hash": hashlib.sha256(_canonical(view)).hexdigest(),
         "agent_stated_intent": _stated_intent(event),
+        # What told the agent to do this, when an extension did (extensions.py).
+        "extension_id": ((meta.get("extension") or {}).get("id") if isinstance(meta, dict) else None),
         # Decision.
         "verdict": _verdict(findings, blocking),
         "mode": mode,
@@ -329,6 +339,38 @@ def append_approval_record(
         "rules": [rule_id] if rule_id else [],
         "severity": severity,
         "reason": reason or f"human approval {status}",
+    }
+    return _append(record)
+
+
+def append_extension_record(
+    *,
+    event: str,
+    extension: Dict[str, Any],
+    session_id: str = "",
+    **detail: Any,
+) -> Dict[str, Any]:
+    """Append one signed record for an extension lifecycle event:
+    ``extension_installed | extension_changed | extension_invoked |
+    remote_ref_drift | remote_ref_flagged | hook_executed``. The install path is
+    the one part of an agent's supply chain no tool call passes through, so it
+    gets its own record type rather than riding on an action."""
+    record: Dict[str, Any] = {
+        "record_type": "extension",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "device_id": _device_id(),
+        "prismor_version": _prismor_version(),
+        "session_id": session_id,
+        "event": event,
+        "extension_id": extension.get("id"),
+        "kind": extension.get("kind"),
+        "name": extension.get("name"),
+        "path": extension.get("path"),
+        "origin": extension.get("origin"),
+        "sha256": extension.get("sha256"),
+        "installed_by": extension.get("installed_by"),
+        "capabilities": extension.get("capabilities") or [],
+        "detail": {k: v for k, v in detail.items() if v is not None},
     }
     return _append(record)
 
