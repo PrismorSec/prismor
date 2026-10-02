@@ -221,3 +221,48 @@ tests:
 ```
 
 `prismor check --explain` prints a matched rule's `when:`.
+
+### Suites: fixtures and per-principal expectations
+
+Name your principals and resources once, and assert one call for several
+callers in a single test. A matrix row is named `test [principal]`.
+
+```yaml
+fixtures:                      # or a sibling policy-fixtures.yaml, shared by every suite in the directory
+  principals:
+    bob:   {id: bob, roles: [support], verified: true}
+    carol: {id: carol, roles: [finance], verified: true}
+    anon:  {}
+  resources:
+    alices_order: {kind: order, id: o-1, attr: {owner: alice}}
+tests:
+  - name: refunds over 500
+    tool: refund_order
+    args: {amount: 900}
+    resource: alices_order
+    expect: {bob: block, carol: pass, anon: block}
+    expect_rule: refund-cap
+  - name: not yet
+    skip: true
+    skip_reason: waiting on the roles claim
+```
+
+```bash
+prismor policy test                                 # .prismor/policy-tests.yaml
+prismor policy test --policy policies/bot.yaml      # a policy file, with its own tests: if it has them
+prismor policy test --filter '*[carol]' --json
+```
+
+A policy file can carry its own `tests:` and `fixtures:`; the engine ignores
+both keys. The console stores a policy's tests this way and runs them before
+publishing.
+
+### In CI
+
+```yaml
+- uses: PrismorSec/prismor/.github/actions/policy-test@main
+  with:
+    policy: policies/support-bot.yaml   # optional
+```
+
+The job fails on any mismatch.

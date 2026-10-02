@@ -316,7 +316,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
-| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)). |
+| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
 | `prismor sandbox <status\|check\|run>` | `--workspace` | Docker-backed command sandbox: show config, check the backend, or run one command isolated. See [Docker sandbox](docker.md). |
 | `prismor egress show` | `--workspace` | Effective network egress policy, its mode, and which layer (default / project / org) set it. See [Network Isolation](network-isolation.md). |
 | `prismor egress report` | `--last N`, `--fail-on-block`, `--workspace` | Every destination recorded sessions actually contacted, with the verdict the current policy gives it. The on-ramp before flipping to enforce; `--fail-on-block` gates CI. |

@@ -2990,7 +2990,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             _policy_edit(workspace)
             return
         if args.policy_command == "test":
-            _policy_test(workspace, test_file=getattr(args, "file", None))
+            _policy_test(workspace, test_file=getattr(args, "file", None),
+                         policy_file=getattr(args, "policy", None),
+                         name_filter=getattr(args, "filter", None),
+                         as_json=getattr(args, "json", False))
             return
         # No action given → print usage instead of the cryptic
         # "Unsupported command: policy" (the command IS supported; it needs an action).
@@ -3943,7 +3946,10 @@ def build_parser() -> argparse.ArgumentParser:
     policy_export.add_argument("--workspace", help="Workspace path")
 
     policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
-    policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml)")
+    policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml, or the --policy file's own tests:)")
+    policy_test.add_argument("--policy", help="Test this policy file instead of the workspace's effective policy (e.g. a policy exported from the console, in CI)")
+    policy_test.add_argument("--filter", help="Only run tests whose name matches this pattern (* and ? wildcards; matrix rows are named 'test [principal]')")
+    policy_test.add_argument("--json", action="store_true", help="Print results as JSON")
     policy_test.add_argument("--workspace", help="Workspace path")
 
     # ── mode (governance mode templates → policy.yaml) ─────────────────
@@ -5645,12 +5651,16 @@ def _policy_validate(path: Path) -> None:
     raise SystemExit(1)
 
 
-def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
+def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: Optional[str] = None,
+                 name_filter: Optional[str] = None, as_json: bool = False) -> None:
     """Run declarative policy tests from policy-tests.yaml."""
-    from prismor.runtime.policy_test import run_cases, load_cases
+    from prismor.runtime.policy_test import run_cases, load_suite
 
+    policy_path = Path(policy_file) if policy_file else None
     if test_file:
         path = Path(test_file)
+    elif policy_path is not None:
+        path = policy_path  # a policy carrying its own tests: (console export)
     else:
         path = workspace / ".prismor" / "policy-tests.yaml"
 
@@ -5668,12 +5678,18 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
             raise SystemExit(1)
 
     try:
-        cases = load_cases(path)
+        cases, fixtures = load_suite(path)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         sys.stderr.write(f"error: {exc}\n")
         raise SystemExit(1)
 
-    result = run_cases(cases, workspace=workspace)
+    result = run_cases(cases, workspace=workspace, fixtures=fixtures,
+                       policy_path=policy_path, name_filter=name_filter)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if result["failed"]:
+            raise SystemExit(1)
+        return
     print()
     print(f"  {_color('PRISMOR', _BOLD)}  policy tests ({path.name})")
     print(f"  {_color('─' * 50, _DIM)}")
@@ -5682,6 +5698,8 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
     for r in result["results"]:
         if r["status"] == "ok":
             print(f"  {_color('PASS', _GREEN)}  {r['name']}")
+        elif r["status"] == "skip":
+            print(f"  {_color('SKIP', _DIM)}  {r['name']}" + (f"  ({r['reason']})" if r.get("reason") else ""))
         else:
             print(f"  {_color('FAIL', _RED)}  {r['name']}")
             print(f"         input:    {r['input']!r}")
@@ -5692,7 +5710,8 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
     print()
     color = _GREEN if result["failed"] == 0 else _RED
     print(f"  {_color(str(result['passed']) + '/' + str(result['total']) + ' passed', color)}"
-          + (f"  ({result['failed']} failed)" if result["failed"] else ""))
+          + (f"  ({result['failed']} failed)" if result["failed"] else "")
+          + (f"  ({result['skipped']} skipped)" if result.get("skipped") else ""))
     print()
     if result["failed"]:
         raise SystemExit(1)
