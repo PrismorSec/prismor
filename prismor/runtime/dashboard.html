@@ -916,7 +916,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .upgrade-btn {
     font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
     padding: 5px 14px; border-radius: 6px; border: none; color: #fff;
-    background: var(--gray-900);
+    background: #1f2a3c;
     display: inline-flex; align-items: center; gap: 6px;
     transition: opacity 0.15s, transform 0.1s;
   }
@@ -962,11 +962,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .up-feat strong { color: var(--gray-900); }
   .up-modal-actions { display: flex; gap: 14px; padding: 18px 28px 16px; align-items: center; }
   .up-cta-primary {
-    flex: 1; text-align: center; background: var(--gray-900); color: #fff;
+    flex: 1; text-align: center; background: #1f2a3c; color: #fff;
     font-weight: 600; font-size: 13px; padding: 10px 18px; border-radius: 7px;
     text-decoration: none; transition: background 0.15s;
   }
-  .up-cta-primary:hover { background: #000; }
+  .up-cta-primary:hover { background: #0f1620; }
   .up-cta-secondary { font-size: 12px; color: var(--gray-500); text-decoration: none; white-space: nowrap; }
   .up-cta-secondary:hover { color: var(--gray-800); text-decoration: underline; }
   .up-modal-note { font-size: 10px; color: var(--gray-400); padding: 0 28px 22px; line-height: 1.5; }
@@ -1012,7 +1012,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tab-lock .icon { width: 11px; height: 11px; vertical-align: -1px; }
   .locked-hero .lock { color: var(--gray-400); }
   .locked-hero .lock .icon { width: 28px; height: 28px; stroke-width: 1.75; }
-  .up-feat .fi .icon { width: 15px; height: 15px; color: #6d28d9; margin-top: 1px; }
+  .up-feat .fi .icon { width: 15px; height: 15px; color: var(--green-500); margin-top: 1px; }
   .drawer-toggle .icon { width: 12px; height: 12px; vertical-align: -1.5px; }
   .scoped-tag .icon { width: 11px; height: 11px; vertical-align: -1.5px; }
 
@@ -1385,6 +1385,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background: var(--gray-400); box-shadow: 0 0 0 3px var(--gray-100);
   }
   html[data-theme="dark"] .theme-toggle-dot { background: #fbbf24; box-shadow: 0 0 0 3px #1e293b; }
+  .tab-nav-footer {
+    margin-top: auto; padding-top: 12px; border-top: 1px solid var(--gray-200);
+    display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 8px;
+  }
+  .tab-nav-footer .theme-toggle { flex: 1; justify-content: center; }
   html[data-theme="dark"] body,
   html[data-theme="dark"] #loadingScreen { background: var(--app-bg); }
   html[data-theme="dark"] .event-row:hover,
@@ -2226,6 +2231,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   @media (max-width: 900px) {
     .nav-group, .tab-count { display: none; }
     .tab-nav .tab-btn { justify-content: center; padding: 10px 0; }
+    .tab-nav-footer { flex-direction: column; }
     .page, .prismor-cta { margin-left: 60px; }
     .prismor-cta { margin-left: 76px; margin-right: 16px; }
     .page { padding: 12px 16px 32px; }
@@ -2294,6 +2300,13 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
   <div class="nav-group">Platform</div>
   <button class="tab-btn" data-tab="docs" data-label="Docs"><svg class="icon"><use href="#i-book"/></svg><span>Docs</span></button>
+  <div class="tab-nav-footer">
+    <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
+    <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
+      <span class="theme-toggle-dot"></span>
+      <span id="themeToggleLabel">Dark</span>
+    </button>
+  </div>
 </div>
 
 <!-- ═══ TOP BAR (breadcrumb) ══════════════════════════════════════ -->
@@ -2310,14 +2323,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div class="topbar-right">
     <span id="lastUpdated" class="last-updated"></span>
-    <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
     <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
             title="Effective enforcement mode: click to manage in Policy Control">
       <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
-    </button>
-    <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
-      <span class="theme-toggle-dot"></span>
-      <span id="themeToggleLabel">Dark</span>
     </button>
     <button id="refreshBtn" class="upgrade-btn" onclick="refreshDashboard()"><svg class="icon"><use href="#i-refresh"/></svg> Refresh</button>
     <button class="upgrade-btn" onclick="openUpgradeModal()"><svg class="icon"><use href="#i-sparkles"/></svg> Upgrade</button>
