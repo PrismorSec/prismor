@@ -2023,6 +2023,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .how-it-works:not([open]) .sess-ext-toggle::after { content: ' \25BE'; } .how-it-works[open] .sess-ext-toggle::after { content: ' \25B4'; }
   .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
   .ext-stat small { display: block; font-size: 11px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+  .dep-line { display:flex; align-items:center; gap:8px; padding:4px 0; min-width:0; }
+  .dep-line + .dep-line { border-top:1px solid var(--gray-100); }
+  .dep-when { flex:none; }
   .ext-review-note { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--gray-500); max-width: 460px; vertical-align: middle; }
   .btn-ok, .btn-line {
     font: 600 14px var(--font-ui); padding: 11px 16px; border-radius: 6px; cursor: pointer;
@@ -2285,6 +2288,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="nav-group">Policy</div>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
+  <button class="tab-btn" data-tab="dependencies" data-label="External Dependencies"><svg class="icon"><use href="#i-globe"/></svg><span>Dependencies</span></button>
   <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
   <div class="nav-group">Govern</div>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
@@ -2345,6 +2349,16 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div id="extEvents"><div class="empty">No extension events yet.</div></div>
     </div>
   </div>
+</div>
+
+<div id="page-dependencies" class="page">
+  <div class="section"><h2>External dependencies and connections</h2><div class="rule"></div>
+    <span class="hint">What your agents reached for outside themselves, across every session on this machine: the secrets they used and which service each one opened, the MCP servers they called, the skills they loaded, and the packages they installed. Read it by dependency to see what is in use, or by session, agent or project to see who used it.</span>
+  </div>
+  <div id="depSummary" class="ext-summary"></div>
+  <div class="ext-views" id="depViews"></div>
+  <div class="ext-filters" id="depFilters"></div>
+  <div id="depList"><div class="empty">Loading dependencies…</div></div>
 </div>
 
 <div id="page-docs" class="page">
@@ -2448,6 +2462,29 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
           <tr><th>Session</th><th>Agent</th><th>Status</th><th>Last Active</th></tr>
         </thead>
         <tbody id="ovSessBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="bar" style="margin-bottom:14px">
+      <div>
+        <div class="card-title">Top network calls</div>
+        <div style="font-size:11px;color:var(--gray-500);margin-top:4px" id="netSub">
+          Every destination your sessions reached, busiest first.
+        </div>
+      </div>
+      <div class="bar-right">
+        <button class="inline-link-btn" id="netToggle" onclick="_netLocal=!_netLocal;renderNetworkCalls()">Show local too</button>
+      </div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead>
+          <tr><th>Destination</th><th class="right">Calls</th><th class="right">Blocked</th>
+              <th class="right">Warned</th><th class="right">Sessions</th><th>Agents</th><th>Last</th></tr>
+        </thead>
+        <tbody id="netBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -3400,6 +3437,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     }
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
     if (btn.dataset.tab === 'extensions') loadExtensions();
+    if (btn.dataset.tab === 'dependencies') loadDependencies();
     if (btn.dataset.tab === 'docs') loadDocs();
   });
 });
@@ -3810,6 +3848,90 @@ async function extApprove(id) {
     else if (document.getElementById('page-extension')?.classList.contains('active')) openExtension(id, true);
     else loadExtensions();
   } catch (e) { toast('✗ ' + e.message, true); }
+}
+
+// ── External dependencies: what the agent reached for outside itself ─────────
+// /api/dependencies answers at (part, name, target, session) grain, so each
+// view below is a different grouping of the same rows and switching one never
+// costs another fetch. Rows arrive newest-first, so members[0] is a group's
+// most recent use.
+let _depCache = null, _depPart = 'all', _depGroup = 'dep', _depDays = 30, _depOpen = {};
+const DEP_PARTS = [['secret', 'Services a secret opened', 'which credential is never recorded here', 'Secrets'],
+                   ['mcp', 'MCP servers', 'tools called on them', 'MCP servers'],
+                   ['skill', 'Skills loaded', 'by an agent mid-session', 'Skills'],
+                   ['package', 'Packages installed', 'from a registry', 'Packages']];
+// label, group key, group heading, badge beside the heading
+const DEP_GROUPS = {
+  dep:     ['By dependency', r => r.part + '/' + r.name, r => r.name,                              r => r.part],
+  session: ['By session',    r => r.session,             r => String(r.session).slice(0, 8),       r => r.agent],
+  agent:   ['By agent',      r => r.agent,               r => r.agent,                            () => 'agent'],
+  project: ['By project',    r => r.workspace,           r => r.workspace.split('/').pop() || '—', () => 'project'],
+};
+async function loadDependencies() {
+  try {
+    _depCache = await apiFetch('/api/dependencies?days=' + _depDays, {timeoutMs: 30000});
+    renderDependencies();
+  } catch (e) {
+    document.getElementById('depList').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  }
+}
+// A skill has no second half: it is loaded, it does not connect to anything.
+function depTarget(r) { return r.part === 'skill' || r.part === 'secret' ? '' : r.target || ''; }
+function depLine(r) {
+  return '<div class="dep-line">' +
+    '<span class="ext-kind">' + safe(r.part) + '</span>' +
+    '<span class="ext-name">' + safe(r.name) + (depTarget(r) ? ' <span class="ext-quiet">&rarr; ' + safe(depTarget(r)) + '</span>' : '') + '</span>' +
+    (r.note ? '<span class="ext-cap' + (r.note === 'not in vault' ? ' remote_instructions' : '') + '">' + safe(r.note) + '</span>' : '') +
+    '<span class="ext-agent">' + agentIcon(r.agent) + safe(r.agent) + '</span>' +
+    '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(r.session) + '\')">' + safe(String(r.session).slice(0, 8)) + '</a>' +
+    '<span class="ext-origin">' + safe(r.workspace) + '</span>' +
+    '<span class="ext-quiet dep-when">' + r.calls + ' call' + (r.calls === 1 ? '' : 's') + ' &middot; ' + safe(r.last || '') + '</span></div>';
+}
+function renderDependencies() {
+  const all = ((_depCache || {}).rows) || [];
+  const dangling = all.some(r => r.note === 'not in vault');
+  document.getElementById('depSummary').innerHTML = DEP_PARTS.map(([part, label, sub]) => {
+    const mine = all.filter(r => r.part === part), calls = mine.reduce((n, r) => n + r.calls, 0);
+    const warn = part === 'secret' && dangling;
+    return '<div class="ext-stat' + (warn ? ' warn' : '') + '" onclick="_depPart=\'' + (_depPart === part ? 'all' : part) + '\';renderDependencies()">' +
+      '<b>' + new Set(mine.map(r => r.name)).size + '</b><span>' + label + '</span><small>' +
+      calls + ' call' + (calls === 1 ? '' : 's') + ' &middot; ' + safe(sub) +
+      (warn ? ' &middot; <b style="color:#b45309">a placeholder had no vault entry</b>' : '') + '</small></div>';
+  }).join('');
+  document.getElementById('depViews').innerHTML = Object.keys(DEP_GROUPS).map(k =>
+    '<button class="ext-view' + (_depGroup === k ? ' on' : '') + '" onclick="_depGroup=\'' + k + '\';renderDependencies()">' + DEP_GROUPS[k][0] + '</button>').join('');
+  document.getElementById('depFilters').innerHTML =
+    '<select class="fsel" style="margin-right:6px" onchange="_depDays=+this.value;loadDependencies()">' +
+    [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [365, 'Last year']].map(([d, l]) =>
+      '<option value="' + d + '"' + (_depDays === d ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>' +
+    [['all', 'All']].concat(DEP_PARTS.map(([p, , , chip]) => [p, chip])).map(([p, l]) =>
+      '<button class="ext-filter' + (_depPart === p ? ' on' : '') + '" onclick="_depPart=\'' + p + '\';renderDependencies()">' + safe(l) + '</button>').join('');
+
+  const rows = all.filter(r => _depPart === 'all' || r.part === _depPart);
+  const [, keyOf, titleOf, badgeOf] = DEP_GROUPS[_depGroup];
+  const groups = new Map();
+  rows.forEach(r => { const k = keyOf(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+  const out = [...groups].map(([k, members]) => ({k: k, members: members, calls: members.reduce((n, r) => n + r.calls, 0)}))
+    .sort((a, b) => b.calls - a.calls);
+  document.getElementById('depList').innerHTML = out.length ? out.map(g => {
+    const head = g.members[0], key = JSON.stringify(g.k);
+    // Count only what the group heading does not already fix.
+    const facets = [['part', 'parts', r => r.part], ['dependency', 'dependencies', r => r.part + '/' + r.name],
+                    ['session', 'sessions', r => r.session], ['agent', 'agents', r => r.agent],
+                    ['project', 'projects', r => r.workspace]]
+      .filter(([f]) => f !== _depGroup && !(_depGroup === 'dep' && (f === 'part' || f === 'dependency')))
+      .map(([one, many, fn]) => { const n = new Set(g.members.map(fn)).size; return n + ' ' + (n === 1 ? one : many); });
+    return '<div class="ext-row' + (_depOpen[g.k] ? ' open' : '') + '">' +
+      '<div class="ext-head" onclick="_depOpen[' + key + ']=!_depOpen[' + key + '];renderDependencies()">' +
+        '<span class="ext-kind">' + safe(badgeOf(head)) + '</span>' +
+        '<span class="ext-name">' + safe(titleOf(head)) + '</span>' +
+        '<span class="ext-origin">' + safe(facets.join(' · ')) + '</span>' +
+        '<span class="ext-quiet dep-when">' + g.calls + ' call' + (g.calls === 1 ? '' : 's') + '</span>' +
+        '<span class="ext-never">' + safe(head.last || '') + '</span></div>' +
+      '<div class="ext-body">' + g.members.slice(0, 200).map(depLine).join('') +
+        (g.members.length > 200 ? '<div class="ext-quiet">Showing 200 of ' + g.members.length + '.</div>' : '') + '</div></div>';
+  }).join('') + ((_depCache || {}).truncated ? '<div class="empty">Capped at 5000 rows — narrow the date range.</div>' : '')
+    : '<div class="empty">Nothing recorded in this window. Prismor fills this in as your agents use secrets, call MCP servers, load skills and install packages.</div>';
 }
 
 async function loadMcpServers() {
@@ -5868,6 +5990,39 @@ async function loadStats(){
   }catch(e){console.error('[prismor] stats:',e);}
 }
 
+// ── Top network calls ─────────────────────────────────────────────────────
+// Private destinations are hidden by default: a local dev server outranks real
+// egress on volume, and egress is what this card is for.
+let _netCache = null, _netLocal = false;
+async function loadNetworkCalls(){
+  try{
+    const days=document.getElementById('globalDays').value;
+    _netCache=await apiFetch('/api/network-calls?days='+days,{timeoutMs:30000});
+    renderNetworkCalls();
+  }catch(e){
+    document.getElementById('netBody').innerHTML='<tr><td colspan="7" class="empty">Failed to load: '+safe(e.message)+'</td></tr>';
+  }
+}
+function renderNetworkCalls(){
+  const d=_netCache||{hosts:[]}, all=d.hosts||[];
+  const rows=_netLocal?all:all.filter(h=>!h.private);
+  const local=all.length-all.filter(h=>!h.private).length;
+  document.getElementById('netToggle').textContent=_netLocal?'Hide local':'Show local too';
+  document.getElementById('netToggle').hidden=!local;
+  document.getElementById('netSub').innerHTML='Every destination your sessions reached, busiest first. '+
+    fmtNum(d.calls||0)+' call'+((d.calls||0)===1?'':'s')+' to '+(d.externalCount||0)+' external host'+((d.externalCount||0)===1?'':'s')+
+    (local?' · '+local+' local host'+(local===1?'':'s')+(_netLocal?' shown':' hidden'):'');
+  document.getElementById('netBody').innerHTML=rows.length?rows.map(h=>
+    '<tr><td><code>'+safe(h.host)+'</code>'+(h.private?' <span class="ext-never">local</span>':'')+'</td>'+
+      '<td class="right">'+fmtNum(h.calls)+'</td>'+
+      '<td class="right">'+(h.blocked?'<b style="color:var(--bad)">'+fmtNum(h.blocked)+'</b>':'–')+'</td>'+
+      '<td class="right">'+(h.warned?'<b style="color:#b45309">'+fmtNum(h.warned)+'</b>':'–')+'</td>'+
+      '<td class="right">'+fmtNum(h.sessions)+'</td>'+
+      '<td>'+(h.agents||[]).map(a=>'<span class="ext-agent">'+agentIcon(a)+safe(a)+'</span>').join(' ')+'</td>'+
+      '<td>'+safe(h.last||'')+'</td></tr>').join('')
+    : '<tr><td colspan="7" class="empty">No network calls recorded in this window.</td></tr>';
+}
+
 // ── Supply chain ──────────────────────────────────────────────────────────
 async function loadSupplyChain(){
   try{
@@ -5917,7 +6072,7 @@ async function loadSupplyChain(){
     ).join('');}
   }catch(e){console.error('[prismor] supply-chain:',e);}
 }
-document.getElementById('globalDays').addEventListener('change',()=>{loadStats();loadSupplyChain();});
+document.getElementById('globalDays').addEventListener('change',()=>{loadStats();loadSupplyChain();loadNetworkCalls();});
 
 // ══════════════════════════════════════════════════════════════════════════
 // AGENTS TAB — per-agent kill switch, mode override, IAM profile
@@ -6815,6 +6970,7 @@ const _bootTasks = [
   loadFindings().then(()      => _loadTick('Findings loaded')),
   loadEvents().then(()        => _loadTick('Events loaded')),
   loadSupplyChain().then(()   => _loadTick('Supply chain loaded')),
+  loadNetworkCalls().then(()  => _loadTick('Network calls loaded')),
   loadAgents().then(()        => _loadTick('Agents loaded')),
   loadWorkspaces()
     .then(() => Promise.allSettled([loadSessionControl(), loadPolicy()]))
@@ -6834,6 +6990,7 @@ setInterval(() => {
   loadStats();
   loadSessions();
   loadSupplyChain();
+  loadNetworkCalls();
   loadSessionControl();
   loadPolicy();
   loadAgents();

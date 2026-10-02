@@ -50,6 +50,8 @@ from prismor.runtime.store import (
     get_aggregate_stats,
     get_sessions_page,
     get_mcp_usage,
+    get_dependency_usage,
+    get_network_calls,
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
@@ -764,6 +766,22 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
                 return
             self._send_json(data)
+            return
+
+        if path == "/api/network-calls":
+            try:
+                days = max(1, qint("days", 7))
+                self._send_json(get_network_calls(hours=days * 24))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/dependencies":
+            try:
+                days = max(1, qint("days", 30))
+                self._send_json(get_dependency_usage(hours=days * 24))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
             return
 
         if path == "/api/tokens":
