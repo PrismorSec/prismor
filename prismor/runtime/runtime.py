@@ -185,6 +185,7 @@ def evaluate_tool_call(
     flush_at_exit: bool = True,
     resource: Optional[Dict[str, Any]] = None,
     identity_token: Optional[str] = None,
+    explain: bool = False,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -217,6 +218,8 @@ def evaluate_tool_call(
             ``when:`` rules as ``resource.*``. Overrides ``metadata.resource``.
         identity_token: the end user's IdP token (JWT). Verified against the
             org's ``settings.identity``; defaults to ``use_subject(token=...)``.
+        explain: attach a decision trace (``Decision.explain``): matched rules,
+            their policy layer and mode, each ``when`` result, policy version.
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -350,7 +353,9 @@ def evaluate_tool_call(
     perf.lap("agent_control")
     _guard_t0 = time.perf_counter()
     _session_seq = len(events) - 1
-    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
+    _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
+    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
+                               trace=_trace)
     perf.lap("policy_eval")
 
     # Integrity findings (memory guard, #154) bypass the regex rule engine
@@ -780,6 +785,20 @@ def evaluate_tool_call(
                 engine=engine,
             )
 
+    _explain = None
+    if explain:
+        try:
+            from prismor.runtime.enterprise import remote_policy as _rp
+            _version = _rp.current_version()
+        except Exception:
+            _version = None
+        _explain = {
+            "rules": _trace or [],
+            "policy_version": _version,
+            "identity": meta.get("identity"),
+            "subject_source": subject.source if subject else None,
+            "decided_by": (blocking or {}).get("ruleId"),
+        }
     return Decision(
         allow=blocking is None,
         findings=findings,
@@ -787,6 +806,7 @@ def evaluate_tool_call(
         reason=_block_reason(blocking) if blocking else None,
         subject=subject,
         engine=engine,
+        explain=_explain,
     )
 
 

@@ -116,6 +116,53 @@ when: "resource.attr.env == 'prod' and not principal.verified"
 when: "args.currency not in ['USD', 'EUR', 'GBP']"
 ```
 
+## Named conditions
+
+Conditions you use in several rules can be named once in `settings.conditions`
+and referenced by name, the way a derived role is defined once and reused:
+
+```yaml
+settings:
+  conditions:
+    is_finance: "'finance' in principal.roles"
+    is_owner: "resource.attr.owner == principal.id"
+
+rules:
+  - id: refund-cap
+    # ...
+    when: "args.amount >= 500 and not is_finance"
+  - id: owner-only-delete
+    # ...
+    when: "not (is_owner or is_finance)"
+```
+
+A named condition reads the same four roots as `when:`. It cannot refer to
+other names, so there are no cycles. Names merge per name across policy layers:
+the signed org policy can redefine `is_finance` without erasing a project's
+other names. A missing attribute inside a named condition fails toward
+detection, exactly as it does inline.
+
+## Explaining a decision
+
+Ask the eval-server for a trace with `"explain": true`:
+
+```json
+"explain": {
+  "rules": [
+    {"rule_id": "refund-cap", "layer": "remote", "mode": "enforce",
+     "when": "args.amount >= 500 and not is_finance", "when_holds": false, "fired": false}
+  ],
+  "policy_version": 14,
+  "identity": "verified",
+  "subject_source": "jwt",
+  "decided_by": null
+}
+```
+
+Every rule whose patterns matched is listed, including the ones a `when:` then
+switched off, so "why didn't my rule fire?" has an answer. In Python, pass
+`evaluate_tool_call(..., explain=True)` and read `Decision.explain`.
+
 ## Core rules
 
 `when:` can only narrow a rule, so it is refused on core protections (the

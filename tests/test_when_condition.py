@@ -159,3 +159,91 @@ def test_policy_test_tool_cases(tmp_path):
          "expect": "pass"},
     ], workspace=tmp_path)
     assert out["failed"] == 0, out
+
+
+# ── named conditions (settings.conditions) ───────────────────────────────
+
+from prismor.runtime.policy_engine import compile_named_conditions  # noqa: E402
+
+
+def test_named_conditions_compile_and_reject_bad_names():
+    named, errs = compile_named_conditions({
+        "is_finance": "'finance' in principal.roles",
+        "args": "true", "has": "true", "bad name": "true", "broken": "args.x >",
+    })
+    assert set(named) == {"is_finance"}
+    assert len(errs) == 4
+
+
+def test_when_uses_named_condition():
+    named, _ = compile_named_conditions({"is_finance": "'finance' in principal.roles",
+                                         "is_owner": "resource.attr.owner == principal.id"})
+    w = AttrCondition("args.amount >= 500 and not (is_finance or is_owner)", named)
+    ctx = {"principal": {"id": "bob", "roles": []}, "args": {"amount": 900}, "resource": {"attr": {"owner": "bob"}}}
+    assert w.evaluate(ctx) is False  # owner
+    ctx["resource"] = {"attr": {"owner": "alice"}}
+    assert w.evaluate(ctx) is True
+    ctx["principal"]["roles"] = ["finance"]
+    assert w.evaluate(ctx) is False
+
+
+def test_unknown_name_still_rejected_without_definition():
+    with pytest.raises(ConditionError):
+        AttrCondition("is_finance")
+
+
+def test_missing_attr_inside_named_condition_fails_toward_detection():
+    named, _ = compile_named_conditions({"is_owner": "resource.attr.owner == principal.id"})
+    assert AttrCondition("not is_owner", named).evaluate({"principal": {"id": "x"}}) is True
+
+
+def test_engine_named_conditions_and_layer_merge(tmp_path):
+    import yaml
+    (tmp_path / ".prismor").mkdir()
+    rule = {**_REFUND, "when": "args.amount >= 500 and not is_finance"}
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({
+        "version": "1.0", "rules": [rule],
+        "settings": {"conditions": {"is_finance": "'finance' in principal.roles"}}}))
+    from prismor.runtime.principal import Subject
+    eng = PolicyEngine(workspace=tmp_path)
+    assert _hit(eng, _event("refund_order", {"amount": 900}))
+    assert not _hit(eng, _event("refund_order", {"amount": 900}),
+                    Subject(user_id="c", source="jwt", roles=("finance",), verified=True))
+
+
+def test_validate_policy_knows_named_conditions(tmp_path):
+    import yaml
+    pol = tmp_path / "p.yaml"
+    pol.write_text(yaml.safe_dump({"version": "1.0", "settings": {"conditions": {"is_fin": "'f' in principal.roles"}},
+                                   "rules": [{**_REFUND, "when": "is_fin"}, {**_REFUND, "id": "b", "when": "is_ghost"}]}))
+    errs = validate_policy(pol)
+    assert not any("rules[0]" in e for e in errs)
+    assert any("rules[1].when" in e for e in errs)
+
+
+# ── explain trace ────────────────────────────────────────────────────────
+
+def test_trace_records_matched_rules_and_when_results(tmp_path):
+    eng = _engine(tmp_path, _REFUND)
+    trace = []
+    eng.evaluate(_event("refund_order", {"amount": 10}), 0, trace=trace)
+    row = next(t for t in trace if t["rule_id"] == "refund-cap")
+    assert row["when_holds"] is False and row["fired"] is False and row["layer"] == "project"
+    trace = []
+    eng.evaluate(_event("refund_order", {"amount": 900}), 0, trace=trace)
+    row = next(t for t in trace if t["rule_id"] == "refund-cap")
+    assert row["fired"] is True and row["mode"] == "enforce"
+
+
+_NAMED, _ = compile_named_conditions(GOLDEN["named"])
+
+
+@pytest.mark.parametrize("case", GOLDEN["named_valid"], ids=lambda c: c["expr"])
+def test_golden_named_valid(case):
+    assert AttrCondition(case["expr"], _NAMED).evaluate(GOLDEN["context"]) is case["result"]
+
+
+@pytest.mark.parametrize("expr", GOLDEN["named_invalid"])
+def test_golden_named_invalid(expr):
+    with pytest.raises(ConditionError):
+        AttrCondition(expr, _NAMED)

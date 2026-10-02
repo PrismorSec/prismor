@@ -549,10 +549,13 @@ class AttrCondition:
     adapter forgot to send ``args``. Guard optional fields with ``has()``.
     """
 
-    __slots__ = ("source", "_tree")
+    __slots__ = ("source", "_tree", "_named")
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, named: Optional[Dict[str, "AttrCondition"]] = None) -> None:
         self.source = source
+        # Named conditions (settings.conditions) usable as bare names, the
+        # equivalent of reusable derived roles: `when: "is_owner or is_finance"`.
+        self._named: Dict[str, "AttrCondition"] = named or {}
         try:
             self._tree = ast.parse(source, mode="eval").body
         except SyntaxError as exc:
@@ -601,6 +604,8 @@ class AttrCondition:
             self._validate_path(node.args[0])
         elif isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
             pass  # YAML/JSON-style literals, for authors who don't write Python
+        elif isinstance(node, ast.Name) and node.id in self._named:
+            pass
         else:
             self._validate_path(node)
 
@@ -648,7 +653,38 @@ class AttrCondition:
                 return False
         if isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
             return {"true": True, "false": False, "null": None}[node.id]
+        if isinstance(node, ast.Name) and node.id in self._named:
+            # Raw evaluation: a missing attribute inside the named condition
+            # propagates, so the whole `when` still fails toward detection.
+            sub = self._named[node.id]
+            return bool(sub._eval(sub._tree, ctx))
         return self._resolve(node, ctx)
+
+
+_CONDITION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_NAMES = _WHEN_ROOTS | {"true", "false", "null", "True", "False", "None", "has",
+                                 "and", "or", "not", "in", "is"}
+
+
+def compile_named_conditions(raw: Any) -> Tuple[Dict[str, AttrCondition], List[str]]:
+    """settings.conditions → ({name: AttrCondition}, errors). Each body may read
+    the four attribute roots; names cannot refer to other names (no cycles)."""
+    out: Dict[str, AttrCondition] = {}
+    errors: List[str] = []
+    if raw is None:
+        return out, errors
+    if not isinstance(raw, dict):
+        return out, ["settings.conditions must be a map of name -> expression"]
+    for name, src in raw.items():
+        name = str(name)
+        if not _CONDITION_NAME.match(name) or name in _RESERVED_NAMES:
+            errors.append(f"settings.conditions.{name}: not a usable name")
+            continue
+        try:
+            out[name] = AttrCondition(str(src))
+        except ConditionError as exc:
+            errors.append(f"settings.conditions.{name}: {exc}")
+    return out, errors
 
 
 def _compare(op, left: Any, right: Any) -> bool:
@@ -717,7 +753,7 @@ class CompiledRule:
         "pattern_groups", "condition", "layer", "when", "match_all",
     )
 
-    def __init__(self, raw: Dict[str, Any]) -> None:
+    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
         self.id: str = raw["id"]
         # Which policy layer last wrote this rule: default, project,
         # remote (signed org) or exemption. Answers "why is this rule
@@ -769,7 +805,7 @@ class CompiledRule:
                     f"cannot be narrowed by an attribute expression\n")
             else:
                 try:
-                    self.when = AttrCondition(str(raw_when))
+                    self.when = AttrCondition(str(raw_when), named)
                 except ConditionError as exc:
                     sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored\n")
         # A rule may match on attributes alone (no patterns). Such a rule fires
@@ -1239,6 +1275,11 @@ class PolicyEngine:
                 **(settings.get("semantic_guard") or {}),
                 **override_settings["semantic_guard"],
             }
+        # Named conditions merge per name: an org layer redefining `is_finance`
+        # wins over the project's, but does not erase the project's other names
+        # (which its own rules still reference).
+        if isinstance(override_settings.get("conditions"), dict) and isinstance(settings.get("conditions"), dict):
+            override_settings["conditions"] = {**settings["conditions"], **override_settings["conditions"]}
         settings.update(override_settings)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -1473,10 +1514,16 @@ class PolicyEngine:
         if isinstance(sandbox, dict):
             self.sandbox_config = sandbox
 
+        # Named conditions (settings.conditions), merged per name across layers
+        # (see _apply_override), so the signed org layer wins over a project's.
+        self.named_conditions, _cond_errors = compile_named_conditions(settings.get("conditions"))
+        for _e in _cond_errors:
+            sys.stderr.write(f"[prismor] {_e} — ignored\n")
+
         # Compile rules.
         for rule_data in rules_by_id.values():
             if rule_data.get("enabled", True):
-                compiled = CompiledRule(rule_data)
+                compiled = CompiledRule(rule_data, self.named_conditions)
                 if compiled.enabled:  # a when-only rule with a broken `when` disables itself
                     self.rules.append(compiled)
 
@@ -1495,6 +1542,7 @@ class PolicyEngine:
         session_id: str = "",
         subject: Optional[Any] = None,
         include_suppressed: bool = False,
+        trace: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -1630,16 +1678,36 @@ class PolicyEngine:
             if matched_evidence is None:
                 continue
 
+            when_holds: Optional[bool] = None
             if rule.when is not None:
                 if when_ctx is None:
                     when_ctx = _when_context(event, subject)
-                if not rule.when.evaluate(when_ctx):
-                    continue
+                when_holds = rule.when.evaluate(when_ctx)
+            if trace is not None:
+                # Every rule whose patterns matched, including the ones a
+                # `when` then switched off: "why didn't my rule fire?" is the
+                # question an explain exists to answer.
+                try:
+                    _mode, _why = self.explain_mode(rule)
+                except Exception:
+                    _mode, _why = rule.mode, ""
+                trace.append({
+                    "rule_id": rule.id, "title": rule.title, "layer": rule.layer,
+                    "action": rule.action, "mode": _mode, "mode_reason": _why,
+                    "when": rule.when.source if rule.when else None,
+                    "when_holds": when_holds,
+                    "fired": when_holds is not False,
+                })
+            if when_holds is False:
+                continue
 
             # Check allowlist. An explaining caller asks for the suppressed
             # ones too, tagged with the entry that swallowed them; the default
             # stays exactly as before for the enforcement path.
             _allow = self.allowlist_match(rule.id, matched_evidence)
+            if _allow is not None and trace:
+                trace[-1]["fired"] = False
+                trace[-1]["suppressed_by"] = _allow.id
             if _allow is not None:
                 if not include_suppressed:
                     continue
@@ -4094,6 +4162,9 @@ def validate_policy(path: Path) -> List[str]:
         errors.append("Missing required field: rules")
         return errors
 
+    named, cond_errors = compile_named_conditions((raw.get("settings") or {}).get("conditions"))
+    errors.extend(cond_errors)
+
     seen_ids: set[str] = set()
     for i, rule in enumerate(raw.get("rules", [])):
         prefix = f"rules[{i}]"
@@ -4153,7 +4224,7 @@ def validate_policy(path: Path) -> List[str]:
             if core:
                 errors.append(f"{prefix}: rule '{rule_id}' is a core protection — `when` is not allowed")
             try:
-                AttrCondition(str(rule["when"]))
+                AttrCondition(str(rule["when"]), named)
             except ConditionError as e:
                 errors.append(f"{prefix}.when: {e}")
         if rule.get("condition"):

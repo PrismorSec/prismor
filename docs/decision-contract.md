@@ -51,7 +51,9 @@ A normalized event describes one thing an agent is about to do (or just did).
 ```
 
 `kwargs` and `resource` feed [attribute conditions](attribute-conditions.md).
-Both are additive; the contract version is unchanged.
+Both are additive; the contract version is unchanged. A caller that passes
+`explain=True` also gets `Decision.explain`, a trace of the rules that matched
+(see [explaining a decision](attribute-conditions.md#explaining-a-decision)).
 
 ### Event types and their value field
 

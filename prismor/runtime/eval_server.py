@@ -23,6 +23,7 @@ Request body (POST /v1/evaluate):
       "session_id": "req-abc123",        # optional
       "subject":    "user:alice",        # optional — user:<id> or user=x;team=y
       "resource":   {"kind": "order", "id": "o-1", "attr": {"owner": "alice"}},
+      "explain":    true,                # optional — add a decision trace to the response
                                          # optional — target of the call, read by `when:` rules
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
       "workspace":  "/path/to/project"   # optional, overrides server default
@@ -254,6 +255,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 session_id=session_id,
                 subject=subject,
                 identity_token=self._identity_token(),
+                explain=bool(body.get("explain")),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -299,6 +301,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 session_id=session_id,
                 subject=resolve_subject(subject_str),
                 identity_token=self._identity_token(),
+                explain=bool(body.get("explain")),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)

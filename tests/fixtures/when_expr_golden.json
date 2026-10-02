@@ -204,5 +204,37 @@
     "args.amount if 1 else 2",
     "principal.in",
     "args.items[-1] == 2"
+  ],
+  "named": {
+    "is_finance": "'finance' in principal.roles",
+    "is_owner": "resource.attr.owner == principal.id",
+    "has_nope": "args.nope == 1"
+  },
+  "named_valid": [
+    {
+      "expr": "is_finance",
+      "result": false
+    },
+    {
+      "expr": "not is_finance and args.amount >= 500",
+      "result": true
+    },
+    {
+      "expr": "is_owner or principal.team == 'support'",
+      "result": true
+    },
+    {
+      "expr": "has_nope",
+      "result": true
+    },
+    {
+      "expr": "not has_nope",
+      "result": true
+    }
+  ],
+  "named_invalid": [
+    "is_ghost",
+    "is_finance(1)",
+    "is_finance.x"
   ]
 }

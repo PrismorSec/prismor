@@ -65,3 +65,18 @@ def test_build_event_keeps_kwargs_and_resource():
     assert ev["metadata"]["kwargs"] == {"a": 1}
     assert ev["metadata"]["resource"] == {"kind": "x"}
     assert "subject" not in ev["metadata"]
+
+
+def test_explain_trace_over_http(server):
+    out = _post(server, {
+        "tool_name": "delete_doc", "arguments": {"doc": "d-1"}, "subject": "user:alice",
+        "resource": {"kind": "doc", "id": "d-1", "attr": {"owner": "alice"}}, "explain": True,
+    })
+    assert out["allow"] is True
+    row = next(r for r in out["explain"]["rules"] if r["rule_id"] == "owner-only")
+    assert row["when_holds"] is False and row["fired"] is False
+    assert out["explain"]["subject_source"] == "explicit"
+
+
+def test_no_explain_unless_asked(server):
+    assert "explain" not in _call(server, "alice")
