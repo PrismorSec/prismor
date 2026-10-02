@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from prismor.runtime.principal import resolve_subject
 from prismor.runtime.runtime import evaluate_tool_call
@@ -119,6 +119,9 @@ class EvalHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        # AuthZEN: echo the caller's request id for correlation.
+        if self.headers.get("X-Request-ID"):
+            self.send_header("X-Request-ID", self.headers["X-Request-ID"])
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -128,12 +131,16 @@ class EvalHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity, X-Request-ID")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             self._send_json({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
+        elif self.path == "/.well-known/authzen-configuration":
+            from prismor.runtime.authzen import metadata
+            host = self.headers.get("Host") or f"{self.server.server_address[0]}:{self.server.server_address[1]}"
+            self._send_json(metadata(f"http://{host}"))
         elif self.path == "/v1/contract":
             # Self-describing, so a non-Python caller can discover the event
             # shape and verdict vocabulary from the server it is already
@@ -156,7 +163,8 @@ class EvalHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in ("/v1/evaluate", "/v1/redact"):
+        from prismor.runtime import authzen as _az
+        if self.path not in ("/v1/evaluate", "/v1/redact", _az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
             self._send_json({"error": "not found"}, 404)
             return
 
@@ -172,6 +180,10 @@ class EvalHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except Exception as exc:
             self._send_json({"error": f"invalid JSON: {exc}"}, 400)
+            return
+
+        if self.path in (_az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
+            self._authzen(body)
             return
 
         if self.path == "/v1/redact":
@@ -262,6 +274,38 @@ class EvalHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(decision.as_dict())
+
+    def _authzen(self, body: Any) -> None:
+        """AuthZEN evaluation(s). The workspace is always the server's own:
+        an AuthZEN caller does not get to pick which policy judges it."""
+        from prismor.runtime import authzen as _az
+
+        def decide(call: Dict[str, Any]) -> Dict[str, Any]:
+            event = _build_event(
+                tool_name=call["tool_name"], arguments=call["arguments"],
+                event_type=call["event_type"], agent="authzen",
+                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                resource=call["resource"])
+            return evaluate_tool_call(
+                event=event, workspace=self.workspace, agent="authzen",
+                agent_name=call["agent_name"], mode="enforce",
+                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                subject=resolve_subject(call["subject"]),
+                identity_token=self._identity_token(), explain=call["explain"],
+            ).as_dict()
+
+        if not isinstance(body, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+        try:
+            if self.path == _az.EVALUATION_PATH:
+                self._send_json(_az.evaluate_one(body, decide))
+            else:
+                self._send_json(_az.evaluate_batch(body, decide))
+        except _az.AuthZenError as exc:
+            self._send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self._send_json({"error": f"evaluation error: {exc}"}, 500)
 
     def _identity_token(self) -> Optional[str]:
         """The end user's IdP token. Its own header, because Authorization
