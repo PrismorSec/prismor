@@ -519,6 +519,190 @@ class RuleCondition:
         return hits >= need
 
 
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool"})
+_WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
+
+
+class _MissingAttr(Exception):
+    """An attribute path the event does not carry."""
+
+
+class AttrCondition:
+    """A rule's ``when:`` — a boolean expression over request attributes.
+
+    Where ``condition:`` asks *what the text says*, ``when:`` asks *who is
+    asking, for what, with which arguments*::
+
+        when: "args.amount >= 500 and 'finance' not in principal.roles"
+        when: "resource.attr.owner != principal.id"
+        when: "not principal.verified"
+        when: "has(args.dry_run) and args.dry_run == false"
+
+    Names are dotted paths rooted at ``principal``, ``resource``, ``args`` or
+    ``tool``; ``args['x-y']`` reaches keys that are not identifiers. Only
+    and/or/not, comparisons (== != < <= > >= in, not in), literals, lists and
+    ``has(path)`` are accepted — same no-``eval`` whitelist as RuleCondition.
+
+    A path the event does not carry, or a comparison between incompatible
+    types, makes the expression *hold*: the rule fires. A rule narrowed by
+    attributes must fail toward detection, never silently allow because an
+    adapter forgot to send ``args``. Guard optional fields with ``has()``.
+    """
+
+    __slots__ = ("source", "_tree")
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        try:
+            self._tree = ast.parse(source, mode="eval").body
+        except SyntaxError as exc:
+            raise ConditionError(f"invalid when {source!r}: {exc.msg}") from exc
+        self._validate(self._tree)
+
+    def _fail(self, msg: str) -> ConditionError:
+        return ConditionError(f"when {self.source!r}: {msg}")
+
+    def _validate_path(self, node) -> None:
+        if isinstance(node, ast.Attribute):
+            self._validate_path(node.value)
+        elif isinstance(node, ast.Subscript):
+            if not (isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, (str, int))):
+                raise self._fail("index must be a string or integer literal")
+            self._validate_path(node.value)
+        elif isinstance(node, ast.Name):
+            if node.id not in _WHEN_ROOTS:
+                raise self._fail(
+                    f"unknown name '{node.id}' (paths start with "
+                    f"{', '.join(sorted(_WHEN_ROOTS))})")
+        else:
+            raise self._fail("expected an attribute path")
+
+    def _validate(self, node) -> None:
+        if isinstance(node, ast.BoolOp):
+            for v in node.values:
+                self._validate(v)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            self._validate(node.operand)
+        elif isinstance(node, ast.Compare):
+            if not all(isinstance(op, _WHEN_CMP_OPS) for op in node.ops):
+                raise self._fail("unsupported comparison")
+            for v in (node.left, *node.comparators):
+                self._validate(v)
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            for v in node.elts:
+                self._validate(v)
+        elif isinstance(node, ast.Constant):
+            if not isinstance(node.value, (str, int, float, bool, type(None))):
+                raise self._fail("unsupported literal")
+        elif isinstance(node, ast.Call):
+            if getattr(node.func, "id", None) != "has" or len(node.args) != 1 or node.keywords:
+                raise self._fail("the only function is has(path)")
+            self._validate_path(node.args[0])
+        elif isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
+            pass  # YAML/JSON-style literals, for authors who don't write Python
+        else:
+            self._validate_path(node)
+
+    def evaluate(self, ctx: Dict[str, Any]) -> bool:
+        try:
+            return bool(self._eval(self._tree, ctx))
+        except (_MissingAttr, TypeError):
+            return True
+
+    def _resolve(self, node, ctx: Dict[str, Any]) -> Any:
+        if isinstance(node, ast.Name):
+            return ctx.get(node.id) or {}
+        base = self._resolve(node.value, ctx)
+        key = node.attr if isinstance(node, ast.Attribute) else node.slice.value
+        if isinstance(base, dict) and key in base:
+            return base[key]
+        if isinstance(base, (list, tuple)) and isinstance(key, int) and -len(base) <= key < len(base):
+            return base[key]
+        raise _MissingAttr(key)
+
+    def _eval(self, node, ctx: Dict[str, Any]) -> Any:
+        if isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                return all(self._eval(v, ctx) for v in node.values)
+            return any(self._eval(v, ctx) for v in node.values)
+        if isinstance(node, ast.UnaryOp):
+            return not self._eval(node.operand, ctx)
+        if isinstance(node, ast.Compare):
+            left = self._eval(node.left, ctx)
+            for op, comp in zip(node.ops, node.comparators):
+                right = self._eval(comp, ctx)
+                if not _compare(op, left, right):
+                    return False
+                left = right
+            return True
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [self._eval(v, ctx) for v in node.elts]
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Call):
+            try:
+                self._resolve(node.args[0], ctx)
+                return True
+            except _MissingAttr:
+                return False
+        if isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
+            return {"true": True, "false": False, "null": None}[node.id]
+        return self._resolve(node, ctx)
+
+
+def _compare(op, left: Any, right: Any) -> bool:
+    if isinstance(op, (ast.In, ast.NotIn)):
+        if isinstance(right, str):
+            hit = str(left) in right
+        elif isinstance(right, (list, tuple, dict)):
+            hit = left in right
+        else:
+            raise TypeError("'in' needs a list or string")
+        return hit if isinstance(op, ast.In) else not hit
+    if isinstance(op, ast.Eq):
+        return left == right
+    if isinstance(op, ast.NotEq):
+        return left != right
+    if isinstance(left, bool) or isinstance(right, bool) or left is None or right is None:
+        raise TypeError("ordering needs numbers or strings")
+    if isinstance(op, ast.Lt):
+        return left < right
+    if isinstance(op, ast.LtE):
+        return left <= right
+    if isinstance(op, ast.Gt):
+        return left > right
+    return left >= right
+
+
+def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, Any]:
+    """The attribute namespaces a ``when:`` expression can read."""
+    meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    args = meta.get("kwargs")
+    if not isinstance(args, dict):
+        raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+        args = next((raw[k] for k in ("tool_input", "toolInput", "toolArgs", "tool_args")
+                     if isinstance(raw.get(k), dict)), {})
+    source = getattr(subject, "source", "anonymous")
+    principal = {
+        "id": getattr(subject, "user_id", None),
+        "team": getattr(subject, "team_id", None),
+        "org": getattr(subject, "org_id", None),
+        "source": source,
+        # An enrolled device signed its own enrollment; a verified JWT is the
+        # other trusted source. A caller-asserted string never is.
+        "verified": bool(getattr(subject, "verified", False)) or source == "device",
+        "roles": list(getattr(subject, "roles", ()) or ()),
+        "claims": dict(getattr(subject, "claims", None) or {}),
+    }
+    resource = meta.get("resource") if isinstance(meta.get("resource"), dict) else {}
+    return {
+        "principal": principal,
+        "resource": resource,
+        "args": args,
+        "tool": {"name": str(meta.get("tool_name") or "")},
+    }
+
+
 class CompiledRule:
     """A single policy rule with compiled regex patterns."""
 
@@ -527,7 +711,7 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
-        "pattern_groups", "condition", "layer",
+        "pattern_groups", "condition", "layer", "when", "match_all",
     )
 
     def __init__(self, raw: Dict[str, Any]) -> None:
@@ -570,7 +754,31 @@ class CompiledRule:
         # ignored, so drift always fails toward MORE detection, never less).
         # `add_patterns` lets an org strengthen a rule without forking the whole
         # patterns list. Order-stable + de-duplicated: surviving defaults first.
-        base: List[str] = [str(p) for p in raw["patterns"]]
+        # ``when:`` — attribute expression (who/what/which args), see
+        # AttrCondition. Core rules refuse it for the same reason they refuse
+        # ``condition:``: it can only narrow, and narrowing is disabling.
+        self.when: Optional[AttrCondition] = None
+        raw_when = raw.get("when")
+        if raw_when:
+            if raw["id"] in _NON_OVERRIDABLE_RULE_IDS or raw["category"] in _CORE_BLOCK_CATEGORIES:
+                sys.stderr.write(
+                    f"[prismor] rule '{raw['id']}': `when` ignored — core rules "
+                    f"cannot be narrowed by an attribute expression\n")
+            else:
+                try:
+                    self.when = AttrCondition(str(raw_when))
+                except ConditionError as exc:
+                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored\n")
+        # A rule may match on attributes alone (no patterns). Such a rule fires
+        # on every event of its types for which ``when`` holds. If its ``when``
+        # failed to parse it has nothing left to match on, and firing on every
+        # event would be worse than the typo — so it matches nothing; the
+        # validator refuses to save it in the first place.
+        self.match_all: bool = not raw.get("patterns") and bool(raw_when)
+        if self.match_all and self.when is None:
+            self.enabled = False
+
+        base: List[str] = [str(p) for p in (raw.get("patterns") or [])]
         disable_set = {str(p) for p in (raw.get("disable_patterns") or [])}
         adds = [str(p) for p in (raw.get("add_patterns") or []) if isinstance(p, str) and p]
         effective: List[str] = []
@@ -591,7 +799,9 @@ class CompiledRule:
                 sys.stderr.write(f"[prismor] rule '{self.id}': ignoring invalid custom pattern ({exc})\n")
                 continue
             effective.append(a); seen.add(a)
-        if not effective:
+        if not effective and self.match_all:
+            pass
+        elif not effective:
             # A rule must never compile to an empty alternation (that silently
             # matches nothing). Fall back to the full default set + warn — the
             # control plane separately blocks saving a non-core rule to zero.
@@ -602,7 +812,9 @@ class CompiledRule:
         # newlines — prevents evasion via embedded newlines. The individual
         # pattern strings are kept so a finding can report which one fired.
         self.raw_patterns: List[str] = effective
-        joined = _alternation(effective)
+        # A when-only rule has no text to match; `(?!)` keeps every other
+        # caller of `.patterns` (repo scans, context checks) inert for it.
+        joined = _alternation(effective) if effective else "(?!)"
         self.patterns: re.Pattern[str] = re.compile(
             joined, re.IGNORECASE | re.DOTALL
         )
@@ -1248,7 +1460,9 @@ class PolicyEngine:
         # Compile rules.
         for rule_data in rules_by_id.values():
             if rule_data.get("enabled", True):
-                self.rules.append(CompiledRule(rule_data))
+                compiled = CompiledRule(rule_data)
+                if compiled.enabled:  # a when-only rule with a broken `when` disables itself
+                    self.rules.append(compiled)
 
         for al_data in allowlist_raw:
             self.allowlists.append(AllowlistEntry(al_data))
@@ -1294,6 +1508,8 @@ class PolicyEngine:
         # changed nothing (so the evasion rescan can skip it).
         folded_cache: Dict[str, Optional[str]] = {}
 
+        when_ctx: Optional[Dict[str, Any]] = None  # built on first `when:` rule
+
         def _folded(field_name: str, value: str) -> Optional[str]:
             if field_name not in folded_cache:
                 folded = _fold_confusables(value)
@@ -1329,7 +1545,13 @@ class PolicyEngine:
             folded_evidence = None
             evasion = None
 
-            if rule.condition is not None:
+            if rule.match_all:
+                # when-only rule: the attributes are the whole match; quote the
+                # tool (or first checked field) as evidence.
+                matched_evidence = field_values.get("tool_name") or next(
+                    (field_values.get(f) for f in check_fields if field_values.get(f)),
+                    event_type)
+            elif rule.condition is not None:
                 # Opt-in path: boolean expression over named pattern groups.
                 # Evaluated across all checked fields at once, since a condition
                 # like "exfil_verb and secret_ref" may legitimately be satisfied
@@ -1391,6 +1613,12 @@ class PolicyEngine:
 
             if matched_evidence is None:
                 continue
+
+            if rule.when is not None:
+                if when_ctx is None:
+                    when_ctx = _when_context(event, subject)
+                if not rule.when.evaluate(when_ctx):
+                    continue
 
             # Check allowlist. An explaining caller asks for the suppressed
             # ones too, tagged with the entry that swallowed them; the default
@@ -3864,6 +4092,8 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(f"{prefix}: missing required field 'id'")
         else:
             for field in ("id", "severity", "category", "title", "event_types", "patterns", "action"):
+                if field == "patterns" and rule.get("when"):
+                    continue  # a when-only rule matches on attributes alone
                 if field not in rule:
                     errors.append(f"{prefix}: missing required field '{field}'")
 
@@ -3901,6 +4131,23 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(
                     f"{prefix}.fields[{j}]: unknown field '{fname}' "
                     f"(one of {', '.join(sorted(_VALID_FIELDS))})")
+
+        core = rule_id in _NON_OVERRIDABLE_RULE_IDS or rule.get("category") in _CORE_BLOCK_CATEGORIES
+        if rule.get("when"):
+            if core:
+                errors.append(f"{prefix}: rule '{rule_id}' is a core protection — `when` is not allowed")
+            try:
+                AttrCondition(str(rule["when"]))
+            except ConditionError as e:
+                errors.append(f"{prefix}.when: {e}")
+        if rule.get("condition"):
+            if core:
+                errors.append(f"{prefix}: rule '{rule_id}' is a core protection — `condition` is not allowed")
+            groups = set((rule.get("pattern_groups") or {}).keys()) | {"patterns"}
+            try:
+                RuleCondition(str(rule["condition"]), groups)
+            except ConditionError as e:
+                errors.append(f"{prefix}.condition: {e}")
 
         action = rule.get("action", "")
         if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
@@ -4014,6 +4261,12 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
                 "mode": rule.mode,
                 "severity_on_write": rule.severity_on_write,
                 "severity_on_manifest": rule.severity_on_manifest,
+                "condition": rule.condition.source if rule.condition else None,
+                "pattern_groups": {
+                    name: pat.pattern for name, pat in rule.pattern_groups.items()
+                    if name != "patterns"
+                },
+                "when": rule.when.source if rule.when else None,
             }
             for rule in sorted(engine.rules, key=lambda r: r.id)
         ],

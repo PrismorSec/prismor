@@ -4577,6 +4577,10 @@ def _print_findings(
                 print(f"  event_types: {sorted(rule.event_types)}")
                 print(f"  fields: {rule.fields}")
                 print(f"  pattern: {_truncate_str(rule.patterns.pattern, 160)}")
+                if rule.condition is not None:
+                    print(f"  condition: {rule.condition.source}")
+                if rule.when is not None:
+                    print(f"  when: {rule.when.source}")
             else:
                 print(f"  (built-in rule — no YAML pattern)")
 

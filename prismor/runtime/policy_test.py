@@ -12,6 +12,16 @@ Users author ``.prismor/policy-tests.yaml`` with a list of cases:
         type: command
         input: "rm -rf ./node_modules"
         expect: pass
+      - name: refunds over 500 need the finance role
+        type: tool
+        tool: refund_order
+        args: {amount: 900}
+        principal: {id: bob, roles: [support], verified: true}
+        resource: {kind: order, id: o-1, attr: {owner: alice}}
+        expect: block
+
+``type: tool`` cases exercise ``when:`` rules: ``args``, ``principal`` and
+``resource`` become the attributes the expression reads.
 
 This is a lightweight pytest alternative that non-developer security
 teams can run against a policy change in CI. Also used internally for
@@ -41,6 +51,31 @@ def _verdict_from_findings(findings: List[Dict[str, Any]]) -> str:
     return "pass"
 
 
+def _tool_case_event(case: Dict[str, Any]):
+    """(event, subject) for a ``type: tool`` case."""
+    from prismor.runtime.principal import Subject
+
+    args = case.get("args") or {}
+    p = case.get("principal") or {}
+    subject = Subject(
+        user_id=p.get("id"), team_id=p.get("team"), org_id=p.get("org"),
+        source=str(p.get("source") or ("jwt" if p.get("verified") else "explicit")),
+        roles=tuple(str(r) for r in p.get("roles") or ()),
+        claims=dict(p.get("claims") or {}),
+        verified=bool(p.get("verified")),
+    )
+    event = {
+        "type": case.get("event_type", "shell"),
+        "command": " ".join(str(v) for v in args.values() if v is not None),
+        "metadata": {
+            "tool_name": str(case.get("tool") or ""),
+            "kwargs": args,
+            "resource": case.get("resource") or {},
+        },
+    }
+    return event, subject
+
+
 def run_cases(
     cases: List[Dict[str, Any]],
     workspace: Optional[Path] = None,
@@ -66,6 +101,9 @@ def run_cases(
         elif typ in ("read", "write"):
             event_type = "file_read" if typ == "read" else "file_write"
             findings = engine.check_path(value, event_type=event_type)
+        elif typ == "tool":
+            event, subject = _tool_case_event(case)
+            findings = engine.evaluate(event, 0, session_id="policy-test", subject=subject)
         else:
             results.append({
                 "name": name, "status": "fail",

@@ -175,6 +175,7 @@ def evaluate_tool_call(
     taint_store: Optional[Any] = None,
     register_agent: bool = True,
     flush_at_exit: bool = True,
+    resource: Optional[Dict[str, Any]] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -203,6 +204,8 @@ def evaluate_tool_call(
         flush_at_exit: upload the heartbeat and spooled findings when the
             process exits, so a short script's activity still reaches the
             console. Hook-dispatch passes ``False`` (one process per call).
+        resource: the call's target (``{"kind", "id", "attr": {...}}``), read by
+            ``when:`` rules as ``resource.*``. Overrides ``metadata.resource``.
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -221,6 +224,8 @@ def evaluate_tool_call(
     if "subject" not in meta:
         meta["subject"] = subject.as_dict()
     meta.setdefault("agent_name", _agent_name)
+    if resource is not None:
+        meta["resource"] = resource
 
     perf.lap()
     if persist:

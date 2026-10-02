@@ -43,9 +43,15 @@ A normalized event describes one thing an agent is about to do (or just did).
     "tool_name": "Bash",
     "surface": "hook",         # which enforcement point saw it
     "cwd": "/home/u/project",
+    "kwargs": {"command": "rm -rf /"},  # optional: raw arguments, read as `args.*`
+    "resource": {"kind": "doc", "id": "d-1", "attr": {"owner": "alice"}},
+                               # optional: the call's target, read as `resource.*`
   },
 }
 ```
+
+`kwargs` and `resource` feed [attribute conditions](attribute-conditions.md).
+Both are additive; the contract version is unchanged.
 
 ### Event types and their value field
 

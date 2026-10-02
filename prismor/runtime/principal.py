@@ -27,8 +27,8 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
-from typing import Any, Dict, Iterator, Optional, Union
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterator, Optional, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,12 @@ class Subject:
     user_id: Optional[str] = None
     team_id: Optional[str] = None
     org_id: Optional[str] = None
-    source: str = "anonymous"  # explicit | env | device | anonymous
+    source: str = "anonymous"  # explicit | context | env | device | jwt | anonymous
+    # Roles and claims come only from a verified identity token: a
+    # caller-asserted string can name a user, never grant itself a role.
+    roles: Tuple[str, ...] = ()
+    claims: Dict[str, Any] = field(default_factory=dict, hash=False, compare=False)
+    verified: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         """Compact dict for event metadata / telemetry (omits empty fields)."""
@@ -49,6 +54,10 @@ class Subject:
             out["team_id"] = self.team_id
         if self.org_id:
             out["org_id"] = self.org_id
+        if self.roles:
+            out["roles"] = list(self.roles)
+        if self.verified:
+            out["verified"] = True
         return out
 
     @property

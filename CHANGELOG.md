@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+### Added
+- **Attribute conditions on rules (`when:`).** A rule can now fire only for certain users, targets or arguments: `when: "args.amount >= 500 and 'finance' not in principal.roles"`. Expressions read `principal.*` (id, team, org, roles, claims, verified, source), `args.*` (the tool call's arguments, including a hook's `tool_input`), `resource.*` and `tool.name`. They support and/or/not, comparisons, `in`, lists and `has(path)`. They are parsed into a checked tree and never run through `eval`. A missing path or a type mismatch makes the expression hold, so the rule still fires. A rule may use `when:` without `patterns`. Core rules refuse `when:`. Callers send the target as `resource` on the eval-server body or as `evaluate_tool_call(resource=...)`. `prismor policy test` takes `type: tool` cases with `args`, `principal` and `resource`, and `check --explain` prints the rule's `when:` and `condition:`. See `docs/attribute-conditions.md`.
+- **`Subject` carries `roles`, `claims` and `verified`.** Only a verified identity sets them; a caller-asserted `user:<id>` never carries roles.
+
+### Fixed
+- **`prismor policy validate` did not check `condition:` / `pattern_groups`**, and the effective-policy export dropped them. Both are now linted and exported, along with `when:`.
+- **eval-server stamped the raw subject header string on the event** instead of the resolved subject, so `metadata.subject` differed between the eval-server and every other surface.
+
 ## [1.57.0] — 2026-10-01
 
 ### Security

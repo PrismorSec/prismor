@@ -110,6 +110,12 @@ further for a single session.
 
 ---
 
+## Rules on the end user
+
+IAM profiles allow or deny whole tools. To decide on a call's arguments, its
+target, or the user's roles ("refunds over 500 need finance"), write a rule with
+a [`when:` attribute condition](attribute-conditions.md).
+
 ## See also
 
 - [Scoped Agent](scoped-agent.md) — session-scoped, task-derived rules

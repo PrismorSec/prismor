@@ -22,6 +22,8 @@ Request body (POST /v1/evaluate):
       "mode":       "enforce",           # optional, default "enforce"
       "session_id": "req-abc123",        # optional
       "subject":    "user:alice",        # optional — user:<id> or user=x;team=y
+      "resource":   {"kind": "order", "id": "o-1", "attr": {"owner": "alice"}},
+                                         # optional — target of the call, read by `when:` rules
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
       "workspace":  "/path/to/project"   # optional, overrides server default
     }
@@ -70,8 +72,9 @@ def _build_event(
     event_type: str,
     agent: str,
     session_id: str,
-    subject_str: Optional[str],
+    subject_str: Optional[str] = None,
     available_tools: Optional[list[str]] = None,
+    resource: Optional[dict] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
     # Serialize arguments to a single value string (values only — for regex matching)
@@ -88,7 +91,9 @@ def _build_event(
             "framework": agent,
             "args": list(arguments.values()),
             "kwargs": arguments,
-            "subject": subject_str,
+            # The resolved subject (not the raw header string) is stamped by
+            # evaluate_tool_call, so `when:` and telemetry see the same dict.
+            "resource": resource or {},
             "available_tools": available_tools or [],
             "surface": "eval-server",
         },
@@ -236,6 +241,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             subject_str=subject_str,
             available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
             if isinstance(body.get("available_tools"), list) else [],
+            resource=body.get("resource") if isinstance(body.get("resource"), dict) else None,
         )
 
         try:
