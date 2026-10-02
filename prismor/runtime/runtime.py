@@ -240,6 +240,7 @@ def evaluate_tool_call(
                 repo_url=None,
                 events=events,
                 analysis=analysis,
+                append_only=True,
             )
         except Exception as exc:  # best-effort; never block on analysis failure
             sys.stderr.write(f"[prismor] analysis error: {exc}\n")

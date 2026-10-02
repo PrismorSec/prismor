@@ -824,11 +824,9 @@ def save_session_snapshot(
     events: List[Dict[str, Any]],
     analysis: Dict[str, Any],
     agent_name: str = "",
+    append_only: bool = False,
 ) -> Path:
     db_path = initialize_database(workspace)
-    # Defense in depth: ensure no raw secret value reaches the SQLite store,
-    # even if a caller passes events that did not pass through append_session_event.
-    events = [_recloak_event(e) for e in events]
     timestamps = sorted(event.get("ts") for event in events if event.get("ts"))
     started_at = timestamps[0] if timestamps else None
     updated_at = timestamps[-1] if timestamps else None
@@ -857,7 +855,20 @@ def save_session_snapshot(
                 json.dumps(analysis["summary"]),
             ),
         )
-        cursor.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+        # append_only: ``events`` is an append-only session log (hook, proxy), so
+        # only the rows not stored yet are inserted -- those callers snapshot
+        # after every event, and rewriting the whole session made each call
+        # O(session). Re-parsed sessions (ingest, replay) are rewritten in full,
+        # as is a log that no longer lines up with the stored rows.
+        stored = cursor.execute(
+            "SELECT COUNT(*) FROM events WHERE session_id = ?", (session_id,)
+        ).fetchone()[0] if append_only else 0
+        if not append_only or stored > len(events):
+            cursor.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+            stored = 0
+        # Defense in depth: ensure no raw secret value reaches the SQLite store,
+        # even if a caller passes events that did not pass through append_session_event.
+        new_events = [_recloak_event(e) for e in events[stored:]]
         # Re-derive analysis findings, but KEEP runtime findings (scoped-agent,
         # IAM, kill-switch, org denies — persisted by persist_runtime_findings
         # with source=runtime). They are per-event enforcement decisions, not
@@ -907,7 +918,7 @@ def save_session_snapshot(
                     ),
                     json.dumps(event),
                 )
-                for event in events
+                for event in new_events
             ],
         )
 

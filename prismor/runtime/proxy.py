@@ -746,6 +746,7 @@ class Screen:
                 analysis=analyze_session_incremental(events, repo_root=self.workspace,
                                                      workspace=self.workspace,
                                                      session_id=sid),
+                append_only=True,
             )
         except Exception as exc:  # best-effort, exactly as the runtime path is
             sys.stderr.write(f"[prismor-proxy] snapshot error: {exc}\n")
