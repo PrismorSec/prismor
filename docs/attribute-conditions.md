@@ -265,4 +265,6 @@ publishing.
     policy: policies/support-bot.yaml   # optional
 ```
 
-The job fails on any mismatch.
+The job fails on any mismatch. The action installs the prismor source from the
+ref you pin, so the CLI always matches the action; pass
+`prismor-version: "==X.Y.Z"` to use a PyPI release instead.
