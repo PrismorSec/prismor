@@ -48,7 +48,7 @@ unless a role is present therefore stays a deny for every unverified caller.
 | Comparison | `==` `!=` `<` `<=` `>` `>=` (chainable: `100 < args.amount <= 1000`) |
 | Membership | `x in list`, `x not in list`; on a string, substring match |
 | Literals | strings, numbers, `true`/`false`/`null` (or `True`/`False`/`None`), lists |
-| Paths | `args.amount`, `args['dry-run']`, `args.items[0]` |
+| Paths | `args.amount`, `args['dry-run']`, `args.items[0]` (non-negative integer index) |
 | Function | `has(path)` — whether the path exists |
 
 Anything else is rejected when the policy loads, including calls, arithmetic

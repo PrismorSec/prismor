@@ -566,7 +566,8 @@ class AttrCondition:
         if isinstance(node, ast.Attribute):
             self._validate_path(node.value)
         elif isinstance(node, ast.Subscript):
-            if not (isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, (str, int))):
+            if not (isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, (str, int))
+                    and not isinstance(node.slice.value, bool)):
                 raise self._fail("index must be a string or integer literal")
             self._validate_path(node.value)
         elif isinstance(node, ast.Name):
