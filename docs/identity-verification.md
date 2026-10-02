@@ -23,11 +23,13 @@ user ──login──▶ IdP ──JWT──▶ your app ──tool call + JWT�
 
 ## Configure
 
-**From the console (managed agents).** Under *Settings → SSO → End-user
-identity*, set the issuer, audience, JWKS URL and claim mapping, then choose a
-mode. The config ships to devices inside the signed policy as
-`settings.identity` and follows policy bindings, so you can require it on the
-support bot and leave it off everywhere else.
+**From the console (managed agents).** On the SSO page, under *End-user
+identity for agents*, set the issuer, audience, JWKS URL (or let it be
+discovered from the issuer) and claim mapping, choose a mode, and use *Test a
+token* to see the principal a real token maps to. The config ships to devices
+inside the signed policy as `settings.identity`. A policy can override only the
+mode (`settings.identity.mode` in its YAML), so you can require it in the
+support bot's policy and leave it on observe everywhere else.
 
 **From the eval-server (no console).**
 
@@ -119,7 +121,7 @@ observe mode, and rule exemptions do not apply to it.
 ### Rolling out
 
 1. Turn on `observe`. Nothing is blocked.
-2. In the console, filter events by *unverified* to find the agents and callers
+2. In the console, open recent events: the end user shows as "verified token" or "not verified", so you can find the agents and callers
    that do not send a token yet. Fix them.
 3. Switch the agents that serve end users to `require` through their policy
    binding.
