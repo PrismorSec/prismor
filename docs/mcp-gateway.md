@@ -69,6 +69,24 @@ Your agent now sees the same tools, namespaced as `<server>__<tool>`
 (e.g. `github__create_issue`), and every call and response flows through
 Prismor.
 
+
+## Tools a caller can never use are not listed
+
+In enforce mode, `tools/list` leaves out the tools this caller could only fail
+with, so the agent never plans around them. A tool is hidden when every call to
+it would be refused whatever its arguments:
+
+- a control-plane refusal: agent paused, the tool denied for this agent or org,
+  the end user suspended or denied the tool, or identity required and missing;
+- a [`when:`](attribute-conditions.md) rule matched on the tool name whose
+  condition reads no `args.*` or `resource.*` (for example
+  `when: "'admin' not in principal.roles"`).
+
+A tool whose outcome depends on its arguments (`args.amount >= 500`) stays
+listed and is decided per call. Calling a hidden tool by name returns
+"not available to this caller (denied by policy)". Observe mode hides nothing.
+The gateway also passes each call's arguments to `when:` rules as `args.*`.
+
 ## Modes and flags
 
 ```bash
