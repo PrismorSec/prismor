@@ -229,3 +229,15 @@ def test_nested_and_namespaced_claims():
     s = verify(tok(preferred_username="carol.k", realm_access={"roles": ["finance"]},
                    **{"https://acme.com/team": "fin"}), cfg)
     assert (s.user_id, s.team_id, s.roles) == ("carol.k", "fin", ("finance",))
+
+
+@pytest.mark.parametrize("field,value", [("issuer", "file:///etc"), ("jwks_uri", "file:///etc/passwd"),
+                                         ("jwks_uri", "ftp://idp.example.com/k")])
+def test_non_http_urls_rejected(field, value):
+    with pytest.raises(IdentityError, match="http"):
+        verify(tok(), {**CFG, field: value})
+
+
+def test_discovery_refuses_non_http_issuer():
+    with pytest.raises(IdentityError, match="http"):
+        identity_token.discover_jwks_uri("file:///etc")

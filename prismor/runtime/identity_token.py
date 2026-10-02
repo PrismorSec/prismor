@@ -70,6 +70,14 @@ def effective_config(policy_cfg: Any) -> Optional[Dict[str, Any]]:
     return cfg
 
 
+def _http_url(value: str) -> bool:
+    """Only http(s): urllib would otherwise open file:// (or a custom scheme)
+    for an issuer or JWKS URL, turning identity config into a local file read."""
+    from urllib.parse import urlparse
+
+    return urlparse(str(value)).scheme in ("http", "https")
+
+
 def config_errors(cfg: Dict[str, Any]) -> List[str]:
     errs = []
     if str(cfg.get("mode") or "off").lower() not in MODES:
@@ -77,6 +85,9 @@ def config_errors(cfg: Dict[str, Any]) -> List[str]:
     for key in ("issuer", "jwks_uri", "audience"):
         if not cfg.get(key):
             errs.append(f"identity.{key} is required")
+    for key in ("issuer", "jwks_uri"):
+        if cfg.get(key) and not _http_url(cfg[key]):
+            errs.append(f"identity.{key} must be an http(s) URL")
     return errs
 
 
@@ -86,13 +97,18 @@ def discover_jwks_uri(issuer: str) -> str:
     import urllib.request
 
     url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    if not _http_url(url):
+        raise IdentityError(f"issuer must be an http(s) URL, got {issuer!r}")
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 - operator-supplied issuer
+        # Scheme checked just above, so this cannot open file:// or custom schemes.
+        with urllib.request.urlopen(url, timeout=5) as r:  # nosec B310
             uri = json.load(r).get("jwks_uri")
     except Exception as exc:
         raise IdentityError(f"discovery failed for {url}: {exc}") from None
     if not isinstance(uri, str) or not uri:
         raise IdentityError(f"{url} has no jwks_uri")
+    if not _http_url(uri):
+        raise IdentityError(f"{url} returned a non-http(s) jwks_uri {uri!r}")
     return uri
 
 
