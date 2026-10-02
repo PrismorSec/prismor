@@ -20,7 +20,11 @@ def test_sigterm_runs_atexit_handlers(tmp_path):
     # Stand-in for heartbeat.flush_at_exit: an atexit hook registered in the server process.
     boot = (f"import atexit, pathlib; atexit.register(lambda: pathlib.Path({str(marker)!r}).write_text('ok'));"
             f"from prismor.runtime.eval_server import run_eval_server; run_eval_server(port={port})")
-    env = dict(os.environ, PRISMOR_HOME=str(tmp_path / "home"))
+    # The child must import THIS checkout: with cwd=tmp_path and no PYTHONPATH
+    # it imported whatever prismor was installed, and tested that instead.
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PRISMOR_HOME=str(tmp_path / "home"),
+               PYTHONPATH=os.pathsep.join(filter(None, [repo, os.environ.get("PYTHONPATH")])))
     proc = subprocess.Popen([sys.executable, "-c", boot], cwd=tmp_path, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
