@@ -35,11 +35,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest", "cryptography>=41"]
+dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8"]
 # Ed25519 receipt signing for enrolled devices (tamper-evident + non-repudiable
 # telemetry receipts). Optional: without it, telemetry falls back to the keyless
 # hash chain. `pip install "prismor[signing]"`.
 signing = ["cryptography>=41"]
+# Verified end-user identity (settings.identity): JWT + JWKS verification.
+# `pip install "prismor[identity]"`. docs/identity-verification.md
+identity = ["PyJWT[crypto]>=2.8"]
 # LLM layer of the semantic prompt-injection guard on hosts without the Claude
 # Code CLI: routes to any provider via litellm. `pip install "prismor[semantic]"`.
 semantic = ["litellm>=1.40"]

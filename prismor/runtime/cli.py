@@ -386,6 +386,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             port=args.port,
             workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
             api_key=getattr(args, "api_key", None),
+            identity={
+                "mode": args.identity_mode, "issuer": args.identity_issuer,
+                "audience": args.identity_audience, "jwks_uri": args.identity_jwks,
+                "user_claim": args.identity_user_claim, "team_claim": args.identity_team_claim,
+                "roles_claim": args.identity_roles_claim,
+            } if args.identity_issuer else None,
         )
         return
 
@@ -3362,6 +3368,15 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
+    # Verified end-user identity for hosts without a signed org policy (the
+    # org's settings.identity wins when present). docs/identity-verification.md
+    _ep.add_argument("--identity-issuer", default=None, help="Verify X-Prismor-Identity JWTs from this issuer (turns identity on)")
+    _ep.add_argument("--identity-audience", action="append", default=None, help="Accepted audience; repeatable")
+    _ep.add_argument("--identity-jwks", default=None, help="JWKS URL of the issuer's signing keys")
+    _ep.add_argument("--identity-mode", default="observe", choices=["observe", "require"], help="observe: verify when sent; require: block calls without a valid token (default: observe)")
+    _ep.add_argument("--identity-user-claim", default="sub", help="Claim holding the user id (default: sub)")
+    _ep.add_argument("--identity-team-claim", default=None, help="Claim holding the team id")
+    _ep.add_argument("--identity-roles-claim", default=None, help="Claim holding roles/groups")
 
     # ── proxy: the LLM lane (governs agents that cannot be hooked) ───────
     _pp = subparsers.add_parser(

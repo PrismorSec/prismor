@@ -60,6 +60,17 @@ with use_subject("user:alice"):       # also "user=alice;team=data;org=acme"
 Priority: explicit `subject=` arg → `use_subject` context → `PRISMOR_SUBJECT` env
 → enrolled device identity → anonymous.
 
+These subjects are **asserted**: good for attribution, not proof. When the org
+verifies identity, pass the user's IdP token instead and the verified claims
+(user, team, roles) replace the asserted subject:
+
+```python
+with use_subject(token=user_jwt):
+    Runner.run_sync(agent, prompt)
+```
+
+See [identity-verification.md](identity-verification.md).
+
 ## Per framework
 
 | Framework | Wrap point (patched) | Guard call |
@@ -116,7 +127,8 @@ await generateText({ model, tools, prompt });
 ```
 → `200 {"allow":false,"reason":"[HIGH] …","findings":[…],"subject":{…}}`. Subject
 and agent name may also be sent as `X-Prismor-Subject` / `X-Prismor-Agent-Name`
-headers.
+headers; the user's IdP token goes in `X-Prismor-Identity: Bearer <jwt>`, and the
+call's target in a `resource` body field ([attribute conditions](attribute-conditions.md)).
 
 ## Failure behavior
 

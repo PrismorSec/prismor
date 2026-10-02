@@ -127,7 +127,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -253,12 +253,19 @@ class EvalHandler(BaseHTTPRequestHandler):
                 mode=mode,
                 session_id=session_id,
                 subject=subject,
+                identity_token=self._identity_token(),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
             return
 
         self._send_json(decision.as_dict())
+
+    def _identity_token(self) -> Optional[str]:
+        """The end user's IdP token. Its own header, because Authorization
+        already carries the server's API key."""
+        raw = (self.headers.get("X-Prismor-Identity") or "").strip()
+        return raw[7:].strip() if raw.lower().startswith("bearer ") else (raw or None)
 
     def _evaluate_raw_event(self, body: dict, event: dict) -> None:
         """Evaluate a pre-normalized canonical event (contract.py shape)."""
@@ -291,6 +298,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 mode=str(body.get("mode") or "enforce"),
                 session_id=session_id,
                 subject=resolve_subject(subject_str),
+                identity_token=self._identity_token(),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -303,6 +311,7 @@ def run_eval_server(
     port: int = 7071,
     workspace: Optional[Path] = None,
     api_key: Optional[str] = None,
+    identity: Optional[dict] = None,
 ) -> None:
     """Start the evaluation HTTP server (blocking).
 
@@ -313,6 +322,13 @@ def run_eval_server(
     EvalHandler.workspace = ws
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
 
+    if identity:
+        from prismor.runtime.identity_token import config_errors, set_server_config
+        problems = config_errors(identity)
+        if problems:
+            raise SystemExit("[prismor] eval-server identity: " + "; ".join(problems))
+        set_server_config(identity)
+
     server = _ThreadingHTTPServer((host, port), EvalHandler)
     if host not in ("127.0.0.1", "localhost", "::1") and not EvalHandler.api_key:
         print("[prismor] WARNING: binding beyond localhost with NO API key — "
@@ -321,6 +337,9 @@ def run_eval_server(
     print(f"[prismor] eval-server listening on http://{host}:{port}"
           + (" (bearer auth ON)" if EvalHandler.api_key else ""))
     print(f"[prismor] workspace: {ws}")
+    if identity:
+        print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
+              f"via X-Prismor-Identity")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
 

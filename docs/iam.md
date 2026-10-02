@@ -114,7 +114,8 @@ further for a single session.
 
 IAM profiles allow or deny whole tools. To decide on a call's arguments, its
 target, or the user's roles ("refunds over 500 need finance"), write a rule with
-a [`when:` attribute condition](attribute-conditions.md).
+a [`when:` attribute condition](attribute-conditions.md). To make the user's
+identity and roles trustworthy, turn on [identity verification](identity-verification.md).
 
 ## See also
 

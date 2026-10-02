@@ -37,7 +37,8 @@ they all go through one [decision contract](decision-contract.md).
 | `tool.name` | tool name | `metadata.tool_name` |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
-role: roles and claims come only from a verified identity. A rule that denies
+role: roles and claims come only from a
+[verified identity token](identity-verification.md). A rule that denies
 unless a role is present therefore stays a deny for every unverified caller.
 
 ## Grammar

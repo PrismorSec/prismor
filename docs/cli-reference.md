@@ -339,7 +339,7 @@ outside all of this, the same as every other Prismor control.
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace` | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
+| `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace`, `--api-key`, `--identity-issuer`/`--identity-audience`/`--identity-jwks`/`--identity-mode` ([identity verification](identity-verification.md)) | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
 
 ### proxy
 

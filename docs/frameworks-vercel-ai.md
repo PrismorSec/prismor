@@ -144,6 +144,7 @@ Users without an explicit IAM profile fall through to org-wide defaults.
 |---|---|---|---|
 | `evalUrl` | `string` | `http://127.0.0.1:7071` | Eval-server URL |
 | `subject` | `string` | `""` | End-user identity: `"user:alice"` (overrides `useSubject()`) |
+| `identityToken` | `string` | `""` | The end user's IdP JWT, sent as `X-Prismor-Identity`; verified claims replace `subject` ([identity verification](identity-verification.md)) |
 | `mode` | `"enforce"\|"observe"` | `"observe"` | Enforce blocks; observe logs only |
 | `failMode` | `"open"\|"closed"` | `"closed"` in enforce, `"open"` in observe | Behavior when the eval-server is unavailable |
 | `timeoutMs` | `number` | `10000` | Max wait for the eval-server per call |
@@ -331,6 +332,9 @@ See `examples/multilang/` for the full runnable examples for each language.
 ```
 
 Subject can also be passed via `X-Prismor-Subject` header (takes precedence over body field).
+The end user's IdP token goes in `X-Prismor-Identity: Bearer <jwt>` (the
+`identityToken` option of `prismorTools()`); see
+[identity verification](identity-verification.md).
 
 **Response:**
 ```json

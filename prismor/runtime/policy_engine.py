@@ -683,15 +683,17 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
         raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
         args = next((raw[k] for k in ("tool_input", "toolInput", "toolArgs", "tool_args")
                      if isinstance(raw.get(k), dict)), {})
+    from prismor.runtime.principal import is_verified
+
     source = getattr(subject, "source", "anonymous")
     principal = {
         "id": getattr(subject, "user_id", None),
         "team": getattr(subject, "team_id", None),
         "org": getattr(subject, "org_id", None),
         "source": source,
-        # An enrolled device signed its own enrollment; a verified JWT is the
-        # other trusted source. A caller-asserted string never is.
-        "verified": bool(getattr(subject, "verified", False)) or source == "device",
+        # A verified token, or an enrolled device acting through its own
+        # coding-agent hook. A caller-asserted string never is.
+        "verified": is_verified(subject, meta.get("surface")),
         "roles": list(getattr(subject, "roles", ()) or ()),
         "claims": dict(getattr(subject, "claims", None) or {}),
     }
@@ -1203,6 +1205,15 @@ class PolicyEngine:
                 f"(the safety floor stays on for managed workspaces)\n"
             )
             override_settings.pop("selection", None)
+        # Identity config names the issuer whose tokens Prismor believes. From a
+        # repo or local file it would let whoever writes that file mint users
+        # and roles, so only the signed org policy may set it.
+        if source != "remote" and "identity" in override_settings:
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.identity from the {source} policy layer "
+                f"(only the signed org policy or eval-server flags may set it)\n"
+            )
+            override_settings.pop("identity", None)
         if "block_categories" in override_settings:
             cats = set(override_settings.get("block_categories") or [])
             dropped = _CORE_BLOCK_CATEGORIES - cats
@@ -1334,6 +1345,10 @@ class PolicyEngine:
         # workspaces only.
         _sc = settings.get("subject_controls")
         self.subject_controls: Dict[str, Any] = _sc if isinstance(_sc, dict) else {}
+        # Verified end-user identity (settings.identity) — signed org layer only,
+        # see the layer filter in _apply_override and identity_token.py.
+        _idc = settings.get("identity")
+        self.identity: Dict[str, Any] = _idc if isinstance(_idc, dict) else {}
         # Tool-combination governance config (settings.tool_tags):
         # customizable tags + forbidden combinations (generalized trifecta).
         _tt = settings.get("tool_tags")

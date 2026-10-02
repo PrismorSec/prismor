@@ -27,7 +27,7 @@ from prismor.runtime import perf
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
-from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.principal import Subject, current_token, is_verified, resolve_subject
 from prismor.runtime.store import (
     append_session_event,
     persist_runtime_findings,
@@ -46,6 +46,8 @@ def _apply_rule_exemptions(
     *,
     session_id: str,
     subject: Optional[Subject],
+    verified_users_only: bool = False,
+    surface: str = "",
 ) -> List[Dict[str, Any]]:
     """Relax or downgrade findings per admin-granted, signed rule exemptions.
 
@@ -56,6 +58,10 @@ def _apply_rule_exemptions(
 
     Core protections are never exemptable: a floor rule id / core block category
     (and the agent kill-switch) is left untouched regardless of any exemption.
+
+    ``verified_users_only`` (set when the org verifies identity): a ``user``
+    exemption then needs a verified subject, so ``subject: "user:alice"`` sent
+    by anyone no longer carries Alice's exemptions.
     """
     if not rule_exemptions:
         return findings
@@ -79,6 +85,8 @@ def _apply_rule_exemptions(
             return False
         scope, scope_id = ex.get("scope"), ex.get("scopeId")
         if scope == "user":
+            if verified_users_only and not is_verified(subject, surface):
+                return False
             return bool(user_id) and scope_id == user_id
         if scope == "device":
             return bool(device_id) and scope_id == device_id
@@ -176,6 +184,7 @@ def evaluate_tool_call(
     register_agent: bool = True,
     flush_at_exit: bool = True,
     resource: Optional[Dict[str, Any]] = None,
+    identity_token: Optional[str] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -206,6 +215,8 @@ def evaluate_tool_call(
             console. Hook-dispatch passes ``False`` (one process per call).
         resource: the call's target (``{"kind", "id", "attr": {...}}``), read by
             ``when:`` rules as ``resource.*``. Overrides ``metadata.resource``.
+        identity_token: the end user's IdP token (JWT). Verified against the
+            org's ``settings.identity``; defaults to ``use_subject(token=...)``.
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -268,6 +279,29 @@ def evaluate_tool_call(
     if taint_store is not None:
         engine.taint_override = taint_store
     perf.lap("policy_load")
+
+    # Verified end-user identity. Off unless the signed org policy (or the
+    # eval-server's flags) configure an issuer; then the subject comes from the
+    # verified token, and `require` blocks calls that have none.
+    _identity_finding = None
+    _identity_cfg = None
+    try:
+        from prismor.runtime import identity_token as _idt
+        _identity_cfg = _idt.effective_config(getattr(engine, "identity", None))
+        if _identity_cfg:
+            subject, meta["identity"], _identity_finding = _idt.apply(
+                subject, identity_token or current_token(), _identity_cfg,
+                surface=str(meta.get("surface") or ""), session_id=session_id)
+            meta["subject"] = subject.as_dict()
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] identity check error: {exc}\n")
+        if _identity_cfg and str(_identity_cfg.get("mode")).lower() == "require":
+            _identity_finding = {
+                "id": f"{session_id}:identity-unverified", "ruleId": "identity-unverified",
+                "severity": "high", "category": "agent-control", "mode": "enforce",
+                "title": "End-user identity required — identity check failed",
+                "evidence": str(exc), "eventIndex": 0,
+            }
 
     # Resolve per-agent control (kill-switch, mode override, IAM profile).
     # Runs AFTER engine construction so the org's remote controls — carried in
@@ -423,6 +457,9 @@ def evaluate_tool_call(
                 _agent_name, session_id, disabled_by=_control.disabled_by))
         except Exception as exc:
             sys.stderr.write(f"[prismor] kill-switch error: {exc}\n")
+
+    if _identity_finding is not None:
+        findings.insert(0, _identity_finding)
 
     # Per-agent / global tool-tag deny list (operator-set from the dashboard's
     # Tool Call panel). Resolves the tool tag the same way scoped rules do, so
@@ -600,6 +637,8 @@ def evaluate_tool_call(
         findings = _apply_rule_exemptions(
             findings, getattr(engine, "rule_exemptions", None),
             session_id=session_id, subject=subject,
+            verified_users_only=bool(_identity_cfg),
+            surface=str(meta.get("surface") or ""),
         )
     except Exception as exc:
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
