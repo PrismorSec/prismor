@@ -117,7 +117,27 @@ def is_verified(subject: Optional[Subject], surface: Optional[str]) -> bool:
 
 
 def current_token() -> Optional[str]:
-    return _CURRENT_TOKEN.get()
+    """The end user's IdP token for this call.
+
+    Per-request ``use_subject(token=...)`` wins. A long-lived single-user
+    process (an MCP gateway the host starts for one person) can instead point
+    ``PRISMOR_IDENTITY_TOKEN_FILE`` at a file an external refresher rewrites:
+    it is re-read on every call, because tokens expire long before the process
+    does. ``PRISMOR_IDENTITY_TOKEN`` is the static fallback.
+    """
+    token = _CURRENT_TOKEN.get()
+    if token:
+        return token
+    path = os.environ.get("PRISMOR_IDENTITY_TOKEN_FILE")
+    if path:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                value = fh.read().strip()
+            if value:
+                return value[7:].strip() if value.lower().startswith("bearer ") else value
+        except OSError:
+            pass
+    return os.environ.get("PRISMOR_IDENTITY_TOKEN") or None
 
 
 @contextmanager

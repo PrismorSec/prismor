@@ -789,10 +789,26 @@ class Gateway:
         if hidden:
             sys.stderr.write(f"[prismor-gateway] hiding {len(hidden)} tool(s) this caller can never use: "
                              f"{', '.join(sorted(hidden))}\n")
+        from prismor.runtime.principal import current_token
         with self._routes_lock:
             self._routes = routes
             self._hidden = set(hidden)
+            # Which end user this list was filtered for (see _identity_changed).
+            self._listed_token = current_token()
         self._reply(req_id, {"tools": tools})
+
+    def _identity_changed(self) -> None:
+        """Tell the host to re-list when the end user's token has changed since
+        the last tools/list (a refresher rotated PRISMOR_IDENTITY_TOKEN_FILE to
+        another user, or it expired and was renewed): hosts only re-fetch the
+        tool list when notified, and the visible tools follow the user."""
+        from prismor.runtime.principal import current_token
+        token = current_token()
+        with self._routes_lock:
+            if not hasattr(self, "_listed_token") or token == self._listed_token:
+                return
+            self._listed_token = token
+        self._send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/call (the enforcement point) ───────────────────────────────
 
@@ -805,6 +821,7 @@ class Gateway:
             self._reply_error(req_id, -32603, f"prismor-gateway internal error: {exc}")
 
     def _handle_tools_call(self, req_id: Any, params: Dict[str, Any]) -> None:
+        self._identity_changed()
         name = str(params.get("name") or "")
         arguments = params.get("arguments")
         with self._routes_lock:

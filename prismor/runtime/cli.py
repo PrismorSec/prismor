@@ -386,12 +386,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             port=args.port,
             workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
             api_key=getattr(args, "api_key", None),
-            identity={
-                "mode": args.identity_mode, "issuer": args.identity_issuer,
-                "audience": args.identity_audience, "jwks_uri": args.identity_jwks,
-                "user_claim": args.identity_user_claim, "team_claim": args.identity_team_claim,
-                "roles_claim": args.identity_roles_claim,
-            } if args.identity_issuer else None,
+            identity=_identity_from_args(args),
         )
         return
 
@@ -1538,6 +1533,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── mcp-gateway (single MCP connector for all downstream servers) ──
     if args.command == "mcp-gateway":
         register_workspace(workspace)
+        _cfg = _identity_from_args(args)
+        if _cfg:
+            from prismor.runtime.identity_token import set_server_config
+            set_server_config(_cfg)
+            sys.stderr.write(f"[prismor-gateway] identity: {_cfg['mode']} — tokens from {_cfg['issuer']} "
+                             f"via PRISMOR_IDENTITY_TOKEN_FILE / PRISMOR_IDENTITY_TOKEN\n")
         from prismor.runtime.mcp_gateway import run_gateway, GatewayConfigError
         try:
             sys.exit(run_gateway(args, workspace))
@@ -3373,13 +3374,8 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
     # Verified end-user identity for hosts without a signed org policy (the
     # org's settings.identity wins when present). docs/identity-verification.md
-    _ep.add_argument("--identity-issuer", default=None, help="Verify X-Prismor-Identity JWTs from this issuer (turns identity on)")
-    _ep.add_argument("--identity-audience", action="append", default=None, help="Accepted audience; repeatable")
-    _ep.add_argument("--identity-jwks", default=None, help="JWKS URL of the issuer's signing keys (default: discovered from the issuer)")
-    _ep.add_argument("--identity-mode", default="observe", choices=["observe", "require"], help="observe: verify when sent; require: block calls without a valid token (default: observe)")
-    _ep.add_argument("--identity-user-claim", default="sub", help="Claim holding the user id (default: sub; often preferred_username or email). Nested: a.b")
-    _ep.add_argument("--identity-team-claim", default=None, help="Claim holding the team id")
-    _ep.add_argument("--identity-roles-claim", default=None, help="Claim holding roles/groups")
+    from prismor.runtime.identity_token import add_cli_args as _add_identity_args
+    _add_identity_args(_ep)
 
     # ── proxy: the LLM lane (governs agents that cannot be hooked) ───────
     _pp = subparsers.add_parser(
@@ -3830,6 +3826,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Stable session id (default: fresh per process). Hosted deployments "
                            "set this so restored session state survives gateway restarts. "
                            "Env fallback: PRISMOR_SESSION_ID")
+    _add_identity_args(gw_parser)
     gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
                            help="plain=<server>__<tool> (default); none=raw tool names "
                            "(single-upstream shim only)")
@@ -5649,6 +5646,17 @@ def _policy_validate(path: Path) -> None:
     for error in errors:
         print(f"  - {error}")
     raise SystemExit(1)
+
+
+def _identity_from_args(args) -> Optional[Dict[str, Any]]:
+    """--identity-* flags -> config (JWKS discovered), exiting with a clear
+    message when the issuer cannot be used."""
+    from prismor.runtime.identity_token import IdentityError, config_from_args
+    try:
+        return config_from_args(args)
+    except IdentityError as exc:
+        sys.stderr.write(f"[prismor] identity: {exc.reason} (pass --identity-jwks, or check --identity-issuer)\n")
+        raise SystemExit(2)
 
 
 def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: Optional[str] = None,

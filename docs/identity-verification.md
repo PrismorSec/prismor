@@ -97,6 +97,11 @@ with use_subject(token=user_jwt):
 
 Or call `evaluate_tool_call(..., identity_token=user_jwt)` directly.
 
+**MCP gateway / a single-user long-lived process.** Set
+`PRISMOR_IDENTITY_TOKEN_FILE` to a file a refresher rewrites (re-read on every
+call) or `PRISMOR_IDENTITY_TOKEN`, and pass `--identity-*` to `mcp-gateway`. See
+[the gateway docs](mcp-gateway.md).
+
 **Vercel AI SDK.**
 
 ```ts

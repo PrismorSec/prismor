@@ -112,6 +112,36 @@ def discover_jwks_uri(issuer: str) -> str:
     return uri
 
 
+def add_cli_args(parser) -> None:
+    """The --identity-* flags, shared by eval-server and mcp-gateway."""
+    parser.add_argument("--identity-issuer", default=None, help="Verify end-user JWTs from this issuer (turns identity on)")
+    parser.add_argument("--identity-audience", action="append", default=None, help="Accepted audience; repeatable")
+    parser.add_argument("--identity-jwks", default=None, help="JWKS URL of the issuer's signing keys (default: discovered from the issuer)")
+    parser.add_argument("--identity-mode", default="observe", choices=["observe", "require"], help="observe: verify when sent; require: block calls without a valid token (default: observe)")
+    parser.add_argument("--identity-user-claim", default="sub", help="Claim holding the user id (default: sub; often preferred_username or email). Nested: a.b")
+    parser.add_argument("--identity-team-claim", default=None, help="Claim holding the team id")
+    parser.add_argument("--identity-roles-claim", default=None, help="Claim holding roles/groups")
+
+
+def config_from_args(args) -> Optional[Dict[str, Any]]:
+    """--identity-* flags -> a validated config with the JWKS URL discovered,
+    or None when no issuer was given. Raises IdentityError when unusable."""
+    if not getattr(args, "identity_issuer", None):
+        return None
+    cfg = {
+        "mode": args.identity_mode, "issuer": args.identity_issuer,
+        "audience": args.identity_audience, "jwks_uri": args.identity_jwks,
+        "user_claim": args.identity_user_claim, "team_claim": args.identity_team_claim,
+        "roles_claim": args.identity_roles_claim,
+    }
+    if not cfg["jwks_uri"]:
+        cfg["jwks_uri"] = discover_jwks_uri(cfg["issuer"])
+    problems = config_errors(cfg)
+    if problems:
+        raise IdentityError("; ".join(problems))
+    return cfg
+
+
 def _jwks_client(uri: str):
     import jwt
 
