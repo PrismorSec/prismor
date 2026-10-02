@@ -221,3 +221,11 @@ def test_identity_sig_matches_server_format(monkeypatch):
     assert remote_policy._current_identity_sig() == want
     monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {"settings": {}})
     assert remote_policy._current_identity_sig() == ""
+
+
+def test_nested_and_namespaced_claims():
+    cfg = {**CFG, "user_claim": "preferred_username", "roles_claim": "realm_access.roles",
+           "team_claim": "https://acme.com/team"}
+    s = verify(tok(preferred_username="carol.k", realm_access={"roles": ["finance"]},
+                   **{"https://acme.com/team": "fin"}), cfg)
+    assert (s.user_id, s.team_id, s.roles) == ("carol.k", "fin", ("finance",))

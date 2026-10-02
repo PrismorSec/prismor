@@ -15,9 +15,13 @@ eval-server flags on an unmanaged host)::
       issuer: https://acme.okta.com/oauth2/default
       audience: [api://support-bot]
       jwks_uri: https://acme.okta.com/oauth2/default/v1/keys
-      user_claim: sub          # default sub
+      user_claim: sub          # default sub; e.g. preferred_username, email
       team_claim: team         # optional
       roles_claim: groups      # optional; list or space/comma-separated string
+
+Claim names match exactly first, then as a dotted path into nested claims, so
+both ``https://acme.com/roles`` (Auth0) and ``realm_access.roles`` (Keycloak)
+work.
 
 Modes:
   observe  verify a token when one is sent; otherwise keep the asserted subject
@@ -76,6 +80,22 @@ def config_errors(cfg: Dict[str, Any]) -> List[str]:
     return errs
 
 
+def discover_jwks_uri(issuer: str) -> str:
+    """The issuer's ``jwks_uri`` from its OIDC discovery document."""
+    import json
+    import urllib.request
+
+    url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 - operator-supplied issuer
+            uri = json.load(r).get("jwks_uri")
+    except Exception as exc:
+        raise IdentityError(f"discovery failed for {url}: {exc}") from None
+    if not isinstance(uri, str) or not uri:
+        raise IdentityError(f"{url} has no jwks_uri")
+    return uri
+
+
 def _jwks_client(uri: str):
     import jwt
 
@@ -91,6 +111,25 @@ def _roles(value: Any) -> Tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(str(v) for v in value if v not in (None, ""))
     return ()
+
+
+def claim(claims: Dict[str, Any], name: Optional[str]) -> Any:
+    """A claim by exact name, else by dotted path into nested objects.
+
+    Exact first, because namespaced claims contain dots
+    (``https://acme.com/roles``, Auth0); the path covers nesting
+    (``realm_access.roles``, Keycloak).
+    """
+    if not name:
+        return None
+    if name in claims:
+        return claims[name]
+    value: Any = claims
+    for part in name.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
 
 
 def verify(token: str, cfg: Dict[str, Any]) -> Subject:
@@ -115,17 +154,16 @@ def verify(token: str, cfg: Dict[str, Any]) -> Subject:
         raise IdentityError(f"signing key: {exc}") from None
     except jwt.InvalidTokenError as exc:
         raise IdentityError(f"{type(exc).__name__}: {exc}") from None
-    user = claims.get(str(cfg.get("user_claim") or "sub"))
+    user = claim(claims, str(cfg.get("user_claim") or "sub"))
     if not user:
         raise IdentityError(f"token has no '{cfg.get('user_claim') or 'sub'}' claim")
-    team_claim = cfg.get("team_claim")
-    roles_claim = cfg.get("roles_claim")
+    team = claim(claims, cfg.get("team_claim"))
     return Subject(
         user_id=str(user),
-        team_id=str(claims[team_claim]) if team_claim and claims.get(team_claim) else None,
+        team_id=str(team) if team else None,
         org_id=None,
         source="jwt",
-        roles=_roles(claims.get(roles_claim)) if roles_claim else (),
+        roles=_roles(claim(claims, cfg.get("roles_claim"))),
         claims=claims,
         verified=True,
     )

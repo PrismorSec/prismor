@@ -38,7 +38,6 @@ pip install 'prismor[identity]'
 prismor eval-server \
   --identity-issuer https://acme.okta.com/oauth2/default \
   --identity-audience api://support-bot \
-  --identity-jwks https://acme.okta.com/oauth2/default/v1/keys \
   --identity-roles-claim groups \
   --identity-mode require
 ```
@@ -55,9 +54,22 @@ policy, or the operator starting the eval-server, may set it.
 | `issuer` | required | must equal the token's `iss` |
 | `audience` | required, string or list | the token's `aud` must contain one |
 | `jwks_uri` | required | the IdP's signing keys; cached 10 minutes |
-| `user_claim` | default `sub` | becomes `principal.id` |
+| `user_claim` | default `sub` | becomes `principal.id`; `sub` is often an opaque id, so `preferred_username` or `email` reads better |
 | `team_claim` | optional | becomes `principal.team` |
 | `roles_claim` | optional | list, or space/comma-separated string → `principal.roles` |
+
+Claim names match exactly first, then as a dotted path into nested claims:
+
+| IdP | roles claim |
+|---|---|
+| Keycloak | `realm_access.roles` |
+| Okta | `groups` (add a groups claim to the authorization server) |
+| Entra ID | `roles` (app roles) or `groups` |
+| Auth0 | your namespaced claim, e.g. `https://acme.com/roles` |
+| Cognito | `cognito:groups` |
+
+`--identity-jwks` is optional: without it, the JWKS URL is read from the
+issuer's `/.well-known/openid-configuration`.
 
 Accepted algorithms are RS*, PS*, ES* and EdDSA. `alg: none` and HMAC tokens
 are rejected, which closes the "public key used as an HMAC secret" attack.

@@ -323,7 +323,13 @@ def run_eval_server(
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
 
     if identity:
-        from prismor.runtime.identity_token import config_errors, set_server_config
+        from prismor.runtime.identity_token import (
+            IdentityError, config_errors, discover_jwks_uri, set_server_config)
+        if not identity.get("jwks_uri") and identity.get("issuer"):
+            try:
+                identity["jwks_uri"] = discover_jwks_uri(identity["issuer"])
+            except IdentityError as exc:
+                raise SystemExit(f"[prismor] eval-server identity: {exc.reason} (pass --identity-jwks)")
         problems = config_errors(identity)
         if problems:
             raise SystemExit("[prismor] eval-server identity: " + "; ".join(problems))
@@ -339,7 +345,7 @@ def run_eval_server(
     print(f"[prismor] workspace: {ws}")
     if identity:
         print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
-              f"via X-Prismor-Identity")
+              f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
 

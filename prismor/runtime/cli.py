@@ -3372,9 +3372,9 @@ def build_parser() -> argparse.ArgumentParser:
     # org's settings.identity wins when present). docs/identity-verification.md
     _ep.add_argument("--identity-issuer", default=None, help="Verify X-Prismor-Identity JWTs from this issuer (turns identity on)")
     _ep.add_argument("--identity-audience", action="append", default=None, help="Accepted audience; repeatable")
-    _ep.add_argument("--identity-jwks", default=None, help="JWKS URL of the issuer's signing keys")
+    _ep.add_argument("--identity-jwks", default=None, help="JWKS URL of the issuer's signing keys (default: discovered from the issuer)")
     _ep.add_argument("--identity-mode", default="observe", choices=["observe", "require"], help="observe: verify when sent; require: block calls without a valid token (default: observe)")
-    _ep.add_argument("--identity-user-claim", default="sub", help="Claim holding the user id (default: sub)")
+    _ep.add_argument("--identity-user-claim", default="sub", help="Claim holding the user id (default: sub; often preferred_username or email). Nested: a.b")
     _ep.add_argument("--identity-team-claim", default=None, help="Claim holding the team id")
     _ep.add_argument("--identity-roles-claim", default=None, help="Claim holding roles/groups")
 
