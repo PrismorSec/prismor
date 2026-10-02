@@ -1,7 +1,7 @@
 """Tests for the per-rule `when:` attribute expression.
 
 `when:` narrows a rule by who is asking (principal), what for (resource) and
-with which arguments (args) — Cerbos-style conditions on an agent tool call.
+with which arguments (args) — attribute-based conditions on an agent tool call.
 
 Pinned hardest:
   1. Fail toward detection: a path the event lacks, or a type mismatch, makes
