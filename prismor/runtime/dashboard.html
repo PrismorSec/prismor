@@ -941,18 +941,18 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     max-height: 92vh; overflow-y: auto;
   }
   .up-modal-hero {
-    background: linear-gradient(135deg, #1e1b4b, #4c1d95); color: #fff;
-    padding: 26px 28px; position: relative;
+    background: var(--surface); color: var(--gray-900);
+    padding: 26px 28px; position: relative; border-bottom: 1px solid var(--gray-100);
   }
   .up-modal-hero img { width: 34px; height: 34px; margin-bottom: 10px; }
   .up-modal-hero h3 { font-size: 16px; font-weight: 600; }
-  .up-modal-hero p { font-size: 12px; color: #c7d2fe; margin-top: 5px; line-height: 1.5; }
+  .up-modal-hero p { font-size: 12px; color: var(--gray-500); margin-top: 5px; line-height: 1.5; }
   .up-modal-close {
     position: absolute; top: 12px; right: 14px; background: none; border: none;
-    color: #c7d2fe; font-size: 15px; cursor: pointer; font-family: inherit;
+    color: var(--gray-400); font-size: 15px; cursor: pointer; font-family: inherit;
     padding: 2px 6px; border-radius: 4px;
   }
-  .up-modal-close:hover { background: rgba(255,255,255,0.12); color: #fff; }
+  .up-modal-close:hover { background: var(--gray-100); color: var(--gray-900); }
   .up-feat-list { padding: 18px 28px 6px; }
   .up-feat {
     display: flex; gap: 10px; align-items: flex-start; padding: 7px 0;
@@ -1016,7 +1016,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .drawer-toggle .icon { width: 12px; height: 12px; vertical-align: -1.5px; }
   .scoped-tag .icon { width: 11px; height: 11px; vertical-align: -1.5px; }
 
-  /* ── Monospace surfaces (code, ids, editors) — the platform's own face ── */
+  /* ── Monospace surfaces (code, ids, editors): the platform's own face ── */
   code, .yaml-editor, .sess-id, .sess-drawer-sessid, .event-sess-id,
   td.mono, .finding-cmd, .trigger-detail, .rule-id, .user-id, .adv-pill,
   .policy-meta .path { font-family: var(--font-mono); }
@@ -1223,7 +1223,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .flow-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 16px; border-bottom:1px solid var(--gray-100); background:var(--surface); }
   .flow-head-title { font-size:12px; font-weight:700; color:var(--gray-800); }
-  /* ── Session tree: turns → lanes → events ── */
+  /* ── Session tree: turns -> lanes -> events ── */
   .tree-toolbar { display:flex; gap:6px; align-items:center; }
   .tree-btn { font-size:11px; font-weight:600; color:var(--gray-700); background:var(--surface);
     border:1px solid var(--gray-300); border-radius:7px; padding:4px 9px; cursor:pointer; }
@@ -1494,7 +1494,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
 
   /* ═══════════════════════════════════════════════════════════════════
-     MATERIAL LAYER — Material Design skin over the Prismor dashboard.
+     MATERIAL LAYER: Material Design skin over the Prismor dashboard.
      Roboto type, elevation, contained/outlined controls, Material tabs
      and chips. Appended last so single-class overrides win on source order.
      Prismor brand pink is used as the Material "primary".
@@ -1561,7 +1561,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   /* This repainted the editor white without touching its text colour, which is
      set dark-on-light further up (#e5e7eb on #111827). The result was near-white
-     text on white — a contrast ratio of about 1.05:1, i.e. an invisible policy.
+     text on white: a contrast ratio of about 1.05:1, i.e. an invisible policy.
      The editors follow the theme like every other surface now. */
   .yaml-editor { color: var(--gray-800); }
   html[data-theme="dark"] .yaml-editor {
@@ -1612,7 +1612,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
 
   /* ═══════════════════════════════════════════════════════════════════
-     AGENTOS LAYER — left sidebar nav + breadcrumb top bar, dark-first,
+     AGENTOS LAYER: left sidebar nav + breadcrumb top bar, dark-first,
      dense uppercase tables. Appended last so single-class overrides win
      on source order (same convention as the Material layer above).
      ═══════════════════════════════════════════════════════════════════ */
@@ -1679,7 +1679,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   html[data-theme="dark"] .pg-num.cur { background: var(--md-primary); border-color: var(--md-primary); color: #fff; }
 
-  /* Policy precedence ranking — number badge + connecting arrow between layers */
+  /* Policy precedence ranking: number badge + connecting arrow between layers */
   .prec-row { display: flex; align-items: stretch; gap: 10px; }
   .prec-row .drawer-policy-card { flex: 1; min-width: 0; margin-bottom: 0; }
   .prec-rank {
@@ -1733,10 +1733,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
 
   /* ═══════════════════════════════════════════════════════════════════
-     MINIMALIST KIT LAYER — monochrome re-skin mapped from the Figma
+     MINIMALIST KIT LAYER: monochrome re-skin mapped from the Figma
      "Minimalist UI Kit" (near-black #1c1c1c as the only accent, soft
      diffuse shadows, larger radii, pill controls, Inter). Appended last
-     so single-selector token/style overrides win on source order — same
+     so single-selector token/style overrides win on source order: same
      convention as the Material and AgentOS layers above.
      ═══════════════════════════════════════════════════════════════════ */
   :root {
@@ -1751,10 +1751,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     /* the only accent is near-black */
     --accent: #1c1c1c;
     --md-primary: #1c1c1c; --md-primary-d: #000000; --md-primary-soft: rgba(28,28,28,0.07);
-    --pink-600: #1c1c1c;   /* KPI "accent" value → ink, not pink */
+    --pink-600: #1c1c1c;   /* KPI "accent" value -> ink, not pink */
     --purple: #1c1c1c;
 
-    /* Inter (kit type face) — undo the Roboto override */
+    /* Inter (kit type face): undo the Roboto override */
     --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
     /* soft, diffuse shadow (Figma effect: 6/6, 50 blur, ~5% black) */
@@ -1771,7 +1771,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     --chart-palette-4: #b6b6ba; --chart-palette-5: #a8c5da; --chart-palette-6: #d4d4d6;
   }
   html[data-theme="dark"] {
-    /* monochrome dark: accent inverts to near-white (kit's black toggle → white on dark) */
+    /* monochrome dark: accent inverts to near-white (kit's black toggle becomes white on dark) */
     --gray-50: #17171a; --gray-100: #1c1c20; --gray-200: #2a2a2f;
     --gray-300: #3a3a40; --gray-400: #8a8a90; --gray-500: #a6a6ac;
     --gray-600: #cbcbd0; --gray-700: #e7e7ea; --gray-800: #f2f2f4; --gray-900: #f5f5f6;
@@ -1829,7 +1829,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .agent-pill, .src-pill, .status-pill, .scoped-tag, .sev-badge, .adv-pill,
   .sugg-pill, .trigger-kind, .event-sess-link { border-radius: 999px; }
 
-  /* "Open full drilldown" → a real secondary/outlined pill button (was a text link) */
+  /* "Open full drilldown" becomes a real secondary/outlined pill button (was a text link) */
   .inline-link-btn {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 7px 14px; border: 1px solid var(--gray-300); border-radius: 999px;
@@ -1843,7 +1843,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
 
   /* CTA "Rolling Prismor out to a team?": monochrome black panel (was indigo),
-     kit typography — Inter, 14/20 semibold title · 12/18 regular body. */
+     kit typography: Inter, 14/20 semibold title · 12/18 regular body. */
   .prismor-cta {
     background: #1c1c1c; color: rgba(255,255,255,.72);
     border: 1px solid var(--gray-200); border-radius: var(--md-radius); box-shadow: var(--md-e1);
@@ -1862,7 +1862,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .prismor-cta-btn:hover { background: #f0f0f1; }
 
-  /* Info / enterprise banners → neutral panel + standard dashboard type.
+  /* Info / enterprise banners become a neutral panel + standard dashboard type.
      Also fixes the old `.banner-text strong{display:block}` that broke the
      inline mode names (Blocked / Observe / Enforce) each onto their own line. */
   .banner {
@@ -1897,7 +1897,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   mark.match-mark{background:rgba(220,38,38,.22);color:inherit;border-radius:2px;padding:0 1px}
 
   /* ═══════════════════════════════════════════════════════════════════
-     LEDGER LAYER — light-first editorial console: brand + breadcrumb top
+     LEDGER LAYER: light-first editorial console, brand + breadcrumb top
      bar under a thin accent stripe, grouped sidebar with counts, a hero
      with a pass-rate ring, hairline-divided KPI strip and a numbered
      "one tool call" strip. Hairlines instead of shadows, navy ink, one
@@ -2254,7 +2254,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 </svg>
 
 
-<!-- ═══ ICON SPRITE (Lucide, inlined — no external requests) ══════ -->
+<!-- ═══ ICON SPRITE (Lucide, inlined, no external requests) ══════ -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
   <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
@@ -2312,7 +2312,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span id="lastUpdated" class="last-updated"></span>
     <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
     <button id="modeChip" class="mode-chip unknown" onclick="gotoPolicy()"
-            title="Effective enforcement mode — click to manage in Policy Control">
+            title="Effective enforcement mode: click to manage in Policy Control">
       <span class="badge-dot"></span><span id="modeChipLabel">mode</span>
     </button>
     <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
@@ -2363,12 +2363,12 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-docs" class="page">
   <div class="section"><h2>Docs</h2><div class="rule"></div>
-    <span class="hint">The Prismor docs shipped with this install — browse or search without leaving the dashboard.</span>
+    <span class="hint">The Prismor docs shipped with this install. Browse or search without leaving the dashboard.</span>
   </div>
   <div class="docs-search">
     <svg class="icon"><use href="#i-search"/></svg>
     <input id="docsSearch" type="search" spellcheck="false" autocomplete="off"
-           placeholder="Search the docs — e.g. mcp-gateway, cloak, egress" />
+           placeholder="Search the docs, e.g. mcp-gateway, cloak, egress" />
     <span id="docsCount" class="docs-count"></span>
     <button id="docsClear" class="docs-clear" title="Clear" hidden onclick="docsClearSearch()">×</button>
     <button class="btn-ghost" id="docsAskAgent" onclick="docsCopyAgentPrompt()"
@@ -2496,7 +2496,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div id="donutLegend" class="legend-grid"></div>
     </div>
     <div class="card">
-      <div class="card-title">Block Rate &mdash; 30 days</div>
+      <div class="card-title">Block Rate: 30 days</div>
       <div class="chart-container" style="height:240px"><canvas id="lineChart"></canvas></div>
     </div>
   </div>
@@ -2659,7 +2659,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-agents" class="page">
   <div class="section" style="margin-top:0">
     <h2>Agent Control</h2><div class="rule"></div>
-    <span class="hint">per-agent kill switch, enforcement mode &amp; IAM profile — live agents pick changes up within 30 s</span>
+    <span class="hint">per-agent kill switch, enforcement mode &amp; IAM profile; live agents pick changes up within 30 s</span>
   </div>
 
   <div class="banner banner-info">
@@ -2700,7 +2700,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-sessions" class="page">
   <div class="section" style="margin-top:0">
     <h2>Live Sessions</h2><div class="rule"></div>
-    <span class="hint">pause Prismor, clear scope, or unblock a stuck agent — per-agent kill switch lives in the Agents tab</span>
+    <span class="hint">pause Prismor, clear scope, or unblock a stuck agent. Per-agent kill switch lives in the Agents tab</span>
   </div>
 
   <div id="enrollBannerSess"></div>
@@ -2751,7 +2751,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   <div class="section">
     <h2>All Sessions</h2><div class="rule"></div>
-    <span class="hint">full session log — click session row above for controls</span>
+    <span class="hint">full session log: click session row above for controls</span>
   </div>
 
   <div class="card">
@@ -2834,7 +2834,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         <span id="agentHeroName">agent</span>
         <span id="agentHeroStatus"></span>
       </div>
-      <div class="agent-hero-sub" id="agentHeroSub">—</div>
+      <div class="agent-hero-sub" id="agentHeroSub">-</div>
     </div>
     <div class="agent-switch-wrap">
       <label>View agent</label>
@@ -2890,7 +2890,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="session-hero">
     <div class="session-hero-main">
       <div class="session-hero-title">Session</div>
-      <div class="session-hero-id" id="sessFlowId">—</div>
+      <div class="session-hero-id" id="sessFlowId">-</div>
       <div class="session-hero-meta" id="sessFlowMeta"></div>
     </div>
     <div class="sess-ctrl-btns" id="sessFlowActions"></div>
@@ -2902,7 +2902,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div>
       <div class="flow-card">
         <div class="flow-head">
-          <span class="flow-head-title">Session — click any row for details</span>
+          <span class="flow-head-title">Session: click any row for details</span>
           <div class="tree-toolbar">
             <button class="tree-btn" onclick="treeToggleAll(false)">Expand all</button>
             <button class="tree-btn" onclick="treeToggleAll(true)">Collapse all</button>
@@ -2926,7 +2926,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-policy" class="page">
   <div class="section" style="margin-top:0">
     <h2>Policy Control</h2><div class="rule"></div>
-    <span class="hint">human-only — changes take effect within 30 s on running agents</span>
+    <span class="hint">human-only; changes take effect within 30 s on running agents</span>
   </div>
 
   <div id="enrollBanner"></div>
@@ -2967,7 +2967,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         <button class="fbtn" data-rf="reports">Reporting</button>
         <button class="fbtn" data-rf="off">Off</button>
       </div>
-      <span id="rulesCount" class="rules-count">—</span>
+      <span id="rulesCount" class="rules-count">-</span>
       <button class="btn-ghost" id="rulesAll" title="Turn on every rule that is not pinned">All on</button>
       <button class="btn-ghost" id="rulesNone" title="Turn off every rule that is not pinned">All off</button>
     </div>
@@ -2986,7 +2986,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="banner-text">
         <strong>Where agents may connect</strong>
         Off by default. Turn it on in <em>observe</em> first and read
-        <code>prismor egress report</code> — it lists every destination your recorded sessions
+        <code>prismor egress report</code>: it lists every destination your recorded sessions
         actually contacted, so you can see what enforcing would have broken before it breaks it.
         Saved to <code>.prismor/policy.yaml</code> under <code>settings.egress</code>.
       </div>
@@ -3044,9 +3044,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="banner banner-warn">
       <span class="banner-icon"><svg class="icon"><use href="#i-globe"/></svg></span>
       <div class="banner-text">
-        <strong>Global policy — not applied by the runtime yet</strong>
+        <strong>Global policy: not applied by the runtime yet</strong>
         This file is read and written here, but the policy engine merges only the built-in
-        defaults, the project file, and any org policy — so edits below do not currently change
+        defaults, the project file, and any org policy, so edits below do not currently change
         what agents are allowed to do. Use the <strong>Project</strong> tab, or
         <code>prismor setup</code>, to change enforcement.
         Path: <code id="globalPolicyPath">~/.prismor/policy.yaml</code>
@@ -3107,7 +3107,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <span class="mode-hint" id="projectModeHint">observe = log only &nbsp;·&nbsp; enforce = block</span>
     </div>
     <textarea id="projectPolicyEditor" class="yaml-editor" spellcheck="false"
-      placeholder="# .prismor/policy.yaml&#10;# Per-project overrides — only what you want to change.&#10;version: &quot;1.0&quot;&#10;settings:&#10;  default_mode: observe"></textarea>
+      placeholder="# .prismor/policy.yaml&#10;# Per-project overrides: only what you want to change.&#10;version: &quot;1.0&quot;&#10;settings:&#10;  default_mode: observe"></textarea>
     <div class="policy-actions">
       <button class="btn-primary" id="projectPolicySave">Save project policy</button>
       <button class="btn-ghost" id="projectPolicyDiscard">Discard changes</button>
@@ -3126,19 +3126,19 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       </div>
     </div>
     <textarea id="enterprisePolicyEditor" class="yaml-editor" readonly spellcheck="false"
-      placeholder="# No enterprise policy — device is not enrolled."></textarea>
+      placeholder="# No enterprise policy: device is not enrolled."></textarea>
     <div class="policy-actions">
-      <span style="font-size:11px;color:var(--gray-400)">Read-only — managed by your org admin in the Prismor web dashboard.</span>
+      <span style="font-size:11px;color:var(--gray-400)">Read-only: managed by your org admin in the Prismor web dashboard.</span>
     </div>
   </div>
 
-  <!-- Effective (merged) — read-only -->
+  <!-- Effective (merged), read-only -->
   <div id="pscope-effective" class="policy-scope-pane">
     <div class="banner banner-info">
       <span class="banner-icon"><svg class="icon"><use href="#i-merge"/></svg></span>
       <div class="banner-text">
         <strong>Effective policy</strong>
-        What actually runs on this machine right now — global + project + enterprise merged together.
+        What actually runs on this machine right now: global + project + enterprise merged together.
         Enterprise settings take precedence; core protections can never be disabled.
       </div>
     </div>
@@ -3150,7 +3150,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <textarea id="effectivePolicyEditor" class="yaml-editor" readonly spellcheck="false"
       placeholder="# Loading effective policy…"></textarea>
     <div class="policy-actions">
-      <span style="font-size:11px;color:var(--gray-400)">Read-only — edit Global or Project to change this.</span>
+      <span style="font-size:11px;color:var(--gray-400)">Read-only: edit Global or Project to change this.</span>
     </div>
   </div>
 </div>
@@ -3169,8 +3169,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <h3>Fleet view is a Prismor Enterprise feature</h3>
     <p>
       This local dashboard shows agents and sessions on <em>this machine</em>. Fleet view gives
-      your security team the same picture across every developer laptop and CI runner in the org —
-      live sessions, findings, per-device policy status, and a remote kill switch — streamed as
+      your security team the same picture across every developer laptop and CI runner in the org:
+      live sessions, findings, per-device policy status, and a remote kill switch, streamed as
       redacted telemetry to a dashboard you host.
     </p>
     <button class="upgrade-btn" onclick="openUpgradeModal()"><svg class="icon"><use href="#i-sparkles"/></svg> Talk to us</button>
@@ -3185,13 +3185,13 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         <tbody>
           <tr><td>mbp-eng-042</td><td>priya@acme.dev</td><td>claude-code, codex</td><td>enforce</td><td>3</td><td>2m ago</td></tr>
           <tr><td>mbp-eng-017</td><td>sam@acme.dev</td><td>claude-code</td><td>enforce</td><td>0</td><td>11m ago</td></tr>
-          <tr><td>ci-runner-08</td><td>—</td><td>codex</td><td>enforce</td><td>1</td><td>just now</td></tr>
+          <tr><td>ci-runner-08</td><td>-</td><td>codex</td><td>enforce</td><td>1</td><td>just now</td></tr>
           <tr><td>mbp-eng-063</td><td>jo@acme.dev</td><td>cursor</td><td>observe</td><td>7</td><td>1h ago</td></tr>
           <tr><td>mbp-eng-029</td><td>lee@acme.dev</td><td>claude-code, cursor</td><td>enforce</td><td>0</td><td>3h ago</td></tr>
         </tbody>
       </table>
     </div>
-    <div class="overlay"><span>Illustrative preview — live fleet data is part of Prismor Enterprise</span></div>
+    <div class="overlay"><span>Illustrative preview: live fleet data is part of Prismor Enterprise</span></div>
   </div>
 </div>
 
@@ -3201,7 +3201,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <strong>Rolling Prismor out to a team?</strong>
     <span>This local dashboard stays free and open source. Enterprise adds fleet visibility, signed remote policy, org kill switch, and audit history.</span>
   </div>
-  <a class="prismor-cta-btn" href="#" onclick="openUpgradeModal();return false">Talk to us →</a>
+  <a class="prismor-cta-btn" href="#" onclick="openUpgradeModal();return false">Talk to us</a>
 </div>
 
 <!-- ═══ UPGRADE MODAL ═══════════════════════════════════════════════════ -->
@@ -3214,18 +3214,18 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <p>Everything in the open-source agent, plus an org control plane for security teams. Cloud or self-hosted.</p>
     </div>
     <div class="up-feat-list">
-      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-radio"/></svg></span><div><strong>Fleet visibility</strong> — every enrolled device, agent, and session in one org dashboard</div></div>
-      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-pen"/></svg></span><div><strong>Signed remote policy</strong> — push observe/enforce and rule changes org-wide, verified on-device</div></div>
-      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-ban"/></svg></span><div><strong>Org kill switch</strong> — pause a compromised agent on every machine at once; a local re-enable can't lift it</div></div>
-      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-database"/></svg></span><div><strong>Audit history &amp; export</strong> — long-term, redacted telemetry for compliance and incident review</div></div>
-      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-users"/></svg></span><div><strong>Teams &amp; roles</strong> — control who can change policy, grant exemptions, and lift blocks</div></div>
+      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-radio"/></svg></span><div><strong>Fleet visibility:</strong> every enrolled device, agent, and session in one org dashboard</div></div>
+      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-pen"/></svg></span><div><strong>Signed remote policy:</strong> push observe/enforce and rule changes org-wide, verified on-device</div></div>
+      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-ban"/></svg></span><div><strong>Org kill switch:</strong> pause a compromised agent on every machine at once; a local re-enable can't lift it</div></div>
+      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-database"/></svg></span><div><strong>Audit history &amp; export:</strong> long-term, redacted telemetry for compliance and incident review</div></div>
+      <div class="up-feat"><span class="fi"><svg class="icon"><use href="#i-users"/></svg></span><div><strong>Teams &amp; roles:</strong> control who can change policy, grant exemptions, and lift blocks</div></div>
     </div>
     <div class="up-modal-actions">
-      <a class="up-cta-primary" href="https://prismor.dev/demo?utm_source=immunity_dashboard&utm_medium=upgrade_modal" target="_blank" rel="noopener">Book a demo →</a>
+      <a class="up-cta-primary" href="https://prismor.dev/demo?utm_source=immunity_dashboard&utm_medium=upgrade_modal" target="_blank" rel="noopener">Book a demo</a>
       <a class="up-cta-secondary" href="mailto:contact@prismor.dev?subject=Prismor%20Enterprise">contact@prismor.dev</a>
     </div>
     <div class="up-modal-note">
-      The local dashboard is free and open source, forever — Enterprise adds the cloud control plane on top, nothing here is taken away.
+      The local dashboard is free and open source, forever. Enterprise adds the cloud control plane on top; nothing here is taken away.
       Prefer chat? <a href="https://discord.gg/FH2PRX754c" target="_blank" rel="noopener" style="color:inherit">Join our Discord</a>.
     </div>
   </div>
@@ -3267,13 +3267,13 @@ const CAT_LABELS = {
   malicious_mcp: 'Malicious MCP', dangerous_command: 'Dangerous Cmd',
   scoped_agent: 'Scoped Agent',
 };
-const DEFAULT_GLOBAL_YAML = `# Global policy — applies to every project on this machine.
+const DEFAULT_GLOBAL_YAML = `# Global policy: applies to every project on this machine.
 # Only set what you want to differ from built-in defaults.
 version: "1.0"
 settings:
   default_mode: observe
 `;
-const DEFAULT_PROJECT_YAML = `# Project policy — per-project overrides.
+const DEFAULT_PROJECT_YAML = `# Project policy: per-project overrides.
 # Merge precedence: enterprise > project > global > built-in defaults.
 version: "1.0"
 settings:
@@ -3460,7 +3460,7 @@ async function loadDocs() {
   try {
     const data = await apiFetch('/api/docs');
     _docsCache = data.docs || [];
-    // Typed into the box while the list was still loading — that search wins.
+    // Typed into the box while the list was still loading; that search wins.
     if (!document.getElementById('docsSearch').value.trim())
       renderDocsList(_docsCache.map(d => ({name: d.name, title: d.title})));
   } catch (e) {
@@ -3516,7 +3516,7 @@ async function docsCopyAgentPrompt() {
   try {
     const data = await apiFetch('/api/query-prompt');
     await navigator.clipboard.writeText(data.prompt);
-    toast('Prompt copied — paste it into your agent and finish the last line.');
+    toast('Prompt copied. Paste it into your agent and finish the last line.');
     openDoc('query-your-data.md');
   } catch (e) {
     toast('Could not copy: ' + (e && e.message || e), true);
@@ -3531,7 +3531,7 @@ function docsClearSearch() {
 }
 async function openDoc(name) {
   const body = document.getElementById('docsBody');
-  // Called from the MCP Servers page too — make sure the reader is visible.
+  // Called from the MCP Servers page too. Make sure the reader is visible.
   document.querySelector('.tab-btn[data-tab="docs"]')?.click();
   body.innerHTML = '<div class="empty">Loading…</div>';
   try {
@@ -3865,7 +3865,7 @@ const DEP_GROUPS = {
   dep:     ['By dependency', r => r.part + '/' + r.name, r => r.name,                              r => r.part],
   session: ['By session',    r => r.session,             r => String(r.session).slice(0, 8),       r => r.agent],
   agent:   ['By agent',      r => r.agent,               r => r.agent,                            () => 'agent'],
-  project: ['By project',    r => r.workspace,           r => r.workspace.split('/').pop() || '—', () => 'project'],
+  project: ['By project',    r => r.workspace,           r => r.workspace.split('/').pop() || '-', () => 'project'],
 };
 async function loadDependencies() {
   try {
@@ -3880,7 +3880,7 @@ function depTarget(r) { return r.part === 'skill' || r.part === 'secret' ? '' : 
 function depLine(r) {
   return '<div class="dep-line">' +
     '<span class="ext-kind">' + safe(r.part) + '</span>' +
-    '<span class="ext-name">' + safe(r.name) + (depTarget(r) ? ' <span class="ext-quiet">&rarr; ' + safe(depTarget(r)) + '</span>' : '') + '</span>' +
+    '<span class="ext-name">' + safe(r.name) + (depTarget(r) ? ' <span class="ext-quiet">(' + safe(depTarget(r)) + ')</span>' : '') + '</span>' +
     (r.note ? '<span class="ext-cap' + (r.note === 'not in vault' ? ' remote_instructions' : '') + '">' + safe(r.note) + '</span>' : '') +
     '<span class="ext-agent">' + agentIcon(r.agent) + safe(r.agent) + '</span>' +
     '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(r.session) + '\')">' + safe(String(r.session).slice(0, 8)) + '</a>' +
@@ -3930,7 +3930,7 @@ function renderDependencies() {
         '<span class="ext-never">' + safe(head.last || '') + '</span></div>' +
       '<div class="ext-body">' + g.members.slice(0, 200).map(depLine).join('') +
         (g.members.length > 200 ? '<div class="ext-quiet">Showing 200 of ' + g.members.length + '.</div>' : '') + '</div></div>';
-  }).join('') + ((_depCache || {}).truncated ? '<div class="empty">Capped at 5000 rows — narrow the date range.</div>' : '')
+  }).join('') + ((_depCache || {}).truncated ? '<div class="empty">Capped at 5000 rows. Narrow the date range.</div>' : '')
     : '<div class="empty">Nothing recorded in this window. Prismor fills this in as your agents use secrets, call MCP servers, load skills and install packages.</div>';
 }
 
@@ -3986,7 +3986,7 @@ function mcpRiskChip(s) {
 }
 function mcpDeclaredMarkup(s) {
   const decl = s.declared_in || [];
-  if (!decl.length) return '<div class="mcp-meta mcp-muted">Not declared in any config Prismor scans' + (s.kind === 'mirror' ? ' — served in-process by the gateway.' : (s.kind === 'seen' ? ' — known only from calls the agent made.' : ' — listed because this workspace\'s policy scope names it.')) + '</div>';
+  if (!decl.length) return '<div class="mcp-meta mcp-muted">Not declared in any config Prismor scans' + (s.kind === 'mirror' ? ', served in-process by the gateway.' : (s.kind === 'seen' ? ', known only from calls the agent made.' : ', listed because this workspace\'s policy scope names it.')) + '</div>';
   return decl.map(d => {
     const how = d.url ? '<code>' + safe(d.url) + '</code>' : (d.command ? '<code>' + safe(d.command) + '</code>' : '');
     return '<div class="mcp-meta">' +
@@ -4019,8 +4019,8 @@ function mcpCardHead(s, extra) {
 
 // The mirror: front-of-house controls. A Governing / Pass-through switch (screen
 // and redact every mirrored call, or execute them exactly as the natives would
-// while still logging) and a per-tool on/off roster — "this tool I want, this
-// one I don't" — distinct from call-time allow/ask/deny. Pass-through keeps
+// while still logging) and a per-tool on/off roster ("this tool I want, this
+// one I don't"), distinct from call-time allow/ask/deny. Pass-through keeps
 // serving the tools: the host's natives were denied by `prismor mirror on`, so a
 // mirror that went silent would leave the agent with no Bash/Read at all.
 // Handing the built-ins back to the agent is a config change + restart, and
@@ -4030,7 +4030,7 @@ function renderMirrorCard(s) {
   const paused = !!s.paused;
   const governing = override && !paused;
   const ovBtn = '<button class="en-toggle ' + (override ? 'on' : 'off') + '" ' +
-    (paused ? 'disabled title="Prismor is paused — run prismor resume first" ' : '') +
+    (paused ? 'disabled title="Prismor is paused: run prismor resume first" ' : '') +
     'onclick="mcpOverrideSet(\'' + safeAttr(s.name) + '\',' + (override ? 'true' : 'false') + ')">' +
     (paused ? 'Paused' : (override ? 'Governing' : 'Pass-through')) + '</button>';
   const rows = (s.tools || []).map(t => {
@@ -4044,14 +4044,14 @@ function renderMirrorCard(s) {
   let hint;
   if (paused) {
     const until = s.paused_until ? ' until ' + safe(s.paused_until) : '';
-    hint = 'Prismor is <b>paused</b>' + until + ' — the mirror passes every call through (logged, not blocked or redacted). ' +
+    hint = 'Prismor is <b>paused</b>' + until + ': the mirror passes every call through (logged, not blocked or redacted). ' +
       'Resume from your terminal: <code>prismor resume</code>.';
   } else if (override) {
-    hint = 'Governing — every mirrored call is policy-screened before it runs and its output redacted after. ' +
+    hint = 'Governing: every mirrored call is policy-screened before it runs and its output redacted after. ' +
       'Native tools are switched off in the host by <code>prismor mirror on</code>; ' +
       '<code>prismor mirror off</code> hands them back (next session).';
   } else {
-    hint = 'Pass-through — the mirror still serves the tools below but runs them exactly as the natives would ' +
+    hint = 'Pass-through: the mirror still serves the tools below but runs them exactly as the natives would ' +
       '(logged, not blocked or redacted). Flip back to Governing here, or <code>prismor mirror passthrough off</code>.';
   }
   return '<div class="card mcp-card">' + mcpCardHead(s, ovBtn) +
@@ -4081,7 +4081,7 @@ function renderRemoteCard(s) {
         btn('deny','Deny','Blocked in real time') + '</span></div>';
   }).join('') : '<div class="tp-row mcp-muted" style="font-size:12.5px">' +
       (direct ? 'Prismor never sees this server\'s calls, so there is nothing to govern here yet.'
-              : 'No tools seen or governed yet — they appear here the first time the agent calls one, or when you set a policy.') + '</div>';
+              : 'No tools seen or governed yet. They appear here the first time the agent calls one, or when you set a policy.') + '</div>';
   const fix = direct
     ? '<div class="banner banner-warn mcp-fix"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
         '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config. Front it so every call is screened first:' +
@@ -4092,7 +4092,7 @@ function renderRemoteCard(s) {
     '<div class="tp-grid">' + rows + '</div></div>';
 }
 
-// Nothing is wired up yet — say how to wire it, rather than showing an
+// Nothing is wired up yet. Say how to wire it, rather than showing an
 // empty page. Both halves are one command each.
 function mcpSetupHelp() {
   return '<div class="card">' +
@@ -4108,7 +4108,7 @@ function mcpSetupHelp() {
       '<div class="mcp-hint">Serves Bash/Read/Write over MCP so the built-ins are screened and their output redacted too. Takes effect in the next session.</div>' +
       '<pre class="doc-cmd">prismor mirror on\nprismor mirror status</pre>' +
     '</div>' +
-    '<div class="mcp-hint">Configs Prismor will not guess at (Zed\'s <code>context_servers</code>, Codex\'s TOML) are reported and left untouched — move those by hand. Full walkthrough: <a href="#" onclick="openDoc(\'mcp-gateway.md\');return false">MCP Gateway docs</a>.</div>' +
+    '<div class="mcp-hint">Configs Prismor will not guess at (Zed\'s <code>context_servers</code>, Codex\'s TOML) are reported and left untouched. Move those by hand. Full walkthrough: <a href="#" onclick="openDoc(\'mcp-gateway.md\');return false">MCP Gateway docs</a>.</div>' +
     '</div>';
 }
 
@@ -4150,11 +4150,11 @@ async function mcpToolSet(tag, action) {
       if (t.tag === tag) t.state = deny.has(tag) ? 'deny' : (ask.has(tag) ? 'ask' : 'allow');
     }));
     renderMcpServers();
-    toast('✓ ' + tag + ' → ' + action);
+    toast('✓ ' + tag + ': ' + action);
   } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
 }
 
-// ── Toast (non-blocking feedback — replaces alert()) ──────────────────────
+// ── Toast (non-blocking feedback; replaces alert()) ──────────────────────
 let _toastTimer;
 function toast(msg, isErr) {
   let t = document.getElementById('prismorToast');
@@ -4223,10 +4223,10 @@ function updateModeChip(data) {
   syncNavCounts();
   if (mode === 'enforce') {
     chip.title = eff.blocking
-      ? 'Enforce — ' + eff.blocking + ' of ' + eff.total + ' rules block in real time. Click to manage.'
-      : 'Enforce — threats are blocked in real time. Click to manage.';
+      ? 'Enforce: ' + eff.blocking + ' of ' + eff.total + ' rules block in real time. Click to manage.'
+      : 'Enforce: threats are blocked in real time. Click to manage.';
   } else {
-    chip.title = 'Observe — threats are logged but NOT blocked. Click to switch to enforce.';
+    chip.title = 'Observe: threats are logged but NOT blocked. Click to switch to enforce.';
   }
 }
 function openUpgradeModal() {
@@ -4417,7 +4417,7 @@ function renderDrawerContent(sessId, ws, data) {
   const rulesDiv = document.createElement('div');
   rulesDiv.id = 'scopeRulesView';
   if (!scoped) {
-    rulesDiv.innerHTML = '<div style="font-size:11px;color:var(--gray-400)">No scope set — full default policy applies.</div>';
+    rulesDiv.innerHTML = '<div style="font-size:11px;color:var(--gray-400)">No scope set: full default policy applies.</div>';
   } else {
     renderScopeView(rulesDiv, scoped);
   }
@@ -4647,7 +4647,7 @@ async function scopeSave() {
 async function drawerAction(action) {
   const sessId = _drawerSessId;
   const ws     = _drawerWs;
-  if (action === 'pause' && !confirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session — nothing is blocked or flagged until you resume.')) return;
+  if (action === 'pause' && !confirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session. Nothing is blocked or flagged until you resume.')) return;
 
   // Disable all footer buttons immediately to prevent double-clicks
   document.querySelectorAll('#sessDrawerFooter button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
@@ -4659,7 +4659,7 @@ async function drawerAction(action) {
       body: JSON.stringify({ action, workspace: ws }),
     });
     if (sessId !== _drawerSessId) return; // drawer changed while in flight
-    // PATCH already returns the new scoped state — render directly, no second round-trip
+    // PATCH already returns the new scoped state; render directly, no second round-trip
     if (action === 'clear') {
       renderDrawerContent(sessId, ws, { scoped: null, recent_blocked: [] });
     } else {
@@ -4738,7 +4738,7 @@ function renderPolicyPrecedenceHtml(precedence, opts = {}) {
 }
 function tsCell(rel, abs, color) {
   const c = color || 'var(--gray-400)';
-  if (!rel) return '<span style="color:' + c + '">—</span>';
+  if (!rel) return '<span style="color:' + c + '">-</span>';
   if (!abs) return '<span style="color:' + c + '">' + safe(rel) + '</span>';
   return '<span class="ts-hover" style="color:' + c + '" title="' + safeAttr(abs) + '">' + safe(rel) + '</span>';
 }
@@ -4806,7 +4806,7 @@ function buildPager(containerId, state, loadFn) {
       ?'<span class="pg-num ellipsis">…</span>'
       :'<button class="pg-num'+(n===page?' cur':'')+'" data-p="'+n+'">'+n+'</button>'
     ).join('')+'</div>' +
-    '<button class="pg-btn" id="'+containerId+'Next"'+(page>=pages?' disabled':'')+'>Next →</button>' +
+    '<button class="pg-btn" id="'+containerId+'Next"'+(page>=pages?' disabled':'')+'>Next</button>' +
     '<span class="pg-info">'+from+'–'+to+' of '+fmtNum(total)+'</span>';
   container.querySelector('#'+containerId+'Prev')?.addEventListener('click',()=>{state.page--;loadFn();});
   container.querySelector('#'+containerId+'Next')?.addEventListener('click',()=>{state.page++;loadFn();});
@@ -4981,7 +4981,7 @@ function renderAgentControls(agentName){
         '<option value=""'+(!a.iam_profile?' selected':'')+'>none</option>'+
         profiles.map(pf=>'<option value="'+safeAttr(pf)+'"'+(a.iam_profile===pf?' selected':'')+'>'+safe(pf)+'</option>').join('')+
       '</select>'+
-      '<span class="agent-ctrl-hint">least-privilege profile from iam.yaml — enforced when the agent runs in enforce mode</span></div>'
+      '<span class="agent-ctrl-hint">least-privilege profile from iam.yaml: enforced when the agent runs in enforce mode</span></div>'
   ) : '';
   el.innerHTML =
     '<div class="agent-ctrl"><label>Enforcement mode</label>'+
@@ -5035,7 +5035,7 @@ async function toolPolicySet(agent, tool, action){
     const a = (_agentsCache?.agents||[]).find(x=>x.name===agent);
     if (a){ a.deny_tools = r.deny_tools || []; a.ask_tools = r.ask_tools || []; }
     renderAgentControls(agent);
-    toast('✓ '+tool+' → '+action);
+    toast('✓ '+tool+': '+action);
   } catch(e){ toast('✗ '+e.message, true); loadAgents(); }
 }
 // An agent page is keyed on the instance label, which for a hooked agent is
@@ -5110,7 +5110,7 @@ function renderSessionView(data){
   const scoped = data.scoped || null;
   const paused = scoped && scoped.paused;
   const blocks = data.recent_blocked || [];
-  const trail = (data.recent_events || []).slice().reverse(); // oldest→newest
+  const trail = (data.recent_events || []).slice().reverse(); // oldest to newest
 
   const agent = _sessionViewState.agent;
   let pills = '';
@@ -5144,7 +5144,7 @@ async function sessViewAction(action){
       method:'PATCH', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({action, workspace: ws}),
     });
-    toast({pause:'Session paused — protection off', resume:'Session resumed', clear:'Scope cleared'}[action]||'✓ Done');
+    toast({pause:'Session paused: protection off', resume:'Session resumed', clear:'Scope cleared'}[action]||'✓ Done');
     openSessionView(sid, ws);
   } catch(e){ toast('✗ '+e.message, true); }
 }
@@ -5306,7 +5306,7 @@ function renderNodePanelDefault(data){
       '<div class="drawer-block-body"><div class="drawer-block-title">'+safe(b.title)+'</div>'+
       '<div class="drawer-block-meta">'+safe(CAT_LABELS[b.category]||b.category)+' · '+safe(b.ts||'')+'</div></div></div>').join('');
   } else {
-    html+='<div class="node-panel-empty">Clean run — no blocks. Click a node to inspect a tool call.</div>';
+    html+='<div class="node-panel-empty">Clean run: no blocks. Click a node to inspect a tool call.</div>';
   }
   panel.innerHTML=html;
 }
@@ -5479,7 +5479,7 @@ async function applyNodePolicy(action, scope){
     }
     const verb = action==='deny' ? 'Blocked' : 'Allowed';
     setStatus('\u2713 '+verb+' '+tool+' for '+where+'.');
-    toast('\u2713 '+verb+' '+tool+' \u2014 '+where);
+    toast('\u2713 '+verb+' '+tool+' for '+where);
     setTimeout(()=>{ if(_sessionViewState && _sessionViewState.sessionId===st.sessionId) openSessionView(st.sessionId, ws); }, 650);
   } catch(e){ setStatus('\u2717 '+e.message, true); }
 }
@@ -5847,7 +5847,7 @@ function renderEvents(rows){
         '<div class="event-action">'+toolTag+safe(ev.action)+'</div>'+
       '</div>'+
       '<span class="sev-badge '+sevClass(ev.severity)+'" style="flex-shrink:0">'+safe(ev.severity)+'</span>'+
-      '<span class="event-sess-link">Session →</span>'+
+      '<span class="event-sess-link">Session</span>'+
     '</div>';
   }).join('');
 }
@@ -5892,7 +5892,7 @@ function renderAttention(k){
   // Headline is the first item; its own "what to do" line leads the list.
   document.getElementById('attnTitle').textContent = items.length ? (items[0].n ? fmtNum(items[0].n)+' '+items[0].t : items[0].t) : 'All clear';
   document.getElementById('attnList').innerHTML = items.map((i, idx) =>
-    '<li'+(i.go?' onclick="'+i.go+'" class="link"':'')+'>'+(idx ? '<b>'+(i.n!==''?fmtNum(i.n)+' ':'')+safe(i.t)+'</b>' : '')+'<span>'+safe(i.d)+(i.go?' &rarr;':'')+'</span></li>').join('')
+    '<li'+(i.go?' onclick="'+i.go+'" class="link"':'')+'>'+(idx ? '<b>'+(i.n!==''?fmtNum(i.n)+' ':'')+safe(i.t)+'</b>' : '')+'<span>'+safe(i.d)+'</span></li>').join('')
     + (!items.length ? '<li><span>Nothing blocked in this window and every extension has been reviewed.</span></li>' : '');
   if (!ext){
     apiFetch('/api/extensions'+(_serverWorkspace?'?workspace='+encodeURIComponent(_serverWorkspace):''), {timeoutMs:20000})
@@ -6046,12 +6046,12 @@ async function loadSupplyChain(){
       const ver=b.version?'<span class="pkg-ver">@'+safe(b.version)+'</span>':'';
       const adv=(b.advisoryIds||[]).slice(0,2).map(a=>'<span class="adv-pill" title="'+safeAttr(a)+'">'+safe(a)+'</span>').join('');
       const more=(b.advisoryIds||[]).length>2?'<span style="font-size:10px;color:var(--gray-400)">+'+(b.advisoryIds.length-2)+'</span>':'';
-      const sugg=b.recommended?'<span class="sugg-pill">'+safe(b.package+'@'+b.recommended)+'</span>':'<span class="sugg-none">—</span>';
+      const sugg=b.recommended?'<span class="sugg-pill">'+safe(b.package+'@'+b.recommended)+'</span>':'<span class="sugg-none">-</span>';
       return '<tr title="'+safeAttr(b.installCmd||'')+'">'+
         '<td>'+badge+' <span class="pkg-name">'+safe(b.package)+'</span>'+ver+'</td>'+
         '<td style="color:var(--gray-500)">'+safe(b.ecosystem)+'</td>'+
         '<td class="right" style="font-weight:600;color:var(--pink-600)">'+(b.score||0)+'</td>'+
-        '<td>'+(adv||'<span class="sugg-none">—</span>')+' '+more+'</td>'+
+        '<td>'+(adv||'<span class="sugg-none">-</span>')+' '+more+'</td>'+
         '<td>'+sugg+'</td>'+
         '<td>'+tsCell(b.ts,b.tsAbs)+'</td>'+
       '</tr>';
@@ -6075,7 +6075,7 @@ async function loadSupplyChain(){
 document.getElementById('globalDays').addEventListener('change',()=>{loadStats();loadSupplyChain();loadNetworkCalls();});
 
 // ══════════════════════════════════════════════════════════════════════════
-// AGENTS TAB — per-agent kill switch, mode override, IAM profile
+// AGENTS TAB: per-agent kill switch, mode override, IAM profile
 // ══════════════════════════════════════════════════════════════════════════
 let _agentsCache = null;
 // Sidebar counts and the step-strip footers read from three loaders that land
@@ -6094,7 +6094,7 @@ function syncNavCounts() {
 }
 
 function fmtLastSeen(iso) {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return String(iso);
   const diff = (Date.now() - d.getTime()) / 1000;
@@ -6137,7 +6137,7 @@ function renderAgents(data) {
     agents.length + ' agent' + (agents.length === 1 ? '' : 's') + ' registered';
   const tbody = document.getElementById('agentsBody');
   if (!agents.length) {
-    tbody.innerHTML = '<tr><td colspan="7" class="empty">No agents discovered yet — agents ' +
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No agents discovered yet. Agents ' +
       'auto-register the first time they run in a Prismor-enabled workspace. ' +
       'Install hooks with <code>prismor install</code>, then start Claude Code, Codex, or Cursor.</td></tr>';
     return;
@@ -6181,7 +6181,7 @@ async function agentSet(name, fields) {
       renderAgents(_agentsCache);
       if (document.getElementById('page-agent')?.classList.contains('active')) { renderAgentHero(name); renderAgentControls(name); }
     }
-    if (fields.enabled === false)      toast(name + ' blocked — all tool calls denied');
+    if (fields.enabled === false)      toast(name + ' blocked: all tool calls denied');
     else if (fields.enabled === true)  toast('✓ ' + name + ' unblocked');
     else                               toast('✓ ' + name + ' updated');
   } catch (e) {
@@ -6243,7 +6243,7 @@ function renderEnrollBanners(enrollment) {
         '<span class="banner-icon"><svg class="icon"><use href="#i-building"/></svg></span>' +
         '<div class="banner-text"><strong>Enterprise enrolled</strong>' +
         'This device is enrolled in org <code>' + safeAttr(enrollment.org_id || '') + '</code>. ' +
-        'The Enterprise policy tab is read-only — changes must be made by your org admin in the Prismor web dashboard. ' +
+        'The Enterprise policy tab is read-only: changes must be made by your org admin in the Prismor web dashboard. ' +
         'Global and project policies can still be edited here.' +
         '</div></div>';
     } else {
@@ -6305,7 +6305,7 @@ function renderSessionControl(items, workspace) {
           '<span id="pill-' + i + '">' + statusPill(s, null) + '</span>' +
           '<span class="agent-pill link" onclick="openAgentView(\'' + safeAttr(s.agent||'') + '\')">' + safe(s.agent||'?') + '</span>' +
         '</div>' +
-        '<div class="sess-ws" title="' + safeAttr(ws) + '">' + safe(wsLabel || ws) + ' · last active ' + (s.updatedAt||'—') + '</div>' +
+        '<div class="sess-ws" title="' + safeAttr(ws) + '">' + safe(wsLabel || ws) + ' · last active ' + (s.updatedAt||'-') + '</div>' +
         '<div id="' + detailId + '" class="sess-detail"></div>' +
       '</div>' +
       '<div class="sess-ctrl-btns">' +
@@ -6356,7 +6356,7 @@ function renderSessDetail(el, data, idx) {
       net +
     '</div>';
   } else {
-    scopedHtml = '<div style="font-size:11px;color:var(--gray-400);margin-bottom:8px">No session scope — default policy applies.</div>';
+    scopedHtml = '<div style="font-size:11px;color:var(--gray-400);margin-bottom:8px">No session scope: default policy applies.</div>';
   }
 
   let blocksHtml = '';
@@ -6377,7 +6377,7 @@ function renderSessDetail(el, data, idx) {
 }
 
 async function sessAction(sessId, action, workspace, idx) {
-  if (action === 'pause' && !confirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session — nothing is blocked or flagged until you resume.')) return;
+  if (action === 'pause' && !confirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session. Nothing is blocked or flagged until you resume.')) return;
   if (action === 'clear' && !confirm('Clear the scoped rules for this session?\n\nThe session falls back to the full default policy.')) return;
   try {
     const ws = workspace || _serverWorkspace || '';
@@ -6397,7 +6397,7 @@ async function sessAction(sessId, action, workspace, idx) {
       const pill = document.getElementById('pill-' + idx);
       if (pill) pill.innerHTML = statusPill({blockCount:(data.recent_blocked||[]).length}, data.scoped);
     }
-    toast({pause:'Session paused — protection off', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
+    toast({pause:'Session paused: protection off', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
   } catch(e) {
     toast('✗ ' + e.message, true);
   }
@@ -6444,7 +6444,7 @@ function _syncModeToggle(scope, yaml) {
   enf.className = 'mode-btn' + (mode === 'enforce' ? ' active-enforce' : '');
   // Per-rule `mode:` wins over this default, so a policy that names its
   // blocking set keeps blocking exactly what was selected regardless of which
-  // button is lit here. Saying "observe — threats are logged but not blocked"
+  // button is lit here. Saying "observe: threats are logged but not blocked"
   // over such a policy is simply false, so it gets its own sentence.
   const perRule = (yaml || '').match(/^\s*mode\s*:\s*enforce\s*$/gm);
   if (!hint) return;
@@ -6453,8 +6453,8 @@ function _syncModeToggle(scope, yaml) {
       + mode + ')';
   } else {
     hint.textContent = mode === 'enforce'
-      ? 'enforce — threats are blocked in real time'
-      : 'observe — threats are logged but not blocked';
+      ? 'enforce: threats are blocked in real time'
+      : 'observe: threats are logged but not blocked';
   }
 }
 
@@ -6540,8 +6540,8 @@ function renderPolicyTab(data) {
   }
   document.getElementById('enterprisePolicyEditor').value = e.yaml || (
     enrolled
-      ? '# Enrolled in org ' + ((data.enrollment||{}).org_id||'') + ' — no policy has been pushed to this device yet.\n# Your org admin can push a policy from prismor.dev/admin.'
-      : '# No enterprise policy — device is not enrolled.\n# Run: prismor enroll <token>'
+      ? '# Enrolled in org ' + ((data.enrollment||{}).org_id||'') + ': no policy has been pushed to this device yet.\n# Your org admin can push a policy from prismor.dev/admin.'
+      : '# No enterprise policy: device is not enrolled.\n# Run: prismor enroll <token>'
   );
 
   // Effective (simple stacked view)
@@ -6552,7 +6552,7 @@ function renderPolicyTab(data) {
   ].filter(Boolean);
   document.getElementById('effectivePolicyEditor').value = layers.length
     ? layers.join('\n\n')
-    : '# No custom policies — built-in Prismor defaults apply.\n# Run: prismor policy init   to create a project policy.';
+    : '# No custom policies: built-in Prismor defaults apply.\n# Run: prismor policy init   to create a project policy.';
 
   const effectiveStatus = [];
   if (g.exists) effectiveStatus.push('global');
@@ -6597,10 +6597,10 @@ function applyPolicyEditable(data) {
     const btn = document.getElementById(id);
     if (btn) {
       btn.disabled = locked;
-      btn.title = locked ? 'Managed by your organization — edit it in the Prismor console.' : '';
+      btn.title = locked ? 'Managed by your organization: edit it in the Prismor console.' : '';
     }
   });
-  // The rules list may not be loaded yet — it reads _policyLocked when it does.
+  // The rules list may not be loaded yet; it reads _policyLocked when it does.
   // Guarded because _rulesCatalog is declared further down this file, so a
   // bare reference here throws before the rules tab has ever been opened.
   try {
@@ -6779,7 +6779,7 @@ function renderEgress() {
     : 'calls outside the policy are recorded, not blocked';
   document.getElementById('egressDefaultHint').textContent = !on ? ''
     : eff.default === 'deny'
-      ? 'anything not in Allowed is refused — start from `prismor egress report`'
+      ? 'anything not in Allowed is refused: start from `prismor egress report`'
       : 'anything not in Denied is permitted';
 
   ['egressHost', 'egressReason'].forEach(id => {
