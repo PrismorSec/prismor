@@ -59,11 +59,16 @@ _SKIP_DIR_NAMES = frozenset({
 
 
 def _is_nested_checkout(path: Path) -> bool:
-    """True for a directory that is its own git checkout - a submodule or
-    a linked worktree (whose `.git` is a file, not a directory). Its
-    manifests belong to that repo, not to the workspace being scanned.
+    """True for a nested checkout or a directory that cannot be inspected.
+
+    A cross-user mount can be visible to ``os.walk`` while denying the
+    ``.git`` stat. Treat it as out of scope rather than aborting every
+    dependency and audit scan of the parent workspace.
     """
-    return (path / ".git").exists()
+    try:
+        return (path / ".git").exists()
+    except OSError:
+        return True
 
 
 def _iter_workspace_files(workspace: Path, *patterns: str) -> Iterator[Path]:
