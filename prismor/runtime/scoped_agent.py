@@ -400,9 +400,7 @@ Rules:
 - deny_tools: tools explicitly not needed (complement of allowed)
 - deny_network: true to block all network access, false to allow
 - If the task involves reading/editing code, allow Read/Edit/Write for relevant paths
-- If the task does NOT mention network, web, fetch, install, or download, set deny_network: true,
-  unless it asks to find, research, look up or compare anything outside the workspace
-  (other repos, projects, libraries, docs, competitors) — that needs the web
+- If the task does NOT mention network, web, fetch, install, or download, set deny_network: true
 - Always include Read in allowed_tools (agents need to read files to orient)
 - Entries of the form mcp__<server>__* are MCP tool families (one per connected
   MCP server). Include a family in allowed_tools when the task needs that
