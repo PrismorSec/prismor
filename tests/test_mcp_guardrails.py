@@ -230,6 +230,13 @@ _METADATA_ARGS = [
     ("argument named target", {"target": "http://169.254.169.254/latest/"}),
     ("host and path split apart", {"host": "169.254.169.254", "path": "/latest/meta-data/"}),
     ("nested request object", {"request": {"url": "http://169.254.169.254/latest/"}}),
+    # #471: shapes the serialized-JSON regexes used to miss.
+    ("url inside a list", {"url": ["http://169.254.169.254/latest/meta-data/"]}),
+    ("second url in a list", {"url": ["https://example.com", "http://169.254.169.254/"]}),
+    ("argument named destination", {"destination": "http://169.254.169.254/latest/meta-data/"}),
+    ("percent-encoded host", {"url": "http://169%2e254%2e169%2e254/latest/meta-data/"}),
+    ("percent-encoded host uppercase", {"url": "http://169%2E254%2E169%2E254/latest/"}),
+    ("percent-encoded host in a list", {"url": ["http://169%2e254%2e169%2e254/"]}),
 ]
 
 _BENIGN_ARGS = [
@@ -238,6 +245,9 @@ _BENIGN_ARGS = [
     ("prose mentioning imds", {"message": "The server returned 169.254.169.254"}),
     ("question about imds", {"query": "what is 169.254.169.254 used for"}),
     ("imds inside a longer url path", {"url": "https://docs.example.com/169.254.169.254"}),
+    ("list of plain urls", {"url": ["https://example.com", "https://api.github.com/"]}),
+    ("prose list mentioning imds", {"notes": ["see 169.254.169.254 docs"]}),
+    ("encoded imds in a query string", {"url": "https://example.com/?q=169%2e254%2e169%2e254"}),
 ]
 
 

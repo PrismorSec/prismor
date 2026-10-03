@@ -15,7 +15,7 @@ import sys
 import unicodedata
 from pathlib import Path
 from typing import Iterable, Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from prismor.runtime import perf as _perf
 from prismor.runtime.egress import EgressPolicy
@@ -3879,7 +3879,7 @@ def _extract_mcp_args(event: Dict[str, Any]) -> str:
     """
     payload = str(event.get("outbound_payload", ""))
     if payload:
-        return payload
+        return _with_normalized_mcp_args(payload)
     if not event.get("mcp_server"):
         return ""
     agent_event = str(event.get("agent_event", ""))
@@ -3890,7 +3890,41 @@ def _extract_mcp_args(event: Dict[str, Any]) -> str:
         or lower.startswith("before")
         or agent_event in {"UserPromptSubmit", "PermissionRequest"}
     )
-    return str(event.get("response", "")) if is_pre else ""
+    return _with_normalized_mcp_args(str(event.get("response", ""))) if is_pre else ""
+
+
+def _with_normalized_mcp_args(raw: str) -> str:
+    """``raw`` plus a ``"key": "value"`` line for each argument a rule would miss.
+
+    Argument rules match the serialized JSON with regexes shaped like
+    ``"url"\\s*:\\s*"<host>``, so two shapes slip past them (#471): a value
+    inside a list (``{"url": ["http://169.254.169.254/"]}``) and a
+    percent-encoded host (``169%2e254%2e169%2e254``), which RFC 3986 treats
+    as the same host. Each such string is re-emitted under its nearest key,
+    percent-decoded. The raw text stays first, so existing patterns see
+    exactly what they saw before.
+    """
+    try:
+        args = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+
+    extra: List[str] = []
+
+    def walk(node: Any, key: str, in_list: bool) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                walk(v, str(k), False)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, key, True)
+        elif isinstance(node, str) and key:
+            decoded = unquote(node)
+            if in_list or decoded != node:
+                extra.append(json.dumps(key) + ": " + json.dumps(decoded))
+
+    walk(args, "", False)
+    return "\n".join([raw] + extra) if extra else raw
 
 
 def _extract_domain(url: str) -> str:
