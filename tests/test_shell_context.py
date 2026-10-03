@@ -153,6 +153,30 @@ def test_double_quote_command_substitution_blocks_at_runtime(tmp_path, command):
     assert decision.verdict == "block"
 
 
+@pytest.mark.parametrize("command", [
+    'echo "chmod 777"; rm -rf /',
+    'echo "chmod 777" && rm -rf /',
+    'git commit -m "chmod 777"; rm -rf /',
+    'printf "%s" "chmod 777"; rm -rf /',
+])
+def test_harmless_prefix_on_same_line_blocks_at_runtime(tmp_path, command):
+    decision = evaluate_tool_call(
+        event={
+            "agent_event": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "type": "shell",
+            "command": command,
+        },
+        workspace=Path(tmp_path),
+        agent="claude",
+        mode="enforce",
+        persist=False,
+    )
+    assert decision.allow is False
+    assert decision.verdict == "block"
+
+
 # ── Heredoc bodies ──────────────────────────────────────────────────────────
 # A script typed inline and saved with ``cat > file <<EOF`` is data at that
 # moment; the same body fed to an interpreter, or written and run in the same

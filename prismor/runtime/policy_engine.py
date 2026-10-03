@@ -1772,13 +1772,24 @@ class PolicyEngine:
                                 _context_text, _m.start(), _m.end()
                             )
                     # Context is judged on the first raw match. In a multi-line
-                    # command that can be an inert heredoc body while a later
-                    # line performs the same action for real
-                    # (`cat > n.md <<'EOF' ... cat .env ... EOF` then `cat .env`),
-                    # so stay inert only when EVERY raw match is inert.
-                    if context_inert and "\n" in _context_text:
+                    # command (e.g. an inert heredoc body next to a real command)
+                    # or a compound command separated by semicolons on one line
+                    # (`echo 'chmod 777'; rm -rf /`), an earlier match can be
+                    # inert while a later one performs the action for real.
+                    # Stay inert only when EVERY raw match is inert.
+                    if context_inert:
+                        def _is_match_inert(m):
+                            if is_inert_match(_context_text, m.start(), m.end()):
+                                return True
+                            if (
+                                rule.id in _LOCAL_JURISDICTION_RULE_IDS
+                                and is_remote_payload(_context_text, m.start(), m.end())
+                            ):
+                                return True
+                            return False
+
                         context_inert = all(
-                            is_inert_match(_context_text, m.start(), m.end())
+                            _is_match_inert(m)
                             for m in rule.patterns.finditer(_context_text)
                         )
                 except Exception as exc:  # never let context checking drop a finding
