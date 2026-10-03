@@ -59,11 +59,19 @@ POPULAR_PACKAGES: Dict[str, List[str]] = {
 
 
 def _edit_distance(a: str, b: str) -> int:
-    """Compute Levenshtein distance between strings a and b."""
+    """Edit distance between a and b, counting a swap of two neighbours as one.
+
+    Plain Levenshtein scores a swapped pair as two edits, so ``reqeusts``
+    sat at distance 2 from ``requests`` and slipped under the distance-1
+    threshold for short names (#555). A swap is one keystroke slip, the
+    commonest typo there is, so it costs one edit here (optimal string
+    alignment distance).
+    """
     if len(a) < len(b):
         return _edit_distance(b, a)
     if len(b) == 0:
         return len(a)
+    prev2: List[int] = []
     prev = list(range(len(b) + 1))
     for i, ca in enumerate(a):
         curr = [i + 1]
@@ -71,8 +79,11 @@ def _edit_distance(a: str, b: str) -> int:
             insertions = prev[j + 1] + 1
             deletions = curr[j] + 1
             substitutions = prev[j] + (ca != cb)
-            curr.append(min(insertions, deletions, substitutions))
-        prev = curr
+            cost = min(insertions, deletions, substitutions)
+            if i and j and ca == b[j - 1] and a[i - 1] == cb:
+                cost = min(cost, prev2[j - 1] + 1)
+            curr.append(cost)
+        prev2, prev = prev, curr
     return prev[-1]
 
 

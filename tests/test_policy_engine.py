@@ -1355,6 +1355,19 @@ class TestSafeVersionRecommendation(unittest.TestCase):
         self.assertEqual(dep[0]["safe_version"], "4.17.21")
         self.assertIn("4.17.21", dep[0]["remediation"])
 
+    def test_lookalike_points_at_the_real_package(self):
+        # #555: `npm install expresss` was told "Use 0.0.0 instead" — a version
+        # of the squat. The fix is the package it imitates, not a version.
+        engine = PolicyEngine()
+        with self._mock_osv([]), self._mock_safe_version("0.0.0") as sv:
+            findings = engine.check_command("npm install expresss")
+        dep = [f for f in findings if f["ruleId"] == "pkg-install-vulnerable-version"]
+        self.assertTrue(dep, "a lookalike name must still produce a finding")
+        self.assertIn("express", dep[0]["remediation"])
+        self.assertNotIn("0.0.0", dep[0]["remediation"])
+        self.assertIsNone(dep[0]["safe_version"])
+        sv.assert_not_called()   # no registry lookup for the squat's versions
+
 
 class TestObserveAllFindings(unittest.TestCase):
     """Observe mode must emit every finding, not just the first."""

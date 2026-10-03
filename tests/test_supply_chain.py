@@ -238,6 +238,17 @@ class TestTyposquatDetection:
         assert check_typosquat("lodass", "npm") == "lodash"
         assert check_typosquat("requsts", "pypi") == "requests"
 
+    def test_swapped_letters_flagged(self):
+        """Two neighbouring letters swapped is one typo, not two (#555)."""
+        assert check_typosquat("reqeusts", "pypi") == "requests"
+        assert check_typosquat("reqeusts", "pip") == "requests"
+        assert check_typosquat("lodahs", "npm") == "lodash"
+        assert check_typosquat("exrpess", "npm") == "express"
+
+    def test_two_real_edits_still_not_flagged_on_short_names(self):
+        """Counting swaps as one edit must not loosen the threshold itself."""
+        assert check_typosquat("rxacd", "npm") is None   # two substitutions from react
+
     def test_unrelated_package_not_flagged(self):
         """Unrelated package name should not be flagged."""
         assert check_typosquat("my-custom-xyz-lib", "npm") is None

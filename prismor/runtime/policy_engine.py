@@ -2809,11 +2809,32 @@ class PolicyEngine:
         if top_signals:
             evidence += f": {top_signals}"
 
-        try:
-            from supplychain.scoring.safe_version import recommend_safe_version
-            _sv = recommend_safe_version(spec.name, ecosystem, exclude_version=spec.version)
-        except Exception:
-            _sv = None
+        # A lookalike name is the wrong package, not a bad version of the right
+        # one: "use <newest safe version> instead" would point the agent back at
+        # the squat (#555 — `npm install expresss` got "Use 0.0.0 instead").
+        # Name the package it imitates and skip the version lookup.
+        mimic = None
+        if any(s.id == "typosquat_suspect" for s in verdict.signals):
+            from supplychain.scoring.typosquat import check_typosquat
+            mimic = check_typosquat(spec.name, meta.ecosystem)
+
+        _sv = None
+        if mimic is None:
+            try:
+                from supplychain.scoring.safe_version import recommend_safe_version
+                _sv = recommend_safe_version(spec.name, ecosystem, exclude_version=spec.version)
+            except Exception:
+                _sv = None
+
+        if mimic:
+            remediation: Optional[str] = (
+                f"Did you mean '{mimic}'? '{spec.name}' looks like a lookalike of it; "
+                f"install {mimic} instead"
+            )
+        elif _sv:
+            remediation = f"Use {_sv.version} instead ({_sv.reason})"
+        else:
+            remediation = None
 
         finding_id = f"pkg-install-vulnerable-version-{index}-{spec.name}"
         prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2830,7 +2851,7 @@ class PolicyEngine:
             "ruleId": "pkg-install-vulnerable-version",
             "action": "block" if verdict.verdict == "block" else "warn",
             "safe_version": _sv.version if _sv else None,
-            "remediation": f"Use {_sv.version} instead ({_sv.reason})" if _sv else None,
+            "remediation": remediation,
             # Same default as every other dependency_risk rule: no per-rule
             # override exists here, so inherit the device override (if any)
             # or the policy's default_mode, exactly as a YAML rule without an
