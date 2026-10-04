@@ -513,8 +513,10 @@ JSON-RPC error (`-32001`). Managed model endpoints work too: an upstream can
 authenticate with `aws-sigv4` (Bedrock), `gcp-oauth` (Vertex), or an `api-key`
 header (Azure OpenAI). Bedrock's `invoke-with-response-stream` is signed and
 forwarded but **not screened**, so use buffered `invoke` where policy must hold
-on the response. Deep dives:
-[`docs/llm-proxy.md`](./docs/llm-proxy.md), [`docs/n8n.md`](./docs/n8n.md), and
+on the response. ElevenLabs voice agents have their own wiring command:
+`prismor elevenlabs connect --all --proxy-url https://…`. Deep dives:
+[`docs/llm-proxy.md`](./docs/llm-proxy.md), [`docs/n8n.md`](./docs/n8n.md),
+[`docs/elevenlabs.md`](./docs/elevenlabs.md), and
 [`docs/deploy-docker.md`](./docs/deploy-docker.md) for running it as a service.
 
 ### Egress control
@@ -681,6 +683,7 @@ and `prismor docs <page>` (e.g. `prismor docs llm-proxy`) prints one.
 - [`docs/tool-tags.md`](./docs/tool-tags.md): tag-rule expression language, capability tiers, MCP `_meta` auto-tagging
 - [`docs/inference-hook.md`](./docs/inference-hook.md): Prismor as a Claude Enterprise AI security server
 - [`docs/n8n.md`](./docs/n8n.md): putting an n8n agent behind the proxy
+- [`docs/elevenlabs.md`](./docs/elevenlabs.md): putting ElevenLabs voice agents behind the proxy (`prismor elevenlabs`)
 
 **Capabilities**
 - [`docs/prismor-runtime.md`](./docs/prismor-runtime.md): policy engine, session logs, audit

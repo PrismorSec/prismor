@@ -322,6 +322,16 @@ Every turn is then screened, and a tool the model proposes is judged before n8n
 executes it. Bind beyond loopback only on a trusted network, or put TLS in
 front.
 
+## Governing ElevenLabs voice agents
+
+ElevenLabs agents take a **Custom LLM** URL, so the same lever works from
+ElevenLabs' cloud — over a public https URL rather than a container network.
+`prismor elevenlabs connect --all --proxy-url https://…` does the wiring,
+including two settings that matter for voice: it turns off the backup LLM
+(which would otherwise answer without the proxy whenever it errors) and asks
+for spoken refusals, so a blocked turn is a sentence the caller hears rather
+than a rule id read aloud. Walkthrough: [elevenlabs.md](elevenlabs.md).
+
 ## Running it as a service
 
 It is a long-lived server, so it wants a supervisor, a volume for

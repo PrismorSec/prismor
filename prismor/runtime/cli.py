@@ -2889,6 +2889,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime import mirror_cli
         sys.exit(mirror_cli.run(args, workspace))
 
+    if args.command == "elevenlabs":
+        from prismor.runtime import elevenlabs_cli
+        sys.exit(elevenlabs_cli.run(args))
+
     if args.command == "egress":
         from prismor.runtime import egress_cli
 
@@ -3409,6 +3413,38 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Stable session id (default: fresh per process). Env: PRISMOR_SESSION_ID")
     _pp.add_argument("--agent-name", dest="agent_name", default="",
                      help="Per-instance agent name (enables the console kill-switch and per-agent policy)")
+
+    # ── elevenlabs: route ElevenLabs voice agents through the proxy ──────
+    _elp = subparsers.add_parser(
+        "elevenlabs",
+        help="Route ElevenLabs voice agents through `prismor proxy` — status/connect/disconnect",
+        description="ElevenLabs agents run in ElevenLabs' cloud, so the lever is their Custom LLM "
+        "setting. `connect` mints a per-agent virtual key, stores it as an ElevenLabs workspace "
+        "secret, points the agent at the proxy, threads each call into one Prismor session, and "
+        "disables the backup LLM that would otherwise route around policy. `disconnect` restores "
+        "exactly what was replaced. Reads ELEVENLABS_API_KEY.",
+    )
+    _el_sub = _elp.add_subparsers(dest="el_command")
+    _el_sub.add_parser("status", help="Every agent: its LLM, whether Prismor governs it, backup LLM")
+    _el_con = _el_sub.add_parser("connect", help="Route agents through the proxy")
+    _el_con.add_argument("agent_ids", nargs="*", help="ElevenLabs agent ids")
+    _el_con.add_argument("--all", action="store_true", help="Every agent in the workspace")
+    _el_con.add_argument("--proxy-url", dest="proxy_url", default="",
+                         help="Public https URL of `prismor proxy` (env: PRISMOR_PROXY_PUBLIC_URL)")
+    _el_con.add_argument("--model", default="",
+                         help="Upstream model id (default: the agent's own if it is an OpenAI "
+                              "model, else gpt-4o-mini)")
+    _el_con.add_argument("--upstream", default="openai",
+                         help="proxy.json upstream the virtual key routes to (default: openai)")
+    _el_con.add_argument("--config", default=None,
+                         help="proxy.json to write virtual keys into (default: $PRISMOR_HOME/proxy.json)")
+    _el_con.add_argument("--keep-backup-llm", dest="keep_backup_llm", action="store_true",
+                         help="Leave ElevenLabs' backup LLM on (turns it serves bypass Prismor)")
+    _el_dis = _el_sub.add_parser("disconnect", help="Restore agents' original LLM settings")
+    _el_dis.add_argument("agent_ids", nargs="*", help="ElevenLabs agent ids")
+    _el_dis.add_argument("--all", action="store_true", help="Every agent prismor connected")
+    _el_dis.add_argument("--config", default=None,
+                         help="proxy.json the virtual keys were written to")
 
     # ── surfaces: which enforcement surfaces are governing this machine ──
     subparsers.add_parser(

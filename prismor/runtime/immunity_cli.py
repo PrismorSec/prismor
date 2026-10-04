@@ -202,7 +202,7 @@ _HELP_GROUPS = [
     ("Policy & scoping",     ["policy", "tags", "scope", "iam", "egress", "agents", "learn"]),
     ("Secrets",              ["cloak", "sweep", "canary"]),
     ("Scanning & audit",     ["audit", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
-    ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy",
+    ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy", "elevenlabs",
                               "sandbox", "inference-hook", "eval-server"]),
     ("Sessions & evidence",  ["sessions", "session", "analyze", "ingest", "tokens", "trail", "attest", "query"]),
     ("Org enrollment",       ["enroll", "enroll-status", "workspace", "exempt", "logout"]),

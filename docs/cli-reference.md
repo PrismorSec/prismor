@@ -353,6 +353,14 @@ outside all of this, the same as every other Prismor control.
 |---|---|---|
 | `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode <observe\|enforce>`, `--workspace`, `--config`, `--session-id`, `--agent-name` | The LLM lane: sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so an agent Prismor cannot hook is still governed. Point the client at it with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `genai.Client(http_options=types.HttpOptions(base_url=...))` — nothing else about the agent changes. The outbound prompt is screened and cloak-masked; every proposed tool call (`tool_use` / `tool_calls` / `functionCall`) is reshaped into the event a `Bash` hook produces and run through the same policy; streamed tool calls are held until they can be judged. See [LLM proxy](llm-proxy.md). |
 
+### elevenlabs
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor elevenlabs status` | — | Every agent in the ElevenLabs workspace: its LLM, whether `prismor proxy` governs it, and whether a backup LLM could route around it. Reads `ELEVENLABS_API_KEY`. |
+| `prismor elevenlabs connect` | `<agent_id>…` or `--all`, `--proxy-url` (public https; env `PRISMOR_PROXY_PUBLIC_URL`), `--model`, `--upstream` (default `openai`), `--config`, `--keep-backup-llm` | Point agents' Custom LLM at the proxy with a per-agent virtual key (stored as an ElevenLabs workspace secret), disable the backup LLM, and thread each call into one Prismor session. Re-run with a new URL to re-point. Restart the proxy afterwards. See [ElevenLabs](elevenlabs.md). |
+| `prismor elevenlabs disconnect` | `<agent_id>…` or `--all`, `--config` | Restore the LLM settings `connect` replaced, delete the secret, drop the virtual key. |
+
 ### inference-hook
 
 | Command | Key flags | Description |

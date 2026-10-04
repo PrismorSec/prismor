@@ -972,7 +972,17 @@ def gcp_access_token() -> str:
 
 # ── refusals, in each provider's own error shape ─────────────────────────────
 
-def refusal_reason(blocking: Dict[str, Any]) -> str:
+#: What a voice agent says instead of reading out a rule id. Opted into per
+#: request with ``X-Prismor-Refusal: spoken``: the refusal text is the agent's
+#: next utterance, and "Blocked by Prismor [remote-execution]" spoken aloud to a
+#: caller is an error message, not an answer. The rule still lands in the trail.
+SPOKEN_REFUSAL = ("Sorry, I can't do that. It's blocked by our security policy. "
+                  "Is there something else I can help with?")
+
+
+def refusal_reason(blocking: Dict[str, Any], spoken: bool = False) -> str:
+    if spoken:
+        return SPOKEN_REFUSAL
     rule = blocking.get("ruleId") or blocking.get("rule_id") or "policy"
     detail = blocking.get("message") or blocking.get("reason") or "blocked by policy"
     return f"Blocked by Prismor [{rule}]: {detail}"
@@ -1033,11 +1043,13 @@ class StreamScreen:
     """
 
     def __init__(self, screen: Screen, provider: str, model: str,
-                 subject: Optional[str], session_id: str = "") -> None:
+                 subject: Optional[str], session_id: str = "",
+                 spoken: bool = False) -> None:
         self.screen = screen
         self.provider = provider
         self.model = model
         self.subject = subject
+        self.spoken = spoken
         # The request's conversation, so a streamed tool call lands in the
         # same session as the prompt that produced it.
         self.session_id = session_id or screen.session_id
@@ -1166,7 +1178,6 @@ class StreamScreen:
             if reason is None:
                 continue
             self.blocked.append(reason)
-            sys.stderr.write(f"[prismor-proxy] {reason} (tool={tool_name})\n")
             return _sse_text_frames("google", reason)
         return chunk
 
@@ -1283,7 +1294,6 @@ class StreamScreen:
                     return held
                 self.blocked.append(reason)
                 self._denied[self._tool_name] = reason
-                sys.stderr.write(f"[prismor-proxy] {reason} (tool={self._tool_name})\n")
                 return _responses_refusal_frames(reason, self._tool_index)
             return b""
 
@@ -1303,10 +1313,16 @@ class StreamScreen:
             decision = self.screen.evaluate(event, self.subject)
         except Exception:
             # enforce-mode engine failure: the call never ships.
-            return "Blocked by Prismor: policy evaluation failed (fail-closed)"
+            reason = "Blocked by Prismor: policy evaluation failed (fail-closed)"
+            sys.stderr.write(f"[prismor-proxy] {reason} (tool={tool_name})\n")
+            return reason
         self.screen.log(decision, tool_name)
         blocking = self.screen.blocking(decision)
-        return None if blocking is None else refusal_reason(blocking)
+        if blocking is None:
+            return None
+        # Logged here, with the rule, even when the caller hears the spoken line.
+        sys.stderr.write(f"[prismor-proxy] {refusal_reason(blocking)} (tool={tool_name})\n")
+        return refusal_reason(blocking, self.spoken)
 
     def _judge_openai(self) -> bytes:
         """Judge each held chat/completions call; drop only the denied ones."""
@@ -1322,7 +1338,6 @@ class StreamScreen:
                 continue
             refusals.append(reason)
             self.blocked.append(reason)
-            sys.stderr.write(f"[prismor-proxy] {reason} (tool={call['name']})\n")
         if not refusals:
             return held
         delta: Dict[str, Any] = {"role": "assistant", "content": "\n".join(refusals)}
@@ -1349,7 +1364,6 @@ class StreamScreen:
             self._released = True
             return held
         self.blocked.append(reason)
-        sys.stderr.write(f"[prismor-proxy] {reason} (tool={self._tool_name})\n")
         return _sse_text_frames(self.provider, reason, self._tool_index)
 
 
@@ -1514,6 +1528,38 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _say(self, model: str, message: str, streaming: bool) -> None:
+        """Answer a refused chat/completions turn as the assistant, at 200.
+
+        A voice platform treats a 403 from its LLM as an outage: it drops the
+        call or, worse, retries on a backup model Prismor never sees. Spoken
+        mode keeps the turn alive and lets the agent say no out loud instead.
+        """
+        meta = {"id": f"chatcmpl-prismor-{int(time.time() * 1000)}",
+                "created": int(time.time()), "model": model or "prismor"}
+        if streaming:
+            frames = [
+                {**meta, "object": "chat.completion.chunk",
+                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": message},
+                              "finish_reason": None}]},
+                {**meta, "object": "chat.completion.chunk",
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+            ]
+            body = b"".join(f"data: {json.dumps(f)}\n\n".encode() for f in frames)
+            body += b"data: [DONE]\n\n"
+            ctype = "text/event-stream"
+        else:
+            body = json.dumps({**meta, "object": "chat.completion", "choices": [
+                {"index": 0, "finish_reason": "stop",
+                 "message": {"role": "assistant", "content": message}}]}).encode()
+            ctype = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Prismor-Blocked", "1")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _provider(self) -> str:
         path = urlsplit(self.path).path
         for prefix, provider in PROVIDER_ROUTES:
@@ -1571,6 +1617,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
+        self._spoken = (self.headers.get("x-prismor-refusal") or "").strip().lower() == "spoken"
 
         screened = body is not None and (
             (a2a and a2a_method(body) in A2A_SCREENED_METHODS)
@@ -1597,7 +1644,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if screened and self.screen is not None:
             refusal = self._screen_request(provider, model, body, subject)
             if refusal:
-                self._refuse(provider, refusal)
+                if self._spoken and provider == "openai":
+                    self._say(model, refusal, streaming)
+                else:
+                    self._refuse(provider, refusal)
                 return
             raw_body = json.dumps(body).encode()
 
@@ -1651,9 +1701,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.screen.log(decision, "llm_request")
         blocking = self.screen.blocking(decision)
         if blocking is not None:
-            reason = refusal_reason(blocking)
-            sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return reason
+            sys.stderr.write(f"[prismor-proxy] {refusal_reason(blocking)}\n")
+            return refusal_reason(blocking, getattr(self, "_spoken", False))
         _mask_in_place(body, self.screen.redact)
         return None
 
@@ -1802,7 +1851,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.screen.log(decision, tool_name)
             blocking = self.screen.blocking(decision)
             if blocking is not None:
-                blocked[tool_name] = refusal_reason(blocking)
+                blocked[tool_name] = refusal_reason(blocking, getattr(self, "_spoken", False))
                 sys.stderr.write(
                     f"[prismor-proxy] {blocked[tool_name]} (tool={tool_name})\n")
         if blocked:
@@ -1830,7 +1879,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         stream = StreamScreen(self.screen, provider, model, subject,
-                              getattr(self, "_session_id", ""))
+                              getattr(self, "_session_id", ""),
+                              spoken=getattr(self, "_spoken", False))
         try:
             for frame in _sse_frames(resp):
                 out = stream.feed(frame)

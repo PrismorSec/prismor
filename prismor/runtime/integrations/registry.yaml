@@ -670,6 +670,19 @@ agents:
     notes: "AI security server for Claude Enterprise Inference hooks (prismor inference-hook serve --port 7072). Anthropic POSTs a signed prompt frame per governed request; Prismor fans the transcript into canonical events, runs the policy pipeline and returns {action: allow|deny}. Covers web, desktop and CLI with nothing installed on user devices."
     sources: ["https://platform.claude.com/docs/en/manage-claude/inference-hooks", "https://platform.claude.com/docs/en/manage-claude/inference-hooks-endpoint"]
 
+  # ── Hosted voice agents — routed through the LLM proxy ───────────────────
+  - id: elevenlabs
+    name: ElevenLabs Agents (voice)
+    kind: framework
+    surface: http
+    status: shipped
+    config_paths: {}
+    events: [prompt, tool_call]
+    blocking: proxy-deny
+    normalizer: prismor.runtime.proxy
+    notes: "Agents run in ElevenLabs' cloud; `prismor elevenlabs connect` points each agent's Custom LLM at `prismor proxy` with a per-agent virtual key, disables the backup LLM (a fail-open path around the proxy), threads each call into one session via X-Prismor-Session = system__conversation_id, and asks for spoken refusals. Webhook, client, MCP and system tools are all proposed by the model, so all are judged before ElevenLabs runs them. Verified live 2026-10-04 (websocket conversations, gpt-4o-mini upstream)."
+    sources: ["https://elevenlabs.io/docs/agents-platform/customization/llm/custom-llm"]
+
   # ── Multiplexers — pass-through, no dedicated adapter ────────────────────
   - id: herdr
     name: Herdr
