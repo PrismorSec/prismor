@@ -16,7 +16,8 @@ caller ──voice──▶ ElevenLabs agent ──every turn──▶ prismor p
 ```
 
 This walkthrough takes about ten minutes. Every output shown below is from a
-real run against a live ElevenLabs workspace, trimmed for width.
+real run against a live ElevenLabs workspace on `gpt-5.6-luna`, trimmed
+for width.
 
 ## What you get
 
@@ -73,9 +74,9 @@ agent_7401m437vqj4e9v8gmcwa8ahckb2     Acme Support                       gpt-4o
 
 ```console
 $ prismor elevenlabs connect --all --proxy-url https://prismor.example.com
-  + Acme Billing (agent_8701…) -> https://prismor.example.com/v1  model=gpt-4o-mini  backup LLM off
-  + Acme Ops (agent_1701…) -> https://prismor.example.com/v1  model=gpt-4o-mini  backup LLM off
-  + Acme Support (agent_7401…) -> https://prismor.example.com/v1  model=gpt-4o-mini  backup LLM off
+  + Acme Billing (agent_8701…) -> https://prismor.example.com/v1  model=gpt-5.6-luna  backup LLM off
+  + Acme Ops (agent_1701…) -> https://prismor.example.com/v1  model=gpt-5.6-luna  backup LLM off
+  + Acme Support (agent_7401…) -> https://prismor.example.com/v1  model=gpt-5.6-luna  backup LLM off
 
 Virtual keys written to ~/.prismor/proxy.json. The proxy reads it once at startup:
 restart `prismor proxy --mode enforce --config ~/.prismor/proxy.json` before the next call.
@@ -87,15 +88,22 @@ For each agent this:
    `elevenlabs:<agent name>`, so the trail says which agent made each call;
 2. stores that key as an ElevenLabs **workspace secret**, so the agent
    config references it by id and never contains it;
-3. sets **LLM → Custom LLM** with the proxy URL, keeping the agent's model if
-   it is an OpenAI model and using `gpt-4o-mini` otherwise (`--model` to choose);
-4. adds two request headers ElevenLabs resolves per call:
+3. sets **LLM → Custom LLM** with the proxy URL on `gpt-5.6-luna`
+   (`--model` to choose another);
+4. tells the proxy how to adapt ElevenLabs' requests for that model. ElevenLabs
+   sends `max_tokens` and `temperature: 0` on every turn. GPT-5-era models
+   refuse both, and they refuse function tools on chat completions unless
+   reasoning is off. The key gets a `body` rule that renames `max_tokens` to
+   `max_completion_tokens`, drops `temperature` and sets
+   `reasoning_effort: none`. Without the rule, every turn of a luna agent fails
+   at OpenAI. With it, the agent also skips a thinking pause before it speaks;
+5. adds two request headers ElevenLabs resolves per call:
    `X-Prismor-Session = system__conversation_id` and `X-Prismor-Refusal = spoken`;
-5. sets **backup LLM → disabled**. By default ElevenLabs falls back to its own
+6. sets **backup LLM → disabled**. By default ElevenLabs falls back to its own
    models when the custom LLM errors or is slow, and those turns never reach
    Prismor. Pass `--keep-backup-llm` only if you'd rather keep the call alive
    than keep it governed;
-6. saves the original LLM settings to `~/.prismor/elevenlabs.json` for
+7. saves the original LLM settings to `~/.prismor/elevenlabs.json` for
    `disconnect`.
 
 The agent's prompt, voice, tools and knowledge base are left alone. Pick
@@ -113,9 +121,9 @@ $ prismor proxy --mode observe --agent-name elevenlabs-agents
 ```console
 $ prismor elevenlabs status
 AGENT                                  NAME                               LLM              PRISMOR   BACKUP LLM
-agent_8701m438aap5frtv5qzv6fhzsgek     Acme Billing                       gpt-4o-mini      yes       disabled
-agent_1701m437vsasf4han11a1wb66y0q     Acme Ops                           gpt-4o-mini      yes       disabled
-agent_7401m437vqj4e9v8gmcwa8ahckb2     Acme Support                       gpt-4o-mini      yes       disabled
+agent_8701m438aap5frtv5qzv6fhzsgek     Acme Billing                       gpt-5.6-luna     yes       disabled
+agent_1701m437vsasf4han11a1wb66y0q     Acme Ops                           gpt-5.6-luna     yes       disabled
+agent_7401m437vqj4e9v8gmcwa8ahckb2     Acme Support                       gpt-5.6-luna     yes       disabled
 ```
 
 ## 4. Make a call
@@ -128,7 +136,7 @@ Ordinary calls don't change. The support agent looks up an order through its
  agent: Hi, this is Acme support. How can I help?
   user: What is the status of order A1001?
         -> tool lookup_order (webhook)
- agent: Your order A one thousand one has shipped and is expected to arrive on Tuesday.
+ agent: Your order has shipped and is expected to arrive Tuesday.
 ```
 
 Switch the proxy to `--mode enforce` and call the ops agent, which has a
@@ -267,6 +275,7 @@ Not covered:
 | Agent speaks its greeting, then goes silent | ElevenLabs can't reach the proxy URL (tunnel down or hostname rotated) | `curl https://<url>/health` from outside, then `prismor elevenlabs connect --all --proxy-url <new url>` to re-point (keys are reused) |
 | Every turn fails after `connect` | proxy wasn't restarted, so it doesn't know the new keys (`401`) | restart it and check the banner reads `virtual keys: N` |
 | `status` says `stale` | the agent was changed in the ElevenLabs UI after `connect` | run `connect` again |
+| Agent greets, then never answers, and the tunnel is fine | OpenAI rejected the turn: the key has no `body` rule for its model (for example, an older `connect`, or a key added by hand) | run `connect` again and restart the proxy; the rule is added for GPT-5/6 and o-series models |
 | Kill switch or `deny_tools` does nothing | `agents set` ran in another directory and wrote that workspace's `agents.yaml` | run it from `~/.prismor/surfaces/proxy` |
 | Caller hears "Blocked by Prismor [rule]…" | the agent was wired by hand without `X-Prismor-Refusal: spoken` | run `connect`, or add the header under Custom LLM → request headers |
 

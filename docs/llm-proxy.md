@@ -263,6 +263,29 @@ re-plumb credentials first.
 The real credential is read from the environment variable named by
 `api_key_env`. Never put a provider key in this file.
 
+### Adapting a client you can't change
+
+A hosted client sends a fixed request shape that the model may refuse. A key's
+optional `body` rule rewrites the request after screening and before it goes
+upstream, so policy still judges what the client sent:
+
+```json
+"pk_el_…": {
+  "subject": "elevenlabs:Acme Support", "upstream": "openai",
+  "body": {
+    "rename": {"max_tokens": "max_completion_tokens"},
+    "drop": ["temperature"],
+    "set": {"reasoning_effort": "none"}
+  }
+}
+```
+
+`rename` moves a field (keeping an existing target), `drop` removes one, and
+`set` overwrites. `prismor elevenlabs connect` writes this rule for GPT-5-era
+models: ElevenLabs always sends `max_tokens` and `temperature: 0`, and
+`gpt-5.6-luna` refuses both, along with function tools on chat completions
+unless reasoning is off.
+
 ### Local OpenAI-compatible backends
 
 Ollama, vLLM, LM Studio, LocalAI and similar servers use the OpenAI-compatible

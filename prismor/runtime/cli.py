@@ -3432,8 +3432,7 @@ def build_parser() -> argparse.ArgumentParser:
     _el_con.add_argument("--proxy-url", dest="proxy_url", default="",
                          help="Public https URL of `prismor proxy` (env: PRISMOR_PROXY_PUBLIC_URL)")
     _el_con.add_argument("--model", default="",
-                         help="Upstream model id (default: the agent's own if it is an OpenAI "
-                              "model, else gpt-4o-mini)")
+                         help="Upstream model id (default: gpt-5.6-luna)")
     _el_con.add_argument("--upstream", default="openai",
                          help="proxy.json upstream the virtual key routes to (default: openai)")
     _el_con.add_argument("--config", default=None,

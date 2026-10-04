@@ -158,12 +158,29 @@ def _llm_url(proxy_url: str) -> str:
     return base if base.endswith("/v1") else base + "/v1"
 
 
-def _pick_model(prompt: Dict[str, Any], requested: str) -> str:
-    """Keep the agent's own model when the upstream can serve it."""
-    if requested:
-        return requested
-    current = str(prompt.get("llm") or "")
-    return current if current.startswith(("gpt-", "o1", "o3", "o4")) else "gpt-4o-mini"
+#: The model a connected agent runs on unless ``--model`` says otherwise.
+DEFAULT_MODEL = "gpt-5.6-luna"
+
+
+def body_rules(model: str) -> Dict[str, Any]:
+    """Request fixes the proxy applies for this agent's virtual key.
+
+    ElevenLabs sends ``max_tokens`` and ``temperature: 0`` on every turn. The
+    GPT-5-era and o-series models refuse both -- they take
+    ``max_completion_tokens`` and only the default temperature -- so without
+    this every turn of a gpt-5.6-luna agent fails at OpenAI with a 400.
+
+    GPT-5/6 also refuse function tools on chat/completions unless
+    ``reasoning_effort`` is ``none``, and every agent with a tool sends them.
+    ``none`` is what a voice turn wants anyway: no thinking pause before the
+    agent speaks.
+    """
+    if model.startswith(("gpt-5", "gpt-6")):
+        return {"rename": {"max_tokens": "max_completion_tokens"}, "drop": ["temperature"],
+                "set": {"reasoning_effort": "none"}}
+    if model.startswith(("o1", "o3", "o4")):
+        return {"rename": {"max_tokens": "max_completion_tokens"}, "drop": ["temperature"]}
+    return {}
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
@@ -202,20 +219,25 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
     proxy_cfg.setdefault("keys", {})
     state = _load_json(state_path())
     state.setdefault("agents", {})
-    new_keys = 0
+    restart = False
 
     for aid in agent_ids:
         agent = client.agent(aid)
         name = agent.get("name") or aid
         prompt = _prompt(agent)
-        if aid in state["agents"] and _governed_by(prompt, proxy_url):
-            print(f"  = {name} ({aid}) already routed through {proxy_url}")
+        model_id = model or DEFAULT_MODEL
+        key_meta: Dict[str, Any] = {"subject": f"elevenlabs:{name}", "upstream": upstream}
+        if body_rules(model_id):
+            key_meta["body"] = body_rules(model_id)
+        if (aid in state["agents"] and _governed_by(prompt, proxy_url)
+                and (prompt.get("custom_llm") or {}).get("model_id") == model_id
+                and proxy_cfg["keys"].get(state["agents"][aid]["virtual_key"]) == key_meta):
+            print(f"  = {name} ({aid}) already routed through {proxy_url} on {model_id}")
             continue
         if aid in state["agents"]:
             # Re-pointing (new tunnel URL): keep the first-saved originals, reuse the key.
             entry = state["agents"][aid]
         else:
-            new_keys += 1
             vkey = "pk_el_" + secrets.token_hex(16)
             entry = {
                 "name": name,
@@ -227,15 +249,16 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
                     "backup_llm_config": prompt.get("backup_llm_config"),
                 },
             }
-        proxy_cfg["keys"][entry["virtual_key"]] = {
-            "subject": f"elevenlabs:{name}", "upstream": upstream}
+        if proxy_cfg["keys"].get(entry["virtual_key"]) != key_meta:
+            restart = True
+        proxy_cfg["keys"][entry["virtual_key"]] = key_meta
         _write_private(config_path, proxy_cfg)
 
         patch: Dict[str, Any] = {
             "llm": "custom-llm",
             "custom_llm": {
                 "url": _llm_url(proxy_url),
-                "model_id": _pick_model({"llm": entry["original"]["llm"]}, model),
+                "model_id": model_id,
                 "api_key": {"secret_id": entry["secret_id"]},
                 "request_headers": SESSION_HEADER,
                 "api_type": "chat_completions",
@@ -251,7 +274,7 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
         print(f"  + {name} ({aid}) -> {_llm_url(proxy_url)}  model={patch['custom_llm']['model_id']}"
               f"{'' if keep_backup else '  backup LLM off'}")
 
-    if new_keys:
+    if restart:
         print(f"\nVirtual keys written to {config_path}. The proxy reads it once at startup:")
         print(f"restart `prismor proxy --mode enforce --config {config_path}` before the next call.")
     return 0

@@ -970,6 +970,28 @@ def gcp_access_token() -> str:
         return token
 
 
+# ── per-key request fixes ────────────────────────────────────────────────────
+
+def apply_body_rules(body: Dict[str, Any], rules: Dict[str, Any]) -> Dict[str, Any]:
+    """Adapt a request the client cannot change to what the upstream accepts.
+
+    A hosted platform sends a fixed request shape: ElevenLabs puts
+    ``max_tokens`` and ``temperature: 0`` on every turn, and the GPT-5-era
+    models refuse both (``max_completion_tokens`` only; default temperature
+    only). A virtual key's ``"body": {"rename": {...}, "drop": [...],
+    "set": {...}}`` fixes that at the proxy. Applied after screening, so policy
+    judges what the client sent.
+    """
+    for old, new in (rules.get("rename") or {}).items():
+        if old in body:
+            value = body.pop(old)
+            body.setdefault(new, value)
+    for key in rules.get("drop") or []:
+        body.pop(key, None)
+    body.update(rules.get("set") or {})
+    return body
+
+
 # ── refusals, in each provider's own error shape ─────────────────────────────
 
 #: What a voice agent says instead of reading out a rule id. Opted into per
@@ -1599,6 +1621,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         meta = self.config.resolve_key(presented) if presented else None
         if meta is None:
             return None, None, "unknown or revoked Prismor key"
+        self._key_meta = meta
         return meta.get("subject"), meta.get("upstream"), None
 
     # -- the request path ------------------------------------------------
@@ -1613,6 +1636,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # in the body is what marks it, so the lane is chosen per request.
             provider = "a2a"
             self._a2a_id = body.get("id")
+        self._key_meta: Dict[str, Any] = {}
         subject, upstream_override, auth_error = self._auth()
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
@@ -1650,6 +1674,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self._refuse(provider, refusal)
                 return
             raw_body = json.dumps(body).encode()
+        if body is not None and isinstance(self._key_meta.get("body"), dict):
+            raw_body = json.dumps(apply_body_rules(body, self._key_meta["body"])).encode()
 
         name = upstream_override or provider
         try:
