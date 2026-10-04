@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -66,6 +68,19 @@ class FakeUpstream(Upstream):
 
     def notify(self, method, params):
         self.requests.append((method, params))
+
+
+class SlowUpstream(FakeUpstream):
+    """Handshake blocks until ``up`` is set — a cold ``npx -y`` install."""
+
+    def __init__(self, spec, **kwargs):
+        super().__init__(spec, **kwargs)
+        self.up = threading.Event()
+
+    def initialize(self, client_params, timeout=30.0):
+        if not self.up.wait(timeout):
+            raise UpstreamError(f"MCP server '{self.spec.name}' timed out on initialize")
+        return super().initialize(client_params, timeout)
 
 
 def make_gateway(tmp_path, monkeypatch, upstreams, mode="enforce", namespace="plain"):
@@ -339,6 +354,69 @@ def test_list_changed_invalidates_routes_and_reemits(tmp_path, monkeypatch):
     handler("notifications/tools/list_changed", {})
     assert gateway._routes == {}
     assert sent[-1]["method"] == "notifications/tools/list_changed"
+
+
+# ── slow upstream handshake (#559) ───────────────────────────────────────────
+
+INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-03-26", "clientInfo": {"name": "pytest"}}}
+
+
+def _wait_for(pred, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not pred():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.01)
+
+
+def test_initialize_replies_before_a_slow_upstream_is_up(tmp_path, monkeypatch):
+    slow = SlowUpstream(UpstreamSpec(name="fs", command=["npx", "-y", "x"]))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [slow])
+    gateway._dispatch(INIT)
+    assert sent[-1]["id"] == 1 and sent[-1]["result"]["serverInfo"]["name"] == "prismor-gateway"
+    assert ("initialize", INIT["params"]) not in slow.requests
+    slow.up.set()
+    _wait_for(lambda: ("notifications/initialized", {}) in slow.requests)
+
+
+def test_tools_list_waits_for_a_slow_upstream_handshake(tmp_path, monkeypatch):
+    slow = SlowUpstream(UpstreamSpec(name="fs", command=["npx", "-y", "x"]))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [slow])
+    gateway._dispatch(INIT)
+    threading.Timer(0.2, slow.up.set).start()
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"fs__echo"}
+    # The handshake completed before tools/list went out, in order.
+    assert [m for m, _ in slow.requests] == ["initialize", "notifications/initialized", "tools/list"]
+    assert not any(m.get("method") == "notifications/tools/list_changed" for m in sent)
+
+
+def test_late_upstream_is_announced_via_list_changed(tmp_path, monkeypatch):
+    monkeypatch.setattr(gw_mod, "REQUEST_TIMEOUT", 0.05)
+    slow = SlowUpstream(UpstreamSpec(name="fs", command=["npx", "-y", "x"]))
+    fast = stub("a")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [slow, fast])
+    gateway._dispatch(INIT)
+    # Still starting after the wait: listed without it, not as 0 tools.
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
+    assert "a__echo" in gateway._routes
+    assert not any(m == "tools/list" for m, _ in slow.requests)
+    slow.up.set()
+    _wait_for(lambda: any(m.get("method") == "notifications/tools/list_changed" for m in sent))
+    assert "a__echo" in gateway._routes          # the earlier list stays valid
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo", "fs__echo"}
+    # Announced once, on the handshake — not again on later lists.
+    assert sum(m.get("method") == "notifications/tools/list_changed" for m in sent) == 1
+
+
+def test_failed_upstream_handshake_does_not_stall_tools_list(tmp_path, monkeypatch):
+    dead = FakeUpstream(UpstreamSpec(name="dead", command=["false"]),
+                        fail=UpstreamError("exited"))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [dead, stub("a")])
+    gateway._dispatch(INIT)
+    started = time.monotonic()
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
+    assert time.monotonic() - started < 5
+    assert not any(m.get("method") == "notifications/tools/list_changed" for m in sent)
 
 
 # ── real stdio transport against the demo server ─────────────────────────────

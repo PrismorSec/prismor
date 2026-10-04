@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Fixed
+- **`prismor mcp-gateway` answered the client's first `tools/list` with 0 tools while an `npx` upstream was still starting** (#559). Each upstream's `initialize` was awaited in turn with a 30-second limit, so a cold `npx -y` install was given up on and the tool list came back empty; a client that lists once at startup then had no tools for the session. Upstreams are now initialized concurrently with a 120-second limit, `tools/list` waits for any still in their handshake, and one that is still starting after 30 seconds is announced with `notifications/tools/list_changed` once it is up, so the client re-lists and sees it.
+
 ## [1.55.3] — 2026-09-28
 
 ### Fixed

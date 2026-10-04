@@ -309,5 +309,10 @@ Local gateway vs hosted instance:
   with `0600` permissions and Prismor never logs config values.
 - Aggregation is tools-only: resources/prompts from downstream servers are
   not advertised in v1.
+- Upstreams are started concurrently and may take up to 120s to answer
+  `initialize` (a cold `npx -y` install). `tools/list` waits up to 30s for
+  servers still in their handshake; one that is still starting after that is
+  left out of the answer and announced with `notifications/tools/list_changed`
+  once it is up, so a client that lists once at startup re-lists and sees it.
 - If policy evaluation itself fails in enforce mode, the call is **denied**
   (fail-closed), never silently allowed.

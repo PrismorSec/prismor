@@ -54,6 +54,10 @@ PROTOCOL_VERSION_FALLBACK = "2025-03-26"
 GATEWAY_AGENT = "mcp-gateway"
 REQUEST_TIMEOUT = 30.0
 CALL_TIMEOUT = 300.0
+#: How long an upstream may take to answer `initialize`. A cold `npx -y`
+#: install can take well over REQUEST_TIMEOUT; giving up that early left the
+#: client's first tools/list with 0 tools (#559).
+INIT_TIMEOUT = 120.0
 
 
 def _gateway_version() -> str:
@@ -171,8 +175,9 @@ class Upstream:
         #: UpstreamError to refuse the connection. See ``Gateway._egress_guard``.
         self.guard = guard
 
-    def initialize(self, client_params: Dict[str, Any]) -> Dict[str, Any]:
-        result = self.request("initialize", client_params, timeout=REQUEST_TIMEOUT)
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        result = self.request("initialize", client_params, timeout=timeout)
         self.notify("notifications/initialized", {})
         return result
 
@@ -470,7 +475,8 @@ class UpstreamLocal(Upstream):
         super().__init__(spec, on_notification)
         self.workspace = workspace
 
-    def initialize(self, client_params: Dict[str, Any]) -> Dict[str, Any]:
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
         return {"protocolVersion": str(client_params.get("protocolVersion")
                                        or PROTOCOL_VERSION_FALLBACK),
                 "capabilities": {"tools": {}},
@@ -602,6 +608,11 @@ class Gateway:
                                             thread_name_prefix="mcp-gw")
         self._initialized = False
         self._client_protocol = PROTOCOL_VERSION_FALLBACK
+        #: Upstreams whose `initialize` is still in flight, and those a
+        #: tools/list already answered without. Both guarded by _init_cv.
+        self._starting: set = set()
+        self._late: set = set()
+        self._init_cv = threading.Condition()
 
     # ── serve loop ───────────────────────────────────────────────────────
 
@@ -687,18 +698,40 @@ class Gateway:
             self.agent_name = str(client_info["name"])
         self._client_protocol = str(
             params.get("protocolVersion") or PROTOCOL_VERSION_FALLBACK)
+        # Upstreams are initialized concurrently, off the serve loop: a slow
+        # one (cold `npx -y`) must neither delay the client's handshake nor be
+        # declared dead after REQUEST_TIMEOUT. tools/list waits for them; one
+        # that is still starting is announced via list_changed later (#559).
+        with self._init_cv:
+            self._starting = {up.spec.name for up in self.upstreams}
         for up in self.upstreams:
-            try:
-                up.initialize(params)
-            except UpstreamError as exc:
-                sys.stderr.write(
-                    f"[prismor-gateway] upstream '{up.spec.name}' failed to initialize: {exc}\n")
+            threading.Thread(target=self._init_upstream, args=(up, params),
+                             name=f"mcp-init-{up.spec.name}", daemon=True).start()
         self._reply(req_id, {
             "protocolVersion": self._client_protocol,
             "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": "prismor-gateway",
                            "version": _gateway_version()},
         })
+
+    def _init_upstream(self, up: Upstream, params: Dict[str, Any]) -> None:
+        ok = False
+        try:
+            up.initialize(params, timeout=INIT_TIMEOUT)
+            ok = True
+        except Exception as exc:  # never leave the upstream marked as starting
+            sys.stderr.write(
+                f"[prismor-gateway] upstream '{up.spec.name}' failed to initialize: {exc}\n")
+        with self._init_cv:
+            self._starting.discard(up.spec.name)
+            late = up.spec.name in self._late
+            self._late.discard(up.spec.name)
+            self._init_cv.notify_all()
+        if ok and late:
+            # The client already listed without this server: have it re-list.
+            # Routes from that list stay valid, so they are not cleared.
+            self._send({"jsonrpc": "2.0",
+                        "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/list ───────────────────────────────────────────────────────
 
@@ -715,7 +748,21 @@ class Gateway:
     def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
+        with self._init_cv:
+            # Give upstreams still in their handshake a chance to come up
+            # rather than answering with 0 tools (#559). Whatever is still
+            # starting after that is skipped here and announced via
+            # notifications/tools/list_changed once its handshake completes.
+            self._init_cv.wait_for(lambda: not self._starting,
+                                   timeout=REQUEST_TIMEOUT)
+            starting = set(self._starting)
+            self._late |= starting
         for up in self.upstreams:
+            if up.spec.name in starting:
+                sys.stderr.write(
+                    f"[prismor-gateway] upstream '{up.spec.name}' is still starting; "
+                    "its tools will be announced via tools/list_changed\n")
+                continue
             try:
                 result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
             except UpstreamError as exc:
