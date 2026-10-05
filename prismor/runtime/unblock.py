@@ -228,6 +228,24 @@ def _subsystem_steps(
             "Start a fresh session afterwards — tags accumulate across the session.",
         ]
 
+    if rule_id in ("egress-allowlist", "egress-deny"):
+        # Egress verdicts come from settings.egress, not a policy rule, so the
+        # generic `prismor allow <rule>` ladder would answer "No rule named".
+        host = str(finding.get("egressHost") or "<host>")
+        if rule_id == "egress-deny":
+            first = (
+                "1. This destination matches an entry in settings.egress.deny. "
+                "Find it with `prismor egress show`, then: prismor egress rm <entry>"
+            )
+        else:
+            first = f"1. Allow this destination:  prismor egress allow {host}"
+        return [
+            first,
+            "2. Or keep checking but stop blocking (still reported):  prismor egress mode observe",
+            f"Each writes {_policy_path(workspace)}; check a command first with: "
+            f"prismor egress test {host}",
+        ]
+
     if rule_id.startswith("codex-cloak-"):
         return [
             "This is secret cloaking, not a policy rule — Codex hooks cannot "

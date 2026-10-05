@@ -177,6 +177,14 @@ def check_allowed(
         )
 
     rule = _default_rule(rule_id)
+    if rule is None and rule_id in ("egress-allowlist", "egress-deny"):
+        return (
+            f"{rule_id} is the network egress policy (settings.egress), not a "
+            "policy rule, so it is managed with `prismor egress`:\n"
+            "  prismor egress allow <host>      allow a destination\n"
+            "  prismor egress rm <host>         drop an allow/deny entry\n"
+            "  prismor egress mode observe      keep reporting, stop blocking"
+        )
     if rule is None:
         return f"No rule named '{rule_id}'. List them with: prismor policy show"
 

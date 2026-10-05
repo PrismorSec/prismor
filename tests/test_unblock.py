@@ -211,5 +211,25 @@ class TestFormatting(unittest.TestCase):
         self.assertEqual(unblock.format_unblock(_finding(ruleId="unknown")), "")
 
 
+class EgressStepsTest(unittest.TestCase):
+    """Egress verdicts live in settings.egress, so `prismor allow <rule>` cannot clear them."""
+
+    def _steps(self, rule_id):
+        return "\n".join(unblock.unblock_steps(
+            _finding(ruleId=rule_id, category="network_isolation", egressHost="api.example.dev"),
+            workspace=Path("/w"),
+        ))
+
+    def test_off_allowlist_points_at_egress_allow_with_the_host(self):
+        joined = self._steps("egress-allowlist")
+        self.assertIn("prismor egress allow api.example.dev", joined)
+        self.assertNotIn("prismor allow egress-allowlist", joined)
+
+    def test_explicit_deny_points_at_egress_rm(self):
+        joined = self._steps("egress-deny")
+        self.assertIn("prismor egress rm", joined)
+        self.assertNotIn("prismor allow egress-deny", joined)
+
+
 if __name__ == "__main__":
     unittest.main()
