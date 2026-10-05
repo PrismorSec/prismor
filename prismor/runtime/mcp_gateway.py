@@ -56,8 +56,10 @@ REQUEST_TIMEOUT = 30.0
 CALL_TIMEOUT = 300.0
 #: How long an upstream may take to answer `initialize`. A cold `npx -y`
 #: install can take well over REQUEST_TIMEOUT; giving up that early left the
-#: client's first tools/list with 0 tools (#559).
-INIT_TIMEOUT = 120.0
+#: client's first tools/list with 0 tools (#559). Measured ~105s for
+#: server-filesystem on a small cloud VM, so 120s was too close: an upstream
+#: that misses this is never announced and the client never sees its tools.
+INIT_TIMEOUT = 600.0
 
 
 def _gateway_version() -> str:
@@ -753,7 +755,10 @@ class Gateway:
             # rather than answering with 0 tools (#559). Whatever is still
             # starting after that is skipped here and announced via
             # notifications/tools/list_changed once its handshake completes.
-            self._init_cv.wait_for(lambda: not self._starting,
+            # Only wait on upstreams no earlier list has given up on: one
+            # already marked late will be announced, and waiting for it again
+            # would stall every tools/list (and the serve loop) for 30s.
+            self._init_cv.wait_for(lambda: not (self._starting - self._late),
                                    timeout=REQUEST_TIMEOUT)
             starting = set(self._starting)
             self._late |= starting

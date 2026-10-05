@@ -408,6 +408,20 @@ def test_late_upstream_is_announced_via_list_changed(tmp_path, monkeypatch):
     assert sum(m.get("method") == "notifications/tools/list_changed" for m in sent) == 1
 
 
+def test_late_upstream_does_not_stall_later_lists(tmp_path, monkeypatch):
+    monkeypatch.setattr(gw_mod, "REQUEST_TIMEOUT", 0.5)
+    slow = SlowUpstream(UpstreamSpec(name="fs", command=["npx", "-y", "x"]))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [slow, stub("a")])
+    gateway._dispatch(INIT)
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
+    # fs is already marked late: the next list must not wait for it again.
+    started = time.monotonic()
+    assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
+    assert time.monotonic() - started < 0.4
+    slow.up.set()
+    _wait_for(lambda: any(m.get("method") == "notifications/tools/list_changed" for m in sent))
+
+
 def test_failed_upstream_handshake_does_not_stall_tools_list(tmp_path, monkeypatch):
     dead = FakeUpstream(UpstreamSpec(name="dead", command=["false"]),
                         fail=UpstreamError("exited"))
