@@ -2677,11 +2677,16 @@ class PolicyEngine:
                 cli = cfg.get("cli_path") or None
                 # `auto` is the default and screens every tool call, so it never
                 # spawns the CLI subagent; `hybrid` is the explicit opt-in to it.
+                # Policy names the judge; PRISMOR_SEMANTIC_PROVIDER is the operator's
+                # default when it does not (`prismor proxy --judge typesafe`). A
+                # policy `model` belongs to the policy's provider, not to that one.
+                env_provider = os.environ.get("PRISMOR_SEMANTIC_PROVIDER", "").strip().lower()
+                from_env = not cfg.get("provider") and bool(env_provider)
                 self._semantic_guard = SemanticGuardV2(
                     cli_path=cli,
-                    model=str(cfg.get("model") or ""),
+                    model="" if from_env else str(cfg.get("model") or ""),
                     allow_cli=(mode == "hybrid"),
-                    provider=str(cfg.get("provider") or "").lower(),
+                    provider=env_provider if from_env else str(cfg.get("provider") or "").lower(),
                     # Documented and editable in the console for a long time,
                     # but never read: the band was always 0.30-0.75.
                     # Unset: the guard picks from the judge's cost (0 for a fast
@@ -2725,7 +2730,10 @@ class PolicyEngine:
         if len(text) < 12:  # too short to be a meaningful semantic attack
             return None
 
-        budget = float(cfg.get("budget_ms") or 0) / 1000
+        # Policy wins; PRISMOR_SEMANTIC_BUDGET_MS is the operator's default for a
+        # surface that has a deadline of its own (`prismor proxy --judge-budget-ms`
+        # in front of a voice agent that retries a turn after a few seconds).
+        budget = float(cfg.get("budget_ms") or os.environ.get("PRISMOR_SEMANTIC_BUDGET_MS") or 0) / 1000
         result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)

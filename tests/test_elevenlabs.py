@@ -126,7 +126,8 @@ class FakeElevenLabs(el.Client):
 def _agent(aid, llm="gemini-2.5-flash"):
     return {"agent_id": aid, "name": f"Agent {aid}", "conversation_config": {"agent": {
         "prompt": {"prompt": "be nice", "llm": llm, "tool_ids": ["t1"],
-                   "custom_llm": None, "backup_llm_config": {"preference": "default"}}}}}
+                   "custom_llm": None, "backup_llm_config": {"preference": "default"},
+                   "cascade_timeout_seconds": 4.0}}}}
 
 
 @pytest.fixture
@@ -148,6 +149,7 @@ def test_connect_routes_agent_through_proxy_with_a_virtual_key(home):
     assert p["custom_llm"]["url"] == "https://proxy.example.com/v1"
     assert p["custom_llm"]["model_id"] == "gpt-5.6-luna"
     assert p["backup_llm_config"] == {"preference": "disabled"}
+    assert p["cascade_timeout_seconds"] == 8.0
     assert p["custom_llm"]["request_headers"]["X-Prismor-Session"] == {
         "variable_name": "system__conversation_id"}
     assert p["prompt"] == "be nice" and p["tool_ids"] == ["t1"]
@@ -214,6 +216,7 @@ def test_disconnect_restores_exactly_what_connect_replaced(home):
     after = _prompt(fake, "a1")
     assert after["llm"] == before["llm"] and after["custom_llm"] is None
     assert after["backup_llm_config"] == before["backup_llm_config"]
+    assert after["cascade_timeout_seconds"] == 4.0
     assert fake.secrets == {}
     assert json.loads((home / "proxy.json").read_text())["keys"] == {}
     assert json.loads((home / "elevenlabs.json").read_text())["agents"] == {}
@@ -239,3 +242,115 @@ def test_rerun_repairs_key_rules_even_when_url_and_model_match(home):
     el.connect(fake, ["a1"], "https://p.example.com")
     assert json.loads((home / "proxy.json").read_text())["keys"][vkey]["body"]["set"] == {
         "reasoning_effort": "none"}
+
+
+def test_turn_timeout_is_bounded_to_elevenlabs_range(home):
+    with pytest.raises(el.ElevenLabsError):
+        el.connect(FakeElevenLabs([_agent("a1")]), ["a1"], "https://p.example.com", turn_timeout=30)
+
+
+def test_proxy_ships_telemetry_off_the_request_path(monkeypatch):
+    """A slow control plane must not sit inside a voice turn."""
+    import time as _time
+    from prismor.runtime import sinks
+
+    shipped = []
+
+    def slow_dispatch(findings, *args, **kwargs):
+        _time.sleep(0.3)
+        shipped.append(findings[0]["n"])
+
+    monkeypatch.setattr(sinks, "dispatch", slow_dispatch)
+    proxy_mod.install_background_sinks()
+    assert proxy_mod.install_background_sinks() is sinks.dispatch.queue  # idempotent
+
+    t0 = _time.monotonic()
+    for n in range(3):
+        sinks.dispatch([{"n": n}], [])
+    assert _time.monotonic() - t0 < 0.1, "dispatch blocked the caller"
+
+    proxy_mod.drain_background_sinks(timeout=5)
+    assert shipped == [0, 1, 2]  # one worker, delivery order kept
+
+
+class _SlowJudge:
+    """Stands in for a hosted judge on a bad day."""
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+    def analyze(self, text):
+        import time as _time
+        from prismor.runtime.semantic_guard import _heuristic_analyze
+        _time.sleep(self.seconds)
+        return _heuristic_analyze(text)
+
+
+def _semantic_engine(budget_ms=None):
+    from prismor.runtime.policy_engine import PolicyEngine
+    engine = PolicyEngine()
+    engine.semantic_guard_config = {"enabled": True, "mode": "auto",
+                                    "warn_threshold": 0.45, "block_threshold": 0.75}
+    if budget_ms is not None:
+        engine.semantic_guard_config["budget_ms"] = budget_ms
+    engine._semantic_guard = _SlowJudge(3.0)
+    return engine
+
+
+def test_judge_budget_from_the_proxy_flag_caps_a_slow_judge(monkeypatch):
+    import time as _time
+    monkeypatch.setenv("PRISMOR_SEMANTIC_BUDGET_MS", "150")
+    engine = _semantic_engine()
+    t0 = _time.monotonic()
+    engine.evaluate({"type": "user_prompt", "prompt": "what is the status of my order"}, 0)
+    # Budget 150ms vs a 3s judge: the margin is wide so a loaded CI box can't flake it.
+    assert _time.monotonic() - t0 < 2.0, "the judge ran past the operator's budget"
+
+
+def test_policy_budget_wins_over_the_proxy_flag(monkeypatch):
+    import time as _time
+    monkeypatch.setenv("PRISMOR_SEMANTIC_BUDGET_MS", "150")
+    engine = _semantic_engine(budget_ms=5000)
+    t0 = _time.monotonic()
+    engine.evaluate({"type": "user_prompt", "prompt": "what is the status of my order"}, 0)
+    assert _time.monotonic() - t0 >= 2.9, "policy's budget_ms should have let the judge finish"
+
+
+def test_run_proxy_exports_the_judge_budget(monkeypatch):
+    monkeypatch.delenv("PRISMOR_SEMANTIC_BUDGET_MS", raising=False)
+
+    class _Stop(Exception):
+        pass
+
+    def boom(*a, **k):
+        raise _Stop()
+
+    monkeypatch.setattr(proxy_mod.ProxyConfig, "load", classmethod(lambda cls, p: boom()))
+    with pytest.raises(_Stop):
+        proxy_mod.run_proxy(judge_budget_ms=1500)
+    assert os.environ["PRISMOR_SEMANTIC_BUDGET_MS"] == "1500"
+    monkeypatch.delenv("PRISMOR_SEMANTIC_BUDGET_MS")
+
+
+def test_proxy_moves_the_heartbeat_flush_off_the_request_path(monkeypatch):
+    import time as _time
+    from prismor.runtime import sinks
+    from prismor.runtime.enterprise import heartbeat
+
+    flushed = []
+
+    def slow_flush(now=None, force=False, timeout=6.0):
+        _time.sleep(0.3)
+        flushed.append(force)
+        return True
+
+    monkeypatch.setattr(sinks, "dispatch", lambda *a, **k: None)
+    monkeypatch.setattr(heartbeat, "maybe_flush", slow_flush)
+    proxy_mod.install_background_sinks()
+
+    t0 = _time.monotonic()
+    heartbeat.maybe_flush()
+    assert _time.monotonic() - t0 < 0.1
+    heartbeat.maybe_flush(force=True)          # exit flush stays synchronous
+    assert flushed[-1] is True
+    proxy_mod.drain_background_sinks(timeout=5)
+    assert flushed.count(False) == 1

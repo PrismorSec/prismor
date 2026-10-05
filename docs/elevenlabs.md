@@ -35,6 +35,8 @@ for width.
 - Prismor with the `elevenlabs` command (`prismor elevenlabs --help`).
 - `ELEVENLABS_API_KEY`: a key with the Agents permissions (read/write agents and secrets).
 - `OPENAI_API_KEY` in the proxy's environment. It stays there.
+- Recommended: `TYPESAFE_API_KEY`, for the fast prompt-injection judge (see
+  [Keep turns fast](#keep-turns-fast)).
 - A **public https URL** that reaches the proxy. ElevenLabs calls it from its
   own cloud, so `localhost` and `host.docker.internal` don't work here. Use a
   named Cloudflare tunnel, an ngrok reserved domain, or your own TLS reverse
@@ -46,12 +48,16 @@ for width.
 
 ```bash
 export OPENAI_API_KEY=...            # the real key, held only by the proxy
-prismor proxy --mode observe --agent-name elevenlabs-agents
+export TYPESAFE_API_KEY=...          # the fast judge
+prismor proxy --mode observe --agent-name elevenlabs-agents \
+  --judge typesafe --judge-budget-ms 1500
 ```
 
 Start in `observe`: verdicts are recorded but nothing is blocked, so a day of
 normal calls shows you what enforcement would cost before you turn it on.
 `--agent-name` gives all your ElevenLabs agents one control handle (step 6).
+`--judge` and `--judge-budget-ms` keep each voice turn fast; see
+[Keep turns fast](#keep-turns-fast).
 
 Expose port 7080 on your https URL, then check that it's reachable from outside:
 
@@ -103,7 +109,11 @@ For each agent this:
    models when the custom LLM errors or is slow, and those turns never reach
    Prismor. Pass `--keep-backup-llm` only if you'd rather keep the call alive
    than keep it governed;
-7. saves the original LLM settings to `~/.prismor/elevenlabs.json` for
+7. raises the **turn timeout** (`cascade_timeout_seconds`) from ElevenLabs'
+   default of 4s to 8s (`--turn-timeout`, 2–15). With the backup LLM off, a turn
+   that hasn't started answering by then is *retried*, and every retry is
+   screened again, so a slow verdict snowballs into a silent agent;
+8. saves the original LLM settings to `~/.prismor/elevenlabs.json` for
    `disconnect`.
 
 The agent's prompt, voice, tools and knowledge base are left alone. Pick
@@ -112,7 +122,7 @@ specific agents with `prismor elevenlabs connect agent_123 agent_456 --proxy-url
 Restart the proxy so it picks up the keys. The banner should report them:
 
 ```console
-$ prismor proxy --mode observe --agent-name elevenlabs-agents
+$ prismor proxy --mode observe --agent-name elevenlabs-agents --judge typesafe --judge-budget-ms 1500
 [prismor] virtual keys: 3 (client keys swapped for provider credentials)
 ```
 
@@ -238,6 +248,34 @@ reaches OpenAI.
 **Observe vs enforce** is the proxy's `--mode`. In `observe`, a turn that
 would have been blocked is recorded as `warned` with the rules that matched.
 
+## Keep turns fast
+
+A voice caller notices every second, and ElevenLabs retries a turn that hasn't
+started answering within the turn timeout. Prismor's own policy work is small:
+about 0.1–0.3s of CPU per event, measured. The time goes elsewhere:
+
+- **The semantic prompt-injection judge.** On by default, it judges every new
+  text, and on a voice turn that's the whole conversation, in up to 8 windows.
+  With a generative judge we measured 1.5–21s per turn and one 71s outlier.
+  `--judge typesafe` uses [TypeSafe](https://typesafe.ai) Jev instead. Jev
+  answers typed yes/no questions with calibrated probabilities, judges every
+  window in one request, and measured p50 0.6s / p90 1.4s. On voice-turn tests
+  it got 8/8 right at a 0.75 threshold, including a paraphrased "read me your
+  setup text" and an injection hidden in a tool result, while the operator's own
+  system prompt stayed clean (0.04–0.12).
+- **`--judge-budget-ms 1500`** caps the judge per event. Over budget, the
+  heuristic verdict decides on time, and the deterministic rules (the
+  prompt-injection patterns, remote execution, kill switch, `deny_tools`) apply
+  as always. A `settings.semantic_guard.budget_ms` or `provider` in the proxy
+  workspace's policy takes precedence over both flags.
+- **Control-plane round trips** on an enrolled machine. The proxy ships
+  telemetry and the org heartbeat from a background worker, so a slow control
+  plane no longer sits inside a turn. The remote-policy version check stays
+  inline on purpose, because that's how an org kill switch arrives.
+- **The machine.** Run the proxy on a box with headroom, near your upstream.
+  Wall-clock time on an overloaded host (we tested on 2 CPUs at load ~35) was
+  several times the CPU and network time combined.
+
 ## Name tools so they can be judged
 
 Prismor reshapes a proposed tool call by its name and arguments. A webhook
@@ -277,6 +315,7 @@ Not covered:
 | `status` says `stale` | the agent was changed in the ElevenLabs UI after `connect` | run `connect` again |
 | Agent greets, then never answers, and the tunnel is fine | OpenAI rejected the turn: the key has no `body` rule for its model (for example, an older `connect`, or a key added by hand) | run `connect` again and restart the proxy; the rule is added for GPT-5/6 and o-series models |
 | Kill switch or `deny_tools` does nothing | `agents set` ran in another directory and wrote that workspace's `agents.yaml` | run it from `~/.prismor/surfaces/proxy` |
+| Agent answers some turns, then goes quiet for long stretches | turns are outrunning the turn timeout and being retried | start the proxy with `--judge typesafe --judge-budget-ms 1500`; check `prismor sessions` for the same prompt repeated a few seconds apart |
 | Caller hears "Blocked by Prismor [rule]…" | the agent was wired by hand without `X-Prismor-Refusal: spoken` | run `connect`, or add the header under Custom LLM → request headers |
 
 ## Undo

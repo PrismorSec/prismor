@@ -176,6 +176,30 @@ settings:
     provider: prismor
 ```
 
+### TypeSafe Jev (fastest judge)
+
+`provider: typesafe` asks [TypeSafe](https://typesafe.ai)'s Jev two yes/no questions per
+text: is it trying to override the agent's instructions, and is it trying to extract
+them or quietly send data out. Jev answers with calibrated probabilities rather than
+generated text, and every window of a long text goes in one request, so a verdict
+measured p50 0.6s / p90 1.4s. That's the judge for latency-critical surfaces such as
+voice agents behind `prismor proxy`. On ElevenLabs-shaped turns (an operator system
+prompt plus the conversation) it got 8/8 right at 0.75, including a paraphrased
+extraction and an injection inside a tool result; the system prompt itself scored
+0.04–0.12. The risk score is the higher of the two probabilities. Needs
+`TYPESAFE_API_KEY`; `model` defaults to `jev-latest`.
+
+```yaml
+settings:
+  semantic_guard:
+    provider: typesafe
+    budget_ms: 1500        # optional: a slow call never outruns the caller
+```
+
+Without a policy setting, `prismor proxy --judge typesafe --judge-budget-ms 1500` sets
+the same thing for that one proxy process (`PRISMOR_SEMANTIC_PROVIDER` /
+`PRISMOR_SEMANTIC_BUDGET_MS`). An explicit policy value wins.
+
 ### Judging every ingested text
 
 The judge only sees text whose heuristic score falls in `[low_threshold, high_threshold)`.
@@ -186,7 +210,7 @@ of them whichever judge was configured. Scoring every text, gpt-5.6-luna blocked
 83/83 with 1 false block and gpt-4o-mini 80/83 with 6. On one real machine only 1.6%
 of ingested texts landed in the default band.
 
-With a fast judge (`api` or `prismor`) this is now the default: every ingested text
+With a fast judge (`api`, `prismor` or `typesafe`) this is now the default: every ingested text
 is judged, because a verdict costs about a second. A CLI judge keeps the narrow band
 instead, since it spawns a process per call (7-33s measured) and no tool call should
 wait that long. Pin either behaviour explicitly:
@@ -233,11 +257,12 @@ settings:
                             #   heuristic  — regex signals only, no LLM, <1 ms
                             #   api        — every event goes to `model` (no pre-screen)
 
-    provider: ""            # api | claude | codex | prismor — which login judges the uncertain zone
+    provider: ""            # api | claude | codex | prismor | typesafe — which login judges the uncertain zone
                             #   api    — `model` over litellm, needs a provider key
                             #   claude — Claude Code CLI on its own login (no key)
                             #   codex  — Codex CLI on its ChatGPT login (no key)
                             #   prismor — Prismor hosted judge on the device's enrollment
+                            #   typesafe — TypeSafe Jev, typed probabilities (~0.6s), needs TYPESAFE_API_KEY
                             #   ""     — claude CLI when mode is hybrid, else api (historical)
 
     cli_path: ""            # path to the Claude (or Codex) CLI binary

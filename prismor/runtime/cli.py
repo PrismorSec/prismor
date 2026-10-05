@@ -402,6 +402,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             config_path=_Path(args.config) if getattr(args, "config", None) else None,
             session_id=getattr(args, "session_id", "") or "",
             agent_name=getattr(args, "agent_name", "") or "",
+            judge_budget_ms=int(getattr(args, "judge_budget_ms", 0) or 0),
+            judge=getattr(args, "judge", "") or "",
         )
         return
 
@@ -3413,6 +3415,14 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Stable session id (default: fresh per process). Env: PRISMOR_SESSION_ID")
     _pp.add_argument("--agent-name", dest="agent_name", default="",
                      help="Per-instance agent name (enables the console kill-switch and per-agent policy)")
+    _pp.add_argument("--judge", choices=["typesafe", "prismor", "api", "claude", "codex"], default="",
+                     help="Semantic LLM judge when policy names none. typesafe = TypeSafe Jev "
+                          "(needs TYPESAFE_API_KEY): typed probabilities in well under a second, "
+                          "for latency-critical clients such as voice agents")
+    _pp.add_argument("--judge-budget-ms", dest="judge_budget_ms", type=int, default=0,
+                     help="Cap the semantic LLM judge per event (ms) unless policy sets "
+                          "semantic_guard.budget_ms; over budget the heuristic decides on time. "
+                          "Use for clients with a turn deadline, e.g. ElevenLabs voice agents (1500)")
 
     # ── elevenlabs: route ElevenLabs voice agents through the proxy ──────
     _elp = subparsers.add_parser(
@@ -3437,6 +3447,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="proxy.json upstream the virtual key routes to (default: openai)")
     _el_con.add_argument("--config", default=None,
                          help="proxy.json to write virtual keys into (default: $PRISMOR_HOME/proxy.json)")
+    _el_con.add_argument("--turn-timeout", dest="turn_timeout", type=float, default=8.0,
+                         help="Seconds ElevenLabs waits for a turn before retrying it "
+                              "(cascade_timeout_seconds, 2-15; default 8, ElevenLabs' own is 4)")
     _el_con.add_argument("--keep-backup-llm", dest="keep_backup_llm", action="store_true",
                          help="Leave ElevenLabs' backup LLM on (turns it serves bypass Prismor)")
     _el_dis = _el_sub.add_parser("disconnect", help="Restore agents' original LLM settings")

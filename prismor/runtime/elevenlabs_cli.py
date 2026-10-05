@@ -29,6 +29,12 @@ What `connect` sets, and why each matters
   models when the custom LLM errors or is slow, and those turns never reach the
   proxy — a fail-open path around every rule. Disabling it makes the proxy the
   only way the agent can think.
+* ``cascade_timeout_seconds`` goes from ElevenLabs' 4s default to 8s
+  (``--turn-timeout``). With the backup LLM off, a turn that has not started
+  answering by then is *retried*, and each retry is screened again, so a
+  verdict that briefly runs long turned into a retry storm and a silent agent.
+  Keep Prismor's own share bounded too (``settings.semantic_guard.budget_ms``
+  in the proxy workspace).
 * ``request_headers`` carry ``X-Prismor-Session`` = the ElevenLabs
   ``system__conversation_id``, so one phone call is one Prismor session with
   the same id ElevenLabs shows in its history, and ``X-Prismor-Refusal:
@@ -208,7 +214,10 @@ def status(client: Client) -> int:
 
 def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
             model: str = "", upstream: str = "openai",
-            config_path: Optional[Path] = None, keep_backup: bool = False) -> int:
+            config_path: Optional[Path] = None, keep_backup: bool = False,
+            turn_timeout: float = 8.0) -> int:
+    if not 2.0 <= turn_timeout <= 15.0:
+        raise ElevenLabsError("--turn-timeout must be between 2 and 15 seconds (ElevenLabs' range)")
     if not proxy_url.startswith("https://"):
         # ElevenLabs calls the URL from its own cloud and sends the virtual key
         # in the Authorization header: plain http would put it on the wire.
@@ -231,6 +240,7 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
             key_meta["body"] = body_rules(model_id)
         if (aid in state["agents"] and _governed_by(prompt, proxy_url)
                 and (prompt.get("custom_llm") or {}).get("model_id") == model_id
+                and prompt.get("cascade_timeout_seconds") == turn_timeout
                 and proxy_cfg["keys"].get(state["agents"][aid]["virtual_key"]) == key_meta):
             print(f"  = {name} ({aid}) already routed through {proxy_url} on {model_id}")
             continue
@@ -247,6 +257,7 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
                     "llm": prompt.get("llm"),
                     "custom_llm": prompt.get("custom_llm"),
                     "backup_llm_config": prompt.get("backup_llm_config"),
+                    "cascade_timeout_seconds": prompt.get("cascade_timeout_seconds"),
                 },
             }
         if proxy_cfg["keys"].get(entry["virtual_key"]) != key_meta:
@@ -266,6 +277,7 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
         }
         if not keep_backup:
             patch["backup_llm_config"] = {"preference": "disabled"}
+        patch["cascade_timeout_seconds"] = turn_timeout
         client.patch_prompt(aid, patch)
 
         entry.update(proxy_url=proxy_url.rstrip("/"), connected_at=int(time.time()))
@@ -297,6 +309,7 @@ def disconnect(client: Client, agent_ids: List[str], *,
         restore: Dict[str, Any] = {"llm": orig.get("llm") or "gpt-4o-mini",
                                    "custom_llm": orig.get("custom_llm")}
         restore["backup_llm_config"] = orig.get("backup_llm_config") or {"preference": "default"}
+        restore["cascade_timeout_seconds"] = orig.get("cascade_timeout_seconds") or 4.0
         gone = False
         try:
             client.patch_prompt(aid, restore)
@@ -340,7 +353,8 @@ def run(args: Any) -> int:
                     return 2
                 return connect(client, ids, proxy_url, model=args.model or "",
                                upstream=args.upstream, config_path=config,
-                               keep_backup=args.keep_backup_llm)
+                               keep_backup=args.keep_backup_llm,
+                               turn_timeout=args.turn_timeout)
             return disconnect(client, ids, config_path=config)
     except ElevenLabsError as exc:
         print(f"prismor elevenlabs: {exc}", file=sys.stderr)

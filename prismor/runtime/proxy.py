@@ -64,6 +64,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import re
 import signal
 import ssl
@@ -2080,6 +2081,91 @@ def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "
 
 # ── entry point ──────────────────────────────────────────────────────────────
 
+def install_background_sinks(maxsize: int = 10000) -> "queue.Queue[Any]":
+    """Ship telemetry (sink dispatch + org heartbeat) from one background worker.
+
+    ``evaluate_tool_call`` hands findings to ``sinks.dispatch`` inline, which
+    is right for a hook: the process exits as soon as it answers, so there is
+    no later to ship them in. The proxy is a long-lived server, and inline it
+    put a control-plane POST (up to a 6s timeout, never skipped for a block)
+    inside every turn, under the lock that serializes evaluation. Measured on
+    ElevenLabs: blocked turns took 2-12s, past the platform's turn timeout, so
+    it retried and the caller heard nothing.
+
+    One worker keeps delivery order; a full queue falls back to sending inline
+    rather than dropping. ``run_proxy`` drains the queue on the way out.
+    """
+    from prismor.runtime import sinks
+
+    existing = getattr(sinks.dispatch, "queue", None)
+    if existing is not None:
+        return existing
+    inline = sinks.dispatch
+    pending: "queue.Queue[Any]" = queue.Queue(maxsize=maxsize)
+
+    def _worker() -> None:
+        while True:
+            args, kwargs = pending.get()
+            try:
+                call = kwargs.pop("_call", None)
+                if call is not None:
+                    fn, fargs, fkwargs = call
+                    fn(*fargs, **fkwargs)
+                else:
+                    inline(*args, **kwargs)
+            except Exception as exc:  # dispatch already swallows; belt and braces
+                sys.stderr.write(f"[prismor-proxy] telemetry error: {exc}\n")
+            finally:
+                pending.task_done()
+
+    def dispatch(*args: Any, **kwargs: Any) -> None:
+        try:
+            pending.put_nowait((args, kwargs))
+        except queue.Full:
+            inline(*args, **kwargs)
+
+    dispatch.queue = pending  # type: ignore[attr-defined]
+    dispatch.inline = inline  # type: ignore[attr-defined]
+    threading.Thread(target=_worker, name="prismor-proxy-sinks", daemon=True).start()
+    sinks.dispatch = dispatch
+
+    # The org heartbeat flush is the same kind of upload, reached from
+    # runtime.evaluate_tool_call rather than through dispatch: measured at
+    # 1.3s on the request path against a slow control plane. Its result is
+    # unused there, so it can ride the same worker. (The remote-policy version
+    # check stays inline on purpose: it is how an org kill switch arrives.)
+    try:
+        from prismor.runtime.enterprise import heartbeat
+
+        flush_inline = heartbeat.maybe_flush
+
+        def maybe_flush(*args: Any, **kwargs: Any) -> bool:
+            if kwargs.get("force"):          # process exit: must run now
+                return flush_inline(*args, **kwargs)
+            try:
+                pending.put_nowait(((), {"_call": (flush_inline, args, kwargs)}))
+            except queue.Full:
+                return flush_inline(*args, **kwargs)
+            return True
+
+        heartbeat.maybe_flush = maybe_flush
+    except Exception:
+        pass
+    return pending
+
+
+def drain_background_sinks(timeout: float = 5.0) -> None:
+    """Give queued telemetry a bounded chance to ship before the process exits."""
+    from prismor.runtime import sinks
+
+    pending = getattr(sinks.dispatch, "queue", None)
+    if pending is None:
+        return
+    deadline = time.monotonic() + timeout
+    while pending.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
 def default_config_path() -> Path:
     home = os.environ.get("PRISMOR_HOME") or str(Path.home() / ".prismor")
     return Path(home) / "proxy.json"
@@ -2111,8 +2197,15 @@ def default_workspace() -> Path:
 def run_proxy(host: str = "127.0.0.1", port: int = 7080,
               workspace: Optional[Path] = None, mode: str = "observe",
               config_path: Optional[Path] = None,
-              session_id: str = "", agent_name: str = "") -> None:
+              session_id: str = "", agent_name: str = "",
+              judge_budget_ms: int = 0, judge: str = "") -> None:
     """Start the LLM proxy (blocking)."""
+    if judge:
+        # Read by the semantic layer when the policy names no provider of its own.
+        os.environ["PRISMOR_SEMANTIC_PROVIDER"] = judge
+    if judge_budget_ms > 0:
+        # Read by the semantic layer when the policy sets no budget_ms of its own.
+        os.environ["PRISMOR_SEMANTIC_BUDGET_MS"] = str(int(judge_budget_ms))
     ws = workspace or default_workspace()
     try:
         ws = ws.resolve()
@@ -2121,6 +2214,7 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     config = ProxyConfig.load(config_path if config_path is not None
                               else default_config_path())
     ProxyHandler.config = config
+    install_background_sinks()
     ProxyHandler.screen = Screen(
         workspace=ws, mode=mode,
         session_id=session_id or os.environ.get("PRISMOR_SESSION_ID")
@@ -2132,6 +2226,12 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     base = f"http://{host}:{port}"
     print(f"[prismor] proxy listening on {base}  (mode: {mode})")
     print(f"[prismor] workspace: {ws}")
+    if os.environ.get("PRISMOR_SEMANTIC_PROVIDER"):
+        print(f"[prismor] LLM judge: {os.environ['PRISMOR_SEMANTIC_PROVIDER']} "
+              "unless policy sets semantic_guard.provider")
+    if os.environ.get("PRISMOR_SEMANTIC_BUDGET_MS"):
+        print(f"[prismor] LLM judge budget: {os.environ['PRISMOR_SEMANTIC_BUDGET_MS']}ms per event "
+              "unless policy sets semantic_guard.budget_ms")
     if config.keys:
         print(f"[prismor] virtual keys: {len(config.keys)} "
               "(client keys swapped for provider credentials)")
@@ -2163,6 +2263,7 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
         if ProxyHandler.screen._writer.is_alive():
             ProxyHandler.screen._writer.join(timeout=2.0)
         ProxyHandler.screen.snapshot()
+        drain_background_sinks()
 
 
 if __name__ == "__main__":
