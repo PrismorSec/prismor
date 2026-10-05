@@ -12,6 +12,9 @@ Endpoints:
     POST /v1/redact     → {"result": <any JSON>} → the same value with cloaked
                           secrets / data-boundary values masked, + "redacted"
     GET  /health        → {"status": "ok", "ts": "<iso>"}
+    POST /copilot-studio/validate, /copilot-studio/analyze-tool-execution
+                        → Copilot Studio threat detection (copilot_studio.py);
+                          on when PRISMOR_COPILOT_STUDIO_AUDIENCE is set
 
 Request body (POST /v1/evaluate):
     {
@@ -164,6 +167,11 @@ class EvalHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         from prismor.runtime import authzen as _az
+        from prismor.runtime import copilot_studio as _cs
+        route = self.path.split("?", 1)[0]  # Copilot Studio appends ?api-version=
+        if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0]):
+            self._copilot_studio(route)
+            return
         if self.path not in ("/v1/evaluate", "/v1/redact", _az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
             self._send_json({"error": "not found"}, 404)
             return
@@ -307,6 +315,21 @@ class EvalHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
 
+    def _copilot_studio(self, route: str) -> None:
+        """Copilot Studio threat detection. Its own Entra auth, not --api-key;
+        the workspace is always the server's own, as for AuthZEN."""
+        from prismor.runtime import copilot_studio as _cs
+
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        try:
+            body = json.loads(raw) if raw.strip() else {}
+        except Exception as exc:
+            status, out = 400, _cs.CopilotStudioError(400, f"invalid JSON: {exc}").body()
+        else:
+            status, out = _cs.handle(route, self.headers, body, workspace=self.workspace,
+                                     bound_host=self.server.server_address[0])
+        self._send_json(out, status)
+
     def _identity_token(self) -> Optional[str]:
         """The end user's IdP token. Its own header, because Authorization
         already carries the server's API key."""
@@ -393,6 +416,10 @@ def run_eval_server(
     if identity:
         print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
               f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
+    from prismor.runtime import copilot_studio as _cs
+    if _cs.enabled(host):
+        print(f"[prismor] POST {_cs.PREFIX}/validate, {_cs.ANALYZE_PATH}  →  Copilot Studio threat detection"
+              + (" (NO AUTH, localhost only)" if _cs.insecure(host) else " (Entra auth)"))
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
 
