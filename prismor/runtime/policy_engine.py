@@ -1580,6 +1580,18 @@ class PolicyEngine:
                 folded_cache[field_name] = folded if folded != value else None
             return folded_cache[field_name]
 
+        # Dequoted spellings of the shell command, computed once per event:
+        # the normalized field (command substitutions unwrapped) and the raw
+        # command (lines intact, so text after a heredoc is still reachable).
+        dequoted_cache: Dict[str, List[str]] = {}
+
+        def _dequoted() -> List[str]:
+            if "command" not in dequoted_cache:
+                spellings = (_dequote_shell(str(text or "")) for text in
+                             (field_values.get("command"), event.get("command")))
+                dequoted_cache["command"] = [dq for dq in spellings if dq]
+            return dequoted_cache["command"]
+
         for rule in _perf.timed_rules(self.rules, findings):
             matched_via_mcp_alias = False
             # A synthetic "text" event has no rules of its own; route it through
@@ -1675,6 +1687,18 @@ class PolicyEngine:
                             evasion = "unicode_obfuscation"
                             break
 
+            if (matched_evidence is None and event_type == "shell"
+                    and rule.condition is None and "command" in check_fields):
+                # Shell-quote evasion rescan: `r''m -rf /`, `c\at .env` and
+                # `$'\x72m'` run the same program as the plain spelling but
+                # match no literal pattern. Same fallback shape as the fold.
+                for dequoted in _dequoted():
+                    if rule.patterns.search(dequoted):
+                        matched_evidence = field_values.get("command", "")
+                        folded_evidence = dequoted
+                        evasion = "shell_quote_obfuscation"
+                        break
+
             if matched_evidence is None:
                 continue
 
@@ -1754,7 +1778,14 @@ class PolicyEngine:
                             )
                         )
                         if not has_executable_quoted_span:
-                            _context_text = matched_evidence
+                            # A quote-evasion match is judged on its dequoted
+                            # spelling, which re-quotes each word for what it
+                            # is (`echo $'\x72m -rf /'` stays an echo argument).
+                            _context_text = (
+                                folded_evidence
+                                if evasion == "shell_quote_obfuscation"
+                                else matched_evidence
+                            )
                             _m = rule.patterns.search(_context_text)
                     if _m is not None:
                         context_inert = is_inert_match(
@@ -1777,20 +1808,25 @@ class PolicyEngine:
                     # (`echo 'chmod 777'; rm -rf /`), an earlier match can be
                     # inert while a later one performs the action for real.
                     # Stay inert only when EVERY raw match is inert.
+                    # The dequoted spelling is checked too, so a quote-split
+                    # command (`echo 'chmod 777'; r''m -rf /`) cannot hide
+                    # behind an inert first match.
                     if context_inert:
-                        def _is_match_inert(m):
-                            if is_inert_match(_context_text, m.start(), m.end()):
+                        def _is_match_inert(text, m):
+                            if is_inert_match(text, m.start(), m.end()):
                                 return True
                             if (
                                 rule.id in _LOCAL_JURISDICTION_RULE_IDS
-                                and is_remote_payload(_context_text, m.start(), m.end())
+                                and is_remote_payload(text, m.start(), m.end())
                             ):
                                 return True
                             return False
 
+                        _texts = [_context_text, _dequote_shell(_context_text)]
                         context_inert = all(
-                            _is_match_inert(m)
-                            for m in rule.patterns.finditer(_context_text)
+                            _is_match_inert(text, m)
+                            for text in _texts if text
+                            for m in rule.patterns.finditer(text)
                         )
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
@@ -3556,6 +3592,55 @@ def _fold_confusables(text: str) -> str:
     except Exception:
         folded = text
     return folded.translate(_CONFUSABLE_FOLD)
+
+
+_ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+_SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+
+
+def _dequote_shell(cmd: str) -> Optional[str]:
+    """Re-spell a shell command the way the shell will see each word.
+
+    Quote removal and backslash escapes go through ``shlex``; ``$'...'``
+    (ANSI-C quoting, which shlex does not know) is decoded first. Words come
+    back re-quoted with ``shlex.quote`` and operators stay bare, so
+    ``echo 'chmod 777'; r''m -rf /`` becomes ``echo 'chmod 777' ; rm -rf /``
+    and the context check can still tell the echo argument from the command.
+
+    Works line by line and leaves everything from ``<<`` on untouched, so a
+    heredoc body keeps the shape the context check recognizes as data. A line
+    that does not parse (a quote spanning lines) is kept as it is.
+
+    Match-only text, like ``_fold_confusables``. Returns None when nothing
+    changes.
+    """
+    if not cmd or not any(c in cmd for c in "'\"\\"):
+        return None
+    out = []
+    for line in cmd.split("\n"):
+        cut = line.find("<<")
+        head, tail = (line, "") if cut < 0 else (line[:cut], line[cut:])
+        try:
+            text = _ANSI_C_QUOTE_RE.sub(
+                lambda m: shlex.quote(
+                    m.group(1).encode("latin-1", "backslashreplace").decode("unicode_escape")
+                ),
+                head,
+            )
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            head = " ".join(
+                w if set(w) <= _SHELL_OPERATOR_CHARS else shlex.quote(w)
+                for w in lexer
+            )
+        except (ValueError, UnicodeError):
+            pass
+        out.append(f"{head} {tail}" if tail else head)
+    dequoted = "\n".join(out)
+    if " ".join(dequoted.split()) == " ".join(cmd.split()):
+        return None
+    return dequoted
 
 
 def _normalize_command(cmd: str) -> str:

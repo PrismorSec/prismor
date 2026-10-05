@@ -179,6 +179,50 @@ def test_harmless_prefix_on_same_line_blocks_at_runtime(tmp_path, command):
     assert decision.verdict == "block"
 
 
+def _runtime_verdict(tmp_path, command):
+    return evaluate_tool_call(
+        event={
+            "agent_event": "PreToolUse",
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "type": "shell",
+            "command": command,
+        },
+        workspace=Path(tmp_path),
+        agent="claude",
+        mode="enforce",
+        persist=False,
+    ).verdict
+
+
+# The shell removes quotes and backslashes before it runs a word, so each of
+# these is `rm -rf /` (or a secret read) spelled to miss a literal pattern.
+@pytest.mark.parametrize("command", [
+    "r''m -rf /",
+    "r\\m -rf /",
+    '"r"m -rf /',
+    "$'\\x72m' -rf /",
+    "echo hi; r''m -rf /",
+    "echo 'chmod 777'; r''m -rf /",
+    'echo "chmod 777"; r\\m -rf /',
+    "c''at .e''nv",
+    "echo 'never cat .e''nv'; cat .e''nv",
+    "cat > n.md <<'EOF'\nnotes\nEOF\nr''m -rf /",
+])
+def test_quote_split_command_blocks_at_runtime(tmp_path, command):
+    assert _runtime_verdict(tmp_path, command) == "block"
+
+
+@pytest.mark.parametrize("command", [
+    "echo $'\\x72m -rf /'",
+    "git commit -m 'fix r''m -rf / handling'",
+    "echo 'it''s fine'",
+    'echo "unbalanced',
+])
+def test_quote_split_text_stays_allowed(tmp_path, command):
+    assert _runtime_verdict(tmp_path, command) == "allow"
+
+
 # ── Heredoc bodies ──────────────────────────────────────────────────────────
 # A script typed inline and saved with ``cat > file <<EOF`` is data at that
 # moment; the same body fed to an interpreter, or written and run in the same
