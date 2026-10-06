@@ -70,6 +70,13 @@ workspace databases. The only external resources are a Chart.js CDN link and the
 Inter / JetBrains Mono webfonts (Google Fonts) loaded by the browser; the data
 never leaves your machine.
 
+The API answers only its own page: requests from another site's origin, or
+with a non-loopback `Host` header, get a 403. Bound to anything other than
+loopback (`--host 0.0.0.0`), it also requires a token. The startup line prints
+`http://<host>:<port>/?token=…`; opening that URL sets a cookie, and scripts send
+`Authorization: Bearer <token>`. Set `PRISMOR_DASHBOARD_TOKEN` to pin the
+token instead of getting a random one per start.
+
 | Endpoint | Returns |
 |---|---|
 | `GET /` | The HTML dashboard |
@@ -79,6 +86,8 @@ never leaves your machine.
 | `GET /api/findings` | Paginated findings (`?page&limit&agent&severity&category&q`) |
 | `GET /api/events` | Paginated events (`?page&limit&verdict&agent`) |
 | `GET /api/supply-chain` | Supply-chain enforcement stats |
+| `GET /api/network-calls` | Destinations the recorded sessions reached, busiest first (`?days`) |
+| `GET /api/dependencies` | External dependencies used: secrets, MCP servers, skills, packages (`?days`) |
 | `GET /api/agents` | Agent registry merged with per-agent call stats |
 | `POST /api/agents/<name>` | Update per-agent controls: `{enabled?, mode?, iam_profile?}` |
 | `GET /api/policy` | Effective policy state: mode, blocking/total rule counts, `explicitSelection`, editability |
@@ -89,6 +98,26 @@ never leaves your machine.
 If you run `dashboard` before installing hooks anywhere, it warns that no workspaces
 are registered yet — install hooks in a project first to collect data.
 
+### Top network calls (overview)
+
+Every destination your recorded sessions reached, busiest first, over the
+window the **Agent activity** selector sets. Destinations are pulled with
+`extract_destinations` — the same extractor the egress rule screens with, so
+the table and that verdict cannot disagree about where a call was aimed. It
+covers the `url` of network events (WebFetch/WebSearch/remote MCP) and the
+destinations hidden inside shell commands: URLs of any scheme, `user@host:path`
+for git/scp, bare hosts passed to curl/wget, and `host port` pairs for
+nc/telnet/socat.
+
+- **Blocked** / **Warned** count only *network* decisions. An event can carry a
+  finding about something else entirely — a secret in the command, say — and
+  counting that would overstate blocked egress, so the join is narrowed to the
+  `network_isolation` category and findings that name an `egressHost`.
+  Blocked means a rule stopped the call; warned means it only flagged it.
+- Loopback, RFC1918 and link-local destinations are tagged `local` and
+  **hidden by default** — a local dev server outranks real egress on volume,
+  and egress is what the card is for. *Show local too* reveals them.
+
 ### Docs tab
 
 The Markdown docs that shipped with your install, browsable and searchable
@@ -97,6 +126,34 @@ a line and shows the matching lines. Offline-friendly: the pages are read from
 the installed package, not fetched. The **MCP Servers** tab links into it when
 nothing is going through Prismor yet, alongside the `prismor mcp-gateway
 install` / `prismor mirror on` commands that wire it up.
+
+### Dependencies tab
+
+**External dependencies and connections** — what your agents reached for
+outside themselves, across every session recorded on the machine rather than
+just the recent ones an agent config remembers. Four parts, all derived from
+the event store:
+
+- **Services a secret opened** — one row per service a cloaked
+  `@@SECRET:<name>@@` reference reached (the host named in the command, or the
+  binary it ran when there is no URL). *Which* credential it was is not
+  recorded in this view, only that a redacted placeholder was used and what it
+  connected to; a secret value never appears anywhere. When a referenced
+  placeholder has no vault entry the row is flagged — unresolvable means the
+  decloak hook denied that call, so it failed closed rather than leaked, and
+  saying so needs no name.
+- **MCP servers** — the server and the tool called on it.
+- **Skills loaded** — skills an agent pulled in mid-session.
+- **Packages installed** — registry installs, parsed with the same
+  `supplychain.ecosystems.detector` the install-gating rule uses, so this view
+  and that verdict always agree on what counts as an install. Installs the
+  `prismor supplychain` CLI gated are merged in with their verdict.
+
+`/api/dependencies?days=N` answers at one row per (part, name, target,
+session), so the four groupings — **by dependency, session, agent or
+project** — are regroupings of a single payload, and switching between them
+costs no extra query. Use *by dependency* to see what is in use at all, and the
+others to see who used it.
 
 ### Policy tab
 

@@ -14,7 +14,9 @@ a JSON permission object, or a raised exception).
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -25,7 +27,7 @@ from prismor.runtime import perf
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
-from prismor.runtime.principal import Subject, resolve_subject
+from prismor.runtime.principal import Subject, current_token, is_verified, resolve_subject
 from prismor.runtime.store import (
     append_session_event,
     persist_runtime_findings,
@@ -44,6 +46,8 @@ def _apply_rule_exemptions(
     *,
     session_id: str,
     subject: Optional[Subject],
+    verified_users_only: bool = False,
+    surface: str = "",
 ) -> List[Dict[str, Any]]:
     """Relax or downgrade findings per admin-granted, signed rule exemptions.
 
@@ -54,6 +58,10 @@ def _apply_rule_exemptions(
 
     Core protections are never exemptable: a floor rule id / core block category
     (and the agent kill-switch) is left untouched regardless of any exemption.
+
+    ``verified_users_only`` (set when the org verifies identity): a ``user``
+    exemption then needs a verified subject, so ``subject: "user:alice"`` sent
+    by anyone no longer carries Alice's exemptions.
     """
     if not rule_exemptions:
         return findings
@@ -77,6 +85,8 @@ def _apply_rule_exemptions(
             return False
         scope, scope_id = ex.get("scope"), ex.get("scopeId")
         if scope == "user":
+            if verified_users_only and not is_verified(subject, surface):
+                return False
             return bool(user_id) and scope_id == user_id
         if scope == "device":
             return bool(device_id) and scope_id == device_id
@@ -124,6 +134,41 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 _NO_PROJECT_AGENTS = frozenset({"prismor-proxy"})
 
 
+_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
+_READ_TOOL = re.compile(r"read|open|cat|load|view|get_?file", re.I)
+_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file", re.I)
+
+
+def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
+    """Treat an SDK tool that only takes a file path as the file access it is.
+
+    Adapters default every tool to ``shell``, so ``read_file(path=".env")``
+    arrived as a "shell command" consisting of a bare path and none of the
+    file-read secret rules could see it (#542). Only adapter events (they carry
+    ``metadata.framework``) with a single path argument and a read/write-named
+    tool are re-typed; anything with a command argument stays shell.
+    """
+    meta = event.get("metadata") or {}
+    if event.get("type") != "shell" or not meta.get("framework"):
+        return
+    kwargs = meta.get("kwargs") or {}
+    if set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
+        try:  # OpenAI Agents SDK FunctionTools hand over one JSON string
+            kwargs = json.loads(kwargs["input"])
+        except ValueError:
+            return
+    if not isinstance(kwargs, dict):
+        return
+    paths = [v for k, v in kwargs.items() if k.lower() in _PATH_ARGS and isinstance(v, str) and v]
+    if len(paths) != 1 or any(k.lower() in ("command", "cmd", "script") for k in kwargs):
+        return
+    name = str(meta.get("tool_name") or "")
+    kind = "file_read" if _READ_TOOL.search(name) else "file_write" if _WRITE_TOOL.search(name) else ""
+    if kind:
+        event["type"] = kind
+        event["path"] = paths[0]
+
+
 def evaluate_tool_call(
     *,
     event: Dict[str, Any],
@@ -138,6 +183,9 @@ def evaluate_tool_call(
     taint_store: Optional[Any] = None,
     register_agent: bool = True,
     flush_at_exit: bool = True,
+    resource: Optional[Dict[str, Any]] = None,
+    identity_token: Optional[str] = None,
+    explain: bool = False,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -166,6 +214,12 @@ def evaluate_tool_call(
         flush_at_exit: upload the heartbeat and spooled findings when the
             process exits, so a short script's activity still reaches the
             console. Hook-dispatch passes ``False`` (one process per call).
+        resource: the call's target (``{"kind", "id", "attr": {...}}``), read by
+            ``when:`` rules as ``resource.*``. Overrides ``metadata.resource``.
+        identity_token: the end user's IdP token (JWT). Verified against the
+            org's ``settings.identity``; defaults to ``use_subject(token=...)``.
+        explain: attach a decision trace (``Decision.explain``): matched rules,
+            their policy layer and mode, each ``when`` result, policy version.
 
     Returns:
         A :class:`Decision`. ``allow`` is ``False`` only when a finding's effective
@@ -177,11 +231,15 @@ def evaluate_tool_call(
     # Normalise agent_name: default to the framework id for backward compat.
     _agent_name = agent_name or agent
 
+    _retype_adapter_file_call(event)
+
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})
     if "subject" not in meta:
         meta["subject"] = subject.as_dict()
     meta.setdefault("agent_name", _agent_name)
+    if resource is not None:
+        meta["resource"] = resource
 
     perf.lap()
     if persist:
@@ -201,6 +259,7 @@ def evaluate_tool_call(
                 repo_url=None,
                 events=events,
                 analysis=analysis,
+                append_only=True,
             )
         except Exception as exc:  # best-effort; never block on analysis failure
             sys.stderr.write(f"[prismor] analysis error: {exc}\n")
@@ -223,6 +282,29 @@ def evaluate_tool_call(
     if taint_store is not None:
         engine.taint_override = taint_store
     perf.lap("policy_load")
+
+    # Verified end-user identity. Off unless the signed org policy (or the
+    # eval-server's flags) configure an issuer; then the subject comes from the
+    # verified token, and `require` blocks calls that have none.
+    _identity_finding = None
+    _identity_cfg = None
+    try:
+        from prismor.runtime import identity_token as _idt
+        _identity_cfg = _idt.effective_config(getattr(engine, "identity", None))
+        if _identity_cfg:
+            subject, meta["identity"], _identity_finding = _idt.apply(
+                subject, identity_token or current_token(), _identity_cfg,
+                surface=str(meta.get("surface") or ""), session_id=session_id)
+            meta["subject"] = subject.as_dict()
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] identity check error: {exc}\n")
+        if _identity_cfg and str(_identity_cfg.get("mode")).lower() == "require":
+            _identity_finding = {
+                "id": f"{session_id}:identity-unverified", "ruleId": "identity-unverified",
+                "severity": "high", "category": "agent-control", "mode": "enforce",
+                "title": "End-user identity required — identity check failed",
+                "evidence": str(exc), "eventIndex": 0,
+            }
 
     # Resolve per-agent control (kill-switch, mode override, IAM profile).
     # Runs AFTER engine construction so the org's remote controls — carried in
@@ -271,7 +353,9 @@ def evaluate_tool_call(
     perf.lap("agent_control")
     _guard_t0 = time.perf_counter()
     _session_seq = len(events) - 1
-    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject)
+    _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
+    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
+                               trace=_trace)
     perf.lap("policy_eval")
 
     # Integrity findings (memory guard, #154) bypass the regex rule engine
@@ -379,6 +463,9 @@ def evaluate_tool_call(
         except Exception as exc:
             sys.stderr.write(f"[prismor] kill-switch error: {exc}\n")
 
+    if _identity_finding is not None:
+        findings.insert(0, _identity_finding)
+
     # Per-agent / global tool-tag deny list (operator-set from the dashboard's
     # Tool Call panel). Resolves the tool tag the same way scoped rules do, so
     # arbitrary MCP tags (e.g. mcp__node_repl__js) work verbatim. Tagged
@@ -449,14 +536,15 @@ def evaluate_tool_call(
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
+                        _label = "org" if _scope == "org" else f"org {_scope}"
                         if _d.get("action") == "step_up":
                             findings.append(make_agent_tool_step_up_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}"))
+                                scope_label=_label))
                         else:
                             findings.append(make_agent_tool_deny_finding(
                                 _agent_name, _otn, session_id,
-                                scope_label=f"org {_scope}", rule_id="org-tool-deny"))
+                                scope_label=_label, rule_id="org-tool-deny"))
                         break
         except Exception as exc:
             sys.stderr.write(f"[prismor] org tool-deny error: {exc}\n")
@@ -554,6 +642,8 @@ def evaluate_tool_call(
         findings = _apply_rule_exemptions(
             findings, getattr(engine, "rule_exemptions", None),
             session_id=session_id, subject=subject,
+            verified_users_only=bool(_identity_cfg),
+            surface=str(meta.get("surface") or ""),
         )
     except Exception as exc:
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
@@ -632,6 +722,13 @@ def evaluate_tool_call(
                 event,
             )
 
+    # The finding that actually blocks reports as enforced. The legacy bridge
+    # blocks by category while the finding still carries the rule's observe
+    # mode, and the telemetry verdict is read from that mode, so the console
+    # showed a stopped prompt as "allowed" (#541).
+    if blocking is not None:
+        blocking["mode"] = "enforce"
+
     _dispatch_telemetry(
         engine=engine,
         findings=findings,
@@ -688,6 +785,20 @@ def evaluate_tool_call(
                 engine=engine,
             )
 
+    _explain = None
+    if explain:
+        try:
+            from prismor.runtime.enterprise import remote_policy as _rp
+            _version = _rp.current_version()
+        except Exception:
+            _version = None
+        _explain = {
+            "rules": _trace or [],
+            "policy_version": _version,
+            "identity": meta.get("identity"),
+            "subject_source": subject.source if subject else None,
+            "decided_by": (blocking or {}).get("ruleId"),
+        }
     return Decision(
         allow=blocking is None,
         findings=findings,
@@ -695,6 +806,7 @@ def evaluate_tool_call(
         reason=_block_reason(blocking) if blocking else None,
         subject=subject,
         engine=engine,
+        explain=_explain,
     )
 
 

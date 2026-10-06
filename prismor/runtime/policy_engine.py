@@ -519,6 +519,229 @@ class RuleCondition:
         return hits >= need
 
 
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool"})
+_WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
+
+
+class _MissingAttr(Exception):
+    """An attribute path the event does not carry."""
+
+
+class AttrCondition:
+    """A rule's ``when:`` — a boolean expression over request attributes.
+
+    Where ``condition:`` asks *what the text says*, ``when:`` asks *who is
+    asking, for what, with which arguments*::
+
+        when: "args.amount >= 500 and 'finance' not in principal.roles"
+        when: "resource.attr.owner != principal.id"
+        when: "not principal.verified"
+        when: "has(args.dry_run) and args.dry_run == false"
+
+    Names are dotted paths rooted at ``principal``, ``resource``, ``args`` or
+    ``tool``; ``args['x-y']`` reaches keys that are not identifiers. Only
+    and/or/not, comparisons (== != < <= > >= in, not in), literals, lists and
+    ``has(path)`` are accepted — same no-``eval`` whitelist as RuleCondition.
+
+    A path the event does not carry, or a comparison between incompatible
+    types, makes the expression *hold*: the rule fires. A rule narrowed by
+    attributes must fail toward detection, never silently allow because an
+    adapter forgot to send ``args``. Guard optional fields with ``has()``.
+    """
+
+    __slots__ = ("source", "_tree", "_named")
+
+    def __init__(self, source: str, named: Optional[Dict[str, "AttrCondition"]] = None) -> None:
+        self.source = source
+        # Named conditions (settings.conditions) usable as bare names, the
+        # equivalent of reusable derived roles: `when: "is_owner or is_finance"`.
+        self._named: Dict[str, "AttrCondition"] = named or {}
+        try:
+            self._tree = ast.parse(source, mode="eval").body
+        except SyntaxError as exc:
+            raise ConditionError(f"invalid when {source!r}: {exc.msg}") from exc
+        self._validate(self._tree)
+
+    def _fail(self, msg: str) -> ConditionError:
+        return ConditionError(f"when {self.source!r}: {msg}")
+
+    def _validate_path(self, node) -> None:
+        if isinstance(node, ast.Attribute):
+            self._validate_path(node.value)
+        elif isinstance(node, ast.Subscript):
+            if not (isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, (str, int))
+                    and not isinstance(node.slice.value, bool)):
+                raise self._fail("index must be a string or integer literal")
+            self._validate_path(node.value)
+        elif isinstance(node, ast.Name):
+            if node.id not in _WHEN_ROOTS:
+                raise self._fail(
+                    f"unknown name '{node.id}' (paths start with "
+                    f"{', '.join(sorted(_WHEN_ROOTS))})")
+        else:
+            raise self._fail("expected an attribute path")
+
+    def _validate(self, node) -> None:
+        if isinstance(node, ast.BoolOp):
+            for v in node.values:
+                self._validate(v)
+        elif isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            self._validate(node.operand)
+        elif isinstance(node, ast.Compare):
+            if not all(isinstance(op, _WHEN_CMP_OPS) for op in node.ops):
+                raise self._fail("unsupported comparison")
+            for v in (node.left, *node.comparators):
+                self._validate(v)
+        elif isinstance(node, (ast.List, ast.Tuple)):
+            for v in node.elts:
+                self._validate(v)
+        elif isinstance(node, ast.Constant):
+            if not isinstance(node.value, (str, int, float, bool, type(None))):
+                raise self._fail("unsupported literal")
+        elif isinstance(node, ast.Call):
+            if getattr(node.func, "id", None) != "has" or len(node.args) != 1 or node.keywords:
+                raise self._fail("the only function is has(path)")
+            self._validate_path(node.args[0])
+        elif isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
+            pass  # YAML/JSON-style literals, for authors who don't write Python
+        elif isinstance(node, ast.Name) and node.id in self._named:
+            pass
+        else:
+            self._validate_path(node)
+
+    def evaluate(self, ctx: Dict[str, Any]) -> bool:
+        try:
+            return bool(self._eval(self._tree, ctx))
+        except (_MissingAttr, TypeError):
+            return True
+
+    def _resolve(self, node, ctx: Dict[str, Any]) -> Any:
+        if isinstance(node, ast.Name):
+            return ctx.get(node.id) or {}
+        base = self._resolve(node.value, ctx)
+        key = node.attr if isinstance(node, ast.Attribute) else node.slice.value
+        if isinstance(base, dict) and key in base:
+            return base[key]
+        if isinstance(base, (list, tuple)) and isinstance(key, int) and -len(base) <= key < len(base):
+            return base[key]
+        raise _MissingAttr(key)
+
+    def _eval(self, node, ctx: Dict[str, Any]) -> Any:
+        if isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                return all(self._eval(v, ctx) for v in node.values)
+            return any(self._eval(v, ctx) for v in node.values)
+        if isinstance(node, ast.UnaryOp):
+            return not self._eval(node.operand, ctx)
+        if isinstance(node, ast.Compare):
+            left = self._eval(node.left, ctx)
+            for op, comp in zip(node.ops, node.comparators):
+                right = self._eval(comp, ctx)
+                if not _compare(op, left, right):
+                    return False
+                left = right
+            return True
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [self._eval(v, ctx) for v in node.elts]
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Call):
+            try:
+                self._resolve(node.args[0], ctx)
+                return True
+            except _MissingAttr:
+                return False
+        if isinstance(node, ast.Name) and node.id in ("true", "false", "null"):
+            return {"true": True, "false": False, "null": None}[node.id]
+        if isinstance(node, ast.Name) and node.id in self._named:
+            # Raw evaluation: a missing attribute inside the named condition
+            # propagates, so the whole `when` still fails toward detection.
+            sub = self._named[node.id]
+            return bool(sub._eval(sub._tree, ctx))
+        return self._resolve(node, ctx)
+
+
+_CONDITION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_NAMES = _WHEN_ROOTS | {"true", "false", "null", "True", "False", "None", "has",
+                                 "and", "or", "not", "in", "is"}
+
+
+def compile_named_conditions(raw: Any) -> Tuple[Dict[str, AttrCondition], List[str]]:
+    """settings.conditions → ({name: AttrCondition}, errors). Each body may read
+    the four attribute roots; names cannot refer to other names (no cycles)."""
+    out: Dict[str, AttrCondition] = {}
+    errors: List[str] = []
+    if raw is None:
+        return out, errors
+    if not isinstance(raw, dict):
+        return out, ["settings.conditions must be a map of name -> expression"]
+    for name, src in raw.items():
+        name = str(name)
+        if not _CONDITION_NAME.match(name) or name in _RESERVED_NAMES:
+            errors.append(f"settings.conditions.{name}: not a usable name")
+            continue
+        try:
+            out[name] = AttrCondition(str(src))
+        except ConditionError as exc:
+            errors.append(f"settings.conditions.{name}: {exc}")
+    return out, errors
+
+
+def _compare(op, left: Any, right: Any) -> bool:
+    if isinstance(op, (ast.In, ast.NotIn)):
+        if isinstance(right, str):
+            hit = str(left) in right
+        elif isinstance(right, (list, tuple, dict)):
+            hit = left in right
+        else:
+            raise TypeError("'in' needs a list or string")
+        return hit if isinstance(op, ast.In) else not hit
+    if isinstance(op, ast.Eq):
+        return left == right
+    if isinstance(op, ast.NotEq):
+        return left != right
+    if isinstance(left, bool) or isinstance(right, bool) or left is None or right is None:
+        raise TypeError("ordering needs numbers or strings")
+    if isinstance(op, ast.Lt):
+        return left < right
+    if isinstance(op, ast.LtE):
+        return left <= right
+    if isinstance(op, ast.Gt):
+        return left > right
+    return left >= right
+
+
+def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, Any]:
+    """The attribute namespaces a ``when:`` expression can read."""
+    meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    args = meta.get("kwargs")
+    if not isinstance(args, dict):
+        raw = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+        args = next((raw[k] for k in ("tool_input", "toolInput", "toolArgs", "tool_args")
+                     if isinstance(raw.get(k), dict)), {})
+    from prismor.runtime.principal import is_verified
+
+    source = getattr(subject, "source", "anonymous")
+    principal = {
+        "id": getattr(subject, "user_id", None),
+        "team": getattr(subject, "team_id", None),
+        "org": getattr(subject, "org_id", None),
+        "source": source,
+        # A verified token, or an enrolled device acting through its own
+        # coding-agent hook. A caller-asserted string never is.
+        "verified": is_verified(subject, meta.get("surface")),
+        "roles": list(getattr(subject, "roles", ()) or ()),
+        "claims": dict(getattr(subject, "claims", None) or {}),
+    }
+    resource = meta.get("resource") if isinstance(meta.get("resource"), dict) else {}
+    return {
+        "principal": principal,
+        "resource": resource,
+        "args": args,
+        "tool": {"name": str(meta.get("tool_name") or "")},
+    }
+
+
 class CompiledRule:
     """A single policy rule with compiled regex patterns."""
 
@@ -527,10 +750,10 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
-        "pattern_groups", "condition", "layer",
+        "pattern_groups", "condition", "layer", "when", "match_all",
     )
 
-    def __init__(self, raw: Dict[str, Any]) -> None:
+    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
         self.id: str = raw["id"]
         # Which policy layer last wrote this rule: default, project,
         # remote (signed org) or exemption. Answers "why is this rule
@@ -570,7 +793,31 @@ class CompiledRule:
         # ignored, so drift always fails toward MORE detection, never less).
         # `add_patterns` lets an org strengthen a rule without forking the whole
         # patterns list. Order-stable + de-duplicated: surviving defaults first.
-        base: List[str] = [str(p) for p in raw["patterns"]]
+        # ``when:`` — attribute expression (who/what/which args), see
+        # AttrCondition. Core rules refuse it for the same reason they refuse
+        # ``condition:``: it can only narrow, and narrowing is disabling.
+        self.when: Optional[AttrCondition] = None
+        raw_when = raw.get("when")
+        if raw_when:
+            if raw["id"] in _NON_OVERRIDABLE_RULE_IDS or raw["category"] in _CORE_BLOCK_CATEGORIES:
+                sys.stderr.write(
+                    f"[prismor] rule '{raw['id']}': `when` ignored — core rules "
+                    f"cannot be narrowed by an attribute expression\n")
+            else:
+                try:
+                    self.when = AttrCondition(str(raw_when), named)
+                except ConditionError as exc:
+                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored\n")
+        # A rule may match on attributes alone (no patterns). Such a rule fires
+        # on every event of its types for which ``when`` holds. If its ``when``
+        # failed to parse it has nothing left to match on, and firing on every
+        # event would be worse than the typo — so it matches nothing; the
+        # validator refuses to save it in the first place.
+        self.match_all: bool = not raw.get("patterns") and bool(raw_when)
+        if self.match_all and self.when is None:
+            self.enabled = False
+
+        base: List[str] = [str(p) for p in (raw.get("patterns") or [])]
         disable_set = {str(p) for p in (raw.get("disable_patterns") or [])}
         adds = [str(p) for p in (raw.get("add_patterns") or []) if isinstance(p, str) and p]
         effective: List[str] = []
@@ -591,7 +838,9 @@ class CompiledRule:
                 sys.stderr.write(f"[prismor] rule '{self.id}': ignoring invalid custom pattern ({exc})\n")
                 continue
             effective.append(a); seen.add(a)
-        if not effective:
+        if not effective and self.match_all:
+            pass
+        elif not effective:
             # A rule must never compile to an empty alternation (that silently
             # matches nothing). Fall back to the full default set + warn — the
             # control plane separately blocks saving a non-core rule to zero.
@@ -602,7 +851,9 @@ class CompiledRule:
         # newlines — prevents evasion via embedded newlines. The individual
         # pattern strings are kept so a finding can report which one fired.
         self.raw_patterns: List[str] = effective
-        joined = _alternation(effective)
+        # A when-only rule has no text to match; `(?!)` keeps every other
+        # caller of `.patterns` (repo scans, context checks) inert for it.
+        joined = _alternation(effective) if effective else "(?!)"
         self.patterns: re.Pattern[str] = re.compile(
             joined, re.IGNORECASE | re.DOTALL
         )
@@ -990,6 +1241,15 @@ class PolicyEngine:
                 f"(the safety floor stays on for managed workspaces)\n"
             )
             override_settings.pop("selection", None)
+        # Identity config names the issuer whose tokens Prismor believes. From a
+        # repo or local file it would let whoever writes that file mint users
+        # and roles, so only the signed org policy may set it.
+        if source != "remote" and "identity" in override_settings:
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.identity from the {source} policy layer "
+                f"(only the signed org policy or eval-server flags may set it)\n"
+            )
+            override_settings.pop("identity", None)
         if "block_categories" in override_settings:
             cats = set(override_settings.get("block_categories") or [])
             dropped = _CORE_BLOCK_CATEGORIES - cats
@@ -1015,6 +1275,11 @@ class PolicyEngine:
                 **(settings.get("semantic_guard") or {}),
                 **override_settings["semantic_guard"],
             }
+        # Named conditions merge per name: an org layer redefining `is_finance`
+        # wins over the project's, but does not erase the project's other names
+        # (which its own rules still reference).
+        if isinstance(override_settings.get("conditions"), dict) and isinstance(settings.get("conditions"), dict):
+            override_settings["conditions"] = {**settings["conditions"], **override_settings["conditions"]}
         settings.update(override_settings)
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
@@ -1121,6 +1386,10 @@ class PolicyEngine:
         # workspaces only.
         _sc = settings.get("subject_controls")
         self.subject_controls: Dict[str, Any] = _sc if isinstance(_sc, dict) else {}
+        # Verified end-user identity (settings.identity) — signed org layer only,
+        # see the layer filter in _apply_override and identity_token.py.
+        _idc = settings.get("identity")
+        self.identity: Dict[str, Any] = _idc if isinstance(_idc, dict) else {}
         # Tool-combination governance config (settings.tool_tags):
         # customizable tags + forbidden combinations (generalized trifecta).
         _tt = settings.get("tool_tags")
@@ -1245,10 +1514,18 @@ class PolicyEngine:
         if isinstance(sandbox, dict):
             self.sandbox_config = sandbox
 
+        # Named conditions (settings.conditions), merged per name across layers
+        # (see _apply_override), so the signed org layer wins over a project's.
+        self.named_conditions, _cond_errors = compile_named_conditions(settings.get("conditions"))
+        for _e in _cond_errors:
+            sys.stderr.write(f"[prismor] {_e} — ignored\n")
+
         # Compile rules.
         for rule_data in rules_by_id.values():
             if rule_data.get("enabled", True):
-                self.rules.append(CompiledRule(rule_data))
+                compiled = CompiledRule(rule_data, self.named_conditions)
+                if compiled.enabled:  # a when-only rule with a broken `when` disables itself
+                    self.rules.append(compiled)
 
         for al_data in allowlist_raw:
             self.allowlists.append(AllowlistEntry(al_data))
@@ -1265,6 +1542,7 @@ class PolicyEngine:
         session_id: str = "",
         subject: Optional[Any] = None,
         include_suppressed: bool = False,
+        trace: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -1294,11 +1572,25 @@ class PolicyEngine:
         # changed nothing (so the evasion rescan can skip it).
         folded_cache: Dict[str, Optional[str]] = {}
 
+        when_ctx: Optional[Dict[str, Any]] = None  # built on first `when:` rule
+
         def _folded(field_name: str, value: str) -> Optional[str]:
             if field_name not in folded_cache:
                 folded = _fold_confusables(value)
                 folded_cache[field_name] = folded if folded != value else None
             return folded_cache[field_name]
+
+        # Dequoted spellings of the shell command, computed once per event:
+        # the normalized field (command substitutions unwrapped) and the raw
+        # command (lines intact, so text after a heredoc is still reachable).
+        dequoted_cache: Dict[str, List[str]] = {}
+
+        def _dequoted() -> List[str]:
+            if "command" not in dequoted_cache:
+                spellings = (_dequote_shell(str(text or "")) for text in
+                             (field_values.get("command"), event.get("command")))
+                dequoted_cache["command"] = [dq for dq in spellings if dq]
+            return dequoted_cache["command"]
 
         for rule in _perf.timed_rules(self.rules, findings):
             matched_via_mcp_alias = False
@@ -1329,7 +1621,13 @@ class PolicyEngine:
             folded_evidence = None
             evasion = None
 
-            if rule.condition is not None:
+            if rule.match_all:
+                # when-only rule: the attributes are the whole match; quote the
+                # tool (or first checked field) as evidence.
+                matched_evidence = field_values.get("tool_name") or next(
+                    (field_values.get(f) for f in check_fields if field_values.get(f)),
+                    event_type)
+            elif rule.condition is not None:
                 # Opt-in path: boolean expression over named pattern groups.
                 # Evaluated across all checked fields at once, since a condition
                 # like "exfil_verb and secret_ref" may legitimately be satisfied
@@ -1389,13 +1687,51 @@ class PolicyEngine:
                             evasion = "unicode_obfuscation"
                             break
 
+            if (matched_evidence is None and event_type == "shell"
+                    and rule.condition is None and "command" in check_fields):
+                # Shell-quote evasion rescan: `r''m -rf /`, `c\at .env` and
+                # `$'\x72m'` run the same program as the plain spelling but
+                # match no literal pattern. Same fallback shape as the fold.
+                for dequoted in _dequoted():
+                    if rule.patterns.search(dequoted):
+                        matched_evidence = field_values.get("command", "")
+                        folded_evidence = dequoted
+                        evasion = "shell_quote_obfuscation"
+                        break
+
             if matched_evidence is None:
+                continue
+
+            when_holds: Optional[bool] = None
+            if rule.when is not None:
+                if when_ctx is None:
+                    when_ctx = _when_context(event, subject)
+                when_holds = rule.when.evaluate(when_ctx)
+            if trace is not None:
+                # Every rule whose patterns matched, including the ones a
+                # `when` then switched off: "why didn't my rule fire?" is the
+                # question an explain exists to answer.
+                try:
+                    _mode, _why = self.explain_mode(rule)
+                except Exception:
+                    _mode, _why = rule.mode, ""
+                trace.append({
+                    "rule_id": rule.id, "title": rule.title, "layer": rule.layer,
+                    "action": rule.action, "mode": _mode, "mode_reason": _why,
+                    "when": rule.when.source if rule.when else None,
+                    "when_holds": when_holds,
+                    "fired": when_holds is not False,
+                })
+            if when_holds is False:
                 continue
 
             # Check allowlist. An explaining caller asks for the suppressed
             # ones too, tagged with the entry that swallowed them; the default
             # stays exactly as before for the enforcement path.
             _allow = self.allowlist_match(rule.id, matched_evidence)
+            if _allow is not None and trace:
+                trace[-1]["fired"] = False
+                trace[-1]["suppressed_by"] = _allow.id
             if _allow is not None:
                 if not include_suppressed:
                     continue
@@ -1420,11 +1756,40 @@ class PolicyEngine:
             if event_type == "shell" and matched_evidence:
                 try:
                     from prismor.runtime.shell_context import (
-                        is_inert_match, is_remote_payload)
-                    _m = rule.patterns.search(matched_evidence)
+                        is_inert_match,
+                        is_remote_payload,
+                        quoted_spans,
+                    )
+                    # Rules match against a normalized command so command
+                    # substitutions expose their executable payload
+                    # (``echo "$(rm -rf /)"`` -> ``echo " rm -rf / "``).
+                    # Context, however, must be judged against the raw command:
+                    # double quotes still execute ``$(...)`` and backticks
+                    # before text sinks such as echo/printf receive arguments.
+                    # Falling back keeps unicode-folded and non-command cases
+                    # conservative when the raw text no longer matches.
+                    _context_text = str(event.get("command") or "")
+                    _m = rule.patterns.search(_context_text)
+                    if _m is None:
+                        has_executable_quoted_span = any(
+                            is_payload and is_closed
+                            for _start, _end, is_payload, is_closed in quoted_spans(
+                                _context_text
+                            )
+                        )
+                        if not has_executable_quoted_span:
+                            # A quote-evasion match is judged on its dequoted
+                            # spelling, which re-quotes each word for what it
+                            # is (`echo $'\x72m -rf /'` stays an echo argument).
+                            _context_text = (
+                                folded_evidence
+                                if evasion == "shell_quote_obfuscation"
+                                else matched_evidence
+                            )
+                            _m = rule.patterns.search(_context_text)
                     if _m is not None:
                         context_inert = is_inert_match(
-                            matched_evidence, _m.start(), _m.end()
+                            _context_text, _m.start(), _m.end()
                         )
                         # A self-protection rule guards THIS install. When the
                         # match sits inside an ssh/docker/kubectl payload it
@@ -1435,8 +1800,34 @@ class PolicyEngine:
                         # still destroys a real machine (issue #344).
                         if not context_inert and rule.id in _LOCAL_JURISDICTION_RULE_IDS:
                             context_inert = is_remote_payload(
-                                matched_evidence, _m.start(), _m.end()
+                                _context_text, _m.start(), _m.end()
                             )
+                    # Context is judged on the first raw match. In a multi-line
+                    # command (e.g. an inert heredoc body next to a real command)
+                    # or a compound command separated by semicolons on one line
+                    # (`echo 'chmod 777'; rm -rf /`), an earlier match can be
+                    # inert while a later one performs the action for real.
+                    # Stay inert only when EVERY raw match is inert.
+                    # The dequoted spelling is checked too, so a quote-split
+                    # command (`echo 'chmod 777'; r''m -rf /`) cannot hide
+                    # behind an inert first match.
+                    if context_inert:
+                        def _is_match_inert(text, m):
+                            if is_inert_match(text, m.start(), m.end()):
+                                return True
+                            if (
+                                rule.id in _LOCAL_JURISDICTION_RULE_IDS
+                                and is_remote_payload(text, m.start(), m.end())
+                            ):
+                                return True
+                            return False
+
+                        _texts = [_context_text, _dequote_shell(_context_text)]
+                        context_inert = all(
+                            _is_match_inert(text, m)
+                            for text in _texts if text
+                            for m in rule.patterns.finditer(text)
+                        )
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False
@@ -3203,6 +3594,55 @@ def _fold_confusables(text: str) -> str:
     return folded.translate(_CONFUSABLE_FOLD)
 
 
+_ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+_SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+
+
+def _dequote_shell(cmd: str) -> Optional[str]:
+    """Re-spell a shell command the way the shell will see each word.
+
+    Quote removal and backslash escapes go through ``shlex``; ``$'...'``
+    (ANSI-C quoting, which shlex does not know) is decoded first. Words come
+    back re-quoted with ``shlex.quote`` and operators stay bare, so
+    ``echo 'chmod 777'; r''m -rf /`` becomes ``echo 'chmod 777' ; rm -rf /``
+    and the context check can still tell the echo argument from the command.
+
+    Works line by line and leaves everything from ``<<`` on untouched, so a
+    heredoc body keeps the shape the context check recognizes as data. A line
+    that does not parse (a quote spanning lines) is kept as it is.
+
+    Match-only text, like ``_fold_confusables``. Returns None when nothing
+    changes.
+    """
+    if not cmd or not any(c in cmd for c in "'\"\\"):
+        return None
+    out = []
+    for line in cmd.split("\n"):
+        cut = line.find("<<")
+        head, tail = (line, "") if cut < 0 else (line[:cut], line[cut:])
+        try:
+            text = _ANSI_C_QUOTE_RE.sub(
+                lambda m: shlex.quote(
+                    m.group(1).encode("latin-1", "backslashreplace").decode("unicode_escape")
+                ),
+                head,
+            )
+            lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            lexer.commenters = ""
+            head = " ".join(
+                w if set(w) <= _SHELL_OPERATOR_CHARS else shlex.quote(w)
+                for w in lexer
+            )
+        except (ValueError, UnicodeError):
+            pass
+        out.append(f"{head} {tail}" if tail else head)
+    dequoted = "\n".join(out)
+    if " ".join(dequoted.split()) == " ".join(cmd.split()):
+        return None
+    return dequoted
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
 
@@ -3818,6 +4258,9 @@ def validate_policy(path: Path) -> List[str]:
         errors.append("Missing required field: rules")
         return errors
 
+    named, cond_errors = compile_named_conditions((raw.get("settings") or {}).get("conditions"))
+    errors.extend(cond_errors)
+
     seen_ids: set[str] = set()
     for i, rule in enumerate(raw.get("rules", [])):
         prefix = f"rules[{i}]"
@@ -3832,6 +4275,8 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(f"{prefix}: missing required field 'id'")
         else:
             for field in ("id", "severity", "category", "title", "event_types", "patterns", "action"):
+                if field == "patterns" and rule.get("when"):
+                    continue  # a when-only rule matches on attributes alone
                 if field not in rule:
                     errors.append(f"{prefix}: missing required field '{field}'")
 
@@ -3869,6 +4314,23 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(
                     f"{prefix}.fields[{j}]: unknown field '{fname}' "
                     f"(one of {', '.join(sorted(_VALID_FIELDS))})")
+
+        core = rule_id in _NON_OVERRIDABLE_RULE_IDS or rule.get("category") in _CORE_BLOCK_CATEGORIES
+        if rule.get("when"):
+            if core:
+                errors.append(f"{prefix}: rule '{rule_id}' is a core protection — `when` is not allowed")
+            try:
+                AttrCondition(str(rule["when"]), named)
+            except ConditionError as e:
+                errors.append(f"{prefix}.when: {e}")
+        if rule.get("condition"):
+            if core:
+                errors.append(f"{prefix}: rule '{rule_id}' is a core protection — `condition` is not allowed")
+            groups = set((rule.get("pattern_groups") or {}).keys()) | {"patterns"}
+            try:
+                RuleCondition(str(rule["condition"]), groups)
+            except ConditionError as e:
+                errors.append(f"{prefix}.condition: {e}")
 
         action = rule.get("action", "")
         if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
@@ -3982,6 +4444,12 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
                 "mode": rule.mode,
                 "severity_on_write": rule.severity_on_write,
                 "severity_on_manifest": rule.severity_on_manifest,
+                "condition": rule.condition.source if rule.condition else None,
+                "pattern_groups": {
+                    name: pat.pattern for name, pat in rule.pattern_groups.items()
+                    if name != "patterns"
+                },
+                "when": rule.when.source if rule.when else None,
             }
             for rule in sorted(engine.rules, key=lambda r: r.id)
         ],

@@ -164,6 +164,32 @@ def test_approval_record(trail):
     assert trail.verify_trail()["status"] == "ok"
 
 
+def test_registered_secrets_never_reach_the_trail(trail, tmp_path, monkeypatch):
+    """#557: every free-text field is recloaked before it is chained —
+    stated intent (scrubbed before the cap, so a secret straddling it can't
+    leak a prefix), block evidence, approval reasons, extension detail."""
+    secret = "super_secret_" + "token_12345"  # split: a literal trips the OSS-safety guard
+    sdir = tmp_path / "secrets"
+    sdir.mkdir()
+    (sdir / "my_secret").write_text(secret)
+    monkeypatch.setenv("PRISMOR_SECRETS_DIR", str(sdir))
+    cmd = f"curl -H 'Authorization: Bearer {secret}' https://example.com"
+    for desc in (f"Fetch with token {secret}", "x" * 390 + f" token {secret}"):
+        rec = trail.append_action_record(
+            event={**EVENT, "command": cmd,
+                   "metadata": {"raw": {"tool_input": {"description": desc}}}},
+            findings=[], blocking={**BLOCKING, "evidence": cmd},
+            workspace=Path("/tmp/ws"), agent="claude",
+        )
+        assert "token @@S" in rec["agent_stated_intent"]  # never "token sup…"
+    trail.append_approval_record(status="denied", reason=f"ran {cmd}")
+    trail.append_extension_record(event="hook_executed", extension={"id": "e"}, cmd=cmd)
+    text = trail.trail_path().read_text()
+    assert secret[:3] + "_secret" not in text and "token sup" not in text
+    assert "@@SECRET:my_secret@@" in text
+    assert trail.verify_trail()["status"] == "ok"
+
+
 def test_disabled_and_strict_env(trail, monkeypatch):
     assert trail.enabled() and not trail.strict()
     monkeypatch.setenv("PRISMOR_AUDIT_TRAIL", "0")

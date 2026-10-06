@@ -35,11 +35,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest", "cryptography>=41"]
+dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8"]
 # Ed25519 receipt signing for enrolled devices (tamper-evident + non-repudiable
 # telemetry receipts). Optional: without it, telemetry falls back to the keyless
 # hash chain. `pip install "prismor[signing]"`.
 signing = ["cryptography>=41"]
+# Verified end-user identity (settings.identity): JWT + JWKS verification.
+# `pip install "prismor[identity]"`. docs/identity-verification.md
+identity = ["PyJWT[crypto]>=2.8"]
 # LLM layer of the semantic prompt-injection guard on hosts without the Claude
 # Code CLI: routes to any provider via litellm. `pip install "prismor[semantic]"`.
 semantic = ["litellm>=1.40"]
@@ -142,7 +145,9 @@ packages = [
 "docs/agentic-architecture-review.md" = "prismor/runtime/data/docs/agentic-architecture-review.md"
 "docs/architecture.md" = "prismor/runtime/data/docs/architecture.md"
 "docs/attestation-bundle.md" = "prismor/runtime/data/docs/attestation-bundle.md"
+"docs/attribute-conditions.md" = "prismor/runtime/data/docs/attribute-conditions.md"
 "docs/audit-trail.md" = "prismor/runtime/data/docs/audit-trail.md"
+"docs/authzen.md" = "prismor/runtime/data/docs/authzen.md"
 "docs/canary.md" = "prismor/runtime/data/docs/canary.md"
 "docs/cli-reference.md" = "prismor/runtime/data/docs/cli-reference.md"
 "docs/cloud-agents.md" = "prismor/runtime/data/docs/cloud-agents.md"
@@ -170,6 +175,7 @@ packages = [
 "docs/governance-surfaces.md" = "prismor/runtime/data/docs/governance-surfaces.md"
 "docs/hermes.md" = "prismor/runtime/data/docs/hermes.md"
 "docs/iam.md" = "prismor/runtime/data/docs/iam.md"
+"docs/identity-verification.md" = "prismor/runtime/data/docs/identity-verification.md"
 "docs/inference-hook.md" = "prismor/runtime/data/docs/inference-hook.md"
 "docs/installation.md" = "prismor/runtime/data/docs/installation.md"
 "docs/learning.md" = "prismor/runtime/data/docs/learning.md"
@@ -180,9 +186,11 @@ packages = [
 "docs/modes.md" = "prismor/runtime/data/docs/modes.md"
 "docs/n8n.md" = "prismor/runtime/data/docs/n8n.md"
 "docs/network-isolation.md" = "prismor/runtime/data/docs/network-isolation.md"
+"docs/observability.md" = "prismor/runtime/data/docs/observability.md"
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
+"docs/prompt-guardrails.md" = "prismor/runtime/data/docs/prompt-guardrails.md"
 "docs/query-your-data.md" = "prismor/runtime/data/docs/query-your-data.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"

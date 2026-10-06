@@ -7,6 +7,7 @@ Commands:
   deps          Check workspace dependencies against threat feed
   audit         Full security posture check across all Prismor subsystems
   audit --fix   Auto-remediate fixable issues
+  audit judge   LLM judge reviews a sample of ALLOWED tool calls after the fact
   status        One-shot health check for this workspace (--all for every workspace)
   doctor        Health-check every runtime subsystem (hooks, policy, signature, enrollment, sink, chain); --json for scripts
   analyze       Analyze a JSONL session file
@@ -55,6 +56,8 @@ import json
 import os
 import re
 import subprocess
+import contextlib
+import io
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -383,6 +386,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             port=args.port,
             workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
             api_key=getattr(args, "api_key", None),
+            identity=_identity_from_args(args),
         )
         return
 
@@ -1213,6 +1217,36 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     # ── audit: full security posture check ──────────────────────────
+    if args.command == "audit" and getattr(args, "target", None) == "judge":
+        from prismor.runtime import judge_audit as _ja
+        try:
+            report = _ja.run(workspace, since=args.since, sample=args.sample,
+                             max_n=args.max_n, dry_run=args.dry_run)
+        except (_ja.JudgeNotConfigured, ValueError) as exc:
+            sys.stderr.write(f"prismor audit judge: {exc}\n")
+            raise SystemExit(2)
+        if args.json:
+            print(json.dumps(report, indent=2))
+        else:
+            print(f"Judge audit: {report['eligible']} allowed call(s) in the last {report['window']}, "
+                  f"{report['sampled']} sampled at {report['sample_rate']:g} (max {report['max']})")
+            if report["dry_run"]:
+                for ev in report["events"]:
+                    print(f"  would judge  {ev['event_id']}  {ev['ts']}  {ev['type']}")
+                print("Dry run: no judge calls made.")
+            else:
+                print(f"Judged {report['judged']}, flagged {len(report['flagged'])}"
+                      + (f", {report['unjudged']} unjudged (judge failed or over budget; retried next run)"
+                         if report["unjudged"] else ""))
+                for hit in report["flagged"]:
+                    print(_color(f"  FLAGGED  {hit['event_id']}  {hit['tool']}  "
+                                 f"{hit['category']} {hit['risk_score']:.2f}", _YELLOW))
+                    print(f"           {hit['reason']}")
+                if report["flagged"]:
+                    print("Allowed calls are never blocked retroactively. Inspect one with: "
+                          "prismor query \"SELECT * FROM judge_audit WHERE verdict='flagged'\"")
+        return
+
     if args.command == "audit":
         from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
@@ -1499,6 +1533,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── mcp-gateway (single MCP connector for all downstream servers) ──
     if args.command == "mcp-gateway":
         register_workspace(workspace)
+        _cfg = _identity_from_args(args)
+        if _cfg:
+            from prismor.runtime.identity_token import set_server_config
+            set_server_config(_cfg)
+            sys.stderr.write(f"[prismor-gateway] identity: {_cfg['mode']} — tokens from {_cfg['issuer']} "
+                             f"via PRISMOR_IDENTITY_TOKEN_FILE / PRISMOR_IDENTITY_TOKEN\n")
         from prismor.runtime.mcp_gateway import run_gateway, GatewayConfigError
         try:
             sys.exit(run_gateway(args, workspace))
@@ -1612,6 +1652,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         # "what does this repo do?" is no longer Read-only forever once the
         # user says "now fix it". (Narrowing is the operator's job: IAM or the
         # dashboard's per-session denies, which merge_scoped_rules preserves.)
+        # The scoped-agent notice is held until the decision: a blocked prompt's
+        # stderr IS the block reason on Codex, and the notice buried it (#541).
+        _scoped_notice = io.StringIO()
         if event.get("agent_event") == "UserPromptSubmit":
             try:
                 from prismor.runtime.scoped_agent import (
@@ -1634,17 +1677,18 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # can never put an MCP tool in scope and every MCP call is
                     # denied by omission, whatever the prompt asks for.
                     _available_tools = _available_tools_for_scope(workspace, args.agent)
-                    _scoped_rules = _synthesize_scoped(
-                        goal=event["prompt"],
-                        available_tools=_available_tools,
-                        workspace=workspace,
-                    )
+                    with contextlib.redirect_stderr(_scoped_notice):
+                        _scoped_rules = _synthesize_scoped(
+                            goal=event["prompt"],
+                            available_tools=_available_tools,
+                            workspace=workspace,
+                        )
                     if _scoped_rules:
                         _scoped_rules = _agent_invariants(_scoped_rules, args.agent)
                         if _existing_scoped is not None:
                             _scoped_rules = _merge_scoped(_existing_scoped, _scoped_rules)
                         _save_scoped(workspace, normalized["sessionId"], _scoped_rules)
-                        sys.stderr.write(_format_scoped_box(_scoped_rules) + "\n")
+                        _scoped_notice.write(_format_scoped_box(_scoped_rules) + "\n")
             except Exception as _scoped_exc:
                 sys.stderr.write(f"[prismor] scoped agent error: {_scoped_exc}\n")
         _perf.lap("scope_synthesis")
@@ -1703,6 +1747,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         _current_engine = decision.engine
         current_findings = decision.findings
         blocking = decision.blocking
+        if blocking is None and _scoped_notice.getvalue():
+            sys.stderr.write(_scoped_notice.getvalue())
 
         # Stamp how long this hook process took once it exits -- whichever
         # path it leaves by (allow, block via sys.exit(2), sandbox rewrite) --
@@ -2571,8 +2617,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()
-            print("Next step: register your first secret with")
-            print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
+            _n = len(list_secrets())
+            if _n:
+                print(f"{_n} secret(s) already registered — see {_color('prismor cloak list', _CYAN)}")
+            else:
+                print("Next step: register your first secret with")
+                print(f"  {_color('prismor cloak add <name>', _CYAN)}  (reads the value from stdin)")
             return
 
         if sub == "uninstall":
@@ -2941,7 +2991,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             _policy_edit(workspace)
             return
         if args.policy_command == "test":
-            _policy_test(workspace, test_file=getattr(args, "file", None))
+            _policy_test(workspace, test_file=getattr(args, "file", None),
+                         policy_file=getattr(args, "policy", None),
+                         name_filter=getattr(args, "filter", None),
+                         as_json=getattr(args, "json", False))
             return
         # No action given → print usage instead of the cryptic
         # "Unsupported command: policy" (the command IS supported; it needs an action).
@@ -3319,6 +3372,10 @@ def build_parser() -> argparse.ArgumentParser:
     _ep.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
     _ep.add_argument("--workspace", default=None, help="Workspace path for policy/IAM (default: cwd)")
     _ep.add_argument("--api-key", default=None, help="Require Authorization: Bearer <key> on /v1/evaluate (default: $PRISMOR_EVAL_KEY); needed when exposing beyond localhost")
+    # Verified end-user identity for hosts without a signed org policy (the
+    # org's settings.identity wins when present). docs/identity-verification.md
+    from prismor.runtime.identity_token import add_cli_args as _add_identity_args
+    _add_identity_args(_ep)
 
     # ── proxy: the LLM lane (governs agents that cannot be hooked) ───────
     _pp = subparsers.add_parser(
@@ -3468,10 +3525,21 @@ def build_parser() -> argparse.ArgumentParser:
     deps_parser.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── audit ──────────────────────────────────────────────────────────
-    audit_parser = subparsers.add_parser("audit", help="Full security posture audit across all Prismor subsystems")
+    audit_parser = subparsers.add_parser(
+        "audit",
+        help="Full security posture audit; `audit judge` has the LLM judge review a sample of allowed calls",
+    )
+    audit_parser.add_argument(
+        "target", nargs="?", choices=["judge"],
+        help="judge: sampled after-the-fact judge review of ALLOWED tool calls in the local store",
+    )
     audit_parser.add_argument("--workspace", help="Workspace path")
     audit_parser.add_argument("--fix", action="store_true", help="Auto-remediate fixable issues")
     audit_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    audit_parser.add_argument("--since", help="[judge] window to audit, e.g. 30m, 24h, 7d (default: semantic_guard.audit.window, 24h)")
+    audit_parser.add_argument("--sample", type=float, help="[judge] fraction of allowed calls to judge, 0-1 (default 0.05)")
+    audit_parser.add_argument("--max", type=int, dest="max_n", metavar="N", help="[judge] cap on judge calls this run (default 50)")
+    audit_parser.add_argument("--dry-run", action="store_true", help="[judge] show what would be judged; no judge calls")
 
     # ── query / docs ────────────────────────────────────────────────────
     query_parser = subparsers.add_parser(
@@ -3758,6 +3826,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Stable session id (default: fresh per process). Hosted deployments "
                            "set this so restored session state survives gateway restarts. "
                            "Env fallback: PRISMOR_SESSION_ID")
+    _add_identity_args(gw_parser)
     gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
                            help="plain=<server>__<tool> (default); none=raw tool names "
                            "(single-upstream shim only)")
@@ -3874,7 +3943,10 @@ def build_parser() -> argparse.ArgumentParser:
     policy_export.add_argument("--workspace", help="Workspace path")
 
     policy_test = policy_sub.add_parser("test", help="Run declarative policy tests from policy-tests.yaml")
-    policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml)")
+    policy_test.add_argument("--file", help="Path to policy-tests.yaml (default: .prismor/policy-tests.yaml, or the --policy file's own tests:)")
+    policy_test.add_argument("--policy", help="Test this policy file instead of the workspace's effective policy (e.g. a policy exported from the console, in CI)")
+    policy_test.add_argument("--filter", help="Only run tests whose name matches this pattern (* and ? wildcards; matrix rows are named 'test [principal]')")
+    policy_test.add_argument("--json", action="store_true", help="Print results as JSON")
     policy_test.add_argument("--workspace", help="Workspace path")
 
     # ── mode (governance mode templates → policy.yaml) ─────────────────
@@ -4523,6 +4595,10 @@ def _print_findings(
                 print(f"  event_types: {sorted(rule.event_types)}")
                 print(f"  fields: {rule.fields}")
                 print(f"  pattern: {_truncate_str(rule.patterns.pattern, 160)}")
+                if rule.condition is not None:
+                    print(f"  condition: {rule.condition.source}")
+                if rule.when is not None:
+                    print(f"  when: {rule.when.source}")
             else:
                 print(f"  (built-in rule — no YAML pattern)")
 
@@ -5572,12 +5648,27 @@ def _policy_validate(path: Path) -> None:
     raise SystemExit(1)
 
 
-def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
-    """Run declarative policy tests from policy-tests.yaml."""
-    from prismor.runtime.policy_test import run_cases, load_cases
+def _identity_from_args(args) -> Optional[Dict[str, Any]]:
+    """--identity-* flags -> config (JWKS discovered), exiting with a clear
+    message when the issuer cannot be used."""
+    from prismor.runtime.identity_token import IdentityError, config_from_args
+    try:
+        return config_from_args(args)
+    except IdentityError as exc:
+        sys.stderr.write(f"[prismor] identity: {exc.reason} (pass --identity-jwks, or check --identity-issuer)\n")
+        raise SystemExit(2)
 
+
+def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: Optional[str] = None,
+                 name_filter: Optional[str] = None, as_json: bool = False) -> None:
+    """Run declarative policy tests from policy-tests.yaml."""
+    from prismor.runtime.policy_test import run_cases, load_suite
+
+    policy_path = Path(policy_file) if policy_file else None
     if test_file:
         path = Path(test_file)
+    elif policy_path is not None:
+        path = policy_path  # a policy carrying its own tests: (console export)
     else:
         path = workspace / ".prismor" / "policy-tests.yaml"
 
@@ -5595,12 +5686,18 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
             raise SystemExit(1)
 
     try:
-        cases = load_cases(path)
+        cases, fixtures = load_suite(path)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         sys.stderr.write(f"error: {exc}\n")
         raise SystemExit(1)
 
-    result = run_cases(cases, workspace=workspace)
+    result = run_cases(cases, workspace=workspace, fixtures=fixtures,
+                       policy_path=policy_path, name_filter=name_filter)
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        if result["failed"]:
+            raise SystemExit(1)
+        return
     print()
     print(f"  {_color('PRISMOR', _BOLD)}  policy tests ({path.name})")
     print(f"  {_color('─' * 50, _DIM)}")
@@ -5609,6 +5706,8 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
     for r in result["results"]:
         if r["status"] == "ok":
             print(f"  {_color('PASS', _GREEN)}  {r['name']}")
+        elif r["status"] == "skip":
+            print(f"  {_color('SKIP', _DIM)}  {r['name']}" + (f"  ({r['reason']})" if r.get("reason") else ""))
         else:
             print(f"  {_color('FAIL', _RED)}  {r['name']}")
             print(f"         input:    {r['input']!r}")
@@ -5619,7 +5718,8 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None) -> None:
     print()
     color = _GREEN if result["failed"] == 0 else _RED
     print(f"  {_color(str(result['passed']) + '/' + str(result['total']) + ' passed', color)}"
-          + (f"  ({result['failed']} failed)" if result["failed"] else ""))
+          + (f"  ({result['failed']} failed)" if result["failed"] else "")
+          + (f"  ({result['skipped']} skipped)" if result.get("skipped") else ""))
     print()
     if result["failed"]:
         raise SystemExit(1)

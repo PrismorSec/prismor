@@ -1,0 +1,51 @@
+name: Prismor policy test
+description: >
+  Run `prismor policy test` in CI: declarative tests (fixtures, per-principal
+  expectations) against a policy file, failing the job on any mismatch.
+inputs:
+  policy:
+    description: Policy file to test (may carry its own `tests:`). Empty = the workspace's policy.
+    required: false
+    default: ""
+  tests:
+    description: Test file. Empty = the policy's own tests, else .prismor/policy-tests.yaml.
+    required: false
+    default: ""
+  filter:
+    description: Only run tests whose name matches (* and ? wildcards).
+    required: false
+    default: ""
+  prismor-version:
+    description: >
+      pip version spec to install prismor from PyPI instead, e.g. "==1.59.0".
+      Empty (default) installs the prismor source this action ships with, so
+      `uses: …/policy-test@<ref>` always runs the CLI from that same ref.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - shell: bash
+      env:
+        VERSION: ${{ inputs.prismor-version }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if [ -n "$VERSION" ]; then
+          python -m pip install --quiet "prismor$VERSION"
+        else
+          python -m pip install --quiet "$ACTION_PATH/../../.."
+        fi
+    - shell: bash
+      env:
+        POLICY: ${{ inputs.policy }}
+        TESTS: ${{ inputs.tests }}
+        FILTER: ${{ inputs.filter }}
+      run: |
+        args=(policy test --workspace "$GITHUB_WORKSPACE")
+        [ -n "$POLICY" ] && args+=(--policy "$POLICY")
+        [ -n "$TESTS" ] && args+=(--file "$TESTS")
+        [ -n "$FILTER" ] && args+=(--filter "$FILTER")
+        PRISMOR_HOME="$RUNNER_TEMP/prismor-home" prismor "${args[@]}"

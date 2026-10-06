@@ -747,9 +747,54 @@ class Gateway:
             return tool
         return f"{server}__{tool}"
 
+    def _never_allowed(self, route: "_Route") -> bool:
+        """Would every call to this tool be refused, whatever its arguments?
+
+        Asked once per tool at tools/list, so the agent is never shown a tool
+        it can only fail with (the approach of filtering the MCP tool list per
+        user, rather than refusing each attempt). Only decisions that cannot
+        depend on the arguments count:
+
+        - control-plane refusals (agent paused, tool denied for this agent,
+          org or end-user tool deny, suspended user, identity required);
+        - a ``when:`` rule matched on the tool name whose expression reads no
+          ``args.*`` and no ``resource.*``.
+
+        Anything else (a pattern that might match some arguments and not
+        others) stays a call-time decision. Observe mode hides nothing.
+        """
+        if self.mode != "enforce" or self._passthrough(route):
+            return False
+        # ponytail: one full evaluation per tool (~20 ms each: the engine is
+        # rebuilt per call), so a 50-tool server adds ~1 s to tools/list. Share
+        # one PolicyEngine across the probes if servers that large show up.
+        try:
+            from prismor.runtime.runtime import evaluate_tool_call
+            with self._eval_lock:
+                decision = evaluate_tool_call(
+                    event=self._build_call_event(route, {}), workspace=self.workspace,
+                    agent=GATEWAY_AGENT, mode=self.mode, session_id=self.session_id,
+                    agent_name=self.agent_name, persist=False, register_agent=False,
+                    flush_at_exit=False)
+        except Exception:
+            return False  # a broken probe hides nothing; the call is still checked
+        b = decision.blocking
+        if decision.allow or not b:
+            return False
+        if b.get("category") == "agent-control":
+            return True
+        rule = next((r for r in getattr(decision.engine, "rules", []) if r.id == b.get("ruleId")), None)
+        if rule is None or rule.when is None or rule.fields != ["tool_name"]:
+            return False
+        src = rule.when.source
+        named = getattr(decision.engine, "named_conditions", {}) or {}
+        src += " " + " ".join(c.source for n, c in named.items() if n in src)
+        return "args" not in src and "resource" not in src
+
     def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
+        hidden: List[str] = []
         with self._init_cv:
             # Give upstreams still in their handshake a chance to come up
             # rather than answering with 0 tools (#559). Whatever is still
@@ -783,15 +828,39 @@ class Gateway:
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
                                          meta_tags=_extract_meta_tags(tool))
+                if self._never_allowed(routes[exposed]):
+                    hidden.append(exposed)
+                    del routes[exposed]
+                    continue
                 entry = dict(tool)
                 entry["name"] = exposed
                 if self.namespace != "none" and not up.spec.local:
                     desc = str(tool.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
+        if hidden:
+            sys.stderr.write(f"[prismor-gateway] hiding {len(hidden)} tool(s) this caller can never use: "
+                             f"{', '.join(sorted(hidden))}\n")
+        from prismor.runtime.principal import current_token
         with self._routes_lock:
             self._routes = routes
+            self._hidden = set(hidden)
+            # Which end user this list was filtered for (see _identity_changed).
+            self._listed_token = current_token()
         self._reply(req_id, {"tools": tools})
+
+    def _identity_changed(self) -> None:
+        """Tell the host to re-list when the end user's token has changed since
+        the last tools/list (a refresher rotated PRISMOR_IDENTITY_TOKEN_FILE to
+        another user, or it expired and was renewed): hosts only re-fetch the
+        tool list when notified, and the visible tools follow the user."""
+        from prismor.runtime.principal import current_token
+        token = current_token()
+        with self._routes_lock:
+            if not hasattr(self, "_listed_token") or token == self._listed_token:
+                return
+            self._listed_token = token
+        self._send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/call (the enforcement point) ───────────────────────────────
 
@@ -804,12 +873,16 @@ class Gateway:
             self._reply_error(req_id, -32603, f"prismor-gateway internal error: {exc}")
 
     def _handle_tools_call(self, req_id: Any, params: Dict[str, Any]) -> None:
+        self._identity_changed()
         name = str(params.get("name") or "")
         arguments = params.get("arguments")
         with self._routes_lock:
             route = self._routes.get(name)
+            hidden = name in getattr(self, "_hidden", ())
         if route is None:
-            self._reply_error(req_id, -32602, f"unknown tool: {name}")
+            self._reply_error(req_id, -32602,
+                              f"tool {name} is not available to this caller (denied by policy)" if hidden
+                              else f"unknown tool: {name}")
             return
 
         # Keep org-managed policy fresh on the hot path (debounced ~30s;
@@ -928,7 +1001,7 @@ class Gateway:
             # (or leaked secret) the withhold exists to keep out of its context.
             self._reply(req_id, _blocked_result(
                 "[Prismor] response withheld", withhold,
-                unblock=self._unblock_text(withhold, route),
+                unblock=self._unblock_text(withhold, route, arguments=arguments),
                 include_evidence=False))
             return
 
@@ -964,7 +1037,8 @@ class Gateway:
             f"({blocking.get('ruleId') or blocking.get('title')}) — "
             f"passing through: {why}\n")
 
-    def _unblock_text(self, blocking: Dict[str, Any], route: "_Route") -> str:
+    def _unblock_text(self, blocking: Dict[str, Any], route: "_Route",
+                      arguments: Optional[Dict[str, Any]] = None) -> str:
         """The hook layer tells the human how to lift a block (narrowest first:
         `prismor allow <rule>` … `prismor pause`). The gateway said nothing,
         so a mirrored block read as a dead end — the person at the keyboard
@@ -972,6 +1046,21 @@ class Gateway:
         ended with the whole mirror being ripped out by hand. Same text here,
         plus the mirror's own two exits."""
         lines: List[str] = []
+        if arguments is not None:
+            # Withheld RESULT (#540): the evidence is the tool output, so an
+            # allow pattern built from it names the output's first line (the
+            # first file of a batch read, a file's heading), not the injected
+            # span, and allowing it would let the injection through too. Offer
+            # no pattern; say which call was withheld so the human knows what
+            # to review.
+            blocking = {**blocking, "evidence": ""}
+            args = json.dumps(arguments, ensure_ascii=False, default=str)
+            if len(args) > 300:
+                args = args[:300] + "…"
+            lines.append(
+                f"Withheld output of {route.server}__{route.tool}({args}). "
+                "Review what that call returned before allowing anything: an allow "
+                "rule for this output would also let the flagged content through.")
         try:
             from prismor.runtime import unblock as _unblock
             from prismor.runtime.enterprise import identity as _identity
@@ -1132,6 +1221,11 @@ class Gateway:
 
     def _build_call_event(self, route: _Route, arguments: Any) -> Dict[str, Any]:
         base = self._event_base(route, "PreToolUse")
+        # The structured arguments, for `when:` rules (`args.amount`). Without
+        # this every args.* path is missing and an attribute rule fires on
+        # every call through the gateway.
+        if isinstance(arguments, dict):
+            base["metadata"]["kwargs"] = arguments
         if route.upstream.spec.local:
             # Native event shape ("shell"/"file_read"/"file_write") so the
             # mirrored tool is screened by the real command and path rules
@@ -1250,7 +1344,12 @@ def _blocked_result(prefix: str, blocking: Dict[str, Any],
 
 # ── install / uninstall helper ───────────────────────────────────────────────
 
-DEFAULT_GATEWAY_CONFIG = Path.home() / ".prismor" / "mcp-gateway.json"
+# Lives in the Prismor home, so a relocated $PRISMOR_HOME (a second identity on
+# a shared box, CI, a test rig) gets its own gateway config instead of writing
+# into the real user's ~/.prismor.
+from prismor.runtime.store import prismor_home as _prismor_home, relocated_home_env as _relocated_home_env
+
+DEFAULT_GATEWAY_CONFIG = _prismor_home() / "mcp-gateway.json"
 
 
 # Top-level keys an MCP server block is declared under. ``mcpServers`` is the
@@ -1282,9 +1381,13 @@ def _gateway_entry(mode: str = "enforce") -> Dict[str, Any]:
     # anyway. So the written entry pins the mode (default enforce), and the
     # installed .mcp.json actually protects the agent. `mirror on` defaults to
     # enforce for the same reason.
-    return {"command": "prismor",
-            "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG),
-                     "--mode", mode]}
+    entry: Dict[str, Any] = {
+        "command": "prismor",
+        "args": ["mcp-gateway", "--config", str(DEFAULT_GATEWAY_CONFIG), "--mode", mode]}
+    env = _relocated_home_env()
+    if env:
+        entry["env"] = env
+    return entry
 
 
 def _is_prismor_entry(name: str, spec: Any) -> bool:
@@ -1419,6 +1522,11 @@ def install_gateway(workspace: Path, mode: str = "enforce") -> str:
     # gateway, install silently downgrades a working set of MCP servers to none
     # until the developer clicks through a dialog they were never told about.
     # Same reasoning, same mechanism, as `prismor mirror on`.
+    try:  # tell the console now that these servers are governed (#279)
+        from prismor.runtime.discover import maybe_report_background
+        maybe_report_background(workspace, force=True)
+    except Exception:
+        pass
     note = ""
     try:
         from prismor.runtime.mirror_cli import _approve_project_server
@@ -1493,6 +1601,12 @@ def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
             lines.append(f"  FAILED    {r.path}  — {r.detail}")
         else:
             lines.append(f"  skipped   {r.path}  — {r.detail}")
+    if total:
+        try:
+            from prismor.runtime.discover import maybe_report_background
+            maybe_report_background(workspace, force=True)
+        except Exception:
+            pass
     head = (f"Moved {total} server(s) into {DEFAULT_GATEWAY_CONFIG} "
             f"from {sum(1 for r in results if r.ok)} config file(s).")
     return head + "\n" + "\n".join(lines)

@@ -28,22 +28,30 @@ Write endpoints (human-only — localhost):
     PUT /api/policy/project        → body: {yaml, workspace} — write project policy
     POST /api/agents/:name         → body: {enabled?, mode?, iam_profile?}
     PATCH /api/sessions/:id/control → body: {action, workspace, …data}
-    OPTIONS *              → 204 CORS preflight
+
+Every request passes ``_request_allowed``: no CORS, a loopback-only Host header
+(DNS rebinding), same-origin only (CSRF), and a token when bound off loopback.
 """
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
+import os
+import secrets
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlsplit
 
 from prismor.runtime.store import (
     get_aggregate_stats,
     get_sessions_page,
     get_mcp_usage,
+    get_dependency_usage,
+    get_network_calls,
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
@@ -345,14 +353,26 @@ def _docs_search(root: Path, query: str, limit: int = 60):
     return results
 
 
-_CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-}
-
 # The workspace where the server was launched (set by run_server).
 _SERVER_WORKSPACE: Optional[Path] = None
+
+# Required on every request when bound off loopback (set by run_server).
+_SERVER_TOKEN: Optional[str] = None
+_TOKEN_COOKIE = "prismor_dashboard_token"
+
+
+def _is_loopback(host: str) -> bool:
+    host = host.strip("[]")
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _hostname(netloc: str) -> str:
+    return (urlsplit("//" + netloc).hostname or "").lower()
 
 
 def _revocation_state() -> Optional[dict]:
@@ -408,16 +428,66 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass
 
-    def _send_cors(self) -> None:
-        for key, value in _CORS_HEADERS.items():
-            self.send_header(key, value)
+    def parse_request(self) -> bool:
+        # One gate for every method, so a new route can't forget it.
+        if not super().parse_request():
+            return False
+        reason = self._request_allowed()
+        if reason is None:
+            return True
+        status, msg = reason
+        self.close_connection = True  # the unread body would parse as the next request
+        self._send_json({"error": msg}, status=status)
+        return False
+
+    def _request_allowed(self) -> Optional[tuple]:
+        """None when the request may proceed, else (status, message).
+
+        The API reads agent transcripts and rewrites the security policy, so a
+        web page the user happens to have open must not be able to reach it.
+        """
+        host = self.headers.get("Host", "")
+        bound = str(self.server.server_address[0])
+        # DNS rebinding: an attacker's hostname resolving to 127.0.0.1 is
+        # same-origin to the browser, so Origin alone can't catch it.
+        if _is_loopback(bound) and not _is_loopback(_hostname(host)):
+            return 403, "forbidden host"
+        # CSRF / cross-origin reads. Our own page is always same-origin.
+        origin = self.headers.get("Origin")
+        if origin is not None and urlsplit(origin).netloc.lower() != host.lower():
+            return 403, "cross-origin request refused"
+        # A link to the dashboard is fine (the page can't read the result);
+        # a script fetch or form post from another site is not.
+        navigation = self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
+        if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none") and not navigation:
+            return 403, "cross-site request refused"
+        if _SERVER_TOKEN:
+            presented = self._presented_token()
+            if not presented or not hmac.compare_digest(presented, _SERVER_TOKEN):
+                return 401, "dashboard token required (see the URL printed at startup)"
+        return None
+
+    def _presented_token(self) -> str:
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == _TOKEN_COOKIE:
+                return value
+        return parse_qs(urlparse(self.path).query).get("token", [""])[0]
+
+    def _send_token_cookie(self) -> None:
+        if _SERVER_TOKEN:
+            self.send_header(
+                "Set-Cookie", f"{_TOKEN_COOKIE}={_SERVER_TOKEN}; HttpOnly; SameSite=Strict; Path=/"
+            )
 
     def _send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
-        self._send_cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -430,7 +500,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
-        self._send_cors()
+        self._send_token_cookie()
         self.end_headers()
         self.wfile.write(body)
 
@@ -447,11 +517,6 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             p = Path(ws_param)
             return p if p.exists() else None
         return _SERVER_WORKSPACE
-
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self.send_response(204)
-        self._send_cors()
-        self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -489,7 +554,6 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
             self.send_header("Content-Length", str(len(payload)))
-            self._send_cors()
             self.end_headers()
             self.wfile.write(payload)
             return
@@ -702,6 +766,22 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
                 return
             self._send_json(data)
+            return
+
+        if path == "/api/network-calls":
+            try:
+                days = max(1, qint("days", 7))
+                self._send_json(get_network_calls(hours=days * 24))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/dependencies":
+            try:
+                days = max(1, qint("days", 30))
+                self._send_json(get_dependency_usage(hours=days * 24))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
             return
 
         if path == "/api/tokens":
@@ -1025,8 +1105,12 @@ def run_server(
     Prismor home DB; when a launch workspace is available, older local state is
     imported once before serving requests.
     """
-    global _SERVER_WORKSPACE
+    global _SERVER_WORKSPACE, _SERVER_TOKEN
     _SERVER_WORKSPACE = workspace
+    # Off loopback anyone who can reach the port could rewrite the policy.
+    _SERVER_TOKEN = None if _is_loopback(host) else (
+        os.environ.get("PRISMOR_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
+    )
     if workspace:
         _migrate_workspace_runtime_state(workspace, prismor_home())
         initialize_database(workspace)
@@ -1043,7 +1127,7 @@ def run_server(
             else:
                 raise
 
-    url = f"http://{host}:{port}"
+    url = f"http://{host}:{port}" + (f"/?token={_SERVER_TOKEN}" if _SERVER_TOKEN else "")
     print(f"[prismor] dashboard → {url}  (Ctrl-C to stop)  state → {prismor_home()}", flush=True)
     if open_browser:
         import threading

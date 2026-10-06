@@ -362,3 +362,14 @@ test("redaction failure returns the original result (never fails the call)", asy
     },
   );
 });
+
+test("identityToken is sent as X-Prismor-Identity, never in the body", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const run_shell = { execute: async ({ command }) => `ran: ${command}` };
+    const tools = prismorTools({ run_shell }, { identityToken: "eyJ.test.sig" });
+    await tools.run_shell.execute({ command: "echo hi" });
+    assert.equal(requests[0].headers["X-Prismor-Identity"], "Bearer eyJ.test.sig");
+    assert.equal(JSON.stringify(requests[0].body).includes("eyJ.test.sig"), false);
+  });
+});

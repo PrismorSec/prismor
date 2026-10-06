@@ -132,6 +132,10 @@ def _append(record: Dict[str, Any]) -> Dict[str, Any]:
     so a crash between the two produces a verifiable seq gap rather than a
     forked seq. Raises on I/O failure; the caller decides best-effort vs strict.
     """
+    # Every record type carries free text (block evidence, approval reasons,
+    # extension detail) — scrub once here, before the record is hashed and
+    # signed, since a chained line can never be redacted afterwards.
+    record.update(_scrub(record))
     state_file = state_path()
     with _locked(state_file):
         state = _read_state(state_file)
@@ -191,13 +195,17 @@ def _tool_name(event: Dict[str, Any]) -> Optional[str]:
 def _scrubbed_view(event: Dict[str, Any]) -> Dict[str, Any]:
     """Secret-scrubbed copy of the event minus ``metadata`` (whose ``raw``
     duplicates the entire hook payload)."""
-    view = {k: v for k, v in event.items() if k != "metadata"}
+    return _scrub({k: v for k, v in event.items() if k != "metadata"})
+
+
+def _scrub(obj: Any) -> Any:
+    """Replace registered secret values with their placeholders. Must run
+    before any truncation: a secret cut at the cap no longer matches."""
     try:
         from prismor.runtime.store import _recloak_event
-        view = _recloak_event(view)
+        return _recloak_event({"v": obj})["v"]
     except Exception:
-        pass
-    return view
+        return obj
 
 
 def _input_summary(view: Dict[str, Any]) -> Optional[str]:
@@ -217,7 +225,7 @@ def _stated_intent(event: Dict[str, Any]) -> Optional[str]:
         if isinstance(tool_input, dict):
             desc = tool_input.get("description")
             if isinstance(desc, str) and desc.strip():
-                return desc[:_SUMMARY_CAP]
+                return _scrub(desc)[:_SUMMARY_CAP]
     return None
 
 

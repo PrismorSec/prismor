@@ -22,6 +22,9 @@ Request body (POST /v1/evaluate):
       "mode":       "enforce",           # optional, default "enforce"
       "session_id": "req-abc123",        # optional
       "subject":    "user:alice",        # optional — user:<id> or user=x;team=y
+      "resource":   {"kind": "order", "id": "o-1", "attr": {"owner": "alice"}},
+      "explain":    true,                # optional — add a decision trace to the response
+                                         # optional — target of the call, read by `when:` rules
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
       "workspace":  "/path/to/project"   # optional, overrides server default
     }
@@ -43,11 +46,12 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import signal
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from prismor.runtime.principal import resolve_subject
 from prismor.runtime.runtime import evaluate_tool_call
@@ -69,8 +73,9 @@ def _build_event(
     event_type: str,
     agent: str,
     session_id: str,
-    subject_str: Optional[str],
+    subject_str: Optional[str] = None,
     available_tools: Optional[list[str]] = None,
+    resource: Optional[dict] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
     # Serialize arguments to a single value string (values only — for regex matching)
@@ -87,7 +92,9 @@ def _build_event(
             "framework": agent,
             "args": list(arguments.values()),
             "kwargs": arguments,
-            "subject": subject_str,
+            # The resolved subject (not the raw header string) is stamped by
+            # evaluate_tool_call, so `when:` and telemetry see the same dict.
+            "resource": resource or {},
             "available_tools": available_tools or [],
             "surface": "eval-server",
         },
@@ -112,6 +119,9 @@ class EvalHandler(BaseHTTPRequestHandler):
         body = json.dumps(data, default=str).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        # AuthZEN: echo the caller's request id for correlation.
+        if self.headers.get("X-Request-ID"):
+            self.send_header("X-Request-ID", self.headers["X-Request-ID"])
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -121,12 +131,16 @@ class EvalHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity, X-Request-ID")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             self._send_json({"status": "ok", "ts": datetime.now(timezone.utc).isoformat()})
+        elif self.path == "/.well-known/authzen-configuration":
+            from prismor.runtime.authzen import metadata
+            host = self.headers.get("Host") or f"{self.server.server_address[0]}:{self.server.server_address[1]}"
+            self._send_json(metadata(f"http://{host}"))
         elif self.path == "/v1/contract":
             # Self-describing, so a non-Python caller can discover the event
             # shape and verdict vocabulary from the server it is already
@@ -149,7 +163,8 @@ class EvalHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path not in ("/v1/evaluate", "/v1/redact"):
+        from prismor.runtime import authzen as _az
+        if self.path not in ("/v1/evaluate", "/v1/redact", _az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
             self._send_json({"error": "not found"}, 404)
             return
 
@@ -165,6 +180,10 @@ class EvalHandler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(length))
         except Exception as exc:
             self._send_json({"error": f"invalid JSON: {exc}"}, 400)
+            return
+
+        if self.path in (_az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
+            self._authzen(body)
             return
 
         if self.path == "/v1/redact":
@@ -235,6 +254,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             subject_str=subject_str,
             available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
             if isinstance(body.get("available_tools"), list) else [],
+            resource=body.get("resource") if isinstance(body.get("resource"), dict) else None,
         )
 
         try:
@@ -246,12 +266,52 @@ class EvalHandler(BaseHTTPRequestHandler):
                 mode=mode,
                 session_id=session_id,
                 subject=subject,
+                identity_token=self._identity_token(),
+                explain=bool(body.get("explain")),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
             return
 
         self._send_json(decision.as_dict())
+
+    def _authzen(self, body: Any) -> None:
+        """AuthZEN evaluation(s). The workspace is always the server's own:
+        an AuthZEN caller does not get to pick which policy judges it."""
+        from prismor.runtime import authzen as _az
+
+        def decide(call: Dict[str, Any]) -> Dict[str, Any]:
+            event = _build_event(
+                tool_name=call["tool_name"], arguments=call["arguments"],
+                event_type=call["event_type"], agent="authzen",
+                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                resource=call["resource"])
+            return evaluate_tool_call(
+                event=event, workspace=self.workspace, agent="authzen",
+                agent_name=call["agent_name"], mode="enforce",
+                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                subject=resolve_subject(call["subject"]),
+                identity_token=self._identity_token(), explain=call["explain"],
+            ).as_dict()
+
+        if not isinstance(body, dict):
+            self._send_json({"error": "request body must be a JSON object"}, 400)
+            return
+        try:
+            if self.path == _az.EVALUATION_PATH:
+                self._send_json(_az.evaluate_one(body, decide))
+            else:
+                self._send_json(_az.evaluate_batch(body, decide))
+        except _az.AuthZenError as exc:
+            self._send_json({"error": str(exc)}, 400)
+        except Exception as exc:
+            self._send_json({"error": f"evaluation error: {exc}"}, 500)
+
+    def _identity_token(self) -> Optional[str]:
+        """The end user's IdP token. Its own header, because Authorization
+        already carries the server's API key."""
+        raw = (self.headers.get("X-Prismor-Identity") or "").strip()
+        return raw[7:].strip() if raw.lower().startswith("bearer ") else (raw or None)
 
     def _evaluate_raw_event(self, body: dict, event: dict) -> None:
         """Evaluate a pre-normalized canonical event (contract.py shape)."""
@@ -284,6 +344,8 @@ class EvalHandler(BaseHTTPRequestHandler):
                 mode=str(body.get("mode") or "enforce"),
                 session_id=session_id,
                 subject=resolve_subject(subject_str),
+                identity_token=self._identity_token(),
+                explain=bool(body.get("explain")),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -296,6 +358,7 @@ def run_eval_server(
     port: int = 7071,
     workspace: Optional[Path] = None,
     api_key: Optional[str] = None,
+    identity: Optional[dict] = None,
 ) -> None:
     """Start the evaluation HTTP server (blocking).
 
@@ -306,6 +369,19 @@ def run_eval_server(
     EvalHandler.workspace = ws
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
 
+    if identity:
+        from prismor.runtime.identity_token import (
+            IdentityError, config_errors, discover_jwks_uri, set_server_config)
+        if not identity.get("jwks_uri") and identity.get("issuer"):
+            try:
+                identity["jwks_uri"] = discover_jwks_uri(identity["issuer"])
+            except IdentityError as exc:
+                raise SystemExit(f"[prismor] eval-server identity: {exc.reason} (pass --identity-jwks)")
+        problems = config_errors(identity)
+        if problems:
+            raise SystemExit("[prismor] eval-server identity: " + "; ".join(problems))
+        set_server_config(identity)
+
     server = _ThreadingHTTPServer((host, port), EvalHandler)
     if host not in ("127.0.0.1", "localhost", "::1") and not EvalHandler.api_key:
         print("[prismor] WARNING: binding beyond localhost with NO API key — "
@@ -314,8 +390,22 @@ def run_eval_server(
     print(f"[prismor] eval-server listening on http://{host}:{port}"
           + (" (bearer auth ON)" if EvalHandler.api_key else ""))
     print(f"[prismor] workspace: {ws}")
+    if identity:
+        print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
+              f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
+
+    def _stop(signum, _frame):  # noqa: ARG001
+        # SIGTERM is how systemd, containers and k8s stop a server. Unhandled it
+        # kills the process without running the atexit heartbeat flush, so the
+        # console lost every clean call since the last upload (#543).
+        raise KeyboardInterrupt
+
+    try:
+        signal.signal(signal.SIGTERM, _stop)
+    except (ValueError, OSError):
+        pass  # not the main thread, or the platform lacks the signal
     try:
         server.serve_forever()
     except KeyboardInterrupt:

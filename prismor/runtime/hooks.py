@@ -128,7 +128,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             # dispatched. So this always targets $CODEX_HOME (Codex's own home-dir
             # override, default ~/.codex) even when scope == "project" (hooks.json
             # itself is correctly scoped).
-            codex_home = Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
+            codex_home = _codex_home()
             _ensure_codex_hooks_feature_enabled(codex_home / "config.toml")
     return results
 
@@ -168,7 +168,7 @@ def codex_hook_trust(workspace: Path, codex_home: Optional[Path] = None) -> Dict
     that event never dispatches. Text-based: the record's exact hash is Codex's
     business; its presence is what we can know.
     """
-    home = codex_home or (Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex")
+    home = codex_home or _codex_home()
     candidates = {
         "project": (workspace / ".codex" / "hooks.json").resolve(),
         "global": (home / "hooks.json").resolve(),
@@ -576,6 +576,23 @@ def _default_block_categories() -> set:
     return cats
 
 
+def _own_prompt_injection(finding: Dict[str, Any], event: Dict[str, Any]) -> bool:
+    """A visible prompt-injection match on the person's own prompt (#541).
+
+    Injection is content that did not come from the principal; on
+    UserPromptSubmit the person at the keyboard IS the principal, so "print
+    ~/.aws/credentials" there is a request, not an injection. The actions it
+    asks for are screened at PreToolUse where they happen. Still reported,
+    never blocks. Hidden-text injection keeps blocking: the person may not
+    have seen what they pasted.
+    """
+    return (
+        str(event.get("agent_event", "")) == "UserPromptSubmit"
+        and finding.get("category") == "prompt_injection"
+        and finding.get("ruleId") != "prompt-injection-hidden"
+    )
+
+
 def should_block(
     findings: List[Dict[str, Any]],
     event: Dict[str, Any],
@@ -595,7 +612,7 @@ def should_block(
     for finding in findings:
         # A match inside inert text (commit message, PR body, grep pattern)
         # describes an action instead of performing it -- report, never block.
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
@@ -633,7 +650,7 @@ def legacy_should_block(
     if not _is_pre_action(str(event.get("agent_event", ""))):
         return None
     for finding in findings:
-        if finding.get("contextInert"):
+        if finding.get("contextInert") or _own_prompt_injection(finding, event):
             continue
         if str(finding.get("action") or BLOCK).lower() not in VERDICTS:
             continue
@@ -645,6 +662,11 @@ def legacy_should_block(
                 continue
             return finding
     return None
+
+
+def _codex_home() -> Path:
+    """Codex's home dir: $CODEX_HOME, default ~/.codex."""
+    return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
 
 
 def _config_path(agent: str, scope: str, workspace: Path) -> Path:
@@ -693,7 +715,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     if agent == "hermes":
         return home / ".hermes" / "config.json"
     if agent == "codex":
-        return home / ".codex" / "hooks.json"
+        # Codex's global config lives in $CODEX_HOME (#539), not always ~/.codex.
+        return _codex_home() / "hooks.json"
     if agent == "copilot":
         return home / ".copilot" / "hooks" / "prismor.json"
     if agent == "grok":

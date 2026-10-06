@@ -223,7 +223,13 @@ class TestNoFalsePositives(_WorkspaceCase):
                     '#!/bin/bash\naws s3 sync ./dist s3://bucket\n'
                     'docker build -t app .\nkubectl apply -f k8s/\n')
         _, findings = self._shell(f"{_BASH} deploy.sh")
-        self.assertEqual(self._via(findings), [])
+        # Deploying is not an attack: nothing here may block. The 1.56
+        # change-control rules do (deliberately) report the cloud and cluster
+        # mutations as warnings, the same as if the commands were typed.
+        via = self._via(findings)
+        self.assertEqual([f for f in via if f.get("category") != "change_control"], [])
+        self.assertTrue(all(f.get("action") == "warn" for f in via))
+        self.assertEqual({f["ruleId"] for f in via} - {"cloud-cli-mutation", "kubectl-cluster-change"}, set())
 
     def test_dangerous_text_inside_a_comment_is_ignored(self):
         # A comment never executes; scanning prose is pure FP surface.

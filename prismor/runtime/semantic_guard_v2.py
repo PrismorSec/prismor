@@ -503,22 +503,52 @@ def _batch_prompt(windows: List[str], heuristic_score: float, signals: List[str]
     )
 
 
-def _parse_verdicts(raw: str, count: int, t0: int) -> List[SemanticRisk]:
-    """Every verdict object in a batched reply, in order. Fewer than asked for is fine."""
-    out: List[SemanticRisk] = []
-    for blob in re.findall(r"\{[^{}]*?\"risk_score\"[^{}]*?\}", raw or "", re.S):
+def _json_values(raw: str):
+    """Yield each top-level JSON value that starts with ``{`` or ``[`` in ``raw``.
+
+    ``raw_decode`` tracks strings, so a brace inside a reason string does not
+    drop that verdict, shorten the batch and shift later windows onto earlier ones.
+    """
+    decoder, start = json.JSONDecoder(), re.compile(r"[\[{]")
+    i = 0
+    while True:
+        m = start.search(raw, i)
+        if not m:
+            return
         try:
-            data = json.loads(blob)
+            data, i = decoder.raw_decode(raw, m.start())
         except ValueError:
+            i = m.start() + 1
             continue
-        out.append(SemanticRisk(
-            risk_score=float(data.get("risk_score", 0.0)),
-            category=str(data.get("category", "unknown")),
-            reason=str(data.get("reason", "")),
-            recommended_action=str(data.get("recommended_action", "allow")),
-            signals=[], mode="local_llm", latency_ms=(time.perf_counter_ns() - t0) / 1e6,
-        ))
-    return out[:count]
+        yield data
+
+
+def _verdict_from_data(data: dict, t0: int) -> SemanticRisk:
+    return SemanticRisk(
+        risk_score=float(data.get("risk_score", 0.0)),
+        category=str(data.get("category", "unknown")),
+        reason=str(data.get("reason", "")),
+        recommended_action=str(data.get("recommended_action", "allow")),
+        signals=[], mode="local_llm", latency_ms=(time.perf_counter_ns() - t0) / 1e6,
+    )
+
+
+def _parse_verdicts(raw: str, count: int, t0: int) -> List[SemanticRisk]:
+    """Every verdict object in a batched reply, in order.
+
+    Fewer than asked for is reported by the caller and discarded: a missing
+    object cannot be assigned to a later window without shifting the rest.
+    """
+    out: List[SemanticRisk] = []
+    for data in _json_values(raw or ""):
+        items = data if isinstance(data, list) else [data]
+        for item in items:
+            if not isinstance(item, dict) or "risk_score" not in item:
+                continue
+            out.append(_verdict_from_data(item, t0))
+            if len(out) >= count:
+                return out
+    return out
 
 
 def _batch_analyze(windows: List[str], heuristic_score: float, signals: List[str],
@@ -708,7 +738,11 @@ class SemanticGuardV2:
             if len(missing) > 1:
                 answered = _batch_analyze([wins[i] for i in missing], effective_score, h.signals,
                                           cli=self._cli, model=self._model, provider=self._provider)
-                batched = {missing[j]: v for j, v in enumerate(answered)}
+                # A short reply is not a prefix: a dropped object shifts every
+                # later verdict onto an earlier window, and that verdict is
+                # then cached under the wrong payload.
+                if len(answered) == len(missing):
+                    batched = {missing[j]: v for j, v in enumerate(answered)}
         for index, window in enumerate(wins):
             key = keys[index]
             hit = cache.get(key)

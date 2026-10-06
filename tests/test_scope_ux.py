@@ -105,7 +105,8 @@ def test_static_rules_keep_bash_and_merge_widens():
     first = sa._static_fallback_rules("What does this repo do? Summarize README.md",
                                       ["Bash", "Read", "Edit", "Write", "WebFetch"])
     assert "Bash" in first["allowed_tools"] and "Read" in first["allowed_tools"]
-    assert "WebFetch" in first["deny_tools"] and first["deny_network"] is False  # static never guesses network
+    # static never guesses network, and with Bash + network open WebFetch is no wider than curl
+    assert "WebFetch" in first["allowed_tools"] and first["deny_network"] is False
     second = sa._static_fallback_rules("Now fix the typo in README.md and fetch the changelog from the url",
                                        ["Bash", "Read", "Edit", "Write", "WebFetch"])
     merged = sa.merge_scoped_rules(first, second)
@@ -131,7 +132,7 @@ def test_hook_dispatch_widens_scope_on_second_prompt(home, tmp_path):
     r = prompt("What does this repo do?")
     assert r.returncode == 0, r.stderr
     rules = sa.load_scoped_rules(ws, "sess-w")
-    assert "WebFetch" in rules["deny_tools"]
+    assert "WebFetch" in rules["allowed_tools"]
     r = prompt("Now fetch the changelog from the url")
     assert r.returncode == 0, r.stderr
     rules = sa.load_scoped_rules(ws, "sess-w")
@@ -215,3 +216,16 @@ def test_static_rules_never_deny_writes():
         rules = sa._static_fallback_rules(goal, tools)
         assert {"Edit", "MultiEdit", "Write"} <= set(rules["allowed_tools"]), goal
         assert rules["deny_tools"] == [], goal
+
+
+def test_research_prompt_keeps_web_tools():
+    """'find similar repos' never says fetch; it still needs the web."""
+    tools = ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetch", "WebSearch"]
+    rules = sa._static_fallback_rules("can u find similar open source repos and see what they show in ui", tools)
+    assert {"WebFetch", "WebSearch"} <= set(rules["allowed_tools"]) and not set(rules["deny_tools"]) & {"WebFetch", "WebSearch"}
+    # an LLM scope that opens the network and Bash but drops the web tools gets them back
+    llm = {"allowed_tools": ["Read", "Bash"], "deny_tools": ["WebFetch", "WebSearch"], "deny_network": False}
+    assert "WebSearch" in sa._apply_web_invariant(llm, tools)["allowed_tools"]
+    # a scope that denies the network keeps denying them
+    closed = {"allowed_tools": ["Read", "Bash"], "deny_tools": ["WebFetch"], "deny_network": True}
+    assert sa._apply_web_invariant(dict(closed), tools)["deny_tools"] == ["WebFetch"]

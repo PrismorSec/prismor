@@ -185,6 +185,14 @@ def _subsystem_steps(
         steps.append("2. Check which layer paused it: prismor agents list")
         return steps
 
+    if rule_id == "org-tool-deny":
+        # Org policy merges last, so `prismor allow` or agents.yaml can't lift it.
+        return [
+            "This tool is on your org's deny list; local overrides do not apply to it.",
+            f"1. {finding.get('remediation')}",
+            '2. Or ask an admin for an exemption: prismor exempt request --reason "<why>"',
+        ]
+
     if rule_id == "iam":
         path = str((workspace / ".prismor" / "iam.yaml")) if workspace else ".prismor/iam.yaml"
         return [
@@ -218,6 +226,24 @@ def _subsystem_steps(
             "  - narrow which tag pairs conflict (`incompatible:`), or",
             "  - `enabled: false` to turn the guard off for this repo.",
             "Start a fresh session afterwards — tags accumulate across the session.",
+        ]
+
+    if rule_id in ("egress-allowlist", "egress-deny"):
+        # Egress verdicts come from settings.egress, not a policy rule, so the
+        # generic `prismor allow <rule>` ladder would answer "No rule named".
+        host = str(finding.get("egressHost") or "<host>")
+        if rule_id == "egress-deny":
+            first = (
+                "1. This destination matches an entry in settings.egress.deny. "
+                "Find it with `prismor egress show`, then: prismor egress rm <entry>"
+            )
+        else:
+            first = f"1. Allow this destination:  prismor egress allow {host}"
+        return [
+            first,
+            "2. Or keep checking but stop blocking (still reported):  prismor egress mode observe",
+            f"Each writes {_policy_path(workspace)}; check a command first with: "
+            f"prismor egress test {host}",
         ]
 
     if rule_id.startswith("codex-cloak-"):

@@ -271,6 +271,12 @@ def _is_own(command: str) -> bool:
     return "hook-dispatch" in command
 
 
+def _short_command(tokens: List[str], original: str, limit: int = 40) -> str:
+    """Readable one-line hook label: paths shown by basename, ellipsis past ``limit``."""
+    short = " ".join(os.path.basename(t.rstrip("/")) or t if "/" in t else t for t in tokens) or original
+    return short if len(short) <= limit else short[: limit - 1] + "…"
+
+
 def _hook_row(source: Path, event: str, command: str, plugin: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     original = _unwrap(command)
     root = plugin["path"] if plugin else ""
@@ -298,7 +304,7 @@ def _hook_row(source: Path, event: str, command: str, plugin: Optional[Dict[str,
     caps = ["runs_code"] + (["network"] if hosts else [])
     return {
         "id": f"hook:{plugin['name'] if plugin else source}#{event}#{_sha(original.encode())[:8]}", "kind": "hook",
-        "name": f"{event}: {original[:80]}", "path": str(source), "sha256": h.hexdigest(),
+        "name": f"{event}: {_short_command(tokens, original)}", "path": str(source), "sha256": h.hexdigest(),
         "origin": plugin["origin"] if plugin else None, "parent": plugin["id"] if plugin else None,
         "capabilities": caps, "hosts": hosts[:20], "command": original, "scripts": scripts,
         "wrapped": original != command,

@@ -56,6 +56,28 @@ _SEPARATORS = ";|&"
 _QUOTES = "\"" + chr(39)
 
 
+def _has_double_quote_command_substitution(value: str) -> bool:
+    """True when a double-quoted shell span contains executable substitution.
+
+    POSIX-style single quotes are inert data. Double quotes are not: command
+    substitutions using ``$(...)`` and legacy backticks execute before the
+    surrounding command receives its argument. A destructive match inside
+    ``echo "$(rm -rf /)"`` therefore lives in code, not prose.
+    """
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if ch == chr(92):
+            i += 2
+            continue
+        if ch == "`":
+            return True
+        if ch == "$" and i + 1 < len(value) and value[i + 1] == "(":
+            return True
+        i += 1
+    return False
+
+
 def quoted_spans(command: str) -> List[Tuple[int, int, bool, bool]]:
     """Return (start, end, is_payload, is_closed) for each quoted span.
 
@@ -87,6 +109,8 @@ def quoted_spans(command: str) -> List[Tuple[int, int, bool, bool]]:
             is_payload = any(_PAYLOAD_FLAG.match(w) for w in words[-2:]) and any(
                 w.rsplit("/", 1)[-1] in _INTERPRETERS for w in recent
             )
+            if ch == '"' and _has_double_quote_command_substitution(command[i + 1:min(j, n)]):
+                is_payload = True
             if words and words[-1].rsplit("/", 1)[-1] in ("eval", "exec", "source", "xargs"):
                 is_payload = True
             spans.append((i, min(j, n), is_payload, j < n))

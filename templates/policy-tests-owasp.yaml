@@ -108,7 +108,7 @@ tests:
     type: write
     input: ".claude/settings.json"
     expect: block
-    expect_rule: agent-config-tampering
+    expect_rule: agent-config-tampering-path   # file writes; agent-config-tampering covers shell commands
 
   # ── MITRE ATLAS: Defense evasion via TLS bypass ──────────────────
   - name: "ATLAS — git sslVerify=false must WARN"
@@ -123,11 +123,13 @@ tests:
     expect: warn
 
   # ── Homoglyph / Unicode bypass ───────────────────────────────────
-  - name: "Unicode — reading .еnv (Cyrillic е) must WARN"
+  # The confusable is flagged, and the ASCII-folded rescan also sees the plain
+  # spelling, so the secret-file rule blocks it exactly as it would that.
+  - name: "Unicode — reading .еnv (Cyrillic е) must BLOCK like the ASCII name"
     type: read
     input: ".еnv"
-    expect: warn
-    expect_rule: unicode-confusable
+    expect: block
+    expect_rule: secret-access
 
   # ── Persistence ──────────────────────────────────────────────────
   - name: "Persistence — writing /etc/cron.d/x must WARN"

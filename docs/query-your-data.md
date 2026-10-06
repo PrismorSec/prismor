@@ -64,6 +64,7 @@ The tables that matter for policy work:
 | `dismissals` | finding marked not-a-problem | `session_id`, `rule_id`, `evidence`, `dismissed_at`, `reason` |
 | `evasion_attempts` | retry that looked like it was routing around a block | `session_id`, `blocked_rule_id`, `blocked_command`, `evading_command`, `similarity_score` |
 | `staged_executions` | file written then executed | `session_id`, `category`, `created_path`, `executing_command` |
+| `judge_audit` | allowed call reviewed by `prismor audit judge` | `event_id` (`<session_id>:<event_index>`), `session_id`, `event_index`, `ts`, `audited_at`, `verdict` (`flagged` / `clean`), `risk_score`, `category`, `reason`, `model` |
 
 `findings.enrichment_json` is where the decision lives. Its keys:
 

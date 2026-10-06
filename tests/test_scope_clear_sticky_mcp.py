@@ -181,6 +181,8 @@ def test_undiscovered_mcp_server_is_not_denied_by_omission(home, tmp_path):
     r = _mcp_call(ws, sid)
     assert not _blocked_by_scope(r), r.stderr
     # …but the built-in scope is still enforced for built-in tools.
+    rules["deny_tools"].append("WebFetch")
+    sa.save_scoped_rules(ws, sid, rules)
     payload = {"session_id": sid, "cwd": str(ws), "hook_event_name": "PreToolUse",
                "tool_name": "WebFetch", "tool_input": {"url": "https://example.com", "prompt": "x"}}
     r = _cli("hook-dispatch", "--agent", "claude", "--workspace", str(ws), "--mode", "enforce",

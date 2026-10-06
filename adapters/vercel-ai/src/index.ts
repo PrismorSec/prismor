@@ -28,6 +28,12 @@ export interface PrismorOptions {
    * mirroring the Python runtime's resolve_subject().
    */
   subject?: string;
+  /**
+   * The end user's IdP token (JWT), sent as X-Prismor-Identity. When the org
+   * verifies identity, the verified claims (user, team, roles) replace
+   * `subject`; in `require` mode a call without a valid token is blocked.
+   */
+  identityToken?: string;
   /** "enforce" blocks denied calls; "observe" logs only. Default: "observe" */
   mode?: "enforce" | "observe";
   /**
@@ -204,6 +210,7 @@ async function evaluate(
         "Content-Type": "application/json",
         ...(opts.apiKey ? { Authorization: `Bearer ${opts.apiKey}` } : {}),
         ...(subject ? { "X-Prismor-Subject": subject } : {}),
+        ...(opts.identityToken ? { "X-Prismor-Identity": `Bearer ${opts.identityToken}` } : {}),
         ...(opts.agentName ? { "X-Prismor-Agent-Name": opts.agentName } : {}),
       },
       body: JSON.stringify({
@@ -265,6 +272,7 @@ function resolveOpts(opts: PrismorOptions): Required<PrismorOptions> {
     apiKey: opts.apiKey
       ?? (typeof process !== "undefined" && process.env ? process.env.PRISMOR_EVAL_KEY ?? "" : ""),
     subject: opts.subject ?? "",
+    identityToken: opts.identityToken ?? "",
     mode,
     failMode: opts.failMode ?? (mode === "enforce" ? "closed" : "open"),
     timeoutMs: opts.timeoutMs ?? 10_000,

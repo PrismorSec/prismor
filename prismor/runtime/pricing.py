@@ -62,7 +62,11 @@ CACHE_1H_INPUT_MULTIPLIER = 2.0
 def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     """LiteLLM per-token USD -> our per-1M shape, keyed by normalized model id."""
     out: Dict[str, Dict[str, float]] = {}
-    for key, v in raw.items():
+    # Canonical ids first, then shortest: a bare "gpt-5.1" or "claude-sonnet-4-5"
+    # must win over "azure/eu/gpt-5.1" or "au.anthropic.claude-sonnet-4-5-...",
+    # which list earlier in the file at regional (higher) rates.
+    for key in sorted(raw, key=lambda k: (normalize_model(k) != k.lower(), len(k))):
+        v = raw[key]
         if not isinstance(v, dict) or v.get("input_cost_per_token") is None:
             continue
         per_m = lambda f: round(float(v.get(f) or 0) * 1_000_000, 6)
@@ -72,7 +76,8 @@ def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         }
         if v.get("cache_creation_input_token_cost_above_1hr"):
             rate["cache_1h"] = per_m("cache_creation_input_token_cost_above_1hr")
-        out.setdefault(normalize_model(key), rate)  # first (bare) key wins over provider-prefixed dupes
+        out.setdefault(key.lower().split("/")[-1], rate)  # exact id, e.g. Bedrock's regional us.anthropic.* rate
+        out.setdefault(normalize_model(key), rate)
     return out
 
 
@@ -127,16 +132,31 @@ def _table(fetch: bool = True) -> Dict[str, Dict[str, float]]:
 def normalize_model(model: str) -> str:
     m = model.lower().split("/")[-1]            # anthropic/claude-x, gemini/gemini-x
     m = re.sub(r"\[.*?\]$", "", m)              # claude-opus-5[1m]
+    m = re.sub(r"^(?:[a-z]+(?:-gov)?\.)?anthropic\.", "", m)  # Bedrock (us.|eu.|apac.|global.)anthropic.claude-x
+    m = re.sub(r"@.*$", "", m)                  # Vertex claude-x@20250929
+    m = re.sub(r"(-\d{8})-v\d+:\d+$", r"\1", m)  # Bedrock -20250929-v1:0 (not claude-v2:1, that's Claude 2.1)
     m = re.sub(r"-\d{8}$", "", m)               # -20250514
     return m
 
 
+# A suffix that names a different size/tier or version is a different price:
+# "o3-pro" is not "o3", "gpt-4.1-mini" is not "gpt-4.1", "claude-opus-4-9" is not "claude-opus-4".
+# ponytail: word list, not a model registry; unknown tiers still fall back to the base price.
+_OTHER_MODEL = re.compile(r"(?:\d|(?:mini|nano|micro|lite|pro|max|turbo|ultra|plus|large|small|medium)\b)")
+_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")    # gpt-4o-2024-08-06
+
+
 def price_for(model: str, fetch: bool = True) -> Optional[Dict[str, float]]:
     table = _table(fetch)
+    exact = (model or "").lower().split("/")[-1]
     m = normalize_model(model or "")
-    if m in table:
-        return table[m]
-    best = max((k for k in table if m.startswith(k)), key=len, default=None)
+    for key in (exact, m):
+        if key in table:
+            return table[key]
+    # Prefix fallback only at a "-" boundary and only for a same-model suffix
+    # (gpt-5-codex -> gpt-5); anything else is unpriced rather than a guess.
+    best = max((k for k in table if k and m.startswith(k + "-") and (
+        _DATE.fullmatch(m[len(k) + 1:]) or not _OTHER_MODEL.match(m[len(k) + 1:]))), key=len, default=None)
     return table[best] if best else None
 
 

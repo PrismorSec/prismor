@@ -54,12 +54,24 @@ def test_a_short_text_is_unchanged(no_keys, tmp_path):
     assert calls(log) == 1 and res.final.risk_score == 0.8
 
 
-def test_a_short_batch_reply_falls_back_to_judging_each_window(no_keys, tmp_path, capsys):
+def test_a_short_batch_reply_is_discarded(no_keys, tmp_path, capsys):
     one_only = '[{"risk_score": 0.2, "category": "clean", "reason": "only one", "recommended_action": "allow"}]'
     cli, log = fake_claude(tmp_path, one_only)
     SemanticGuardV2(cli_path=cli, provider="claude", low_threshold=0.0).analyze(LONG)
-    assert calls(log) == 2                       # batch, then the window it did not answer
+    # Incomplete batches are not aligned by position: both windows are rejudged.
+    assert calls(log) == 3
     assert "batch returned 1 of 2 verdicts" in capsys.readouterr().err
+
+
+def test_parse_verdicts_keeps_braces_inside_reason_strings():
+    raw = json.dumps([
+        {"risk_score": 0.9, "category": "prompt_injection", "reason": "Found injection in {target}",
+         "recommended_action": "block"},
+        {"risk_score": 0.05, "category": "clean", "reason": "plain", "recommended_action": "allow"},
+    ])
+    got = _parse_verdicts(raw, 2, 0)
+    assert [round(v.risk_score, 2) for v in got] == [0.9, 0.05]
+    assert got[0].reason == "Found injection in {target}"
 
 
 def test_batched_verdicts_are_cached_per_window(no_keys, tmp_path):
@@ -75,3 +87,12 @@ def test_parse_verdicts_reads_an_array_and_stops_at_the_count():
     assert [round(v.risk_score, 2) for v in got] == [0.1, 0.95]
     assert _parse_verdicts(ARRAY, 1, 0)[0].risk_score == 0.1
     assert _parse_verdicts("no json here", 2, 0) == []
+
+
+def test_parse_verdicts_reads_fenced_replies_with_escaped_quotes():
+    raw = ('Here you go:\n```json\n[{"risk_score": 0.9, "category": "x", "reason": "a \\"}\\" b", '
+           '"recommended_action": "block"}, {"risk_score": 0.1, "category": "clean", "reason": "[ok]", '
+           '"recommended_action": "allow"}]\n```')
+    got = _parse_verdicts(raw, 2, 0)
+    assert [v.risk_score for v in got] == [0.9, 0.1]
+    assert got[0].reason == 'a "}" b'

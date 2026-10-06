@@ -485,7 +485,7 @@ def _synthesize_scoped_rules(
         rules["allowed_tools"] = [t for t in rules["allowed_tools"] if t in available_set]
         rules["deny_tools"] = [t for t in rules["deny_tools"] if t in available_set]
 
-        return _apply_cloak_invariant(rules, goal)
+        return _apply_web_invariant(_apply_cloak_invariant(rules, goal), available_tools)
 
     except Exception as exc:
         sys.stderr.write(f"[prismor] scoped agent API error: {exc} — using static fallback.\n")
@@ -510,6 +510,19 @@ def _apply_cloak_invariant(rules: Dict[str, Any], goal: str) -> Dict[str, Any]:
     rules["allowed_tools"] = allowed + ["Bash"]
     rules["deny_tools"] = [t for t in rules.get("deny_tools", []) if t != "Bash"]
     rules["deny_network"] = False
+    return rules
+
+
+def _apply_web_invariant(rules: Dict[str, Any], available_tools: List[str]) -> Dict[str, Any]:
+    """Network open + Bash allowed means ``curl`` reaches any host, so denying
+    WebFetch/WebSearch stops nothing and only blocks research prompts that
+    never say "fetch" ("find similar open source repos" denied every web call
+    for the session). The egress policy is the network control."""
+    if rules.get("deny_network") or "Bash" not in rules.get("allowed_tools", []):
+        return rules
+    web = [t for t in ("WebFetch", "WebSearch") if t in available_tools]
+    rules["allowed_tools"] = list(dict.fromkeys(list(rules["allowed_tools"]) + web))
+    rules["deny_tools"] = [t for t in rules.get("deny_tools", []) if t not in web]
     return rules
 
 
@@ -580,10 +593,6 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
     # The egress policy is the network control; the LLM path still scopes it.
     deny_network = False
 
-    network_keywords = {"fetch", "download", "install", "deploy", "push", "pull", "clone", "api", "http", "url"}
-    if any(kw in goal_lower for kw in network_keywords):
-        allowed.update({"WebFetch", "WebSearch"})
-
     # MCP tool families: allow a family when the prompt names its server
     # ("query posthog for ..." → mcp__plugin_posthog_posthog__*).
     for fam in available_tools:
@@ -605,7 +614,7 @@ def _static_fallback_rules(goal: str, available_tools: List[str]) -> Dict[str, A
         "inventory": [t for t in available_tools if not is_mcp_tool(t) or t in allowed],
     }
     # Cloaked-secret placeholders always require Bash (decloak runs in shell).
-    return _apply_cloak_invariant(rules, goal)
+    return _apply_web_invariant(_apply_cloak_invariant(rules, goal), available_tools)
 
 
 # ── Sidecar persistence ───────────────────────────────────────────────────

@@ -126,6 +126,25 @@ def prismor_home() -> Path:
     return Path(os.environ.get("PRISMOR_HOME", str(Path.home() / ".prismor")))
 
 
+def relocated_home_env() -> Dict[str, str]:
+    """``{"PRISMOR_HOME": ...}`` when the home is relocated, else ``{}``.
+
+    For MCP server entries Prismor writes into agent configs. The host launches
+    them from its own environment, not the shell that ran the installer, so a
+    relocated $PRISMOR_HOME has to be pinned into the entry or the server runs
+    under a different identity and policy than the CLI and the hooks. A default
+    install keeps a clean entry.
+    """
+    home = os.environ.get("PRISMOR_HOME")
+    if not home:
+        return {}
+    try:
+        relocated = Path(home).expanduser().resolve() != (Path.home() / ".prismor").resolve()
+    except OSError:
+        relocated = True
+    return {"PRISMOR_HOME": str(Path(home).expanduser())} if relocated else {}
+
+
 # ── Re-cloaking: never persist a raw secret value to the audit store ─────────
 #
 # A decloak hook substitutes the real secret into a command for execution. The
@@ -786,6 +805,8 @@ def initialize_database(workspace: Path) -> Path:
         )
         from prismor.runtime.learning import initialize_learning_tables
         initialize_learning_tables(connection)
+        from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
+        connection.executescript(_JUDGE_AUDIT_DDL)
 
         connection.commit()
     finally:
@@ -803,11 +824,9 @@ def save_session_snapshot(
     events: List[Dict[str, Any]],
     analysis: Dict[str, Any],
     agent_name: str = "",
+    append_only: bool = False,
 ) -> Path:
     db_path = initialize_database(workspace)
-    # Defense in depth: ensure no raw secret value reaches the SQLite store,
-    # even if a caller passes events that did not pass through append_session_event.
-    events = [_recloak_event(e) for e in events]
     timestamps = sorted(event.get("ts") for event in events if event.get("ts"))
     started_at = timestamps[0] if timestamps else None
     updated_at = timestamps[-1] if timestamps else None
@@ -836,7 +855,20 @@ def save_session_snapshot(
                 json.dumps(analysis["summary"]),
             ),
         )
-        cursor.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+        # append_only: ``events`` is an append-only session log (hook, proxy), so
+        # only the rows not stored yet are inserted -- those callers snapshot
+        # after every event, and rewriting the whole session made each call
+        # O(session). Re-parsed sessions (ingest, replay) are rewritten in full,
+        # as is a log that no longer lines up with the stored rows.
+        stored = cursor.execute(
+            "SELECT COUNT(*) FROM events WHERE session_id = ?", (session_id,)
+        ).fetchone()[0] if append_only else 0
+        if not append_only or stored > len(events):
+            cursor.execute("DELETE FROM events WHERE session_id = ?", (session_id,))
+            stored = 0
+        # Defense in depth: ensure no raw secret value reaches the SQLite store,
+        # even if a caller passes events that did not pass through append_session_event.
+        new_events = [_recloak_event(e) for e in events[stored:]]
         # Re-derive analysis findings, but KEEP runtime findings (scoped-agent,
         # IAM, kill-switch, org denies — persisted by persist_runtime_findings
         # with source=runtime). They are per-event enforcement decisions, not
@@ -886,7 +918,7 @@ def save_session_snapshot(
                     ),
                     json.dumps(event),
                 )
-                for event in events
+                for event in new_events
             ],
         )
 
@@ -2054,6 +2086,292 @@ def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
         for t in srv["tools"].values():
             t["last"] = _relative_time_store(t["last_ts"]) if t["last_ts"] else ""
     return usage
+
+
+# ── Network calls: every destination a recorded session reached ──────────────
+#
+# `extract_destinations` is the same extractor the egress rule screens with, so
+# this table and that verdict can never disagree about what a call was aimed at.
+# The finding join is narrowed to network decisions: an event can carry a
+# finding about something else entirely (a secret in the command, say), and
+# counting that as a blocked network call would overstate the number.
+
+# `findings.event_index` is an event's position in its WHOLE session, so the
+# numbering must not be windowed: filtering by ts first restarts it at 0 and
+# silently joins a session's findings onto the wrong events whenever that
+# session began before the cutoff. Number everything, then filter.
+_NET_SQL = """
+WITH numbered AS (
+    SELECT id, session_id, ts, type, command_text, url_text,
+           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id) - 1 AS rn
+    FROM events
+)
+SELECT n.session_id, n.ts, n.type, n.command_text, n.url_text, f.enrichment_json
+FROM numbered n
+LEFT JOIN findings f
+       ON f.session_id = n.session_id AND f.event_index = n.rn
+      AND (f.category = 'network_isolation' OR f.enrichment_json LIKE '%egressHost%')
+WHERE n.ts >= ?
+  AND ((n.url_text IS NOT NULL AND n.url_text != '')
+   OR n.command_text LIKE '%://%' OR n.command_text LIKE '%curl%'
+   OR n.command_text LIKE '%wget%' OR n.command_text LIKE '%git %'
+   OR n.command_text LIKE '%ssh %' OR n.command_text LIKE '%scp %'
+   OR n.command_text LIKE '%nc %')
+ORDER BY n.id DESC
+LIMIT 40000
+"""
+
+
+def get_network_calls(hours: int = 24 * 7, limit: int = 50) -> Dict[str, Any]:
+    """Destinations the recorded sessions reached, busiest first.
+
+    ``private`` marks loopback / RFC1918 / link-local hosts, so the dashboard
+    can lead with real egress and keep a local dev server from topping the
+    table. ``blocked`` counts calls a network rule actually stopped; ``warned``
+    counts ones it only flagged.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from prismor.runtime.egress import extract_destinations
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    hosts: Dict[str, Dict[str, Any]] = {}
+    total = 0
+
+    for workspace in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(workspace))
+        if conn is None:
+            continue
+        try:
+            agents = {r["session_id"]: (r["agent"] or "unknown")
+                      for r in conn.execute("SELECT session_id, agent FROM sessions")}
+            for row in conn.execute(_NET_SQL, (cutoff,)):
+                event = {"type": row["type"] or "", "command": row["command_text"] or "",
+                         "url": row["url_text"] or ""}
+                try:
+                    destinations = extract_destinations(event)
+                except Exception:
+                    continue
+                if not destinations:
+                    continue
+                verdict = ""
+                if row["enrichment_json"]:
+                    try:
+                        verdict = "blocked" if _enforced(json.loads(row["enrichment_json"])) else "warned"
+                    except ValueError:
+                        verdict = "blocked"
+                session, ts = row["session_id"], row["ts"] or ""
+                for dest in destinations:
+                    entry = hosts.get(dest.host)
+                    if entry is None:
+                        entry = hosts[dest.host] = {
+                            "host": dest.host, "calls": 0, "blocked": 0, "warned": 0,
+                            "sessions": set(), "agents": set(), "lastTs": ts,
+                            "private": dest.is_private,
+                        }
+                    total += 1
+                    entry["calls"] += 1
+                    if verdict:
+                        entry[verdict] += 1
+                    entry["sessions"].add(session)
+                    entry["agents"].add(agents.get(session, "unknown"))
+                    entry["lastTs"] = max(entry["lastTs"] or ts, ts)
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    out = sorted(hosts.values(), key=lambda h: (-h["calls"], h["host"]))[:limit]
+    for entry in out:
+        entry["sessions"] = len(entry["sessions"])
+        entry["agents"] = sorted(entry["agents"])
+        entry["last"] = _relative_time_store(entry["lastTs"]) if entry["lastTs"] else ""
+    return {"hosts": out, "hours": hours, "calls": total,
+            "hostCount": len(hosts), "externalCount": sum(1 for h in hosts.values() if not h["private"])}
+
+# ── External dependencies: what an agent reached outside itself for ──────────
+#
+# Four parts, all recoverable from the event store so the view spans every
+# session on the machine rather than the last few an agent config remembers:
+#   secret   a service a cloaked credential opened (never which one)
+#   mcp      an MCP server, and the tool called on it
+#   skill    a skill the agent loaded
+#   package  a supply-chain install
+#
+# One row per (part, name, target, session) is the grain the dashboard needs:
+# grouping it by dependency, session, agent or project is then a client-side
+# sum, so the same payload answers all four views.
+
+_SECRET_RE = re.compile(r"@@SECRET:([A-Za-z0-9_-]+)@@")
+_PKG_NAME_RE = re.compile(r"^(?:@[a-z0-9._-]+/)?[A-Za-z][A-Za-z0-9._-]{1,100}$")
+
+# Narrow the scan in SQL: a dependency always leaves one of these marks, and
+# the alternative is a json.loads() of every tool call ever recorded.
+_DEP_SQL = """
+    SELECT session_id, ts, raw_json, command_text, url_text
+    FROM events
+    WHERE ts >= ? AND (
+        raw_json LIKE '%mcp__%' OR raw_json LIKE '%"Skill"%'
+        OR command_text LIKE '%@@SECRET:%' OR url_text LIKE '%@@SECRET:%'
+        OR command_text LIKE '%install%' OR command_text LIKE '%add %'
+        OR command_text LIKE '% get %')
+    ORDER BY id DESC
+    LIMIT 40000
+"""
+
+
+def _installed_packages(command: str) -> List[Tuple[str, str, str]]:
+    """``(ecosystem, name, version)`` for every registry install in a shell
+    command. Reuses the parser the supply-chain rule gates installs with, so
+    this view and that verdict always agree on what counts as an install."""
+    try:
+        from prismor.runtime.policy_engine import _iter_install_argvs
+        from supplychain.ecosystems.detector import detect_install
+    except Exception:
+        return []
+    out: List[Tuple[str, str, str]] = []
+    for argv in _iter_install_argvs(command)[:12]:
+        try:
+            event = detect_install(argv)
+        except Exception:
+            continue
+        for spec in (event.packages if event else []):
+            # A redirection or a log path parses as an argument; only a
+            # registry name with a plausible shape is a dependency.
+            if spec.source == "registry" and _PKG_NAME_RE.match(spec.name):
+                out.append((event.ecosystem, spec.name, spec.version))
+    return out
+
+
+# Shell plumbing that can precede the command which actually reached the
+# service, so none of these is ever the answer to "connected to what".
+_SHELL_PLUMBING = frozenset({
+    "cd", "then", "do", "if", "while", "echo", "printf", "time", "env",
+    "set", "unset", "export", "source", ".", "command", "builtin",
+    "sudo", "exec", "eval", "nohup", "xargs",
+})
+
+
+def _service_of(command: str, hosts: List[str]) -> List[str]:
+    """What a secret connected to: the hosts named in the command, or failing
+    that the binary it ran (`stripe`, `psql`, `gh` — a service with no URL)."""
+    if hosts:
+        return hosts
+    for token in command.split():
+        # Skip env assignments and flags; a shell continuation or quote is not
+        # part of the name, so keep only what can spell a binary.
+        if "=" in token or token.startswith("-"):
+            continue
+        binary = re.sub(r"[^A-Za-z0-9._-]", "", token.rsplit("/", 1)[-1])[:40]
+        # `cd /app && stripe ...` names stripe, not cd: plumbing is what runs on
+        # the way to the command that actually reached the service.
+        if binary and binary not in _SHELL_PLUMBING:
+            return [binary]
+    return ["(local)"]
+
+
+def get_dependency_usage(hours: int = 24 * 30, limit: int = 5000) -> Dict[str, Any]:
+    """Every external dependency an agent used in the window, one row per
+    (part, name, target, session). See the block comment above for the grain."""
+    from datetime import datetime, timedelta, timezone
+
+    from prismor.runtime.extensions import _hosts  # lazy: extensions imports store
+
+    # The cutoff is built here, not by SQLite's datetime(), which renders
+    # "2026-10-02 03:18:32" while events store "2026-10-02T03:18:32+00:00".
+    # Those compare lexically, and 'T' > ' ', so a SQLite-rendered cutoff
+    # admits every event from its own calendar day whatever the hour.
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+    registered: Set[str] = set()
+    try:
+        from prismor.runtime.cloaking.secrets_store import list_secrets
+        registered = {str(s.get("name")) for s in list_secrets()}
+    except Exception:
+        pass
+
+    rows: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+
+    def add(part: str, name: str, target: str, session: str,
+            who: Tuple[str, str], ts: str, note: str = "") -> None:
+        row = rows.get((part, name, target, session))
+        if row is None:
+            row = rows[(part, name, target, session)] = {
+                "part": part, "name": name, "target": target, "session": session,
+                "agent": who[0] or "unknown", "workspace": who[1],
+                "calls": 0, "firstTs": ts, "lastTs": ts, "note": note,
+            }
+        row["calls"] += 1
+        if ts:
+            row["firstTs"] = min(row["firstTs"] or ts, ts)
+            row["lastTs"] = max(row["lastTs"] or ts, ts)
+        if note and not row["note"]:
+            row["note"] = note
+
+    for workspace in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(workspace))
+        if conn is None:
+            continue
+        try:
+            who_by_session = {
+                r["session_id"]: (r["agent"] or "", r["workspace_path"] or str(workspace))
+                for r in conn.execute("SELECT session_id, agent, workspace_path FROM sessions")
+            }
+            for row in conn.execute(_DEP_SQL, (cutoff,)):
+                session, ts = row["session_id"], row["ts"] or ""
+                who = who_by_session.get(session, ("", str(workspace)))
+                raw = row["raw_json"] or ""
+
+                info = _extract_mcp_or_tool(raw)
+                if info and info["kind"] in ("mcp", "skill"):
+                    tool = ""
+                    if info["kind"] == "mcp":
+                        try:
+                            name = str((json.loads(raw).get("metadata") or {}).get("tool_name") or "")
+                            if name.startswith("mcp__") and "__" in name[5:]:
+                                tool = name[5:].split("__", 1)[1]
+                        except Exception:
+                            tool = ""
+                    add(info["kind"], info["name"], tool, session, who, ts)
+
+                text = " ".join(filter(None, (row["command_text"], row["url_text"])))
+                if not text:
+                    continue
+                placeholders = set(_SECRET_RE.findall(text))
+                if placeholders:
+                    # Which credential it was does not belong in a usage view, so
+                    # the service is the row and the placeholder name is dropped
+                    # here: this answers "a cloaked secret opened what", nothing
+                    # more. A name with no vault entry is still worth saying --
+                    # unresolvable means the decloak hook denied that call -- and
+                    # saying so needs no name.
+                    note = "" if placeholders <= registered else "placeholder not in vault"
+                    for service in _service_of(text, _hosts(text)):
+                        add("secret", service, "", session, who, ts, note)
+                if "install" in text or " add " in text or " get " in text:
+                    for ecosystem, package, version in _installed_packages(text):
+                        add("package", package, ecosystem, session, who, ts, version)
+
+            # Installs the supply-chain CLI gated carry a verdict the shell
+            # text cannot show, so they are merged in rather than re-parsed.
+            for row in conn.execute(
+                "SELECT ts, ecosystem, package_name, package_version, verdict, session_id "
+                "FROM supply_chain_events WHERE ts >= ?",
+                (cutoff,),
+            ):
+                session = row["session_id"] or ""
+                add("package", row["package_name"] or "?", row["ecosystem"] or "unknown",
+                    session, who_by_session.get(session, ("", str(workspace))), row["ts"] or "",
+                    " ".join(filter(None, (row["package_version"], row["verdict"]))))
+        except Exception:
+            pass
+        finally:
+            conn.close()
+
+    out = sorted(rows.values(), key=lambda r: r["lastTs"] or "", reverse=True)
+    for row in out[:limit]:
+        row["last"] = _relative_time_store(row["lastTs"]) if row["lastTs"] else ""
+    return {"rows": out[:limit], "hours": hours, "truncated": len(out) > limit}
 
 
 def get_findings_page(

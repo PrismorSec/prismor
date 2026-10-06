@@ -1,0 +1,240 @@
+{
+  "_comment": "Golden vectors for rule `when:` expressions. Asserted by BOTH the Python evaluator (prismor/runtime/policy_engine.py AttrCondition) and the TS port (prismor-web lib/when-expr.ts) to prevent drift. A missing path or a type mismatch makes the expression hold (fail toward detection).",
+  "context": {
+    "principal": {
+      "id": "bob",
+      "team": "support",
+      "org": "acme",
+      "source": "jwt",
+      "verified": true,
+      "roles": [
+        "support",
+        "agent"
+      ],
+      "claims": {
+        "tier": "gold"
+      }
+    },
+    "resource": {
+      "kind": "order",
+      "id": "o-1",
+      "attr": {
+        "owner": "alice",
+        "amount": 900,
+        "tags": [
+          "vip"
+        ]
+      }
+    },
+    "args": {
+      "amount": 900,
+      "currency": "USD",
+      "dry-run": false,
+      "items": [
+        1,
+        2
+      ]
+    },
+    "tool": {
+      "name": "refund_order"
+    }
+  },
+  "valid": [
+    {
+      "expr": "args.amount >= 500",
+      "result": true
+    },
+    {
+      "expr": "args.amount < 500",
+      "result": false
+    },
+    {
+      "expr": "'finance' in principal.roles",
+      "result": false
+    },
+    {
+      "expr": "'finance' not in principal.roles",
+      "result": true
+    },
+    {
+      "expr": "args.amount >= 500 and 'finance' not in principal.roles",
+      "result": true
+    },
+    {
+      "expr": "resource.attr.owner != principal.id",
+      "result": true
+    },
+    {
+      "expr": "resource.attr.owner == principal.id or principal.team == 'support'",
+      "result": true
+    },
+    {
+      "expr": "principal.verified",
+      "result": true
+    },
+    {
+      "expr": "not principal.verified",
+      "result": false
+    },
+    {
+      "expr": "principal.verified == false",
+      "result": false
+    },
+    {
+      "expr": "principal.verified == true",
+      "result": true
+    },
+    {
+      "expr": "tool.name == 'refund_order'",
+      "result": true
+    },
+    {
+      "expr": "args['dry-run'] == false",
+      "result": true
+    },
+    {
+      "expr": "args.items[0] == 1",
+      "result": true
+    },
+    {
+      "expr": "args.currency in ['USD', 'EUR']",
+      "result": true
+    },
+    {
+      "expr": "'vip' in resource.attr.tags",
+      "result": true
+    },
+    {
+      "expr": "'ref' in tool.name",
+      "result": true
+    },
+    {
+      "expr": "principal.claims.tier == 'gold'",
+      "result": true
+    },
+    {
+      "expr": "100 < args.amount <= 1000",
+      "result": true
+    },
+    {
+      "expr": "has(args.amount)",
+      "result": true
+    },
+    {
+      "expr": "has(args.nope)",
+      "result": false
+    },
+    {
+      "expr": "has(args.nope) and args.nope > 1",
+      "result": false
+    },
+    {
+      "expr": "args.nope > 1",
+      "result": true
+    },
+    {
+      "expr": "not args.nope",
+      "result": true
+    },
+    {
+      "expr": "args.items[9] == 1",
+      "result": true
+    },
+    {
+      "expr": "args.amount > 'x'",
+      "result": true
+    },
+    {
+      "expr": "args.amount > null",
+      "result": true
+    },
+    {
+      "expr": "args.currency == null",
+      "result": false
+    },
+    {
+      "expr": "args.amount in (1, 2, 900)",
+      "result": true
+    },
+    {
+      "expr": "1 < 2 < args.amount",
+      "result": true
+    },
+    {
+      "expr": "'amount' in args",
+      "result": true
+    },
+    {
+      "expr": "null in [null]",
+      "result": true
+    },
+    {
+      "expr": "true == 1",
+      "result": true
+    },
+    {
+      "expr": "args.items == [1, 2]",
+      "result": true
+    },
+    {
+      "expr": "args.currency > 5",
+      "result": true
+    },
+    {
+      "expr": "not principal.claims",
+      "result": false
+    }
+  ],
+  "invalid": [
+    "__import__('os')",
+    "os.system",
+    "open('x')",
+    "args[x]",
+    "lambda: 1",
+    "args.amount + 1 > 2",
+    "args.amount is None",
+    "has(1)",
+    "has(args.a, args.b)",
+    "args.amount >=",
+    "user.id == 'x'",
+    "args.amount > -5",
+    "args.items[True]",
+    "args.items[1.5]",
+    "args.amount is not None",
+    "args.amount if 1 else 2",
+    "principal.in",
+    "args.items[-1] == 2"
+  ],
+  "named": {
+    "is_finance": "'finance' in principal.roles",
+    "is_owner": "resource.attr.owner == principal.id",
+    "has_nope": "args.nope == 1"
+  },
+  "named_valid": [
+    {
+      "expr": "is_finance",
+      "result": false
+    },
+    {
+      "expr": "not is_finance and args.amount >= 500",
+      "result": true
+    },
+    {
+      "expr": "is_owner or principal.team == 'support'",
+      "result": true
+    },
+    {
+      "expr": "has_nope",
+      "result": true
+    },
+    {
+      "expr": "not has_nope",
+      "result": true
+    }
+  ],
+  "named_invalid": [
+    "is_ghost",
+    "is_finance(1)",
+    "is_finance.x"
+  ]
+}

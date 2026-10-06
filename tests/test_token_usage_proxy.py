@@ -24,7 +24,7 @@ from prismor.runtime.proxy import Screen, StreamScreen  # noqa: E402
 def captured_rows(monkeypatch):
     rows = []
     monkeypatch.setattr(tu, "_record",
-                        lambda workspace, session_id, agent, row: rows.append(row))
+                        lambda workspace, session_id, agent, row, **kw: rows.append(row))
     return rows
 
 
@@ -38,11 +38,14 @@ GEMINI = dict(promptTokenCount=40, candidatesTokenCount=12,
               cachedContentTokenCount=5)
 
 
+# OpenAI/Gemini count cached tokens inside the prompt total; Anthropic keeps
+# them apart. Normalized buckets must be disjoint or cached input bills twice.
 @pytest.mark.parametrize("usage,expect", [
-    (OPENAI_CHAT, (11, 7, 4, 0)),
-    (OPENAI_RESP, (20, 5, 8, 0)),
+    (OPENAI_CHAT, (7, 7, 4, 0)),
+    (OPENAI_RESP, (12, 5, 8, 0)),
     (ANTHROPIC, (30, 9, 6, 3)),
-    (GEMINI, (40, 12, 5, 0)),
+    (GEMINI, (35, 12, 5, 0)),
+    (dict(prompt_tokens=2, completion_tokens=1, prompt_tokens_details={"cached_tokens": 5}), (0, 1, 5, 0)),
 ])
 def test_normalizes_each_provider_shape(captured_rows, usage, expect):
     tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="prismor-proxy",
@@ -52,6 +55,46 @@ def test_normalizes_each_provider_shape(captured_rows, usage, expect):
     got = (r["input_tokens"], r["output_tokens"],
            r["cache_read_tokens"], r["cache_creation_tokens"])
     assert got == expect
+
+
+@pytest.mark.parametrize("usage,output,reasoning", [
+    # OpenAI reasoning is already inside output tokens: report, don't re-bill.
+    (dict(OPENAI_CHAT, completion_tokens_details={"reasoning_tokens": 3}), 7, 3),
+    (dict(OPENAI_RESP, output_tokens_details={"reasoning_tokens": 2}), 5, 2),
+    # Gemini thoughts are separate from candidates and billed as output.
+    (dict(GEMINI, thoughtsTokenCount=6), 18, 6),
+    (ANTHROPIC, 9, 0),
+])
+def test_reasoning_tokens(captured_rows, usage, output, reasoning):
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a",
+                        model="m", usage=usage, message_id="mid")
+    r = captured_rows[0]
+    assert (r["output_tokens"], r["reasoning_tokens"]) == (output, reasoning)
+
+
+def test_anthropic_1h_cache_write(captured_rows):
+    usage = dict(ANTHROPIC, cache_creation={"ephemeral_1h_input_tokens": 2})
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a",
+                        model="m", usage=usage, message_id="mid")
+    assert captured_rows[0]["cache_1h_tokens"] == 2
+
+
+def test_telemetry_record_carries_reasoning_and_1h(monkeypatch):
+    from prismor.runtime import store
+    from prismor.runtime.enterprise import identity, telemetry_spool
+    spooled, stored = [], []
+    monkeypatch.setattr(store, "record_token_usage", lambda **k: stored.append(k) or True)
+    monkeypatch.setattr(identity, "is_enrolled", lambda: True)
+    monkeypatch.setattr(telemetry_spool, "append", lambda recs: spooled.extend(recs))
+    usage = dict(ANTHROPIC, cache_creation={"ephemeral_1h_input_tokens": 2})
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a", model="claude-sonnet-4-5",
+                        usage=usage, message_id="m1")
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a", model="gemini-2.5-pro",
+                        usage=dict(GEMINI, thoughtsTokenCount=6), message_id="m2")
+    assert "reasoning_tokens" not in stored[0]  # not a store column
+    assert spooled[0]["usage"]["cache_1h_tokens"] == 2
+    assert spooled[1]["usage"]["reasoning_tokens"] == 6
+    assert spooled[1]["usage"]["input_tokens"] == 35
 
 
 @pytest.mark.parametrize("usage,message_id", [
@@ -134,3 +177,28 @@ def test_proxy_usage_gets_a_timestamp(captured_rows):
     tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="a", model="m",
                         usage={"input_tokens": 3, "output_tokens": 1}, message_id="resp_1")
     assert captured_rows[0]["ts"]
+
+
+def test_usage_record_carries_the_proxy_agent_name(monkeypatch):
+    """#543: without agent_name every metered turn showed up in the console as a
+    second, unnamed 'prismor-proxy' agent next to the --agent-name one."""
+    from prismor.runtime import store
+    from prismor.runtime.enterprise import identity, telemetry_spool
+    spooled = []
+    monkeypatch.setattr(store, "record_token_usage", lambda **k: True)
+    monkeypatch.setattr(identity, "is_enrolled", lambda: True)
+    monkeypatch.setattr(telemetry_spool, "append", lambda recs: spooled.extend(recs))
+    tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="prismor-proxy",
+                        agent_name="data-analyst", model="gpt-5-mini",
+                        usage=OPENAI_CHAT, message_id="m1")
+    assert [(r["agent"], r["agent_name"]) for r in spooled] == [("prismor-proxy", "data-analyst")]
+
+
+def test_stream_meter_passes_the_screen_agent_name(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tu, "record_llm_usage", lambda **kw: calls.append(kw))
+    screen = Screen(workspace=Path("/x"), mode="observe", session_id="sess", agent_name="data-analyst")
+    stream = StreamScreen(screen, "openai", "model", None)
+    stream._usage = dict(OPENAI_CHAT)
+    stream.meter()
+    assert calls and calls[0]["agent_name"] == "data-analyst"

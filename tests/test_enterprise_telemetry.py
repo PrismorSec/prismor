@@ -213,3 +213,28 @@ def test_prismor_sink_uploads_redacted(tmp_path, monkeypatch):
     # The uploaded payload must not contain the raw command or secret.
     blob = json.dumps(captured["body"])
     assert "rm -rf" not in blob and "AWS_SECRET_ACCESS_KEY" not in blob
+
+
+def test_record_carries_applied_policy_version(tmp_path, monkeypatch):
+    """Events are stamped with the signed policy that decided them, so the
+    console can explain old events after a policy edit. Null on local-only."""
+    import prismor.runtime.sinks as sinks
+    from prismor.runtime.enterprise import remote_policy
+
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    identity.save_identity({"device_id": "d", "org_id": "o", "user_id": "u",
+                            "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1"})
+    uploads = []
+    monkeypatch.setattr(sinks, "upload_telemetry", lambda recs, **kw: uploads.extend(recs))
+    finding = {**SECRET_FINDING, "action": "block"}
+
+    sinks._dispatch_prismor({"type": "prismor"}, [finding], {"type": "shell"}, {})
+    assert uploads[-1]["policy_version"] is None
+    assert uploads[-1]["policy_profile_id"] is None
+
+    remote_policy._meta_path().write_text(json.dumps({"version": 7, "profile_id": "pp_1"}))
+    sinks._dispatch_prismor({"type": "prismor"}, [finding], {"type": "shell"}, {})
+    rec = uploads[-1]
+    assert rec["redacted"] is True
+    assert (rec["policy_version"], rec["policy_profile_id"]) == (7, "pp_1")
+    telemetry.assert_redacted(rec)

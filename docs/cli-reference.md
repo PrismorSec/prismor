@@ -63,6 +63,7 @@ prismor
 │
 ├─ Visibility (audit & forensics)
 │   ├─ audit                  Full posture audit (--fix to remediate)
+│   ├─ audit judge            LLM judge reviews a sample of ALLOWED calls after the fact
 │   ├─ scan                   Scan MCP servers & skills for risk
 │   ├─ extensions <action>    list · why · approve · wrap-hooks — what puts instructions or code into the agent
 │   ├─ deps                   Check project deps vs. threat feed
@@ -315,7 +316,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
-| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). |
+| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
 | `prismor sandbox <status\|check\|run>` | `--workspace` | Docker-backed command sandbox: show config, check the backend, or run one command isolated. See [Docker sandbox](docker.md). |
 | `prismor egress show` | `--workspace` | Effective network egress policy, its mode, and which layer (default / project / org) set it. See [Network Isolation](network-isolation.md). |
 | `prismor egress report` | `--last N`, `--fail-on-block`, `--workspace` | Every destination recorded sessions actually contacted, with the verdict the current policy gives it. The on-ramp before flipping to enforce; `--fail-on-block` gates CI. |
@@ -338,7 +339,7 @@ outside all of this, the same as every other Prismor control.
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace` | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
+| `prismor eval-server` | `--port` (default 7071), `--host` (default 127.0.0.1), `--workspace`, `--api-key`, `--identity-issuer`/`--identity-audience`/`--identity-jwks`/`--identity-mode` ([identity verification](identity-verification.md)) | HTTP evaluation endpoint (`POST /v1/evaluate`) so non-Python adapters (Vercel AI SDK, anything HTTP) get the same policy pipeline. See [Frameworks overview](frameworks-overview.md) and [Vercel AI SDK](frameworks-vercel-ai.md). |
 
 ### proxy
 
@@ -371,6 +372,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
+| `prismor audit judge` | `--since 24h`, `--sample 0.05`, `--max 50`, `--dry-run`, `--json`, `--workspace` | Has the configured LLM judge review a deterministic sample of tool calls the rules ALLOWED, after the fact, from the local store. Results go to the `judge_audit` table; flagged calls are printed and sent as one content-free `judge_audit` record each. Never blocks. Exits 2 when no judge is configured. See [Semantic Guard](semantic-guard.md#auditing-allowed-calls). |
 | `prismor scan` | `--agent`, `--json` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
 | `prismor extensions [list\|why\|approve\|wrap-hooks\|unwrap-hooks]` | `--kind`, `--json`, `--workspace` | Inventory of skills, plugins, third-party hooks and MCP servers with origin, installer, capabilities and the documents they caused to be fetched. See [Extension Ledger](extensions.md). |
 | `prismor deps` | `--json`, `--workspace` | Cross-reference project dependencies against the signed IOC feed + lockfile integrity. See [Supply Chain](supply-chain.md). |
@@ -488,6 +490,8 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | `PRISMOR_CLOAK` | `setup --non-interactive` | Enable cloaking (`1`/`true`/`yes`/`on`). |
 | `PRISMOR_WORKSPACE` | all commands | Override the resolved workspace path. |
 | `PRISMOR_AGENT_ID` | `iam` | Active agent identity for IAM enforcement. See [IAM](iam.md). |
+| `PRISMOR_ENVIRONMENT` | telemetry | Deployment environment label on every event (`prod`, `staging`, `ci`...). Lowercase `[a-z0-9_-]`, max 40; invalid values are dropped. |
+| `PRISMOR_RELEASE` | telemetry | Agent release label on every event (git sha, app version). Printable, no whitespace, max 64; invalid values are dropped. |
 | `PRISMOR_SWEEP_PASS` | `sweep` | Vault passphrase for non-interactive runs. |
 | `EDITOR` | `scope edit` | Editor for scoped-rule editing. |
 

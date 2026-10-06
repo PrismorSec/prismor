@@ -151,6 +151,11 @@ class Decision:
     # Engine kept so callers that need post-decision config (e.g. the Claude
     # sandbox rewrite path) don't have to re-instantiate it.
     engine: Optional["PolicyEngine"] = None
+    # Opt-in decision trace (``explain=True``): which rules matched, from which
+    # policy layer, what each `when` evaluated to, the policy version in force
+    # and how the subject was established. Absent from the wire form unless
+    # asked for, so the contract stays additive.
+    explain: Optional[Dict[str, Any]] = None
 
     @property
     def verdict(self) -> str:
@@ -184,6 +189,7 @@ class Decision:
             "findings": self.findings,
             "blocking": self.blocking,
             "subject": self.subject.as_dict() if self.subject else None,
+            **({"explain": self.explain} if self.explain is not None else {}),
         }
 
 

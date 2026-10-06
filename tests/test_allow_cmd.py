@@ -260,6 +260,12 @@ class TestRefusals(unittest.TestCase):
         self.assertIsNotNone(refusal)
         self.assertIn("No rule named", refusal)
 
+    def test_egress_rule_redirects_to_egress_cli(self):
+        refusal = self._check("egress-allowlist", "pattern")
+        self.assertIsNotNone(refusal)
+        self.assertIn("prismor egress allow", refusal)
+        self.assertNotIn("No rule named", refusal)
+
     def test_org_managed_workspace_with_a_signed_policy_refuses_everything(self):
         ws = _workspace()
         signed = Path(tempfile.mkdtemp()) / "remote-policy.yaml"
