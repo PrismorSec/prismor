@@ -448,9 +448,12 @@ def test_late_upstream_does_not_stall_later_lists(tmp_path, monkeypatch):
     gateway._dispatch(INIT)
     assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
     # fs is already marked late: the next list must not wait for it again.
+    # A long wait limit makes a re-wait unmistakable; the bound is generous
+    # because listing also runs a policy evaluation per tool.
+    monkeypatch.setattr(gw_mod, "REQUEST_TIMEOUT", 60.0)
     started = time.monotonic()
     assert {t["name"] for t in list_tools(gateway, sent)} == {"a__echo"}
-    assert time.monotonic() - started < 0.4
+    assert time.monotonic() - started < 30.0
     slow.up.set()
     _wait_for(lambda: any(m.get("method") == "notifications/tools/list_changed" for m in sent))
 
