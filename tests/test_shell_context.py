@@ -92,7 +92,8 @@ def test_executable_position_still_blocks(engine, command):
 def test_inert_text_does_not_block(engine, command):
     """The pattern is inside quoted prose, so it is described, not run."""
     event, findings = _findings(engine, command)
-    assert findings, f"expected a reported finding for {command!r}"
+    # A rule anchored to command position may not match the prose at all;
+    # when one does, the context check has to mark it inert.
     assert all(f["contextInert"] for f in findings), command
     assert should_block(findings, event) is None, command
     cats = {f["category"] for f in findings}

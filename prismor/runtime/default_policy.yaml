@@ -447,19 +447,19 @@ rules:
     fields: [command]
     patterns:
       # Root wipe: rm -rf /, rm -rf /*
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/["'']?(\s|\*|$)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/["'']?(\s|\*|$)'
       # System-critical paths — block at any depth (optional surrounding quotes)
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(["'']|\s|$|&|;|\|)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/(home|var|usr|opt|root|System|Library|Applications)(/\*?)?(["'']|\s|$|&|;|\|)'
       # HOME wipe
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+["'']?(\$\{?HOME\}?|~)(/\*?)?(["'']|\s|$|&|;|\|)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?(\$\{?HOME\}?|~)(/\*?)?(["'']|\s|$|&|;|\|)'
       # Cwd wildcard wipe: rm -rf *
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\*(\s|$|;|&|\|)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+\*(\s|$|;|&|\|)'
       # Parent-dir escape chain: rm -rf .. or ../.. (but NOT ../build)
-      - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))[^\n]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
       # sudo elevates blast radius — always block sudo rm -rf (any flag form)
-      - '(?:^|\s|;|&|\||\(|["''])sudo\s+rm\b(?=[^\n]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n]*\s-[rR]\b|--recursive\b[^\n]*--force\b|--force\b[^\n]*--recursive\b))'
+      - '(?:^|(?<=[\s;&|(]))["'']?sudo\s+rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))'
       # World-writable chmod — numeric modes whose "other" digit grants write
       # (…2/3/6/7, e.g. 777, 666, 0777, 1777), any path — plus symbolic grants
       # of write to other/all (o+w, a+w, a+rwx). Group-only and read-only
@@ -507,7 +507,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(cat|sed|grep|awk)\b[^\n]*(\.env\b|id_rsa\b|id_ed25519\b|\.npmrc\b|\.pypirc\b|\.aws\b|\.ssh\b)[^\n]*(\b(curl|wget|nc|scp|ftp)\b|https?://)'
+      - '\b(cat|sed|grep|awk|head|tail|base64|xxd|gzip)\b[^\n;&]*(?<![\w$])(\.env\b|id_rsa\b|id_ed25519\b|\.npmrc\b|\.pypirc\b|\.aws\b|\.ssh\b)[^\n;&]*\|[^\n;&]*\b(curl|wget|nc|ncat|socat|scp|ftp)\b'
       # scp/rsync/sftp UPLOAD of a secret file to a remote host (secret then user@host:)
       - '\b(scp|rsync|sftp)\b[^\n]*(\.env|id_rsa|id_ed25519|\.npmrc|\.pypirc|credentials|secrets?)\b[^\n]*@'
     action: block
@@ -522,7 +522,7 @@ rules:
     patterns:
       - ':\(\)\s*\{.*\|.*&\s*\}\s*;'
       - 'while\s+true\s*;?\s*do\b'
-      - 'yes\s*\|'
+      - '(?:^|[\n;&|(]\s*|\b(?:sudo|doas)\s+)yes\b[^\n;&|]*\|(?!\|)'
       - 'dd\s+if=/dev/(zero|urandom)\b'
       - 'cat\s+/dev/urandom\b'
       # Command-position anchored so `npm run stress-test` / a commit message
@@ -551,7 +551,10 @@ rules:
       # and reading `os.environ[...]` are routine, benign introspection. Flag the
       # actual execution sinks instead: exec()/eval() calls, os.system/os.popen/
       # os.exec*/os.spawn*, subprocess, __import__, and socket (reverse shells).
-      - 'python3?\s+-c\s+.*(?:\bexec\s*\(|\beval\s*\(|os\.(?:system|popen|exec|spawn)|\bsubprocess\b|__import__|socket\.)'
+      # Only inside the -c string itself: a sink named later in the same shell
+      # line (`python3 -c "print(1)" && grep subprocess x.py`) is not the code
+      # being run.
+      - 'python[23]?\s+-c\s+(?:"[^"]*|''[^'']*)(?:\bexec\s*\(|\beval\s*\(|os\.(?:system|popen|exec|spawn)|\bsubprocess\b|__import__|socket\.)'
       - 'perl\s+-e\s+.*(?:socket|exec)'
       - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
       - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
@@ -648,7 +651,11 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|zsh|dash|ksh)\b'
+      - '(?:^|[\n;&|({]\s*|\b(?:sudo|doas|then|do|else|exec|xargs|nohup|time|env)\s+(?:-\S+\s+)*|\b(?:ssh|sshpass|docker|podman|kubectl)\b[^\n;|]*?\s["'']|-c\s+["'']|\b(?:system|popen|exec\w*|run|call|check_output|Popen|spawn\w*)\s*\(\s*\[?\s*["''])(?:\w+=\S*\s+)*(curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+)?(bash|sh|zsh|dash|ksh)\b'
+      # A fetch-and-run line that echo/printf hands to a shell or writes into a
+      # script. The command-position anchor above skips it, since the fetch sits
+      # inside the echo's quotes.
+      - '\b(?:echo|printf)\b[^\n]*\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|zsh|dash|ksh)\b[^\n]*(?:\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|>{1,2}\s*\S+\.(?:sh|bash|zsh)\b)'
       # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
       - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
       # eval of remotely-fetched content: eval "$(curl ...)"
@@ -682,7 +689,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '(?:^|[\s;&|]|(?<!\$)\()(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|sed|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/])(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws/credentials)(?=$|[\s"'';&|)])'
+      - '(?:^|[;&|{]|(?<!\$)\(|\b(?:then|do|else|xargs|sudo|time|exec)\b)\s*(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|sed(?![^\n;&|<>]*\s-i)|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/])(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws/credentials)(?=$|[\s"'';&|)])'
     action: block
 
   # ── HIGH: Suspicious network destinations ─────────────────────────────
@@ -754,8 +761,11 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(DROP\s+(TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
-      - '(?:mysql|psql|sqlite3)\s+.*(?:-e\s+|-c\s+)[''"]?\s*(?:DROP|DELETE|UPDATE|ALTER|INSERT|TRUNCATE)'
+      - '\b(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql|bq\s+query|wrangler\s+d1\s+execute)\b[^\n]*?\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
+      - '\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b[^\n]*\|\s*(?:\S*/)?(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql|bq\s+query|wrangler\s+d1\s+execute)\b'
+      # SQL as the statement itself, e.g. a line of a heredoc fed to a client.
+      - '(?:^|[;&]\s*)(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
+      - '\.(?:execute|executescript|executemany|exec|query|raw|run)\s*\(\s*(?:[rfbu]?[''\"`]{1,3})\s*\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
     action: block
 
   # ── HIGH: Database dumps / sensitive queries ──────────────────────────
@@ -767,9 +777,9 @@ rules:
     fields: [command]
     patterns:
       - '\b(pg_dump|mysqldump|mongodump|redis-cli\s+--rdb)\b'
-      - 'sqlite3\s+.*\.dump'
-      - '\bSELECT\b[^;]*\bFROM\b[^;]*\b(users?|accounts?|credentials?|passwords?|secrets?|tokens?|sessions?|admins?)\b'
-      - '\bCOPY\b.*\bTO\b\s+[''"'']'
+      - 'sqlite3\s+[^\n]*\.dump'
+      - '\bSELECT\b[^;\n]{0,200}?\bFROM\s+[\"''`\[]?(?:\w+\.)?[\"''`]?(?:users?|accounts?|credentials?|passwords?|secrets?|tokens?|sessions?|admins?)\b'
+      - '(?-i:\bCOPY\b)[^\n]*(?-i:\bTO\b)\s+[''\"]'
     action: warn
 
   # ── HIGH: Path traversal ──────────────────────────────────────────────
@@ -780,7 +790,8 @@ rules:
     event_types: [shell, file_read]
     fields: [command, path]
     patterns:
-      - '(\.\./){2,}'
+      - '(?:\.\./){2,}(?:etc|proc|root|home|var|usr|boot|sys|\.ssh|\.aws|\.gnupg|\.kube|\.docker|\.config|\.env)\b'
+      - '(?:\.\./){5,}'
       - '/etc/(passwd|shadow|hosts|sudoers)'
       - '/proc/self/(environ|cmdline|maps|root)'
       - '/proc/\d+/(environ|cmdline|maps)'
@@ -810,8 +821,8 @@ rules:
     event_types: [shell, network]
     fields: [command, url]
     patterns:
-      - '\b(curl|wget|http|nc|ncat|socat|ssh|scp|rsync|ftp)\b[^\n]*\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
-      - 'https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+      - '\b(?:curl|wget|http|nc|ncat|socat|ssh|scp|rsync|ftp)\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\b(?!(?:127|10)\.|0\.0\.0\.0\b|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
+      - 'https?://(?!(?:127|10)\.|0\.0\.0\.0\b|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b'
     action: warn
 
   # ── HIGH: Service binding to 0.0.0.0 (all interfaces) ────────────
@@ -843,7 +854,7 @@ rules:
       - '\bssh\b[^\n]*-R\s+\d+'
       - '\bssh\b[^\n]*-L\s+\d+'
       - '\bssh\b[^\n]*-D\s+\d+'
-      - '\bngrok\b|\bcloudflared\s+tunnel\b|\blt\s+--port\b'
+      - '\bngrok\s+(?:http|tcp|tls|start)\b|\bcloudflared\s+tunnel\s+(?:run|--url)\b|\bcloudflared\s+tunnel\s*$|\blt\s+--port\b'
       - '\bsocat\b[^\n]*TCP-LISTEN'
     action: warn
 
@@ -855,9 +866,9 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bcurl\b[^\n]*(-d\s|--data|--upload-file|-T\s|-F\s|--form)'
-      - '\bwget\b[^\n]*--post-(data|file)'
-      - '\bnc\b[^\n]*<\s*/'
+      - '\bcurl\b(?!-)(?!(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s(?-i:-G|--get)\b)(?!(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s[''\"]?(?:https?://)?(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|\[::1\])(?=[:/\s''"]|$))(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s(?-i:-d|--data(?:-binary|-raw|-ascii|-urlencode)?|--json|--upload-file|-T|-F|--form)(?=[\s=@''\"]|$)'
+      - '\bwget\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*--post-(?:data|file)'
+      - '\bnc\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*<\s*/'
     action: warn
 
   # ── CRITICAL: Skill exfiltration URLs ──────────────────────────────
@@ -981,9 +992,10 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(tar|zip|7z|gzip)\b[^\n]*(\.ssh|\.aws|\.claude|\.gnupg|\.credentials)'
-      - '\b(cp|mv|rsync)\b[^\n]*(-r|-a)[^\n]*(\.ssh|\.aws|\.claude|\.gnupg)'
-      - '\b(cp|mv|rsync)\b[^\n]*(\.ssh|\.aws|\.claude|\.gnupg)[^\n]*/tmp'
+      - '\b(tar|zip|7z|gzip)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
+      - '\b(cp|mv|rsync)\b[^\n;&|]*\s-[a-zA-Z]*[rRa][^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
+      - '\b(cp|mv|rsync)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude)\b[^\n;&|]*/tmp'
+      - '\b(cp|mv|rsync|scp)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/(?:\.claude/\.credentials\.json|\.aws/credentials|\.ssh/id_[a-z0-9]+(?!\.pub))\b'
     action: block
 
   # ── HIGH: Credential staging (encode to file without network) ─────
@@ -994,8 +1006,8 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(cat|sed|grep|awk)\b[^\n]*(\.env|id_rsa|credentials|\.credentials)[^\n]*\|\s*(base64|gzip|xxd|openssl)'
-      - '\bbase64\b[^\n]*(\.env|id_rsa|credentials|\.claude)'
+      - '\b(cat|sed|grep|awk)\b[^\n;&|]*(?<![\w$])(\.env|id_rsa|credentials|\.credentials)\b[^\n;&|]*\|\s*(base64|gzip|xxd|openssl)'
+      - '(?:^|[\s;&|(])base64(?:\s+-{1,2}[\w=-]+)*\s+(?:<\s*)?["'']?[^\s;&|"'']*(\.env\b|id_rsa|credentials|\.claude/)'
     action: block
 
   # ── HIGH: Persistence — systemd services/timers ───────────────────
@@ -1123,8 +1135,8 @@ rules:
     # the bare-path form below, which is exactly the over-match being removed,
     # so without them the split would have opened a real gap.
     patterns:
-      - '(>|\b(rm|mv|cp|tee|truncate|sed)\b)[^\n;&|]*\.claude/settings(\.local)?\.json'
-      - '(>|\b(rm|mv|cp|tee|truncate|sed)\b)[^\n;&|]*\.prismor(-warden)?/policy\.yaml'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
     action: block
 
   # The same protection for the file-write surface, where the field IS a bare
@@ -1170,15 +1182,15 @@ rules:
       # `$PRISMOR_HOME`, any path under a directory called Prismor, and any
       # `git checkout -b feat/...-setup` run from one. Replaying 30 days of
       # real transcripts turned up 1057 such matches against ~30 genuine ones.
-      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b'
-      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init)\b'
-      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+egress[ \t]+(allow|deny|rm|mode|default|enable|disable)\b'
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+egress[ \t]+(allow|deny|rm|mode|default|enable|disable)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # The same CLI reached as a module or a script path.
-      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b'
-      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # ...or wrapped in a shell, which is how the anchors above would
       # otherwise be stepped around: `bash -c "prismor allow ..."`.
-      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # The unlock credential and grant. Reads matter as much as writes: the
       # credential file is what an offline guess would need, and the grant file
       # is what a forged window would be written to.
@@ -1191,17 +1203,17 @@ rules:
       - '\bunlock(-grant)?\.json\b'
       - '(^|/)unlock(-grant)?\.json$'
       # Other Prismor state an agent has no legitimate reason to rewrite.
-      - '(>|rm|mv|cp|truncate|tee)[^\n]*\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
       # The session store. Reads are fine (`prismor query`, sqlite3 SELECT);
       # SQL writes are caught by db-modification, this catches the file.
-      - '(>|rm|mv|cp|truncate|tee|shred)[^\n]*\bprismor\.db(-wal|-shm)?\b'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|dd)\b[^\n;&|<>]*?)\bprismor\.db(?:-wal|-shm|-journal)?\b'
       # The local dashboard's write API (loopback, unauthenticated by design
       # — it assumes only the human reaches it).
       - '(curl|wget|http|nc)[^\n]*(127\.0\.0\.1|localhost)[^\n]*/api/(policy|tool-policy|agents|sessions)'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
-      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b'
+      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
     action: block
 
   # ── CRITICAL: Audit-trail tampering ────────────────────────────────
@@ -1236,17 +1248,13 @@ rules:
     event_types: [shell, file_write]
     fields: [command, path]
     patterns:
-      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*(CLAUDE\.md|AGENTS\.md|GEMINI\.md)(\s|$)'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?=$|[\s;&|)])'
       - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
-      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.cursorrules(\s|$)'
       - '(^|/)\.cursorrules$'
-      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.windsurfrules(\s|$)'
       - '(^|/)\.windsurfrules$'
       - '(^|/)\.github/copilot-instructions\.md$'
       - '(^|/)\.github/chatmodes/'
-      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.mcp\.json(\s|$)'
       - '(^|/)\.mcp\.json$'
-      - '(>|rm|mv|cp|truncate|sed\s+-i|tee)[^\n]*\.github/copilot-instructions\.md'
     action: warn
 
   # ── MEDIUM: Embedded directive in project-memory content (#153) ───────
@@ -1490,8 +1498,8 @@ rules:
       - '\bGIT_SSL_NO_VERIFY\s*=\s*(1|true|yes)'
       - '\bStrictHostKeyChecking\s*=\s*no\b'
       - '\bUserKnownHostsFile\s*=\s*/dev/null\b'
-      - '\bcurl\b[^\n]*\s--insecure\b'
-      - '\bcurl\b[^\n]*\s-[a-zA-Z]*k[a-zA-Z]*\b'
+      - '\bcurl\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s--insecure\b'
+      - '\bcurl\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s-(?-i:[a-zA-Z]{0,8}k[a-zA-Z]{0,8})(?=\s|$)'
       - '\bwget\b[^\n]*\s--no-check-certificate\b'
       - '\bnpm\s+config\s+set\s+strict-ssl\s+false\b'
       - '\bNODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0\b'
@@ -1507,7 +1515,7 @@ rules:
     event_types: [shell, file_read, file_write]
     fields: [command, path]
     patterns:
-      - '(^|/)\.claude/\.credentials\.json'
+      - '(?:^|[;&|(\n])(?![ \t]*(?:(?:ls|stat|test)\b|\[))[^;&|\n]*(?:^|/)\.claude/\.credentials\.json'
     action: block
 
   # ── HIGH: Claude Code session transcript access ───────────────────
@@ -1534,7 +1542,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bln\b[^\n]*-[a-zA-Z]*s[^\n]*(\.env|\.ssh|\.aws|\.claude|\.credentials|id_rsa|\.gnupg)'
+      - '(?:^|[\s;&|(])ln\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*s[a-zA-Z]*\s+[^\n;&|]*(\.env\b|\.ssh|\.aws|\.claude|\.credentials|id_rsa|\.gnupg)'
     action: block
 
   # ── HIGH: Environment variable hijacking ──────────────────────────
@@ -1560,8 +1568,8 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - 'python3?\s+-c\s+[^\n]*(socket\.socket|pty\.spawn|os\.dup2)'
-      - 'python3?\s+-c\s+[^\n]*connect\([^\n]*\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+      - 'python[23]?\s+-c\s+(?:"[^"]*|''[^'']*)(socket\.socket|pty\.spawn|os\.dup2)'
+      - 'python[23]?\s+-c\s+(?:"[^"]*|''[^'']*)connect\([^\n]*\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
     action: block
 
   # ── HIGH: DNS exfiltration ────────────────────────────────────────
@@ -1572,8 +1580,8 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(dig|nslookup|host)\b[^\n]*\$\('
-      - '\b(dig|nslookup|host)\b[^\n]*\`'
+      - '(?<![\w-])(dig|nslookup|host)\s+(?:-\S+\s+)*[^\s;&|]*\$\('
+      - '(?<![\w-])(dig|nslookup|host)\s+(?:-\S+\s+)*[^\s;&|]*\`'
     action: block
 
   # ── HIGH: Git remote hijacking ───────────────────────────────────
@@ -1588,7 +1596,8 @@ rules:
     fields: [command]
     patterns:
       - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))'
-      - '\bgit\s+push\b[^\n]*--force(?!-with-lease|-if-includes)\b'
+      - '\bgit\s+push\b(?=(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s--force(?!-with-lease|-if-includes)\b)(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*[\s:+](?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
+      - '\bgit\s+push(?=[^\n;&|]*\s--force(?!-with-lease|-if-includes)\b)(?:\s+-[\w-]+)*(?:\s+(?!-)[\w.-]+)?(?:\s+-[\w-]+)*(?:\s+\d?>\S*)*\s*(?:$|[;&|)])'
     action: warn
 
   # ── HIGH: Package manager registry poisoning ─────────────────────
@@ -1612,7 +1621,8 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - 'python3?\s+-c\s+[^\n]*(urllib|requests|httpx)[^\n]*(open|post|put|send)'
+      - 'python3?\s+-c\s+[^\n]*?\b(?:requests|httpx)\.(?:post|put|patch)\s*\((?!\s*[''\"]https?://(?:localhost|127\.|0\.0\.0\.0|\[::1\]))'
+      - 'python3?\s+-c\s+[^\n]*?\burllib\b[^\n]*?\b(?:urlopen|Request)\s*\((?!\s*[''\"]https?://(?:localhost|127\.|0\.0\.0\.0|\[::1\]))[^\n]*?\bdata\s*='
       - 'python3?\s+-c\s+[^\n]*socket[^\n]*connect[^\n]*send'
     action: warn
 
@@ -1629,11 +1639,11 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bpip3?\s+install\b[^\n]*(https?://|git\+|ftp://)'
-      - '\bnpm\s+install\b[^\n]*(https?://|git\+|git://)'
-      - '\byarn\s+add\b[^\n]*(https?://|git\+|git://)'
-      - '\bgem\s+install\b[^\n]*--source\s+https?://'
-      - '\bcargo\s+install\b[^\n]*--git\s+'
+      - '\bpip3?\s+install\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*(?:https?://|git\+|ftp://)'
+      - '\bnpm\s+install\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*(?:https?://|git\+|git://)'
+      - '\byarn\s+add\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*(?:https?://|git\+|git://)'
+      - '\bgem\s+install\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*--source\s+https?://'
+      - '\bcargo\s+install\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*--git\s+'
     action: warn
 
   # ── MEDIUM: Package install with unsafe flags ────────────────────
@@ -1953,7 +1963,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\b(env|printenv|set)\b\s*\|\s*(curl|wget|nc|ncat|socat)\b'
+      - '(?<![\w.$/-])(env|printenv|set)\b\s*\|\s*(curl|wget|nc|ncat|socat)\b'
     action: block
 
   # ── HIGH: Staged fetch-and-run dropper (download then execute) ──────────
@@ -1965,7 +1975,7 @@ rules:
     fields: [command]
     patterns:
       # curl/wget -o FILE ... && ... (chmod +x | bash/sh/zsh | ./run)
-      - '\b(curl|wget)\b[^\n]*(-o|-O|--output)\b[^\n]*(&&|;|\|\|)\s*[^\n]*(\bchmod\b[^\n]*\+x|\b(bash|sh|zsh)\b|(^|\s)\./)'
+      - '\b(curl|wget)\b[^\n;&|]*\s(?:-[a-zA-Z]*[oO]|--output(?:-document)?)(?:\s+|=)["'']?(?!/dev/null\b)([^\s"'';&|]+)[^\n]*(?:&&|;|\|\|)[^\n]*(?:\bchmod\b[^\n;&|]*\+x[^\n;&|]*\2|\b(?:bash|sh|zsh|source|python3?|node)\s+(?:-\S+\s+)*\S*\2|(?:^|[\n;&|(]\s*)(?:\S*/)?\2(?=\s|$|;|&|\|))'
       # fetch, then chmod +x a tmp path and execute a tmp path. The fetch is
       # required: a locally written scratch script is not a dropper (#483).
       # Cross-call staging (fetch now, run later) is learning.py's job.
@@ -2070,8 +2080,8 @@ rules:
     fields: [command]
     patterns:
       # `gh pr create` / `gh issue comment` are normal agent work and stay quiet.
-      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:pr\s+(?:merge|close)|workflow\s+(?:run|enable|disable)|run\s+(?:rerun|cancel|delete)|release\s+(?:create|delete|edit|upload)|repo\s+(?:delete|archive|rename|edit)|secret\s+(?:set|delete|remove)|variable\s+(?:set|delete)|issue\s+(?:delete|transfer))(?=\s|$|[;&|)])'
-      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+api\b[^\n;&|]*(?:-X\s*|--method[=\s]\s*)(?:POST|PUT|PATCH|DELETE)\b'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:pr\s+(?:merge|close)|workflow\s+(?:run|enable|disable)|run\s+(?:rerun|cancel|delete)|release\s+(?:create|delete|edit|upload)|repo\s+(?:delete|archive|rename)|repo\s+edit(?=[^\n;&|]*\s--(?:visibility|default-branch|enable-[\w-]+|allow-[\w-]+|template)\b)|secret\s+(?:set|delete|remove)|variable\s+(?:set|delete)|issue\s+(?:delete|transfer))(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?gh(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+api\b[^\n;&|]*(?:-X\s*|--method[=\s]\s*)(?:POST|PUT|PATCH|DELETE)\b(?![^\n;&|]*\brepos/[\w.-]+/[\w.-]+/(?:pulls|issues)(?:/\d+(?:/comments|/reviews|/labels)?)?(?:\s|$|[?''\"])(?![^\n;&|]*\bstate=))'
     action: warn
 
   - id: sudo-command
@@ -2082,7 +2092,7 @@ rules:
     fields: [command]
     patterns:
       # sudo -l/-v/-k and --help/--version do not elevate anything.
-      - '(?:^|[\n;&|(`]|\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
+      - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
     action: warn
 
 allowlists: []

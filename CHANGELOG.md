@@ -1,6 +1,20 @@
 ## [Unreleased]
 
 ### Fixed
+- **Shell rules fired on everyday commands.** Replaying 30 days of real agent sessions (6,458 unique tool calls) through the default policy gave 647 findings, roughly 75 of them real. The same replay now gives 317, and 177 instead of 311 of them would block. All 128 attacks used to test the change are still caught except two DNS-exfiltration forms that main misses too. Changes:
+  - Shell commands keep the newlines between statements. They used to be collapsed into one line before matching, so every `[^\n]` guard in a rule did nothing. `rm -rf /tmp/x` reached a `cd /home/...` on the next line, and a `cat > f.py <<EOF` redirect reached a path inside the heredoc body. Continuations, lines ending in `|`/`&&`/`||`, and quoted strings spanning lines are still joined. Rules that read only commands, paths or URLs now match `^`/`$` per statement.
+  - Patterns stay inside one shell command instead of running across `;`, `&&` and `|`. Verbs need a word boundary, so `rm` no longer matches inside "perform", and the `>` of `2>&1` is no longer a write.
+  - `raw-ip-outbound` and `network-exfil-tool` skip loopback and private addresses. Curl's flags are matched case-sensitively, so `tail -f` no longer counts as `-F`.
+  - Tightened rules:
+    - `path-traversal`: `../../` must reach a sensitive directory.
+    - `gh-remote-mutation`: no longer fires on opening a PR or issue, commenting, or `repo edit --add-topic`.
+    - Force-push in `git-remote-hijack`: only fires for protected branches.
+    - `python-network-exfil`: only fires on sending data.
+    - `db-modification`: needs a DB client, a heredoc line, or an `.execute()` call.
+    - `secret-exfiltration`: needs the secret file piped to an upload tool.
+    - Also tightened: `dos-resource-exhaustion` (`yes || ...`), `env-network-exfil` (`.env`), `credential-staging`, `credential-aggregation`, `fetch-then-execute`, `symlink-to-sensitive`, `reverse-tunnel` and `tls-verification-disabled`.
+  - `remote-execution` requires the fetch to be the command that runs. As a result it now catches `sudo -E curl … | sudo bash`, and it gains a pattern for a fetch line that `echo` pipes into a shell or writes to a `.sh` file.
+  - `prismor-self-edit` no longer blocks reading `prismor.db` (`ls -la …/prismor.db 2>&1`, or a heredoc script that opens it read-only) or `--help`. `agent-config-tampering` and `agent-instruction-tampering` bind a redirect to its target. `claude-credential-access` skips `ls`/`stat`.
 - **`prismor mcp-gateway` answered the client's first `tools/list` with 0 tools while an `npx` upstream was still starting** (#559). Each upstream's `initialize` was awaited in turn with a 30-second limit, so a cold `npx -y` install was given up on and the tool list came back empty; a client that lists once at startup then had no tools for the session. Upstreams are now initialized concurrently with a 10-minute limit, `tools/list` waits for any still in their handshake, and one that is still starting after 30 seconds is announced (later lists do not wait for it again) with `notifications/tools/list_changed` once it is up, so the client re-lists and sees it.
 
 ## [1.59.0] — 2026-10-02

