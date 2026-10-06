@@ -35,6 +35,12 @@ What `connect` sets, and why each matters
   verdict that briefly runs long turned into a retry storm and a silent agent.
   Keep Prismor's own share bounded too (``settings.semantic_guard.budget_ms``
   in the proxy workspace).
+* ``X-Prismor-Screening: parallel`` (``--sequential-screening`` to drop it): each
+  turn is judged while the model is already answering, and the reply is held
+  until the verdict, so screening adds ``max(0, verdict - first token)``
+  instead of the verdict's whole time. The prompt reaches the provider before
+  its verdict (secrets still masked first); sequential keeps a blocked prompt
+  from ever leaving, for policies whose data-boundary rules must stop the send.
 * ``request_headers`` carry ``X-Prismor-Session`` = the ElevenLabs
   ``system__conversation_id``, so one phone call is one Prismor session with
   the same id ElevenLabs shows in its history, and ``X-Prismor-Refusal:
@@ -63,6 +69,10 @@ API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
 #: Header values ElevenLabs resolves per conversation.
 SESSION_HEADER = {"X-Prismor-Session": {"variable_name": "system__conversation_id"},
                   "X-Prismor-Refusal": "spoken"}
+
+#: Judge each turn while the model is already answering it; the reply is held
+#: until the verdict. See ProxyHandler._start_parallel_screen for the trade.
+PARALLEL_HEADER = {"X-Prismor-Screening": "parallel"}
 
 
 class ElevenLabsError(RuntimeError):
@@ -215,7 +225,8 @@ def status(client: Client) -> int:
 def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
             model: str = "", upstream: str = "openai",
             config_path: Optional[Path] = None, keep_backup: bool = False,
-            turn_timeout: float = 8.0) -> int:
+            turn_timeout: float = 8.0, parallel: bool = True,
+            refusal_text: str = "") -> int:
     if not 2.0 <= turn_timeout <= 15.0:
         raise ElevenLabsError("--turn-timeout must be between 2 and 15 seconds (ElevenLabs' range)")
     if not proxy_url.startswith("https://"):
@@ -241,6 +252,10 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
         if (aid in state["agents"] and _governed_by(prompt, proxy_url)
                 and (prompt.get("custom_llm") or {}).get("model_id") == model_id
                 and prompt.get("cascade_timeout_seconds") == turn_timeout
+                and ((prompt.get("custom_llm") or {}).get("request_headers") or {}).get(
+                    "X-Prismor-Screening") == ("parallel" if parallel else None)
+                and ((prompt.get("custom_llm") or {}).get("request_headers") or {}).get(
+                    "X-Prismor-Refusal-Text") == (refusal_text or None)
                 and proxy_cfg["keys"].get(state["agents"][aid]["virtual_key"]) == key_meta):
             print(f"  = {name} ({aid}) already routed through {proxy_url} on {model_id}")
             continue
@@ -271,7 +286,8 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
                 "url": _llm_url(proxy_url),
                 "model_id": model_id,
                 "api_key": {"secret_id": entry["secret_id"]},
-                "request_headers": SESSION_HEADER,
+                "request_headers": {**SESSION_HEADER, **(PARALLEL_HEADER if parallel else {}),
+                                    **({"X-Prismor-Refusal-Text": refusal_text} if refusal_text else {})},
                 "api_type": "chat_completions",
             },
         }
@@ -354,7 +370,9 @@ def run(args: Any) -> int:
                 return connect(client, ids, proxy_url, model=args.model or "",
                                upstream=args.upstream, config_path=config,
                                keep_backup=args.keep_backup_llm,
-                               turn_timeout=args.turn_timeout)
+                               turn_timeout=args.turn_timeout,
+                               parallel=not args.sequential_screening,
+                               refusal_text=args.refusal_text or "")
             return disconnect(client, ids, config_path=config)
     except ElevenLabsError as exc:
         print(f"prismor elevenlabs: {exc}", file=sys.stderr)

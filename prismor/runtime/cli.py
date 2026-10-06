@@ -3450,6 +3450,14 @@ def build_parser() -> argparse.ArgumentParser:
     _el_con.add_argument("--turn-timeout", dest="turn_timeout", type=float, default=8.0,
                          help="Seconds ElevenLabs waits for a turn before retrying it "
                               "(cascade_timeout_seconds, 2-15; default 8, ElevenLabs' own is 4)")
+    _el_con.add_argument("--refusal-text", dest="refusal_text", default="",
+                         help="What the agent says when Prismor blocks a turn, in the agent's own "
+                              "language and voice (default: \"Sorry, I can't do that. It's blocked "
+                              "by our security policy. ...\")")
+    _el_con.add_argument("--sequential-screening", dest="sequential_screening", action="store_true",
+                         help="Judge each turn before the model sees it (slower first word; a "
+                              "blocked prompt never leaves). Default: in parallel with the model, "
+                              "reply held until the verdict")
     _el_con.add_argument("--keep-backup-llm", dest="keep_backup_llm", action="store_true",
                          help="Leave ElevenLabs' backup LLM on (turns it serves bypass Prismor)")
     _el_dis = _el_sub.add_parser("disconnect", help="Restore agents' original LLM settings")

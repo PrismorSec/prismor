@@ -43,10 +43,26 @@ def placeholder_names(text: str) -> List[str]:
     return out
 
 
+#: (directory, per-file (name, mtime_ns, size) signature) -> secret map. Masking
+#: reads the map once per *string*, and a model request holds dozens: re-reading
+#: every secret file each time cost ~4ms a string, a few hundred ms in front of
+#: every proxied turn. The signature is re-taken on every call, so an added,
+#: rewritten or removed secret is seen on the very next read -- never stale.
+_SECRET_MAP_CACHE: Dict[str, Any] = {}
+
+
 def _read_secret_map() -> Dict[str, str]:
     sdir = secrets_dir()
     if not sdir.is_dir():
         return {}
+    try:
+        entries = sorted((e for e in os.scandir(sdir) if e.is_file()), key=lambda e: e.name)
+        signature = tuple((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in entries)
+    except OSError:
+        signature = None
+    cached = _SECRET_MAP_CACHE.get(str(sdir))
+    if signature is not None and cached and cached[0] == signature:
+        return dict(cached[1])
     values: Dict[str, str] = {}
     for child in sorted(sdir.iterdir()):
         if not child.is_file():
@@ -55,6 +71,8 @@ def _read_secret_map() -> Dict[str, str]:
             values[child.name] = child.read_text(encoding="utf-8")
         except OSError:
             continue
+    if signature is not None:
+        _SECRET_MAP_CACHE[str(sdir)] = (signature, dict(values))
     return values
 
 

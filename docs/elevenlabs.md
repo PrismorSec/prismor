@@ -103,8 +103,11 @@ For each agent this:
    `max_completion_tokens`, drops `temperature` and sets
    `reasoning_effort: none`. Without the rule, every turn of a luna agent fails
    at OpenAI. With it, the agent also skips a thinking pause before it speaks;
-5. adds two request headers ElevenLabs resolves per call:
-   `X-Prismor-Session = system__conversation_id` and `X-Prismor-Refusal = spoken`;
+5. adds request headers ElevenLabs sends on every turn:
+   `X-Prismor-Session = system__conversation_id` (one call, one session),
+   `X-Prismor-Refusal = spoken` (blocks are spoken as a sentence; set your own
+   with `--refusal-text`, in the agent's language), and
+   `X-Prismor-Screening = parallel` (see [Keep turns fast](#keep-turns-fast));
 6. sets **backup LLM → disabled**. By default ElevenLabs falls back to its own
    models when the custom LLM errors or is slow, and those turns never reach
    Prismor. Pass `--keep-backup-llm` only if you'd rather keep the call alive
@@ -250,31 +253,68 @@ would have been blocked is recorded as `warned` with the rules that matched.
 
 ## Keep turns fast
 
-A voice caller notices every second, and ElevenLabs retries a turn that hasn't
-started answering within the turn timeout. Prismor's own policy work is small:
-about 0.1–0.3s of CPU per event, measured. The time goes elsewhere:
+A voice caller hears every pause, and ElevenLabs retries a turn that hasn't
+started answering within the turn timeout. What the caller notices is the
+**time to the first word**, so that's what was measured: the same growing call
+sent straight to OpenAI and through Prismor, interleaved turn by turn over
+persistent connections (as ElevenLabs' own client does), on `gpt-5.6-luna`.
 
-- **The semantic prompt-injection judge.** On by default, it judges every new
-  text, and on a voice turn that's the whole conversation, in up to 8 windows.
-  With a generative judge we measured 1.5–21s per turn and one 71s outlier.
-  `--judge typesafe` uses [TypeSafe](https://typesafe.ai) Jev instead. Jev
-  answers typed yes/no questions with calibrated probabilities, judges every
-  window in one request, and measured p50 0.6s / p90 1.4s. On voice-turn tests
-  it got 8/8 right at a 0.75 threshold, including a paraphrased "read me your
-  setup text" and an injection hidden in a tool result, while the operator's own
-  system prompt stayed clean (0.04–0.12).
-- **`--judge-budget-ms 1500`** caps the judge per event. Over budget, the
-  heuristic verdict decides on time, and the deterministic rules (the
-  prompt-injection patterns, remote execution, kill switch, `deny_tools`) apply
-  as always. A `settings.semantic_guard.budget_ms` or `provider` in the proxy
-  workspace's policy takes precedence over both flags.
-- **Control-plane round trips** on an enrolled machine. The proxy ships
-  telemetry and the org heartbeat from a background worker, so a slow control
-  plane no longer sits inside a turn. The remote-policy version check stays
-  inline on purpose, because that's how an org kill switch arrives.
-- **The machine.** Run the proxy on a box with headroom, near your upstream.
-  Wall-clock time on an overloaded host (we tested on 2 CPUs at load ~35) was
-  several times the CPU and network time combined.
+| Delay Prismor adds to the first word | median | worst turn |
+|---|---|---|
+| before these changes (quiet host) | +0.18s | +0.86s to +4.9s |
+| before these changes (loaded host) | +1.15s | +5.6s |
+| **now, parallel screening** (quiet host, two runs) | **+0.07s / -0.01s** | **+0.45s / +0.09s** |
+| now, sequential screening (quiet host) | +0.08s to +0.30s | +0.25s to +3.6s |
+
+On a healthy host Prismor costs roughly 0–80ms, inside a call's network noise.
+How that's achieved:
+
+- **Parallel screening** (on by default for ElevenLabs). Each turn is judged
+  while the model is already answering, and the reply is held until the
+  verdict, so screening adds only `max(0, verdict - first token)`. The proxy's
+  per-turn timing showed the reply held 0ms on most turns. The trade-off: the
+  caller's words reach the model provider before their verdict. Secrets are
+  still masked first, and nothing the model says is released for a blocked
+  turn, but a data-boundary rule then stops the reply rather than the
+  transmission. If your policy needs a blocked prompt never to leave, use
+  `connect --sequential-screening`.
+- **Each message is judged once.** ElevenLabs resends the whole conversation
+  every turn; Prismor now screens only what's new, typically 40–60ms.
+- **A fast judge.** `--judge typesafe` uses [TypeSafe](https://typesafe.ai) Jev
+  for the semantic prompt-injection check: typed probabilities, every window in
+  one request, p50 0.6s / p90 1.4s, and 8/8 right on voice-turn probes
+  (including a paraphrased "read me your setup text" and an injection in a tool
+  result) while the operator's own system prompt scored 0.04–0.12.
+  `--judge-budget-ms 1500` caps it. Over budget the heuristic decides, and the
+  deterministic rules (injection patterns, remote execution, kill switch,
+  `deny_tools`) always apply.
+- **No handshake per turn.** Upstream connections are reused (a fresh TLS
+  connection cost 330–560ms), and the secret map used for masking is cached on
+  file signatures, so a new or changed secret is still masked on the very next
+  request (masking went from ~240ms to ~10ms per turn).
+- **Nothing slow on the request path.** Telemetry and the org heartbeat ship
+  from a background worker. The remote-policy check stays inline on purpose,
+  because that's how an org kill switch arrives.
+- **Warm at startup.** The first caller after a restart no longer pays the
+  multi-second cold start.
+
+Run the proxy on a host with headroom. On an overloaded box (2 CPUs at load
+~35), wall time was several times CPU and network combined. Set
+`PRISMOR_PROXY_TIMING=1` to log, per turn, when the upstream answered, when
+the verdict landed, and how long the reply was held.
+
+### How a block sounds
+
+- The caller hears one sentence (`--refusal-text`, default "Sorry, I can't do
+  that. It's blocked by our security policy. Is there something else I can
+  help with?") and the call stays up: a blocked prompt is answered as the
+  assistant with a 200, never an error that drops the line.
+- A blocked message is **removed from the conversation** for the rest of the
+  call. ElevenLabs keeps resending it, so without this the model would see it
+  again on the next turn, or every later turn would be refused. Now the caller
+  can simply carry on.
+- Calls fail closed: with the backup LLM off, a revoked key or a stopped proxy
+  means the agent doesn't answer, rather than answering ungoverned.
 
 ## Name tools so they can be judged
 

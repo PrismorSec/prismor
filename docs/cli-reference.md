@@ -358,7 +358,7 @@ outside all of this, the same as every other Prismor control.
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor elevenlabs status` | — | Every agent in the ElevenLabs workspace: its LLM, whether `prismor proxy` governs it, and whether a backup LLM could route around it. Reads `ELEVENLABS_API_KEY`. |
-| `prismor elevenlabs connect` | `<agent_id>…` or `--all`, `--proxy-url` (public https; env `PRISMOR_PROXY_PUBLIC_URL`), `--model` (default `gpt-5.6-luna`), `--upstream` (default `openai`), `--config`, `--turn-timeout` (default 8s), `--keep-backup-llm` | Point agents' Custom LLM at the proxy with a per-agent virtual key (stored as an ElevenLabs workspace secret, with `body` rules that adapt ElevenLabs' request to the model), disable the backup LLM, and thread each call into one Prismor session. Re-run with a new URL to re-point. Restart the proxy afterwards. See [ElevenLabs](elevenlabs.md). |
+| `prismor elevenlabs connect` | `<agent_id>…` or `--all`, `--proxy-url` (public https; env `PRISMOR_PROXY_PUBLIC_URL`), `--model` (default `gpt-5.6-luna`), `--upstream` (default `openai`), `--config`, `--turn-timeout` (default 8s), `--refusal-text`, `--sequential-screening`, `--keep-backup-llm` | Point agents' Custom LLM at the proxy with a per-agent virtual key (stored as an ElevenLabs workspace secret, with `body` rules that adapt ElevenLabs' request to the model), disable the backup LLM, and thread each call into one Prismor session. Re-run with a new URL to re-point. Restart the proxy afterwards. See [ElevenLabs](elevenlabs.md). |
 | `prismor elevenlabs disconnect` | `<agent_id>…` or `--all`, `--config` | Restore the LLM settings `connect` replaced, delete the secret, drop the virtual key. |
 
 ### inference-hook
