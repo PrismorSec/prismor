@@ -23,7 +23,8 @@ Read endpoints:
     GET /metrics           → Prometheus text exposition (see docs/observability.md)
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
     GET /api/sessions/:id/dev → what went wrong + what changed (devlog.py)
-    GET /api/blame         → agent sessions that wrote ?path=…[&line=N]
+    GET /api/files         → files agents wrote (?q=… path filter)
+    GET /api/blame         → agent sessions that wrote ?path=…[&line=N], with diffs
     GET /api/friction      → failures recurring across sessions (?workspace=…&days=14)
 
 Write endpoints (human-only — localhost):
@@ -838,10 +839,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
-        if path in ("/api/blame", "/api/friction"):
+        if path in ("/api/blame", "/api/friction", "/api/files"):
             from prismor.runtime import devlog
             try:
-                if path == "/api/blame":
+                if path == "/api/files":
+                    data = devlog.files(qstr("q"))
+                elif path == "/api/blame":
                     data = devlog.blame(qstr("path"), qint("line", 0) or None)
                 else:
                     data = devlog.friction(qstr("workspace") or None, qint("days", 14))

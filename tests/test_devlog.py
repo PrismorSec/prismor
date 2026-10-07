@@ -69,12 +69,16 @@ def test_rca_changes_blame(tmp_path):
     assert [v["path"] for v in r["reverts"]] == [str(target)]
 
     ch = devlog.changes(SID)
-    assert ch["files"] == [{"path": str(target), "writes": 2}]
+    f0 = ch["files"][0]
+    assert (f0["path"], f0["writes"], f0["added"], f0["removed"]) == (str(target), 2, 2, 2)
+    assert f0["diff"] == ["@@", "-a = 1", "+a = 2", "@@", "-a = 2", "+a = 1"]
     assert "- make the tests pass" in ch["prDescription"] and "`pytest -q -x`" in ch["prDescription"]
 
     hit = devlog.blame(str(target), line=2)
     assert hit["text"] == "a = 2" and hit["writes"][0]["prompt"] == "make the tests pass"
+    assert hit["writes"][0]["diff"] == ["@@", "-a = 1", "+a = 2"]
     assert devlog.blame(str(target), line=1)["writes"] == []  # line 1 was never written by an agent
+    assert [f["path"] for f in devlog.files("mod.py")["files"]] == [str(target)]
 
     f = devlog.friction(days=1)
     assert f["sessions"] == 1 and f["patterns"] == []  # one session is not a pattern
@@ -86,3 +90,12 @@ def test_loop_warning_on_third_identical_failure():
     out = devlog.on_failure(p)["hookSpecificOutput"]
     assert out["hookEventName"] == "PostToolUseFailure" and "failed 3 times" in out["additionalContext"]
     assert devlog.on_failure({**p, "tool_input": {"command": "make test"}}) is None  # different call
+
+
+def test_claude_patch_wins_over_text_diff():
+    patch = {"structuredPatch": [{"oldStart": 4, "oldLines": 1, "newStart": 4, "newLines": 1,
+                                  "lines": ["-x = 1", "+x = 2"]}]}
+    call = {"tool": "Write", "input": {"content": "whole new file"}}
+    assert devlog._call_diff(call, patch) == ["@@ -4,1 +4,1 @@", "-x = 1", "+x = 2"]
+    assert devlog._call_diff(call, {"type": "create", "structuredPatch": [], "content": "a\nb"}) == ["@@ new file", "+a", "+b"]
+    assert devlog._call_diff(call, None) == ["@@", "+whole new file"]  # no result: text fallback

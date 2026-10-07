@@ -1182,8 +1182,21 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .dev-quiet { font-size:11px; font-weight:400; color:var(--gray-400); margin-left:6px; text-transform:none; letter-spacing:0; }
   .dev-mono { font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; overflow-wrap:anywhere; }
   .dev-err { color:#ef4444; }
-  .dev-blame { display:flex; gap:8px; margin-bottom:10px; }
-  .dev-blame input { flex:1; min-width:0; }
+  .files-layout { grid-template-columns:minmax(260px,380px) minmax(0,1fr); }
+  .file-item { padding:7px 8px; border-radius:6px; cursor:pointer; border-bottom:1px solid var(--gray-100); }
+  .file-item:hover { background:var(--gray-50); }
+  .file-item.active { background:rgba(59,130,246,.10); }
+  .file-item .dev-mono { direction:rtl; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dev-add { color:#16a34a; font-weight:600; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; }
+  .dev-del { color:#dc2626; font-weight:600; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; }
+  .dev-diff { margin:6px 0 4px; border:1px solid var(--gray-200); border-radius:6px; overflow:auto; max-height:420px;
+    font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; line-height:1.55; }
+  .dev-diff div { padding:0 10px; white-space:pre; min-width:max-content; }
+  .dev-diff .a { background:rgba(34,197,94,.14); color:#15803d; }
+  .dev-diff .d { background:rgba(239,68,68,.13); color:#b91c1c; }
+  .dev-diff .h { background:rgba(59,130,246,.08); color:var(--gray-500); }
+  .dev-file { border:1px solid var(--gray-200); border-radius:8px; margin:8px 0; padding:6px 10px; }
+  .dev-file > summary { cursor:pointer; display:flex; gap:10px; align-items:baseline; }
   .dev-pr { width:100%; min-height:150px; box-sizing:border-box; padding:8px; border:1px solid var(--gray-200); border-radius:6px; background:var(--gray-50); color:inherit; resize:vertical; }
   .sess-ran-under .ext-row { background:none; }
   .sess-ext-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin-bottom:10px; }
@@ -2300,6 +2313,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="nav-group">Run</div>
   <button class="tab-btn active" data-tab="overview" data-label="Overview"><svg class="icon"><use href="#i-home"/></svg><span>Overview</span></button>
   <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span><span class="tab-count" id="navSessions"></span></button>
+  <button class="tab-btn" data-tab="files" data-label="Files"><svg class="icon"><use href="#i-folder"/></svg><span>Files</span></button>
   <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span><span class="tab-count" id="navAgents"></span></button>
   <div class="nav-group">Policy</div>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
@@ -2349,6 +2363,19 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
   <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
+</div>
+
+<div id="page-files" class="page">
+  <div class="section" style="margin-top:0"><h2>Files</h2><div class="rule"></div>
+    <span class="hint">every file an agent wrote, and each session that touched it: what it was asked, and the change it made</span>
+  </div>
+  <div class="ext-layout files-layout">
+    <div class="card">
+      <input id="filesSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by path…" style="width:100%;box-sizing:border-box;margin-bottom:8px" />
+      <div id="filesList" class="dev-list"><div class="empty">Loading…</div></div>
+    </div>
+    <div class="card" id="fileDetail"><div class="empty">Select a file to see every session that changed it.</div></div>
+  </div>
 </div>
 
 <div id="page-extensions" class="page">
@@ -2584,18 +2611,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
 
   <div class="section">
-    <h2>Developer</h2><div class="rule"></div><span class="hint">read from the same session record: who wrote what, and where agents keep failing</span>
+    <h2>Developer</h2><div class="rule"></div><span class="hint">where agents keep failing. Who changed which file is under Files</span>
   </div>
 
-  <div class="grid grid-1-2">
-    <div class="card">
-      <div class="card-title">Who wrote this?</div>
-      <form class="dev-blame" onsubmit="event.preventDefault();loadBlame()">
-        <input id="blamePath" class="finput" type="text" spellcheck="false" autocomplete="off" placeholder="/path/to/file.py:42" />
-        <button class="fbtn" type="submit">Blame</button>
-      </form>
-      <div id="blameOut" class="dev-list"><div class="empty">Paste a file path, with :line for a single line, to see the agent session that wrote it and what it was asked.</div></div>
-    </div>
+  <div class="grid" style="grid-template-columns:1fr">
     <div class="card">
       <div class="card-title">Agent friction <span class="dev-quiet">failures that recur across sessions, last 14 days</span></div>
       <div id="frictionOut" class="dev-list"><div class="empty">Loading…</div></div>
@@ -3475,6 +3494,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     }
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
     if (btn.dataset.tab === 'extensions') loadExtensions();
+    if (btn.dataset.tab === 'files') loadFiles();
     if (btn.dataset.tab === 'dependencies') loadDependencies();
     if (btn.dataset.tab === 'docs') loadDocs();
   });
@@ -3749,6 +3769,12 @@ function devCall(c) {
   return '<div class="dev-row"><div class="dev-mono"><b>' + safe(c.tool) + '</b> ' + safe(c.detail) + '</div>' +
     (c.error ? '<div class="dev-mono dev-err">→ ' + safe(c.error) + '</div>' : '') + '</div>';
 }
+function devDiff(lines, truncated) {
+  if (!(lines || []).length) return '';
+  return '<div class="dev-diff">' + lines.map(l => '<div class="' + (l[0] === '+' ? 'a' : l[0] === '-' ? 'd' : l[0] === '@' ? 'h' : '') + '">' +
+    safe(l[0] === '@' && l.length < 3 ? '⋯' : l) + '</div>').join('') + (truncated ? '<div class="h">⋯ more lines not shown</div>' : '') + '</div>';
+}
+function devCounts(x) { return '<span class="dev-add">+' + (x.added || 0) + '</span> <span class="dev-del">−' + (x.removed || 0) + '</span>'; }
 function devSpan(a, b) { const s = (new Date(b) - new Date(a)) / 1000; return isNaN(s) ? '' : s < 90 ? Math.round(s) + 's' : Math.round(s / 60) + 'm'; }
 function devCopy(text, btn) { navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1200); }); }
 async function loadSessionDev(sessionId) {
@@ -3777,25 +3803,42 @@ async function loadSessionDev(sessionId) {
   if (!f && !r.loops.length && !r.reverts.length && !r.churn.length) h += '<div class="empty">Nothing went wrong that the record shows.</div>';
   h += '</details>';
   h += '<details class="sess-ext-all"><summary class="sess-ext-head"><span class="sess-ran-title">Changes</span><span class="ext-quiet">' +
-    ch.files.length + ' file' + (ch.files.length === 1 ? '' : 's') + ' written · ' + ch.commands.length + ' commands' + (ch.branch ? ' · branch ' + safe(ch.branch) : '') +
+    ch.files.length + ' file' + (ch.files.length === 1 ? '' : 's') + ' · ' + devCounts({added: ch.files.reduce((n, f) => n + f.added, 0), removed: ch.files.reduce((n, f) => n + f.removed, 0)}) + ' · ' + ch.commands.length + ' commands' + (ch.branch ? ' · branch ' + safe(ch.branch) : '') +
     '</span><span class="sess-ext-toggle">details</span></summary>' +
-    ch.files.map(x => '<div class="dev-row dev-mono">' + safe(x.path) + ' <span class="dev-quiet">' + x.writes + ' edit' + (x.writes === 1 ? '' : 's') + '</span></div>').join('') +
+    ch.files.map(x => '<details class="dev-file"' + (ch.files.length <= 3 ? ' open' : '') + '><summary><span class="dev-mono">' + safe(x.path) + '</span>' + devCounts(x) +
+      '<span class="dev-quiet">' + x.writes + ' edit' + (x.writes === 1 ? '' : 's') + '</span></summary>' + devDiff(x.diff, x.truncated) + '</details>').join('') +
     '<div class="dev-h">Draft PR description <button class="fbtn" onclick="devCopy(this.parentNode.nextElementSibling.value,this)">Copy</button></div>' +
     '<textarea class="dev-pr dev-mono" readonly>' + safeAttr(ch.prDescription) + '</textarea></details>';
   el.innerHTML = h; el.hidden = false;
 }
-async function loadBlame() {
-  const out = document.getElementById('blameOut'), raw = document.getElementById('blamePath').value.trim();
-  if (!raw) return;
-  const m = raw.match(/^(.*):(\d+)$/), path = m ? m[1] : raw, line = m ? m[2] : '';
-  out.innerHTML = '<div class="empty">Looking…</div>';
+let _filesSel = '', _filesTimer = null;
+async function loadFiles() {
+  const el = document.getElementById('filesList'), q = document.getElementById('filesSearch').value.trim();
   try {
-    const d = await apiFetch('/api/blame?path=' + encodeURIComponent(path) + (line ? '&line=' + line : ''));
-    out.innerHTML = (d.line ? '<div class="dev-row dev-mono">' + d.line + ': ' + safe(d.text || '') + '</div>' : '') +
-      ((d.writes || []).length ? d.writes.map(w => '<div class="dev-row"><div><b>' + safe(w.agent || 'agent') + '</b> <span class="dev-quiet">' + safe(extWhen(w.ts)) + '</span> ' +
+    const d = await apiFetch('/api/files' + (q ? '?q=' + encodeURIComponent(q) : ''), {timeoutMs: 20000});
+    const fs = d.files || [];
+    el.innerHTML = fs.length ? fs.map(f => '<div class="file-item' + (f.path === _filesSel ? ' active' : '') + '" data-path="' + safeAttr(f.path) + '" onclick="openFile(this.dataset.path)">' +
+      '<div class="dev-mono" title="' + safeAttr(f.path) + '">&lrm;' + safe(f.path) + '</div><div class="dev-quiet" style="margin:0">' + f.sessions + ' session' + (f.sessions === 1 ? '' : 's') + ' · ' + safe(extWhen(f.last)) + '</div></div>').join('')
+      : '<div class="empty">' + (q ? 'No agent-written file matches.' : 'No agent has written a file yet.') + '</div>';
+  } catch (e) { el.innerHTML = '<div class="empty" style="color:#b91c1c">' + safe(e.message) + '</div>'; }
+}
+document.getElementById('filesSearch').addEventListener('input', () => { clearTimeout(_filesTimer); _filesTimer = setTimeout(loadFiles, 250); });
+async function openFile(path) {
+  _filesSel = path;
+  document.querySelectorAll('.file-item').forEach(x => x.classList.toggle('active', x.dataset.path === path));
+  const out = document.getElementById('fileDetail');
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    const d = await apiFetch('/api/blame?path=' + encodeURIComponent(path), {timeoutMs: 20000});
+    const ws = d.writes || [];
+    out.innerHTML = '<div class="card-title dev-mono" style="overflow-wrap:anywhere">' + safe(d.path) + '</div>' +
+      '<div class="dev-quiet" style="margin:0 0 6px">' + ws.length + ' change' + (ws.length === 1 ? '' : 's') + ' by agents, newest first · ' +
+      devCounts({added: ws.reduce((n, w) => n + w.added, 0), removed: ws.reduce((n, w) => n + w.removed, 0)}) + '</div>' +
+      (ws.length ? ws.map(w => '<div class="dev-row"><div><b>' + safe(w.agent || 'agent') + '</b> <span class="dev-quiet">' + safe(extWhen(w.ts)) + '</span> ' + devCounts(w) + ' ' +
+        (w.via ? '<span class="ext-kind" title="Written from a shell command; the text it replaced was not recorded">' + safe(w.via) + '</span> ' : '') +
         '<a class="ext-sess" onclick="openSessionView(\'' + safeJsArg(w.sessionId) + '\')">session ' + safe(w.sessionId.slice(0, 8)) + '</a></div>' +
-        '<div class="dev-quiet" style="margin:2px 0 0">asked: ' + safe(w.prompt || '(no prompt recorded)') + '</div></div>').join('')
-        : '<div class="empty">No agent write to this ' + (d.line ? 'line' : 'file') + ' is on record.</div>');
+        '<div class="dev-quiet" style="margin:2px 0 0">asked: ' + safe(w.prompt || '(no prompt recorded)') + '</div>' + devDiff(w.diff, w.truncated) + '</div>').join('')
+        : '<div class="empty">No agent change to this file is on record.</div>');
   } catch (e) { out.innerHTML = '<div class="empty" style="color:#b91c1c">' + safe(e.message) + '</div>'; }
 }
 async function loadFriction() {
