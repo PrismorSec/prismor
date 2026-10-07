@@ -195,7 +195,7 @@ flowchart TD
 %% ── sources ────────────────────────────────────────────────
 subgraph SRC["Agents Prismor protects"]
     direction LR
-    AC["<b>Coding agents</b><br/>Claude Code · Codex · Cursor · Windsurf · Copilot<br/>OpenClaw · Hermes · Grok · Kiro · Crush<br/>OpenHands · Qwen · Continue · Goose"]
+    AC["<b>Coding agents</b><br/>Claude Code · Codex · Cursor · Windsurf · Copilot<br/>OpenClaw · Hermes · Grok · Kiro · Crush<br/>OpenHands · Qwen · Continue · Goose · Antigravity"]
     AF["<b>Production frameworks</b><br/>OpenAI Agents · LangChain / LangGraph · CrewAI · browser-use<br/>Pydantic AI · AutoGen Core · Agno · Semantic Kernel · Google ADK<br/>BeeAI · Claude Agent SDK · Vercel AI SDK · Mastra"]
 end
 
@@ -396,6 +396,7 @@ prismor uninstall-hooks --agent all --scope project      # every supported agent
 | Qwen Code | `<workspace>/.qwen/settings.json` | `~/.qwen/settings.json` |
 | Continue CLI | `<workspace>/.continue/settings.json` | `~/.continue/settings.json` |
 | Goose | `<workspace>/.agents/plugins/prismor/hooks/hooks.json` | `~/.agents/plugins/prismor/hooks/hooks.json` |
+| Antigravity | `<workspace>/.agents/hooks.json` | `~/.gemini/config/hooks.json` |
 
 If you only run one scope, the other one's hooks (if installed) keep firing. Run both if you want Prismor fully out of the picture for an agent.
 
