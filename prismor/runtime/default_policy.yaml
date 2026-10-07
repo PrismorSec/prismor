@@ -1582,6 +1582,11 @@ rules:
     patterns:
       - '(?<![\w-])(dig|nslookup|host)\s+(?:[-+@]\S+\s+(?:\w+\s+)?)*[^\s;&|]*\$\('
       - '(?<![\w-])(dig|nslookup|host)\s+(?:[-+@]\S+\s+(?:\w+\s+)?)*[^\s;&|]*\`'
+      # The engine matches the normalized command, which unwraps `$(id).evil.example`
+      # to `id .evil.example`: a lookup argument that starts with a dot is the
+      # label a substitution was glued to. Anchored on the command being run, so
+      # prose like "the host ... its own .mcp.json" in a message does not match.
+      - '(?:^|[;&|(=])\s*(?:sudo\s+)?(?:\S*/)?(dig|nslookup|host)\s[^\n;&|]*?\s\.[a-z0-9-]+\.[a-z]'
     action: block
 
   # ── HIGH: Git remote hijacking ───────────────────────────────────

