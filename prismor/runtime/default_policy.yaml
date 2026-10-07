@@ -1168,7 +1168,7 @@ rules:
   - id: prismor-self-edit
     severity: CRITICAL
     category: security_bypass
-    title: Blocks an agent editing Prismor's own policy or unlock credential
+    title: Blocks an agent editing Prismor's own policy or unlock credential, or making a session public
     event_types: [shell, file_write, file_read]
     fields: [command, path]
     patterns:
