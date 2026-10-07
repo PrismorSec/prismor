@@ -1186,6 +1186,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .file-item { padding:7px 8px; border-radius:6px; cursor:pointer; border-bottom:1px solid var(--gray-100); }
   .file-item:hover { background:var(--gray-50); }
   .file-item.active { background:rgba(59,130,246,.10); }
+  .ftree-dir { margin-left:12px; }
+  .ftree-dir > summary { cursor:pointer; padding:4px 6px; border-radius:6px; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; font-weight:600; }
+  .ftree-dir > summary:hover { background:var(--gray-50); }
+  .ftree-root { font-family:var(--mono,ui-monospace,monospace); font-size:11px; color:var(--gray-400); overflow-wrap:anywhere; margin:2px 0 6px; }
+  .ftree .file-item { margin-left:12px; padding:5px 8px; }
   .file-item .dev-mono { direction:rtl; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .dev-add { color:#16a34a; font-weight:600; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; }
   .dev-del { color:#dc2626; font-weight:600; font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; }
@@ -2371,7 +2376,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div class="ext-layout files-layout">
     <div class="card">
-      <input id="filesSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by path…" style="width:100%;box-sizing:border-box;margin-bottom:8px" />
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input id="filesSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by path…" style="flex:1;min-width:0" />
+        <button class="fbtn active" data-fview="tree" onclick="setFilesView('tree')">Tree</button>
+        <button class="fbtn" data-fview="recent" onclick="setFilesView('recent')">Recent</button>
+      </div>
       <div id="filesList" class="dev-list"><div class="empty">Loading…</div></div>
     </div>
     <div class="card" id="fileDetail"><div class="empty">Select a file to see every session that changed it.</div></div>
@@ -3812,15 +3821,48 @@ async function loadSessionDev(sessionId) {
   el.innerHTML = h; el.hidden = false;
 }
 let _filesSel = '', _filesTimer = null;
+let _filesView = 'tree', _filesData = [];
+function setFilesView(v) {
+  _filesView = v;
+  document.querySelectorAll('[data-fview]').forEach(b => b.classList.toggle('active', b.dataset.fview === v));
+  renderFiles();
+}
 async function loadFiles() {
   const el = document.getElementById('filesList'), q = document.getElementById('filesSearch').value.trim();
   try {
-    const d = await apiFetch('/api/files' + (q ? '?q=' + encodeURIComponent(q) : ''), {timeoutMs: 20000});
-    const fs = d.files || [];
-    el.innerHTML = fs.length ? fs.map(f => '<div class="file-item' + (f.path === _filesSel ? ' active' : '') + '" data-path="' + safeAttr(f.path) + '" onclick="openFile(this.dataset.path)">' +
-      '<div class="dev-mono" title="' + safeAttr(f.path) + '">&lrm;' + safe(f.path) + '</div><div class="dev-quiet" style="margin:0">' + f.sessions + ' session' + (f.sessions === 1 ? '' : 's') + ' · ' + safe(extWhen(f.last)) + '</div></div>').join('')
-      : '<div class="empty">' + (q ? 'No agent-written file matches.' : 'No agent has written a file yet.') + '</div>';
+    _filesData = (await apiFetch('/api/files' + (q ? '?q=' + encodeURIComponent(q) : ''), {timeoutMs: 20000})).files || [];
+    if (!_filesData.length) { el.innerHTML = '<div class="empty">' + (q ? 'No agent-written file matches.' : 'No agent has written a file yet.') + '</div>'; return; }
+    renderFiles();
   } catch (e) { el.innerHTML = '<div class="empty" style="color:#b91c1c">' + safe(e.message) + '</div>'; }
+}
+function fileRow(f, label) {
+  return '<div class="file-item' + (f.path === _filesSel ? ' active' : '') + '" data-path="' + safeAttr(f.path) + '" onclick="openFile(this.dataset.path)">' +
+    '<div class="dev-mono" title="' + safeAttr(f.path) + '">&lrm;' + safe(label) + '</div><div class="dev-quiet" style="margin:0">' +
+    f.sessions + ' session' + (f.sessions === 1 ? '' : 's') + ' · ' + safe(extWhen(f.last)) + '</div></div>';
+}
+function renderFiles() {
+  const el = document.getElementById('filesList'), fs = _filesData;
+  if (!fs.length) return;
+  if (_filesView === 'recent') { el.innerHTML = fs.map(f => fileRow(f, f.path)).join(''); return; }
+  // Folder tree under the paths' common directory; a folder with one subfolder and no files merges into it.
+  const parts = fs.map(f => f.path.split('/'));
+  let common = parts[0].length - 1;
+  parts.forEach(p => { let i = 0; while (i < common && i < p.length - 1 && p[i] === parts[0][i]) i++; common = i; });
+  const root = {dirs: {}, files: []};
+  fs.forEach((f, i) => {
+    let node = root;
+    parts[i].slice(common, -1).forEach(d => { node = node.dirs[d] = node.dirs[d] || {dirs: {}, files: []}; });
+    node.files.push(f);
+  });
+  const count = n => n.files.length + Object.values(n.dirs).reduce((a, c) => a + count(c), 0);
+  const open = fs.length <= 40 || document.getElementById('filesSearch').value.trim();
+  const draw = node => Object.keys(node.dirs).sort().map(name => {
+    let sub = node.dirs[name], label = name;
+    while (!sub.files.length && Object.keys(sub.dirs).length === 1) { const k = Object.keys(sub.dirs)[0]; label += '/' + k; sub = sub.dirs[k]; }
+    return '<details class="ftree-dir"' + (open || sub.files.some(f => f.path === _filesSel) ? ' open' : '') + '><summary>' + safe(label) +
+      '/ <span class="dev-quiet">' + count(sub) + '</span></summary>' + draw(sub) + '</details>';
+  }).join('') + node.files.slice().sort((a, b) => a.path.localeCompare(b.path)).map(f => fileRow(f, f.path.split('/').pop())).join('');
+  el.innerHTML = '<div class="ftree-root" title="common folder">' + safe(parts[0].slice(0, common).join('/') + '/') + '</div><div class="ftree">' + draw(root) + '</div>';
 }
 document.getElementById('filesSearch').addEventListener('input', () => { clearTimeout(_filesTimer); _filesTimer = setTimeout(loadFiles, 250); });
 async function openFile(path) {
