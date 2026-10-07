@@ -15,6 +15,7 @@ from prismor.runtime.store import append_session_event, prismor_home
 _SUPPORTED_AGENTS = [
     "claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro",
     "crush", "openhands", "qwen", "continue", "goose", "opencode", "gemini",
+    "antigravity",
 ]
 
 
@@ -60,6 +61,8 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
         return _strip_opencode(config, marker)
     if agent == "gemini":
         return _strip_gemini(config, marker)
+    if agent == "antigravity":
+        return _strip_antigravity(config, marker)
     return _strip_windsurf(config, marker)
 
 
@@ -115,6 +118,8 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             config = _merge_opencode(config, command, repo_root)
         elif current_agent == "gemini":
             config = _merge_gemini(config, command)
+        elif current_agent == "antigravity":
+            config = _merge_antigravity(config, command)
         else:
             config = _merge_windsurf(config, command, workspace)
 
@@ -506,6 +511,7 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         or payload.get("trajectoryId")
         or payload.get("execution_id")
         or payload.get("executionId")
+        or payload.get("conversationId")
         or _ephemeral_session_id(agent, workspace)
     )
 
@@ -539,6 +545,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event = _normalize_opencode(payload, session_id)
     elif agent == "gemini":
         event = _normalize_gemini(payload, session_id, workspace)
+    elif agent == "antigravity":
+        event = _normalize_antigravity(payload, session_id, workspace)
     else:
         event = _normalize_cursor(payload, session_id)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
@@ -704,6 +712,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
             return workspace / ".opencode" / "plugins.json"
         if agent == "gemini":
             return workspace / ".gemini" / "settings.json"
+        if agent == "antigravity":
+            return workspace / ".agents" / "hooks.json"
         return workspace / ".windsurf" / "hooks.json"
 
     if agent == "claude":
@@ -741,6 +751,8 @@ def _config_path(agent: str, scope: str, workspace: Path) -> Path:
         return home / ".config" / "opencode" / "plugins.json"
     if agent == "gemini":
         return home / ".gemini" / "settings.json"
+    if agent == "antigravity":
+        return home / ".gemini" / "config" / "hooks.json"
     return home / ".codeium" / "windsurf" / "hooks.json"
 
 
@@ -2989,6 +3001,154 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
         return mcp_event
 
     return _unmapped_tool_event(base, payload)
+
+# ── Google Antigravity ───────────────────────────────────────────────────────
+#
+# Antigravity (2.19+, desktop app and `agy` CLI) runs lifecycle hooks from a
+# `hooks.json` in a customization root, keyed by hook name:
+#
+#   {"prismor": {"PreToolUse": [{"matcher": "*", "hooks":
+#       [{"type": "command", "command": "...", "timeout": 60}]}]}}
+#
+# Config locations:
+#   project:  <workspace>/.agents/hooks.json
+#   global:   ~/.gemini/config/hooks.json
+#
+# The payload is camelCase: {toolCall: {name, args}, conversationId,
+# workspacePaths, transcriptPath}. Tool names are the lowercased step type
+# (run_command, view_file, write_to_file, call_mcp_tool, ...). The hook answers
+# on stdout with {"decision": "deny"|"ask"|"force_ask"|"allow", "reason"};
+# empty stdout leaves Antigravity's own permission settings in charge. The
+# working directory is the hooks.json directory, so the workspace comes from
+# workspacePaths. Verified live against agy (Antigravity 2.19.1): a deny is
+# surfaced to the model as "tool call denied by pre-tool hook: <reason>".
+# PostToolUse carries no tool call (only stepIdx/error), so only PreToolUse
+# is registered.
+
+
+def _strip_antigravity(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
+    """Remove Prismor handlers from every named hook in an Antigravity hooks.json."""
+    out: Dict[str, Any] = {}
+    removed = False
+    for name, spec in config.items():
+        if not isinstance(spec, dict):
+            out[name] = spec
+            continue
+        spec = dict(spec)
+        for event_name, groups in list(spec.items()):
+            if not isinstance(groups, list):
+                continue
+            cleaned = []
+            for group in groups:
+                if isinstance(group, dict) and isinstance(group.get("hooks"), list):
+                    inner = [h for h in group["hooks"] if marker not in str(h.get("command", ""))]
+                    removed = removed or len(inner) < len(group["hooks"])
+                    if inner:
+                        cleaned.append({**group, "hooks": inner})
+                elif isinstance(group, dict) and marker in str(group.get("command", "")):
+                    removed = True  # flat handler (PreInvocation/Stop shape)
+                else:
+                    cleaned.append(group)
+            spec[event_name] = cleaned
+        lists = [v for v in spec.values() if isinstance(v, list)]
+        if not lists or any(lists):  # drop a named hook left with no handlers
+            out[name] = spec
+    return out, removed
+
+
+def _merge_antigravity(config: Dict[str, Any], command: str) -> Dict[str, Any]:
+    """Register Prismor as the `prismor` named hook on every PreToolUse call."""
+    return {
+        **config,
+        "prismor": {
+            "PreToolUse": [{
+                "matcher": "*",
+                # Antigravity's default is 30s; a cold dispatcher plus a judge
+                # call can exceed that, and a timed-out hook does not block.
+                "hooks": [{"type": "command", "command": command, "timeout": 60}],
+            }],
+        },
+    }
+
+
+def _ag_pick(args: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _normalize_antigravity(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    """Translate an Antigravity PreToolUse payload into a Prismor event.
+
+    Argument keys verified live (2.19.1): run_command {CommandLine, Cwd},
+    view_file {AbsolutePath}, write_to_file {TargetFile, CodeContent},
+    call_mcp_tool {ServerName, ToolName, Arguments}. The edit tools'
+    keys are matched loosely since they vary across releases.
+    """
+    call = payload.get("toolCall") or {}
+    tool_name = str(call.get("name") or "")
+    args = call.get("args") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except (json.JSONDecodeError, ValueError):
+            args = {"raw": args}
+    if not isinstance(args, dict):
+        args = {"raw": str(args)}
+    roots = payload.get("workspacePaths") or []
+    base = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "session_id": session_id,
+        "agent": "antigravity",
+        "agent_event": "PreToolUse" if call else "unknown",
+        "metadata": {
+            "cwd": args.get("Cwd") or (roots[0] if roots else None),
+            "tool_name": tool_name,
+            "transcript_path": payload.get("transcriptPath"),
+            "raw": payload,
+        },
+    }
+    path = _ag_pick(args, "AbsolutePath", "TargetFile", "FilePath", "File", "Path", "DirectoryPath")
+    if tool_name in {"run_command", "shell_exec", "send_command_input"}:
+        return {**base, "type": "shell", "command": _ag_pick(args, "CommandLine", "Command", "Input")}
+    if tool_name in {"view_file", "view_file_outline", "view_code_item", "view_content_chunk", "read_notebook"}:
+        return {**base, "type": "file_read", "path": path}
+    if tool_name in {"write_to_file", "write_blob", "code_action", "replace_file_content",
+                     "multi_replace_file_content", "edit_notebook", "file_change"}:
+        content = _ag_pick(args, "CodeContent", "ReplacementContent", "Content")
+        if not content and isinstance(args.get("ReplacementChunks"), list):
+            content = "\n".join(str(c.get("ReplacementContent", "")) for c in args["ReplacementChunks"]
+                                if isinstance(c, dict))
+        return {**base, "type": "file_write", "path": path, "content": content}
+    if tool_name == "delete_directory":
+        return {**base, "type": "shell", "command": f"rm -rf {path}"}
+    if tool_name in {"read_url_content", "open_browser_url", "read_browser_page"}:
+        return {**base, "type": "network", "url": _ag_pick(args, "Url", "URL", "url")}
+    if tool_name == "search_web":
+        return {**base, "type": "network", "url": _ag_pick(args, "query", "Query")}
+    if tool_name in {"call_mcp_tool", "mcp_tool"}:
+        mcp_args = args.get("Arguments")
+        if isinstance(mcp_args, str):
+            try:
+                mcp_args = json.loads(mcp_args)
+            except (json.JSONDecodeError, ValueError):
+                mcp_args = {"raw": mcp_args}
+        server = _ag_pick(args, "ServerName")
+        tool = _ag_pick(args, "ToolName")
+        mcp_event = _classify_mcp_event(
+            base=base,
+            tool_name=f"mcp__{server}__{tool}",
+            tool_input=mcp_args if isinstance(mcp_args, dict) else {},
+            response=None,
+            is_post=False,
+            workspace=workspace,
+        )
+        if mcp_event is not None:
+            return mcp_event
+    return _unmapped_tool_event(base, payload)
+
 
 def _ephemeral_session_id(agent: str, workspace: Path) -> str:
     digest = hashlib.sha1(f"{agent}:{workspace}:{os.getpid()}".encode("utf-8")).hexdigest()[:12]  # an id, not a security hash  # nosec B324

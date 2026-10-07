@@ -116,7 +116,7 @@ There is a hard limit worth understanding. Prismor cannot constrain an agent it
 has not hooked: egress screening, the sandbox, tool denies and kill switches all
 act on a hook payload, and an unhooked agent never produces one. So `--fix`
 governs by *eliminating* the shadow rather than policing it, and an agent with
-no hook surface at all — Warp, Trae, Antigravity — is reported as unfixable
+no hook surface at all — Warp, Trae — is reported as unfixable
 instead of quietly skipped.
 
 On an enrolled device this inventory also reaches your organization console,

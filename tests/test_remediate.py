@@ -73,7 +73,7 @@ class TestPlanAgents:
         assert remediate.plan(report(agents=[agent(managed=True)])).actions == []
 
     def test_agent_without_a_hook_surface_is_refused_with_a_reason(self):
-        # Warp/Trae/Antigravity have no hook Prismor can install. Planning one
+        # Warp/Trae have no hook Prismor can install. Planning one
         # would produce a fix that silently does nothing.
         p = remediate.plan(report(agents=[agent("Warp", "warp", coverable=False)]))
         assert p.fixable == []

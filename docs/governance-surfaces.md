@@ -88,7 +88,7 @@ is not there.
 | Factory Droid | yes | yes | **hooks** | machine | not persistent, so it cannot be enforced from config |
 | Gemini CLI (Google) | yes | yes | **hooks** | machine | from docs, not live-tested |
 | GitHub Copilot CLI | yes | no | **hooks** |  | per-command deny only, no first-class disablement |
-| Google Antigravity | no | no | — |  | no disablement mechanism found |
+| Google Antigravity | yes | no | **hooks** |  | verified live on agy 2.19.1 |
 | Goose (Agentic AI Foundation) | yes | yes | **hooks** | machine | seven separate extensions to turn off |
 | Grok Build (xAI) | yes | yes | **hooks** | machine | flags exist, not runtime-verified |
 | Hermes (NousResearch gateway) | yes | unknown | **hooks** |  |  |

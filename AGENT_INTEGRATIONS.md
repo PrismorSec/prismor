@@ -44,7 +44,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Auggie CLI (Augment Code) | coding-agent | hook-config | 🟡 | `exit-2` |
 | Kimi Code (Moonshot AI) | coding-agent | hook-config | 🟡 | `exit-2` |
 | Devin CLI (Cognition AI) | coding-agent | hook-config | 🟡 | `exit-2` |
-| Google Antigravity | coding-agent | rules-only | — | — |
+| Google Antigravity | coding-agent | hook-config | ✅ | `json-permission` |
 | Aider | coding-agent | rules-only | — | — |
 | Trae / Trae CN (ByteDance) | coding-agent | rules-only | — | — |
 | Warp (Agent Mode) | coding-agent | rules-only | — | — |
@@ -143,6 +143,15 @@ Prismor integrates with Hermes at two complementary layers:
 - **Static layer:** `--allow-tool` / `--deny-tool` / `--allow-all-tools` CLI flags apply before the hook fires (deny beats allow). Useful as defense-in-depth.
 - **Payload note:** arguments arrive in `tool_input` (PascalCase events) or `toolArgs` (camelCase events), as an object or as raw `apply_patch` text. File tools use Copilot's keys: `{path}`, `{path, file_text}`, `{path, old_str, new_str}`. Captured live on Copilot CLI 1.0.88; see `tests/test_copilot_normalizer.py`.
 - **Code:** `prismor/runtime/hooks.py` `_merge_copilot()`, `_strip_copilot()`, `_normalize_copilot()`.
+
+### Google Antigravity
+
+- **Config:** `~/.gemini/config/hooks.json` (user, every workspace) or `<repo>/.agents/hooks.json` (project). Antigravity 2.19+ (desktop app and `agy` CLI) reads lifecycle hooks from a `hooks.json` in its customization roots, keyed by hook name; Prismor registers itself as the `prismor` entry.
+- **Events hooked:** `PreToolUse` with matcher `*`. `PostToolUse` carries no tool call (only `stepIdx`/`error`), so it is not registered.
+- **Blocking:** hook prints `{"decision": "deny", "reason": "..."}` on stdout; a step-up rule prints `force_ask` (prompts even if the user chose "Always Allow"). An allowed call prints nothing, which leaves Antigravity's own permission settings in charge: Prismor never auto-approves. Verified end to end on `agy` 2.19.1: a blocked `chmod -R 777` came back to the model as `tool call denied by pre-tool hook: Prismor blocked this action ...`.
+- **Payload note:** camelCase, `{toolCall: {name, args}, conversationId, workspacePaths, transcriptPath}`. Tool names are lowercased step types with PascalCase args: `run_command {CommandLine, Cwd}`, `view_file {AbsolutePath}`, `write_to_file {TargetFile, CodeContent}`, `call_mcp_tool {ServerName, ToolName, Arguments}` (captured live). The hook runs from the `hooks.json` directory, so the workspace comes from `workspacePaths`. Hook timeout is set to 60s (Antigravity's default is 30s).
+- **Install:** `prismor install-hooks --agent antigravity --scope global --mode enforce`, or pick Antigravity in `prismor setup`.
+- **Code:** `prismor/runtime/hooks.py` `_merge_antigravity()`, `_strip_antigravity()`, `_normalize_antigravity()`.
 
 ### Codex (OpenAI)
 
@@ -629,12 +638,6 @@ These agents don't expose a programmable pre-tool hook. Integration is limited t
 - **Sweep** — scanning the agent's config directory for leaked secrets with `prismor sweep`.
 - **Rules** — shipping `AGENTS.md` / rules-file content the agent loads on every turn (static guardrails, no runtime enforcement).
 
-### Google Antigravity
-
-- **Hooks:** none. Community requests open on the [Antigravity forum](https://discuss.ai.google.dev/t/hooks-in-antigravity/120458). Permission UI is interactive, not programmable.
-- **Surface:** `AGENTS.md`, `GEMINI.md`, interactive permission prompts.
-- **Config dir:** `~/.antigravity/` (already swept).
-
 ### Aider
 
 - **Hooks:** none for agent tool calls. `--git-commit-verify` is a static toggle for git pre-commit only.
@@ -692,7 +695,7 @@ Internal code is authoritative for the five supported agents.
 
 **Rules-only / sweep-only:**
 
-- [Antigravity — hooks request forum thread](https://discuss.ai.google.dev/t/hooks-in-antigravity/120458)
+- [Antigravity — lifecycle hooks](https://antigravity.google/docs/hooks/)
 - [Aider — options](https://aider.chat/docs/config/options.html)
 - [Trae — rules docs](https://docs.trae.ai/ide/rules?_lang=en)
 - [Kilocode — tool filtering & permissions (DeepWiki)](https://deepwiki.com/Kilo-Org/kilocode/6.3-tool-filtering-and-permissions)

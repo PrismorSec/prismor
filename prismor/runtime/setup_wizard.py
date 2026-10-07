@@ -297,6 +297,7 @@ def _detect_agents(target: Path) -> dict:
         "qwen":     shutil.which("qwen") is not None or (target / ".qwen").exists() or (home / ".qwen").exists(),
         "continue": shutil.which("cn") is not None or (target / ".continue").exists() or (home / ".continue").exists(),
         "goose":    shutil.which("goose") is not None or (home / ".config" / "goose").exists(),
+        "antigravity": shutil.which("agy") is not None or (home / ".antigravity").exists() or (home / ".gemini" / "antigravity").exists(),
     }
 
 
@@ -605,6 +606,7 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
         {"name": "qwen",      "label": "Qwen Code",   "on": detected.get("qwen", False)},
         {"name": "continue",  "label": "Continue CLI", "on": detected.get("continue", False)},
         {"name": "goose",     "label": "Goose",       "on": detected.get("goose", False)},
+        {"name": "antigravity", "label": "Antigravity", "on": detected.get("antigravity", False)},
     ]
     if not any(a["on"] for a in agents):
         agents[0]["on"] = True

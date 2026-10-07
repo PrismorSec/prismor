@@ -1558,7 +1558,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         # not to whichever directory `setup --scope global` happened to run
         # from. An explicit --workspace / PRISMOR_WORKSPACE still wins.
         if not ws_value:
-            _cwd = payload.get("cwd") or payload.get("workspace") or (payload.get("workspace_roots") or [None])[0]
+            _cwd = (payload.get("cwd") or payload.get("workspace")
+                    or (payload.get("workspace_roots") or payload.get("workspacePaths") or [None])[0])
             if isinstance(_cwd, str) and _cwd:
                 workspace = _git_root_or_self(Path(_cwd))
         register_workspace(workspace)
@@ -2013,6 +2014,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                         "permissionDecisionReason": reason,
                     }) + "\n")
                     return
+                if args.agent == "antigravity":
+                    # force_ask ignores Antigravity's "Always Allow" cache, so a
+                    # step-up rule always reaches a human.
+                    sys.stdout.write(json.dumps({"decision": "force_ask", "reason": reason}) + "\n")
+                    return
                 # No inline-approval surface (cursor/windsurf/codex/grok/kiro/
                 # crush/openhands/continue/goose): fail closed.
                 sys.stderr.write(f"Prismor requires approval for this action (no approval surface — blocked): {reason}\n")
@@ -2080,6 +2086,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                             "permissionDecisionReason": reason,
                         }
                     }) + "\n")
+                elif args.agent == "antigravity":
+                    # Antigravity reads {"decision": "deny", "reason"} from stdout
+                    # and shows the reason to the model (verified live, 2.19.1).
+                    _ag_reason = _block_header(blocking)
+                    if blocking.get("remediation"):
+                        _ag_reason += f"Recommended fix: {blocking['remediation']}\n"
+                    if unblock_text:
+                        _ag_reason += f"\n{unblock_text}\n"
+                    sys.stdout.write(json.dumps({"decision": "deny", "reason": _ag_reason.strip()}) + "\n")
                 elif args.agent == "grok":
                     # Grok Build reads {"decision": "deny", "reason": ...} from stdout
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
@@ -3777,7 +3792,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── install-hooks ──────────────────────────────────────────────────
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
-    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    install_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "antigravity", "all"], required=True, help="Which agent/IDE")
     install_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope (default: project)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
     install_parser.add_argument("--portable", action="store_true", help="Write a hook command with no machine-specific paths, for a config file committed to the repo and cloned onto a hosted agent's VM (needs sh)")
@@ -3792,7 +3807,7 @@ def build_parser() -> argparse.ArgumentParser:
         "`prismor cloak install`.",
     )
     uninstall_parser.add_argument("--workspace", help="Workspace path")
-    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "all"], required=True, help="Which agent/IDE")
+    uninstall_parser.add_argument("--agent", choices=["claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "copilot", "grok", "kiro", "crush", "openhands", "qwen", "continue", "goose", "antigravity", "all"], required=True, help="Which agent/IDE")
     uninstall_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope")
 
     # ── mcp-gateway ────────────────────────────────────────────────────

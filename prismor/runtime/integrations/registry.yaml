@@ -398,14 +398,14 @@ agents:
   - id: antigravity
     name: Google Antigravity
     kind: coding-agent
-    surface: rules-only
-    status: sweep-only
-    config_paths: { user: "~/.antigravity/" }
-    events: []
-    blocking: none
-    normalizer: null
+    surface: hook-config
+    status: shipped
+    config_paths: { project: ".agents/hooks.json", user: "~/.gemini/config/hooks.json" }
+    events: [PreToolUse]
+    blocking: json-permission
+    normalizer: _normalize_antigravity
     sweep_dir: "~/.antigravity/"
-    sources: ["https://discuss.ai.google.dev/t/hooks-in-antigravity/120458"]
+    sources: ["https://antigravity.google/docs/hooks/"]
     mirror:
       status: unsupported
       notes: "no disablement mechanism found"
