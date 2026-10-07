@@ -363,10 +363,10 @@ def friction(workspace: Optional[str] = None, days: int = 14, max_sessions: int 
     if conn is None:
         return {"days": days, "sessions": 0, "patterns": []}
     try:
-        sql = ("SELECT session_id FROM sessions WHERE updated_at >= datetime('now', ?)"
-               + (" AND workspace_path = ?" if workspace else "") + " ORDER BY updated_at DESC LIMIT ?")
-        params: List[Any] = [f"-{int(days)} days"] + ([workspace] if workspace else []) + [max_sessions]
-        sids = [r[0] for r in conn.execute(sql, params)]
+        sids = [r[0] for r in conn.execute(
+            "SELECT session_id FROM sessions WHERE updated_at >= datetime('now', ?) "
+            "AND (? IS NULL OR workspace_path = ?) ORDER BY updated_at DESC LIMIT ?",
+            (f"-{int(days)} days", workspace, workspace, max_sessions))]
     finally:
         conn.close()
     # ponytail: re-reads up to max_sessions transcripts per call; cache per (path, mtime) if the card gets slow.
