@@ -161,3 +161,38 @@ def test_status_renders_for_an_unlimited_plan(home, monkeypatch, capsys):
     transport(monkeypatch, [{"plan": "enterprise", "used": 4210, "limit": None, "remaining": None}])
     _cli._print_status_quota(_engine("prismor"))
     assert "4,210 used this month (unlimited)" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("ref,path", [
+    ("https://evil.example/admin/sessions/sess%201?orgId=org_9", "/api/v1/sessions/sess%201"),
+    ("http://localhost:3000/admin/sessions/sess%201", "/api/v1/sessions/sess%201"),
+    ("sess1", "/api/v1/sessions/sess1"),
+    ("https://evil.example/s/Tk_9-x", "/api/v1/shares/Tk_9-x"),
+    ('https://www.prismor.dev/s/Tk_9-x  # codex · billing-api · "Add retry"', "/api/v1/shares/Tk_9-x"),
+])
+def test_a_session_link_is_read_from_this_machines_org_not_the_links_host(home, monkeypatch, ref, path):
+    cli_login.save(APPROVED)
+    sent = []
+
+    def fake_urlopen(req, timeout=None):
+        sent.append((req.full_url, req.get_header("Authorization")))
+        return _Resp(b"# Prismor session sess 1\n")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert cli_login.fetch_session(ref).startswith("# Prismor session")
+    assert sent == [("https://cp.example" + path, "Bearer dk_live")]
+
+
+def test_reading_a_session_needs_a_login_and_a_session_link(home):
+    with pytest.raises(RuntimeError, match="prismor login"):
+        cli_login.fetch_session("abc")
+    cli_login.save(APPROVED)
+    with pytest.raises(RuntimeError, match="not a Prismor session link"):
+        cli_login.fetch_session("https://cp.example/admin/devices/abc")
+
+
+def test_shared_with_me_lists_what_teammates_shared(home, monkeypatch):
+    cli_login.save(APPROVED)
+    sent = transport(monkeypatch, [{"shares": [{"url": "https://cp.example/s/Tk", "title": "Fix the build"}]}])
+    assert cli_login.shared_with_me()[0]["title"] == "Fix the build"
+    assert sent[0]["url"] == "https://cp.example/api/v1/shares"
+    assert sent[0]["auth"] == "Bearer dk_live"
