@@ -73,6 +73,13 @@ BLOCKED_COMMANDS = [
     "sudo prismor uninstall-hooks",
     "PRISMOR_HOME=/tmp/x prismor unlock",
     "prismor@dev allow risky-write --off",
+    # Making a session public is the human's call, not the agent's.
+    "prismor session share --public",
+    "prismor session share abc-123 --org --public",
+    "cd /repo && prismor session share --public",
+    "python3 -m prismor.runtime.cli session share --public",
+    "bash -c 'prismor session share --public'",
+    "script -q /dev/null prismor session share --public",
 ]
 
 # Things an agent legitimately does, which must keep working.
@@ -99,6 +106,12 @@ ALLOWED_COMMANDS = [
     'git commit -m "feat(allow): the prismor allow ladder"',
     "ls ~/Documents/projects/Prismor/prismor",
     "rsync -az ./prismor ubuntu@host:~/selfedit-test/",
+    # Sharing with people in the org is the agent's to do.
+    "prismor session share",
+    "prismor session share --org",
+    "prismor session share --with bob@example.com",
+    "prismor session https://www.prismor.dev/s/Tk9x",
+    'grep -n "session share --public" SKILL.md',
 ]
 
 

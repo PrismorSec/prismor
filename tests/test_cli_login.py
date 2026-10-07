@@ -196,3 +196,55 @@ def test_shared_with_me_lists_what_teammates_shared(home, monkeypatch):
     assert cli_login.shared_with_me()[0]["title"] == "Fix the build"
     assert sent[0]["url"] == "https://cp.example/api/v1/shares"
     assert sent[0]["auth"] == "Bearer dk_live"
+
+
+def test_sharing_a_session_posts_what_was_asked_with_the_login(home, monkeypatch):
+    cli_login.save(APPROVED)
+    sent = transport(monkeypatch, [{"url": "https://cp.example/s/Tk", "command": "prismor session https://cp.example/s/Tk",
+                                    "access": "org", "people": []}])
+    res = cli_login.share_session("sess 1", access="org", emails=["bob@x.dev"])
+    assert res["url"] == "https://cp.example/s/Tk"
+    assert sent[0]["url"] == "https://cp.example/api/v1/sessions/sess%201/share"
+    assert sent[0]["body"] == {"access": "org", "emails": ["bob@x.dev"]}
+    assert sent[0]["auth"] == "Bearer dk_live"
+
+
+def test_a_public_link_opens_without_a_login_and_without_a_key(home, monkeypatch):
+    sent = []
+
+    def fake_urlopen(req, timeout=None):
+        sent.append((req.full_url, req.get_header("Authorization")))
+        return _Resp(b"# Prismor session s1\n")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert cli_login.fetch_session("https://www.prismor.dev/s/Tk").startswith("# Prismor session")
+    assert sent == [("https://www.prismor.dev/api/v1/shares/Tk", None)]
+    with pytest.raises(RuntimeError, match="prismor login"):
+        cli_login.fetch_session("https://www.prismor.dev/admin/sessions/s1")
+
+
+class _Tty:
+    def __init__(self, tty):
+        self._tty = tty
+
+    def isatty(self):
+        return self._tty
+
+
+def test_only_a_person_at_a_terminal_can_make_a_session_public(monkeypatch, capsys):
+    from prismor.runtime import cli, unlock
+    monkeypatch.setattr("sys.stdin", _Tty(False))
+    with pytest.raises(SystemExit, match="person at the keyboard"):
+        cli._confirm_public_share()
+
+    monkeypatch.setattr("sys.stdin", _Tty(True))
+    monkeypatch.setattr(unlock, "is_configured", lambda: True)
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "wrong")
+    monkeypatch.setattr(unlock, "verify", lambda pw: (pw == "right", "That password is not right."))
+    with pytest.raises(SystemExit, match="not right"):
+        cli._confirm_public_share()
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": "right")
+    assert cli._confirm_public_share() == "password"
+
+    monkeypatch.setattr(unlock, "is_configured", lambda: False)
+    assert cli._confirm_public_share() == "no-password"
+    assert "No Prismor password is set" in capsys.readouterr().out

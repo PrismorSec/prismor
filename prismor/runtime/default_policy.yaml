@@ -1191,6 +1191,13 @@ rules:
       # ...or wrapped in a shell, which is how the anchors above would
       # otherwise be stepped around: `bash -c "prismor allow ..."`.
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      # Making a session public is the human's call: an agent may share its
+      # session with the org (`prismor session share`), never with the world.
+      # The CLI also demands a terminal and the unlock password; this stops the
+      # attempt before it runs at all.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
       # The unlock credential and grant. Reads matter as much as writes: the
       # credential file is what an offline guess would need, and the grant file
       # is what a forged window would be written to.
@@ -1214,6 +1221,8 @@ rules:
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      # A pty wrapper is exactly how the CLI's "needs a terminal" check would be faked.
+      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
     action: block
 
   # ── CRITICAL: Audit-trail tampering ────────────────────────────────
