@@ -1175,6 +1175,16 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-sess { color:#3b82f6; cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
   .sess-ran-under { margin:0 0 14px; padding:12px 14px 6px; background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; font-size:12px; }
   .sess-ran-under[hidden] { display:none; }
+  .dev-list { font-size:12px; }
+  .dev-row { padding:8px 0; border-bottom:1px solid var(--gray-100); }
+  .dev-row:last-child { border-bottom:0; }
+  .dev-h { font-weight:600; margin:12px 0 2px; }
+  .dev-quiet { font-size:11px; font-weight:400; color:var(--gray-400); margin-left:6px; text-transform:none; letter-spacing:0; }
+  .dev-mono { font-family:var(--mono,ui-monospace,monospace); font-size:11.5px; overflow-wrap:anywhere; }
+  .dev-err { color:#ef4444; }
+  .dev-blame { display:flex; gap:8px; margin-bottom:10px; }
+  .dev-blame input { flex:1; min-width:0; }
+  .dev-pr { width:100%; min-height:150px; box-sizing:border-box; padding:8px; border:1px solid var(--gray-200); border-radius:6px; background:var(--gray-50); color:inherit; resize:vertical; }
   .sess-ran-under .ext-row { background:none; }
   .sess-ext-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin-bottom:10px; }
   .sess-ext-hooks { margin:0 0 8px; }
@@ -2574,6 +2584,25 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
 
   <div class="section">
+    <h2>Developer</h2><div class="rule"></div><span class="hint">read from the same session record: who wrote what, and where agents keep failing</span>
+  </div>
+
+  <div class="grid grid-1-2">
+    <div class="card">
+      <div class="card-title">Who wrote this?</div>
+      <form class="dev-blame" onsubmit="event.preventDefault();loadBlame()">
+        <input id="blamePath" class="finput" type="text" spellcheck="false" autocomplete="off" placeholder="/path/to/file.py:42" />
+        <button class="fbtn" type="submit">Blame</button>
+      </form>
+      <div id="blameOut" class="dev-list"><div class="empty">Paste a file path, with :line for a single line, to see the agent session that wrote it and what it was asked.</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Agent friction <span class="dev-quiet">failures that recur across sessions, last 14 days</span></div>
+      <div id="frictionOut" class="dev-list"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+  <div class="section">
     <h2>Findings &amp; Events</h2><div class="rule"></div>
   </div>
 
@@ -2905,6 +2934,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
 
   <div id="sessRanUnder" class="sess-ran-under" hidden></div>
+  <div id="sessDev" class="sess-ran-under" hidden></div>
 
   <div class="session-layout">
     <div>
@@ -3712,6 +3742,73 @@ function renderSessionExtensions() {
     (hooks.length ? '<details class="sess-ext-hooks"' + (_sessExtOpen.__hooks ? ' open' : '') + ' ontoggle="_sessExtOpen.__hooks=this.open"><summary>' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') +
       (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '') + '</details>';
   el.hidden = false;
+}
+
+// ── Developer views: rca, changes, blame, friction (prismor/runtime/devlog.py) ──
+function devCall(c) {
+  return '<div class="dev-row"><div class="dev-mono"><b>' + safe(c.tool) + '</b> ' + safe(c.detail) + '</div>' +
+    (c.error ? '<div class="dev-mono dev-err">→ ' + safe(c.error) + '</div>' : '') + '</div>';
+}
+function devSpan(a, b) { const s = (new Date(b) - new Date(a)) / 1000; return isNaN(s) ? '' : s < 90 ? Math.round(s) + 's' : Math.round(s / 60) + 'm'; }
+function devCopy(text, btn) { navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1200); }); }
+async function loadSessionDev(sessionId) {
+  const el = document.getElementById('sessDev');
+  el.hidden = true; el.innerHTML = '';
+  let d;
+  try { d = await apiFetch('/api/sessions/' + encodeURIComponent(sessionId) + '/dev', {timeoutMs: 20000}); } catch (e) { return; }
+  if (!_sessionViewState || _sessionViewState.sessionId !== sessionId || !d.rca) return;
+  const r = d.rca, ch = d.changes, f = r.firstFailure;
+  const quiet = r.source === 'events' ? 'this agent\'s hooks do not report outcomes, so failures are unknown'
+    : r.calls + ' calls · ' + r.failures + ' failed · ' + r.denied + ' denied' +
+      (r.loops.length ? ' · <b style="color:#ef4444">' + r.loops.length + ' retry loop' + (r.loops.length === 1 ? '' : 's') + '</b>' : '') +
+      (r.reverts.length ? ' · <b style="color:#d97706">' + r.reverts.length + ' revert' + (r.reverts.length === 1 ? '' : 's') + '</b>' : '');
+  let h = '<details class="sess-ext-all"' + (r.loops.length || r.reverts.length ? ' open' : '') + '><summary class="sess-ext-head">' +
+    '<span class="sess-ran-title">What went wrong</span><span class="ext-quiet">' + quiet + '</span><span class="sess-ext-toggle">details</span></summary>';
+  r.loops.forEach(l => {
+    h += '<div class="dev-h">Retry loop: failed ' + l.count + '× over ' + devSpan(l.first, l.last) + (l.tokens ? ', ' + fmtNum(l.tokens) + ' tokens' : '') + '</div>' +
+      devCall({tool: l.tool, detail: l.detail, error: l.error});
+  });
+  if (f && !r.loops.some(l => l.detail === f.detail)) h += '<div class="dev-h">First failure <span class="dev-quiet">' + safe(extWhen(f.ts)) + ', after the calls below</span></div>' +
+    f.before.map(devCall).join('') + devCall(f);
+  if (r.reverts.length) h += '<div class="dev-h">Edits undone</div>' + r.reverts.map(v =>
+    '<div class="dev-row dev-mono">' + safe(v.path) + ' <span class="dev-quiet">' + safe(extWhen(v.ts)) + '</span></div>').join('');
+  if (r.churn.length) h += '<div class="dev-h">Rewritten over and over</div>' + r.churn.map(c =>
+    '<div class="dev-row dev-mono">' + safe(c.path) + ' <span class="dev-quiet">' + c.writes + ' writes</span></div>').join('');
+  if (!f && !r.loops.length && !r.reverts.length && !r.churn.length) h += '<div class="empty">Nothing went wrong that the record shows.</div>';
+  h += '</details>';
+  h += '<details class="sess-ext-all"><summary class="sess-ext-head"><span class="sess-ran-title">Changes</span><span class="ext-quiet">' +
+    ch.files.length + ' file' + (ch.files.length === 1 ? '' : 's') + ' written · ' + ch.commands.length + ' commands' + (ch.branch ? ' · branch ' + safe(ch.branch) : '') +
+    '</span><span class="sess-ext-toggle">details</span></summary>' +
+    ch.files.map(x => '<div class="dev-row dev-mono">' + safe(x.path) + ' <span class="dev-quiet">' + x.writes + ' edit' + (x.writes === 1 ? '' : 's') + '</span></div>').join('') +
+    '<div class="dev-h">Draft PR description <button class="fbtn" onclick="devCopy(this.parentNode.nextElementSibling.value,this)">Copy</button></div>' +
+    '<textarea class="dev-pr dev-mono" readonly>' + safeAttr(ch.prDescription) + '</textarea></details>';
+  el.innerHTML = h; el.hidden = false;
+}
+async function loadBlame() {
+  const out = document.getElementById('blameOut'), raw = document.getElementById('blamePath').value.trim();
+  if (!raw) return;
+  const m = raw.match(/^(.*):(\d+)$/), path = m ? m[1] : raw, line = m ? m[2] : '';
+  out.innerHTML = '<div class="empty">Looking…</div>';
+  try {
+    const d = await apiFetch('/api/blame?path=' + encodeURIComponent(path) + (line ? '&line=' + line : ''));
+    out.innerHTML = (d.line ? '<div class="dev-row dev-mono">' + d.line + ': ' + safe(d.text || '') + '</div>' : '') +
+      ((d.writes || []).length ? d.writes.map(w => '<div class="dev-row"><div><b>' + safe(w.agent || 'agent') + '</b> <span class="dev-quiet">' + safe(extWhen(w.ts)) + '</span> ' +
+        '<a class="ext-sess" onclick="openSessionView(\'' + safeJsArg(w.sessionId) + '\')">session ' + safe(w.sessionId.slice(0, 8)) + '</a></div>' +
+        '<div class="dev-quiet" style="margin:2px 0 0">asked: ' + safe(w.prompt || '(no prompt recorded)') + '</div></div>').join('')
+        : '<div class="empty">No agent write to this ' + (d.line ? 'line' : 'file') + ' is on record.</div>');
+  } catch (e) { out.innerHTML = '<div class="empty" style="color:#b91c1c">' + safe(e.message) + '</div>'; }
+}
+async function loadFriction() {
+  const out = document.getElementById('frictionOut');
+  try {
+    const d = await apiFetch('/api/friction', {timeoutMs: 20000});
+    const ps = d.patterns || [];
+    if (!ps.length) { out.innerHTML = '<div class="empty">No failure repeated across the last ' + d.sessions + ' sessions.</div>'; return; }
+    out.innerHTML = ps.map(p => '<div class="dev-row"><div class="dev-mono"><b>' + safe(p.command) + '</b> <span class="dev-quiet">' + p.sessions + ' sessions · ' + p.failures + ' failures</span></div>' +
+      '<div class="dev-mono dev-err">' + safe(p.error) + '</div></div>').join('') +
+      '<div class="dev-h">For AGENTS.md <button class="fbtn" onclick="devCopy(_frictionMd,this)">Copy</button></div>';
+    window._frictionMd = ps.map(p => p.agentsMd).join('\n');
+  } catch (e) { out.innerHTML = '<div class="empty" style="color:#b91c1c">' + safe(e.message) + '</div>'; }
 }
 
 // ── Extensions: the ledger of what puts instructions or code into the agent ──
@@ -5095,6 +5192,7 @@ async function openSessionView(sessionId, workspace, isBack){
   document.getElementById('sessNodePanel').innerHTML = '<div class="node-panel-empty">Loading…</div>';
 
   loadSessionExtensions(sessionId, ws);
+  loadSessionDev(sessionId);
   await ensureAllSessions(false);
   const sess = _allSessionsCache.find(s=>s.sessionId===sessionId);
   const agent = sess ? sess.agent : '';
@@ -6978,6 +7076,7 @@ const _bootTasks = [
   loadFindings().then(()      => _loadTick('Findings loaded')),
   loadEvents().then(()        => _loadTick('Events loaded')),
   loadSupplyChain().then(()   => _loadTick('Supply chain loaded')),
+  loadFriction(),
   loadNetworkCalls().then(()  => _loadTick('Network calls loaded')),
   loadAgents().then(()        => _loadTick('Agents loaded')),
   loadWorkspaces()

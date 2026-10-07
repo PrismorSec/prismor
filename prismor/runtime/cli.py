@@ -1468,12 +1468,32 @@ def main(argv: Optional[List[str]] = None) -> None:
         session_id = args.session_id or getattr(args, "session_id_pos", None)
         if not session_id:
             raise SystemExit("session: --session-id or a positional session id is required")
+        if getattr(args, "changes", False):
+            from prismor.runtime import devlog
+            emit(devlog.changes(session_id), as_json=args.json, formatter=devlog.format_changes)
+            return
         session = get_session(workspace, session_id)
         if session is None:
             raise SystemExit(f"Session not found: {session_id}")
         from prismor.runtime.token_usage import session_cost
         session["cost"] = session_cost(workspace, session_id)
         emit(session, as_json=args.json, formatter=format_session)
+        return
+
+    if args.command in ("rca", "blame", "friction"):
+        from prismor.runtime import devlog
+        if args.command == "rca":
+            sid = args.session_id or next((s["sessionId"] for s in list_sessions(workspace, 1)), None)
+            if not sid:
+                raise SystemExit("rca: no sessions recorded yet")
+            emit(devlog.rca(sid), as_json=args.json, formatter=devlog.format_rca)
+        elif args.command == "blame":
+            path, _, line = args.target.rpartition(":") if re.search(r":\d+$", args.target) else (args.target, "", "")
+            emit(devlog.blame(path, int(line) if line else None), as_json=args.json, formatter=devlog.format_blame)
+        else:
+            from prismor.runtime.store import canonical_workspace_path
+            ws = None if args.all else canonical_workspace_path(workspace)
+            emit(devlog.friction(ws, args.days), as_json=args.json, formatter=devlog.format_friction)
         return
 
     # ── tokens ─────────────────────────────────────────────────────────
@@ -1562,6 +1582,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             if isinstance(_cwd, str) and _cwd:
                 workspace = _git_root_or_self(Path(_cwd))
         register_workspace(workspace)
+
+        # The call already failed: nothing to screen, only a retry loop to name.
+        if payload.get("hook_event_name") == "PostToolUseFailure":
+            try:
+                from prismor.runtime.devlog import on_failure
+                _loop = on_failure(payload)
+                if _loop:
+                    print(json.dumps(_loop))
+            except Exception:
+                pass
+            sys.exit(0)
 
         # A mirrored built-in reaching the hook layer as mcp__<server>__Bash has
         # already been screened and logged by the gateway that executes it —
@@ -3759,6 +3790,19 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--workspace", help="Workspace path")
     session_parser.add_argument("--session-id", help="Session ID to view")
     session_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    session_parser.add_argument("--changes", action="store_true", help="Files written, commands run, and a drafted PR description")
+
+    # ── rca / blame / friction (developer views, prismor/runtime/devlog.py) ──
+    rca_parser = subparsers.add_parser("rca", help="What went wrong in a session: first failure, retry loops, reverts")
+    rca_parser.add_argument("session_id", nargs="?", help="Session ID (default: the latest session)")
+    blame_parser = subparsers.add_parser("blame", help="Which agent session wrote this file or line, and what it was asked")
+    blame_parser.add_argument("target", help="path or path:line")
+    friction_parser = subparsers.add_parser("friction", help="Failures that recur across sessions, as AGENTS.md lines")
+    friction_parser.add_argument("--days", type=int, default=14)
+    friction_parser.add_argument("--all", action="store_true", help="Every workspace, not just this one")
+    for _p in (rca_parser, blame_parser, friction_parser):
+        _p.add_argument("--workspace", help="Workspace path")
+        _p.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── tokens ─────────────────────────────────────────────────────────
     tokens_parser = subparsers.add_parser(

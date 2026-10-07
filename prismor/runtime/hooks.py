@@ -837,6 +837,13 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
         hooks.get("PostToolUse", []),
         {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
     )
+    # A failed call fires PostToolUseFailure instead of PostToolUse. Only
+    # failures reach it, so it costs successful calls nothing; the dispatcher
+    # uses it to tell the agent when it keeps retrying the same failing call.
+    hooks["PostToolUseFailure"] = _merge_claude_entries(
+        hooks.get("PostToolUseFailure", []),
+        {"matcher": _CLAUDE_TOOL_MATCHER, "hooks": [{"type": "command", "command": command}]},
+    )
     # SessionStart carries the project-memory files (CLAUDE.md/AGENTS.md) that
     # Claude auto-loads before any tool call. Scanning them here brings their
     # directives under the same content rules as untrusted tool output so a

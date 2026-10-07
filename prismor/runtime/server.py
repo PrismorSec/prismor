@@ -22,6 +22,9 @@ Read endpoints:
     GET /api/query-prompt  → copy-paste prompt teaching an agent to query the store
     GET /metrics           → Prometheus text exposition (see docs/observability.md)
     GET /api/sessions/:id/control → scoped rules + recent blocks for a session
+    GET /api/sessions/:id/dev → what went wrong + what changed (devlog.py)
+    GET /api/blame         → agent sessions that wrote ?path=…[&line=N]
+    GET /api/friction      → failures recurring across sessions (?workspace=…&days=14)
 
 Write endpoints (human-only — localhost):
     PUT /api/policy/global         → body: {yaml} — write ~/.prismor/policy.yaml
@@ -835,8 +838,30 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
-        # /api/sessions/<id>/control
+        if path in ("/api/blame", "/api/friction"):
+            from prismor.runtime import devlog
+            try:
+                if path == "/api/blame":
+                    data = devlog.blame(qstr("path"), qint("line", 0) or None)
+                else:
+                    data = devlog.friction(qstr("workspace") or None, qint("days", 14))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+                return
+            self._send_json(data)
+            return
+
         parts = path.split("/")
+        # /api/sessions/<id>/dev → rca + changes for the session view
+        if len(parts) == 5 and parts[1] == "api" and parts[2] == "sessions" and parts[4] == "dev":
+            from prismor.runtime import devlog
+            try:
+                self._send_json({"rca": devlog.rca(parts[3]), "changes": devlog.changes(parts[3])})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        # /api/sessions/<id>/control
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "sessions" and parts[4] == "control":
             session_id = parts[3]
             workspace = self._resolve_workspace(qs)
