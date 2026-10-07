@@ -16,6 +16,7 @@ import platform as _platform
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Optional
 
@@ -129,6 +130,70 @@ def quota(base: Optional[str] = None, timeout: float = 10.0) -> Optional[Dict[st
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def session_path(ref: str) -> str:
+    """The control-plane path for a pasted reference.
+
+    A share link (``…/s/<token>``) reads through the share, which checks this
+    machine's login against who it was shared with. A console link
+    (``…/admin/sessions/<id>``) or a bare id reads the session directly, which
+    only its owner and org admins may do. Anything after the link (the ``# …``
+    comment a copied command carries) is ignored.
+    """
+    ref = ref.strip().split()[0] if ref.strip() else ""
+    if "://" in ref:
+        path = urllib.parse.urlsplit(ref).path
+        for marker, api in (("/s/", "shares"), ("/sessions/", "sessions")):
+            if marker in path:
+                key = path.split(marker, 1)[1].split("/", 1)[0]
+                if key:
+                    return f"/api/v1/{api}/{urllib.parse.quote(urllib.parse.unquote(key), safe='')}"
+        raise RuntimeError(f"not a Prismor session link: {ref}")
+    if not ref:
+        raise RuntimeError("no session link or id given")
+    return f"/api/v1/sessions/{urllib.parse.quote(ref, safe='')}"
+
+
+def _get(path: str, accept: str, timeout: float) -> str:
+    """GET a control-plane path with this machine's login. Readable RuntimeError on failure."""
+    ident = _identity.load_identity()
+    if not ident or not ident.get("device_key"):
+        raise RuntimeError("this machine is not signed in to Prismor; run `prismor login`")
+    base = (ident.get("api_base") or _identity.api_base()).rstrip("/")
+    req = urllib.request.Request(base + path, method="GET", headers={
+        "Authorization": f"Bearer {ident['device_key']}", "User-Agent": _UA, "Accept": accept,
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # operator-configured api_base  # nosec B310
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            detail = (body.get("error") or {}).get("message") if isinstance(body.get("error"), dict) else body.get("message", "")
+        except Exception:
+            pass
+        raise RuntimeError(detail or f"HTTP {exc.code}") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"cannot reach {base}: {exc.reason}") from None
+
+
+def fetch_session(ref: str, limit: Optional[int] = None, timeout: float = 30.0) -> str:
+    """A session from the control plane as markdown, read with this machine's login.
+
+    The key only ever goes to the api_base this machine signed in to, never to
+    the host in a pasted link: the link just names the session.
+    """
+    path = session_path(ref)
+    if limit:
+        path += f"?limit={int(limit)}"
+    return _get(path, "text/markdown", timeout)
+
+
+def shared_with_me(timeout: float = 30.0) -> list:
+    """Sessions teammates shared with the signed-in person (or with the whole org)."""
+    return json.loads(_get("/api/v1/shares", "application/json", timeout)).get("shares", [])
 
 
 def run_interactive(base: Optional[str] = None, label: Optional[str] = None,
