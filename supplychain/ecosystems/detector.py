@@ -89,21 +89,20 @@ def _extract_version(raw: str, ecosystem: str) -> str:
 
     Returns an empty string when no version is pinned so the caller can
     fall back to whatever the registry reports.
+
+    Only an exact version counts as pinned. A partial or range spec
+    (`pkg@1`, `pkg@^1.2`, `pkg==1.*`) is not a version OSV can match, so it is
+    treated like an unpinned install (#599).
     """
     if ecosystem in ("pip", "uv"):
         # pip: pkg==1.2.3  pkg>=1.0  pkg~=1.0  pkg[extra]==1.0
-        m = re.search(r'==([A-Za-z0-9._-]+)', raw)
+        m = re.search(r'==([A-Za-z0-9._-]+)(?![\w.*])', raw)
         return m.group(1) if m else ""
-    if ecosystem in ("npm", "pnpm", "yarn", "bun"):
-        # @scope/pkg@1.2.3  or  pkg@1.2.3
-        if raw.startswith("@"):
-            parts = raw[1:].split("@")
-            return parts[1] if len(parts) > 1 else ""
-        parts = raw.split("@")
-        return parts[1] if len(parts) > 1 else ""
-    if ecosystem == "cargo":
-        parts = raw.split("@")
-        return parts[1] if len(parts) > 1 else ""
+    if ecosystem in ("npm", "pnpm", "yarn", "bun", "cargo"):
+        # @scope/pkg@1.2.3  pkg@1.2.3  crate@1.2.3
+        parts = raw.lstrip("@").split("@")
+        version = parts[1] if len(parts) > 1 else ""
+        return version if re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?', version) else ""
     return ""
 
 
