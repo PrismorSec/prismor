@@ -286,6 +286,7 @@ def rca(session_id: str) -> Dict[str, Any]:
         "calls": len(calls), "failures": len(failed), "denied": len(denied),
         "firstFailure": first, "loops": loops, "reverts": reverts, "churn": churn,
         "failed": [_public(c) for c in failed[-30:]],
+        "deniedCalls": [_public(c) for c in denied[-30:]],
     }
     return _redact(out)
 

@@ -1206,6 +1206,26 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-ran-under .ext-row { background:none; }
   .sess-ext-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; margin-bottom:10px; }
   .sess-ext-hooks { margin:0 0 8px; }
+  .sess-sum { font-size:12.5px; color:var(--gray-600); }
+  .sess-sum b { color:var(--gray-900); font-weight:600; }
+  .sess-dot { width:8px; height:8px; border-radius:50%; background:var(--gray-300); align-self:center; flex:none; }
+  .sess-dot.ok { background:#22c55e; } .sess-dot.warn { background:#f59e0b; } .sess-dot.bad { background:#ef4444; }
+  .sess-sub { font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--gray-500); margin:12px 0 6px; }
+  .sess-sub span { font-weight:400; text-transform:none; letter-spacing:0; color:var(--gray-400); margin-left:6px; }
+  .sess-none { padding:2px 0 6px; }
+  .sess-hook-ev { font-size:10.5px; font-weight:600; color:var(--gray-600); background:var(--gray-100); border-radius:4px; padding:1px 6px; font-family:var(--font-mono); }
+  .dev-fail { border:1px solid var(--gray-200); border-left:3px solid #ef4444; border-radius:6px; padding:8px 10px; margin:8px 0; }
+  .dev-fail-label { font-size:11px; font-weight:700; color:#b91c1c; margin-bottom:4px; }
+  .dev-fail-head { display:flex; gap:8px; align-items:baseline; min-width:0; }
+  .dev-fail-cmd { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dev-fail-err { margin-top:6px; padding:6px 8px; border-radius:4px; background:rgba(239,68,68,.08); color:#b91c1c; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .dev-fail-full { margin-top:6px; } .dev-fail-full > summary { cursor:pointer; font-size:11.5px; color:var(--gray-500); }
+  .dev-fail-full pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; margin:6px 0 0; font-size:11.5px; }
+  .dev-before { margin:-2px 0 8px 12px; }
+  .dev-locate { flex:none; padding:2px 10px; font-size:11.5px; }
+  #sessFlowCanvas .tree-leaf.flash { animation:devflash 1.6s ease-out; }
+  @keyframes devflash { 0%,35% { box-shadow:inset 0 0 0 2px #ef4444; background:rgba(239,68,68,.12); } 100% { box-shadow:none; } }
+  .dev-note { font-size:12.5px; color:var(--gray-600); background:var(--gray-50); border-radius:6px; padding:8px 10px; margin:8px 0; }
   .sess-ext-hooks summary { cursor:pointer; color:var(--gray-500); font-weight:600; padding:4px 2px 8px; }
   .sess-ran-title { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--gray-400); }
   .sess-ran-group { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px; }
@@ -2056,8 +2076,24 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .how-it-works:not([open]) .sess-ext-toggle::after { content: ' \25BE'; } .how-it-works[open] .sess-ext-toggle::after { content: ' \25B4'; }
   .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
   .ext-stat small { display: block; font-size: 11px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
-  .dep-line { display:flex; align-items:center; gap:8px; padding:4px 0; min-width:0; }
-  .dep-line + .dep-line { border-top:1px solid var(--gray-100); }
+  .ext-kinds { display:flex; flex-wrap:wrap; }
+  .ext-item { display:grid; grid-template-columns:minmax(0,2.4fr) 96px 70px 70px minmax(0,1fr) 80px; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; }
+  .ext-item.hdr { cursor:default; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--gray-500); background:none; border:0; padding-top:0; padding-bottom:4px; }
+  .ext-item .ext-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ext-item .num { font-variant-numeric:tabular-nums; text-align:right; }
+  .ext-item-agents { display:flex; gap:4px; overflow:hidden; }
+  .ext-spark { display:inline-flex; align-items:flex-end; gap:1px; height:22px; width:100%; }
+  .ext-spark i { flex:1; min-height:1px; background:var(--accent); opacity:.75; border-radius:1px; }
+  .ext-spark.big { height:90px; gap:3px; margin:6px 0 2px; }
+  .extd-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:14px; }
+  .extd-kpis div { border:1px solid var(--gray-200); border-radius:8px; padding:8px 12px; font-size:11px; color:var(--gray-500); text-transform:uppercase; letter-spacing:.04em; }
+  .extd-kpis b { display:block; font-size:18px; color:var(--gray-900); text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums; }
+  .extd-break { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin:14px 0; }
+  .extd-break h4 { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--gray-500); margin:0 0 6px; font-weight:600; }
+  .extd-bar { display:grid; grid-template-columns:minmax(0,1fr) 44px; gap:8px; font-size:12.5px; padding:2px 0; }
+  .extd-bar span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:linear-gradient(90deg,var(--md-primary-soft,#e8eefc) var(--w),transparent var(--w)); border-radius:3px; padding:1px 6px; }
+  .extd-bar em { font-style:normal; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500); }
+  @media (max-width:720px) { .ext-item { grid-template-columns:minmax(0,1fr) 60px 60px; } .ext-item > :nth-child(2), .ext-item > :nth-child(5), .ext-item > :nth-child(6) { display:none; } }
   .dep-when { flex:none; }
   .ext-review-note { display: inline-block; margin-left: 10px; font-size: 11px; color: var(--gray-500); max-width: 460px; vertical-align: middle; }
   .btn-ok, .btn-line {
@@ -2323,7 +2359,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="nav-group">Policy</div>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
   <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
-  <button class="tab-btn" data-tab="dependencies" data-label="External Dependencies"><svg class="icon"><use href="#i-globe"/></svg><span>Dependencies</span></button>
   <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
   <div class="nav-group">Govern</div>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
@@ -2389,11 +2424,12 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-extensions" class="page">
   <div class="section"><h2>Extensions</h2><div class="rule"></div>
-    <span class="hint">Skills, plugins, MCP servers and third-party hooks: anything installed on this machine that can put instructions or code into an agent. Prismor records each one when it first appears and again when its files change, so you can read it once and know it has not moved since.</span>
+    <span class="hint">Everything your agents reach for outside themselves: the skills, MCP servers, plugins and third-party hooks installed on this machine, the secrets they used and the packages they installed. Pick a kind to see each one, then open it for every session that used it. Prismor records an installed extension when it first appears and again when its files change, so you can read it once and know it has not moved since.</span>
   </div>
+  <div class="ext-views ext-kinds" id="extKinds"></div>
   <div id="extSummary" class="ext-summary"></div>
   <div class="ext-views" id="extViews"></div>
-  <div class="ext-layout">
+  <div class="ext-layout" id="extLayout">
     <div>
       <div class="ext-filters" id="extFilters"></div>
       <div id="extList"><div class="empty">Loading extensions…</div></div>
@@ -2403,16 +2439,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div id="extEvents"><div class="empty">No extension events yet.</div></div>
     </div>
   </div>
-</div>
-
-<div id="page-dependencies" class="page">
-  <div class="section"><h2>External dependencies and connections</h2><div class="rule"></div>
-    <span class="hint">What your agents reached for outside themselves, across every session on this machine: the secrets they used and which service each one opened, the MCP servers they called, the skills they loaded, and the packages they installed. Read it by dependency to see what is in use, or by session, agent or project to see who used it.</span>
-  </div>
-  <div id="depSummary" class="ext-summary"></div>
-  <div class="ext-views" id="depViews"></div>
-  <div class="ext-filters" id="depFilters"></div>
-  <div id="depList"><div class="empty">Loading dependencies…</div></div>
 </div>
 
 <div id="page-docs" class="page">
@@ -2867,6 +2893,14 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div id="extdHead" class="card" style="margin-bottom:16px"></div>
   <div class="card" style="margin-bottom:16px">
+    <div class="bar" style="margin-bottom:10px">
+      <div class="card-title" id="extdUsageTitle">Usage</div>
+      <div class="bar-right"><select class="fsel" id="extdDays" onchange="_depDays=+this.value;_depCache=null;openExtension(_extViewId,true)"></select></div>
+    </div>
+    <div id="extdUsage"></div>
+  </div>
+  <div id="extdLedger">
+  <div class="card" style="margin-bottom:16px">
     <div class="card-title" style="margin-bottom:10px">Agents that used it</div>
     <div id="extdAgents"></div>
   </div>
@@ -2880,6 +2914,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="card">
     <div class="card-title" style="margin-bottom:6px">Sessions</div>
     <div id="extdSessions"></div>
+  </div>
   </div>
 </div>
 
@@ -3504,7 +3539,6 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (btn.dataset.tab === 'mcpservers') loadMcpServers();
     if (btn.dataset.tab === 'extensions') loadExtensions();
     if (btn.dataset.tab === 'files') loadFiles();
-    if (btn.dataset.tab === 'dependencies') loadDependencies();
     if (btn.dataset.tab === 'docs') loadDocs();
   });
 });
@@ -3659,15 +3693,22 @@ async function openExtension(id, isBack) {
   _extViewId = id; _extDetail = null;
   showSubPage('page-extension');
   document.getElementById('extdCrumb').textContent = id;
-  ['extdHead', 'extdAgents', 'extdCalls', 'extdSessions'].forEach(k => document.getElementById(k).innerHTML = '<div class="empty">Loading…</div>');
+  ['extdHead', 'extdUsage', 'extdAgents', 'extdCalls', 'extdSessions'].forEach(k => document.getElementById(k).innerHTML = '<div class="empty">Loading…</div>');
   try {
-    if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
+    await Promise.all([_extCache ? 0 : apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000}).then(x => { _extCache = x; }),
+      _depCache ? 0 : loadDependencies()]);
   } catch (e) { /* the page still shows usage without the ledger row */ }
   if (_extViewId === id) loadExtensionDetail(id, false);
 }
 async function loadExtensionDetail(id, history) {
-  const row = ((_extCache || {}).rows || []).find(r => r.id === id) || {id: id, name: id.replace(/^.*[#:]/, ''), kind: id.split(':')[0]};
-  const ids = [id].concat(((_extCache || {}).rows || []).filter(r => r.parent === id).map(r => r.id));
+  const it = extItemById(id);
+  const row = ((_extCache || {}).rows || []).find(r => r.id === id) || (it && it.ledger[0]) || {id: id, name: it ? it.name : id.replace(/^.*[#:]/, ''), kind: it ? it.kind : id.split(':')[0]};
+  if (it) renderExtensionUsage(it);
+  // Secrets and packages are seen only in tool calls; there is no ledger entry to review or trace.
+  document.getElementById('extdLedger').hidden = !!(it && !it.ledger.length);
+  if (it && !it.ledger.length) return renderDepHead(it);
+  const own = it ? it.ledger.map(r => r.id) : [id];
+  const ids = own.concat(((_extCache || {}).rows || []).filter(r => own.includes(r.parent)).map(r => r.id));
   renderExtensionHead(row);
   if (history) document.getElementById('extdCalls').innerHTML = '<div class="empty">Searching every recorded call… this takes a few seconds.</div>';
   try {
@@ -3693,6 +3734,14 @@ function renderExtensionHead(r) {
       (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') + '</div>' +
     '<dl class="ext-kv">' + kv + '</dl>' +
     (r.status && r.status !== 'approved' ? '<button class="ext-approve" onclick="extApprove(\'' + safeJsArg(r.id) + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>' : '');
+}
+function renderDepHead(it) {
+  document.getElementById('extdCrumb').textContent = it.name;
+  const sub = it.kind === 'secret' ? 'A cloaked secret reached this service. Which credential it was is never recorded, and a secret value never appears here.'
+    : it.kind === 'package' ? 'Installed by an agent from ' + safe([...new Set(it.deps.map(r => r.target))].join(', ') || 'a registry') + '.'
+    : 'Seen in tool calls; no config file on this machine describes it.';
+  document.getElementById('extdHead').innerHTML = '<div class="ext-agent-head"><span class="ext-kind">' + safe(it.kind) + '</span><b>' + safe(it.name) + '</b>' +
+    (it.warn ? '<span class="ext-cap remote_instructions">placeholder not in vault</span>' : '') + '</div><div class="ext-quiet" style="margin-top:6px">' + sub + '</div>';
 }
 function renderExtensionDetail(row) {
   const d = _extDetail;
@@ -3720,7 +3769,7 @@ function renderExtensionDetail(row) {
     : '<div class="empty">None recorded.</div>';
 }
 function openExtensionsFor(agent, filter) {
-  _extView = 'installed'; _extAgent = agent || ''; _extFilter = filter || 'all'; _extOpen = {};
+  _extTab = 'all'; _extView = 'installed'; _extAgent = agent || ''; _extFilter = filter || 'all'; _extOpen = {};
   document.querySelector('.tab-btn[data-tab="extensions"]')?.click();
 }
 // The session page answers "what was this run under" on its own: every
@@ -3738,24 +3787,42 @@ async function loadSessionExtensions(sessionId, ws) {
     renderSessionExtensions();
   } catch (e) { /* the session view works without it */ }
 }
+// A hook's name is "Event: <command>"; the script it runs is the readable part.
+function sessHookParts(x) {
+  const i = x.name.indexOf(': '), event = i > 0 ? x.name.slice(0, i) : 'Hook', cmd = i > 0 ? x.name.slice(i + 2) : x.name;
+  // The stored name is cut at ~100 chars, so match the start of Prismor's path, and skip interpreters to reach the script.
+  const words = cmd.replace(/["']/g, '').split(/\s+/).map(w => w.split('/').pop()).filter(Boolean);
+  const script = (cmd.match(/[\w.-]+\.(?:sh|mjs|cjs|js|py|ts|rb)\b/g) || []).pop() ||
+    words.find(w => !/^(node|python3?|bash|sh|zsh|npx|bunx?|deno|uv|env|exec)$/.test(w)) || words[0] || cmd;
+  const prismor = /prismor[\\/]run|venvs[\\/]prismor|prismor\s+hook|immunity_cli/i.test(cmd);
+  const from = prismor ? 'Prismor' : x.origin ? x.origin.split('@')[0] : (x.path || '').includes('/plugins/') ? 'a plugin' : 'your settings';
+  return {event: event, script: prismor ? 'prismor hook' : script, from: from, prismor: prismor};
+}
+const SESS_CAP = {runs_code: 'runs code', network: 'uses the network', remote_instructions: 'reads instructions from the web'};
+function sessCaps(x) { return (x.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(SESS_CAP[c] || c.replace(/_/g, ' ')) + '</span>').join(''); }
+function sessReviewBadge(x) {
+  return x.reviewed ? '<span class="ext-badge approved" title="Someone marked it reviewed, and its files have not changed since.">reviewed</span>'
+    : '<span class="ext-badge new" title="New or changed since anyone looked at it. Open it to read what it does.">not reviewed</span>';
+}
 function sessExtRow(x, calls) {
   const mine = calls.filter(ev => ev.extension && ev.extension.id === x.id);
   const blocked = mine.filter(ev => flowVerdict(ev) === 'block').length;
-  const kv = [['Origin', x.origin], ['Installed by', extBy(x.installed_by)], ['Path', x.path], ['Command', x.command],
-    ['Hosts named', (x.hosts || []).join(', ')]].filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
-  const docs = (x.documents || []).map(doc => '<dt>Read here</dt><dd>' + safe(doc.url) + (doc.sha256 ? ' · sha256 ' + safe(String(doc.sha256).slice(0, 12)) + ' · ' + doc.bytes + ' bytes' : '') +
+  const hook = x.role === 'ambient' ? sessHookParts(x) : null;
+  const kv = [['Where it came from', x.origin], ['Installed', extBy(x.installed_by)], ['File', x.path], ['Runs', hook ? x.name.slice(x.name.indexOf(': ') + 2) : x.command],
+    ['Hosts it names', (x.hosts || []).join(', ')]].filter(([, v]) => v).map(([k, v]) => '<dt>' + k + '</dt><dd>' + safe(v) + '</dd>').join('');
+  const docs = (x.documents || []).map(doc => '<dt>Sent the agent to</dt><dd>' + safe(doc.url) + (doc.sha256 ? ' · sha256 ' + safe(String(doc.sha256).slice(0, 12)) + ' · ' + doc.bytes + ' bytes' : '') +
     (doc.last_changed ? ' · <b style="color:#ef4444">changed ' + safe(extWhen(doc.last_changed)) + '</b>' : '') + '</dd>').join('');
   const id = safeJsArg(x.id);
-  return '<div class="ext-row' + (x.reviewed ? '' : ' review') + (_sessExtOpen[x.id] ? ' open' : '') + '">' +
+  const what = hook ? '<span class="sess-hook-ev">' + safe(hook.event) + '</span><span class="ext-name">' + safe(hook.script) + '</span>'
+    : '<span class="ext-kind">' + safe(x.kind === 'mcp' ? 'MCP server' : x.kind) + '</span><span class="ext-name">' + safe(x.name) + '</span>';
+  const use = hook ? '' : '<span class="ext-quiet">' + (mine.length ? mine.length + ' call' + (mine.length === 1 ? '' : 's') + ' in this session' + (blocked ? ', <b style="color:#ef4444">' + blocked + ' blocked</b>' : '') : x.role === 'invoked' ? 'loaded by the agent' : 'no calls traced to it') + '</span>';
+  return '<div class="ext-row' + (x.reviewed || (hook && hook.prismor) ? '' : ' review') + (_sessExtOpen[x.id] ? ' open' : '') + '">' +
     '<div class="ext-head" onclick="_sessExtOpen[\'' + id + '\']=!_sessExtOpen[\'' + id + '\'];renderSessionExtensions()">' +
-      '<span class="ext-badge ' + (x.reviewed ? 'approved' : 'new') + '">' + (x.reviewed ? 'reviewed' : 'unreviewed') + '</span>' +
-      '<span class="ext-kind">' + safe(x.kind) + '</span><span class="ext-name">' + safe(x.name) + '</span>' +
-      (x.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
-      (x.role === 'ambient' ? '' : '<span class="ext-quiet">' + (mine.length ? 'caused ' + mine.length + ' call' + (mine.length === 1 ? '' : 's') + ' here' + (blocked ? ', ' + blocked + ' blocked' : '') : 'no calls traced to it') + '</span>') +
-      '<span class="ext-origin">' + safe(x.origin || '') + '</span></div>' +
+      (hook && hook.prismor ? '<span class="ext-badge approved" title="Prismor\'s own screening hook.">prismor</span>' : sessReviewBadge(x)) + what + sessCaps(x) + use +
+      (hook ? '' : '<span class="ext-origin">' + safe(x.origin || '') + '</span>') + '</div>' +
     '<div class="ext-body"><dl class="ext-kv">' + kv + docs + '</dl>' +
-      (x.reviewed ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button><span class="ext-review-note">You have read what it does. Prismor stops flagging it, and flags it again if its files change.</span>') +
-      ' <a class="ext-sess" style="margin-left:10px" onclick="openExtension(\'' + id + '\')">open in ledger</a></div></div>';
+      (x.reviewed || (hook && hook.prismor) ? '' : '<button class="ext-approve" onclick="extApprove(\'' + id + '\')">Mark reviewed</button><span class="ext-review-note">Once you have read what it does. Prismor flags it again if its files change.</span>') +
+      ' <a class="ext-sess" style="margin-left:10px" onclick="openExtension(\'' + id + '\')">every session that used it →</a></div></div>';
 }
 function renderSessionExtensions() {
   const el = document.getElementById('sessRanUnder'), d = _sessExt;
@@ -3763,13 +3830,28 @@ function renderSessionExtensions() {
   const calls = (_sessionViewState && _sessionViewState.data && _sessionViewState.data.recent_events) || [];
   const used = d.extensions.filter(x => x.role !== 'ambient'), hooks = d.extensions.filter(x => x.role === 'ambient');
   const unrev = used.filter(x => !x.reviewed).length;
-  el.innerHTML = '<details class="sess-ext-all"' + (_sessExtOpen.__all ? ' open' : '') + ' ontoggle="_sessExtOpen.__all=this.open"><summary class="sess-ext-head"><span class="sess-ran-title">Extensions in this session</span>' +
-      '<span class="ext-quiet">' + (used.length ? used.length + ' loaded' + (unrev ? ', <b style="color:#d97706">' + unrev + ' never reviewed</b>' : '') : 'none loaded') +
-      (hooks.length ? ' · ' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') + ' ran around every call' : '') +
-      ((d.fetched || []).length ? ' · ' + d.fetched.length + ' document' + (d.fetched.length === 1 ? '' : 's') + ' read on a skill\'s say-so' : '') + '</span><span class="sess-ext-toggle">details</span></summary>' +
-    used.map(x => sessExtRow(x, calls)).join('') +
-    (hooks.length ? '<details class="sess-ext-hooks"' + (_sessExtOpen.__hooks ? ' open' : '') + ' ontoggle="_sessExtOpen.__hooks=this.open"><summary>' + hooks.length + ' third-party hook' + (hooks.length === 1 ? '' : 's') +
-      (hooks.some(h => !h.reviewed) ? ' · <b style="color:#d97706">' + hooks.filter(h => !h.reviewed).length + ' unreviewed</b>' : '') + '</summary>' + hooks.map(x => sessExtRow(x, calls)).join('') + '</details>' : '') + '</details>';
+  const hookUnrev = hooks.filter(h => !h.reviewed && !sessHookParts(h).prismor).length;
+  const names = used.slice(0, 4).map(x => '<b>' + safe(x.name) + '</b>').join(', ') + (used.length > 4 ? ' and ' + (used.length - 4) + ' more' : '');
+  const line = (used.length ? 'The agent used ' + names : 'The agent used no skills or MCP servers') +
+    (unrev ? ' · <b style="color:#d97706">' + unrev + ' not reviewed</b>' : '') +
+    (hooks.length ? ' · ' + hooks.length + ' background hook' + (hooks.length === 1 ? '' : 's') + ' ran' + (hookUnrev ? ' (<b style="color:#d97706">' + hookUnrev + ' not reviewed</b>)' : '') : '') +
+    ((d.fetched || []).length ? ' · read ' + d.fetched.length + ' web document' + (d.fetched.length === 1 ? '' : 's') + ' a skill pointed it to' : '');
+  // Group hooks by where they came from, so 22 rows read as 4 sources.
+  const bySrc = new Map();
+  hooks.forEach(h => { const k = sessHookParts(h).from; bySrc.set(k, (bySrc.get(k) || []).concat([h])); });
+  const hookGroups = [...bySrc].sort((a, b) => (a[0] === 'Prismor') - (b[0] === 'Prismor') || b[1].length - a[1].length).map(([src, hs]) => {
+    const bad = hs.filter(h => !h.reviewed && src !== 'Prismor').length;
+    return '<details class="sess-ext-hooks"' + (_sessExtOpen['__h' + src] ? ' open' : '') + ' ontoggle="_sessExtOpen[\'__h' + safeJsArg(src) + '\']=this.open"><summary>From ' + safe(src) +
+      ' <span class="ext-quiet">' + hs.length + ' hook' + (hs.length === 1 ? '' : 's') + ' · ' + safe([...new Set(hs.map(h => sessHookParts(h).event))].join(', ')) + '</span>' +
+      (bad ? ' · <b style="color:#d97706">' + bad + ' not reviewed</b>' : '') + '</summary>' + hs.map(x => sessExtRow(x, calls)).join('') + '</details>';
+  }).join('');
+  el.innerHTML = '<details class="sess-ext-all"' + (_sessExtOpen.__all ? ' open' : '') + ' ontoggle="_sessExtOpen.__all=this.open"><summary class="sess-ext-head">' +
+      '<span class="sess-dot ' + (unrev || hookUnrev ? 'warn' : 'ok') + '"></span><span class="sess-ran-title">Extensions in this session</span>' +
+      '<span class="sess-sum">' + line + '</span><span class="sess-ext-toggle">details</span></summary>' +
+    '<div class="sess-sub">Skills and MCP servers the agent chose to use</div>' +
+    (used.length ? used.map(x => sessExtRow(x, calls)).join('') : '<div class="ext-quiet sess-none">None in this session.</div>') +
+    (hooks.length ? '<div class="sess-sub">Background hooks <span>run automatically on agent events (start, each tool call, stop); the agent does not choose them</span></div>' + hookGroups : '') +
+    '</details>';
   el.hidden = false;
 }
 
@@ -3785,6 +3867,79 @@ function devDiff(lines, truncated) {
 }
 function devCounts(x) { return '<span class="dev-add">+' + (x.added || 0) + '</span> <span class="dev-del">−' + (x.removed || 0) + '</span>'; }
 function devSpan(a, b) { const s = (new Date(b) - new Date(a)) / 1000; return isNaN(s) ? '' : s < 90 ? Math.round(s) + 's' : Math.round(s / 60) + 'm'; }
+// One failed call, readable: the first line of what ran, the full text a click away.
+let _devFails = [];
+function devFail(c, label) {
+  const n = _devFails.push(c) - 1;
+  const first = String(c.detail || '').split('\n')[0], short = first.length > 140 ? first.slice(0, 140) + '…' : first;
+  return '<div class="dev-fail">' + (label ? '<div class="dev-fail-label">' + label + '</div>' : '') +
+    '<div class="dev-fail-head"><span class="ext-kind">' + safe(c.tool) + '</span><span class="dev-mono dev-fail-cmd">' + safe(short) + '</span>' +
+      '<span class="dev-quiet">' + safe(extWhen(c.ts)) + '</span>' +
+      '<button class="fbtn dev-locate" title="Scroll the session flow to this call and open it" onclick="devLocate(' + n + ')">Locate</button></div>' +
+    (c.error ? '<div class="dev-fail-err dev-mono">' + safe(c.error) + '</div>' : '') +
+    (String(c.detail || '').length > short.length ? '<details class="dev-fail-full"><summary>full command</summary><pre class="dev-mono">' + safe(c.detail) + '</pre></details>' : '') + '</div>';
+}
+// Find the flow row for an RCA call: the same tool and command text, nearest in time.
+function devFindInFlow(c) {
+  const norm = t => String(t || '').replace(/\s+/g, ' ').trim();
+  const want = norm(c.detail).slice(0, 80), at = Date.parse(c.ts);
+  let best = -1, bestGap = Infinity;
+  (_flowTrail || []).forEach((ev, i) => {
+    const a = ev.artifacts || {};
+    const text = norm(a.command || a.file_path || a.path || a.url || a.query || eventSummary(ev));
+    const sameTool = !c.tool || !ev.toolTag || ev.toolTag === c.tool;
+    if (!sameTool || !want || !(text.startsWith(want) || want.startsWith(text.slice(0, 80)))) return;
+    const gap = Math.abs((Date.parse(ev.tsAbs) || at) - at);
+    if (gap < bestGap) { best = i; bestGap = gap; }
+  });
+  return best;
+}
+function devLocate(n) { devLocateRow(devFindInFlow(_devFails[n] || {})); }
+function devLocateRow(idx) {
+  const leaf = idx < 0 ? null : document.querySelector('#sessFlowCanvas .tree-leaf[data-idx="' + idx + '"]');
+  if (!leaf) return toast('That call is not in the recorded flow below (it keeps the most recent events).', true);
+  // Open every collapsed turn and lane above it.
+  for (let el = leaf.parentElement; el && el.id !== 'sessFlowCanvas'; el = el.parentElement) {
+    if (el.classList.contains('tree-children') && el.classList.contains('hidden')) {
+      el.classList.remove('hidden');
+      if (el.previousElementSibling) el.previousElementSibling.classList.remove('collapsed');
+    }
+  }
+  selectFlowNode(idx);
+  leaf.scrollIntoView({behavior: 'smooth', block: 'center'});
+  leaf.classList.remove('flash'); void leaf.offsetWidth; leaf.classList.add('flash');
+}
+function devRca(r) {
+  _devFails = [];
+  const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  if (r.source === 'events') return {dot: '', line: 'This agent\'s hooks do not report whether a call succeeded, so failures cannot be shown.', body: ''};
+  const bits = [];
+  if (r.failures) bits.push('<b>' + plural(r.failures, 'call') + ' failed</b>');
+  if (r.denied) bits.push('<b>' + r.denied + ' blocked</b>');
+  if (r.loops.length) bits.push('<b style="color:#ef4444">stuck retrying ' + plural(r.loops.length, 'time') + '</b>');
+  if (r.reverts.length) bits.push('<b style="color:#d97706">' + plural(r.reverts.length, 'edit') + ' undone</b>');
+  if (r.churn.length) bits.push(plural(r.churn.length, 'file') + ' rewritten repeatedly');
+  const line = bits.length ? bits.join(' · ') + ' <span class="ext-quiet">out of ' + r.calls + ' calls</span>' : 'All ' + r.calls + ' calls succeeded';
+  let h = '';
+  r.loops.forEach(l => {
+    h += devFail({tool: l.tool, detail: l.detail, error: l.error, ts: l.last},
+      'Stuck retrying: the same call failed ' + l.count + ' times over ' + devSpan(l.first, l.last) + (l.tokens ? ', costing ' + fmtNum(l.tokens) + ' tokens' : ''));
+  });
+  const f = r.firstFailure, rest = (r.failed || []).filter(c => !(f && c.ts === f.ts && c.detail === f.detail) && !r.loops.some(l => l.detail === c.detail));
+  if (f && !r.loops.some(l => l.detail === f.detail)) {
+    h += devFail(f, 'First failure');
+    if ((f.before || []).length) h += '<details class="dev-fail-full dev-before"><summary>what the agent did just before</summary>' + f.before.map(devCall).join('') + '</details>';
+  }
+  if (rest.length) h += '<div class="dev-h">' + (f ? 'Other failures' : 'Failures') + '</div>' + rest.slice().reverse().map(c => devFail(c)).join('');
+  if (r.denied) h += '<div class="dev-h">Blocked <span class="dev-quiet">a Prismor rule or a permission prompt stopped ' + (r.denied === 1 ? 'this call' : 'these calls') + '; locate one to see why</span></div>' +
+    ((r.deniedCalls || []).length ? r.deniedCalls.slice().reverse().map(c => devFail(c)).join('') : '<div class="dev-note">' + r.denied + ' blocked. They are the red rows in the flow below.</div>');
+  if (r.reverts.length) h += '<div class="dev-h">Edits undone <span class="dev-quiet">the agent put back exactly what an earlier edit replaced</span></div>' + r.reverts.map(v =>
+    '<div class="dev-row dev-mono">' + safe(v.path) + ' <span class="dev-quiet">' + safe(extWhen(v.ts)) + '</span></div>').join('');
+  if (r.churn.length) h += '<div class="dev-h">Rewritten over and over <span class="dev-quiet">often a sign the agent was going in circles</span></div>' + r.churn.map(c =>
+    '<div class="dev-row dev-mono">' + safe(c.path) + ' <span class="dev-quiet">' + c.writes + ' writes</span></div>').join('');
+  if (!h) h = '<div class="empty">Nothing went wrong that the record shows.</div>';
+  return {dot: r.loops.length || r.failures ? 'bad' : r.denied || r.reverts.length || r.churn.length ? 'warn' : 'ok', line: line, body: h};
+}
 function devCopy(text, btn) { navigator.clipboard.writeText(text).then(() => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1200); }); }
 async function loadSessionDev(sessionId) {
   const el = document.getElementById('sessDev');
@@ -3792,24 +3947,10 @@ async function loadSessionDev(sessionId) {
   let d;
   try { d = await apiFetch('/api/sessions/' + encodeURIComponent(sessionId) + '/dev', {timeoutMs: 20000}); } catch (e) { return; }
   if (!_sessionViewState || _sessionViewState.sessionId !== sessionId || !d.rca) return;
-  const r = d.rca, ch = d.changes, f = r.firstFailure;
-  const quiet = r.source === 'events' ? 'this agent\'s hooks do not report outcomes, so failures are unknown'
-    : r.calls + ' calls · ' + r.failures + ' failed · ' + r.denied + ' denied' +
-      (r.loops.length ? ' · <b style="color:#ef4444">' + r.loops.length + ' retry loop' + (r.loops.length === 1 ? '' : 's') + '</b>' : '') +
-      (r.reverts.length ? ' · <b style="color:#d97706">' + r.reverts.length + ' revert' + (r.reverts.length === 1 ? '' : 's') + '</b>' : '');
+  const r = d.rca, ch = d.changes, rc = devRca(r);
   let h = '<details class="sess-ext-all"' + (r.loops.length || r.reverts.length ? ' open' : '') + '><summary class="sess-ext-head">' +
-    '<span class="sess-ran-title">What went wrong</span><span class="ext-quiet">' + quiet + '</span><span class="sess-ext-toggle">details</span></summary>';
-  r.loops.forEach(l => {
-    h += '<div class="dev-h">Retry loop: failed ' + l.count + '× over ' + devSpan(l.first, l.last) + (l.tokens ? ', ' + fmtNum(l.tokens) + ' tokens' : '') + '</div>' +
-      devCall({tool: l.tool, detail: l.detail, error: l.error});
-  });
-  if (f && !r.loops.some(l => l.detail === f.detail)) h += '<div class="dev-h">First failure <span class="dev-quiet">' + safe(extWhen(f.ts)) + ', after the calls below</span></div>' +
-    f.before.map(devCall).join('') + devCall(f);
-  if (r.reverts.length) h += '<div class="dev-h">Edits undone</div>' + r.reverts.map(v =>
-    '<div class="dev-row dev-mono">' + safe(v.path) + ' <span class="dev-quiet">' + safe(extWhen(v.ts)) + '</span></div>').join('');
-  if (r.churn.length) h += '<div class="dev-h">Rewritten over and over</div>' + r.churn.map(c =>
-    '<div class="dev-row dev-mono">' + safe(c.path) + ' <span class="dev-quiet">' + c.writes + ' writes</span></div>').join('');
-  if (!f && !r.loops.length && !r.reverts.length && !r.churn.length) h += '<div class="empty">Nothing went wrong that the record shows.</div>';
+    '<span class="sess-dot ' + rc.dot + '"></span><span class="sess-ran-title">What went wrong</span><span class="sess-sum">' + rc.line + '</span>' +
+    (rc.body ? '<span class="sess-ext-toggle">details</span>' : '') + '</summary>' + rc.body;
   h += '</details>';
   h += '<details class="sess-ext-all"><summary class="sess-ext-head"><span class="sess-ran-title">Changes</span><span class="ext-quiet">' +
     ch.files.length + ' file' + (ch.files.length === 1 ? '' : 's') + ' · ' + devCounts({added: ch.files.reduce((n, f) => n + f.added, 0), removed: ch.files.reduce((n, f) => n + f.removed, 0)}) + ' · ' + ch.commands.length + ' commands' + (ch.branch ? ' · branch ' + safe(ch.branch) : '') +
@@ -3901,7 +4042,7 @@ let _extCache = null, _extFilter = 'review', _extOpen = {}, _extView = 'installe
 async function loadExtensions() {
   const ws = _serverWorkspace || '';
   try {
-    _extCache = await apiFetch('/api/extensions' + (ws ? '?workspace=' + encodeURIComponent(ws) : ''), {timeoutMs: 20000});
+    [_extCache] = await Promise.all([apiFetch('/api/extensions' + (ws ? '?workspace=' + encodeURIComponent(ws) : ''), {timeoutMs: 20000}), loadDependencies()]);
     if (!(_extCache.rows || []).some(r => r.needs_review) && _extFilter === 'review') _extFilter = 'all';
     // Nothing has run yet on a fresh install: the inventory is the only thing to show.
     if (!(_extCache.sessions || []).length && _extView === 'sessions') _extView = 'installed';
@@ -3960,7 +4101,8 @@ async function renderAgentExtensions(agentName) {
 }
 function renderExtensions() {
   const d = _extCache || {rows: [], events: [], counts: {}};
-  const kinds = [['skill','Skills'],['plugin','Plugins'],['hook','Third-party hooks'],['mcp','MCP servers']];
+  renderExtKindTabs();
+  if (_extTab !== 'all') return renderExtKind(_extTab);
   const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
   const review = d.rows.filter(r => r.needs_review).length, idle = d.rows.filter(r => r.never_used).length;
   document.getElementById('extSummary').innerHTML = [
@@ -3969,12 +4111,12 @@ function renderExtensions() {
     [d.rows.length, 'Installed on this machine', idle + ' never used by any session', '', "_extView='installed';_extFilter='all';renderExtensions()"],
     [unrev, 'Sessions that ran unreviewed code', unrev ? 'An agent loaded something nobody had read yet.' : 'Every session so far loaded only reviewed extensions.', unrev ? 'warn' : '', "_extView='sessions';renderExtensions()"]]
     .map(([n, label, sub, cls, go]) => '<div class="ext-stat ' + cls + '" onclick="' + go + '"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
+  document.getElementById('extViews').hidden = false;
   document.getElementById('extViews').innerHTML = [['sessions', 'By session', sess.length], ['agents', 'By agent', (d.agents || []).length], ['installed', 'Installed', d.rows.length]]
     .map(([k, l, n]) => '<button class="ext-view' + (_extView === k ? ' on' : '') + '" onclick="_extView=\'' + k + '\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
   const agentPick = _extView === 'agents' ? '' : '<select class="fsel" style="margin-right:6px" onchange="_extAgent=this.value;renderExtensions()"><option value="">All agents</option>' +
     (d.agents || []).filter(a => a.agent !== 'any').map(a => '<option value="' + safeAttr(a.agent) + '"' + (_extAgent === a.agent ? ' selected' : '') + '>' + safe(a.agent) + '</option>').join('') + '</select>';
-  const filters = [['review','Needs review (' + review + ')'],['all','All'],['never_used','Never used (' + idle + ')'],['remote_instructions','Reads remote instructions'],['runs_code','Runs code'],['network','Talks to the network']]
-    .concat(kinds.map(([k, l]) => [k, l]));
+  const filters = [['review','Needs review (' + review + ')'],['all','All'],['never_used','Never used (' + idle + ')'],['remote_instructions','Reads remote instructions'],['runs_code','Runs code'],['network','Talks to the network']];
   document.getElementById('extFilters').innerHTML = agentPick + (_extView !== 'installed' ? '' : filters.map(([k, l]) =>
     '<button class="ext-filter' + (_extFilter === k ? ' on' : '') + '" onclick="_extFilter=\'' + k + '\';renderExtensions()">' + safe(l) + '</button>').join(''));
   if (_extView !== 'installed') {
@@ -4040,88 +4182,145 @@ async function extApprove(id) {
   } catch (e) { toast('✗ ' + e.message, true); }
 }
 
-// ── External dependencies: what the agent reached for outside itself ─────────
-// /api/dependencies answers at (part, name, target, session) grain, so each
-// view below is a different grouping of the same rows and switching one never
-// costs another fetch. Rows arrive newest-first, so members[0] is a group's
-// most recent use.
-let _depCache = null, _depPart = 'all', _depGroup = 'dep', _depDays = 30, _depOpen = {};
-const DEP_PARTS = [['secret', 'Services a secret opened', 'which credential is never recorded here', 'Secrets'],
-                   ['mcp', 'MCP servers', 'tools called on them', 'MCP servers'],
-                   ['skill', 'Skills loaded', 'by an agent mid-session', 'Skills'],
-                   ['package', 'Packages installed', 'from a registry', 'Packages']];
-// label, group key, group heading, badge beside the heading
-const DEP_GROUPS = {
-  dep:     ['By dependency', r => r.part + '/' + r.name, r => r.name,                              r => r.part],
-  session: ['By session',    r => r.session,             r => String(r.session).slice(0, 8),       r => r.agent],
-  agent:   ['By agent',      r => r.agent,               r => r.agent,                            () => 'agent'],
-  project: ['By project',    r => r.workspace,           r => r.workspace.split('/').pop() || '-', () => 'project'],
-};
+// ── Extensions by kind: the ledger (what is installed) joined with
+// /api/dependencies (what sessions used in the window), one item per name.
+// Secrets and packages exist only on the usage side; plugins and hooks only
+// on the ledger side; skills and MCP servers have both.
+const EXT_KINDS = [['skill', 'Skills'], ['mcp', 'MCP servers'], ['secret', 'Secrets'], ['package', 'Packages'], ['plugin', 'Plugins'], ['hook', 'Hooks']];
+const EXT_DAYS = [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [365, 'Last year']];
+let _depCache = null, _depDays = 30, _extTab = 'all', _extQuery = '';
 async function loadDependencies() {
-  try {
-    _depCache = await apiFetch('/api/dependencies?days=' + _depDays, {timeoutMs: 30000});
-    renderDependencies();
-  } catch (e) {
-    document.getElementById('depList').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
+  try { _depCache = await apiFetch('/api/dependencies?days=' + _depDays, {timeoutMs: 30000}); }
+  catch (e) { _depCache = {rows: [], error: e.message}; }
+}
+function extDaysSelect(onchange) {
+  return '<select class="fsel" style="margin-right:6px" onchange="' + onchange + '">' + EXT_DAYS.map(([d, l]) =>
+    '<option value="' + d + '"' + (_depDays === d ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>';
+}
+function extItems(kind) {
+  const items = new Map();
+  const get = name => items.get(name) || items.set(name, {kind: kind, name: name, ledger: [], deps: []}).get(name);
+  ((_extCache || {}).rows || []).filter(r => r.kind === kind).forEach(r => get(r.name).ledger.push(r));
+  ((_depCache || {}).rows || []).filter(r => r.part === kind).forEach(r => {
+    // A plugin's skill is loaded as `plugin:skill`; the ledger knows it by the skill's own name.
+    const short = r.name.split(':').pop();
+    get(items.has(r.name) || !items.has(short) ? r.name : short).deps.push(r);
+  });
+  return [...items.values()].map(it => {
+    const sess = new Set(it.deps.map(r => r.session));
+    it.ledger.forEach(r => (r.used_in || []).forEach(s => sess.add(s)));
+    const lasts = it.deps.map(r => r.lastTs).concat(it.ledger.map(r => r.last_used)).filter(Boolean).sort();
+    return Object.assign(it, {
+      id: it.ledger.length ? it.ledger[0].id : 'dep:' + kind + ':' + it.name,
+      sessions: sess.size, calls: it.deps.reduce((n, r) => n + r.calls, 0),
+      agents: [...new Set(it.deps.map(r => r.agent).concat(...it.ledger.map(r => r.agents || [])))].filter(a => a && a !== 'any' && a !== 'unknown'),
+      last: lasts[lasts.length - 1] || '', review: it.ledger.some(r => r.needs_review),
+      warn: it.deps.some(r => /not in vault/.test(r.note || '')),
+    });
+  }).sort((a, b) => b.sessions - a.sessions || b.calls - a.calls || a.name.localeCompare(b.name));
+}
+function extItemById(id) {
+  for (const [k] of EXT_KINDS) {
+    const it = extItems(k).find(x => x.id === id || x.ledger.some(r => r.id === id));
+    if (it) return it;
   }
+  const m = /^dep:([^:]+):(.*)$/.exec(id);
+  return m ? {kind: m[1], name: m[2], id: id, ledger: [], deps: [], sessions: 0, calls: 0, agents: [], last: ''} : null;
 }
-// A skill has no second half: it is loaded, it does not connect to anything.
-function depTarget(r) { return r.part === 'skill' || r.part === 'secret' ? '' : r.target || ''; }
-function depLine(r) {
-  return '<div class="dep-line">' +
-    '<span class="ext-kind">' + safe(r.part) + '</span>' +
-    '<span class="ext-name">' + safe(r.name) + (depTarget(r) ? ' <span class="ext-quiet">(' + safe(depTarget(r)) + ')</span>' : '') + '</span>' +
-    (r.note ? '<span class="ext-cap' + (r.note === 'not in vault' ? ' remote_instructions' : '') + '">' + safe(r.note) + '</span>' : '') +
-    '<span class="ext-agent">' + agentIcon(r.agent) + safe(r.agent) + '</span>' +
-    '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(r.session) + '\')">' + safe(String(r.session).slice(0, 8)) + '</a>' +
-    '<span class="ext-origin">' + safe(r.workspace) + '</span>' +
-    '<span class="ext-quiet dep-when">' + r.calls + ' call' + (r.calls === 1 ? '' : 's') + ' &middot; ' + safe(r.last || '') + '</span></div>';
+// ponytail: a usage row is per session, so its calls land on the day of that
+// session's last call; per-call timestamps would need a new endpoint.
+function extActivity(deps, n) {
+  const span = Math.ceil(_depDays / n) * 864e5, now = Date.now(), b = new Array(n).fill(0);
+  deps.forEach(r => { const i = n - 1 - Math.floor((now - Date.parse(r.lastTs)) / span); if (i >= 0 && i < n) b[i] += r.calls; });
+  return b;
 }
-function renderDependencies() {
-  const all = ((_depCache || {}).rows) || [];
-  const dangling = all.some(r => r.note === 'not in vault');
-  document.getElementById('depSummary').innerHTML = DEP_PARTS.map(([part, label, sub]) => {
-    const mine = all.filter(r => r.part === part), calls = mine.reduce((n, r) => n + r.calls, 0);
-    const warn = part === 'secret' && dangling;
-    return '<div class="ext-stat' + (warn ? ' warn' : '') + '" onclick="_depPart=\'' + (_depPart === part ? 'all' : part) + '\';renderDependencies()">' +
-      '<b>' + new Set(mine.map(r => r.name)).size + '</b><span>' + label + '</span><small>' +
-      calls + ' call' + (calls === 1 ? '' : 's') + ' &middot; ' + safe(sub) +
-      (warn ? ' &middot; <b style="color:#b45309">a placeholder had no vault entry</b>' : '') + '</small></div>';
-  }).join('');
-  document.getElementById('depViews').innerHTML = Object.keys(DEP_GROUPS).map(k =>
-    '<button class="ext-view' + (_depGroup === k ? ' on' : '') + '" onclick="_depGroup=\'' + k + '\';renderDependencies()">' + DEP_GROUPS[k][0] + '</button>').join('');
-  document.getElementById('depFilters').innerHTML =
-    '<select class="fsel" style="margin-right:6px" onchange="_depDays=+this.value;loadDependencies()">' +
-    [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days'], [365, 'Last year']].map(([d, l]) =>
-      '<option value="' + d + '"' + (_depDays === d ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>' +
-    [['all', 'All']].concat(DEP_PARTS.map(([p, , , chip]) => [p, chip])).map(([p, l]) =>
-      '<button class="ext-filter' + (_depPart === p ? ' on' : '') + '" onclick="_depPart=\'' + p + '\';renderDependencies()">' + safe(l) + '</button>').join('');
-
-  const rows = all.filter(r => _depPart === 'all' || r.part === _depPart);
-  const [, keyOf, titleOf, badgeOf] = DEP_GROUPS[_depGroup];
-  const groups = new Map();
-  rows.forEach(r => { const k = keyOf(r); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
-  const out = [...groups].map(([k, members]) => ({k: k, members: members, calls: members.reduce((n, r) => n + r.calls, 0)}))
-    .sort((a, b) => b.calls - a.calls);
-  document.getElementById('depList').innerHTML = out.length ? out.map(g => {
-    const head = g.members[0], key = JSON.stringify(g.k);
-    // Count only what the group heading does not already fix.
-    const facets = [['part', 'parts', r => r.part], ['dependency', 'dependencies', r => r.part + '/' + r.name],
-                    ['session', 'sessions', r => r.session], ['agent', 'agents', r => r.agent],
-                    ['project', 'projects', r => r.workspace]]
-      .filter(([f]) => f !== _depGroup && !(_depGroup === 'dep' && (f === 'part' || f === 'dependency')))
-      .map(([one, many, fn]) => { const n = new Set(g.members.map(fn)).size; return n + ' ' + (n === 1 ? one : many); });
-    return '<div class="ext-row' + (_depOpen[g.k] ? ' open' : '') + '">' +
-      '<div class="ext-head" onclick="_depOpen[' + key + ']=!_depOpen[' + key + '];renderDependencies()">' +
-        '<span class="ext-kind">' + safe(badgeOf(head)) + '</span>' +
-        '<span class="ext-name">' + safe(titleOf(head)) + '</span>' +
-        '<span class="ext-origin">' + safe(facets.join(' · ')) + '</span>' +
-        '<span class="ext-quiet dep-when">' + g.calls + ' call' + (g.calls === 1 ? '' : 's') + '</span>' +
-        '<span class="ext-never">' + safe(head.last || '') + '</span></div>' +
-      '<div class="ext-body">' + g.members.slice(0, 200).map(depLine).join('') +
-        (g.members.length > 200 ? '<div class="ext-quiet">Showing 200 of ' + g.members.length + '.</div>' : '') + '</div></div>';
-  }).join('') + ((_depCache || {}).truncated ? '<div class="empty">Capped at 5000 rows. Narrow the date range.</div>' : '')
-    : '<div class="empty">Nothing recorded in this window. Prismor fills this in as your agents use secrets, call MCP servers, load skills and install packages.</div>';
+function extBars(b, cls) {
+  const m = Math.max(1, ...b);
+  return '<span class="ext-spark' + (cls ? ' ' + cls : '') + '">' + b.map(v => '<i style="height:' + (v ? 8 + 92 * v / m : 0) + '%" title="' + v + ' call' + (v === 1 ? '' : 's') + '"></i>').join('') + '</span>';
+}
+function extKindNoun(kind) { return (EXT_KINDS.find(([k]) => k === kind) || [, kind])[1].toLowerCase(); }
+function renderExtKindTabs() {
+  document.getElementById('extKinds').innerHTML = [['all', 'Overview', (_extCache || {rows: []}).rows.length]]
+    .concat(EXT_KINDS.map(([k, l]) => [k, l, extItems(k).length]))
+    .map(([k, l, n]) => '<button class="ext-view' + (_extTab === k ? ' on' : '') + '" onclick="_extTab=\'' + k + '\';_extQuery=\'\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
+}
+function renderExtKind(kind) {
+  const items = extItems(kind), used = items.filter(it => it.calls || it.sessions);
+  const ledgerKind = kind !== 'secret' && kind !== 'package';
+  const review = items.filter(it => it.review).length, warn = items.filter(it => it.warn).length;
+  const calls = items.reduce((n, it) => n + it.calls, 0);
+  const projects = new Set([].concat(...items.map(it => it.deps.map(r => r.workspace)))).size;
+  document.getElementById('extSummary').innerHTML = [
+    [used.length, 'Used', 'by at least one recorded session'],
+    [calls, 'Calls', 'in the ' + _depDays + '-day window'],
+    ledgerKind ? [items.length, 'Installed', items.length - used.length + ' never used'] : [projects, 'Projects', 'where an agent used one'],
+    ledgerKind ? [review, 'Need review', 'new or changed since anyone looked', review ? 'warn' : '']
+      : kind === 'secret' ? [warn, 'Unresolved', 'a placeholder had no vault entry, so the call was denied', warn ? 'warn' : '']
+      : [new Set([].concat(...items.map(it => it.deps.map(r => r.target)))).size, 'Ecosystems', 'registries installed from']]
+    .map(([n, label, sub, cls]) => '<div class="ext-stat ' + (cls || '') + '" style="cursor:default"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
+  document.getElementById('extViews').hidden = true;
+  document.getElementById('extFilters').innerHTML = extDaysSelect('_depDays=+this.value;loadDependencies().then(renderExtensions)') +
+    '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter ' + safeAttr(extKindNoun(kind)) + '…" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderExtKindList()" style="min-width:220px" />';
+  renderExtKindList();
+  if (ledgerKind) renderExtEvents({events: ((_extCache || {}).events || []).filter(e => e.kind === kind)});
+  else document.getElementById('extEvents').innerHTML = '<div class="empty">' + (kind === 'secret'
+    ? 'A secret is not an installed extension, so it has no install history. Which credential was used is never recorded here, only the service it opened.'
+    : 'Packages have no install ledger here. Supply-chain verdicts appear beside each install.') + '</div>';
+}
+function renderExtKindList() {
+  const kind = _extTab, q = _extQuery.toLowerCase();
+  const items = extItems(kind).filter(it => !q || it.name.toLowerCase().includes(q));
+  const hdr = '<div class="ext-item hdr"><span>Name</span><span>Activity</span><span class="num">Sessions</span><span class="num">Calls</span><span>Agents</span><span>Last used</span></div>';
+  document.getElementById('extList').innerHTML = items.length ? hdr + items.slice(0, 300).map(it =>
+    '<div class="ext-row ext-item' + (it.review || it.warn ? ' review' : '') + '" onclick="openExtension(\'' + safeJsArg(it.id) + '\')">' +
+      '<span class="ext-name">' + (it.review ? '<span class="ext-badge new">unreviewed</span> ' : '') + (it.warn ? '<span class="ext-cap remote_instructions">not in vault</span> ' : '') +
+        safe(it.name) + (kind === 'package' && it.deps[0] ? ' <span class="ext-quiet">' + safe(it.deps[0].target) + '</span>' : '') + '</span>' +
+      (it.deps.length ? extBars(extActivity(it.deps, 15)) : '<span class="ext-quiet">-</span>') +
+      '<span class="num">' + (it.sessions || '<span class="ext-never">never</span>') + '</span><span class="num">' + (it.calls || '-') + '</span>' +
+      '<span class="ext-item-agents">' + it.agents.slice(0, 4).map(a => '<span class="ext-agent" title="' + safeAttr(a) + '">' + (agentIcon(a) || safe(a)) + '</span>').join('') + '</span>' +
+      '<span class="ext-quiet">' + (it.last ? safe(extWhen(it.last)) : '') + '</span></div>').join('') +
+    (items.length > 300 ? '<div class="empty">Showing 300 of ' + items.length + '. Filter by name.</div>' : '')
+    : '<div class="empty">' + (q ? 'No ' + safe(extKindNoun(kind)) + ' match.' : 'Nothing recorded in this window. Prismor fills this in as your agents use them.') + '</div>';
+}
+function extTally(rows, key) {
+  const m = new Map();
+  rows.forEach(r => { const k = key(r); if (k) m.set(k, (m.get(k) || 0) + r.calls); });
+  const out = [...m].sort((a, b) => b[1] - a[1]).slice(0, 8), max = out.length ? out[0][1] : 1;
+  return out.map(([k, n]) => '<div class="extd-bar"><span style="--w:' + Math.round(100 * n / max) + '%" title="' + safeAttr(k) + '">' + safe(k) + '</span><em>' + n + '</em></div>').join('');
+}
+function renderExtensionUsage(it) {
+  const deps = it.deps;
+  document.getElementById('extdDays').innerHTML = EXT_DAYS.map(([d, l]) => '<option value="' + d + '"' + (_depDays === d ? ' selected' : '') + '>' + l + '</option>').join('');
+  document.getElementById('extdUsageTitle').textContent = 'Usage in the last ' + _depDays + ' days';
+  const el = document.getElementById('extdUsage');
+  if (!deps.length) {
+    el.innerHTML = '<div class="empty">' + (it.kind === 'plugin' || it.kind === 'hook'
+      ? 'Usage of a ' + it.kind + ' is traced through the extensions it carries; see the sessions below.'
+      : 'No recorded call used it in this window.') + '</div>';
+    return;
+  }
+  const bySess = new Map();
+  deps.forEach(r => {
+    const s = bySess.get(r.session) || bySess.set(r.session, {session: r.session, agent: r.agent, workspace: r.workspace, calls: 0, first: r.firstTs, last: r.lastTs}).get(r.session);
+    s.calls += r.calls; s.first = s.first < r.firstTs ? s.first : r.firstTs; s.last = s.last > r.lastTs ? s.last : r.lastTs;
+  });
+  const sess = [...bySess.values()].sort((a, b) => (b.last || '').localeCompare(a.last || ''));
+  const first = deps.map(r => r.firstTs).filter(Boolean).sort()[0], last = deps.map(r => r.lastTs).filter(Boolean).sort().pop();
+  const kpis = [['Sessions', sess.length], ['Calls', it.calls], ['Calls / session', (it.calls / sess.length).toFixed(1)],
+    ['Agents', new Set(deps.map(r => r.agent)).size], ['Projects', new Set(deps.map(r => r.workspace)).size],
+    ['First used', first ? extWhen(first) : '-'], ['Last used', last ? extWhen(last) : '-']];
+  const target = {mcp: ['Tools called', r => r.target], package: ['Versions and verdicts', r => [r.target, r.note].filter(Boolean).join(' ')]}[it.kind];
+  el.innerHTML = '<div class="extd-kpis">' + kpis.map(([l, v]) => '<div><b>' + safe(String(v)) + '</b>' + l + '</div>').join('') + '</div>' +
+    extBars(extActivity(deps, 30), 'big') + '<div class="ext-quiet" style="font-size:11px">calls over the window, by the day each session last used it</div>' +
+    '<div class="extd-break">' + (target ? '<div><h4>' + target[0] + '</h4>' + extTally(deps, target[1]) + '</div>' : '') +
+      '<div><h4>By agent</h4>' + extTally(deps, r => r.agent) + '</div>' +
+      '<div><h4>By project</h4>' + extTally(deps, r => r.workspace.split('/').pop() || r.workspace) + '</div></div>' +
+    '<h4 class="ext-quiet" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:4px 0 6px">Sessions</h4>' +
+    sess.slice(0, 200).map(s => '<div class="ext-row"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\', \'' + safeJsArg(s.workspace) + '\')">' +
+      '<span class="ext-agent">' + agentIcon(s.agent) + safe(extAgentName(s.agent)) + '</span><span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
+      '<span class="ext-quiet">' + s.calls + ' call' + (s.calls === 1 ? '' : 's') + '</span><span class="ext-origin">' + safe(s.workspace) + '</span>' +
+      '<span class="ext-use-meta">' + safe(extWhen(s.last)) + '</span></div></div>').join('') +
+    (sess.length > 200 ? '<div class="ext-quiet">Showing 200 of ' + sess.length + '.</div>' : '');
 }
 
 async function loadMcpServers() {

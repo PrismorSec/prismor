@@ -127,33 +127,34 @@ the installed package, not fetched. The **MCP Servers** tab links into it when
 nothing is going through Prismor yet, alongside the `prismor mcp-gateway
 install` / `prismor mirror on` commands that wire it up.
 
-### Dependencies tab
+### Extensions tab
 
-**External dependencies and connections** — what your agents reached for
-outside themselves, across every session recorded on the machine rather than
-just the recent ones an agent config remembers. Four parts, all derived from
-the event store:
+Everything your agents reached for outside themselves, in one place, with a
+tab for each kind: **Skills**, **MCP servers**, **Secrets**, **Packages**,
+**Plugins** and **Hooks**. **Overview** is the review ledger: what changed
+since anyone looked, by session, by agent, or the full installed list.
 
-- **Services a secret opened** — one row per service a cloaked
-  `@@SECRET:<name>@@` reference reached (the host named in the command, or the
-  binary it ran when there is no URL). *Which* credential it was is not
-  recorded in this view, only that a redacted placeholder was used and what it
-  connected to; a secret value never appears anywhere. When a referenced
-  placeholder has no vault entry the row is flagged — unresolvable means the
-  decloak hook denied that call, so it failed closed rather than leaked, and
-  saying so needs no name.
-- **MCP servers** — the server and the tool called on it.
-- **Skills loaded** — skills an agent pulled in mid-session.
-- **Packages installed** — registry installs, parsed with the same
-  `supplychain.ecosystems.detector` the install-gating rule uses, so this view
-  and that verdict always agree on what counts as an install. Installs the
+Each kind tab joins two sources by name: the extension ledger (what is
+installed, and whether it has been reviewed) and the usage the event store
+recorded in the selected window (`/api/dependencies?days=N`). A row shows its
+activity over the window, the sessions and calls that used it, which agents
+and when it was last used. Open one for its page: sessions, calls, calls per
+session, agents, projects, first and last use, an activity chart, the tools
+called on it (MCP) or the versions and verdicts (packages), a breakdown by
+agent and project, and every session that used it. Installed extensions also
+keep the ledger detail: the context each call passed, and the review button.
+
+- **Secrets** — one row per service a cloaked `@@SECRET:<name>@@` reference
+  reached (the host named in the command, or the binary it ran when there is
+  no URL). *Which* credential it was is not recorded, only that a redacted
+  placeholder was used and what it connected to; a secret value never appears
+  anywhere. When a placeholder has no vault entry the row is flagged:
+  unresolvable means the decloak hook denied that call, so it failed closed.
+- **Packages** — registry installs, parsed with the same
+  `supplychain.ecosystems.detector` the install-gating rule uses. Installs the
   `prismor supplychain` CLI gated are merged in with their verdict.
-
-`/api/dependencies?days=N` answers at one row per (part, name, target,
-session), so the four groupings — **by dependency, session, agent or
-project** — are regroupings of a single payload, and switching between them
-costs no extra query. Use *by dependency* to see what is in use at all, and the
-others to see who used it.
+- The activity chart puts a session's calls on the day it last used the item;
+  usage is recorded per session, not per call.
 
 ### Policy tab
 

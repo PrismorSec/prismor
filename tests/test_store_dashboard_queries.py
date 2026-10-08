@@ -352,7 +352,7 @@ class TestSupplyChainEventIndex(unittest.TestCase):
 
 
 class TestDependencyUsage(unittest.TestCase):
-    """get_dependency_usage() feeds the dashboard's External dependencies tab.
+    """get_dependency_usage() feeds the dashboard's Extensions tab (Secrets, MCP, Skills, Packages).
 
     All four parts come out of the same event scan, so one session exercising
     each one at once is the test that matters: a regression in the shared row
