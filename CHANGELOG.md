@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Fixed
+- **`prismor skills audit` flagged Prismor's own skill as CRITICAL** (#554). The `immunity-agent` skill that `prismor setup` installs documents shell commands and credential paths on purpose, so a fresh install's first audit reported `skill-shell-injection`, `skill-prompt-override` and `skill-secret-access` against it. A `SKILL.md` at `.../skills/immunity-agent/` whose bytes hash to the `SKILL.md` inside the installed package now shows as `bundled` with no findings. Any edit changes the hash, so the file is reported as `changed` and audited in full again, and a different skill with the same name elsewhere, or the same bytes under another directory name, is audited as before. A copy installed by an older release (such as 1.55.3 in the issue) is still audited, because setup never replaces it; delete `.claude/skills/immunity-agent/` and re-run `prismor setup`.
+
 ## [1.60.0] — 2026-10-06
 
 ### Fixed

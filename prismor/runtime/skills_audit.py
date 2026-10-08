@@ -146,6 +146,34 @@ def _remote_sources(text: str, fm: Dict[str, str]) -> List[str]:
     return dedup[:5]
 
 
+def _shipped_skill() -> Path:
+    """The SKILL.md that is part of the installed package itself.
+
+    Wheel: ``prismor/runtime/data/SKILL.md``. Git checkout or editable install:
+    ``SKILL.md`` at the repo root, three levels above ``paths.py``.
+    """
+    from prismor.runtime import paths
+    wheel = paths._BUNDLED_DATA / "SKILL.md"
+    return wheel if wheel.is_file() else Path(paths.__file__).resolve().parents[2] / "SKILL.md"
+
+
+def _is_bundled(path: Path, digest: str) -> bool:
+    """True only for the skill ``prismor setup`` installs, byte for byte.
+
+    Both halves are required: the file sits where setup puts it
+    (``.../skills/immunity-agent/SKILL.md``) and its bytes hash to the SKILL.md
+    inside the installed package. A skill that only carries that name, or an
+    installed copy that was edited, fails the hash and is audited in full; the
+    shipped bytes under any other name are not waved through either.
+    """
+    if path.parent.name != "immunity-agent" or path.parent.parent.name != "skills":
+        return False
+    try:
+        return digest == _sha256(_shipped_skill())
+    except OSError:
+        return False
+
+
 def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) -> List[Dict[str, Any]]:
     """Audit every installed skill. Returns one report row per SKILL.md.
 
@@ -186,23 +214,29 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
         else:
             status = "changed"
 
-        cache_key = f"{digest}:{rules_fp}"
-        findings = cache.get(cache_key)
-        if not isinstance(findings, list):
-            try:
-                findings = engine.evaluate(
-                    {"type": "skill_manifest", "content": text, "prompt": text, "path": key,
-                     "_bulk_scan": True},
-                    idx, session_id="",
-                )
-            except Exception:
-                findings = []
-            findings = [
-                {"ruleId": f.get("ruleId"), "severity": f.get("severity"), "title": f.get("title"),
-                 "action": f.get("action")}
-                for f in findings
-            ]
-        fresh_cache[cache_key] = findings
+        if _is_bundled(path, digest):
+            # Prismor's own skill documents shell commands and secret paths on
+            # purpose, so the content rules only add noise. The baseline above
+            # still tracks it: a later edit reads as "changed" and is audited.
+            status, findings = "bundled", []
+        else:
+            cache_key = f"{digest}:{rules_fp}"
+            findings = cache.get(cache_key)
+            if not isinstance(findings, list):
+                try:
+                    findings = engine.evaluate(
+                        {"type": "skill_manifest", "content": text, "prompt": text, "path": key,
+                         "_bulk_scan": True},
+                        idx, session_id="",
+                    )
+                except Exception:
+                    findings = []
+                findings = [
+                    {"ruleId": f.get("ruleId"), "severity": f.get("severity"), "title": f.get("title"),
+                     "action": f.get("action")}
+                    for f in findings
+                ]
+            fresh_cache[cache_key] = findings
         rows.append({
             "path": key,
             "name": fm.get("name") or path.parent.name,
@@ -261,7 +295,8 @@ def format_audit(rows: List[Dict[str, Any]]) -> str:
         return "No skills installed (looked in ~/.claude/skills, .claude/skills, ~/.codex/skills, plugins)."
     lines = [f"{len(rows)} skill(s):", ""]
     for r in rows:
-        badge = {"new": "NEW", "changed": "CHANGED", "approved": "ok", "unchanged": "seen"}.get(r["status"], r["status"])
+        badge = {"new": "NEW", "changed": "CHANGED", "approved": "ok", "unchanged": "seen",
+                 "bundled": "bundled"}.get(r["status"], r["status"])
         lines.append(f"  [{badge:>7}] {r['name']}" + (f" v{r['version']}" if r.get("version") else "") + f"  {r['path']}")
         if r["remote_sources"]:
             lines.append(f"           source: {', '.join(r['remote_sources'])}" + ("  (self-updating)" if r["self_updating"] else ""))
