@@ -191,8 +191,8 @@ def record_dismissal(
 _EVASION_THRESHOLD = 0.6
 
 # Rules that fire on what happened earlier in the session, not on the command.
-_SESSION_STATE_RULES = ("tag-rule:", "staged-execution", "evasion-detection",
-                        "cross-agent-flow", "taint-escalation")
+_SESSION_STATE_RULES = ("tag-rule:", "tool-category-crossover", "staged-execution",
+                        "evasion-detection", "cross-agent-flow", "taint-escalation")
 
 
 def _session_state_rule(enrichment_json: Optional[str]) -> bool:

@@ -66,7 +66,7 @@ def _seed_rule(ws: Path, rule_id: str) -> None:
         conn.close()
 
 
-@pytest.mark.parametrize("rule_id", ["tag-rule:00d30a0689", "staged-execution"])
+@pytest.mark.parametrize("rule_id", ["tag-rule:00d30a0689", "tool-category-crossover", "staged-execution"])
 def test_retry_after_a_session_state_block_is_not_evasion(tmp_path, rule_id):
     _seed_rule(tmp_path, rule_id)
     assert _detect(tmp_path, SED_B) == []
