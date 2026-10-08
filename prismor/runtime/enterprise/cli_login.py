@@ -16,6 +16,7 @@ import platform as _platform
 import socket
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Optional
 
@@ -129,6 +130,109 @@ def quota(base: Optional[str] = None, timeout: float = 10.0) -> Optional[Dict[st
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def session_path(ref: str) -> str:
+    """The control-plane path for a pasted reference.
+
+    A share link (``…/s/<token>``) reads through the share, which checks this
+    machine's login against who it was shared with. A console link
+    (``…/admin/sessions/<id>``) or a bare id reads the session directly, which
+    only its owner and org admins may do. Anything after the link (the ``# …``
+    comment a copied command carries) is ignored.
+    """
+    ref = ref.strip().split()[0] if ref.strip() else ""
+    if "://" in ref:
+        path = urllib.parse.urlsplit(ref).path
+        for marker, api in (("/s/", "shares"), ("/sessions/", "sessions")):
+            if marker in path:
+                key = path.split(marker, 1)[1].split("/", 1)[0]
+                if key:
+                    return f"/api/v1/{api}/{urllib.parse.quote(urllib.parse.unquote(key), safe='')}"
+        raise RuntimeError(f"not a Prismor session link: {ref}")
+    if not ref:
+        raise RuntimeError("no session link or id given")
+    return f"/api/v1/sessions/{urllib.parse.quote(ref, safe='')}"
+
+
+def _call(path: str, accept: str, timeout: float, body: Optional[Dict[str, Any]] = None,
+          public_base: Optional[str] = None) -> str:
+    """Call the control plane with this machine's login. Readable RuntimeError on failure.
+
+    ``public_base`` is for a public share link on a machine with no login: the
+    request goes to the link's own host and carries no credential at all.
+    """
+    ident = _identity.load_identity()
+    headers = {"User-Agent": _UA, "Accept": accept}
+    if ident and ident.get("device_key"):
+        base = (ident.get("api_base") or _identity.api_base()).rstrip("/")
+        headers["Authorization"] = f"Bearer {ident['device_key']}"
+    elif public_base:
+        base = public_base.rstrip("/")
+    else:
+        raise RuntimeError("this machine is not signed in to Prismor; run `prismor login`")
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(base + path, data=data, method="POST" if body is not None else "GET", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # operator-configured api_base  # nosec B310
+            return resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            err = json.loads(exc.read().decode("utf-8"))
+            detail = (err.get("error") or {}).get("message") if isinstance(err.get("error"), dict) else err.get("message", "")
+        except Exception:
+            pass
+        if exc.code == 401 and "Authorization" not in headers:
+            detail = "this link isn't public; run `prismor login` to open it with your account"
+        raise RuntimeError(detail or f"HTTP {exc.code}") from None
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"cannot reach {base}: {exc.reason}") from None
+
+
+def fetch_session(ref: str, limit: Optional[int] = None, timeout: float = 30.0) -> str:
+    """A session from the control plane as markdown, read with this machine's login.
+
+    The key only ever goes to the api_base this machine signed in to, never to
+    the host in a pasted link: the link just names the session. Without a
+    login, a share link is tried anonymously against its own host, which only
+    a public share answers.
+    """
+    path = session_path(ref)
+    if limit:
+        path += f"?limit={int(limit)}"
+    link = ref.strip().split()[0] if ref.strip() else ""
+    public_base = None
+    if "://" in link and "/s/" in urllib.parse.urlsplit(link).path:
+        parts = urllib.parse.urlsplit(link)
+        public_base = f"{parts.scheme}://{parts.netloc}"
+    return _call(path, "text/markdown", timeout, public_base=public_base)
+
+
+def shared_with_me(timeout: float = 30.0) -> list:
+    """Sessions teammates shared with the signed-in person (or with the whole org)."""
+    return json.loads(_call("/api/v1/shares", "application/json", timeout)).get("shares", [])
+
+
+def share_session(session_id: str, access: Optional[str] = None, emails: Optional[list] = None,
+                  confirmed: Optional[str] = None, timeout: float = 30.0) -> Dict[str, Any]:
+    """Create (or widen) the share for one of your sessions; returns {url, command, access, people}.
+
+    ``confirmed`` says how a person approved a public link ("password" or
+    "no-password"); the server refuses ``access="public"`` without it.
+    """
+    body: Dict[str, Any] = {}
+    if access:
+        body["access"] = access
+    if emails:
+        body["emails"] = list(emails)
+    if confirmed:
+        body["confirmed"] = confirmed
+    path = f"/api/v1/sessions/{urllib.parse.quote(session_id, safe='')}/share"
+    return json.loads(_call(path, "application/json", timeout, body=body))
 
 
 def run_interactive(base: Optional[str] = None, label: Optional[str] = None,

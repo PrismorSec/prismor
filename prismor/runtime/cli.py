@@ -1438,6 +1438,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     # ── sessions ───────────────────────────────────────────────────────
+    if args.command == "sessions" and getattr(args, "shared", False):
+        from prismor.runtime.enterprise import cli_login
+        try:
+            shares = cli_login.shared_with_me()
+        except RuntimeError as exc:
+            raise SystemExit(f"sessions: {exc}")
+        emit({"shares": shares}, as_json=args.json, formatter=format_shared_sessions)
+        return
+
     if args.command == "sessions":
         if getattr(args, "global_view", False):
             # One shared DB: a single machine-wide query, labelled per session.
@@ -1468,6 +1477,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         session_id = args.session_id or getattr(args, "session_id_pos", None)
         if not session_id:
             raise SystemExit("session: --session-id or a positional session id is required")
+        if session_id == "share":
+            raise SystemExit(_session_share_cmd(args, workspace))
+        # A console link (or --remote) reads any session in the org, from any
+        # agent, as markdown an agent can take as context.
+        if getattr(args, "remote", False) or "://" in session_id:
+            from prismor.runtime.enterprise import cli_login
+            try:
+                print(cli_login.fetch_session(session_id, limit=getattr(args, "limit", None)))
+            except RuntimeError as exc:
+                raise SystemExit(f"session: {exc}")
+            return
         session = get_session(workspace, session_id)
         if session is None:
             raise SystemExit(f"Session not found: {session_id}")
@@ -3767,6 +3787,8 @@ def build_parser() -> argparse.ArgumentParser:
     sessions_parser.add_argument("--json", action="store_true", help="Output raw JSON")
     sessions_parser.add_argument("--findings-only", action="store_true", help="Only show sessions with findings")
     sessions_parser.add_argument("--global", dest="global_view", action="store_true", help="Show sessions across all registered workspaces")
+    sessions_parser.add_argument("--shared", action="store_true",
+                                 help="Sessions teammates shared with you (needs `prismor login`)")
 
     # ── session ────────────────────────────────────────────────────────
     session_parser = subparsers.add_parser("session", help="Show a specific session")
@@ -3774,6 +3796,17 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--workspace", help="Workspace path")
     session_parser.add_argument("--session-id", help="Session ID to view")
     session_parser.add_argument("--json", action="store_true", help="Output raw JSON")
+    session_parser.add_argument("share_target", nargs="?", metavar="SESSION",
+                                help="With `share`: the session to share (default: this workspace's latest)")
+    session_parser.add_argument("--remote", action="store_true",
+                                help="Read the session from your org's console (implied by a pasted link)")
+    session_parser.add_argument("--limit", type=int, help="With --remote: last N events (default 400)")
+    session_parser.add_argument("--org", action="store_true",
+                                help="With `share`: anyone in your org can open the link")
+    session_parser.add_argument("--with", dest="share_with", metavar="EMAILS",
+                                help="With `share`: comma-separated teammates to add")
+    session_parser.add_argument("--public", action="store_true",
+                                help="With `share`: anyone with the link, no sign-in. You run this, not your agent")
 
     # ── tokens ─────────────────────────────────────────────────────────
     tokens_parser = subparsers.add_parser(
@@ -5740,6 +5773,62 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: 
         raise SystemExit(1)
 
 
+def _confirm_public_share() -> str:
+    """A person, not an agent, must make a session public. Returns how they confirmed.
+
+    The prismor-self-edit rule already blocks an agent running `--public` through
+    its hooks; this is the second wall. It needs a terminal (an agent's shell has
+    none) and the Prismor password when one is set. Without a password it goes
+    ahead but says plainly that it could not tell who was typing.
+    """
+    import getpass
+    from prismor.runtime import unlock as _unlock
+
+    if not sys.stdin.isatty():
+        raise SystemExit("Public links need a person at the keyboard. Run it yourself in a terminal:\n"
+                         "  prismor session share --public")
+    if _unlock.is_configured():
+        ok, msg = _unlock.verify(getpass.getpass("Prismor password (to make this session public): "))
+        if not ok:
+            raise SystemExit(msg)
+        return "password"
+    print("! No Prismor password is set, so this can't confirm it's you and not an agent.")
+    print("  Set one so public links always ask:  prismor unlock --set-password")
+    return "no-password"
+
+
+def _session_share_cmd(args, workspace: Path) -> int:
+    """`prismor session share [SESSION] [--org] [--with a@x,b@y] [--public]`."""
+    from prismor.runtime.enterprise import cli_login
+
+    sid = getattr(args, "share_target", None)
+    if not sid:
+        latest = list_sessions(workspace, 1)
+        if not latest:
+            print("No session recorded in this workspace yet. Pass one: prismor session share <id>")
+            return 1
+        sid = latest[0]["sessionId"]
+    access = "public" if args.public else ("org" if args.org else None)
+    emails = [e.strip() for e in (args.share_with or "").split(",") if e.strip()]
+    confirmed = _confirm_public_share() if access == "public" else None
+    try:
+        res = cli_login.share_session(sid, access=access, emails=emails, confirmed=confirmed)
+    except RuntimeError as exc:
+        print(f"session share: {exc}")
+        return 1
+
+    who = {"public": "anyone with the link (no sign-in)", "org": "anyone in your organization",
+           "restricted": "you, org admins" + (" and " + ", ".join(res.get("people") or []) if res.get("people") else "")}
+    print(f"Session {sid}")
+    print(f"  Link:    {res['url']}")
+    print(f"  Access:  {who.get(res.get('access'), res.get('access'))}")
+    print(f"  Paste into any agent:  {res['command']}")
+    if res.get("access") == "public":
+        print("  This session's prompts and commands are now visible to anyone with the link.")
+        print("  Turn it off from the session's Share dialog in the console.")
+    return 0
+
+
 def _unlock_cmd(args, workspace: Path) -> int:
     """`prismor unlock` / `prismor lock` — the password-gated self-edit window."""
     import getpass
@@ -6657,6 +6746,17 @@ def _redact_evidence(evidence: str) -> str:
             return full
         return full[:6] + "****" + full[-2:]
     return _SECRET_PATTERNS.sub(_mask, evidence)
+
+
+def format_shared_sessions(payload: Dict[str, Any]) -> str:
+    shares = payload["shares"]
+    if not shares:
+        return "Nothing shared with you yet."
+    lines = [f"Shared with you ({len(shares)})", ""]
+    for s in shares:
+        meta = " · ".join(x for x in (s.get("agent"), s.get("project"), f"from {s.get('sharedBy') or s.get('owner')}", (s.get("sharedAt") or "")[:10]) if x)
+        lines += [f"  {s.get('title', '')[:90]}", f"    {meta}", f"    prismor session {s['url']}", ""]
+    return "\n".join(lines).rstrip()
 
 
 def format_sessions(payload: Dict[str, Any]) -> str:
