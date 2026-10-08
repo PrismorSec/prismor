@@ -4111,7 +4111,7 @@ function renderExtensions() {
     [d.rows.length, 'Installed on this machine', idle + ' never used by any session', '', "_extView='installed';_extFilter='all';renderExtensions()"],
     [unrev, 'Sessions that ran unreviewed code', unrev ? 'An agent loaded something nobody had read yet.' : 'Every session so far loaded only reviewed extensions.', unrev ? 'warn' : '', "_extView='sessions';renderExtensions()"]]
     .map(([n, label, sub, cls, go]) => '<div class="ext-stat ' + cls + '" onclick="' + go + '"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
-  document.getElementById('extViews').hidden = false;
+  document.getElementById('extViews').style.display = '';
   document.getElementById('extViews').innerHTML = [['sessions', 'By session', sess.length], ['agents', 'By agent', (d.agents || []).length], ['installed', 'Installed', d.rows.length]]
     .map(([k, l, n]) => '<button class="ext-view' + (_extView === k ? ' on' : '') + '" onclick="_extView=\'' + k + '\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
   const agentPick = _extView === 'agents' ? '' : '<select class="fsel" style="margin-right:6px" onchange="_extAgent=this.value;renderExtensions()"><option value="">All agents</option>' +
@@ -4258,7 +4258,7 @@ function renderExtKind(kind) {
       : kind === 'secret' ? [warn, 'Unresolved', 'a placeholder had no vault entry, so the call was denied', warn ? 'warn' : '']
       : [new Set([].concat(...items.map(it => it.deps.map(r => r.target)))).size, 'Ecosystems', 'registries installed from']]
     .map(([n, label, sub, cls]) => '<div class="ext-stat ' + (cls || '') + '" style="cursor:default"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
-  document.getElementById('extViews').hidden = true;
+  document.getElementById('extViews').style.display = 'none';
   document.getElementById('extFilters').innerHTML = extDaysSelect('_depDays=+this.value;loadDependencies().then(renderExtensions)') +
     '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter ' + safeAttr(extKindNoun(kind)) + '…" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderExtKindList()" style="min-width:220px" />';
   renderExtKindList();
