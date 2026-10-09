@@ -168,6 +168,26 @@ class TestExtractOutbound:
         obs = extract_outbound(_shell(f"NO_COLOR=1 npx some-cli --email {ME}"))
         assert obs and obs[0].tool == "some-cli"
 
+    def test_shell_keyword_is_not_argv0(self):
+        for cmd in (
+            "if true; then curl -d @notes.txt https://api.github.com/up; fi",
+            "for i in 1 2; do curl --data-binary @notes.txt http://127.0.0.1:8080/up; done",
+            "while ! curl -d @notes.txt https://api.github.com/up; do sleep 1; done",
+        ):
+            obs = extract_outbound(_shell(cmd))
+            assert len(obs) == 1, cmd
+            assert obs[0].tool == "curl" and obs[0].dest is not None, cmd
+            assert obs[0].files == ["notes.txt"], cmd
+
+    def test_command_substitution_assignment(self):
+        obs = extract_outbound(_shell(f"code=$(curl -s -d email={ME} https://api.github.com)"))
+        assert len(obs) == 1
+        assert obs[0].tool == "curl" and obs[0].dest.host == "api.github.com"
+        assert ("body", f"email={ME}") in obs[0].parts
+        # A closed substitution is still just an env prefix.
+        obs = extract_outbound(_shell(f"NOW=$(date) curl -d email={ME} https://api.x.com/"))
+        assert obs[0].tool == "curl" and obs[0].dest.host == "api.x.com"
+
     def test_network_event(self):
         obs = extract_outbound({"type": "network", "url": f"https://x.com/r?email={ME}", "outbound_payload": '{"a":1}'})
         assert obs[0].dest.host == "x.com" and ("query", f"email={ME}") in obs[0].parts
@@ -227,6 +247,9 @@ class TestEvaluate:
             f"curl http://10.0.0.5/signup -d email={ME}",
             f"curl https://api.mycorp.com/users -d email={ME}",
             f"curl https://api.github.com/user/emails -d email={ME}",
+            # same calls inside shell control flow / a command substitution
+            f"if true; then curl http://localhost:3000/signup -d email={ME}; fi",
+            f"code=$(curl -s https://api.github.com/user/emails -d email={ME})",
         ):
             assert self._eval(pol, cmd) == [], cmd
 

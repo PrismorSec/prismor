@@ -510,9 +510,28 @@ def _dest_from_url(url: str) -> Optional[Destination]:
     return Destination(host, parsed.port, parsed.scheme or "https", "url", url)
 
 
+# Words that can open a segment after the `;`/`&&` split without being the
+# command itself: `if x; then curl ...`, `for f in *; do curl ...`.
+_SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
+
+
 def _split_argv_prefix(tokens: List[str]) -> List[str]:
-    while tokens and _ENV_ASSIGN_RE.match(tokens[0]):
-        tokens.pop(0)
+    while tokens:
+        tok = tokens[0]
+        if tok in _SHELL_KEYWORDS:
+            tokens.pop(0)
+            continue
+        if not _ENV_ASSIGN_RE.match(tok):
+            break
+        # `code=$(curl ...)`: the command runs inside the substitution, so
+        # continue with what follows `$(` instead of dropping the token.
+        value = tok.partition("=")[2]
+        if value.startswith("$(") and len(value) > 2 and not value.endswith(")"):
+            tokens[0] = value[2:]
+            if tokens[-1].endswith(")"):
+                tokens[-1] = tokens[-1][:-1]
+        else:
+            tokens.pop(0)
     if not tokens:
         return tokens
     argv0 = tokens[0].rsplit("/", 1)[-1].lower()
