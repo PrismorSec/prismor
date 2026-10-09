@@ -1144,7 +1144,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-filter { font-size:12px; font-weight:600; padding:4px 11px; border-radius:999px; border:1px solid var(--gray-200); background:var(--surface); color:var(--gray-500); cursor:pointer; }
   .ext-filter.on { background:var(--gray-900); color:var(--surface); border-color:transparent; }
   .ext-row { background:var(--surface); border:1px solid var(--gray-200); border-radius:10px; margin-bottom:8px; }
-  .ext-row.review { border-left:3px solid #f59e0b; }
   .ext-head { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; min-width:0; }
   .ext-name { color:var(--gray-900); font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .ext-origin { font-size:11px; color:var(--gray-400); font-family:var(--mono,ui-monospace,monospace); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
@@ -1214,7 +1213,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-sub span { font-weight:400; text-transform:none; letter-spacing:0; color:var(--gray-400); margin-left:6px; }
   .sess-none { padding:2px 0 6px; }
   .sess-hook-ev { font-size:10.5px; font-weight:600; color:var(--gray-600); background:var(--gray-100); border-radius:4px; padding:1px 6px; font-family:var(--font-mono); }
-  .dev-fail { border:1px solid var(--gray-200); border-left:3px solid #ef4444; border-radius:6px; padding:8px 10px; margin:8px 0; }
+  .dev-fail { border:1px solid var(--gray-200); border-radius:6px; padding:8px 10px; margin:8px 0; }
   .dev-fail-label { font-size:11px; font-weight:700; color:#b91c1c; margin-bottom:4px; }
   .dev-fail-head { display:flex; gap:8px; align-items:baseline; min-width:0; }
   .dev-fail-cmd { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -2885,7 +2884,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div id="page-extension" class="page">
   <div class="view-topbar">
-    <button class="view-back" onclick="goBack()">← Back</button>
+    <button class="view-back" onclick="goBack()">Back</button>
     <div class="crumbs">
       <a onclick="document.querySelector('.tab-btn[data-tab=&quot;extensions&quot;]')?.click()">Extensions</a><span class="sep">/</span>
       <span id="extdCrumb">Extension</span>
@@ -2920,7 +2919,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-agent" class="page">
   <div class="view-topbar">
-    <button class="view-back" onclick="goBack()">← Back</button>
+    <button class="view-back" onclick="goBack()">Back</button>
     <div class="crumbs">
       <a onclick="backToSessions()">Sessions</a><span class="sep">/</span>
       <span id="agentCrumb">Agent</span>
@@ -2979,7 +2978,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div id="page-session" class="page">
   <div class="view-topbar">
-    <button class="view-back" onclick="goBack()">← Back</button>
+    <button class="view-back" onclick="goBack()">Back</button>
     <div class="crumbs">
       <a onclick="backToSessions()">Sessions</a><span class="sep">/</span>
       <a id="sessAgentCrumb">agent</a><span class="sep">/</span>
