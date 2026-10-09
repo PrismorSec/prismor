@@ -57,6 +57,7 @@ from prismor.runtime.egress import (
     _split_host_port,
     _tokenize,
 )
+from prismor.runtime.shell_context import heredocs, is_inert_match, quoted_spans
 
 __all__ = [
     "CATEGORY",
@@ -542,6 +543,34 @@ def _split_argv_prefix(tokens: List[str]) -> List[str]:
     return tokens
 
 
+def _split_segments(command: str) -> List[str]:
+    """Split on `;` `&&` `||` `|` and newlines, except where the separator
+    sits in a quoted argument that is only printed (`echo '... | curl ...'`,
+    a commit message). shell_context decides what is inert; anything it is
+    unsure of still splits, as before. Heredoc bodies are left as they were."""
+    bodies = [(h.body_start, h.body_end) for h in heredocs(command)]
+    text = list(command)
+    for s, e in bodies:
+        text[s:e] = " " * (e - s)
+    spans = [(s, e) for s, e, payload, closed in quoted_spans("".join(text)) if closed and not payload]
+    # is_inert_match rescans the whole command, so ask once per quoted span.
+    inert: Dict[Tuple[int, int], bool] = {}
+    out: List[str] = []
+    start = 0
+    for m in _SHELL_SEP_RE.finditer(command):
+        pos = m.start()
+        span = next(((s, e) for s, e in spans if s < pos < e), None)
+        if span is not None and not any(s <= pos < e for s, e in bodies):
+            if span not in inert:
+                inert[span] = is_inert_match(command, pos, m.end())
+            if inert[span]:
+                continue
+        out.append(command[start:pos])
+        start = m.end()
+    out.append(command[start:])
+    return out
+
+
 def _query_text(url: str) -> str:
     try:
         parsed = urlparse(url if "://" in url else "https://" + url)
@@ -695,7 +724,7 @@ def extract_outbound(event: Dict[str, Any]) -> List[Outbound]:
     if not command:
         return out
 
-    for sub in _SHELL_SEP_RE.split(command):
+    for sub in _split_segments(command):
         sub = sub.strip()
         if not sub:
             continue
