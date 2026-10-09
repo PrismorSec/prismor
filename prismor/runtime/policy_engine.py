@@ -1363,6 +1363,8 @@ class PolicyEngine:
 
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
+        # Opt-in enhanced decision layer (runtime/enhanced.py). Off by default.
+        self.enhanced_decisions = bool(settings.get("enhanced_decisions", False))
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
         # org-managed workspaces (the remote overlay is only merged there); the
