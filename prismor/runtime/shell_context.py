@@ -389,3 +389,81 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
             return False
         return tokens[0].rsplit("/", 1)[-1] in _REMOTE_CONTEXTS
     return False
+
+
+# ── read-only shell predicate ────────────────────────────────────────────────
+# Shared by enhanced.is_fast_path (latency shortcut) and learning.detect_evasion
+# (a command that is itself read-only can never be an *evasion* of a blocked
+# destructive/write/exfil command, so it must not be re-flagged).
+import shlex as _shlex
+
+_RO_SAFE = frozenset({
+    "ls", "cat", "head", "tail", "wc", "stat", "file", "pwd", "echo", "printf",
+    "rg", "grep", "egrep", "fgrep", "find", "tree", "du", "df", "date", "whoami",
+    "basename", "dirname", "realpath", "readlink", "env", "which", "type", "id",
+    "sort", "uniq", "cut", "awk", "sed", "jq", "diff", "cmp", "test", "true",
+    "sleep", "hostname", "uname",
+})
+_RO_GIT = frozenset({"status", "log", "diff", "show", "branch", "rev-parse",
+                     "remote", "config", "describe", "ls-files", "blame"})
+_RO_SEP = re.compile(r"[;\n]|&&|\|\|?|&")
+_RO_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_RO_REDIR = (">", ">>", "<", "1>", "2>", "&>")
+
+
+def shell_segments(cmd: str) -> List[List[str]]:
+    """Word-split per pipeline segment. Unparseable → ``[None, part]`` so every
+    caller treats it as unsafe."""
+    out: List[List[str]] = []
+    for part in _RO_SEP.split(cmd or ""):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(_shlex.split(part))
+        except ValueError:
+            out.append([None, part])
+    return out
+
+
+def _seg_argv0(seg: List[str]):
+    for w in seg:
+        if w is None:
+            return None
+        if "=" in w and _RO_ASSIGN.match(w):
+            continue  # leading VAR=val assignment
+        return w.rsplit("/", 1)[-1]
+    return None
+
+
+def is_readonly_shell(cmd: str) -> bool:
+    """True when every segment of ``cmd`` is a read-only command (no write,
+    exec, redirect, substitution or heredoc). ``sed -n`` reads, ``git diff`` and
+    the like count; any interpreter (``python -c``), redirect or unknown command
+    does not. Conservative: anything unparseable or unrecognised → False."""
+    if not (cmd or "").strip():
+        return False
+    if _has_double_quote_command_substitution(cmd) or "`" in cmd or "$(" in cmd:
+        return False
+    if heredocs(cmd):
+        return False
+    segs = shell_segments(cmd)
+    if not segs:
+        return False
+    for seg in segs:
+        a0 = _seg_argv0(seg)
+        if a0 is None:
+            return False
+        if any(isinstance(w, str) and (w in _RO_REDIR or w.startswith((">", ">>"))) for w in seg):
+            return False
+        if a0 == "git":
+            sub = next((w for w in seg[1:] if isinstance(w, str) and not w.startswith("-")), None)
+            if sub in _RO_GIT:
+                continue
+            return False
+        # interpreters are never read-only (-c/-e is code; a script file is code)
+        if a0 in ("python", "python3", "node", "deno", "bun", "ruby", "perl"):
+            return False
+        if a0 not in _RO_SAFE:
+            return False
+    return True

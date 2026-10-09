@@ -38,16 +38,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from prismor.runtime import shell_context as sc
 
 # ── parsing ──────────────────────────────────────────────────────────────
-_SAFE_READONLY = frozenset({
-    "ls", "cat", "head", "tail", "wc", "stat", "file", "pwd", "echo", "printf",
-    "rg", "grep", "egrep", "fgrep", "find", "tree", "du", "df", "date", "whoami",
-    "basename", "dirname", "realpath", "readlink", "env", "which", "type", "id",
-    "sort", "uniq", "cut", "awk", "sed", "jq", "diff", "cmp", "test", "true",
-    "sleep", "hostname", "uname",
-})
-_SAFE_GIT = frozenset({"status", "log", "diff", "show", "branch", "rev-parse",
-                       "remote", "config", "describe", "ls-files", "blame"})
-_CODE_FLAG = re.compile(r"^-[A-Za-z]*[ce]")
 _SEP = re.compile(r"[;\n]|&&|\|\|?|&")
 
 
@@ -83,35 +73,7 @@ def is_fast_path(event: Dict[str, Any]) -> bool:
         return True
     if t != "shell":
         return False
-    cmd = event.get("command") or ""
-    if not cmd.strip():
-        return False
-    if sc._has_double_quote_command_substitution(cmd) or "`" in cmd or "$(" in cmd:
-        return False
-    if sc.heredocs(cmd):
-        return False
-    segs = segments(cmd)
-    if not segs:
-        return False
-    for seg in segs:
-        a0 = _argv0(seg)
-        if a0 is None:
-            return False
-        # any redirect to a file is a write → not fast
-        if any(w in (">", ">>", "<", "1>", "2>", "&>") or (isinstance(w, str) and w.startswith((">", ">>"))) for w in seg):
-            return False
-        if a0 == "git":
-            sub = next((w for w in seg[1:] if not w.startswith("-")), None)
-            if sub in _SAFE_GIT:
-                continue
-            return False
-        if a0 in ("python", "python3", "node", "deno", "bun", "ruby", "perl"):
-            # interpreters are never read-only for the fast path: -c/-e is
-            # arbitrary code, and a script file is arbitrary code too.
-            return False
-        if a0 not in _SAFE_READONLY:
-            return False
-    return True
+    return sc.is_readonly_shell(event.get("command") or "")
 
 
 # ── effect extraction (security) ───────────────────────────────────────────
@@ -139,6 +101,71 @@ def _external_hosts(seg):
     return [h for h in _hosts(seg) if not _PRIVATE_HOST.match(h) or _RAW_IP.match(h)]
 
 
+#: Common code forges — a clone from one of these is routine, not "untrusted".
+_APPROVED_HOST = re.compile(r"(?:^|\.)(github\.com|gitlab\.com|bitbucket\.org|codeberg\.org|sr\.ht)$", re.I)
+_VARREF = re.compile(r"^\$\{?([A-Za-z_]\w*)\}?$")
+
+
+def _assignments(segs) -> Dict[str, str]:
+    """VAR -> value for every ``VAR=value`` token across the command, so a
+    ``rm -rf $DIR`` can be judged by what ``DIR`` was set to earlier."""
+    out: Dict[str, str] = {}
+    for seg in segs:
+        for w in seg:
+            if not isinstance(w, str):
+                continue
+            m = re.match(r"^([A-Za-z_]\w*)=(.*)$", w)
+            if m:
+                out[m.group(1)] = m.group(2)
+    return out
+
+
+def _recreated_targets(segs) -> set:
+    """Paths (raw token + basename) that a later ``mkdir``/``git clone``/``gh
+    repo clone`` re-creates. Deleting a dir that is immediately re-made is
+    scratch-prep, not destruction."""
+    out: set = set()
+    for seg in segs:
+        a0 = _argv0(seg)
+        words = [w for w in seg if isinstance(w, str)]
+        if a0 == "mkdir":
+            args = [w for w in words[1:] if not w.startswith("-")]
+        elif a0 == "git" and "clone" in words:
+            args = [w for w in words[words.index("clone") + 1:] if not w.startswith("-")]
+        elif a0 == "gh" and "clone" in words:
+            args = [w for w in words if not w.startswith("-")]
+        else:
+            continue
+        for w in args:
+            out.add(w)
+            out.add(os.path.basename(w))
+    out.discard("")
+    return out
+
+
+def _resolve(t: str, assigns: Dict[str, str]) -> str:
+    m = _VARREF.match(t)
+    return assigns.get(m.group(1), t) if m else t
+
+
+def _rm_target_is_risky(t: str, assigns: Dict[str, str], recreated: set) -> bool:
+    """A recursive-delete target worth an ask: a concrete, non-system,
+    non-transient, non-recreated path."""
+    r = _resolve(t, assigns)
+    # system/home/glob targets are the core destructive-command rule's job
+    if re.match(r"^(/|~|\$HOME|\*|\.\.)($|/)", r) or r in ("/", "~"):
+        return False
+    if _TRANSIENT_DIR.search(r) or "mktemp" in r:
+        return False
+    if t in recreated or r in recreated or os.path.basename(r) in recreated:
+        return False
+    # an unresolved bare variable with no transient/recreate signal: don't ask
+    # (too noisy — scratch vars dominate real traffic); require a concrete path
+    if _VARREF.match(t) and r == t:
+        return False
+    return True
+
+
 def _created_paths(events: List[Dict[str, Any]]) -> set:
     """basenames of files written/downloaded earlier this session."""
     out = set()
@@ -163,6 +190,8 @@ def effect_findings(event, events) -> List[Dict[str, Any]]:
         return i >= 0 and sc.is_inert_match(cmd, i, i + len(needle))
 
     segs = segments(cmd)
+    assigns = _assignments(segs)   # VAR -> value, across the whole command
+    recreated = _recreated_targets(segs)  # dirs re-made by a later mkdir/clone
     created = None
     for seg in segs:
         a0 = _argv0(seg)
@@ -173,10 +202,8 @@ def effect_findings(event, events) -> List[Dict[str, Any]]:
 
         # recursive delete of a concrete target (core rule covers / /etc ~ * ..)
         if a0 in ("rm", "sudo") and re.search(r"-[A-Za-z]*r", text, re.I) and re.search(r"-[A-Za-z]*f", text, re.I):
-            targets = [w for w in words[1:] if not w.startswith("-") and w not in ("rm",)]
-            risky = [t for t in targets
-                     if not re.match(r"^(/|~|\$HOME|\*|\.\.)", t)
-                     and not _TRANSIENT_DIR.search(t)]
+            targets = [w for w in words[1:] if not w.startswith("-") and w != "rm"]
+            risky = [t for t in targets if _rm_target_is_risky(t, assigns, recreated)]
             if risky and not inert("rm"):
                 out.append(_f("enh-recursive-delete", "destructive_command", "ask",
                               f"Recursive delete of {risky[0]}"))
@@ -186,10 +213,13 @@ def effect_findings(event, events) -> List[Dict[str, Any]]:
             if re.search(r"\breset\s+--hard\b|\bfilter-branch\b|\bpush\b[^\n]*(--force\b|\s-f\b)|\bupdate-ref\s+-d\b|\breflog\s+expire\b", text):
                 out.append(_f("enh-history-rewrite", "destructive_command", "ask",
                               "Irreversible git history rewrite"))
-            # clone from an unapproved external host
-            if "clone" in words and _external_hosts(seg):
-                out.append(_f("enh-untrusted-clone", "dependency_risk", "ask",
-                              f"Clone from unapproved host {_external_hosts(seg)[0]}"))
+            # clone from an *unapproved* external host (common forges and the
+            # operator's own SSH host are fine; `git push` is not a clone).
+            if "clone" in words:
+                untrusted = [h for h in _external_hosts(seg) if not _APPROVED_HOST.search(h)]
+                if untrusted:
+                    out.append(_f("enh-untrusted-clone", "dependency_risk", "ask",
+                                  f"Clone from unapproved host {untrusted[0]}"))
 
         # install from a non-PyPI index
         if a0 in ("pip", "pip3") and "install" in words:
@@ -258,7 +288,7 @@ def taint_confirms(event, events) -> bool:
 #: enh tier → contract verdict (``action`` on the blocking finding).
 _TIER_ACTION = {"ask": "step_up", "block": "block"}
 _RANK = {"allow": 0, "ask": 1, "block": 2}
-_TRANSIENT_DIR = re.compile(r"(^|/)(build|dist|out|target|node_modules|\.cache|__pycache__|\.pytest_cache|\.next|coverage|tmp|\.tmp|venv|\.venv)(/|$)|\.pyc$|/tmp/|/var/tmp/")
+_TRANSIENT_DIR = re.compile(r"(^|/)(build|dist|out|target|node_modules|\.cache|__pycache__|\.pytest_cache|\.next|coverage|tmp|\.tmp|venv|\.venv|scratchpad)(/|$)|\.pyc$|/tmp/|/var/tmp/|/private/tmp/|/private/var/folders/|/var/folders/")
 
 
 def _governing(event, events, vanilla_findings, vanilla_block) -> Optional[Dict[str, Any]]:

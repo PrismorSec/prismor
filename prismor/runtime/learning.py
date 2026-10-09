@@ -209,6 +209,14 @@ def detect_evasion(
     if not command:
         return []
 
+    # A command that is itself read-only (sed -n reads, git diff/log, grep, …)
+    # cannot be an *evasion* of a blocked destructive/write/exfil command — it
+    # has no effect to smuggle. Re-flagging it only produced false positives
+    # (benign `sed -n '1,220p' file` matching an earlier blocked `sed -i`).
+    from prismor.runtime import shell_context as _sc
+    if _sc.is_readonly_shell(command):
+        return []
+
     base = _base_command(command)
     if not base:
         return []
