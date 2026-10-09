@@ -98,6 +98,22 @@ class TestPolicyEngineDefaults(unittest.TestCase):
         categories = [f["category"] for f in findings]
         self.assertNotIn("destructive_command", categories)
 
+    def test_hf_token_in_url_params_and_header(self):
+        token = "hf_" + "a1B2" * 9
+        findings = self.engine.evaluate(
+            {"type": "network", "url": f"https://example.com/api?token={token}"}, index=0)
+        self.assertIn("secret-in-url-params", [f["ruleId"] for f in findings])
+        findings = self.engine.check_command(
+            f'curl -H "Authorization: Bearer {token}" https://example.com/api')
+        self.assertIn("credential-in-header", [f["ruleId"] for f in findings])
+
+    def test_short_hf_value_not_flagged(self):
+        findings = self.engine.evaluate(
+            {"type": "network", "url": "https://example.com/?repo=hf_demo"}, index=0)
+        self.assertNotIn("secret-in-url-params", [f["ruleId"] for f in findings])
+        findings = self.engine.check_command('curl -H "X-Repo: hf_demo" https://example.com')
+        self.assertNotIn("credential-in-header", [f["ruleId"] for f in findings])
+
     def test_chmod_world_writable_numeric_beyond_777(self):
         for cmd in ("chmod 666 /etc/passwd", "chmod -R 777 /var/www",
                     "chmod 0777 x", "chmod 1777 /tmp/shared"):

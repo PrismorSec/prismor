@@ -730,6 +730,8 @@ rules:
       - '[?&][^=&\s]+=AIza[0-9A-Za-z_-]{35}'
       # Stripe live/test keys
       - '[?&][^=&\s]+=sk_(?:live|test)_[a-zA-Z0-9]{24,}'
+      # Hugging Face user access tokens
+      - '[?&][^=&\s]+=hf_[A-Za-z0-9]{34,}'
     action: block
 
   # ── CRITICAL: API key passed as an HTTP header flag ───────────────────
@@ -751,6 +753,7 @@ rules:
       - '(?:-H|--header)\s+[^;\n]*xox[bpas]-[0-9]+-[a-zA-Z0-9-]+'
       - '(?:-H|--header)\s+[^;\n]*AIza[0-9A-Za-z_-]{35}'
       - '(?:-H|--header)\s+[^;\n]*sk_(?:live|test)_[a-zA-Z0-9]{24,}'
+      - '(?:-H|--header)\s+[^;\n]*hf_[A-Za-z0-9]{34,}'
     action: block
 
   # ── HIGH: Database modification ───────────────────────────────────────
