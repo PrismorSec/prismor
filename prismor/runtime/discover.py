@@ -17,6 +17,16 @@ rather than re-deriving presence — and adds the two surfaces it does not cover
 Anything present but not governed is *shadow*. That diff is the whole product;
 the inventories on their own are commodity.
 
+There is a fourth inventory that is not part of that diff:
+
+    webmcp       Chromium profiles with the WebMCP experiment enabled, and
+                 extensions that speak the API (see ``discover_webmcp``)
+                 governed by: nothing yet — reported, never scored
+
+It is reported because a page registering tools for an in-tab agent is exactly
+the ungoverned AI surface this module exists to surface, and kept out of the
+coverage ratio because no surface can govern it today.
+
 Secret handling: this module records that a credential exists, its provider,
 and where it was found. It never records, returns, or logs the value — callers
 render ``CredentialRecord`` directly to a terminal, so a value placed on that
@@ -109,6 +119,37 @@ class CredentialRecord:
     @property
     def shadow(self) -> bool:
         return not self.managed
+
+
+@dataclass
+class BrowserSurfaceRecord:
+    """A browser-resident WebMCP capability found on this machine.
+
+    WebMCP lets a page register tools on itself, which an agent running in the
+    same tab then calls. The exchange never leaves the browser — no child
+    process, no transport, no config file naming a server — so unlike every
+    other record here this one has no ``managed`` flag and no ``shadow``
+    property. There is nothing in front of it to be governed *by*, which makes
+    it advisory inventory rather than one half of a coverage diff. See
+    ``build_report`` for why it stays out of the coverage ratio.
+
+    Carries locations and names only. Browsing history, extension storage and
+    page contents are never read — the same construction as
+    ``CredentialRecord``, whose fields cannot hold a secret value.
+    """
+
+    #: which browser — "chrome", "edge", "brave", "arc", …
+    browser: str
+    #: "flag" (the experiment is enabled) or "extension" (a WebMCP consumer)
+    kind: str
+    name: str
+    #: path evidence — the profile or the extension bundle it was found in
+    location: str
+    #: profile directory name; empty for browser-wide findings like a flag
+    profile: str = ""
+    extension_id: str = ""
+    risk: str = "none"
+    findings: List[str] = field(default_factory=list)
 
 
 # ── agent inventory ──────────────────────────────────────────────────────────
@@ -924,6 +965,325 @@ def _dotenv_is_vaulted(path: Path, cloak: Set[str]) -> bool:
     return all(n.lower() in cloak for n in names)
 
 
+# ── browser WebMCP inventory ─────────────────────────────────────────────────
+#
+# WebMCP (Chrome 150+, behind a flag) lets a page call
+# ``document.modelContext.registerTool()``; an agent in the same tab finds
+# those tools with ``getTools()`` and runs them with ``executeTool()``. Which
+# tools a page offers is decided at runtime and is not observable from disk —
+# a host-local sweep cannot enumerate them and does not try.
+#
+# What is on disk is the precondition: the experiment being enabled, and an
+# extension present that speaks the API. Both are read here, and neither
+# requires the browser to be running.
+
+#: chrome://flags entries that turn the surface on. Matched as substrings
+#: because the flag gets renamed between milestones while the capability it
+#: gates stays the same; a stale exact string would silently stop matching.
+_WEBMCP_FLAG_HINTS = ("webmcp", "web-mcp", "model-context", "modelcontext")
+
+#: Extensions known to drive this surface, by Chrome Web Store id. This map
+#: only supplies a friendly name — an unknown extension is caught by the
+#: source scan below, which is the signal that actually matters.
+_KNOWN_WEBMCP_EXTENSIONS = {
+    "gbpdfapgefenggkahomfgkhfehlcenpd": "Model Context Tool Inspector",
+}
+
+#: The API an extension must name to use this surface at all.
+_WEBMCP_SOURCE_MARKER = b"modelContext"
+
+#: Scan ceilings. An extension bundle can be tens of megabytes of minified
+#: vendor code, and `prismor discover` runs on every scheduled refresh.
+_MAX_EXT_SCAN_FILES = 40
+_MAX_EXT_SCAN_BYTES = 8 * 1024 * 1024
+
+
+def _browser_user_data_dirs() -> List[Tuple[str, Path]]:
+    """(browser label, user-data directory) for each Chromium-family browser.
+
+    The user-data directory is the one holding ``Local State`` and the profile
+    subdirectories. Only its location differs between platforms and vendors;
+    everything below it is Chromium's own layout.
+    """
+    home = Path.home()
+    system = platform.system()
+    roots: List[Tuple[str, Path]] = []
+
+    if system == "Darwin":
+        base = home / "Library" / "Application Support"
+        roots = [
+            ("chrome", base / "Google" / "Chrome"),
+            ("chrome-beta", base / "Google" / "Chrome Beta"),
+            ("chrome-dev", base / "Google" / "Chrome Dev"),
+            ("chrome-canary", base / "Google" / "Chrome Canary"),
+            ("edge", base / "Microsoft Edge"),
+            ("brave", base / "BraveSoftware" / "Brave-Browser"),
+            ("chromium", base / "Chromium"),
+            ("arc", base / "Arc" / "User Data"),
+        ]
+    elif system == "Windows":
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            base = Path(local)
+            roots = [
+                ("chrome", base / "Google" / "Chrome" / "User Data"),
+                ("chrome-beta", base / "Google" / "Chrome Beta" / "User Data"),
+                ("edge", base / "Microsoft" / "Edge" / "User Data"),
+                ("brave", base / "BraveSoftware" / "Brave-Browser" / "User Data"),
+                ("chromium", base / "Chromium" / "User Data"),
+            ]
+    else:
+        base = home / ".config"
+        roots = [
+            ("chrome", base / "google-chrome"),
+            ("chrome-beta", base / "google-chrome-beta"),
+            ("chrome-dev", base / "google-chrome-unstable"),
+            ("edge", base / "microsoft-edge"),
+            ("brave", base / "BraveSoftware" / "Brave-Browser"),
+            ("chromium", base / "chromium"),
+        ]
+
+    out: List[Tuple[str, Path]] = []
+    for label, path in roots:
+        try:
+            if path.is_dir():
+                out.append((label, path))
+        except OSError:
+            continue
+    return out
+
+
+def _profile_dirs(user_data: Path) -> List[Path]:
+    """Profile directories inside a user-data dir, in stable order.
+
+    ``Default`` plus ``Profile N``. Chromium's ``System Profile`` and
+    ``Guest Profile`` are deliberately skipped: neither runs user extensions.
+    """
+    out: List[Path] = []
+    try:
+        entries = sorted(user_data.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return out
+    for entry in entries:
+        try:
+            if not entry.is_dir():
+                continue
+        except OSError:
+            continue
+        if entry.name == "Default" or entry.name.startswith("Profile "):
+            out.append(entry)
+    return out
+
+
+def _enabled_webmcp_flags(user_data: Path) -> List[str]:
+    """WebMCP-ish entries in this browser's enabled chrome://flags list.
+
+    Entries are stored as ``flag-name@1``; the suffix selects which option of a
+    multi-choice flag is active and is dropped here.
+    """
+    state = user_data / "Local State"
+    try:
+        with open(state, "r", encoding="utf-8", errors="replace") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    browser = data.get("browser")
+    raw = browser.get("enabled_labs_experiments") if isinstance(browser, dict) else None
+    if not isinstance(raw, list):
+        return []
+
+    found: List[str] = []
+    for entry in raw:
+        if not isinstance(entry, str):
+            continue
+        flag = entry.split("@", 1)[0].strip()
+        lowered = flag.lower()
+        if any(hint in lowered for hint in _WEBMCP_FLAG_HINTS) and flag not in found:
+            found.append(flag)
+    return found
+
+
+def _extension_name(bundle: Path, manifest: Dict[str, Any], ext_id: str) -> str:
+    """Display name for an extension, resolving a ``__MSG_key__`` placeholder.
+
+    A localised manifest carries the message key rather than the name, so the
+    default locale's catalogue is consulted. Anything unresolvable falls back
+    to the extension id, which is always meaningful enough to look up.
+    """
+    name = manifest.get("name")
+    if not isinstance(name, str) or not name.strip():
+        return ext_id
+    name = name.strip()
+    if not (name.startswith("__MSG_") and name.endswith("__")):
+        return name
+
+    key = name[len("__MSG_"):-len("__")]
+    locale = manifest.get("default_locale")
+    candidates = []
+    if isinstance(locale, str) and locale:
+        candidates.append(locale)
+    candidates.extend(["en", "en_US"])
+    for candidate in candidates:
+        try:
+            with open(bundle / "_locales" / candidate / "messages.json",
+                      "r", encoding="utf-8", errors="replace") as handle:
+                messages = json.load(handle)
+            entry = messages.get(key)
+            if isinstance(entry, dict) and isinstance(entry.get("message"), str):
+                return entry["message"].strip() or ext_id
+        except (OSError, ValueError):
+            continue
+    return ext_id
+
+
+def _reaches_page_context(manifest: Dict[str, Any]) -> bool:
+    """Could this extension run script in a page at all?
+
+    WebMCP is exposed to page context, so an extension that never gets there
+    cannot be using it. Themes, dictionaries and pure devtools panels are the
+    bulk of an average profile, and skipping them keeps the source scan off
+    almost everything.
+    """
+    if manifest.get("content_scripts"):
+        return True
+    perms: List[Any] = []
+    for key in ("permissions", "optional_permissions", "host_permissions"):
+        value = manifest.get(key)
+        if isinstance(value, list):
+            perms.extend(value)
+    lowered = {str(p).lower() for p in perms}
+    return bool(lowered & {"scripting", "activetab", "tabs", "debugger"})
+
+
+def _bundle_names_webmcp(bundle: Path) -> bool:
+    """Does this extension's own code reference the WebMCP API?
+
+    Bounded by file count and total bytes: a bundle is untrusted input whose
+    size is chosen by whoever published it, and this runs on a schedule.
+    """
+    scanned_files = 0
+    scanned_bytes = 0
+    try:
+        walker = os.walk(bundle)
+    except OSError:
+        return False
+    for root, dirs, files in walker:
+        # Sorted, because the ceilings below mean the walk can stop early and
+        # os.walk hands back whatever order the filesystem keeps. Unsorted,
+        # which files got scanned would vary by platform and the same bundle
+        # could report a finding on one machine and not on another.
+        dirs[:] = sorted(d for d in dirs if d != "_locales")
+        for filename in sorted(files):
+            if not filename.endswith((".js", ".mjs", ".ts", ".html")):
+                continue
+            if scanned_files >= _MAX_EXT_SCAN_FILES or scanned_bytes >= _MAX_EXT_SCAN_BYTES:
+                return False
+            path = Path(root) / filename
+            try:
+                blob = path.read_bytes()
+            except OSError:
+                continue
+            scanned_files += 1
+            scanned_bytes += len(blob)
+            if _WEBMCP_SOURCE_MARKER in blob:
+                return True
+    return False
+
+
+def _latest_version_dir(ext_dir: Path) -> Optional[Path]:
+    """The newest installed version of an extension.
+
+    Chromium keeps the previous version alongside the current one after an
+    update, and scanning both would report the same extension twice.
+    """
+    try:
+        versions = [p for p in ext_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return None
+    if not versions:
+        return None
+    return sorted(versions, key=lambda p: p.name)[-1]
+
+
+def discover_webmcp(workspace: Path) -> List[BrowserSurfaceRecord]:
+    """Browser-resident WebMCP capability on this machine.
+
+    Reports two things, per Chromium-family browser: profiles with the
+    experiment enabled, and installed extensions that speak the API. Both are
+    read-only and neither needs the browser to be running.
+
+    ``workspace`` is unused — the browser surface is a property of the machine,
+    not of a checkout — and is accepted so this matches every other
+    ``discover_*`` entry point.
+    """
+    records: List[BrowserSurfaceRecord] = []
+    seen_extensions: Set[Tuple[str, str]] = set()
+
+    for browser, user_data in _browser_user_data_dirs():
+        for flag in _enabled_webmcp_flags(user_data):
+            records.append(BrowserSurfaceRecord(
+                browser=browser,
+                kind="flag",
+                name=flag,
+                location=str(user_data / "Local State"),
+                risk="medium",
+                # Deliberately says "enabled", not what the flag does. Chrome
+                # 152 ships two (enable-webmcp-testing, devtools-webmcp-support)
+                # and only the first exposes the API to pages, so a single
+                # claim about page tool registration is wrong for the other.
+                findings=["WebMCP experiment enabled in this browser."],
+            ))
+
+        for profile in _profile_dirs(user_data):
+            ext_root = profile / "Extensions"
+            try:
+                ext_dirs = sorted(ext_root.iterdir(), key=lambda p: p.name)
+            except OSError:
+                continue
+            for ext_dir in ext_dirs:
+                ext_id = ext_dir.name
+                if (browser, ext_id) in seen_extensions:
+                    continue
+                bundle = _latest_version_dir(ext_dir)
+                if bundle is None:
+                    continue
+
+                known = _KNOWN_WEBMCP_EXTENSIONS.get(ext_id)
+                manifest: Dict[str, Any] = {}
+                try:
+                    with open(bundle / "manifest.json", "r",
+                              encoding="utf-8", errors="replace") as handle:
+                        loaded = json.load(handle)
+                    if isinstance(loaded, dict):
+                        manifest = loaded
+                except (OSError, ValueError):
+                    manifest = {}
+
+                if known:
+                    finding = "Known WebMCP tool inspector."
+                elif _reaches_page_context(manifest) and _bundle_names_webmcp(bundle):
+                    finding = "Extension code references the WebMCP API."
+                else:
+                    continue
+
+                seen_extensions.add((browser, ext_id))
+                records.append(BrowserSurfaceRecord(
+                    browser=browser,
+                    kind="extension",
+                    name=known or _extension_name(bundle, manifest, ext_id),
+                    location=str(bundle),
+                    profile=profile.name,
+                    extension_id=ext_id,
+                    risk="medium",
+                    findings=[finding],
+                ))
+
+    records.sort(key=lambda r: (r.browser, r.kind, r.name.lower()))
+    return records
+
+
 # ── report ───────────────────────────────────────────────────────────────────
 
 
@@ -958,6 +1318,7 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
     agents = discover_agents(workspace)
     mcp = discover_mcp(workspace)
     credentials = discover_credentials(workspace, scan_files=scan_files)
+    webmcp = discover_webmcp(workspace)
     context = governed_context()
 
     shadow_agents = [a for a in agents if a.shadow and a.coverable]
@@ -980,6 +1341,14 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
         "credentials_total": len(credentials),
         "credentials_shadow": len(shadow_creds),
         "high_risk_mcp": len([m for m in shadow_mcp if m.risk == "high"]),
+        # Advisory only, and deliberately absent from `coverage` below. Prismor
+        # has no interception point inside a browser tab, so an enabled WebMCP
+        # profile is not governable surface that was skipped — it is surface
+        # nothing can cover yet. Folding it into the ratio would drive the
+        # number down with findings no `--fix` can clear, which is the same
+        # mistake `AgentRecord.coverable` exists to avoid for agents Prismor
+        # has no hook for.
+        "webmcp_total": len(webmcp),
         "coverage": _coverage(len(coverable), len(shadow_agents),
                               len(governable_mcp), len(shadow_mcp),
                               len(credentials), len(shadow_creds)),
@@ -992,6 +1361,7 @@ def build_report(workspace: Path, *, scan_files: bool = True) -> Dict[str, Any]:
         "agents": [asdict(a) for a in agents],
         "mcp": [asdict(m) for m in mcp],
         "credentials": [asdict(c) for c in credentials],
+        "webmcp": [asdict(w) for w in webmcp],
     }
 
 
@@ -1063,6 +1433,22 @@ def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
             "risk": server.get("risk") or "none",
             "reasons": server.get("findings") or [],
             **_fix_for("mcp", name),
+        })
+    for surface in report.get("webmcp") or []:
+        name = surface.get("name") or surface.get("extension_id") or ""
+        findings.append({
+            "kind": "browser",
+            "name": name,
+            "detail": surface.get("location") or "",
+            # Nothing governs this surface and nothing can yet, so it reports
+            # as uncoverable — the flag the console already reads to mean "not
+            # a gap". A console that does not know this kind drops the row
+            # (normalizeFinding enum-checks it) rather than mis-scoring it.
+            "managed": False,
+            "coverable": False,
+            "risk": surface.get("risk") or "none",
+            "reasons": surface.get("findings") or [],
+            **_fix_for("browser", name),
         })
     for cred in report.get("credentials") or []:
         provider = cred.get("provider") or ""

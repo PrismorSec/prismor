@@ -73,6 +73,9 @@ actually applies to it:
 | MCP servers | the server is routed through `prismor mcp-gateway` |
 | Provider keys | the credential is registered with [Cloak](sweep-and-cloak.md) |
 
+It also reports a fourth, [the browser](#the-browser-surface), which nothing
+governs yet and which is therefore left out of the score.
+
 ```
   PRISMOR  discover   ~/src/acme
 
@@ -89,13 +92,49 @@ actually applies to it:
   PROVIDER KEYS
     SHADOW                 anthropic  ANTHROPIC_API_KEY
 
+  BROWSER (WebMCP)
+    no coverage            Shopping Copilot  [chrome]  Default
+      …/Chrome/Default/Extensions/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/3.1.4
+      · Extension code references the WebMCP API.
+
   ──────────────────────────────────────────────────────────
   Coverage:  42%  of discovered AI surface is governed
   Shadow:    1 agent(s), 1 MCP server(s), 1 key(s)
+  Browser:   1 WebMCP surface(s)  — not covered by any surface, not scored
 ```
 
-Pass a section (`agents`, `mcp`, `keys`) to limit the report, `--json` for the
-machine-readable form, and `--fail-on-shadow` to exit non-zero in CI.
+Pass a section (`agents`, `mcp`, `keys`, `webmcp`) to limit the report, `--json`
+for the machine-readable form, and `--fail-on-shadow` to exit non-zero in CI.
+
+### The browser surface
+
+[WebMCP](https://github.com/webmachinelearning/webmcp) (Chrome 150+, behind a
+flag) lets a page register tools on itself with
+`document.modelContext.registerTool()`, which an agent running in the same tab
+finds and calls. Nothing about that exchange touches a config file or a child
+process, so it is invisible to the three surfaces above — and a page offering a
+`transfer-funds` tool to an in-tab agent would otherwise leave a machine reading
+100% covered.
+
+Which tools a page exposes is decided at runtime and cannot be read off disk. A
+host-local sweep does not pretend otherwise; what it reports is the
+precondition:
+
+| Reported | Read from |
+|---|---|
+| Profiles with the experiment enabled | `Local State` → `browser.enabled_labs_experiments` |
+| Extensions that speak the API | the extension bundle's own JavaScript |
+
+Both are read-only and neither needs the browser to be running. Chrome and its
+channels, Edge, Brave, Chromium and Arc are all covered. Locations and names
+only — browsing history, extension storage and page contents are never read.
+
+**These findings stay out of the coverage score.** Prismor has no interception
+point inside a browser tab, so an enabled profile is not governable surface that
+was skipped; it is surface nothing can cover yet. Scoring it would drive the
+number down with findings no `--fix` can clear, which is why the section has no
+`--fix` and reports as uncoverable — the same treatment an agent with no hook
+surface gets.
 
 ### Governing what it finds
 
