@@ -689,6 +689,17 @@ def evaluate_tool_call(
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
 
+    # Opt-in enhanced decision layer: re-tiers known FP classes (value-taint
+    # trifecta, transient-dir deletes) to allow/step_up and adds parsed-argv
+    # effect findings for harm classes the regex rules miss. Off by default, so
+    # a vanilla install is unchanged; see runtime/enhanced.py.
+    if os.environ.get("PRISMOR_ENHANCED") == "1" or getattr(engine, "enhanced_decisions", False):
+        try:
+            from prismor.runtime import enhanced
+            blocking = enhanced.evaluate(event, events, findings, blocking)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] enhanced layer error: {exc}\n")
+
     # Local dry-run kill switch: a locally-passed observe mode suppresses blocks.
     # BUT once this machine is ENROLLED the org's signed policy is authoritative —
     # a local `--mode observe` (the install default) must not veto a block the
