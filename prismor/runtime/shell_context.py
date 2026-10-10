@@ -13,6 +13,7 @@ the pipeline) keeps blocking.
 from __future__ import annotations
 
 import re
+import shlex
 from typing import List, NamedTuple, Tuple
 
 # Commands whose quoted argument is executed, not printed. A match inside one of
@@ -51,6 +52,26 @@ _GH_TEXT_SUBCOMMANDS = frozenset({"pr", "issue", "release", "gist"})
 
 # A payload-bearing flag: -c, -e, and clustered forms such as -lc or -xec.
 _PAYLOAD_FLAG = re.compile(r"^-[a-zA-Z]*[ce]$")
+
+# OpenSSH's getopt string (ssh.c), split by arity. Every flag VALUE is consumed
+# on this machine -- a file it reads (-i, -F), a command it runs
+# (-o ProxyCommand=...) -- so only words after the destination are the remote
+# command (issue #607).
+_SSH_ARG_FLAGS = frozenset("BbcDEeFIiJLlmOoPpQRSWw")
+_SSH_NOARG_FLAGS = frozenset("46AaCfGgKkMNnqsTtVvXxYy")
+
+# Subcommands of the other remote contexts that move LOCAL files in or out
+# (`docker cp`, `lxc file push`, `machinectl copy-to`). Their quoted arguments
+# are paths on this machine, not a remote payload.
+_LOCAL_FILE_SUBCOMMANDS = frozenset({
+    "cp", "push", "pull", "upload", "transfer", "mount", "bind",
+    "copy-to", "copy-from",
+})
+
+# Unquoted openers of a local substitution. A quoted span after one is an
+# argument of a LOCAL command nested in the remote one's argv
+# (`ssh host $(sh -c "...")`), never the remote payload itself.
+_LOCAL_EVAL_OPENERS = ("$(", "`", "<(", ">(")
 
 _SEPARATORS = ";|&"
 _QUOTES = "\"" + chr(39)
@@ -348,6 +369,60 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
     return False
 
 
+def _ssh_command_start(words: List[str], i: int) -> int:
+    """Index of the first remote-command word of the ssh argv at ``words[i]``.
+
+    Mirrors OpenSSH's parse: options, the destination, more options, then the
+    command. -1 when the argv cannot be parsed with confidence.
+    """
+    n = len(words)
+    host_seen = False
+    i += 1
+    while i < n:
+        word = words[i]
+        if word == "--":
+            return i + 1 if host_seen else i + 2
+        if word.startswith("-") and len(word) > 1:
+            for j in range(1, len(word)):
+                if word[j] in _SSH_ARG_FLAGS:
+                    if j == len(word) - 1:
+                        i += 1  # the value is the next word
+                    break
+                if word[j] not in _SSH_NOARG_FLAGS:
+                    return -1
+            i += 1
+            continue
+        if host_seen:
+            return i
+        host_seen = True
+        i += 1
+    return n
+
+
+def _is_remote_argument(words: List[str]) -> bool:
+    """Is the last of ``words`` (one remote-context argv) run remotely?"""
+    target = len(words) - 1
+    name = words[0].rsplit("/", 1)[-1]
+    if name in ("ssh", "sshpass"):
+        i = 0
+        if name == "sshpass":
+            # sshpass's own options (the password, its file) come first.
+            i = next((k for k in range(1, target)
+                      if words[k].rsplit("/", 1)[-1] == "ssh"), -1)
+            if i < 0:
+                return False
+        start = _ssh_command_start(words, i)
+        return 0 <= start <= target
+    if any(w in _LOCAL_FILE_SUBCOMMANDS for w in words[1:target]):
+        return False
+    # A flag value (`-v "..."`, `--env-file=...`) is read on this machine; the
+    # `-c`/`-e` payload flags and `--` introduce the remote command.
+    if words[target].startswith("-"):
+        return False
+    prev = words[target - 1] if target > 0 else ""
+    return not (prev.startswith("-") and prev != "--" and not _PAYLOAD_FLAG.match(prev))
+
+
 def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
     """True when the match lies inside the payload of a context-switching command.
 
@@ -361,6 +436,16 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
     a recognised context-switching command. `ssh -V; prismor allow` runs
     `prismor allow` locally -- the match is outside every quoted span, so this
     returns False and the finding stands.
+
+    Exemptions require confirmed remote execution:
+      * Matches inside unescaped command substitutions (`$(...)` or ```...```)
+        within double quotes execute locally before the remote command receives
+        them, and therefore stay live (issue #607).
+      * ssh option values (`-o ProxyCommand=...`, `-i`, `-F`) are consumed on
+        this machine; only words after the destination are the remote command.
+      * A span nested in an unquoted local substitution, or passed to a
+        file-copy subcommand (`docker cp`) or a flag of another context, is
+        local too (issue #607).
     """
     if match_start < 0 or match_end > len(command):
         return False
@@ -380,12 +465,38 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
         # quote.
         if not (start < match_end <= end + 1):
             continue
+
+        # In double quotes, unescaped command substitutions ($(cmd) and `cmd`)
+        # execute on the LOCAL machine before the enclosing command runs.
+        # Any match overlapping an executable substitution is live local code.
+        if command[start] == '"':
+            inner = command[start + 1:end]
+            effective_start = max(match_start, start + 1)
+            effective_end = min(match_end, end)
+            is_sub = False
+            for sub_start, sub_end in command_substitution_spans(inner):
+                abs_start = start + 1 + sub_start
+                abs_end = start + 1 + sub_end
+                if effective_start < abs_end and effective_end > abs_start:
+                    is_sub = True
+                    break
+            if is_sub:
+                return False
+
+        # A newline separates commands as surely as `;` does.
         seg_start = 0
         for k in range(start):
-            if bare[k] in _SEPARATORS:
+            if bare[k] in _SEPARATORS or bare[k] == "\n":
                 seg_start = k + 1
-        tokens = bare[seg_start:start].split()
-        if not tokens:
+        prefix = bare[seg_start:start]
+        if any(opener in prefix for opener in _LOCAL_EVAL_OPENERS):
             return False
-        return tokens[0].rsplit("/", 1)[-1] in _REMOTE_CONTEXTS
+        tokens = prefix.split()
+        if not tokens or tokens[0].rsplit("/", 1)[-1] not in _REMOTE_CONTEXTS:
+            return False
+        try:
+            words = shlex.split(command[seg_start:end + 1])
+        except ValueError:
+            return False
+        return bool(words) and _is_remote_argument(words)
     return False
