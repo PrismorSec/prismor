@@ -190,6 +190,18 @@ def record_dismissal(
 
 _EVASION_THRESHOLD = 0.6
 
+# Rules that fire on what happened earlier in the session, not on the command.
+_SESSION_STATE_RULES = ("tag-rule:", "tool-category-crossover", "staged-execution",
+                        "evasion-detection", "cross-agent-flow", "taint-escalation")
+
+
+def _session_state_rule(enrichment_json: Optional[str]) -> bool:
+    try:
+        rule_id = (json.loads(enrichment_json or "{}") or {}).get("ruleId") or ""
+    except (ValueError, AttributeError):
+        return False
+    return rule_id.startswith(_SESSION_STATE_RULES)
+
 
 def detect_evasion(
     workspace: Path,
@@ -227,14 +239,22 @@ def detect_evasion(
         # whole session — otherwise every command in a session that has *any*
         # finding (including the current, passing one, which is snapshotted
         # into `events` before this runs) self-matches at 100%.
-        finding_rows = conn.execute(
-            """
-            SELECT event_index, finding_id, title, category
-            FROM findings
-            WHERE session_id = ? AND event_index IS NOT NULL
-            """,
-            (session_id,),
-        ).fetchall()
+        finding_rows = [
+            (event_index, finding_id, title, category)
+            for event_index, finding_id, title, category, enrichment in conn.execute(
+                """
+                SELECT event_index, finding_id, title, category, enrichment_json
+                FROM findings
+                WHERE session_id = ? AND event_index IS NOT NULL
+                """,
+                (session_id,),
+            ).fetchall()
+            # Only a block from a pattern on that command can be evaded by
+            # rewording it. A block that came from session state (a tag
+            # sequence, a staged write) says nothing about the command's shape,
+            # so a retry of the same shape is not evasion (#595).
+            if not _session_state_rule(enrichment)
+        ]
         if not finding_rows:
             return []
 
