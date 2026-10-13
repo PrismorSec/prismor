@@ -1,12 +1,16 @@
 """Tests for the Prismor CLI entry points."""
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLI = str(REPO_ROOT / "prismor" / "runtime" / "cli.py")
@@ -104,6 +108,36 @@ class TestCliCommandConsolidation(unittest.TestCase):
         self.assertEqual(r.returncode, 0)
         self.assertIn("--all", r.stdout)
         self.assertIn("--days", r.stdout)
+
+    def test_status_all_formats_day_labels_on_windows(self):
+        from prismor.runtime import cli
+
+        class WindowsDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 10, 3, 12, 0, tzinfo=tz)
+
+            def strftime(self, format_string):
+                if "%-d" in format_string:
+                    raise ValueError("Invalid format string")
+                return super().strftime(format_string)
+
+            def __format__(self, format_string):
+                if "%-d" in format_string:
+                    raise ValueError("Invalid format string")
+                return super().__format__(format_string)
+
+        output = io.StringIO()
+        expected_labels = "  ".join(
+            f"{datetime(2026, 10, day).strftime('%a')} {day}"
+            for day in range(1, 4)
+        )
+        with patch.object(cli, "datetime", WindowsDateTime):
+            with patch.object(cli, "list_registered_workspaces", return_value=[]):
+                with redirect_stdout(output):
+                    cli._print_dashboard(days=3)
+
+        self.assertIn(expected_labels, output.getvalue())
 
     def test_dashboard_serves_web_dashboard(self):
         # `dashboard` is now the web server, so it exposes --port/--host/--no-open.
