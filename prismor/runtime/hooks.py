@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import ast
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
+import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -239,6 +243,216 @@ def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
         return False
     except Exception:
         return False
+
+
+def _dispatcher_self_test(executable: str, shim: Path) -> Tuple[str, str]:
+    """Probe only our generated shim, with synthetic events and disposable state."""
+    try:
+        source = shim.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        roots = [n.args[1].value for n in ast.walk(tree)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and ast.dump(n.func) == ast.dump(ast.parse("sys.path.insert", mode="eval").body)
+                 and len(n.args) == 2 and isinstance(n.args[1], ast.Constant)
+                 and isinstance(n.args[1].value, str)]
+        if len(roots) != 1 or source != _SHIM_TEMPLATE.format(repo_root=roots[0]):
+            return "warn", "custom dispatcher script; self-test skipped"
+    except (OSError, ValueError, SyntaxError):
+        return "fail", "dispatcher script cannot be read or parsed"
+    with tempfile.TemporaryDirectory(prefix="prismor-doctor-") as scratch:
+        ws = Path(scratch)
+        env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if k in os.environ}
+        env.update(HOME=scratch, USERPROFILE=scratch, CODEX_HOME=str(ws / "codex"),
+                   PRISMOR_HOME=str(ws / "state"), PRISMOR_NO_UPDATE_CHECK="1")
+        probe = "import sys; sys.path.insert(0, " + repr(roots[0]) + "); import yaml; import prismor.runtime.cli"
+        try:
+            imported = subprocess.run([executable, "-I", "-c", probe], cwd=scratch,
+                                      env=env, capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=10)
+            if imported.returncode:
+                return "fail", "configured interpreter cannot import dispatcher dependencies in the isolated environment"
+            # This exercises the installed dispatcher using a known protocol, not
+            # the client or its policy. No shell command is ever executed.
+            for command, expected in (("pwd", 0), ("rm -rf /", 2)):
+                payload = {"hook_event_name": "PreToolUse", "session_id": "doctor-" + str(expected),
+                           "cwd": scratch, "tool_name": "Bash", "tool_input": {"command": command}}
+                result = subprocess.run(
+                    [executable, "-I", str(shim), "hook-dispatch", "--agent", "claude",
+                     "--workspace", scratch, "--mode", "enforce"],
+                    input=json.dumps(payload), cwd=scratch, env=env,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+                )
+                denial = "Prismor blocked this action:" in result.stderr and "(rule: destructive-command)" in result.stderr
+                if result.returncode != expected or (expected == 2 and not denial):
+                    return "fail", "dispatcher self-test did not produce the expected allow/block verdict"
+        except subprocess.TimeoutExpired:
+            return "fail", "dispatcher self-test timed out"
+        except OSError:
+            return "fail", "configured interpreter could not be started"
+    return "ok", "imports and synthetic Claude-protocol allow/block verified; client invocation and active policy not verified"
+
+
+def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, Any]]:
+    """Inspect configured hooks; optionally probe recognized generated shims.
+
+    A passing check proves only that a recognized launcher has accessible
+    files. Self-tests check imports and dispatcher verdicts in disposable state;
+    neither mode proves that the agent invokes it.
+    """
+    from prismor.runtime.integrations.registry import load_registry
+
+    def commands(value: Any) -> List[str]:
+        found: List[str] = []
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "command" and isinstance(child, str) and "hook-dispatch" in child:
+                    found.append(child)
+                elif isinstance(child, (dict, list)):
+                    found.extend(commands(child))
+        elif isinstance(value, list):
+            for child in value:
+                found.extend(commands(child))
+        return found
+
+    results: List[Dict[str, Any]] = []
+    probes: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    for scope in ("project", "global"):
+        for entry in load_registry():
+            if entry.kind != "coding-agent" or entry.id not in _SUPPORTED_AGENTS:
+                continue
+            path = _config_path(entry.id, scope, workspace)
+            if not path.exists():
+                continue
+            row: Dict[str, Any] = {"agent": entry.id, "scope": scope,
+                                   "state": "ok", "mode": None, "configured": False}
+            if entry.id == "opencode":
+                # OpenCode auto-loads a JS plugin, not a JSON hook config.
+                # Do not execute or claim schema/runtime validation of it.
+                try:
+                    source = path.read_text(encoding="utf-8")
+                except OSError:
+                    row.update(state="fail", detail="plugin file is unreadable")
+                else:
+                    if "hook-dispatch" not in source:
+                        continue
+                    row.update(state="warn", configured=True,
+                               detail="plugin file present; runtime and agent invocation not verified")
+                    # Read the generated JSON string, never evaluate JavaScript.
+                    prefix = "const PRISMOR_COMMAND = "
+                    for line in source.splitlines():
+                        if line.startswith(prefix) and line.endswith(";"):
+                            try:
+                                command = json.loads(line[len(prefix):-1])
+                                argv = shlex.split(command)
+                                if "--mode" in argv and argv.index("--mode") + 1 < len(argv):
+                                    mode = argv[argv.index("--mode") + 1]
+                                    row["mode"] = mode if mode in ("enforce", "observe") else None
+                            except (ValueError, TypeError, AttributeError):
+                                pass
+                            break
+                results.append(row)
+                continue
+            try:
+                config = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(config, dict):
+                    raise ValueError("expected an object")
+            except (OSError, ValueError):
+                row.update(state="fail", detail="hook configuration is unreadable or invalid JSON")
+                results.append(row)
+                continue
+            # Antigravity keys the file by hook name rather than a top-level
+            # hooks member; inspect event groups within those named hooks.
+            hook_config = config.get("hooks", {})
+            if entry.id == "antigravity":
+                hook_config = {name: spec for name, spec in config.items()
+                               if isinstance(spec, dict) and commands(spec)}
+            launchers = commands(hook_config)
+            plugin = entry.id in _PLUGIN_REGISTERED_AGENTS and _prismor_plugin_registered(json.dumps(config))
+            if not launchers and not plugin:
+                continue
+            row["configured"] = True
+            row["detail"] = "launcher files accessible; imports and agent invocation not verified"
+            if plugin:
+                row.update(state="warn", detail="plugin registered; runtime and agent invocation not verified")
+            if launchers and not plugin:
+                groups = (list(hook_config.values()) if entry.id == "antigravity"
+                          and isinstance(hook_config, dict) else [hook_config])
+                wired = {event for group in groups if isinstance(group, dict)
+                         for event, spec in group.items() if commands(spec)}
+                unknown = wired - set(entry.events)
+                pre_events = {event for event in entry.events if _is_pre_action(event)
+                              and "prompt" not in event.lower() and event != "PermissionRequest"}
+                if unknown:
+                    row.update(state="fail", detail="dispatcher under unsupported hook events: "
+                               + ", ".join(sorted(unknown)))
+                elif pre_events and not wired.intersection(pre_events):
+                    row.update(state="fail", detail="no pre-action tool hook configured; expected one of: "
+                               + ", ".join(sorted(pre_events)))
+                if row["state"] == "fail":
+                    results.append(row)
+                    continue
+            for command in launchers:
+                try:
+                    argv = shlex.split(command)
+                except ValueError:
+                    row.update(state="fail", detail="dispatcher command has invalid quoting")
+                    break
+                if "--mode" in argv and argv.index("--mode") + 1 < len(argv):
+                    candidate = argv[argv.index("--mode") + 1]
+                    if candidate == "enforce" or row["mode"] is None:
+                        row["mode"] = candidate if candidate in ("enforce", "observe") else None
+                # Only inspect the exact launcher shape generated by the installer.
+                # Shell wrappers/portable launchers need a separate runtime check.
+                if len(argv) < 3 or argv[2] != "hook-dispatch" or Path(argv[1]).name != _SHIM_NAME:
+                    if row["state"] != "fail":
+                        row.update(state="warn", detail="custom or portable launcher; runtime not verified")
+                    continue
+                tail = argv[3:]
+                if len(tail) % 2 or any(tail[i] not in ("--agent", "--workspace", "--mode")
+                                        or tail[i] in tail[:i] for i in range(0, len(tail), 2)):
+                    row.update(state="warn", mode=None, detail="custom dispatcher arguments; runtime not verified")
+                    continue
+                options = dict(zip(tail[::2], tail[1::2]))
+                if options.get("--agent") != entry.id or options.get("--mode") not in ("enforce", "observe"):
+                    row.update(state="fail", detail="dispatcher agent or mode arguments are missing or invalid")
+                    break
+                if scope == "project":
+                    target = options.get("--workspace")
+                    try:
+                        target_path = Path(target).expanduser() if target else None
+                        if target_path is not None and not target_path.is_absolute():
+                            target_path = workspace / target_path
+                        matches = target_path is not None and target_path.resolve() == workspace.resolve()
+                    except (OSError, RuntimeError, ValueError):
+                        matches = False
+                    if not matches:
+                        row.update(state="fail", detail="project dispatcher workspace is missing or differs from inspected workspace")
+                        break
+                interpreter = Path(argv[0])
+                executable_name = argv[0]
+                if not interpreter.is_absolute() and interpreter.parent != Path("."):
+                    executable_name = str(workspace / interpreter)
+                executable = shutil.which(executable_name)
+                shim = Path(argv[1])
+                if not shim.is_absolute():
+                    shim = workspace / shim
+                if not executable:
+                    row.update(state="fail", detail="dispatcher interpreter is missing or not executable")
+                    break
+                if not shim.is_file() or not os.access(str(shim), os.R_OK):
+                    row.update(state="fail", detail="dispatcher script is missing or unreadable")
+                    break
+                if self_test:
+                    key = (executable, str(shim))
+                    if key not in probes:
+                        probes[key] = _dispatcher_self_test(executable, shim)
+                    state, detail = probes[key]
+                    if row["state"] == "ok" or state == "fail":
+                        row.update(state=state, detail=detail)
+                    if state == "fail":
+                        break
+            results.append(row)
+    return results
 
 
 def coverage(workspace: Path) -> Dict[str, Dict[str, bool]]:

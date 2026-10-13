@@ -62,7 +62,7 @@ Read the output line by line:
 
 - **`Hooks: not installed`** → go to [Setup](#2-setup-run-once-per-workspace). Without hooks, Prismor sees nothing.
 - **`Hooks: claude (observe)`** → monitoring is on but only logging. Fine for the first session in a new repo. Recommend the user switch to `enforce` when they're ready (see [Setup](#2-setup-run-once-per-workspace)).
-- **`Hooks: claude (enforce)`** → fully active. Proceed.
+- **`Hooks: claude (enforce)`** → the hook configuration requests enforcement. Read any `Hook health:` warnings; this line alone does not prove the agent invokes the hook.
 - **`Note:` lines** → status reports its own misconfigurations: the same agent hooked at *both* project and global scope (every call screened twice), or the two scopes disagreeing on mode. These are the user's to fix, and the printed command is the fix. Relay it, don't run it.
 - **`Workspace:`** → check this is the repo you're actually working in. A hook installed against a different workspace evaluates your calls under *that* repo's policy, which is a real misconfiguration worth raising.
 - **`Paused: yes`** → enforcement is suspended (logging continues). Say so before relying on a clean run; a command that passes while paused may block when it resumes.
@@ -157,7 +157,7 @@ use a committed `install-hooks --portable` config — see
 partial and rules-only agents:
 [`AGENT_INTEGRATIONS.md`](https://github.com/PrismorSec/prismor/blob/main/AGENT_INTEGRATIONS.md).
 
-After install, **verify** by re-running `prismor status`. The `Hooks:` line should now list the agent you just installed. If anything looks wrong — hooks present but nothing logging, remote policy not syncing, enrollment half-applied — run `prismor doctor`, which health-checks every subsystem (hooks, policy, remote-policy signature, enrollment, telemetry sink, chain state) and exits non-zero on failure with `--json`.
+After install, re-run `prismor status`. The `Hooks:` line lists configured agents; it does not prove the client loaded or executed them. `prismor doctor` passively checks hook configuration and recognized launchers for missing interpreters or dispatcher files, alongside policy, remote-policy signature, enrollment, telemetry sink, and chain state. `prismor doctor --self-test` opts into import and synthetic Claude-protocol allow/block probes through recognized generated dispatchers, using disposable state. This checks the shared dispatcher, not each client's protocol, actual invocation, or active workspace policy. Modified/custom/portable launchers and registered plugins remain unverified. `--json` exits non-zero on failure.
 
 **Production framework agents** are a separate surface from coding-agent hooks. If the workspace is a Python/JS app that builds agents rather than a repo an agent edits, wrap the framework instead of installing hooks:
 

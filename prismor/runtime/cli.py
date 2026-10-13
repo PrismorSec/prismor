@@ -739,7 +739,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         return
 
     if args.command == "doctor":
-        _run_doctor(workspace, as_json=bool(getattr(args, "json", False)))
+        _run_doctor(workspace, as_json=bool(getattr(args, "json", False)),
+                    self_test=bool(getattr(args, "self_test", False)))
         return
 
     if args.command == "trail":
@@ -4282,6 +4283,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Health-check every runtime subsystem: hooks, policy, remote policy signature, enrollment, telemetry sink, chain state",
     )
     doctor_parser.add_argument("--json", action="store_true", help="Machine-readable output (exit 0 iff all checks pass)")
+    doctor_parser.add_argument("--self-test", action="store_true",
+                               help="Run recognized dispatchers with synthetic allow/block events in disposable state")
 
     subparsers.add_parser("logout", help="Un-enroll this machine (remove device identity + cached remote policy)")
 
@@ -4863,24 +4866,13 @@ def _warn_other_scope_hooks(workspace: Path, scope: str, agents: List[str], *, i
               f"workspace. To stop: prismor uninstall-hooks --agent {still[0]} --scope {other}")
 
 
-def _hooks_by_scope(workspace: Path) -> Dict[str, Dict[str, Optional[str]]]:
+def _hooks_by_scope(workspace: Path, checks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Optional[str]]]:
     """{scope: {agent: mode}} for every agent hooked at project or global scope."""
-    from prismor.runtime.hooks import _config_path as _hook_cfg_path
-    from prismor.runtime.hooks import hook_installed as _hook_installed
+    from prismor.runtime.hooks import hook_health
     out: Dict[str, Dict[str, Optional[str]]] = {"project": {}, "global": {}}
-    for scope_name in ("project", "global"):
-        for agent_name in _SUPPORTED_AGENTS:
-            # hook_installed also recognises the plugin-registered agents
-            # (openclaw / hermes), whose config never carries the
-            # hook-dispatch marker itself.
-            if not _hook_installed(agent_name, scope_name, workspace):
-                continue
-            try:
-                content = _hook_cfg_path(agent_name, scope_name, workspace).read_text(encoding="utf-8")
-            except Exception:
-                content = ""
-            out[scope_name][agent_name] = ("enforce" if "--mode enforce" in content
-                                           else "observe" if "--mode observe" in content else None)
+    for check in checks if checks is not None else hook_health(workspace):
+        if check["configured"]:
+            out[check["scope"]][check["agent"]] = check["mode"]
     return out
 
 
@@ -5000,7 +4992,9 @@ def _print_dashboard(days: int = 7) -> None:
         risk_color = _RED if latest_risk >= 50 else _YELLOW if latest_risk >= 20 else _GREEN
 
         mode = ""
-        _hs = _hooks_by_scope(ws)
+        from prismor.runtime.hooks import hook_health
+        _checks = hook_health(ws)
+        _hs = _hooks_by_scope(ws, checks=_checks)
         _modes = list(_hs["project"].values()) + list(_hs["global"].values())
         if "enforce" in _modes:
             mode = "enforce"
@@ -5031,11 +5025,14 @@ def _print_dashboard(days: int = 7) -> None:
 
         risk_str = _color(f"risk={latest_risk}/100", risk_color)
         findings_str = f"{with_findings} session{'s' if with_findings != 1 else ''} with findings" if with_findings > 0 else _color("clean", _GREEN)
-        mode_str = _color(mode, _GREEN if mode == "enforce" else _YELLOW) if mode else _color("no hooks", _DIM)
+        mode_str = _color(mode + " (configured)", _GREEN if mode == "enforce" else _YELLOW) if mode else _color("no hooks", _DIM)
         time_str = _color(latest_time or "—", _DIM)
 
         print(f"  {_color(ws_display, _BOLD)}")
         print(f"    {risk_str}  {findings_str}  {mode_str}  {time_str}")
+        for check in _checks:
+            if check["state"] != "ok":
+                print(f"    hook health: {check['agent']} ({check['scope']}): {check['detail']}")
         print(f"    {_color(ws_spark, _YELLOW)}")
         print()
 
@@ -5324,7 +5321,7 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
         )
 
 
-def _run_doctor(workspace: Path, as_json: bool = False) -> None:
+def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False) -> None:
     """Read-only health check across every runtime subsystem: hooks, policy,
     remote policy signature, enrollment, telemetry sink, chain state.
 
@@ -5339,12 +5336,13 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
 
     # 1. IDE hooks — per-agent config with the dispatcher wired in, at either
     #    scope (a ~/.claude hook screens this workspace just like a project one).
-    from prismor.runtime.hooks import hook_installed as _hook_installed
+    from prismor.runtime.hooks import hook_health
     _hooked: Dict[str, List[str]] = {"project": [], "global": []}
-    for scope_name in ("project", "global"):
-        for agent_name in _SUPPORTED_AGENTS:
-            if _hook_installed(agent_name, scope_name, workspace):
-                _hooked[scope_name].append(agent_name)
+    hook_checks = hook_health(workspace, self_test=self_test)
+    for check in hook_checks:
+        if check["configured"]:
+            _hooked[check["scope"]].append(check["agent"])
+        add(check["state"], f"hook {check['agent']} ({check['scope']})", check["detail"])
     agents_with_hooks = sorted(set(_hooked["project"]) | set(_hooked["global"]))
     if agents_with_hooks:
         _parts = []
@@ -5357,7 +5355,8 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
             add("warn", "hooks", f"{' · '.join(_parts)} — {', '.join(_dup)} at both scopes (double dispatch); "
                                  f"remove one with prismor uninstall-hooks --scope project|global")
         else:
-            add("ok", "hooks", f"installed ({' · '.join(_parts)})")
+            state = "fail" if any(c["state"] == "fail" for c in hook_checks) else "warn"
+            add(state, "hooks", f"configured ({' · '.join(_parts)}); agent invocation not verified")
     else:
         add("warn", "hooks", "no IDE hooks installed (run `prismor install-hooks`; SDK adapters are unaffected)")
     if "codex" in agents_with_hooks:
@@ -5558,7 +5557,7 @@ def _run_doctor(workspace: Path, as_json: bool = False) -> None:
         if failed:
             print(f"  {_color('One or more checks failed.', _RED)}")
         else:
-            print(f"  {_color('All systems operational.', _GREEN)}")
+            print(f"  {_color('No failing checks. Review warnings and verification limits above.', _GREEN)}")
     if failed:
         raise SystemExit(1)
 
@@ -5584,13 +5583,16 @@ def _print_status_overview(workspace: Path) -> None:
     # workspace just as much as a project one; reporting "not installed" when
     # only the global hook exists sent people to install a second, project
     # hook on top and every tool call was then evaluated twice.
+    from prismor.runtime.hooks import hook_health
     hooks_by_scope: Dict[str, List[str]] = {"project": [], "global": []}
     modes_by_scope: Dict[str, Optional[str]] = {"project": None, "global": None}
-    for scope_name, agent_modes in _hooks_by_scope(workspace).items():
-        for agent_name, agent_mode in agent_modes.items():
-            hooks_by_scope[scope_name].append(agent_name)
-            if modes_by_scope[scope_name] is None:
-                modes_by_scope[scope_name] = agent_mode
+    hook_checks = hook_health(workspace)
+    for check in hook_checks:
+        if check["configured"]:
+            scope_name = check["scope"]
+            hooks_by_scope[scope_name].append(check["agent"])
+            if check["mode"] == "enforce" or modes_by_scope[scope_name] is None:
+                modes_by_scope[scope_name] = check["mode"]
 
     agents_with_hooks = sorted(set(hooks_by_scope["project"]) | set(hooks_by_scope["global"]))
     # Effective mode: enforce wins if either scope enforces (both hooks run).
@@ -5622,7 +5624,7 @@ def _print_status_overview(workspace: Path) -> None:
             scope_str = "global (~/)"
         else:
             scope_str = "project"
-        print(f"  {_color('Hooks:', _GREEN)}       {', '.join(agents_with_hooks)}  ({mode_str}, {scope_str})")
+        print(f"  {_color('Hooks:', _GREEN)}       {', '.join(agents_with_hooks)}  ({mode_str}, {scope_str}; configured)")
         if "codex" in agents_with_hooks:
             _codex_line = codex_trust_line(workspace)
             if _codex_line:
@@ -5636,6 +5638,12 @@ def _print_status_overview(workspace: Path) -> None:
                   f"{modes_by_scope['global']} — enforce wins")
     else:
         print(f"  {_color('Hooks:', _GREEN)}       {_color('not installed', _YELLOW)}")
+
+    for check in hook_checks:
+        if check["state"] != "ok":
+            print(f"  {_color('Hook health:', _YELLOW)} {check['agent']} ({check['scope']}): {check['detail']}")
+    if agents_with_hooks:
+        print(f"  {_color('Note:', _DIM)}        agent invocation not verified; run prismor doctor for configuration checks")
 
     # Paused? Local enforcement is suspended without uninstalling the hooks
     # (observe-mode screening/telemetry keeps running).

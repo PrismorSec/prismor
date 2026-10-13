@@ -110,11 +110,36 @@ prismor
 | `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>`, `--portable` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. `--portable` writes a command with no machine-specific paths, so the file can be committed and cloned onto a hosted agent's VM — see [cloud-agents.md](cloud-agents.md). |
 | `prismor uninstall-hooks` | `--agent <name\|all>`, `--scope` | Removes Prismor hooks for an agent. For `claude`/`all`, this also removes cloaking hooks (`prismor cloak install`) — secrets are no longer protected at the tool boundary until you reinstall with `prismor cloak install`. |
 | `prismor status` | `--workspace`, `--all`, `--days N` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. |
+| `prismor doctor` | `--json`, `--self-test` | Inspect hook configuration, launcher files, policy, enrollment, telemetry, and chain state. Optionally probe recognized dispatchers. Exits non-zero when a check fails. |
 | `prismor update` | `--check` | Check for (or install) a newer prismor release. |
 | `prismor info` | `--workspace` | _Deprecated_ alias of `status`. |
 
 Agent → config matrix and per-agent details: [AGENT_INTEGRATIONS.md](../AGENT_INTEGRATIONS.md).
 Modes (`observe` vs `enforce`): [Prismor](prismor-runtime.md).
+
+Hook health checks are passive: they parse registered agents' hook configurations
+and inspect recognized launchers for missing interpreters and dispatcher files.
+By default they never run a configured command. `configured` does not establish that imports
+succeed, that the client loaded its hooks, or that a tool call was blocked.
+Portable/custom launchers and registered plugins remain explicitly unverified.
+Doctor's JSON `ok` means no check failed; review warning entries as well.
+Dispatcher entries under unregistered event names, or without any registered
+pre-action tool event, fail the wiring check. Recognized generated project
+launchers must target the inspected workspace (resolved symlinks are accepted).
+Global and portable launchers are not required to pin that workspace. These
+checks do not validate every matcher, optional event or client-specific schema.
+
+`prismor doctor --self-test` additionally runs recognized generated dispatcher
+scripts through their configured interpreter, with a temporary home and workspace
+and no inherited Prismor settings or credentials. It verifies imports and synthetic
+Claude-protocol allow/block responses, with a timeout on each subprocess. The
+synthetic commands are evaluated, never executed. Modified dispatcher scripts,
+custom launchers, portable wrappers, and plugins are skipped with a warning.
+This verifies the shared dispatcher, not each client's protocol or the current
+workspace policy. Client loading, trust, and actual invocation still require a
+live client check. Disposable state is not an OS sandbox.
+The probe uses Python's isolated mode (`-I`); dependencies available only through
+user-site packages or `PYTHONPATH` are excluded and can fail the import probe.
 
 ### Choosing what blocks
 
