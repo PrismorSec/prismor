@@ -4935,7 +4935,8 @@ def _print_dashboard(days: int = 7) -> None:
 
     # ── Period filter bar ─────────────────────────────────────────────────
     period_label = f"last {days} day{'s' if days != 1 else ''}"
-    day_labels = [(now - timedelta(days=days - 1 - i)).strftime("%a %-d") for i in range(days)]
+    day_labels = [f"{day:%a} {day.day}" for day in
+                  (now - timedelta(days=days - 1 - i) for i in range(days))]
     print(f"  {_color('Period:', _CYAN)}  {period_label}  {_color('(--days N to change)', _DIM)}")
     print(f"  {_color('  '.join(day_labels), _DIM)}")
 
