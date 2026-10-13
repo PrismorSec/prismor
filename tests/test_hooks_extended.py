@@ -111,7 +111,7 @@ class TestStripCursor(unittest.TestCase):
     def test_drops_legacy_key_left_empty(self):
         # Older releases registered event names Cursor never had; once
         # Prismor's entry is gone the dead key goes with it.
-        cmd = {"command": 'python3 "/x/hook-dispatch.py" hook-dispatch --agent cursor'}
+        cmd = {"command": 'python3 "/x/.prismor/hook-dispatch.py" hook-dispatch --agent cursor'}
         config = {"hooks": {
             "beforeShellCommand": [cmd],
             "afterFileWrite": [cmd, {"command": "user-tool"}],
@@ -124,6 +124,56 @@ class TestStripCursor(unittest.TestCase):
         self.assertEqual(result["hooks"]["afterFileWrite"], [{"command": "user-tool"}])
         # A current key keeps its (now empty) list, as before.
         self.assertEqual(result["hooks"]["beforeShellExecution"], [])
+
+    def test_preserves_commands_that_only_mention_dispatch(self):
+        commands = [
+            'vendor-check --message "hook-dispatch"',
+            'echo "prismor hook-dispatch"',
+            'python3 "/vendor/hook-dispatch.py" hook-dispatch',
+            'python3 "/vendor/check.py" hook-dispatch',
+            'vendor-check --message "unterminated hook-dispatch',
+            'prismor hook-dispatch --agent cursor && vendor-check',
+            'prismor hook-dispatch --agent cursor&&vendor-check',
+            'python3 "/old/prismor/runtime/cli.py" hook-dispatch --agent cursor; vendor-check',
+            'python3 -m vendor.cli hook-dispatch --agent cursor',
+            'PYTHONPATH="/vendor" python3 -m vendor.cli hook-dispatch',
+            'PYTHONPATH="/r" python3 -m prismor.runtime.immunity_cli hook-dispatch --agent cursor && vendor-check',
+            'DEBUG=1 python3 -m prismor.runtime.immunity_cli hook-dispatch --agent cursor',
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                config = {"hooks": {"beforeShellExecution": [{"command": command}]}}
+                result, removed = _strip_cursor(config, "hook-dispatch")
+                self.assertFalse(removed)
+                self.assertEqual(result, config)
+
+    def test_preserves_non_string_commands(self):
+        entries = [{"command": None}, {"command": 42}, {"command": ["hook-dispatch"]}, "vendor-entry"]
+        config = {"hooks": {"beforeShellExecution": entries}}
+        result, removed = _strip_cursor(config, "hook-dispatch")
+        self.assertFalse(removed)
+        self.assertEqual(result, config)
+
+    def test_removes_known_launcher_forms(self):
+        from prismor.runtime.hooks import _PORTABLE_TEMPLATE, _SHIM_NAME, prismor_home
+        commands = [
+            'prismor hook-dispatch --agent cursor',
+            '"C:\\Program Files\\Prismor\\prismor.exe" hook-dispatch --agent cursor',
+            'immunity hook-dispatch --agent cursor',
+            'python3 "/old/prismor/runtime/cli.py" hook-dispatch --agent cursor',
+            '"C:\\Python\\python.exe" "C:\\Users\\test\\.prismor\\hook-dispatch.py" hook-dispatch --agent cursor',
+            f'"{sys.executable}" "{prismor_home() / _SHIM_NAME}" hook-dispatch --agent cursor',
+            _PORTABLE_TEMPLATE.format(agent="cursor", mode="enforce"),
+            # Module launchers written by v1.7 (warden) and v1.14-v1.44.
+            '"/usr/bin/python3" -m warden.immunity_cli hook-dispatch --agent cursor --workspace "/w" --mode observe',
+            'PYTHONPATH="/repo" "/usr/bin/python3" -m warden.immunity_cli hook-dispatch --agent cursor --workspace "/w" --mode enforce',
+            'PYTHONPATH="/repo path" "/venv/bin/python" -m prismor.runtime.immunity_cli hook-dispatch --agent cursor --workspace "/w s" --mode observe',
+        ]
+        for command in commands:
+            with self.subTest(command=command):
+                result, removed = _strip_cursor({"hooks": {"beforeShellExecution": [{"command": command}]}}, "hook-dispatch")
+                self.assertTrue(removed)
+                self.assertEqual(result["hooks"]["beforeShellExecution"], [])
 
 
 class TestCursorInstallMigration(unittest.TestCase):
@@ -186,6 +236,54 @@ class TestCursorInstallMigration(unittest.TestCase):
                                   agent="cursor", scope="project")
         self.assertTrue(results[0]["removed"])
         self.assertEqual(json.loads(self.config_path.read_text())["hooks"], {})
+
+    def test_roundtrip_preserves_third_party_entries_and_metadata(self):
+        vendor = {"command": 'vendor-check --message "hook-dispatch"', "timeout": 17}
+        unknown = {"command": None, "vendor": True}
+        old = {"command": 'python3 "/old/prismor/runtime/cli.py" hook-dispatch --agent cursor'}
+        config = {"version": 1, "vendorSetting": {"enabled": True}, "hooks": {
+            "beforeShellCommand": [old, vendor],
+            "beforeShellExecution": [vendor, unknown, "vendor-entry"],
+            "vendorEvent": [vendor],
+        }}
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        first = self._install()
+        self.assertEqual(first, self._install())
+        self.assertEqual(first["hooks"]["beforeShellCommand"], [vendor])
+        self.assertEqual(first["hooks"]["beforeShellExecution"][:3], [vendor, unknown, "vendor-entry"])
+        uninstall_hooks(repo_root=self.repo_root, workspace=self.workspace, agent="cursor", scope="project")
+        restored = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(restored["vendorSetting"], config["vendorSetting"])
+        for event, expected in {"beforeShellCommand": [vendor], "beforeShellExecution": [vendor, unknown, "vendor-entry"], "vendorEvent": [vendor]}.items():
+            self.assertEqual(restored["hooks"][event], expected)
+
+    def test_upgrade_from_module_launcher_releases(self):
+        # v1.14-v1.44 wrote PYTHONPATH="<repo>" "<py>" -m prismor.runtime.immunity_cli ...
+        # Reinstall must replace those entries, and uninstall must remove them.
+        old = {"command": f'PYTHONPATH="{self.repo_root}" "{sys.executable}" -m prismor.runtime.immunity_cli '
+                          f'hook-dispatch --agent cursor --workspace "{self.workspace}" --mode observe'}
+        vendor = {"command": 'vendor-check --message "hook-dispatch"'}
+        self.config_path.write_text(json.dumps({"hooks": {
+            **{event: [old] for event in self._REAL[:5]},
+            "beforeShellExecution": [old, vendor],
+        }}), encoding="utf-8")
+        hooks = self._install()["hooks"]
+        commands = [e["command"] for entries in hooks.values() for e in entries]
+        self.assertNotIn(old["command"], commands)
+        self.assertEqual(sum("hook-dispatch --agent" in c for c in commands), len(self._REAL))
+        self.assertIn(vendor, hooks["beforeShellExecution"])
+        uninstall_hooks(repo_root=self.repo_root, workspace=self.workspace, agent="cursor", scope="project")
+        restored = json.loads(self.config_path.read_text(encoding="utf-8"))["hooks"]
+        self.assertEqual([e for entries in restored.values() for e in entries], [vendor])
+
+    def test_custom_state_home_roundtrip(self):
+        state = Path(self.tmpdir) / "custom state with spaces"
+        with patch.dict(os.environ, {"PRISMOR_HOME": str(state)}):
+            first = self._install()
+            self.assertEqual(first, self._install())
+            results = uninstall_hooks(repo_root=self.repo_root, workspace=self.workspace, agent="cursor", scope="project")
+        self.assertTrue(results[0]["removed"])
+        self.assertTrue(all(not entries for entries in json.loads(self.config_path.read_text())["hooks"].values()))
 
 
 class TestStripCodex(unittest.TestCase):

@@ -1116,6 +1116,48 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
     return cfg
 
 
+def _is_prismor_cursor_dispatcher(command: Any) -> bool:
+    """Recognize Prismor launchers, not other tools mentioning hook-dispatch."""
+    if not isinstance(command, str):
+        return False
+    if command in (_PORTABLE_TEMPLATE.format(agent="cursor", mode=mode)
+                   for mode in ("observe", "enforce")):
+        return True
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        argv = list(lexer)
+    except ValueError:
+        return False
+    # v1.14-v1.44 prefixed the module launcher with PYTHONPATH="<repo>".
+    if argv and argv[0].startswith("PYTHONPATH="):
+        argv = argv[1:]
+    if len(argv) < 2:
+        return False
+    executable = argv[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if executable in ("prismor", "prismor.exe", "immunity", "immunity.exe"):
+        if argv[1] != "hook-dispatch":
+            return False
+        tail = argv[2:]
+    elif argv[1] == "-m":
+        # Module launchers written by v1.7-v1.44 ("<py>" -m <module> hook-dispatch ...).
+        if (len(argv) < 4 or argv[3] != "hook-dispatch"
+                or argv[2] not in ("prismor.runtime.immunity_cli", "warden.immunity_cli")):
+            return False
+        tail = argv[4:]
+    else:
+        if len(argv) < 3 or argv[2] != "hook-dispatch":
+            return False
+        launcher = argv[1].replace("\\", "/")
+        if not (launcher == str(prismor_home() / _SHIM_NAME).replace("\\", "/")
+                or launcher.endswith(("/.prismor/hook-dispatch.py", "/prismor/runtime/cli.py"))):
+            return False
+        tail = argv[3:]
+    # Only plain generated arguments; preserve shell wrappers/chained commands.
+    return len(tail) % 2 == 0 and all(
+        tail[i] in ("--agent", "--mode", "--workspace") for i in range(0, len(tail), 2))
+
+
 # Cursor hook events Prismor registers (https://cursor.com/docs/agent/hooks).
 # The before* events are Cursor's permission hooks: exit 2 or
 # {"permission": "deny"} stops the action (beforeSubmitPrompt uses
@@ -1200,7 +1242,10 @@ def _strip_cursor(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], 
         entries = hooks[event_name]
         if not isinstance(entries, list):
             continue
-        filtered = [e for e in entries if not (isinstance(e, dict) and marker in e.get("command", ""))]
+        filtered = [e for e in entries if not isinstance(e, dict)
+                    or not (_is_prismor_cursor_dispatcher(e.get("command"))
+                            if marker == "hook-dispatch"
+                            else marker in str(e.get("command", "")))]
         if len(filtered) < len(entries):
             removed = True
             if not filtered and event_name in _CURSOR_LEGACY_EVENTS:
@@ -2423,7 +2468,7 @@ def _merge_claude_entries(entries: List[Dict[str, Any]], new_entry: Dict[str, An
 
 def _merge_simple_command_entries(entries: List[Dict[str, Any]], command: str) -> List[Dict[str, Any]]:
     next_entries = list(entries)
-    if not any(entry.get("command") == command for entry in next_entries):
+    if not any(isinstance(entry, dict) and entry.get("command") == command for entry in next_entries):
         next_entries.append({"command": command})
     return next_entries
 

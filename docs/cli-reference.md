@@ -141,6 +141,12 @@ live client check. Disposable state is not an OS sandbox.
 The probe uses Python's isolated mode (`-I`); dependencies available only through
 user-site packages or `PYTHONPATH` are excluded and can fail the import probe.
 
+Cursor reinstall and uninstall remove recognized Prismor launchers, not other
+tools whose command text mentions `hook-dispatch`. Legacy event keys are removed
+only when cleanup removes their last entry. Third-party entries and unrelated
+settings are preserved; custom wrappers that cannot be recognized remain for
+manual inspection.
+
 ### Choosing what blocks
 
 `observe` reports everything and blocks nothing, so setup leaves every rule on.
