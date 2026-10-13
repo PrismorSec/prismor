@@ -48,7 +48,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse, parse_qs, urlsplit
+from urllib.parse import urlparse, parse_qs, unquote, urlsplit
 
 from prismor.runtime.store import (
     get_aggregate_stats,
@@ -854,7 +854,8 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(data)
             return
 
-        parts = path.split("/")
+        # The UI encodes ids (`replay:claude:<uuid>` carries colons); decode after splitting.
+        parts = [unquote(p) for p in path.split("/")]
         # /api/sessions/<id>/dev → rca + changes for the session view
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "sessions" and parts[4] == "dev":
             from prismor.runtime import devlog
@@ -1093,7 +1094,8 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/")
 
         # /api/sessions/<id>/control
-        parts = path.split("/")
+        # The UI encodes ids (`replay:claude:<uuid>` carries colons); decode after splitting.
+        parts = [unquote(p) for p in path.split("/")]
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "sessions" and parts[4] == "control":
             session_id = parts[3]
             try:

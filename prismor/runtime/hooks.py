@@ -2937,7 +2937,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
             "prompt": tool_input.get("prompt", ""),
         }
     if tool_name == "Bash":
-        return {**base, "type": "shell", "command": tool_input.get("command", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr", "")}
+        return {**base, "type": "shell", "command": tool_input.get("command", ""), "description": tool_input.get("description", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr", "")}
     if tool_name == "Read":
         return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
     if tool_name in {"Edit", "MultiEdit", "Write"}:

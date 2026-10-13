@@ -32,6 +32,19 @@ class TestEventArtifacts(unittest.TestCase):
         self.assertEqual(art["model"], "gpt-4o-mini")
         self.assertEqual(art["surface"], "llm-proxy")
 
+    def test_shell_description_survives_hook_to_trail(self):
+        """The agent's own label for a call ("Fetch PR 611 metadata") is the
+        row text in the session view, the same text the Claude app shows."""
+        from pathlib import Path
+        from prismor.runtime.hooks import _normalize_claude
+        ev = _normalize_claude({
+            "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "gh pr view 611", "description": "Fetch PR 611 metadata"},
+        }, "s1", Path("."))
+        art = event_artifacts(ev)
+        self.assertEqual(art["description"], "Fetch PR 611 metadata")
+        self.assertEqual(art["command"], "gh pr view 611")
+
     def test_instruction_files_in_context_are_carried(self):
         """The 'what was here already' half: SessionStart's memory scan."""
         art = event_artifacts({

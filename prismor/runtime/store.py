@@ -1319,7 +1319,7 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
     meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     out: Dict[str, Any] = {}
 
-    for key in ("prompt", "command", "stdout", "stderr", "response", "content", "path", "url"):
+    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url"):
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)

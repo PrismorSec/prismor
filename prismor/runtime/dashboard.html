@@ -5567,6 +5567,9 @@ function eventSummary(ev){
   const note = taskNote(ev);
   if (note) return note.id+(note.took ? ' ('+note.took+')' : '')+' - '+note.summary.replace(/\s+/g,' ').slice(0,200);
   const a = ev.artifacts || {};
+  // The agent's own one-line label for the call ("Fetch PR 611 metadata"),
+  // the same text the Claude app shows; the panel still has the command.
+  if (a.description) return String(a.description).replace(/\s+/g,' ').trim().slice(0,300);
   // For a prompt, the person's own message beats the flattened blob: a chat
   // API resends the whole conversation every round trip, so the blob grows by
   // the previous answer each time and the recognisable part is buried.
@@ -5755,7 +5758,7 @@ function renderNodePanel(ev){
 const ARTIFACT_FIELDS = [
   // What the person said comes first; the system prompt the workflow wraps
   // around it, and the flattened blob policy actually read, come after.
-  ['user_message','User message'], ['command','Command'], ['path','Path'], ['url','URL'],
+  ['user_message','User message'], ['description','Description'], ['command','Command'], ['path','Path'], ['url','URL'],
   ['response','Tool output'], ['stdout','stdout'], ['stderr','stderr'],
   ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
   ['system','System prompt'], ['prompt','Full prompt evaluated'],
