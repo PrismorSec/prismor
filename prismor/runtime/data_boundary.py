@@ -543,16 +543,58 @@ def _split_argv_prefix(tokens: List[str]) -> List[str]:
     return tokens
 
 
+# Commands that only print, search or record their input. A quoted separator is
+# kept whole only when every command on the line is one of these: `| "sh"`,
+# `| $SHELL`, `| tee >(sh)` and `; . ./r` all run the printed text, and a list
+# of interpreters cannot name every way to do that. None means any subcommand.
+_PRINT_ONLY_CMDS: Dict[str, Optional[frozenset]] = {
+    **dict.fromkeys(
+        ("echo", "printf", "grep", "egrep", "fgrep", "rg", "jq", "cat", "head",
+         "tail", "wc", "sort", "uniq", "tee", "pbcopy", "prismor")
+    ),
+    "git": frozenset({"commit", "tag", "notes", "stash", "add", "status", "diff", "log", "push"}),
+    "gh": frozenset({"pr", "issue", "release", "gist"}),
+}
+
+
+def _all_print_only(text: str, spans) -> bool:
+    """True when every command in ``text`` (heredoc bodies already blanked)
+    is in _PRINT_ONLY_CMDS. Quoted spans are blanked first, so a quoted
+    command name (`"sh"`, `s''h`) leaves an empty or partial word and fails."""
+    bare = list(text)
+    for s, e, _payload, _closed in spans:
+        bare[s:e + 1] = " " * len(bare[s:e + 1])
+    bare = "".join(bare)
+    if any(t in bare for t in ("$", "`", "<(", ">(")):
+        return False
+    bounds = [0] + [p for m in _SHELL_SEP_RE.finditer(bare) for p in (m.start(), m.end())] + [len(bare)]
+    for s, e in zip(bounds[::2], bounds[1::2]):
+        words = bare[s:e].split()
+        if not words:
+            if text[s:e].strip():  # the whole command word was quoted
+                return False
+            continue
+        subs = _PRINT_ONLY_CMDS.get(words[0].rsplit("/", 1)[-1], False)
+        if subs is False or (subs is not None and (len(words) < 2 or words[1] not in subs)):
+            return False
+    return True
+
+
 def _split_segments(command: str) -> List[str]:
     """Split on `;` `&&` `||` `|` and newlines, except where the separator
     sits in a quoted argument that is only printed (`echo '... | curl ...'`,
-    a commit message). shell_context decides what is inert; anything it is
-    unsure of still splits, as before. Heredoc bodies are left as they were."""
+    a commit message). shell_context decides what is inert, and every command
+    on the line must be print-only; anything else still splits, as before.
+    Heredoc bodies are left as they were."""
     bodies = [(h.body_start, h.body_end) for h in heredocs(command)]
     text = list(command)
     for s, e in bodies:
         text[s:e] = " " * (e - s)
-    spans = [(s, e) for s, e, payload, closed in quoted_spans("".join(text)) if closed and not payload]
+    text = "".join(text)
+    all_spans = quoted_spans(text)
+    spans = [(s, e) for s, e, payload, closed in all_spans if closed and not payload]
+    if spans and not _all_print_only(text, all_spans):
+        spans = []
     # is_inert_match rescans the whole command, so ask once per quoted span.
     inert: Dict[Tuple[int, int], bool] = {}
     out: List[str] = []
