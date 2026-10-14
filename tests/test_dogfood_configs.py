@@ -309,7 +309,7 @@ def test_claude_form_screens_under_git_bash(tmp_path):
     if not bash.exists():
         pytest.skip("Git Bash not installed")
     drifted = ROOT / "prismor" / "runtime"
-    [cmd] = {c for _, _, c in _commands(_committed("claude"))}
+    [cmd] = {c for e, _, c in _commands(_committed("claude")) if not _is_stop_class(e)}
     proc = subprocess.run(
         [str(bash), "-c", cmd], cwd=drifted, input=_rm_rf(drifted), capture_output=True, encoding="utf-8", errors="replace",
         env=_env(tmp_path, CLAUDE_PROJECT_DIR=str(ROOT), PRISMOR_DEV_PYTHON=Path(sys.executable).as_posix()),
