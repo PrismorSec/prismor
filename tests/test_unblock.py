@@ -293,5 +293,19 @@ class EgressOwnershipTest(unittest.TestCase):
         self.assertNotIn("egress request", text)
 
 
+class TestTagRuleSteps(unittest.TestCase):
+    def test_tag_rule_block_never_suggests_prismor_allow(self):
+        # `prismor allow tag-rule:<id>` answered "No rule named ..." (live, 2026-10-14).
+        finding = {"ruleId": "tag-rule:00d30a0689", "category": "lethal_trifecta", "action": "block"}
+        text = "\n".join(unblock.unblock_steps(finding))
+        self.assertNotIn("prismor allow tag-rule", text)
+        self.assertIn("prismor tags rules", text)
+
+    def test_allow_redirects_tag_rules(self):
+        from prismor.runtime.allow import check_allowed
+        msg = check_allowed("tag-rule:00d30a0689", scope="pattern", workspace=Path("."))
+        self.assertIn("prismor tags rules", msg)
+
+
 if __name__ == "__main__":
     unittest.main()

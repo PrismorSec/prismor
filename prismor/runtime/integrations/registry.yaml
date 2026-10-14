@@ -30,7 +30,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".claude/settings.json", user: "~/.claude/settings.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop]
     blocking: exit-2
     normalizer: _normalize_claude
     sweep_dir: "~/.claude/"

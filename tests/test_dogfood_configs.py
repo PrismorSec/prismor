@@ -19,9 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from prismor.runtime import hooks
-
 ROOT = Path(__file__).resolve().parents[1]
+# `--write` run as a script must generate from this tree, not an installed
+# prismor (an older one silently dropped events and renamed others).
+sys.path.insert(0, str(ROOT))
+
+from prismor.runtime import hooks
 WINDOWS = sys.platform == "win32"
 posix_only = pytest.mark.skipif(WINDOWS, reason="POSIX sh guard")
 windows_only = pytest.mark.skipif(not WINDOWS, reason="Windows forms")
@@ -70,8 +73,17 @@ def windows_command(agent):
 def expected_config(agent):
     cmd = dogfood_command(agent)
     if agent == "claude":
-        return hooks._merge_claude({}, cmd, ROOT, pin_workspace=False)
-    config = getattr(hooks, f"_merge_{agent}")({}, cmd)
+        config = hooks._merge_claude({}, cmd, ROOT, pin_workspace=False)
+    else:
+        config = getattr(hooks, f"_merge_{agent}")({}, cmd)
+    for event, entries in config["hooks"].items():
+        if _is_stop_class(event):  # e.g. SubagentStop: exit 1, never "keep going"
+            for entry in entries:
+                for h in entry.get("hooks", [entry]):
+                    if h.get("command") == cmd:
+                        h["command"] = dogfood_command(agent, event)
+    if agent == "claude":
+        return config
     for entries in config["hooks"].values():
         for entry in entries:
             if agent == "codex":  # Codex: `commandWindows` overrides `command` on Windows

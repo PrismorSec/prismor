@@ -334,6 +334,20 @@ def _subsystem_steps(
             "   (`latest` works in place of the session id)",
         ]
 
+    if rule_id.startswith("tag-rule:"):
+        # A tag-rule expression, not a policy rule: `prismor allow` cannot
+        # name it (it said "No rule named ..." and left people stuck).
+        return [
+            "This is a tag-sequence rule (settings.tool_tags.rules), not a policy "
+            "rule, so `prismor allow` cannot relax it.",
+            "1. See the rules and why tools carry each tag: prismor tags rules  /  prismor tags list",
+            "2. Untag the tool that should not count (prismor tags set <tool> ...), "
+            "or set `settings.tool_tags.inference_enabled: false` so plain reads and "
+            "commands are not tagged by event type.",
+            "3. Or drop the rule: prismor tags rules rm <index>",
+            "Tags accumulate for the whole session, so start a fresh session afterwards.",
+        ]
+
     if rule_id == "tool-category-crossover":
         path = _policy_path(workspace)
         return [

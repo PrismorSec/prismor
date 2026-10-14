@@ -837,12 +837,26 @@ def _own_prompt_injection(finding: Dict[str, Any], event: Dict[str, Any]) -> boo
     )
 
 
+def is_subagent_report(event: Dict[str, Any]) -> bool:
+    """Claude Code hands a finished background subagent's result to the main
+    agent as a UserPromptSubmit whose prompt is a <task-notification>. It is
+    tool output the person never typed, not their prompt."""
+    return (str(event.get("agent_event", "")) == "UserPromptSubmit"
+            and str(event.get("prompt") or "").lstrip().startswith("<task-notification>"))
+
+
 def should_block(
     findings: List[Dict[str, Any]],
     event: Dict[str, Any],
     block_categories: set | None = None,  # legacy/no-op; kept for call-site compat
 ) -> Dict[str, Any] | None:
     if not _is_pre_action(str(event.get("agent_event", ""))):
+        return None
+    # Like any tool output, a subagent report is screened but never blocked:
+    # blocking it dropped the report (live, 2026-10-14 - the subagent had
+    # correctly reported a planted injection, and the judge blocked the quote)
+    # and showed the person raw XML. The dispatcher marks it untrusted instead.
+    if is_subagent_report(event):
         return None
 
     # Authoritative enforce lever is the per-finding `mode` (derived from the
@@ -891,7 +905,7 @@ def legacy_should_block(
     from prismor.runtime.contract import BLOCK, VERDICTS
     if not block_categories:
         return None
-    if not _is_pre_action(str(event.get("agent_event", ""))):
+    if not _is_pre_action(str(event.get("agent_event", ""))) or is_subagent_report(event):
         return None
     for finding in findings:
         if finding.get("contextInert") or _own_prompt_injection(finding, event):
@@ -1100,6 +1114,14 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
     hooks["SessionStart"] = _merge_claude_entries(
         hooks.get("SessionStart", []),
         {"matcher": "startup|resume|clear|compact", "hooks": [{"type": "command", "command": command}]},
+    )
+    # SubagentStop: when a subagent finishes, the dispatcher tells the person
+    # what Prismor blocked, asked about or flagged inside it. Its blocks and
+    # warnings otherwise reach only the subagent, and a background subagent's
+    # work never appears in the main chat. Informational; never blocks.
+    hooks["SubagentStop"] = _merge_claude_entries(
+        hooks.get("SubagentStop", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
     )
     # Skip "Stop" hook — the payload contains the full assistant response which
     # exceeds OS argument limits (E2BIG) on long conversations. Stop fires after

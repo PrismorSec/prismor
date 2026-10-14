@@ -185,6 +185,12 @@ def check_allowed(
             "  prismor egress rm <host>         drop an allow/deny entry\n"
             "  prismor egress mode observe      keep reporting, stop blocking"
         )
+    if rule is None and (rule_id.startswith("tag-rule:") or rule_id == "tool-category-crossover"):
+        return (
+            f"{rule_id} is a tag-sequence rule (settings.tool_tags), not a policy "
+            "rule. Manage it with `prismor tags rules` (list / rm <index>) or "
+            "`prismor tags set`, then start a fresh session (tags accumulate)."
+        )
     if rule is None:
         return f"No rule named '{rule_id}'. List them with: prismor policy show"
 

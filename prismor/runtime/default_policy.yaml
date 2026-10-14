@@ -593,7 +593,7 @@ rules:
     fields: [combined_text]
     patterns:
       # Instruction override — direct phrase attacks
-      - '(ignore\s+(all\s+)?(any\s+)?(previous\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|exfiltrat(e|ion)|print\s+.*(secret|token|key|credential|password)|show\s+.*(token|secret|key|credential|password)|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?)|jailbreak)'
+      - '(ignore\s+(all\s+)?(any\s+)?((your|the|my)\s+)?((previous|prior|above)\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|exfiltrat(e|ion)|(?<!not\s)(?<!n''t\s)(?<!never\s)print\s+.*(secret|token|key|credential|password)|(?<!not\s)(?<!n''t\s)(?<!never\s)show\s+.*(token|secret|key|credential|password)|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?)|jailbreak)'
       # System-prompt / instruction extraction via non-trigger verbs (repeat, translate, summarize, print, extract, inspect…)
       - '(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|print|extract|inspect|dump|display|output)\s+.{0,60}((system|developer|initiali[sz]ation|internal)[\s-]*prompt|(your|hidden)\s+(instructions?|guidelines?|rules?|config\w*)|instructions?\s+you\s+(received|were\s+given)|internal\s+config\w*|conversation\s+history|hidden\s+context)'
       # Memory / persistence poisoning — durable state injection to subvert future sessions
@@ -637,7 +637,7 @@ rules:
     fields: [combined_text]
     patterns:
       # Injection keyword inside an HTML comment: <!-- ... ignore previous instructions ... -->
-      - '<!--.*?(?:ignore\s+(?:all\s+)?(?:any\s+)?(?:previous\s+)?instructions|disregard\s+(?:all\s+)?(?:previous\s+)?(?:instructions|rules)|forget\s+(?:everything|all\s+previous|your\s+instructions)|new\s+(?:primary\s+)?instruction|reveal\s+(?:your\s+)?(?:system\s+prompt|api\s+key|secret|token)|exfiltrat|fetch\s+https?://).*?-->'
+      - '<!--[\s\S]{0,800}?(?:ignore\s+(?:all\s+)?(?:any\s+)?(?:(?:your|the|my)\s+)?(?:(?:previous|prior|above)\s+)?instructions|disregard\s+(?:all\s+)?(?:previous\s+)?(?:instructions|rules)|forget\s+(?:everything|all\s+previous|your\s+instructions)|new\s+(?:primary\s+)?instruction|reveal\s+(?:your\s+)?(?:system\s+prompt|api\s+key|secret|token)|exfiltrat|fetch\s+https?://)[\s\S]{0,800}?-->'
       # Injection text following a CSS-hidden style attribute (avoids quote-char class issues)
       - 'style=[^>]*(?:display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0)[^>]*>[^<]{0,400}(?:ignore\s+(?:all\s+)?(?:previous\s+)?instructions|exfiltrat|fetch\s+https?://)'
       # Injection text inside an aria-hidden element (.true. matches "true" or ''true'')
@@ -1225,6 +1225,30 @@ rules:
       # pty allocated around the CLI, so it must still name a real subcommand.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
     action: block
+
+  # ── HIGH: Driving a running browser over remote debugging ──────────
+  # An agent that attaches to an already-running browser (Chrome DevTools
+  # Protocol on a local debugging port) acts with every session that browser
+  # is logged into, and its traffic leaves from the browser - so the egress
+  # allowlist never sees it (localhost is a private destination). A subagent
+  # used exactly this to reach a site the egress policy had just blocked.
+  # Asks rather than blocks: attaching a test harness to a throwaway browser is
+  # legitimate. Inside a subagent the ask becomes a refusal it reports back.
+  - id: browser-session-control
+    severity: HIGH
+    category: security_bypass
+    title: Attaching to a running browser over remote debugging (uses its logged-in sessions; bypasses egress)
+    event_types: [shell, file_write]
+    fields: [command, content]
+    patterns:
+      - '\bconnect_?over_?cdp\b'
+      - '\bpuppeteer(?:-core)?\s*\.\s*connect\s*\('
+      - '\bchrome-remote-interface\b'
+      - '(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]):92[0-9]{2}\b(?![0-9])'
+      - '/devtools/(?:browser|page)/[0-9a-f-]{8,}'
+    action: step_up
+    # No per-rule `mode`: one here takes the whole shipped policy off the
+    # legacy category bridge. security_bypass is in block_categories.
 
   # ── CRITICAL: Audit-trail tampering ────────────────────────────────
   # The signed audit trail (~/.prismor/audit/) is only trustworthy if the
