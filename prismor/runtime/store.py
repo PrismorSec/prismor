@@ -3307,7 +3307,7 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
         # Old rows (and models not priced at recording time) retain request
         # boundaries. Never apply a long-context threshold to their SUM.
         for r in conn.execute(
-            "SELECT session_id, model, COALESCE(input_tokens,0) as input,"  # nosec B608
+            "SELECT session_id, model, COALESCE(input_tokens,0) as input,"  # nosec B608 - only placeholder count is interpolated; values are bound
             "       COALESCE(output_tokens,0) as output, COALESCE(cache_read_tokens,0) as cache_read,"
             "       COALESCE(cache_creation_tokens,0)-COALESCE(cache_1h_tokens,0) as cache_5m,"
             "       COALESCE(cache_1h_tokens,0) as cache_1h"
