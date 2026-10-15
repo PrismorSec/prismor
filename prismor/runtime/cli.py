@@ -7361,7 +7361,7 @@ def _fmt_cost(cost: Dict[str, Any]) -> str:
 
 
 def format_session_tokens(payload: Dict[str, Any]) -> str:
-    from prismor.runtime.pricing import cost_usd, fmt_usd
+    from prismor.runtime.pricing import fmt_usd
     lines = [f"Session {payload['sessionId']}", "=" * 40]
     if not payload.get("known"):
         lines.append("No token usage recorded and no local transcript for this session.")
@@ -7377,7 +7377,8 @@ def format_session_tokens(payload: Dict[str, Any]) -> str:
         "", "By model", "--------",
     ])
     for model, mt in payload["by_model"].items():
-        lines.append(f"  {model:<32} {fmt_usd(cost_usd(mt, model)):>10}   in {mt['input']:,}  out {mt['output']:,}")
+        usd = payload["cost_by_model"].get(model)
+        lines.append(f"  {model:<32} {fmt_usd(usd):>10}   in {mt['input']:,}  out {mt['output']:,}")
     return "\n".join(lines)
 
 

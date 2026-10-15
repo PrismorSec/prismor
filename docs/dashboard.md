@@ -265,6 +265,15 @@ offline machines; `PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a
 means no transcript is on this machine for that agent; `—` means the model has
 no known price.
 
+Pricing applies to each request before costs are summed. When a model's price
+feed includes rates above 200k input tokens, the higher rates apply to the whole
+request only when input plus cache read/write tokens exceeds 200,000; output
+tokens do not select the tier. Recorded costs are retained when rates refresh.
+Older rows without a recorded price are priced individually from their token
+counts. Custom rates can include `input_above_200k`, `output_above_200k`,
+`cache_read_above_200k`, `cache_write_above_200k`, and `cache_1h_above_200k`;
+any missing tier rate keeps that bucket's base rate.
+
 ---
 
 ## Offline analysis: `analyze` and `ingest`

@@ -8,6 +8,8 @@ Rates refresh from LiteLLM's public price file at most once per 12 hours
 (cached at ``$PRISMOR_HOME/pricing-cache.json``; set ``PRISMOR_PRICING_OFFLINE=1``
 to never fetch). Override or extend with ``$PRISMOR_HOME/pricing.json``
 ({model: {input, output, cache_read, cache_write, cache_1h}}, USD per 1M).
+Optional ``<bucket>_above_200k`` rates apply to a whole request when its input
+(including cache reads and writes) exceeds 200,000 tokens.
 """
 
 from __future__ import annotations
@@ -76,6 +78,16 @@ def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         }
         if v.get("cache_creation_input_token_cost_above_1hr"):
             rate["cache_1h"] = per_m("cache_creation_input_token_cost_above_1hr")
+        for bucket, field in (
+            ("input", "input_cost_per_token"),
+            ("output", "output_cost_per_token"),
+            ("cache_read", "cache_read_input_token_cost"),
+            ("cache_write", "cache_creation_input_token_cost"),
+            ("cache_1h", "cache_creation_input_token_cost_above_1hr"),
+        ):
+            tier_field = field + "_above_200k_tokens"
+            if v.get(tier_field) is not None:
+                rate[bucket + "_above_200k"] = per_m(tier_field)
         out.setdefault(key.lower().split("/")[-1], rate)  # exact id, e.g. Bedrock's regional us.anthropic.* rate
         out.setdefault(normalize_model(key), rate)
     return out
@@ -161,11 +173,21 @@ def price_for(model: str, fetch: bool = True) -> Optional[Dict[str, float]]:
 
 
 def cost_usd(tokens: Dict[str, Any], model: str, fetch: bool = True) -> Optional[float]:
-    """tokens: input, output, cache_read, cache_5m, cache_1h (missing -> 0)."""
+    """Price one request, never a session's summed tokens.
+
+    tokens: input, output, cache_read, cache_5m, cache_1h (missing -> 0).
+    Input buckets are disjoint; cache_1h is not counted again in cache_5m.
+    Missing tier rates keep that bucket's base rate.
+    """
     rate = price_for(model, fetch)
     if rate is None:
         return None
     t = {k: int(tokens.get(k) or 0) for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
+    if t["input"] + t["cache_read"] + t["cache_5m"] + t["cache_1h"] > 200_000:
+        rate = dict(rate)
+        for bucket in ("input", "output", "cache_read", "cache_write", "cache_1h"):
+            if bucket + "_above_200k" in rate:
+                rate[bucket] = rate[bucket + "_above_200k"]
     return (
         t["input"] * rate["input"]
         + t["output"] * rate["output"]

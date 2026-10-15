@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
-from prismor.runtime import store
+from prismor.runtime import pricing, store
 from prismor.runtime.hooks import _is_pre_action
 from prismor.runtime.pricing import cost_usd, normalize_model
 
@@ -165,15 +165,21 @@ def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any],
     heartbeat's next flush, never a request of its own."""
     reasoning = int(row.get("reasoning_tokens") or 0)
     row = {k: v for k, v in row.items() if k != "reasoning_tokens"}  # not a store column
+    cache_5m = row["cache_creation_tokens"] - row["cache_1h_tokens"]
+    tokens = {"input": row["input_tokens"], "output": row["output_tokens"], "cache_read": row["cache_read_tokens"],
+              "cache_5m": cache_5m, "cache_1h": row["cache_1h_tokens"]}
+    # No network in a hook: persist the request's estimate from known rates.
+    # Unknown prices remain NULL and can be resolved later by sessions_cost.
+    try:
+        row["cost_usd"] = cost_usd(tokens, row["model"], fetch=False)
+    except Exception:
+        row["cost_usd"] = None  # a broken price override must not drop usage
     if not store.record_token_usage(workspace=workspace, session_id=session_id, **row):
         return
     try:
         from prismor.runtime.enterprise import identity as _identity, telemetry_spool as _spool
         if not _identity.is_enrolled():
             return
-        cache_5m = row["cache_creation_tokens"] - row["cache_1h_tokens"]
-        tokens = {"input": row["input_tokens"], "output": row["output_tokens"], "cache_read": row["cache_read_tokens"],
-                  "cache_5m": cache_5m, "cache_1h": row["cache_1h_tokens"]}
         provider = _provider(row["model"])
         _spool.append([{
             "schema": "prismor.runtime.telemetry.v1",
@@ -195,7 +201,7 @@ def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any],
                 "cache_read_tokens": row["cache_read_tokens"], "cache_write_tokens": row["cache_creation_tokens"],
                 "cache_1h_tokens": row["cache_1h_tokens"], "reasoning_tokens": reasoning,
             },
-            "cost_usd": cost_usd(tokens, row["model"], fetch=False),
+            "cost_usd": row["cost_usd"],
             "redacted": True,
         }])
     except Exception:
@@ -241,6 +247,10 @@ def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True
     ``known`` False = no usage rows and no transcript (agent we can't meter);
     ``priced`` False = usage exists but no model matched the price table.
     Never conflate either with $0.00."""
+    if session_ids:
+        # Keep refreshing rates off the hook path even when every stored
+        # request already has a cost and needs no fallback pricing.
+        pricing._table()
     if backfill:
         for sid in session_ids:
             backfill_session(workspace, sid)
@@ -251,19 +261,27 @@ def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True
         if not entry:
             out[sid] = {"known": False, "priced": False, "usd": None}
             continue
-        total, unpriced, tokens = 0.0, [], {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}
+        total, unpriced, cost_by_model = 0.0, [], {}
+        tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}
         for model, t in entry["by_model"].items():
             for k in tokens:
                 tokens[k] += t[k]
-            usd = cost_usd(t, model)
-            if usd is None:
-                unpriced.append(model)
-            else:
+            usd = entry["cost_by_model"][model]
+            for turn in entry["unpriced_turns"].get(model, []):
+                turn_usd = cost_usd(turn, model)
+                if turn_usd is None:
+                    if model not in unpriced:
+                        unpriced.append(model)
+                else:
+                    usd = (usd or 0.0) + turn_usd
+            cost_by_model[model] = usd
+            if usd is not None:
                 total += usd
-        priced = len(unpriced) < len(entry["by_model"])
+        priced = any(usd is not None for usd in cost_by_model.values())
         out[sid] = {
             "known": True, "priced": priced, "usd": total if priced else None,
             "tokens": tokens, "by_model": entry["by_model"], "unpriced": unpriced, "turns": entry["turns"],
+            "cost_by_model": cost_by_model,
         }
     return out
 
