@@ -3,6 +3,7 @@ that lists agents: the registry, the install/uninstall CLI, setup's detection,
 and the status/doctor scans. Each of these used to keep its own hand-written
 list, and agents added later (gemini, opencode, ...) silently went missing."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,17 @@ import pytest
 from prismor.runtime import hooks
 from prismor.runtime.cli import _hooks_by_scope, build_parser
 from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks
-from prismor.runtime.integrations.registry import get
+from prismor.runtime.integrations.registry import BLOCKING, get
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def test_registry_schema_blocking_modes_match_runtime():
+    schema = json.loads(
+        (REPO_ROOT / "prismor/runtime/integrations/registry.schema.json").read_text()
+    )
+    blocking = schema["definitions"]["integration"]["properties"]["blocking"]["enum"]
+    assert set(blocking) == BLOCKING
 
 
 @pytest.mark.parametrize("agent", _SUPPORTED_AGENTS)

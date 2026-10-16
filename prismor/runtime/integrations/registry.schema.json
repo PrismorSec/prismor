@@ -70,7 +70,8 @@
             "throw",
             "proxy-deny",
             "none",
-            "client-side"
+            "client-side",
+            "return-block"
           ]
         },
         "events": {
