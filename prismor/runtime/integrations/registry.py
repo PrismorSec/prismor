@@ -144,7 +144,13 @@ def governance(agent_id: str, path: Optional[Path] = None) -> Dict[str, Any]:
     if entry is None:
         return {"hooks": False, "mirror": "unknown", "recommended": "none",
                 "surfaces": "unknown", "scope": None, "disable": None, "notes": None}
-    hooks = entry.surface == "hook-config" and entry.status != "sweep-only"
+    # A coding agent whose "hooks" are a plugin Prismor writes into it
+    # (OpenCode, OpenClaw, Hermes Agent: surface sdk) is hooked by
+    # `install-hooks` exactly like a hook-config agent. Counting only
+    # hook-config told setup and `prismor coverage` OpenCode had no hook
+    # protocol and could only be mirrored.
+    hooks = ((entry.surface == "hook-config" and entry.status != "sweep-only")
+             or (entry.surface == "sdk" and entry.kind == "coding-agent" and entry.status == "shipped"))
     mirror_status = str(entry.mirror.get("status") or "unknown")
     mirror_ok = mirror_status in _MIRROR_USABLE
     if hooks and mirror_ok:

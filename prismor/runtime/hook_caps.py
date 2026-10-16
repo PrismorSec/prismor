@@ -102,6 +102,11 @@ CAPS: Dict[str, HookCaps] = {
                        "session_start": "SessionStart",
                        "user_prompt_submit": "UserPromptSubmit"},
     ),
+    # Prismor's own OpenCode plugin (hooks._OPENCODE_PLUGIN_JS) reads a
+    # top-level additionalContext from the dispatcher's stdout and appends it
+    # to the tool's output, which tool.execute.after may mutate
+    # (packages/plugin/src/index.ts, session/tools.ts in sst/opencode).
+    "opencode": HookCaps(post_context=FLAT),
 }
 
 _NONE = HookCaps()

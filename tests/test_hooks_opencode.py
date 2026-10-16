@@ -158,9 +158,10 @@ class TestNormalizeOpenCode(unittest.TestCase):
         self.assertEqual(event["content"], "console.log('hi')")
 
     def test_fetch_tool_maps_to_network(self):
+        # OpenCode's fetch tool id is "webfetch" (packages/opencode/src/tool/webfetch.ts).
         event = self._n({
             "hookEvent": "tool.execute.before",
-            "toolName": "fetch",
+            "toolName": "webfetch",
             "toolInput": {"url": "https://api.github.com"},
         })
         self.assertEqual(event["type"], "network")

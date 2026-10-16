@@ -474,8 +474,10 @@ def test_mirror_only_agents_are_surfaced_to_setup():
     this they look unsupported rather than differently-supported."""
     from prismor.runtime.setup_wizard import _mirror_only_agents
     names = _mirror_only_agents()
-    assert "OpenCode" in names
+    assert "Amp" in names
     assert "Claude Code" not in names, "an agent with hooks must not be listed as MCP-only"
+    # OpenCode's hooks are a plugin install-hooks writes; it is not MCP-only.
+    assert "OpenCode" not in names
 
 
 def test_registry_mirror_blocks_are_well_formed():
@@ -581,18 +583,18 @@ def test_opencode_round_trips_its_project_config(tmp_path, monkeypatch):
     server = data["mcp"]["prismor-tools"]
     assert server["type"] == "local" and server["enabled"] is True
     assert "--mirror" in server["command"]
-    for tool in mirror_cli._OPENCODE_NATIVE_TOOLS:
-        assert data["tools"][tool] is False
+    for key in mirror_cli._OPENCODE_DENY_KEYS:
+        assert data["permission"][key] == "deny"
+        for agent in mirror_cli._OPENCODE_AGENTS:
+            assert data["agent"][agent]["permission"][key] == "deny"
     assert data["model"] == "anthropic/claude-sonnet-4-5", "unrelated config must survive"
-    assert data["tools"]["webfetch"] is False
+    assert data["tools"] == {"webfetch": False}, "the developer's own tools block is left alone"
     assert (tmp_path / "opencode.json.pre-mirror.bak").exists()
 
     assert mirror_cli.mirror_off_opencode(tmp_path) == 0
     data = json.loads(cfg.read_text())
-    assert "mcp" not in data
-    assert data["model"] == "anthropic/claude-sonnet-4-5"
-    # the developer's own disabled tool stays disabled
-    assert data["tools"] == {"webfetch": False}
+    data.pop("$schema", None)  # `on` adds it; harmless to keep
+    assert data == {"model": "anthropic/claude-sonnet-4-5", "tools": {"webfetch": False}}
 
 
 def test_opencode_off_leaves_a_tool_the_developer_disabled(tmp_path, monkeypatch):
@@ -606,15 +608,102 @@ def test_opencode_off_leaves_a_tool_the_developer_disabled(tmp_path, monkeypatch
     assert data["tools"]["bash"] is False, "on() never disabled it, so off() must not enable it"
 
 
-def test_opencode_is_the_highest_value_mirror_target():
-    """It has no hook protocol, so the mirror is the only interposition point
-    that exists for it — the recommendation must not point at hooks."""
+def test_opencode_is_hooked_first_and_mirrorable():
+    """OpenCode's hooks are a plugin `install-hooks` writes, so hooks are the
+    recommendation; the mirror stays available as the layer that holds under
+    `opencode --pure` (no external plugins)."""
     from prismor.runtime.integrations.registry import governance
     from prismor.runtime.mirror_cli import INSTALLABLE_AGENTS
     g = governance("opencode")
-    assert g["hooks"] is False
-    assert g["recommended"] == "mirror"
+    assert g["hooks"] is True
+    assert g["recommended"] == "hooks"
+    assert g["surfaces"] == "hooks + MCP"
     assert "opencode" in INSTALLABLE_AGENTS
+
+
+# OpenCode merges the developer's `permission` over `tools: {x: false}` and
+# applies the last matching rule, so a mirror that only set `tools` left the
+# natives on whenever any config layer allowed them (verified on 1.19.2).
+
+def _oc_on_off(tmp_path, monkeypatch, project):
+    from prismor.runtime import mirror_cli
+    monkeypatch.setattr(mirror_cli, "_preflight", lambda entry, timeout=25.0: (True, "Bash"))
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps(project))
+    assert mirror_cli.mirror_on_opencode(tmp_path) == 0
+    on = json.loads(cfg.read_text())
+    assert mirror_cli.mirror_off_opencode(tmp_path) == 0
+    off = json.loads(cfg.read_text()) if cfg.exists() else {}
+    off.pop("$schema", None)  # `on` adds it; harmless to keep
+    return on, off
+
+
+@pytest.mark.parametrize("permission", [
+    {"bash": "allow"},
+    {"bash": "allow", "*": "allow"},
+    "allow",
+    {"bash": {"git *": "allow", "*": "ask"}, "external_directory": "deny"},
+])
+def test_opencode_denies_come_last_and_off_restores_permission(tmp_path, monkeypatch, permission):
+    from prismor.runtime import mirror_cli
+    on, off = _oc_on_off(tmp_path, monkeypatch, {"permission": permission})
+    keys = list(on["permission"])
+    assert keys[-len(mirror_cli._OPENCODE_DENY_KEYS):] == list(mirror_cli._OPENCODE_DENY_KEYS), \
+        "OpenCode applies the last matching rule: the denies must come after any '*'"
+    if isinstance(permission, str):
+        assert on["permission"]["*"] == permission, "a blanket permission is kept for everything else"
+    assert off == {"permission": permission}
+
+
+def test_opencode_agent_denies_keep_the_developers_agent_config(tmp_path, monkeypatch):
+    project = {"agent": {"build": {"model": "x/y", "permission": {"bash": "allow"}},
+                         "reviewer": {"prompt": "review"}}}
+    on, off = _oc_on_off(tmp_path, monkeypatch, project)
+    assert on["agent"]["build"]["model"] == "x/y"
+    assert on["agent"]["build"]["permission"]["bash"] == "deny"
+    assert on["agent"]["explore"]["permission"]["bash"] == "deny"
+    assert on["agent"]["reviewer"] == {"prompt": "review"}
+    assert off == project
+
+
+def test_opencode_on_twice_still_restores_the_original(tmp_path, monkeypatch):
+    from prismor.runtime import mirror_cli
+    monkeypatch.setattr(mirror_cli, "_preflight", lambda entry, timeout=25.0: (True, "Bash"))
+    cfg = tmp_path / "opencode.json"
+    original = {"permission": {"bash": "allow"}}
+    cfg.write_text(json.dumps(original))
+    assert mirror_cli.mirror_on_opencode(tmp_path) == 0
+    assert mirror_cli.mirror_on_opencode(tmp_path) == 0
+    assert mirror_cli.mirror_off_opencode(tmp_path) == 0
+    data = json.loads(cfg.read_text())
+    data.pop("$schema", None)
+    assert data == original
+
+
+def test_opencode_off_keeps_permission_edits_made_while_on(tmp_path, monkeypatch):
+    from prismor.runtime import mirror_cli
+    monkeypatch.setattr(mirror_cli, "_preflight", lambda entry, timeout=25.0: (True, "Bash"))
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"permission": {"bash": "ask"}}))
+    assert mirror_cli.mirror_on_opencode(tmp_path) == 0
+    data = json.loads(cfg.read_text())
+    data["permission"]["webfetch"] = "allow"   # one of the mirror's own keys: off drops it
+    data["permission"]["task"] = "deny"        # the developer's own edit: off keeps it
+    cfg.write_text(json.dumps(data))
+    assert mirror_cli.mirror_off_opencode(tmp_path) == 0
+    assert json.loads(cfg.read_text())["permission"] == {"bash": "ask", "task": "deny"}
+
+
+def test_opencode_off_undoes_a_tools_block_from_an_older_build(tmp_path, monkeypatch):
+    """Installs made before the permission denies recorded `tools_disabled`."""
+    from prismor.runtime import mirror_cli
+    cfg = tmp_path / "opencode.json"
+    cfg.write_text(json.dumps({"mcp": {"prismor-tools": {"type": "local", "command": ["x"]}},
+                               "tools": {"bash": False, "read": False, "webfetch": False}}))
+    mirror_cli._write_record(tmp_path, {"agent": "opencode", "config_path": str(cfg),
+                                        "server": "prismor-tools", "tools_disabled": ["bash", "read"]})
+    assert mirror_cli.mirror_off_opencode(tmp_path) == 0
+    assert json.loads(cfg.read_text()) == {"tools": {"webfetch": False}}
 
 
 # -- Claude Desktop ----------------------------------------------------------
@@ -716,9 +805,9 @@ def test_webfetch_converts_html_to_text(tmp_path, monkeypatch):
 
 
 def test_opencode_native_webfetch_is_disabled_but_claude_code_keeps_its_own():
-    """OpenCode has no hooks, so its unwatched fetch must go. Claude Code's is
-    already hook-screened and summarises the page — replacing it would be a
-    downgrade."""
+    """OpenCode's fetch is unwatched when plugins are skipped (`--pure`), so
+    under the mirror it must go. Claude Code's is already hook-screened and
+    summarises the page — replacing it would be a downgrade."""
     from prismor.runtime import mirror, mirror_cli
-    assert "webfetch" in mirror_cli._OPENCODE_NATIVE_TOOLS
+    assert "webfetch" in mirror_cli._OPENCODE_DENY_KEYS
     assert "WebFetch" not in mirror.NATIVE_TOOLS_TO_DISABLE

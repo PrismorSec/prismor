@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
 import shlex
 try:
@@ -301,6 +302,38 @@ def _codex_configs(workspace: Path) -> List[Path]:
     return [p for p in _dedupe(candidates) if p.exists()]
 
 
+def _opencode_configs(workspace: Path) -> List[Path]:
+    """OpenCode's config files and the skills it loads.
+
+    Config (packages/opencode/src/config/config.ts): config.json, opencode.json
+    and opencode.jsonc under ~/.config/opencode (or $OPENCODE_CONFIG_DIR), and
+    opencode.json(c) in the project or its .opencode/ directory. Skills
+    (src/skill/index.ts): {skill,skills}/**/SKILL.md under those directories,
+    plus .agents/skills. Its .claude/skills are already Claude's.
+    """
+    home = Path.home()
+    config_dir = Path(os.environ.get("OPENCODE_CONFIG_DIR") or home / ".config" / "opencode")
+    candidates: List[Path] = []
+    for d in (config_dir, workspace, workspace / ".opencode"):
+        for name in ("config.json", "opencode.json", "opencode.jsonc"):
+            if name == "config.json" and d != config_dir:
+                continue  # a project config.json is not OpenCode's
+            candidates.append(d / name)
+    found = [p for p in _dedupe(candidates) if p.exists()]
+    skills: List[Path] = []
+    for root in (config_dir, workspace / ".opencode"):
+        for sub in ("skill", "skills"):
+            if (root / sub).is_dir():
+                skills.extend(sorted((root / sub).rglob("SKILL.md")))
+    for root in (home / ".agents" / "skills", workspace / ".agents" / "skills"):
+        if root.is_dir():
+            skills.extend(sorted(root.rglob("SKILL.md")))
+    ours = _bundled_skill_digest()
+    if ours:
+        skills = [p for p in skills if _digest(p) != ours]
+    return found + [p for p in _dedupe(skills) if p.exists()]
+
+
 def _dedupe(paths: List[Path]) -> List[Path]:
     """De-duplicate paths (preserves order). Resolves each path first so
     symlinks and workspace-that-equals-HOME don't produce duplicates."""
@@ -324,6 +357,7 @@ _AGENT_DISCOVERERS = {
     "openclaw": _openclaw_configs,
     "hermes": _hermes_configs,
     "codex": _codex_configs,
+    "opencode": _opencode_configs,
 }
 
 
@@ -393,6 +427,20 @@ def _extract_mcp_servers(data: Dict[str, Any], agent: str) -> List[Dict[str, Any
             for name, cfg in srv_block.items():
                 servers.append({"name": name, "config": cfg, "raw": json.dumps(cfg, indent=2)})
 
+    # OpenCode: {"mcp": {"name": {"type": "local", "command": [...],
+    # "environment": {...}} | {"type": "remote", "url": ..., "headers": ...}}}.
+    # Mapped onto the mcpServers field names (command list, env) the gateway
+    # and discovery read; raw keeps the declaration as written.
+    mcp = data.get("mcp")
+    if agent == "opencode" and isinstance(mcp, dict):
+        for name, cfg in mcp.items():
+            if not isinstance(cfg, dict):
+                continue
+            norm = dict(cfg)
+            if isinstance(cfg.get("environment"), dict) and "env" not in cfg:
+                norm["env"] = cfg["environment"]
+            servers.append({"name": name, "config": norm, "raw": json.dumps(cfg, indent=2)})
+
     # OpenClaw skills: {"skills": [{"name": ..., ...}]}
     skills_list = data.get("skills") or []
     if isinstance(skills_list, list):
@@ -435,9 +483,13 @@ def parse_config(config_path: Path, agent: Optional[str] = None) -> List[Dict[st
             text = config_path.read_text(encoding="utf-8")
             if config_path.suffix == ".toml":
                 data = tomllib.loads(text)
+            elif config_path.suffix == ".jsonc" or agent == "opencode":
+                data = loads_jsonc(text)
             else:
                 data = json.loads(text)
         except (json.JSONDecodeError, tomllib.TOMLDecodeError, OSError):
+            return []
+        if not isinstance(data, dict):
             return []
         entries = _extract_mcp_servers(data, agent)
 
@@ -445,6 +497,36 @@ def parse_config(config_path: Path, agent: Optional[str] = None) -> List[Dict[st
         entry["source"] = str(config_path)
         entry["agent"] = agent
     return entries
+
+
+def loads_jsonc(text: str) -> Any:
+    """``json.loads`` for JSON with comments and trailing commas (JSONC), the
+    format of opencode.jsonc and VS Code-style configs. String contents are
+    never touched, so a URL's "//" or a literal ",}" survives."""
+    strings: List[str] = []
+    out: List[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            strings.append(text[i:j + 1])
+            out.append(f'"\x00{len(strings) - 1}"')
+            i = j + 1
+        elif text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j == -1 else j
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j == -1 else j + 2
+        else:
+            out.append(c)
+            i += 1
+    body = re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+    body = re.sub(r'"\x00(\d+)"', lambda m: strings[int(m.group(1))], body)
+    return json.loads(body)
 
 
 def _extract_skill_manifest(text: str, path: Path) -> Dict[str, Any]:

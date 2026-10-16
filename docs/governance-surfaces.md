@@ -96,7 +96,7 @@ is not there.
 | Kimi Code (Moonshot AI) | yes | yes | **hooks** | machine |  |
 | Kiro CLI (AWS) | yes | yes | **hooks** | project | from docs, not live-tested |
 | OpenClaw | yes | unknown | **hooks** |  |  |
-| OpenCode | no | yes | **MCP mirror** | project |  |
+| OpenCode | yes | yes (verified) | **hooks** | project | hooks are a plugin Prismor writes to `.opencode/plugins/` |
 | OpenHands | yes | no | **hooks** |  | include_default_tools is SDK-only, not exposed by the CLI |
 | Pi Coding Agent | yes | yes | **hooks** | machine | MCP itself is a third-party adapter, not first-party |
 | Qwen Code (Alibaba) | yes | yes | **hooks** | machine | from docs, not live-tested |
@@ -122,7 +122,7 @@ surfaces available to it, and for agents where Prismor can wire the mirror,
     o  OpenHands         not found   hooks
 
   No hook protocol - govern these with prismor mirror on:
-    OpenCode, Amp, Kilocode
+    Amp, Kilocode
 ```
 
 The mirror is **off by default and stays off unless you ask for it**: it

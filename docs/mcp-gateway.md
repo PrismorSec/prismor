@@ -224,19 +224,28 @@ prismor mirror on --agent opencode     # this project
 prismor mirror off --agent opencode
 ```
 
-The highest-value host to mirror: OpenCode has no hook protocol, so MCP is the
-only interposition point that exists for it - without this Prismor cannot see an
-OpenCode session at all.
+OpenCode is governed by hooks first (`prismor install-hooks --agent opencode`
+writes a plugin into `.opencode/plugins/`). The mirror is the optional second
+layer: it replaces OpenCode's own tools with Prismor's, so a call is screened
+even where the plugin is not loaded (for example `opencode --pure`, which skips
+external plugins).
 
 Everything is one project-scoped `opencode.json`, and there is **no trust gate** -
 the project file both declares the server and grants it. Note the MCP block is
 keyed directly under `mcp`, **not** `mcp.servers`, which published guidance says
 and OpenCode 1.18 rejects.
 
-Verified on OpenCode 1.18.16: after `on`, `opencode mcp list` reports
-`prismor-tools connected` and `opencode debug agent build` shows
-`bash, read, write, edit, grep, glob` all disabled; `off` restores them and
-leaves any tool the developer had disabled themselves alone.
+The natives are switched off with `permission: {<tool>: "deny"}`, written last
+in the project's `permission` block and again under `agent.<build|plan|general|explore>.permission`.
+`tools: {<tool>: false}` is not enough: OpenCode merges any `permission` the
+developer set (a global `"permission": "allow"` included) over it, and the
+natives come back. `off` takes the denies out again and gives back the
+`permission` and `agent` blocks as they were, keeping edits made in between.
+
+Verified on OpenCode 1.19.2: after `on`, `opencode mcp list` reports
+`prismor-tools connected`, and `opencode debug agent build` / `explore` show no
+native tool even with `"permission": "allow"` in the global config; a model
+asking for `bash` is told the tool is unavailable. `off` restores the file.
 
 Other hosts: run `prismor mcp-gateway --mirror` as an MCP server and disable the
 host's own built-ins yourself. The server is host-agnostic — only the config

@@ -274,12 +274,13 @@ agents:
     events: ["tool.execute.before", "tool.execute.after"]
     blocking: throw
     normalizer: _normalize_opencode
-    sources: ["https://opencode.ai/docs/plugins/"]
+    sources: ["https://opencode.ai/docs/plugins/", "https://github.com/sst/opencode/blob/dev/packages/plugin/src/index.ts"]
+    notes: "Plugin module auto-loaded from .opencode/plugins/ or ~/.config/opencode/plugins/; args on output.args. OpenCode only logs a plugin that fails to load, it never shows it. Checked against opencode 1.19.2."
     mirror:
       status: verified
       scope: project
-      disable: "tools.<name>: false"
-      verified: "2026-08-19"
+      disable: "permission.<name>: deny, last in the project block and per built-in agent (tools.<name>: false loses to any permission allow)"
+      verified: "2026-10-16"
       notes: "no trust gate - the project opencode.json both declares and grants the server"
 
   - id: factory-droid

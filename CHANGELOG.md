@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+### Security
+- **OpenCode: GPT-model edits, MCP calls and tool output went unscreened.** OpenCode gives GPT models `apply_patch` (`patchText`) instead of `edit`/`write`, and it reached policy as an opaque unmapped tool, so no path rule (`.prismor/policy.yaml`, `.env`, agent configs) applied to any edit those sessions made. MCP tools, which OpenCode names `<server>_<tool>`, were never classified as MCP, so `mcp` guardrail rules did not fire. The after hook sent no tool output, so prompt-injection screening of fetched pages and MCP results saw nothing. OpenCode now goes through the shared plugin normalizer (with `patchText` and `newString`), MCP tools are matched against OpenCode's configured servers, and the plugin sends `PreToolUse`/`PostToolUse` with the result and the session's `cwd`. A post-tool finding is appended to the output the model sees instead of being thrown after the call already ran. The plugin no longer uses `execSync`, which froze OpenCode for every policy check.
+- **OpenCode MCP servers and skills were missing from the inventory.** Discovery read only `~/.config/opencode/opencode.json` and did not understand its `mcp` block, so `prismor discover`/`scan` reported no OpenCode servers. OpenCode's global and project `opencode.json`, `opencode.jsonc` (comments and trailing commas) and `config.json` are now read, its `mcp` servers inventoried, and skills under `~/.config/opencode/skill(s)`, `.opencode/skill(s)` and `.agents/skills` scanned.
+
+- **`prismor mirror on --agent opencode` left the native tools on.** It wrote `tools: {bash: false, ...}`, which OpenCode turns into permissions and then overrides with any `permission` the developer set, in any config layer: with `"permission": "allow"` in `~/.config/opencode/opencode.json`, or `{"bash": "allow"}` in the project, every native came back while `on` said they were disabled. The mirror now writes `permission` denies, last in the project block and under `agent.build|plan|general|explore`, and `off` restores the `permission` and `agent` blocks as they were. Verified on OpenCode 1.19.2 across eight permission setups.
+
+### Fixed
+- **Setup and coverage said OpenCode had no hook protocol.** `registry.governance()` counted only `hook-config` agents as hookable, so OpenCode, OpenClaw and Hermes Agent (plugin hooks) were listed under "No hook protocol — govern these with prismor mirror on" and recommended the mirror. Docs saying the same are corrected.
+
 ## [1.61.5] — 2026-10-15
 
 ### Security

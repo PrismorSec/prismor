@@ -927,25 +927,68 @@ def mirror_off_codex(workspace: Path) -> int:
 
 # ── OpenCode ─────────────────────────────────────────────────────────────────
 #
-# The most valuable host to mirror: OpenCode has no hook protocol, so MCP is the
-# only interposition point that exists for it — without this Prismor cannot see
-# an OpenCode session at all.
+# OpenCode's hooks are a plugin (hooks._OPENCODE_PLUGIN_JS). The mirror is the
+# layer that still holds when plugins are not loaded: `opencode --pure` skips
+# every external plugin, Prismor's included, but not the project's MCP servers.
 #
 # Everything lives in one project-scoped `opencode.json`, and there is no trust
 # gate: the project file both declares the server and grants it, so `on` is a
 # single file edit. Note the MCP block is keyed directly under `mcp` — NOT
 # `mcp.servers`, which published guidance says and OpenCode 1.18 rejects.
 #
-# Native tool names are lowercase and `tools: {name: false}` removes them from
-# the agent's toolkit (OpenCode also derives a matching `permission: deny` from
-# it, visible in `opencode debug config`).
+# Native tool names are lowercase, and a `deny` permission for one removes it
+# from the agent's toolkit.
 
-# webfetch is in this list but NOT in NATIVE_TOOLS_TO_DISABLE for Claude Code:
-# OpenCode has no hooks, so its native fetch is completely unwatched and the
+# How the natives are switched off. `tools: {x: false}` does not hold: OpenCode
+# turns it into permission rules and merges the developer's `permission` block
+# OVER them (packages/opencode/src/config/config.ts), and of two rules that
+# match it applies the LAST (src/permission/index.ts), so `"permission":
+# "allow"` or `{"bash": "allow"}` in any config layer, global included, put the
+# natives back in front of the model while `mirror on` said they were off.
+# Verified against opencode 1.19.2. The mirror therefore writes explicit
+# `deny`s, last in the project's `permission` block, and again in the
+# per-agent `permission` of OpenCode's own agents, which is applied after every
+# config layer. write/edit/apply_patch share the "edit" permission.
+#
+# webfetch is denied here but NOT in NATIVE_TOOLS_TO_DISABLE for Claude Code:
+# with plugins skipped (--pure) OpenCode's native fetch is unwatched, so the
 # mirrored one is strictly better; Claude Code already screens its own WebFetch
 # through hooks and its version summarises the page, so denying it there would
 # trade a richer tool for no extra coverage.
-_OPENCODE_NATIVE_TOOLS = ("bash", "read", "write", "edit", "grep", "glob", "webfetch")
+_OPENCODE_DENY_KEYS = ("bash", "read", "edit", "grep", "glob", "webfetch")
+# OpenCode's built-in agents that run tools (src/agent/agent.ts); compaction,
+# title and summary already deny everything.
+_OPENCODE_AGENTS = ("build", "plan", "general", "explore")
+
+
+def _opencode_permission_on(perm: Any) -> Dict[str, Any]:
+    """A `permission` block with the mirror's denies appended last."""
+    out: Dict[str, Any] = {"*": perm} if isinstance(perm, str) else {
+        k: v for k, v in (perm or {}).items() if k not in _OPENCODE_DENY_KEYS}
+    for key in _OPENCODE_DENY_KEYS:
+        out[key] = "deny"
+    return out
+
+
+def _opencode_permission_off(cur: Any, before: Any) -> Any:
+    """Undo `_opencode_permission_on`: drop the denies, give back what the
+    developer had for those keys, keep anything they changed meanwhile, and
+    keep their key order (it decides which rule OpenCode applies). None means
+    remove the block."""
+    rest = {k: v for k, v in (cur if isinstance(cur, dict) else {}).items() if k not in _OPENCODE_DENY_KEYS}
+    if isinstance(before, str):
+        return before if rest == {"*": before} else rest
+    if not isinstance(before, dict):
+        return rest or None
+    restored: Dict[str, Any] = {}
+    for key, value in before.items():
+        if key in _OPENCODE_DENY_KEYS:
+            restored[key] = value
+        elif key in rest:
+            restored[key] = rest[key]
+    for key, value in rest.items():
+        restored.setdefault(key, value)
+    return restored
 
 
 def _opencode_config_path(workspace: Path) -> Path:
@@ -972,15 +1015,21 @@ def mirror_on_opencode(workspace: Path, *, mode: str = "enforce") -> int:
     mcp = cfg.get("mcp")
     if mcp is None:
         mcp = cfg["mcp"] = {}
-    if not isinstance(mcp, dict):
-        print(_c(f"prismor mirror on: {path} has an unrecognised 'mcp' block — not touching it.", _RED))
-        return 1
-    tools = cfg.get("tools")
-    if tools is None:
-        tools = cfg["tools"] = {}
-    if not isinstance(tools, dict):
-        print(_c(f"prismor mirror on: {path} has an unrecognised 'tools' block — not touching it.", _RED))
-        return 1
+    perm = cfg.get("permission")
+    agents = cfg.get("agent")
+    for key, value, kinds in (("mcp", mcp, (dict,)), ("permission", perm, (dict, str, type(None))),
+                              ("agent", agents, (dict, type(None)))):
+        bad = not isinstance(value, kinds) or (
+            key == "agent" and any(not isinstance((value or {}).get(a, {}), dict) for a in _OPENCODE_AGENTS))
+        if bad:
+            print(_c(f"prismor mirror on: {path} has an unrecognised '{key}' block — not touching it.", _RED))
+            return 1
+
+    # Re-running `on` must not record its own denies as the developer's.
+    prev = _read_record(workspace) or {}
+    prev = prev if prev.get("agent") == "opencode" else {}
+    permission_before = prev["permission_before"] if "permission_before" in prev else perm
+    agent_before = prev["agent_before"] if "agent_before" in prev else json.loads(json.dumps(agents))
 
     _backup_once(path)
     cfg.setdefault("$schema", "https://opencode.ai/config.json")
@@ -990,26 +1039,30 @@ def mirror_on_opencode(workspace: Path, *, mode: str = "enforce") -> int:
         "enabled": True,
         "environment": dict(entry.get("env") or {}),
     }
-    disabled = []
-    for tool in _OPENCODE_NATIVE_TOOLS:
-        if tools.get(tool) is not False:
-            tools[tool] = False
-            disabled.append(tool)
+    cfg["permission"] = _opencode_permission_on(perm)
+    agents = cfg.setdefault("agent", {})
+    for name in _OPENCODE_AGENTS:
+        agent_cfg = agents.setdefault(name, {})
+        agent_cfg["permission"] = _opencode_permission_on(agent_cfg.get("permission"))
     _write_json(path, cfg)
 
     _write_record(workspace, {
         "agent": "opencode", "scope": "project", "mode": mode,
         "server": mirror.MIRROR_SERVER_NAME,
         "config_path": str(path),
-        "tools_disabled": disabled,
+        # Builds before permission denies wrote `tools: {x: false}`; keep
+        # what they recorded so `off` still undoes it.
+        "tools_disabled": prev.get("tools_disabled") or [],
+        "permission_before": permission_before,
+        "agent_before": agent_before,
         "at": time.time(),
     })
     mirror.set_mirror_config(workspace, override=True)
 
     print(f"  {_c('Prismor mirror is on for OpenCode', _GREEN)} (this project, {mode} mode)")
     print(f"  {_c('server', _DIM)}    {path}  →  mcp.{mirror.MIRROR_SERVER_NAME}")
-    if disabled:
-        print(f"  {_c('natives', _DIM)}   disabled: {', '.join(disabled)}")
+    print(f"  {_c('natives', _DIM)}   denied: {', '.join(_OPENCODE_DENY_KEYS)} "
+          f"{_c('(edit covers write and apply_patch)', _DIM)}")
     print()
     print(f"  {_c('Start a new OpenCode session for it to take effect.', _BOLD)}")
     print(f"  {_c('Verify with', _DIM)} {_c('opencode mcp list', _BOLD)} "
@@ -1039,8 +1092,8 @@ def mirror_off_opencode(workspace: Path) -> int:
         print(f"  {_c('server', _DIM)}    removed mcp.{server} from {path}")
 
     tools = cfg.get("tools")
-    # Re-enable only what `on` turned off; a tool the developer had already
-    # disabled themselves is not ours to switch back on.
+    # Re-enable only what an older `on` turned off; a tool the developer had
+    # already disabled themselves is not ours to switch back on.
     restored = []
     if isinstance(tools, dict):
         for tool in (rec.get("tools_disabled") or []):
@@ -1049,6 +1102,32 @@ def mirror_off_opencode(workspace: Path) -> int:
                 restored.append(tool)
         if not tools:
             cfg.pop("tools", None)
+
+    if "permission_before" in rec and "permission" in cfg:
+        perm = _opencode_permission_off(cfg.get("permission"), rec["permission_before"])
+        if perm is None:
+            cfg.pop("permission", None)
+        else:
+            cfg["permission"] = perm
+        restored = restored or list(_OPENCODE_DENY_KEYS)
+
+    agents = cfg.get("agent")
+    if "agent_before" in rec and isinstance(agents, dict):
+        before = rec["agent_before"] if isinstance(rec["agent_before"], dict) else {}
+        for name in _OPENCODE_AGENTS:
+            agent_cfg = agents.get(name)
+            if not isinstance(agent_cfg, dict):
+                continue
+            had = before.get(name) if isinstance(before.get(name), dict) else None
+            perm = _opencode_permission_off(agent_cfg.get("permission"), (had or {}).get("permission"))
+            if perm is None:
+                agent_cfg.pop("permission", None)
+            else:
+                agent_cfg["permission"] = perm
+            if not agent_cfg and had is None:
+                del agents[name]
+        if not agents and rec["agent_before"] is None:
+            cfg.pop("agent", None)
     if restored:
         changed = True
         print(f"  {_c('natives', _DIM)}   restored: {', '.join(restored)}")

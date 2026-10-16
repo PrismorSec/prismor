@@ -281,7 +281,6 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
     candidates.append(("gemini", home / ".gemini" / "settings.json"))
     candidates.append(("gemini", workspace / ".gemini" / "settings.json"))
     candidates.append(("continue", home / ".continue" / "config.json"))
-    candidates.append(("opencode", home / ".config" / "opencode" / "opencode.json"))
 
     seen: Set[str] = set()
     out: List[Dict[str, Any]] = []

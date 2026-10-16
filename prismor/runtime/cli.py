@@ -1691,7 +1691,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         # for this workspace actually serves a tool of that name.
         try:
             from prismor.runtime import mirror as _mirror
-            if _mirror.already_screened(payload.get("tool_name") or "", workspace,
+            _screened_name = payload.get("tool_name") or ""
+            if args.agent == "opencode":
+                # OpenCode names a mirrored tool prismor-tools_Bash, not mcp__…__Bash.
+                from prismor.runtime.hooks import opencode_mcp_tool_name
+                _screened_name = opencode_mcp_tool_name(str(payload.get("toolName") or ""), workspace)
+            if _mirror.already_screened(_screened_name, workspace,
                                         cwd=str(payload.get("cwd") or "")):
                 sys.exit(0)
         except SystemExit:
@@ -2053,7 +2058,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # brief that FORBADE touching credentials as credential exfiltration,
         # and the parent then told the person Prismor had flagged the launch.
         # What happened inside the subagent is reported at SubagentStop.
-        if _post_ctx_ok and str(payload.get("tool_name") or "") not in ("Task", "Agent"):
+        if _post_ctx_ok and str(payload.get("tool_name") or payload.get("toolName") or "") not in ("Task", "Agent", "task"):
             _sem = [f for f in current_findings
                     if str(f.get("ruleId") or "").startswith("semantic-guard")]
             if _sem:
