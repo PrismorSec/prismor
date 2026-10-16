@@ -261,6 +261,10 @@ def test_proxy_ships_telemetry_off_the_request_path(monkeypatch):
         shipped.append(findings[0]["n"])
 
     monkeypatch.setattr(sinks, "dispatch", slow_dispatch)
+    # install_background_sinks also wraps heartbeat.maybe_flush; registering
+    # the original here makes monkeypatch put it back when the test ends.
+    from prismor.runtime.enterprise import heartbeat
+    monkeypatch.setattr(heartbeat, "maybe_flush", heartbeat.maybe_flush)
     proxy_mod.install_background_sinks()
     assert proxy_mod.install_background_sinks() is sinks.dispatch.queue  # idempotent
 

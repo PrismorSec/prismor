@@ -1664,6 +1664,50 @@ def plugin_load_warning(agent: str, scope: str, workspace: Path, plugin: str = _
                 return "Hermes does not list the Prismor plugin (hermes plugins list)."
             if row[0] != "enabled":
                 return f"Hermes lists the Prismor plugin as {row[0]}; run: hermes plugins enable {plugin}"
+    if agent == "opencode" and shutil.which("opencode"):
+        return _opencode_plugin_load_warning(scope, workspace)
+    return None
+
+
+def _opencode_plugin_load_warning(scope: str, workspace: Path) -> Optional[str]:
+    """OpenCode only logs a plugin that fails to load; it never shows it. So
+    ask it: `opencode debug config` lists every plugin it discovered, and
+    `debug agent build --print-logs` initialises them and logs
+    `failed to load plugin path=… error="…"` for one that breaks (1.19.2)."""
+    from urllib.parse import unquote, urlparse
+    ours = _config_path("opencode", scope, workspace).resolve()
+
+    def _run(argv: List[str]) -> Optional[subprocess.CompletedProcess]:
+        try:
+            return subprocess.run(argv, cwd=str(workspace), capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=90)
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def _is_ours(spec: str) -> bool:
+        try:
+            path = Path(unquote(urlparse(spec).path)) if spec.startswith("file:") else Path(spec)
+            return path.resolve() == ours
+        except (OSError, ValueError):
+            return False
+
+    proc = _run(["opencode", "debug", "config"])
+    if proc is None or "{" not in proc.stdout:
+        return None
+    try:
+        specs = json.loads(proc.stdout[proc.stdout.index("{"):]).get("plugin") or []
+    except (ValueError, AttributeError):
+        return None
+    if not any(_is_ours(str(s)) for s in specs):
+        return f"OpenCode does not list the Prismor plugin {ours} (opencode debug config)."
+    proc = _run(["opencode", "debug", "agent", "build", "--print-logs", "--log-level", "ERROR"])
+    for line in (proc.stderr if proc else "").splitlines():
+        if "failed to load plugin" not in line:
+            continue
+        path = re.search(r'path=(\S+)', line)
+        if path and _is_ours(path.group(1).strip('"')):
+            error = re.search(r'error="([^"]*)"', line)
+            return f"OpenCode failed to load the Prismor plugin: {error.group(1) if error else line.strip()}"
     return None
 
 

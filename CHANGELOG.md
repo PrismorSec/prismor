@@ -7,6 +7,7 @@
 - **`prismor mirror on --agent opencode` left the native tools on.** It wrote `tools: {bash: false, ...}`, which OpenCode turns into permissions and then overrides with any `permission` the developer set, in any config layer: with `"permission": "allow"` in `~/.config/opencode/opencode.json`, or `{"bash": "allow"}` in the project, every native came back while `on` said they were disabled. The mirror now writes `permission` denies, last in the project block and under `agent.build|plan|general|explore`, and `off` restores the `permission` and `agent` blocks as they were. Verified on OpenCode 1.19.2 across eight permission setups.
 
 ### Fixed
+- **`install-hooks --agent opencode` said "Installed" for a plugin OpenCode would not load.** OpenCode only logs a plugin that fails to load. When `opencode` is on PATH, install and setup now ask it (`opencode debug config` for discovery, `opencode debug agent build --print-logs` for load errors) and print `NOT active` with the reason, as they already do for OpenClaw and Hermes.
 - **Setup and coverage said OpenCode had no hook protocol.** `registry.governance()` counted only `hook-config` agents as hookable, so OpenCode, OpenClaw and Hermes Agent (plugin hooks) were listed under "No hook protocol — govern these with prismor mirror on" and recommended the mirror. Docs saying the same are corrected.
 
 ## [1.61.5] — 2026-10-15

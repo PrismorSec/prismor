@@ -443,5 +443,83 @@ class TestInstalledPluginWithRealDispatcher(unittest.TestCase):
             self.assertIsNone(run("ls")["threw"])
 
 
+@unittest.skipIf(os.name == "nt", "fake opencode is a shell script")
+class TestPluginLoadWarning(unittest.TestCase):
+    """install-hooks asks OpenCode whether it loaded the plugin, because
+    OpenCode only logs a plugin that fails to load. A fake `opencode` stands in,
+    replaying the output shapes of opencode 1.19.2."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.ws = self.tmp / "ws"
+        self.plugin = self.ws / ".opencode" / "plugins" / "prismor.js"
+        self.plugin.parent.mkdir(parents=True)
+        self.plugin.write_text("// hook-dispatch\n")
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self._path = os.environ["PATH"]
+        os.environ["PATH"] = f"{self.bin}{os.pathsep}{self._path}"
+
+    def tearDown(self):
+        os.environ["PATH"] = self._path
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _fake(self, plugins, stderr=""):
+        config = json.dumps({"$schema": "https://opencode.ai/config.json", "plugin": plugins})
+        script = self.bin / "opencode"
+        script.write_text(
+            "#!/bin/sh\n"
+            f"if [ \"$2\" = config ]; then printf '%s\\n' '{config}'; exit 0; fi\n"
+            f"printf '%s\\n' '{stderr}' >&2\n")
+        script.chmod(0o755)
+
+    def _warning(self):
+        from prismor.runtime.hooks import plugin_load_warning
+        return plugin_load_warning("opencode", "project", self.ws)
+
+    def test_loaded_plugin_has_no_warning(self):
+        self._fake([self.plugin.resolve().as_uri()])
+        self.assertIsNone(self._warning())
+
+    def test_plugin_not_discovered(self):
+        self._fake(["file:///somewhere/else.js"])
+        self.assertIn("does not list the Prismor plugin", self._warning())
+
+    def test_plugin_that_fails_to_load(self):
+        uri = self.plugin.resolve().as_uri()
+        self._fake([uri], stderr=f'timestamp=x level=ERROR message="failed to load plugin" '
+                                 f'path={uri} error="Plugin export is not a function"')
+        self.assertEqual(self._warning(),
+                         "OpenCode failed to load the Prismor plugin: Plugin export is not a function")
+
+    def test_another_plugins_failure_is_not_ours(self):
+        uri = self.plugin.resolve().as_uri()
+        self._fake([uri], stderr='level=ERROR message="failed to load plugin" '
+                                 'path=file:///x/other.js error="boom"')
+        self.assertIsNone(self._warning())
+
+    def test_unparseable_output_says_nothing(self):
+        script = self.bin / "opencode"
+        script.write_text("#!/bin/sh\necho not json\n")
+        script.chmod(0o755)
+        self.assertIsNone(self._warning())
+
+    def test_install_reports_it(self):
+        self._fake([])
+        with tempfile.TemporaryDirectory() as home:
+            old = {k: os.environ.get(k) for k in ("HOME", "PRISMOR_HOME")}
+            os.environ.update(HOME=home, PRISMOR_HOME=str(Path(home) / ".prismor"))
+            try:
+                res = install_hooks(repo_root=_REPO, workspace=self.ws, agent="opencode",
+                                    scope="project", mode="observe")
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+        self.assertIn("does not list the Prismor plugin", res[0]["loadWarning"])
+
+
 if __name__ == "__main__":
     unittest.main()
