@@ -144,3 +144,17 @@ def test_transcript_backfill_uses_request_costs(workspace):
     assert token_usage.backfill_session(workspace, "s", str(path))
     assert _cost(workspace)["usd"] == pytest.approx(0.55)
     assert _cost(workspace)["turns"] == 2
+
+
+@pytest.mark.parametrize("model,tokens,expected", [
+    ("claude-opus-5-5", 300_000, 1.2),           # flat $4/M across the 1M window
+    ("claude-haiku-5-5", 150_000, 0.075),        # >100k: $0.50/M
+    ("gpt-6-astra", 300_000, 6.0),               # >272k: $20/M
+    ("gemini-3.1-pro-preview", 250_000, 1.0),    # >200k: $4/M
+])
+def test_offline_snapshot_prices_current_models(tmp_path, monkeypatch, model, tokens, expected):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    monkeypatch.setenv("PRISMOR_PRICING_OFFLINE", "1")
+    pricing._table.cache_clear()
+    assert pricing.cost_usd({"input": tokens}, model, fetch=False) == pytest.approx(expected)
+    pricing._table.cache_clear()

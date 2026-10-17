@@ -27,7 +27,7 @@ PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_pric
 PRICING_TTL_SECONDS = 12 * 3600
 PRICING_TIMEOUT_SECONDS = 5
 
-# Offline floor: a snapshot of LiteLLM's price file (USD per 1M, 2026-09-14).
+# Offline floor: a snapshot of LiteLLM's price file (USD per 1M, 2026-10-17).
 # The live feed below overrides it; this only matters on a machine that never
 # reaches the network.
 PRICES: Dict[str, Dict[str, float]] = {
@@ -38,12 +38,15 @@ PRICES: Dict[str, Dict[str, float]] = {
     "claude-opus-4-7": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_1h": 10.0},
     "claude-opus-4-8": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_1h": 10.0},
     "claude-opus-5": {"input": 5.0, "output": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_1h": 10.0},
+    "claude-opus-5-5": {"input": 4.0, "output": 20.0, "cache_read": 0.2, "cache_write": 5.0, "cache_1h": 8.0},
     "claude-fable-5-1": {"input": 10.0, "output": 50.0, "cache_read": 0.25, "cache_write": 12.5, "cache_1h": 20.0},
     "claude-sonnet-4": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_1h": 6.0},
     "claude-sonnet-4-5": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_1h": 6.0},
     "claude-sonnet-4-6": {"input": 3.0, "output": 15.0, "cache_read": 0.3, "cache_write": 3.75, "cache_1h": 6.0},
     "claude-sonnet-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "cache_1h": 4.0},
+    "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5, "cache_1h": 4.0},
     "claude-haiku-4-5": {"input": 1.0, "output": 5.0, "cache_read": 0.1, "cache_write": 1.25, "cache_1h": 2.0},
+    "claude-haiku-5-5": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_1h": 0.2, "long_context_threshold": 100000, "input_long_context": 0.5, "output_long_context": 2.5, "cache_write_long_context": 0.625, "cache_1h_long_context": 1.0, "cache_read_long_context": 0.05},
     "gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0},
     "gpt-5-mini": {"input": 0.25, "output": 2.0, "cache_read": 0.025, "cache_write": 0.0},
     "gpt-5-nano": {"input": 0.05, "output": 0.4, "cache_read": 0.005, "cache_write": 0.0},
@@ -51,6 +54,11 @@ PRICES: Dict[str, Dict[str, float]] = {
     "gpt-5.2": {"input": 1.75, "output": 14.0, "cache_read": 0.175, "cache_write": 0.0},
     "gpt-5.5": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 0.0, "long_context_threshold": 272000,
                 "input_long_context": 10.0, "output_long_context": 45.0, "cache_read_long_context": 1.0},
+    "gpt-5.6": {"input": 4.0, "output": 20.0, "cache_read": 0.4, "cache_write": 5.0, "long_context_threshold": 272000, "cache_write_long_context": 10.0, "cache_read_long_context": 0.8, "input_long_context": 8.0, "output_long_context": 30.0},
+    "gpt-6-astra": {"input": 10.0, "output": 50.0, "cache_read": 1.0, "cache_write": 12.5, "long_context_threshold": 272000, "cache_write_long_context": 25.0, "cache_read_long_context": 2.0, "input_long_context": 20.0, "output_long_context": 75.0},
+    "gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "long_context_threshold": 272000, "cache_write_long_context": 5.0, "cache_read_long_context": 0.4, "input_long_context": 4.0, "output_long_context": 15.0},
+    "gpt-6.1-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.1, "cache_write": 2.5, "long_context_threshold": 272000, "cache_write_long_context": 5.0, "cache_read_long_context": 0.2, "input_long_context": 4.0, "output_long_context": 15.0},
+    "gpt-6-luna": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "long_context_threshold": 272000, "cache_write_long_context": 0.25, "cache_read_long_context": 0.02, "input_long_context": 0.2, "output_long_context": 0.75},
     "gpt-4.1": {"input": 2.0, "output": 8.0, "cache_read": 0.5, "cache_write": 0.0},
     "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075, "cache_write": 0.0},
@@ -60,6 +68,8 @@ PRICES: Dict[str, Dict[str, float]] = {
                        "input_long_context": 2.5, "output_long_context": 15.0, "cache_read_long_context": 0.25,
                        "cache_write_long_context": 0.25},
     "gemini-2.5-flash": {"input": 0.3, "output": 2.5, "cache_read": 0.03, "cache_write": 0.0},
+    "gemini-3.1-pro-preview": {"input": 2.0, "output": 12.0, "cache_read": 0.2, "cache_write": 0.0, "long_context_threshold": 200000, "cache_write_long_context": 0.25, "cache_read_long_context": 0.4, "input_long_context": 4.0, "output_long_context": 18.0},
+    "gemini-3.5-flash": {"input": 1.5, "output": 9.0, "cache_read": 0.15, "cache_write": 0.0},
 }
 
 CACHE_1H_INPUT_MULTIPLIER = 2.0

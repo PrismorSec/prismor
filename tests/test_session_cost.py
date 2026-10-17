@@ -106,8 +106,8 @@ def test_pricing_lookup(home):
     assert pricing.price_for("claude-opus-4-1")["input"] == 15.0
     assert pricing.price_for("claude-fable-5-1[1m]")["output"] == 50.0
     assert pricing.price_for("claude-opus-5-20261001")["cache_1h"] == 10.0
-    assert pricing.price_for("gpt-6-astra") is None
+    assert pricing.price_for("gpt-9-nova") is None
     (Path(home / "home")).mkdir(exist_ok=True)
-    (home / "home" / "pricing.json").write_text(json.dumps({"gpt-6": {"input": 1, "output": 2, "cache_read": 0, "cache_write": 0}}))
+    (home / "home" / "pricing.json").write_text(json.dumps({"gpt-9": {"input": 1, "output": 2, "cache_read": 0, "cache_write": 0}}))
     pricing._table.cache_clear()
-    assert pricing.price_for("gpt-6-astra")["output"] == 2
+    assert pricing.price_for("gpt-9-nova")["output"] == 2
