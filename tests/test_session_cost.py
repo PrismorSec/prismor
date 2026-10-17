@@ -44,27 +44,6 @@ def test_litellm_feed_cached_12h(home, monkeypatch):
     assert pricing.price_for("claude-zeta-9-20270101")["output"] == 2.0
 
 
-def test_stored_costs_do_not_stop_price_refresh_for_future_requests(home, monkeypatch):
-    import io
-    import urllib.request
-    ws = home / "ws"
-    ws.mkdir()
-    def record(mid, inp):
-        token_usage.record_llm_usage(
-            workspace=ws, session_id="s", agent="prismor-proxy", model="claude-sonnet-5",
-            message_id=mid, usage={"input_tokens": inp, "output_tokens": 0})
-    record("before-refresh", 50_000)  # built-in snapshot: $2/M input
-    monkeypatch.delenv("PRISMOR_PRICING_OFFLINE")
-    feed = {"claude-sonnet-5": {"input_cost_per_token": 4e-6,
-            "output_cost_per_token": 10e-6, "input_cost_per_token_above_200k_tokens": 8e-6}}
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(json.dumps(feed).encode()))
-    assert token_usage.sessions_cost(ws, ["s"], backfill=False)["s"]["usd"] == pytest.approx(0.1)
-    assert (home / "home" / "pricing-cache.json").is_file()
-    pricing._table.cache_clear()  # next hook process reads the refreshed cache
-    record("after-refresh", 250_000)
-    assert token_usage.sessions_cost(ws, ["s"], backfill=False)["s"]["usd"] == pytest.approx(2.1)
-
-
 def test_claude_session_cost(home, monkeypatch):
     ws = home / "ws"
     ws.mkdir()

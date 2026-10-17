@@ -8,8 +8,9 @@ Rates refresh from LiteLLM's public price file at most once per 12 hours
 (cached at ``$PRISMOR_HOME/pricing-cache.json``; set ``PRISMOR_PRICING_OFFLINE=1``
 to never fetch). Override or extend with ``$PRISMOR_HOME/pricing.json``
 ({model: {input, output, cache_read, cache_write, cache_1h}}, USD per 1M).
-Optional ``<bucket>_above_200k`` rates apply to a whole request when its input
-(including cache reads and writes) exceeds 200,000 tokens.
+Long-context tiers: ``long_context_threshold`` plus ``<bucket>_long_context``
+rates price a whole request when its input (cache reads and writes included)
+exceeds the threshold, which comes from the feed's ``*_above_<N>k_tokens`` field.
 """
 
 from __future__ import annotations
@@ -48,17 +49,32 @@ PRICES: Dict[str, Dict[str, float]] = {
     "gpt-5-nano": {"input": 0.05, "output": 0.4, "cache_read": 0.005, "cache_write": 0.0},
     "gpt-5.1": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0},
     "gpt-5.2": {"input": 1.75, "output": 14.0, "cache_read": 0.175, "cache_write": 0.0},
-    "gpt-5.5": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 0.0},
+    "gpt-5.5": {"input": 5.0, "output": 30.0, "cache_read": 0.5, "cache_write": 0.0, "long_context_threshold": 272000,
+                "input_long_context": 10.0, "output_long_context": 45.0, "cache_read_long_context": 1.0},
     "gpt-4.1": {"input": 2.0, "output": 8.0, "cache_read": 0.5, "cache_write": 0.0},
     "gpt-4o": {"input": 2.5, "output": 10.0, "cache_read": 1.25, "cache_write": 0.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.6, "cache_read": 0.075, "cache_write": 0.0},
     "o3": {"input": 2.0, "output": 8.0, "cache_read": 0.5, "cache_write": 0.0},
     "o4-mini": {"input": 1.1, "output": 4.4, "cache_read": 0.275, "cache_write": 0.0},
-    "gemini-2.5-pro": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0},
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.0, "cache_read": 0.125, "cache_write": 0.0, "long_context_threshold": 200000,
+                       "input_long_context": 2.5, "output_long_context": 15.0, "cache_read_long_context": 0.25,
+                       "cache_write_long_context": 0.25},
     "gemini-2.5-flash": {"input": 0.3, "output": 2.5, "cache_read": 0.03, "cache_write": 0.0},
 }
 
 CACHE_1H_INPUT_MULTIPLIER = 2.0
+
+
+# Long-context rates, e.g. input_cost_per_token_above_200k_tokens (Claude, Gemini),
+# _above_272k_tokens (OpenAI), _above_100k_tokens. fullmatch skips the
+# _priority/_batches/_flex service-tier variants.
+_TIER_FIELD = re.compile(r"(\w+?)_above_(\d+)k_tokens")
+_TIER_BUCKETS = {
+    "input_cost_per_token": "input", "output_cost_per_token": "output",
+    "cache_read_input_token_cost": "cache_read", "cache_creation_input_token_cost": "cache_write",
+    "cache_creation_input_token_cost_above_1hr": "cache_1h",
+}
+_BUCKETS = ("input", "output", "cache_read", "cache_write", "cache_1h")
 
 
 def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
@@ -78,16 +94,11 @@ def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
         }
         if v.get("cache_creation_input_token_cost_above_1hr"):
             rate["cache_1h"] = per_m("cache_creation_input_token_cost_above_1hr")
-        for bucket, field in (
-            ("input", "input_cost_per_token"),
-            ("output", "output_cost_per_token"),
-            ("cache_read", "cache_read_input_token_cost"),
-            ("cache_write", "cache_creation_input_token_cost"),
-            ("cache_1h", "cache_creation_input_token_cost_above_1hr"),
-        ):
-            tier_field = field + "_above_200k_tokens"
-            if v.get(tier_field) is not None:
-                rate[bucket + "_above_200k"] = per_m(tier_field)
+        for field, value in v.items():
+            tier = _TIER_FIELD.fullmatch(field)
+            if tier and tier.group(1) in _TIER_BUCKETS and value is not None:
+                rate["long_context_threshold"] = int(tier.group(2)) * 1000
+                rate[_TIER_BUCKETS[tier.group(1)] + "_long_context"] = per_m(field)
         out.setdefault(key.lower().split("/")[-1], rate)  # exact id, e.g. Bedrock's regional us.anthropic.* rate
         out.setdefault(normalize_model(key), rate)
     return out
@@ -173,21 +184,23 @@ def price_for(model: str, fetch: bool = True) -> Optional[Dict[str, float]]:
 
 
 def cost_usd(tokens: Dict[str, Any], model: str, fetch: bool = True) -> Optional[float]:
-    """Price one request, never a session's summed tokens.
-
-    tokens: input, output, cache_read, cache_5m, cache_1h (missing -> 0).
-    Input buckets are disjoint; cache_1h is not counted again in cache_5m.
-    Missing tier rates keep that bucket's base rate.
-    """
+    """Price one request, never a session's summed tokens (see request_cost)."""
     rate = price_for(model, fetch)
-    if rate is None:
-        return None
+    return None if rate is None else request_cost(tokens, rate)
+
+
+def request_cost(tokens: Dict[str, Any], rate: Dict[str, float]) -> float:
+    """tokens: input, output, cache_read, cache_5m, cache_1h (missing -> 0).
+
+    Input buckets are disjoint; cache_1h is not counted again in cache_5m.
+    Above ``long_context_threshold`` input tokens (cache included; output never
+    selects the tier) the whole request uses the long-context rates, as
+    Anthropic, Google and OpenAI bill it. A missing tier rate keeps its base rate.
+    """
     t = {k: int(tokens.get(k) or 0) for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
-    if t["input"] + t["cache_read"] + t["cache_5m"] + t["cache_1h"] > 200_000:
-        rate = dict(rate)
-        for bucket in ("input", "output", "cache_read", "cache_write", "cache_1h"):
-            if bucket + "_above_200k" in rate:
-                rate[bucket] = rate[bucket + "_above_200k"]
+    threshold = rate.get("long_context_threshold")
+    if threshold and t["input"] + t["cache_read"] + t["cache_5m"] + t["cache_1h"] > threshold:
+        rate = {**rate, **{b: rate[b + "_long_context"] for b in _BUCKETS if b + "_long_context" in rate}}
     return (
         t["input"] * rate["input"]
         + t["output"] * rate["output"]
