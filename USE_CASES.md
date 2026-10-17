@@ -257,7 +257,7 @@ If the file was tampered with after generation, verification fails. If it passes
 If your agents were running before Prismor was deployed, use transcript ingest to replay historical session logs through the current policy:
 
 ```bash
-prismor ingest --discover
+prismor analyze-history
 ```
 
 This finds on-disk session transcripts from supported agents and replays them through the live policy engine, so the dashboard is populated and you can show what enforcement would have blocked. Use `--coverage` to identify sessions that ran with no monitoring at all.

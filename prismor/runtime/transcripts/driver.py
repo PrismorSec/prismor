@@ -42,8 +42,8 @@ from prismor.runtime.transcripts.base import DiscoveredSession, ParseStats
 REPLAY_PREFIX = "replay"
 
 #: Source tag written to `sessions.source`, distinguishing reconstructed
-#: activity from live hook capture (`hook`) and from the pre-existing
-#: single-file `ingest --input` path (`ingest`).
+#: activity from live hook capture (`hook`). Older stores may also hold
+#: `ingest` rows, written by the removed single-file `ingest --input` path.
 REPLAY_SOURCE = "transcript"
 
 

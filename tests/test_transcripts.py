@@ -1,4 +1,4 @@
-"""Tests for at-rest transcript reconstruction (`prismor ingest --discover`)."""
+"""Tests for at-rest transcript reconstruction (`prismor analyze-history`)."""
 
 from __future__ import annotations
 
@@ -661,16 +661,20 @@ def test_coverage_recognizes_a_governed_session(claude_home, tmp_path):
 
 
 # --------------------------------------------------------------------------
-# CLI back-compat
+# CLI surface
 # --------------------------------------------------------------------------
 
 
-def test_ingest_requires_input_without_discover(capsys):
-    from prismor.runtime.cli import main
+def test_analyze_history_is_registered_and_takes_no_input_flag():
+    """The sweep is its own command now; `--input` belongs to `analyze` alone."""
+    from prismor.runtime.cli import build_parser
 
-    with pytest.raises(SystemExit) as excinfo:
-        main(["ingest"])
-    assert "--input" in str(excinfo.value)
+    sub = next(a for a in build_parser()._actions if a.__class__.__name__ == "_SubParsersAction")
+    assert "analyze-history" in sub.choices
+    assert "ingest" not in sub.choices
+    flags = {o for action in sub.choices["analyze-history"]._actions for o in action.option_strings}
+    assert "--input" not in flags
+    assert {"--coverage", "--no-persist", "--show", "--since"} <= flags
 
 
 # --------------------------------------------------------------------------
@@ -720,7 +724,7 @@ def test_backfill_offer_non_interactive_hints_instead_of_prompting(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "empty"))
     _offer(tmp_path, interactive=False)
     out = capsys.readouterr().out
-    assert "prismor ingest --discover" in out
+    assert "prismor analyze-history" in out
     assert "Reconstruct it now?" not in out
 
 
@@ -881,7 +885,7 @@ def test_silent_session_human_report_names_the_shapes(silent_claude_home, tmp_pa
     assert "type=summary" in text
 
 
-# ── analyze/ingest --input on a raw transcript ─────────────────────────────
+# ── analyze --input on a raw transcript ────────────────────────────────────
 # Fed a raw on-disk transcript, `--input` used to evaluate records the engine
 # does not understand and report 0 findings. It must normalize like --discover.
 

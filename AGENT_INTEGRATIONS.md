@@ -128,7 +128,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 - **Config:** `~/.hermes/plugins/prismor/` (global) or `./.hermes/plugins/prismor/` (project): `plugin.yaml` + `__init__.py`. Builds up to 1.61 wrote a JS plugin and a `~/.hermes/config.json` Hermes never read; install and uninstall now remove them.
 - **Plugin hooks:** `pre_tool_call` (block), `post_tool_call` (record), `pre_llm_call` (screen the user turn; Hermes cannot stop a turn here, so a flagged prompt becomes context telling the model not to act on it).
 - **Verified live** against Hermes Agent v0.19.0 (2026-10-15): `chmod -R 777` blocked, `ls` allowed, sessions recorded as `agent=hermes`.
-- **Session ingest:** offline analysis of `~/.hermes/sessions/*.jsonl` via `prismor ingest --input <file> --agent hermes`, or `prismor ingest --discover --agent hermes` to sweep the whole store automatically. The Hermes transcript adapter is contract-tested but has not been verified against real Hermes session data — run it with `--strict` and report a zero-event sweep. See [Transcript Ingest](docs/transcript-ingest.md).
+- **Session history:** offline analysis of `~/.hermes/sessions/*.jsonl` via `prismor analyze-history --agent hermes`, which sweeps the whole store automatically. The Hermes transcript adapter is contract-tested but has not been verified against real Hermes session data — run it with `--strict` and report a zero-event sweep. See [Transcript Ingest](docs/transcript-ingest.md).
 - **Code:** `prismor/runtime/hooks.py` `_write_hermes_plugin()`, `_normalize_hermes()`.
 
 **2. Secret cloaking** (`prismor cloak install --agent hermes --scope global`):

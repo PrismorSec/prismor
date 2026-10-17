@@ -207,7 +207,7 @@ Then replay the change before you trust it:
 
 ```bash
 prismor policy validate .prismor/policy.yaml
-prismor ingest --discover --since 30d      # re-score history under the new policy
+prismor analyze-history --since 30d      # re-score history under the new policy
 prismor query "SELECT json_extract(enrichment_json,'$.ruleId') r, count(*) FROM findings GROUP BY 1 ORDER BY 2 DESC"
 ```
 

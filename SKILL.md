@@ -246,7 +246,7 @@ prismor mode apply dev-safe --force      # overwrite a hand-written policy
 
 Three things worth knowing:
 
-- **`--observe` is the "what would break?" answer.** Observation is a modifier, not a mode: it compiles the full posture with nothing blocking, so the user sees what `regulated-airgap` *would* stop before letting it stop anything. When someone asks "can I turn this up without wrecking my workflow?", that's the command to hand them — paired with `prismor ingest --discover --no-persist` for the same question asked against real history.
+- **`--observe` is the "what would break?" answer.** Observation is a modifier, not a mode: it compiles the full posture with nothing blocking, so the user sees what `regulated-airgap` *would* stop before letting it stop anything. When someone asks "can I turn this up without wrecking my workflow?", that's the command to hand them — paired with `prismor analyze-history --no-persist` for the same question asked against real history.
 - **Every mode states its residual risk, and `mode explain` prints it.** Don't describe a mode as making a workspace safe. `dev-safe` still allows exfiltration through allowlisted hosts — an injected agent can paste `.env` into a GitHub issue, because `api.github.com` is on the list by design. Quote the residual-risk line rather than paraphrasing it away.
 - **`mode show` reports drift.** If a hand edit moved the policy away from its mode, `show` says so and prints the `--force` re-apply. Report drift; don't resolve it yourself. It also reports when the sandbox was *skipped* because Docker isn't installed — rules, egress and tag rules still apply, but commands run unsandboxed, and the user should know.
 
@@ -389,9 +389,9 @@ pick the smallest tool that answers the question:
 | "Full security posture, fix what you can" | `prismor audit --fix` |
 | "Run this command in a safe sandbox" | `prismor sandbox run <cmd>` (`sandbox status` first — it reports whether Docker is even available) |
 | "Recurring blocked patterns I should accept?" | `prismor learn` |
-| "What did my agents do before Prismor was installed?" | `prismor ingest --discover` (replays on-disk transcripts through the policy engine; add `--since 90d`) |
-| "What would break if I turn on enforce?" | `prismor ingest --discover --no-persist` — what the current policy **would have blocked** across real history, per rule. For a whole posture, `prismor mode apply <id> --observe`. |
-| "Did any agent session run unmonitored?" | `prismor ingest --discover --coverage` |
+| "What did my agents do before Prismor was installed?" | `prismor analyze-history` (replays on-disk transcripts through the policy engine; add `--since 90d`) |
+| "What would break if I turn on enforce?" | `prismor analyze-history --no-persist` — what the current policy **would have blocked** across real history, per rule. For a whole posture, `prismor mode apply <id> --observe`. |
+| "Did any agent session run unmonitored?" | `prismor analyze-history --coverage` |
 | "Show all registered workspaces" | `prismor status --all` |
 | "What AI is running on this machine that Prismor doesn't govern?" | `prismor discover` (host-local, read-only; `agents` / `mcp` / `keys` to narrow, `--fail-on-shadow` for CI) |
 | "Which surfaces are actually protecting me?" | `prismor surfaces` |

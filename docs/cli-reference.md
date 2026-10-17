@@ -96,8 +96,8 @@ prismor
 │
 ├─ Sessions & evidence
 │   ├─ sessions / session     List / show stored sessions (session <id> --changes: files touched)
-│   ├─ analyze / ingest       Run the engine over a JSONL session
-│   ├─ ingest --discover      Reconstruct past agent activity from on-disk transcripts
+│   ├─ analyze                Run the engine over a JSONL session
+│   ├─ analyze-history       Reconstruct past agent activity from on-disk transcripts
 │   ├─ tokens                 Token usage and estimated cost
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ attest [verify|coverage]  Evidence bundle + framework coverage
@@ -435,11 +435,10 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor memory <status\|trust\|verify\|scan\|approve\|sign\|unsign>` | — | Instruction-file integrity for CLAUDE.md, AGENTS.md and friends: TOFU baselines (`trust`, `approve` after a reviewed change), read-only `verify`, content `scan` for memory-poisoning directives, and Ed25519 `sign`/`unsign` (requires `PRISMOR_MEMORY_SIGNED_MODE=1`). See [Memory integrity](memory-integrity.md). |
 | `prismor deps` | `--json`, `--workspace`, `--offline` | Match exact dependency versions against OSV.dev, the signed advisory feed and the bundled IOC list, plus lockfile integrity. `--offline` skips OSV. See [Supply Chain](supply-chain.md). |
 | `prismor analyze [FILE]` | `--input`, `--json`, `--sarif` | Run the engine over a JSONL session (or the most recent one). SARIF output feeds GitHub Code Scanning. |
-| `prismor ingest --input <file>` | `--session-id`, `--agent` | Analyze a single pre-normalized JSONL session and store it in the local DB. |
-| `prismor ingest --discover` | `--agent`, `--since`, `--max-events`, `--no-persist`, `--strict`, `--semantic`, `--json` | Sweep this machine for agent transcripts, replay them through the live policy engine, and report what the current policy **would have blocked** vs warned. Backfills the dashboard with history from before install. `--strict` exits non-zero if a non-empty transcript yields no events; `--semantic` re-enables the semantic guard (off during sweeps so it can't fire an LLM call per event across all history). See [Transcript Ingest](transcript-ingest.md). |
-| `prismor ingest --discover --coverage` | `--json` | Show sessions that ran with no live Prismor record — activity that executed ungoverned. |
-| `prismor ingest --discover --show <rule>` | — | List the individual tool calls behind one rule id. |
-| `prismor ingest --discover --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
+| `prismor analyze-history` | `--agent`, `--since`, `--max-events`, `--no-persist`, `--strict`, `--semantic`, `--json` | Sweep this machine for agent transcripts, replay them through the live policy engine, and report what the current policy **would have blocked** vs warned. Backfills the dashboard with history from before install. `--strict` exits non-zero if a non-empty transcript yields no events; `--semantic` re-enables the semantic guard (off during sweeps so it can't fire an LLM call per event across all history). See [Transcript Ingest](transcript-ingest.md). |
+| `prismor analyze-history --coverage` | `--json` | Show sessions that ran with no live Prismor record — activity that executed ungoverned. |
+| `prismor analyze-history --show <rule>` | — | List the individual tool calls behind one rule id. |
+| `prismor analyze-history --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
 | `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json` | List stored sessions, optionally only flagged ones, optionally across all workspaces. |
 | `prismor session <id>` | `--json`, `--changes` | Drill into one session's tool-call trace + findings. `--changes` lists the files it wrote (as diffs), the commands it ran, and a drafted PR description. See [Dev insights](dev-insights.md). |
 | `prismor rca [session]` | `--workspace`, `--json` | What went wrong in a session (default: the latest): the first failure with the calls before it, retry loops, reverted edits. See [Dev insights](dev-insights.md). |

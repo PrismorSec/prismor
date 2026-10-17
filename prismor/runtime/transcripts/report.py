@@ -261,7 +261,7 @@ def format_report(result: SweepResult, *, since_label: str = "all history") -> s
         extra = len(result.silent_sessions) - 3
         if extra > 0:
             lines.append(_c(f"     … and {extra} more", _DIM))
-        lines.append(_c("     Full paths: prismor ingest --discover --json", _DIM))
+        lines.append(_c("     Full paths: prismor analyze-history --json", _DIM))
         lines.append("")
 
     if result.truncated:
@@ -275,7 +275,7 @@ def format_report(result: SweepResult, *, since_label: str = "all history") -> s
         example = (_group(would_block) or _group(warnings))[0][0]
         lines.append(_c("Next", _BOLD))
         lines.append(
-            f"  prismor ingest --discover --show {example}"
+            f"  prismor analyze-history --show {example}"
             + _c("   see the calls behind a rule", _DIM)
         )
         if would_block:

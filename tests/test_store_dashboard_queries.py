@@ -3,7 +3,7 @@
 get_findings_page() and get_events_page() had no test coverage at all before
 PrismorSec/prismor#129 and #130 — both queries built session data through the
 real ingest path (save_session_snapshot + analyze_events) and asserted on the
-API-shaped output, the same way `prismor ingest` / the dashboard actually do.
+API-shaped output, the same way `prismor analyze-history` / the dashboard do.
 """
 
 import json

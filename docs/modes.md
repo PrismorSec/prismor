@@ -134,7 +134,7 @@ For the same question asked against real history rather than future work, replay
 your existing transcripts through the policy:
 
 ```bash
-prismor ingest --discover --no-persist          # what the policy would have blocked, per rule
+prismor analyze-history --no-persist          # what the policy would have blocked, per rule
 ```
 
 ## Drift

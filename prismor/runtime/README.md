@@ -31,7 +31,7 @@ python3 prismor/runtime/cli.py analyze --input prismor/runtime/examples/sample-s
 | Command | Description |
 |---------|-------------|
 | `analyze --input <file>` | Evaluate a JSONL session file and print findings |
-| `ingest --input <file>` | Analyze and store a session in the local database |
+| `analyze-history` | Replay on-disk agent transcripts through the live policy engine and store them |
 | `sessions` | List stored sessions |
 | `session --session-id <id>` | Show details for a specific session |
 | `install-hooks --agent <agent>` | Install Prismor hooks into agent config |

@@ -206,7 +206,7 @@ _HELP_GROUPS = [
     ("Scanning & audit",     ["audit", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
     ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy", "elevenlabs",
                               "sandbox", "inference-hook", "eval-server"]),
-    ("Sessions & evidence",  ["sessions", "session", "analyze", "ingest", "tokens", "trail", "attest", "query"]),
+    ("Sessions & evidence",  ["sessions", "session", "analyze", "analyze-history", "tokens", "trail", "attest", "query"]),
     ("Org enrollment",       ["enroll", "enroll-status", "workspace", "exempt", "logout"]),
 ]
 

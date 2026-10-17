@@ -11,7 +11,7 @@ Commands:
   status        One-shot health check for this workspace (--all for every workspace)
   doctor        Health-check every runtime subsystem (hooks, policy, signature, enrollment, sink, chain); --json for scripts
   analyze       Analyze a JSONL session file
-  ingest        Analyze and store a session
+  analyze-history Replay on-disk agent transcripts through the live policy engine
   sessions      List stored sessions
   session       Show a specific session
   install-hooks Install IDE hooks for real-time monitoring
@@ -108,7 +108,6 @@ from prismor.runtime.store import (
     list_registered_workspaces,
     list_sessions,
     register_workspace,
-    save_session_snapshot,
 )
 
 SEVERITY_WEIGHT = {
@@ -1476,29 +1475,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             emit(result, as_json=args.json, formatter=format_analysis)
         return
 
-    # ── ingest ─────────────────────────────────────────────────────────
-    if args.command == "ingest":
-        if getattr(args, "discover", False):
-            return _ingest_discover(args, workspace=workspace, repo_root=repo_root)
-        if not args.input:
-            raise SystemExit(
-                "ingest requires --input <file>, or --discover to sweep this "
-                "machine's agent transcripts"
-            )
-        events = load_input_events(args.input, workspace=workspace)
-        result = analyze_events(events, repo_root=repo_root, workspace=workspace)
-        session_id = args.session_id or derive_session_id(events)
-        db_path = save_session_snapshot(
-            workspace=workspace,
-            session_id=session_id,
-            agent=args.agent or infer_agent(events),
-            source="ingest",
-            repo_url=None,
-            events=events,
-            analysis=result,
-        )
-        print(f"Stored session {session_id} in {db_path} with {result['summary']['totalFindings']} findings.")
-        return
+    # ── analyze-history ────────────────────────────────────────────────
+    if args.command == "analyze-history":
+        return _analyze_history(args, workspace=workspace, repo_root=repo_root)
 
     # ── sessions ───────────────────────────────────────────────────────
     if args.command == "sessions":
@@ -4045,65 +4024,55 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--json", action="store_true", help="Output raw JSON")
     analyze.add_argument("--sarif", action="store_true", help="Output SARIF 2.1.0 format")
 
-    # ── ingest ─────────────────────────────────────────────────────────
-    ingest = subparsers.add_parser("ingest", help="Analyze and store a session")
-    # `--input` stays optional-but-primary: without --discover it is required,
-    # preserving the documented single-file workflow exactly.
-    ingest.add_argument("--input", help="Path to JSONL session file")
-    ingest.add_argument("--workspace", help="Workspace path")
-    ingest.add_argument("--session-id", help="Override session ID")
-    ingest.add_argument(
+    # ── analyze-history ────────────────────────────────────────────────
+    history = subparsers.add_parser(
+        "analyze-history",
+        help="Replay on-disk agent transcripts through the live policy engine",
+    )
+    history.add_argument("--workspace", help="Workspace path")
+    history.add_argument(
         "--agent",
-        help=(
-            "With --input: the agent name to label the session with. "
-            "With --discover: which agents' transcripts to sweep "
-            "(comma-separated, or 'all')."
-        ),
+        help="Which agents' transcripts to sweep (comma-separated, or 'all')",
     )
-    ingest.add_argument(
-        "--discover",
-        action="store_true",
-        help="Sweep this machine for agent transcripts instead of reading one file",
-    )
-    ingest.add_argument(
+    history.add_argument(
         "--since",
         default="30d",
         help="Only transcripts modified within this window, e.g. 7d, 90d, all (default: 30d)",
     )
-    ingest.add_argument(
+    history.add_argument(
         "--max-events",
         type=int,
         default=50_000,
         help="Ceiling on evaluated events per sweep (default: 50000)",
     )
-    ingest.add_argument(
+    history.add_argument(
         "--no-persist",
         action="store_true",
         help="Report only; do not write reconstructed sessions to the store",
     )
-    ingest.add_argument("--show", help="List the individual calls matching a rule id")
-    ingest.add_argument(
+    history.add_argument("--show", help="List the individual calls matching a rule id")
+    history.add_argument(
         "--strict",
         action="store_true",
         help="Exit non-zero if a non-empty transcript produced no events",
     )
-    ingest.add_argument(
+    history.add_argument(
         "--semantic",
         action="store_true",
         help="Allow the semantic guard to run during the sweep (off by default: "
              "it would fire one LLM call per uncertain event across all history)",
     )
-    ingest.add_argument(
+    history.add_argument(
         "--coverage",
         action="store_true",
         help="Report sessions that ran with no live Prismor record (ungoverned)",
     )
-    ingest.add_argument(
+    history.add_argument(
         "--export-corpus",
         metavar="DIR",
         help="Write labelled rule fixtures (redacted) from the replayed events",
     )
-    ingest.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    history.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     # ── sessions ───────────────────────────────────────────────────────
     sessions_parser = subparsers.add_parser("sessions", help="List stored sessions")
@@ -6878,7 +6847,7 @@ def _offer_transcript_backfill(
     if choice is False:
         return
 
-    hint = "  Reconstruct it later with: prismor ingest --discover\n"
+    hint = "  Reconstruct it later with: prismor analyze-history\n"
 
     try:
         from prismor.runtime.transcripts.driver import SweepOptions, pending
@@ -6944,7 +6913,7 @@ def _sweep_summary(todo, max_events: int) -> str:
 def _run_sweep(options, todo=None):
     """Run a transcript sweep with a heads-up and a live progress line.
 
-    Everything goes to stderr, so `ingest --discover --json` stays parseable.
+    Everything goes to stderr, so `analyze-history --json` stays parseable.
     """
     from prismor.runtime.transcripts.driver import pending, sweep
 
@@ -6982,7 +6951,7 @@ def _run_sweep(options, todo=None):
             sys.stderr.flush()
 
 
-def _ingest_discover(args, *, workspace: Path, repo_root: Path) -> None:
+def _analyze_history(args, *, workspace: Path, repo_root: Path) -> None:
     """Sweep this machine's agent transcripts and report what policy would do."""
     from prismor.runtime.transcripts.adapters import ADAPTERS
     from prismor.runtime.transcripts.driver import SweepOptions
@@ -7072,11 +7041,11 @@ _ENGINE_EVENT_TYPES = frozenset({
 
 
 def load_input_events(input_path: str, *, workspace: Path) -> List[Dict[str, Any]]:
-    """Events for `analyze/ingest --input`.
+    """Events for `analyze --input`.
 
     Engine events and live hook payloads pass through unchanged. A raw on-disk
     agent transcript (Claude/Codex/Hermes) goes through the same
-    adapter -> normalize_payload chain as `ingest --discover`; fed raw, the
+    adapter -> normalize_payload chain as `analyze-history`; fed raw, the
     engine understood none of its records and reported 0 findings.
     """
     records = parse_jsonl(read_text(input_path))
@@ -7128,19 +7097,6 @@ def read_text(input_path: str) -> str:
     if input_path == "-":
         return sys.stdin.read()
     return Path(input_path).read_text(encoding="utf-8")
-
-
-def derive_session_id(events: List[Dict[str, Any]]) -> str:
-    if events and events[0].get("session_id"):
-        return str(events[0]["session_id"])
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-    return f"session-{Path.cwd().name}-{timestamp}"
-
-
-def infer_agent(events: List[Dict[str, Any]]) -> str:
-    if events and events[0].get("agent"):
-        return str(events[0]["agent"])
-    return "unknown"
 
 
 def emit(payload: Any, *, as_json: bool, formatter=None) -> None:

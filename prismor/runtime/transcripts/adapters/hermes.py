@@ -17,8 +17,8 @@ Hermes store as a format mismatch to report, not as "nothing happened"; run
 with ``--strict`` to make that fail loudly.
 
 Files that already contain normalized Prismor events (rather than plugin
-payloads) remain served by the pre-existing ``prismor ingest --input`` path,
-which is unchanged.
+payloads) are handled by ``prismor analyze --input``, which passes engine-shaped
+events straight through.
 """
 
 from __future__ import annotations

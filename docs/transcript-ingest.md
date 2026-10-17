@@ -7,15 +7,15 @@ the only thing that fed it was the hook dispatcher, so Prismor's knowledge
 started the moment you ran `install-hooks`.
 
 Every supported agent already writes a complete record of what it did to disk.
-`prismor ingest --discover` reads those records, replays them through the same
+`prismor analyze-history` reads those records, replays them through the same
 pipeline live tool calls take, and tells you what your policy would have done.
 
 ```bash
-prismor ingest --discover                      # last 30 days, all agents
-prismor ingest --discover --since 90d
-prismor ingest --discover --agent claude,codex
-prismor ingest --discover --coverage           # sessions that ran unmonitored
-prismor ingest --discover --show destructive-command
+prismor analyze-history                      # last 30 days, all agents
+prismor analyze-history --since 90d
+prismor analyze-history --agent claude,codex
+prismor analyze-history --coverage           # sessions that ran unmonitored
+prismor analyze-history --show destructive-command
 ```
 
 ## What it answers
@@ -135,5 +135,5 @@ pattern, and the raw upstream payload is dropped entirely.
 | `--semantic` | off | Allow the semantic guard to run |
 | `--json` | off | Machine-readable output |
 
-`prismor ingest --input <file>` is unchanged and still analyzes a single
-pre-normalized session file.
+To evaluate one session file without a sweep, use `prismor analyze --input
+<file>` (reports findings; does not write to the store).

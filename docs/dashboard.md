@@ -277,7 +277,7 @@ a missing tier rate keeps that bucket's base rate.
 
 ---
 
-## Offline analysis: `analyze` and `ingest`
+## Offline analysis: `analyze`
 
 For CI gating or replaying an old trace against a newer policy:
 
@@ -285,21 +285,20 @@ For CI gating or replaying an old trace against a newer policy:
 prismor analyze                       # analyze the most recent session
 prismor analyze --input session.jsonl # analyze a specific JSONL log
 prismor analyze --sarif               # SARIF 2.1.0 for GitHub Code Scanning
-prismor ingest --input session.jsonl  # analyze AND store in the DB
 ```
 
 `--sarif` output drops straight into GitHub Code Scanning or the VS Code SARIF
 viewer, with full rule metadata.
 
-## Historical sessions: `ingest --discover`
+## Historical sessions: `analyze-history`
 
 Hooks only see sessions that start after they are installed, so a fresh install
-opens an empty dashboard. `prismor ingest --discover` reconstructs what your
+opens an empty dashboard. `prismor analyze-history` reconstructs what your
 agents did *before* that, by replaying their on-disk transcripts through the
 same policy engine live tool calls go through:
 
 ```bash
-prismor ingest --discover --since 90d
+prismor analyze-history --since 90d
 ```
 
 Reconstructed sessions land in the same store and appear in `prismor sessions`,
@@ -317,7 +316,7 @@ used, so an unprefixed replay would overwrite real enforcement history.
 
 A reconstructed finding means a rule matched a recorded action. It does **not**
 mean the action was blocked at the time — Prismor was not running. Use
-`prismor ingest --discover --coverage` to see which sessions had no live record
+`prismor analyze-history --coverage` to see which sessions had no live record
 at all. See [Transcript Ingest](transcript-ingest.md).
 
 ---

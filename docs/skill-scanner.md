@@ -49,5 +49,5 @@ settings:
 Hermes stores per-session JSONL transcripts at `~/.hermes/sessions/` and a queryable SQLite index with FTS5 at `~/.hermes/state.db`. Prismor hooks intercept tool calls at the gateway layer before the transcript is written. The session store can also be ingested offline for retrospective analysis:
 
 ```bash
-prismor ingest --input ~/.hermes/sessions/<id>.jsonl --agent hermes
+prismor analyze-history --agent hermes
 ```
