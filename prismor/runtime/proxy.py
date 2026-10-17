@@ -563,6 +563,9 @@ class Screen:
         self.mode = mode
         self.session_id = session_id
         self.agent_name = agent_name
+        # Next event index per session, seeded from the log on first use.
+        # Unlike _pending, this must survive snapshot rebuilds.
+        self._next_seq: Dict[str, int] = {}
         # session id -> unsnapshotted event count (reset after each rebuild).
         self._pending: Dict[str, int] = {}
         self._dirty_at: Dict[str, float] = {}
@@ -744,7 +747,7 @@ class Screen:
             from prismor.runtime.principal import resolve_subject
             from prismor.runtime.runtime import evaluate_tool_call
             with self._lock:
-                self._persist(event)
+                session_seq = self._persist(event)
                 return evaluate_tool_call(
                     event=event,
                     workspace=self.workspace,
@@ -754,6 +757,7 @@ class Screen:
                     agent_name=self.agent_name,
                     subject=resolve_subject(subject),
                     persist=False,
+                    session_seq=session_seq,
                 )
         except Exception as exc:
             sys.stderr.write(f"[prismor-proxy] evaluation error: {exc}\n")
@@ -772,18 +776,29 @@ class Screen:
             for sid in ready:
                 self.snapshot(sid)
 
-    def _persist(self, event: Dict[str, Any]) -> None:
-        """Append the event; mark the session dirty for a debounced rebuild."""
+    def _persist(self, event: Dict[str, Any]) -> int:
+        """Append and return its session index; called under the evaluation lock.
+
+        Read history only on first use so a restarted proxy resumes the same
+        indexes as the ledger and snapshot, without re-reading on every call.
+        I/O errors reach evaluate's enforce/observe handling: an unknown index
+        must not silently turn a historical policy into a standalone check.
+        """
+        from prismor.runtime.store import append_session_event, read_session_events
+
         sid = str(event.get("session_id") or self.session_id)
-        try:
-            from prismor.runtime.store import append_session_event
-            append_session_event(self.workspace, sid, event)
-        except Exception as exc:
-            sys.stderr.write(f"[prismor-proxy] session log error: {exc}\n")
-            return
+        if sid not in self._next_seq:
+            try:
+                self._next_seq[sid] = len(read_session_events(self.workspace, sid))
+            except FileNotFoundError:
+                self._next_seq[sid] = 0
+        seq = self._next_seq[sid]
+        append_session_event(self.workspace, sid, event)
+        self._next_seq[sid] = seq + 1
         with self._snapshot_lock:
             self._pending[sid] = self._pending.get(sid, 0) + 1
             self._dirty_at[sid] = time.monotonic()
+        return seq
 
     def snapshot(self, session_id: str = "") -> None:
         """Rebuild the session snapshot the console and `prismor sessions` read.
