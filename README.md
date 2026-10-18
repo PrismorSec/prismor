@@ -457,3 +457,5 @@ By participating you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 ---
 
 - [Prismor.dev](https://prismor.dev)
+
+![Prismor CLI Feature Demo](assets/prismor-demo.gif)
