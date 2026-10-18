@@ -661,10 +661,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         revoked = _identity.revoked_info()
         # An env key (PRISMOR_AGENT_KEY) carries no org/device/label, so the
         # local view alone prints "org: None" on a perfectly healthy deployed
-        # agent - and prints "Enrolled" for a revoked one. Ask the server first,
-        # so the HEADLINE reflects what the control plane says, not what a file
-        # on this machine claims.
-        verified = _identity.verify_remote()
+        # agent - and prints "Enrolled" for a revoked one. Unless revocation is
+        # already recorded locally, ask the server so the headline reflects
+        # what the control plane says, not what a file on this machine claims.
+        if revoked:
+            verified = {"ok": False, "error": revoked.get("reason") or "device revoked"}
+        else:
+            print("Checking enrollment with the control plane...", flush=True)
+            verified = _identity.verify_remote()
         if revoked:
             print("Enrolled — but the control plane REJECTED this device's key")
             print(f"  reason:     {revoked.get('reason') or 'rejected (401/403)'}")

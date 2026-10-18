@@ -107,6 +107,28 @@ def test_policy_check_skipped_while_revoked(monkeypatch):
     assert remote_policy.fetch(force=True) is False
 
 
+@pytest.mark.parametrize("revoked", [False, True])
+def test_enroll_status_reports_before_remote_check(tmp_path, monkeypatch, capsys, revoked):
+    from prismor.runtime import cli, hooks
+    from prismor.runtime.enterprise import identity
+
+    identity.save_identity({"device_id": "d1", "org_id": "o1",
+                            "device_key": "prism_dev_test", "api_base": "https://example.test"})
+    if revoked:
+        identity.mark_revoked("rejected (401)")
+
+    def verify():
+        assert not revoked, "a locally revoked device should report without a network call"
+        assert "Checking enrollment" in capsys.readouterr().out
+        return {"ok": False, "error": "unreachable (URLError)"}
+
+    monkeypatch.setattr(identity, "verify_remote", verify)
+    monkeypatch.setattr(hooks, "coverage", lambda _workspace: {})
+    cli.main(["--workspace", str(tmp_path), "enroll-status"])
+    output = capsys.readouterr().out
+    assert ("REJECTED" if revoked else "control plane unreachable") in output
+
+
 # ── control plane unreachable: one shared backoff ───────────────────────
 
 
