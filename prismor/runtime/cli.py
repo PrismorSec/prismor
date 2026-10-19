@@ -799,6 +799,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.command in ("pause", "pause-hard"):
         from prismor.runtime import pause as _pause
+        refused = _pause_refusal(args.command, workspace)
+        if refused:
+            print(refused)
+            raise SystemExit(1)
         hard = args.command == "pause-hard"
         duration_s: Optional[int] = None
         raw_duration = getattr(args, "duration", None)
@@ -2318,6 +2322,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                         # Exit 2 below is Cursor's deny; it shows stdout as the
                         # block message verbatim (no JSON parsing on exit 2).
                         sys.stdout.write(_cursor_deny_text(_block_header(blocking).strip(), reason))
+                    _codex_json = args.agent == "codex" and _hook_event == "PreToolUse" and os.name == "nt"
+                    if _codex_json:
+                        # Codex runs hooks through `powershell -Command` on
+                        # Windows, which reports a native exit 2 as 1, and Codex
+                        # treats 1 as a broken hook and runs the tool. A JSON deny
+                        # on stdout with exit 0 is honored whatever the shell does
+                        # to exit codes (verified live, codex-cli 0.163).
+                        sys.stdout.write(json.dumps({
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "deny",
+                                "permissionDecisionReason": reason,
+                            }
+                        }) + "\n")
                     sys.stderr.write(_block_header(blocking))
                     if blocking.get("evidence"):
                         sys.stderr.write(f"{blocking['evidence']}\n")
@@ -2325,7 +2343,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
                     if unblock_text:
                         sys.stderr.write(f"\n{unblock_text}\n")
-                    raise SystemExit(2)
+                    raise SystemExit(0 if _codex_json else 2)
         elif current_findings:
             # Observe: surface all findings so agents know every package to fix.
             # Prefer a would-be-blocking finding for the dismissal record.
@@ -6177,6 +6195,33 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: 
     print()
     if result["failed"]:
         raise SystemExit(1)
+
+
+def _pause_refusal(command: str, workspace: Path) -> Optional[str]:
+    """Why `prismor pause`/`pause-hard` may not run here, or None.
+
+    Pausing turns enforcement off for every agent on the machine, so it gets
+    the same gate as `prismor unlock`: a person at a terminal, and the unlock
+    password when one is set. An agent whose hooks never fire (nothing screens
+    its shell) could otherwise switch Prismor off for all the others. An open
+    unlock window already lets the agent edit policy, so it may pause too.
+    """
+    import getpass
+    from prismor.runtime import unlock as _unlock
+
+    try:
+        if _unlock.remaining_seconds(workspace):
+            return None
+    except Exception:
+        pass
+    if not sys.stdin.isatty():
+        return (f"prismor {command} needs a terminal — run it yourself, not through an agent.\n"
+                "(An agent may pause only inside an open `prismor unlock` window.)")
+    if _unlock.is_configured():
+        ok, msg = _unlock.verify(getpass.getpass("Prismor unlock password: "))
+        if not ok:
+            return msg
+    return None
 
 
 def _unlock_cmd(args, workspace: Path) -> int:

@@ -1658,7 +1658,12 @@ rules:
     fields: [command]
     patterns:
       - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))'
-      - '\bgit\s+push\b(?=(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s--force(?!-with-lease|-if-includes)\b)(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*[\s:+](?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
+      # A force push that names a protected branch. --force-with-lease and
+      # --force-if-includes still rewrite that branch history, so they count
+      # here; agents reach for the lease form on their own. -f and a +refspec
+      # are the same push spelled differently.
+      - '\bgit\s+push\b(?=(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s(?:--force(?:-with-lease(?:=\S*)?|-if-includes)?|-[a-zA-Z]*f[a-zA-Z]*)(?=\s|$|[;&|)]))(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*[\s:+](?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
+      - '\bgit\s+push\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s\+(?:[^\s:;&|]*:)?(?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
       - '\bgit\s+push(?=[^\n;&|]*\s--force(?!-with-lease|-if-includes)\b)(?:\s+-[\w-]+)*(?:\s+(?!-)[\w.-]+)?(?:\s+-[\w-]+)*(?:\s+\d?>\S*)*\s*(?:$|[;&|)])'
     action: warn
 

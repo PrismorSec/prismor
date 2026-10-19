@@ -372,10 +372,12 @@ def test_installed_command_runs_under_the_platform_shell(agent, tmp_path, fake_h
     assert proc.returncode == 0, proc.stderr[-2000:]
 
 
-# Each agent's own shell-tool payload, and how it reads a deny: Codex and
-# Gemini by exit code 2, Copilot by a JSON permissionDecision on stdout.
+# Each agent's own shell-tool payload, and how it reads a deny: Gemini by exit
+# code 2, Copilot by a JSON permissionDecision on stdout, Codex by a
+# hookSpecificOutput deny on stdout with exit 0 (honored even when the shell
+# mangles exit codes).
 _PS_DENY_CASES = {
-    "codex": ({"hook_event_name": "PreToolUse", "tool_name": "Bash"}, "exit"),
+    "codex": ({"hook_event_name": "PreToolUse", "tool_name": "Bash"}, "hso"),
     "gemini": ({"hook_event_name": "BeforeTool", "tool_name": "run_shell_command"}, "exit"),
     "copilot": ({"hook_event_name": "PreToolUse", "tool_name": "bash"}, "json"),
 }
@@ -397,6 +399,9 @@ def test_powershell_hook_delivers_a_deny(agent, tmp_path, fake_home):
     detail = (proc.returncode, proc.stdout[-800:], proc.stderr[-800:])
     if how == "exit":
         assert proc.returncode == 2, detail
+    elif how == "hso":
+        assert proc.returncode == 0, detail
+        assert json.loads(proc.stdout)["hookSpecificOutput"]["permissionDecision"] == "deny", detail
     else:
         assert json.loads(proc.stdout)["permissionDecision"] == "deny", detail
 

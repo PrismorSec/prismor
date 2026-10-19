@@ -2512,6 +2512,13 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     print(f"[prismor]                        genai.Client(http_options="
           f"types.HttpOptions(base_url='{base}'))")
     print(f"[prismor]                        A2A client base URL={base}")
+    # Agents whose hooks do not fire (or not everywhere) are governed only here,
+    # and each takes the base URL a different way (each verified live).
+    print(f"[prismor]   qwen / openclaw / hermes:  OPENAI_BASE_URL={base}/v1")
+    print(f"[prismor]   goose:                     OPENAI_HOST={base}")
+    print(f"[prismor]   Continue CLI (cn):         apiBase: {base}/v1   (model entry in config.yaml)")
+    print(f"[prismor]   crush:                     \"providers\": {{\"openai\": {{\"base_url\": \"{base}/v1\"}}}}"
+          "   (crush.json; it ignores OPENAI_BASE_URL)")
     def _stop(signum, _frame):
         # SIGTERM is how a container stops, so the flush has to hang off the
         # signal rather than only off KeyboardInterrupt.

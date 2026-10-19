@@ -184,7 +184,8 @@ def _annotate_rules(rules: List[dict], block_categories: Optional[set] = None) -
     ``self_protect``    — Prismor guarding itself; always on, never a choice here.
     ``floor``           — the safety floor (core rule id / core block category).
     ``default_blocked`` — a category the shipped policy blocks in enforce mode.
-    ``recommended``     — what we actually advise turning on: the floor.
+    ``recommended``     — what we actually advise turning on: the floor, plus the
+                          few overridable rules in ``_RECOMMENDED_RULE_IDS``.
 
     Recommending the floor and nothing more is deliberate. Badging the whole
     default block set would mark ~60 of 77 rules "recommended", which is not a
@@ -197,8 +198,16 @@ def _annotate_rules(rules: List[dict], block_categories: Optional[set] = None) -
         r["self_protect"] = rid in self_ids
         r["floor"] = (rid in non_over or cat in core_cats) and not r["self_protect"]
         r["default_blocked"] = bool(cat) and cat in cats and not r["floor"] and not r["self_protect"]
-        r["recommended"] = r["floor"]
+        r["recommended"] = r["floor"] or (rid in _recommended_ids() and not r["self_protect"])
     return rules
+
+
+def _recommended_ids() -> set:
+    try:
+        from prismor.runtime.policy_engine import _RECOMMENDED_RULE_IDS
+        return set(_RECOMMENDED_RULE_IDS)
+    except Exception:
+        return set()
 
 
 def _load_rules() -> List[dict]:

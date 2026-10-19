@@ -102,6 +102,19 @@ _SELF_PROTECTION_RULE_IDS = frozenset({
     "memory-integrity-mismatch",
 })
 
+# Recommended (`setup --recommended`) on top of the floor, but still overridable:
+# a repo that legitimately prints a credential file or registers an autostart
+# entry can relax these with `prismor allow`, unlike floor rules. The metadata
+# rules hand out machine credentials in one request, yet their category
+# (reconnaissance) is not core, so without this they only warned; they stay
+# retunable from the console (observe, off, drop one host).
+_RECOMMENDED_RULE_IDS = frozenset({
+    "secret-file-shell-read",
+    "persistence-windows-autorun",
+    "cloud-metadata-ssrf",
+    "mcp-arg-metadata-endpoint",
+})
+
 # Self-protection rules whose jurisdiction is strictly THIS machine: they guard
 # Prismor's own policy file, unlock credential, and the agent hook config. When
 # one of them matches inside an ssh/docker/kubectl payload, the thing being
