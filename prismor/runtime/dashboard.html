@@ -4192,8 +4192,24 @@ function renderDepHead(it) {
   document.getElementById('extdHead').innerHTML = '<div class="ext-agent-head"><span class="ext-kind">' + safe(it.kind) + '</span><b>' + safe(it.name) + '</b>' +
     (it.warn ? '<span class="ext-cap remote_instructions">placeholder not in vault</span>' : '') + '</div><div class="ext-quiet" style="margin-top:6px">' + sub + '</div>';
 }
+// A hook or plugin has no calls of its own, so the call-based usage panel is
+// empty; draw it from the sessions it ran in instead (one bar unit = one session).
+function renderSessionUsage(sessions) {
+  const since = Date.now() - _depDays * 864e5;
+  const inWin = sessions.filter(s => Date.parse(s.ts) >= since);
+  if (!inWin.length) return;
+  const ts = inWin.map(s => s.ts).sort();
+  const kpis = [['Sessions', inWin.length], ['Agents', new Set(inWin.map(s => s.agent)).size],
+    ['First seen', extWhen(ts[0])], ['Last seen', extWhen(ts[ts.length - 1])]];
+  document.getElementById('extdUsage').innerHTML =
+    '<div class="extd-kpis">' + kpis.map(([l, v]) => '<div><b>' + safe(String(v)) + '</b>' + l + '</div>').join('') + '</div>' +
+    extBars(extActivity(inWin.map(s => ({calls: 1, lastTs: s.ts})), 30), 'big') +
+    '<div class="ext-quiet" style="font-size: 12px">sessions it ran in, by day. A ' + safe(_extDetail.kind || 'hook') + ' runs around calls, so it has no calls of its own.</div>' +
+    '<div class="extd-break"><div><h4>By agent</h4>' + extTally(inWin.map(s => ({agent: s.agent, calls: 1})), r => r.agent) + '</div></div>';
+}
 function renderExtensionDetail(row) {
   const d = _extDetail;
+  if (!((extItemById(_extViewId) || {}).deps || []).length) { d.kind = row.kind; renderSessionUsage(d.sessions || []); }
   document.getElementById('extdAgents').innerHTML = (d.agents || []).length ? '<div class="extd-agents">' + d.agents.map(a =>
     '<div class="extd-agent" style="cursor:pointer" onclick="openAgentView(\'' + safeJsArg(a.agent) + '\')"><b>' + agentIcon(a.agent) + safe(extAgentName(a.agent)) + '</b>' +
       '<small>' + a.sessions + ' session' + (a.sessions === 1 ? '' : 's') + ' · ' + a.calls + ' call' + (a.calls === 1 ? '' : 's') + '</small>' +
