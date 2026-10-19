@@ -4784,6 +4784,49 @@ def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], li
     return out
 
 
+def get_hook_calls(session_ids: List[str], matcher: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """The tool calls a PreToolUse/PostToolUse hook ran around in the given
+    sessions: every call whose tool name the hook's matcher selects ("" or "*"
+    is every tool), newest first, with the input the agent passed."""
+    db = prismor_home() / "prismor.db"
+    if not session_ids or not db.exists():
+        return []
+    try:
+        pat = None if matcher in ("", "*") else re.compile(matcher)
+    except re.error:
+        pat = re.compile(re.escape(matcher))
+    conn = _connect_ro(db)
+    if conn is None:
+        return []
+    out, seen = [], set()
+    try:
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "  # placeholders only, values bound  # nosec B608
+                            "session_id IN (%s) ORDER BY id DESC" % ",".join("?" * len(session_ids)), list(session_ids))
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except ValueError:
+                continue
+            meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            tool = str(meta.get("tool_name") or hook.get("tool_name") or "")
+            if not tool or (pat is not None and not pat.fullmatch(tool)):
+                continue
+            if hook.get("tool_use_id"):
+                if hook["tool_use_id"] in seen:
+                    continue
+                seen.add(hook["tool_use_id"])
+            out.append({"session": row["session_id"], "ts": row["ts"], "agent": raw.get("agent") or "",
+                        "tool": tool, "via": "",
+                        "input": json.dumps(hook.get("tool_input", raw.get("command") or raw.get("url") or ""),
+                                            indent=1, default=str)[:4000]})
+            if len(out) >= limit:
+                break
+    finally:
+        conn.close()
+    return out
+
+
 def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any]:
     """Return scoped rules + recent blocked findings for a session."""
     from prismor.runtime.scoped_agent import load_scoped_rules, check_scoped_rules

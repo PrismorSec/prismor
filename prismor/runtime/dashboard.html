@@ -4216,7 +4216,9 @@ function renderExtensionDetail(row) {
       (a.last ? '<small>last ' + safe(extWhen(a.last)) + '</small>' : '') + '</div>').join('') + '</div>'
     : '<div class="empty">No recorded session has used it' + (d.history ? '.' : ' in the last 50 sessions the ledger keeps.') + '</div>';
   const more = d.history ? '' : ' <a class="ext-sess" onclick="loadExtensionDetail(\'' + safeJsArg(_extViewId) + '\', true)">search full history</a>';
-  document.getElementById('extdCallCount').innerHTML = (d.calls || []).length + ' call' + ((d.calls || []).length === 1 ? '' : 's') + more;
+  const hk = d.hook, tools = hk && ['PreToolUse', 'PostToolUse'].includes(hk.event);
+  document.getElementById('extdCallCount').innerHTML = (tools ? 'ran around ' : '') + (d.calls || []).length + ' call' + ((d.calls || []).length === 1 ? '' : 's') +
+    (tools ? ' matching <code>' + safe(hk.matcher || '*') + '</code>' : '') + more;
   const agentOf = Object.fromEntries((d.sessions || []).map(s => [s.session, s.agent]));
   const rerender = () => renderExtensionDetail(row), sig = _extViewId + (d.history ? ':h' : '');
   const cp = clientPage('extdCallsPager', d.calls || [], 20, rerender, sig);
@@ -4228,7 +4230,8 @@ function renderExtensionDetail(row) {
       '<a class="ext-sess" onclick="navigateToSession(\'' + safeJsArg(c.session) + '\')">session ' + safe(String(c.session).slice(0, 8)) + '</a>' +
       '<span class="ext-quiet">' + safe(extWhen(c.ts)) + (c.via ? ' · ' + safe(c.via) : '') + '</span></div>' +
       (c.input && c.input !== '""' && c.input !== '{}' ? '<pre>' + safe(c.input) + '</pre>' : '<div class="ext-quiet" style="margin-top:4px">no input</div>') + '</div>';
-  }).join('') + cp.html : '<div class="empty">' + (row.kind === 'hook' ? 'A hook runs around calls rather than causing them, so it has no calls of its own.' : 'No tool call traced to it yet.') + '</div>';
+  }).join('') + cp.html : '<div class="empty">' + (row.kind === 'hook' ? (tools ? 'No tool call matching <code>' + safe(hk.matcher || '*') + '</code> in the sessions it ran in.'
+      : 'A ' + safe((hk || {}).event || 'hook') + ' hook runs outside tool calls, so there are no calls to show.') : 'No tool call traced to it yet.') + '</div>';
   document.getElementById('extdSessions').innerHTML = (d.sessions || []).length ? sp.rows.map(s =>
     '<div class="ext-row"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\')">' +
       agentLink(s.agent) + '<span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +

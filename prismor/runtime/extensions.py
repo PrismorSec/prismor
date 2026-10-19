@@ -1465,6 +1465,20 @@ def why(workspace: Path, ref: str) -> Dict[str, Any]:
             "remote_refs": docs, "children": children}
 
 
+def _hook_target(ext_id: str) -> Tuple[str, str]:
+    """(event, matcher) for a hook id ``hook:<settings file>#<event>#<sha8>``.
+    The matcher is read back from the settings file; "" (every tool) when the
+    file or entry is gone, or the hook ships in a plugin."""
+    source, _, rest = ext_id[len("hook:"):].partition("#")
+    event, _, sha8 = rest.partition("#")
+    hooks = (_read_json(Path(source)) or {}).get("hooks") if Path(source).is_file() else None
+    for group in (hooks or {}).get(event) or [] if isinstance(hooks, dict) else []:
+        for h in (group.get("hooks") or []) if isinstance(group, dict) else []:
+            if isinstance(h, dict) and _sha(_unwrap(str(h.get("command") or "")).encode())[:8] == sha8:
+                return event, str(group.get("matcher") or "")
+    return event, ""
+
+
 def extension_detail(workspace: Path, ids: List[str], history: bool = False) -> Dict[str, Any]:
     """One extension's page: which sessions and agents ran under it, and what
     the agent passed on each call it caused. ``ids`` is the extension plus
@@ -1479,8 +1493,15 @@ def extension_detail(workspace: Path, ids: List[str], history: bool = False) -> 
         if hit:
             sessions.append({"session": sid, "agent": sess.get("agent") or "any",
                              "ts": min(str(h.get("ts") or "") for h in hit), "role": hit[0].get("role")})
-    calls = get_extension_calls(list(wanted), None if history else [s["session"] for s in sessions],
-                                limit=500 if history else 200)
+    hook = next((_hook_target(i) for i in wanted if i.startswith("hook:")), None)
+    if hook:
+        # A hook causes no calls; show the ones it ran around, with their input.
+        from prismor.runtime.store import get_hook_calls
+        calls = get_hook_calls([s["session"] for s in sessions], hook[1], limit=500 if history else 200) \
+            if hook[0] in ("PreToolUse", "PostToolUse") else []
+    else:
+        calls = get_extension_calls(list(wanted), None if history else [s["session"] for s in sessions],
+                                    limit=500 if history else 200)
     known = {s["session"] for s in sessions}
     for c in reversed(calls):  # oldest first, so a session's ts is its first call
         if c["session"] not in known:
@@ -1497,7 +1518,8 @@ def extension_detail(workspace: Path, ids: List[str], history: bool = False) -> 
         key = by_session.get(c["session"]) or c["agent"] or "any"
         agents.setdefault(key, {"agent": key, "sessions": 0, "calls": 0, "last": ""})["calls"] += 1
     return {"ids": list(wanted), "sessions": sessions, "calls": calls,
-            "agents": sorted(agents.values(), key=lambda a: -a["sessions"])}
+            "agents": sorted(agents.values(), key=lambda a: -a["sessions"]),
+            "hook": {"event": hook[0], "matcher": hook[1]} if hook else None}
 
 
 def overview(workspace: Path, events: int = 40) -> Dict[str, Any]:

@@ -338,6 +338,29 @@ def test_extension_detail_lists_agents_sessions_and_the_input_of_each_call(ws):
     assert len(ext.extension_detail(ws, ["mcp:observed#browser-bridge"], history=True)["calls"]) == 1
 
 
+def test_hook_detail_lists_the_calls_its_matcher_ran_around(ws):
+    # A hook causes no calls; its page shows the tool calls it ran around.
+    import sqlite3
+    from prismor.runtime.store import prismor_home
+    (Path.home() / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PostToolUse": [
+        {"matcher": "mcp__.*", "hooks": [{"type": "command", "command": "echo recloak"}]}]}}))
+    hook = next(r for r in ext.sync(ws) if r["kind"] == "hook")
+    ext.session_notice(ws, "s1")  # links every hook to the session as ambient
+    db = prismor_home() / "prismor.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, session_id TEXT, ts TEXT, type TEXT, agent_event TEXT, raw_json TEXT)")
+    for tool, inp in (("mcp__colab__run_code_cell", {"cellId": "c1"}), ("Bash", {"command": "ls"})):
+        raw = {"agent": "claude", "metadata": {"tool_name": tool, "raw": {"tool_use_id": tool, "tool_input": inp}}}
+        conn.execute("INSERT INTO events (session_id, ts, agent_event, raw_json) VALUES ('s1', '2026-01-01', 'PreToolUse', ?)",
+                     (json.dumps(raw),))
+    conn.commit()
+    conn.close()
+
+    d = ext.extension_detail(ws, [hook["id"]])
+    assert d["hook"] == {"event": "PostToolUse", "matcher": "mcp__.*"}
+    assert [c["tool"] for c in d["calls"]] == ["mcp__colab__run_code_cell"] and '"c1"' in d["calls"][0]["input"]
+
+
 def _skill_call(name):
     return {"type": "skill", "metadata": {"tool_name": "Skill", "raw": {"tool_input": {"skill": name}}}}
 
