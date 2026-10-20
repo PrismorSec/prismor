@@ -25,7 +25,7 @@ from prismor.runtime.tag_rules import (
     CompiledRule, ParseError, compile_rule, compile_tool_tag_rules, lint_rules,
 )
 from prismor.runtime.trifecta import (
-    TOOL_TAG_DEFAULTS, TagLedger, _matches, _tool_name, classify_tool_tags,
+    CRITICAL, UNTRUSTED, TOOL_TAG_DEFAULTS, TagLedger, _matches, _tool_name, classify_tool_tags,
 )
 
 # ── small output helpers (match cli.py's ANSI style, no deps) ────────────────
@@ -451,6 +451,14 @@ def tags_lint(workspace: Path, file: Optional[str]) -> None:
         sys.exit(1)
     print(_c(f"all good: {ok} rule expression(s), "
              f"{len(legacy)} legacy set(s)", _GREEN))
+    for rule in compile_tool_tag_rules(tt):
+        if (rule.action == "block" and rule.ordered
+                and rule.all_tags == {UNTRUSTED, CRITICAL}):
+            print(_c(f"warning: {rule.source} (effective action: block)\n"
+                     "  Sequence alone does not establish untrusted influence and can\n"
+                     "  repeatedly block later calls. Consider "
+                     "'critical_action with untrusted_influence -> block'\n"
+                     "  and keeping this sequence at '-> warn'.", _YELLOW))
 
 
 # ── subcommand: test (log replay) ────────────────────────────────────────────

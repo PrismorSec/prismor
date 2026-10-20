@@ -311,15 +311,24 @@ $ prismor tags rules                 # active rules (DSL + legacy + default)
 $ prismor tags rules add "untrusted_content then egress.offlist -> block"
 $ prismor tags rules rm 0
 $ prismor tags edit                  # interactive wizard (option 6 turns tool_tags on)
-$ prismor tags lint                  # validate every rule expression
+$ prismor tags lint                  # validate expressions + warn on broad blocking sequences
 ```
 
 Tags and rules do nothing while `tool_tags.enabled` is false (the shipped
 default); `tags set`, `tags rules add` and `tags rules` say so when that is the
 case. Prefer a narrow last step such as `egress.offlist` over the bare
-`untrusted_content then critical_action -> block`, which blocks every command
-for the rest of a session that read anything untrusted (see
+`untrusted_content then critical_action -> block`, which blocks later critical
+calls in a session that read anything untrusted (see
 [Influence](#influence-what-separates-a-sequence-from-an-attack) above for why the shipped default only warns on it).
+
+`tags lint` warns when a blocking sequence uses only `untrusted_content` and
+`critical_action`, in either order. Those rules can repeatedly block later
+calls without evidence that the untrusted content influenced the action.
+To block actions influenced by untrusted content, prefer
+`critical_action with untrusted_influence -> block` and keep the sequence at
+`-> warn`, as the shipped defaults do. The warning
+respects an `{expr, action}` map's action override. It is advisory: valid
+rules still exit successfully, and lint does not change policy or enforcement.
 
 Invalid expressions fail with a caret diagnostic:
 

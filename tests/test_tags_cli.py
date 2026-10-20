@@ -8,7 +8,7 @@ import yaml
 
 from prismor.runtime import tags_cli
 from prismor.runtime.store import append_session_event, get_data_dir
-from prismor.runtime.trifecta import TagLedger
+from prismor.runtime.trifecta import DEFAULT_RULES, TagLedger
 
 
 @pytest.fixture(autouse=True)
@@ -43,13 +43,31 @@ TT = {
 def test_lint_ok_and_fail(tmp_path, capsys):
     ws = _ws(tmp_path, TT)
     tags_cli.tags_lint(ws, None)  # no exit -> ok
-    assert "all good" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "all good" in out
+    assert "warning:" in out
+    assert "critical_action with untrusted_influence -> block" in out
     bad = _ws(tmp_path, {**TT, "rules": ["a then"]})
     with pytest.raises(SystemExit) as ei:
         tags_cli.tags_lint(bad, None)
     assert ei.value.code == 1
     out = capsys.readouterr().out
     assert "dangling" in out and "^" in out  # caret diagnostic
+
+
+@pytest.mark.parametrize("rules, warns", [
+    (["critical_action then untrusted_content"], True),
+    ([{"expr": "untrusted_content then critical_action -> warn", "action": "block"}], True),
+    ([{"expr": "untrusted_content then critical_action -> block", "action": "warn"}], False),
+    (DEFAULT_RULES, False),
+    (["untrusted_content then critical_action with dest.external -> block"], False),
+])
+def test_lint_sequence_warning_uses_effective_rule(tmp_path, capsys, rules, warns):
+    ws = _ws(tmp_path, {"rules": rules})
+    tags_cli.tags_lint(ws, None)
+    out = capsys.readouterr().out
+    assert "all good" in out
+    assert ("warning:" in out) == warns
 
 
 def test_lint_flags_bad_legacy_sets(tmp_path, capsys):
