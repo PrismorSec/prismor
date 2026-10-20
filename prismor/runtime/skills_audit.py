@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,42 @@ def _installed_plugin_skills(plug: Path) -> List[Path]:
     return sorted(p for root in installs if root.is_dir() for p in root.glob("**/skills/*/SKILL.md"))
 
 
+def _hermes_home() -> Path:
+    return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
+
+
+def _openclaw_home() -> Path:
+    return Path(os.environ.get("OPENCLAW_STATE_DIR") or os.environ.get("OPENCLAW_HOME") or Path.home() / ".openclaw")
+
+
+def read_json5(path: Path) -> Dict[str, Any]:
+    """OpenClaw's config is JSON5; the parts read here survive dropping
+    comments and trailing commas."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    text = re.sub(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', lambda m: m.group(1) or "", text, flags=re.S)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _openclaw_workspaces() -> List[str]:
+    cfg = read_json5(Path(os.environ.get("OPENCLAW_CONFIG_PATH") or _openclaw_home() / "openclaw.json"))
+    agents = cfg.get("agents") if isinstance(cfg.get("agents"), dict) else {}
+    out = [str((agents.get("defaults") or {}).get("workspace") or "")]
+    out += [str(a.get("workspace") or "") for a in agents.get("list") or [] if isinstance(a, dict)]
+    return [w for w in dict.fromkeys(out) if w] or [str(_openclaw_home() / "workspace")]
+
+
+def _openclaw_workspace(ws: str) -> Path:
+    return Path(os.path.expanduser(ws))
+
+
 def discover_skill_files(workspace: Path) -> List[Path]:
     """Every SKILL.md the agents on this machine will load for ``workspace``."""
     home = Path.home()
@@ -71,10 +108,20 @@ def discover_skill_files(workspace: Path) -> List[Path]:
         workspace / ".agents" / "skills",
         home / ".agents" / "skills",
     ]
+    # OpenHands: skills and the older microagents folder, project and user.
+    roots += [workspace / ".openhands" / "skills", workspace / ".openhands" / "microagents",
+              home / ".openhands" / "skills", home / ".openhands" / "skills" / "installed",
+              home / ".openhands" / "microagents"]
+    # OpenClaw: managed skills, and the agent workspace's skills folder.
+    roots += [_openclaw_home() / "skills", *(_openclaw_workspace(ws) / "skills" for ws in _openclaw_workspaces())]
     found: List[Path] = []
     for root in roots:
         if root.is_dir():
             found.extend(sorted(root.glob("*/SKILL.md")))
+    # Hermes nests skills in category folders.
+    hermes_skills = _hermes_home() / "skills"
+    if hermes_skills.is_dir():
+        found.extend(sorted(hermes_skills.glob("**/SKILL.md")))
     found.extend(_installed_plugin_skills(home / ".claude" / "plugins"))
     seen: set = set()
     out: List[Path] = []

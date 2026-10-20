@@ -467,9 +467,8 @@ def test_await_step_up_reports_redacted_decision(monkeypatch):
     monkeypatch.setattr(approvals._identity, "load_identity", lambda: {"device_key": "k", "api_base": "https://cp"})
     monkeypatch.setattr(approvals._identity, "revoked_backoff_active", lambda: False)
     monkeypatch.setattr(approvals, "_post_request", lambda ident, body, timeout: {"id": "a1", "status": "pending"})
-    seq = ["pending", "approved"]
-    monkeypatch.setattr(approvals, "_get_status", lambda ident, aid, timeout: seq.pop(0) if seq else "approved")
-    monkeypatch.setattr(approvals, "_get_status_ex", lambda ident, aid, timeout: ("approved", "redacted"))
+    seq = [("pending", "full"), ("approved", "redacted")]
+    monkeypatch.setattr(approvals, "_get_status_ex", lambda ident, aid, timeout: seq.pop(0))
 
     class D:
         blocking = {"action": "step_up", "title": "t", "ruleId": "self-identity-to-external", "severity": "HIGH",

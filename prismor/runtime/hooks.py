@@ -846,14 +846,20 @@ def should_block(
         if str(finding.get("mode", "observe")).lower() == "enforce":
             # Reads are generally safe, so they only block for secret access —
             # except for IAM, where an operator has explicitly scoped which
-            # paths/tools an identity may read, and that intent must be honored.
+            # paths/tools an identity may read, and an operator's own switch
+            # (agent-control: a denied tool, a skill turned off), whose intent
+            # must be honored.
             if (
                 event.get("type") == "file_read"
-                and finding.get("category") not in ("secret_access", "iam")
+                and finding.get("category") not in _READ_BLOCK_CATEGORIES
             ):
                 continue
             eligible.append(finding)
     return strongest(eligible)
+
+
+# Finding categories that may block a plain read (see should_block).
+_READ_BLOCK_CATEGORIES = ("secret_access", "iam", "agent-control")
 
 
 def legacy_should_block(
@@ -887,7 +893,7 @@ def legacy_should_block(
         if finding.get("category") in block_categories:
             if (
                 event.get("type") == "file_read"
-                and finding.get("category") not in ("secret_access", "iam")
+                and finding.get("category") not in _READ_BLOCK_CATEGORIES
             ):
                 continue
             return finding
@@ -2283,7 +2289,7 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
             ),
         }
     if tool_name in {"WebFetch", "WebSearch"}:
-        return {**base, "type": "network", "url": tool_input.get("url", ""), "response": payload.get("response", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", ""), "response": payload.get("response", "")}
     mcp_event = _classify_mcp_event(
         base=base,
         tool_name=tool_name,
@@ -2358,7 +2364,7 @@ def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -
             ),
         }
     if tool_name in {"WebFetch", "WebSearch"}:
-        return {**base, "type": "network", "url": tool_input.get("url", ""), "response": payload.get("response", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", ""), "response": payload.get("response", "")}
     mcp_event = _classify_mcp_event(
         base=base,
         tool_name=tool_name,
@@ -2409,7 +2415,7 @@ def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -
         )
         return {**base, "type": "file_write", "path": path, "content": content}
     if tool_name in {"web_fetch", "web_search"}:
-        return {**base, "type": "network", "url": tool_input.get("url", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     return _unmapped_tool_event(base, payload)
 
 
@@ -2439,7 +2445,7 @@ def _normalize_crush(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
             "content": tool_input.get("content") or tool_input.get("new_string", ""),
         }
     if tool_name in {"fetch", "download", "sourcegraph"}:
-        return {**base, "type": "network", "url": tool_input.get("url", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     return _unmapped_tool_event(base, payload)
 
 
@@ -2469,7 +2475,7 @@ def _normalize_openhands(payload: Dict[str, Any], session_id: str) -> Dict[str, 
             "content": tool_input.get("content") or tool_input.get("new_str", ""),
         }
     if tool_name in {"web_fetch", "web_search"}:
-        return {**base, "type": "network", "url": tool_input.get("url", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     return _unmapped_tool_event(base, payload)
 
 
@@ -2501,7 +2507,7 @@ def _normalize_qwen(payload: Dict[str, Any], session_id: str, workspace: Path) -
             "content": tool_input.get("content") or tool_input.get("new_string", ""),
         }
     if tool_name in {"web_fetch", "web_search"}:
-        return {**base, "type": "network", "url": tool_input.get("url", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     mcp_event = _classify_mcp_event(
         base=base,
         tool_name=tool_name,
@@ -2549,7 +2555,7 @@ def _normalize_continue(payload: Dict[str, Any], session_id: str, workspace: Pat
             ),
         }
     if tool_name in {"Fetch", "Search"}:
-        return {**base, "type": "network", "url": tool_input.get("url", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     mcp_event = _classify_mcp_event(
         base=base,
         tool_name=tool_name,
@@ -3202,7 +3208,7 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
             ),
         }
     if tool_name in {"WebFetch", "WebSearch"}:
-        return {**base, "type": "network", "url": tool_input.get("url", ""), "response": payload.get("response", "")}
+        return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", ""), "response": payload.get("response", "")}
     mcp_event = _classify_mcp_event(
         base=base,
         tool_name=tool_name,

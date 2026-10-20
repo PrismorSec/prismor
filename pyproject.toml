@@ -31,14 +31,16 @@ classifiers = [
 ]
 dependencies = [
     "pyyaml>=6.0",
+    # Ed25519 checks on the signed org policy and advisory feed. The openssl CLI
+    # fallback can't do them on macOS (LibreSSL) or Windows (no openssl).
+    "cryptography>=41",
     "tomli>=1.1.0; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
 dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8"]
-# Ed25519 receipt signing for enrolled devices (tamper-evident + non-repudiable
-# telemetry receipts). Optional: without it, telemetry falls back to the keyless
-# hash chain. `pip install "prismor[signing]"`.
+# Kept so existing `pip install "prismor[signing]"` commands still resolve;
+# cryptography is now a core dependency.
 signing = ["cryptography>=41"]
 # Verified end-user identity (settings.identity): JWT + JWKS verification.
 # `pip install "prismor[identity]"`. docs/identity-verification.md
@@ -142,6 +144,7 @@ packages = [
 # .claude/skills/ directory. Files are listed explicitly — a `docs/` directory
 # mapping would drag in demo.gif (force-include ignores wheel `exclude`).
 "SKILL.md" = "prismor/runtime/data/SKILL.md"
+"docs/acp.md" = "prismor/runtime/data/docs/acp.md"
 "docs/agentic-architecture-review.md" = "prismor/runtime/data/docs/agentic-architecture-review.md"
 "docs/architecture.md" = "prismor/runtime/data/docs/architecture.md"
 "docs/attestation-bundle.md" = "prismor/runtime/data/docs/attestation-bundle.md"
@@ -161,6 +164,7 @@ packages = [
 "docs/elevenlabs.md" = "prismor/runtime/data/docs/elevenlabs.md"
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
+"docs/faq.md" = "prismor/runtime/data/docs/faq.md"
 "docs/frameworks-agno.md" = "prismor/runtime/data/docs/frameworks-agno.md"
 "docs/frameworks-autogen-core.md" = "prismor/runtime/data/docs/frameworks-autogen-core.md"
 "docs/frameworks-beeai.md" = "prismor/runtime/data/docs/frameworks-beeai.md"
@@ -175,6 +179,8 @@ packages = [
 "docs/frameworks-pydantic-ai.md" = "prismor/runtime/data/docs/frameworks-pydantic-ai.md"
 "docs/frameworks-semantic-kernel.md" = "prismor/runtime/data/docs/frameworks-semantic-kernel.md"
 "docs/frameworks-vercel-ai.md" = "prismor/runtime/data/docs/frameworks-vercel-ai.md"
+"docs/getting-started.md" = "prismor/runtime/data/docs/getting-started.md"
+"docs/glossary.md" = "prismor/runtime/data/docs/glossary.md"
 "docs/governance-surfaces.md" = "prismor/runtime/data/docs/governance-surfaces.md"
 "docs/hermes.md" = "prismor/runtime/data/docs/hermes.md"
 "docs/iam.md" = "prismor/runtime/data/docs/iam.md"

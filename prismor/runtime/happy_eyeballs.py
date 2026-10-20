@@ -21,11 +21,26 @@ import time
 
 # RFC 8305 recommends 250ms before starting the next attempt.
 _STAGGER = 0.25
+# A handshake to a live host takes well under a second even on poor links. On
+# a network that silently drops packets (captive Wi-Fi, a dead VPN route) the
+# connect is where the whole request timeout went: 8s per control-plane call.
+# The caller's timeout still governs reads, so a slow server keeps its window.
+# ponytail: one cap for every host; make it per-call if a >3s handshake is real.
+CONNECT_TIMEOUT = 3.0
 _stdlib_create_connection = socket.create_connection
 
 
 def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
                       source_address=None, *, all_errors=False):
+    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
+        timeout = socket.getdefaulttimeout()
+    connect_timeout = CONNECT_TIMEOUT if timeout is None else min(timeout, CONNECT_TIMEOUT)
+    sock = _connect(address, connect_timeout, source_address, all_errors)
+    sock.settimeout(timeout)
+    return sock
+
+
+def _connect(address, timeout, source_address, all_errors):
     host, port = address
     try:
         infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
@@ -37,8 +52,6 @@ def create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
         kw = {"all_errors": True} if all_errors else {}
         return _stdlib_create_connection(address, timeout, source_address, **kw)
 
-    if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
-        timeout = socket.getdefaulttimeout()
     # Interleave families, preferred (first-resolved) family first.
     first = infos[0][0]
     a = [i for i in infos if i[0] == first]

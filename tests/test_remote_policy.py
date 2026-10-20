@@ -318,3 +318,22 @@ def test_verify_and_load_verifies_once_per_content(tmp_path, monkeypatch):
     # though a verified policy was memoized a moment ago.
     (home / "remote-policy.yaml").write_text(AGENT_CONTROL_POLICY + "\n# x\n")
     assert remote_policy.verify_and_load() is None and len(calls) == 3
+
+
+def test_verifies_without_openssl_3(tmp_path, monkeypatch):
+    """macOS ships LibreSSL, which has no Ed25519 -rawin: every pull used to be
+    discarded as "failed verification". cryptography must carry the check."""
+    pytest.importorskip("cryptography")
+    from prismor.runtime.enterprise import remote_policy
+
+    payload = REMOTE_POLICY.encode("utf-8")
+    sig = _sign(payload)
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    libressl = fake_bin / "openssl"
+    libressl.write_text("#!/bin/sh\necho 'pkeyutl: Unknown option: -rawin' >&2\nexit 1\n")
+    libressl.chmod(0o755)
+    monkeypatch.setenv("PATH", str(fake_bin))
+
+    assert remote_policy._verify_signature(payload, sig)
+    assert not remote_policy._verify_signature(payload + b"\n# tampered", sig)

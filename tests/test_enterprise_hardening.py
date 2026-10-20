@@ -107,6 +107,96 @@ def test_policy_check_skipped_while_revoked(monkeypatch):
     assert remote_policy.fetch(force=True) is False
 
 
+@pytest.mark.parametrize("revoked", [False, True])
+def test_enroll_status_reports_before_remote_check(tmp_path, monkeypatch, capsys, revoked):
+    from prismor.runtime import cli, hooks
+    from prismor.runtime.enterprise import identity
+
+    identity.save_identity({"device_id": "d1", "org_id": "o1",
+                            "device_key": "prism_dev_test", "api_base": "https://example.test"})
+    if revoked:
+        identity.mark_revoked("rejected (401)")
+
+    def verify():
+        assert not revoked, "a locally revoked device should report without a network call"
+        assert "Checking enrollment" in capsys.readouterr().out
+        return {"ok": False, "error": "unreachable (URLError)"}
+
+    monkeypatch.setattr(identity, "verify_remote", verify)
+    monkeypatch.setattr(hooks, "coverage", lambda _workspace: {})
+    cli.main(["--workspace", str(tmp_path), "enroll-status"])
+    output = capsys.readouterr().out
+    assert ("REJECTED" if revoked else "control plane unreachable") in output
+
+
+# ── control plane unreachable: one shared backoff ───────────────────────
+
+
+def _enroll():
+    from prismor.runtime.enterprise import identity
+
+    identity.save_identity({
+        "device_id": "d1", "org_id": "o1", "user_id": "u1",
+        "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1",
+    })
+
+
+def test_policy_check_network_failure_starts_backoff(monkeypatch):
+    """On a network that drops packets every hot-path check waited the full
+    timeout; a failed check must back off the next ones instead."""
+    import urllib.error
+    import urllib.request
+    from prismor.runtime.enterprise import remote_policy, telemetry_spool as spool
+
+    _enroll()
+    calls = []
+
+    def _timeout(*a, **k):
+        calls.append(1)
+        raise urllib.error.URLError(TimeoutError("timed out"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", _timeout)
+    monkeypatch.setattr(remote_policy, "_refresh_interval", lambda: 0.0)
+    assert remote_policy.check_and_refresh() is False
+    assert spool.backoff_active(time.time())
+    assert remote_policy.check_and_refresh() is False  # hot path: skipped
+    assert len(calls) == 1
+    remote_policy.check_and_refresh(interval=0)  # explicit: still tries
+    assert len(calls) == 2
+
+
+def test_policy_check_success_clears_backoff(monkeypatch):
+    import io
+    import urllib.request
+    from prismor.runtime.enterprise import remote_policy, telemetry_spool as spool
+
+    _enroll()
+    spool.note_upload_failure(time.time())
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b'{"version": null}'))
+    remote_policy.check_and_refresh(interval=0)
+    assert not spool.backoff_active(time.time())
+
+
+def test_extensions_report_respects_backoff(tmp_path, monkeypatch):
+    import urllib.request
+    from prismor.runtime import extensions
+    from prismor.runtime.enterprise import telemetry_spool as spool
+
+    _enroll()
+    spool.note_upload_failure(time.time())
+    calls = []
+
+    def _refused(*a, **k):  # send_report swallows exceptions, so count instead
+        calls.append(1)
+        raise OSError("refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", _refused)
+    assert extensions.send_report(tmp_path) is False
+    assert calls == []
+    extensions.send_report(tmp_path, force=True)  # `prismor extensions report`
+    assert calls == [1]
+
+
 # ── block_categories clamp ──────────────────────────────────────────────
 
 

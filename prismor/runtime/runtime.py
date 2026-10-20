@@ -210,6 +210,7 @@ def evaluate_tool_call(
     resource: Optional[Dict[str, Any]] = None,
     identity_token: Optional[str] = None,
     explain: bool = False,
+    session_seq: Optional[int] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -228,6 +229,9 @@ def evaluate_tool_call(
             project install of the same agent) already records this call.
         persist: append the event + write a session snapshot (set ``False`` for
             pure pre-checks like ``immunity check``).
+        session_seq: zero-based position of this event in its session when the
+            caller handles persistence. Defaults to the last index in the
+            loaded history (or zero for a standalone pre-check).
         taint_store: optional session-taint store to use instead of the on-disk
             per-session file. Callers with no local box (the hosted
             inference-hook channel) pass one ``InMemoryTaintStore`` shared
@@ -381,7 +385,7 @@ def evaluate_tool_call(
     # in telemetry (excludes session persistence/analysis above).
     perf.lap("agent_control")
     _guard_t0 = time.perf_counter()
-    _session_seq = len(events) - 1
+    _session_seq = session_seq if session_seq is not None else len(events) - 1
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
                                trace=_trace)
@@ -519,6 +523,15 @@ def evaluate_tool_call(
                     break
         except Exception as exc:
             sys.stderr.write(f"[prismor] tool-deny error: {exc}\n")
+
+    # A skill or MCP server turned off from the dashboard's Extensions page.
+    try:
+        from prismor.runtime.extensions import disabled_finding
+        _off = disabled_finding(workspace, event, session_id)
+        if _off is not None:
+            findings.append(_off)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] extension-toggle error: {exc}\n")
 
     # Per-agent "ask" tools: the console's middle state. A matched tag emits a
     # step_up finding (human approval) rather than a hard deny — the gateway's

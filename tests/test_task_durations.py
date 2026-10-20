@@ -87,3 +87,46 @@ def test_hook_runs_from_the_transcript_attach_to_their_call_and_prompt(tmp_path)
     assert start["hookRuns"][0]["ok"] is False and start["hookRuns"][0]["exit"] == "1"
     assert "hookRuns" not in other
     _attach_hook_runs([other], str(tmp_path / "missing.jsonl"))  # no transcript, no crash
+
+
+def test_hook_runs_tell_timeouts_from_errors_and_fold_context_into_their_run(tmp_path):
+    # Context and system-message attachments are what a run printed, not runs;
+    # a cancel with no command never started; a timeout is not an exit.
+    import json
+    from prismor.runtime.store import _transcript_hook_runs
+    lines = [
+        {"attachment": {"type": "hook_success", "hookEvent": "SessionStart", "toolUseID": "s",
+                        "command": "start.sh", "durationMs": 5, "exitCode": 0}},
+        {"attachment": {"type": "hook_additional_context", "hookEvent": "SessionStart", "content": ["be careful"]}},
+        {"attachment": {"type": "hook_cancelled", "hookEvent": "UserPromptSubmit", "command": "slow.py",
+                        "durationMs": 30100, "timedOut": True, "timeoutMs": 30000}},
+        {"attachment": {"type": "hook_cancelled", "hookEvent": "PostToolUse", "toolUseID": "t1"}},
+        {"attachment": {"type": "hook_blocking_error", "hookEvent": "PreToolUse", "command": "deny.sh",
+                        "durationMs": 3, "exitCode": 2}},
+    ]
+    path = tmp_path / "t.jsonl"
+    path.write_text("\n".join(json.dumps(x) for x in lines) + "\n")
+    runs = _transcript_hook_runs(str(path))
+    assert [(r["command"], r["outcome"], r["ok"]) for r in runs] == [
+        ("start.sh", "ok", True), ("slow.py", "timeout", False), ("deny.sh", "blocked", True)]
+    assert runs[0]["content"] == "be careful"
+
+
+def test_hook_stats_count_one_hook_however_it_was_launched(tmp_path):
+    import json
+    from prismor.runtime.store import get_hook_stats
+    run = lambda cmd, **kw: {"timestamp": "2026-01-01T00:00:00Z", "attachment": {
+        "type": "hook_success", "hookEvent": "PreToolUse", "command": cmd, "durationMs": 10, "exitCode": 0, **kw}}
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "a.jsonl").write_text("\n".join(json.dumps(x) for x in [
+        run('PYTHONPATH="/home/u/venv/lib" "/home/u/venv/bin/python3" -m prismor.runtime.immunity_cli hook-dispatch'),
+        run('"/Users/me/.local/pipx/venvs/prismor/bin/python" -m prismor.runtime.immunity_cli hook-dispatch'),
+        {"attachment": {"type": "hook_cancelled", "hookEvent": "PreToolUse", "durationMs": 600000, "timedOut": True,
+                        "command": "/home/u/venv/bin/python3 -m prismor.runtime.immunity_cli hook-dispatch"}},
+        run("node other.mjs")]) + "\n")
+    hooks = {h["command"].split()[-1]: h for h in get_hook_stats(root=tmp_path)["hooks"]}
+    dispatch = hooks["hook-dispatch"]
+    assert (dispatch["runs"], dispatch["failures"], dispatch["timeouts"], dispatch["p50Ms"]) == (3, 1, 1, 10)
+    assert len(dispatch["variants"]) == 2 and dispatch["sessionCount"] == 1
+    assert hooks["other.mjs"]["runs"] == 1

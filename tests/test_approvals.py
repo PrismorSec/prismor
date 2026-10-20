@@ -7,6 +7,7 @@ all resolve to the correct fail-closed / allow verdict. Run:
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -18,6 +19,8 @@ _REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO))
 
 from prismor.runtime.enterprise import approvals  # noqa: E402
+
+_REAL_GET_STATUS_EX = approvals._get_status_ex
 
 
 def _decision(action="step_up"):
@@ -61,10 +64,11 @@ class ApprovalClient(unittest.TestCase):
             return {"id": "appr_1", "status": "pending"}
 
         def fake_status(ident, approval_id, timeout):
-            return self._status_seq.pop(0) if self._status_seq else "pending"
+            status = self._status_seq.pop(0) if self._status_seq else "pending"
+            return status, "full"
 
         self._patch(approvals, "_post_request", fake_post)
-        self._patch(approvals, "_get_status", fake_status)
+        self._patch(approvals, "_get_status_ex", fake_status)
 
     def test_not_step_up_returns_false(self):
         self.assertFalse(approvals.await_step_up(_decision(action="block")))
@@ -79,6 +83,56 @@ class ApprovalClient(unittest.TestCase):
     def test_denied(self):
         self._status_seq = ["pending", "denied"]
         self.assertFalse(approvals.await_step_up(_decision(), session_id="s1"))
+
+    def test_redacted_approval_uses_one_status_response(self):
+        from urllib.error import URLError
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "status": "approved", "decision_mode": "redacted",
+        }).encode()
+        # Keep the HTTP reader real so a redundant GET is observable.
+        with mock.patch.object(approvals, "_get_status_ex", _REAL_GET_STATUS_EX), \
+                mock.patch("urllib.request.urlopen", side_effect=[
+                    response, URLError("synthetic transport failure"),
+                ]) as get, \
+                mock.patch.object(approvals, "_audit_outcome") as audit, \
+                mock.patch.object(approvals.time, "sleep"):
+            outcome = approvals.await_step_up(_decision(), session_id="s1")
+
+        self.assertTrue(outcome.approved)
+        self.assertTrue(outcome.redacted)
+        self.assertEqual(outcome.status, "approved")
+        self.assertEqual(outcome.approval_id, "appr_1")
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(audit.call_args.kwargs["status"], "approved_redacted")
+
+    def test_status_transport_failure_then_redacted_approval(self):
+        from urllib.error import URLError
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "status": "approved", "decision_mode": "redacted",
+        }).encode()
+        with mock.patch.object(approvals, "_get_status_ex", _REAL_GET_STATUS_EX), \
+                mock.patch("urllib.request.urlopen", side_effect=[
+                    URLError("synthetic transport failure"), response,
+                ]) as get, \
+                mock.patch.object(approvals.time, "sleep"):
+            outcome = approvals.await_step_up(_decision())
+
+        self.assertTrue(outcome.approved)
+        self.assertTrue(outcome.redacted)
+        self.assertEqual(get.call_count, 2)
+
+    def test_status_failure_until_timeout_fails_closed(self):
+        with mock.patch.object(approvals, "_get_status_ex", return_value=(None, "full")), \
+                mock.patch.object(approvals, "_monotonic", side_effect=[0, 0, 2]), \
+                mock.patch.object(approvals.time, "sleep"):
+            outcome = approvals.await_step_up(_decision())
+
+        self.assertFalse(outcome.approved)
+        self.assertEqual(outcome.status, "timeout")
 
     def test_expired_is_fail_closed(self):
         self._status_seq = ["expired"]

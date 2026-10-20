@@ -100,3 +100,14 @@ def test_claude_patch_wins_over_text_diff():
     assert devlog._call_diff(call, {"type": "create", "structuredPatch": [], "content": "a\nb"}) == ["@@ new file", "+a", "+b"]
     # No result: text fallback, headed so "−0" isn't read as "nothing was removed".
     assert devlog._call_diff(call, None) == ["@@ previous content not recorded", "+whole new file"]
+
+
+def test_asked_skips_injected_prompts():
+    # A background task finishing arrives as a prompt; "asked:" must show what the person typed.
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, session_id TEXT, type TEXT, raw_json TEXT)")
+    for p in ("fix the &gt; bug", "<task-notification><task-id>x</task-id></task-notification>", "  <agent-message>done"):
+        conn.execute("INSERT INTO events (session_id, type, raw_json) VALUES ('s', 'prompt', ?)",
+                     (json.dumps({"metadata": {"raw": {"prompt": p}}}),))
+    assert devlog._asked(conn, "s", 99) == "fix the > bug"
+    assert devlog._asked(conn, "s", 1) == ""

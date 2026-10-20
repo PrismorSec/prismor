@@ -109,6 +109,28 @@ def _via_eval_server(tool, tool_input, ws, session):
     )
 
 
+def _via_acp(tool, tool_input, ws, session, *, permission=False):
+    """Real ACP proxy shaping — the client call an ACP agent asks its editor to
+    carry out (terminal/create, fs/read_text_file), or the permission request
+    it raises for one of its own tools."""
+    from prismor.runtime.acp_proxy import AcpProxy, client_call_event, permission_event
+    proxy = AcpProxy(["true"], workspace=ws, pin_workspace=True)
+    if permission:
+        kind = "execute" if tool == "Bash" else "read"
+        body = permission_event({"toolCall": {"toolCallId": "c", "kind": kind, "title": tool,
+                                              "rawInput": tool_input}})
+        body.pop("tool_name", None)
+        event = proxy._event(session, "PermissionRequest", tool, "session/request_permission", body)
+    else:
+        method = "terminal/create" if tool == "Bash" else "fs/read_text_file"
+        params = ({"command": tool_input["command"]} if tool == "Bash"
+                  else {"path": tool_input["file_path"]})
+        _, body = client_call_event(method, params)
+        event = proxy._event(session, "PreToolUse", tool, method, body)
+    event["session_id"] = session
+    return event
+
+
 @pytest.mark.parametrize("case_id,tool,tool_input,expect_blocked",
                          CASES, ids=[c[0] for c in CASES])
 def test_same_action_same_verdict_across_surfaces(case_id, tool, tool_input,
@@ -124,6 +146,8 @@ def test_same_action_same_verdict_across_surfaces(case_id, tool, tool_input,
         "hook:cursor": lambda s: _via_hook("cursor", tool, tool_input, ws, s),
         "mirror":      lambda s: _via_mirror(tool, tool_input, ws, s),
         "eval-server": lambda s: _via_eval_server(tool, tool_input, ws, s),
+        "acp":         lambda s: _via_acp(tool, tool_input, ws, s),
+        "acp:permission": lambda s: _via_acp(tool, tool_input, ws, s, permission=True),
     }
 
     verdicts, rules = {}, {}
@@ -300,6 +324,9 @@ def test_surface_registry_is_wellformed():
     # (PrismorSec/prismor#309). The registry only gets to say so while the
     # adapters actually do it — test_adapter_result_redaction is the check.
     assert contract.surface("sdk-adapter").can_redact is True
+    # The ACP proxy holds what the editor returns (file reads, terminal output)
+    # before the agent sees it.
+    assert contract.surface("acp").can_redact is True
 
 
 # ── shared redaction ─────────────────────────────────────────────────────────

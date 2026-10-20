@@ -1665,8 +1665,19 @@ class PolicyEngine:
         for _e in _cond_errors:
             sys.stderr.write(f"[prismor] {_e} — ignored\n")
 
+        # Floor rules a human turned off with the unlock password (floor_off.py).
+        # Applied after every layer has merged, and never where the floor is the
+        # org's (managed workspace or a signed org layer) or for self-protection.
+        floor_off: set = set()
+        if not self.workspace_managed and not self.remote_policy_meta:
+            from prismor.runtime.floor_off import active_ids as _floor_off_ids
+            floor_off = {rid for rid in _floor_off_ids() if rid not in _SELF_PROTECTION_RULE_IDS}
+        self.floor_off: set = floor_off
+
         # Compile rules.
         for rule_data in rules_by_id.values():
+            if rule_data.get("id") in floor_off:
+                continue
             if rule_data.get("enabled", True):
                 compiled = CompiledRule(rule_data, self.named_conditions)
                 if compiled.enabled:  # a when-only rule with a broken `when` disables itself

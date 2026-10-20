@@ -13,6 +13,7 @@ where they can intercept and what they can do there:
 | **Hooks** | an agent's entire tool surface | yes | Claude/Qwen only | no |
 | **MCP gateway** | every MCP server behind one connector | yes | yes | yes |
 | **Mirror** | the agent's own built-ins, served over MCP | yes | yes | yes |
+| **ACP proxy** | what an ACP editor (Zed, JetBrains) carries out for its agent: terminals, file reads/writes, permission prompts ([details](acp.md)) | yes | yes | yes |
 | **SDK adapters** | in-process framework agents | yes | no | no |
 | **eval-server** | non-Python callers and external proxies | yes | yes | yes |
 | **LLM proxy** | the agent's model traffic and A2A agent-to-agent calls, including agents with no hooks | yes | yes | yes |

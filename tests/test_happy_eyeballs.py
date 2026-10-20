@@ -46,3 +46,22 @@ def test_all_dead_raises_timeout(monkeypatch):
     else:
         raise AssertionError("expected failure")
     assert time.monotonic() - t < 3
+
+
+def test_dead_host_fails_at_connect_cap_but_reads_keep_full_timeout(monkeypatch):
+    """A network that drops packets used to cost the whole request timeout
+    (8s per control-plane call on the hook path); connect is now capped."""
+    monkeypatch.setattr(happy_eyeballs, "CONNECT_TIMEOUT", 0.5)
+    t = time.monotonic()
+    try:
+        happy_eyeballs.create_connection(("192.0.2.1", 9), timeout=8)  # TEST-NET-1 blackhole
+    except OSError:
+        pass
+    else:
+        raise AssertionError("expected failure")
+    assert time.monotonic() - t < 2
+
+    srv, port = _listener()
+    with happy_eyeballs.create_connection(("127.0.0.1", port), timeout=8) as s:
+        assert s.gettimeout() == 8
+    srv.close()

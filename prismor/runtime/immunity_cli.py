@@ -200,10 +200,10 @@ def main(argv: Optional[List[str]] = None) -> None:
 # so a new prismor.runtime.cli subcommand can never silently vanish from help.
 _HELP_GROUPS = [
     ("Get started",          ["setup", "status", "doctor", "discover", "dashboard", "login", "update", "docs"]),
-    ("Day to day",           ["check", "allow", "pause", "pause-hard", "resume", "unlock", "lock", "mode"]),
+    ("Day to day",           ["check", "allow", "approvals", "pause", "pause-hard", "resume", "unlock", "lock", "mode"]),
     ("Policy & scoping",     ["policy", "tags", "scope", "iam", "egress", "agents", "learn"]),
     ("Secrets",              ["cloak", "sweep", "canary"]),
-    ("Scanning & audit",     ["audit", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
+    ("Scanning & audit",     ["audit", "aibom", "scan", "deps", "skills", "extensions", "memory", "semantic-check", "supplychain"]),
     ("Enforcement surfaces", ["surfaces", "install-hooks", "uninstall-hooks", "mirror", "mcp-gateway", "proxy", "elevenlabs",
                               "sandbox", "inference-hook", "eval-server"]),
     ("Sessions & evidence",  ["sessions", "session", "analyze", "analyze-history", "tokens", "trail", "attest", "query"]),

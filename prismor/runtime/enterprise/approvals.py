@@ -317,10 +317,9 @@ def await_step_up(
     interval = _poll_interval()
     while _monotonic() < deadline:
         time.sleep(interval)
-        status = _get_status(ident, approval_id, timeout=poll_timeout)
+        # Keep approval and its redaction requirement from the same response.
+        status, mode = _get_status_ex(ident, approval_id, timeout=poll_timeout)
         if status == _APPROVED:
-            _st, mode = _get_status_ex(ident, approval_id, timeout=poll_timeout)
-            mode = mode if _st == _APPROVED else "full"
             _record("approved" if mode != "redacted" else "approved_redacted", approval_id)
             return ApprovalOutcome(True, redacted=mode == "redacted", approval_id=approval_id, status="approved")
         if status in _DECIDED:  # denied / expired

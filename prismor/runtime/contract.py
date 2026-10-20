@@ -255,6 +255,19 @@ SURFACES: Tuple[Surface, ...] = (
               "a hooked and a mirrored call alike.",
     ),
     Surface(
+        id="acp",
+        title="ACP proxy",
+        kind="gateway",
+        module="prismor.runtime.acp_proxy",
+        normalizer="prismor.runtime.acp_proxy:AcpProxy._event",
+        can_refuse=True, can_rewrite=True, can_redact=True,
+        notes="Stdio proxy between an Agent Client Protocol editor (Zed, "
+              "JetBrains) and its agent. Screens the client-mediated calls "
+              "(terminal/create, fs/*, session/request_permission) and redacts "
+              "what the editor returns; tools the agent runs in-process never "
+              "cross the pipe and still need its native hooks.",
+    ),
+    Surface(
         id="sdk-adapter",
         title="Framework SDK adapters",
         kind="adapter",

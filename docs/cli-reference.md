@@ -54,6 +54,7 @@ prismor
 │
 ├─ Day to day
 │   ├─ check                  Pre-check a command or path against policy
+│   ├─ approvals              Approve or deny one blocked action, once
 │   ├─ allow <rule>           Make an exception to a rule that blocked you
 │   ├─ pause / pause-hard     Suspend local enforcement (24h / until resume); observe stays on
 │   ├─ resume                 Resume enforcement
@@ -88,6 +89,7 @@ prismor
 ├─ Enforcement surfaces
 │   ├─ mirror <action>        on · off · status · passthrough — governed built-ins over MCP
 │   ├─ mcp-gateway [action]   serve · install · uninstall — one MCP connector in front of all servers
+│   ├─ acp -- <agent…>        ACP stdio proxy — agents hosted by Zed, JetBrains and other ACP editors
 │   ├─ proxy                  LLM/A2A proxy — screens model traffic and proposed tool calls
 │   ├─ elevenlabs <action>    status · connect · disconnect — ElevenLabs voice agents via the proxy
 │   ├─ sandbox <action>       status · check · run — Docker command sandbox
@@ -322,6 +324,26 @@ longer has.
 
 ### Making exceptions
 
+Often you don't want an exception at all, just "yes, run that, this once". A
+block carries a request id for exactly that:
+
+```
+prismor approvals                  # what is waiting
+prismor approvals approve 4c3e28   # that exact call, once
+prismor approvals deny 4c3e28
+```
+
+The approval covers the same agent making the same tool call with the same
+input in the same workspace. The first call it lets through spends it, and it
+lapses after 30 minutes if nothing uses it. `approve` tells you whether the
+agent is still waiting (it carries on by itself) or you have to go back and tell
+it to retry. Set `PRISMOR_APPROVAL_WAIT=30` to make Claude Code and Codex hold
+the blocked call open for that many seconds (at most 45, which keeps it under
+the hook timeout). Approving inside that window lets the original call run,
+with no retry. Not offered for self-protection rules or on org-managed
+workspaces. `approve` needs a terminal, so an agent cannot approve its own
+call, even inside an unlock window.
+
 When a rule blocks something it should not, the block prints the command that
 fixes it:
 
@@ -344,6 +366,24 @@ ability for a few minutes, run `prismor unlock` and enter your password
 agent can adjust policy; it still cannot touch the self-protection rules or the
 password itself, and the window closes on its own.
 
+### Let your agent create or edit policy
+
+You can have your agent (Claude Code, Codex, Cursor, ...) write a policy for
+you, or change one, as long as you open the door first:
+
+```
+prismor unlock              # asks for your password; 3 minutes by default
+prismor unlock --for 15m    # longer, up to an hour (or your org's cap)
+```
+
+Then ask the agent for what you want ("block curl to anything but our API",
+"stop flagging `git push` in this repo"). Inside the window it can edit
+`.prismor/policy.yaml`, run `prismor policy init` to scaffold one, and run
+`prismor allow`. Every change is logged. It still cannot relax the
+self-protection rules, read or change the unlock password, or extend its own
+window. `prismor lock` closes the window early; `prismor unlock --status` shows
+how long is left. Check the result with `prismor policy show`.
+
 An unhooked agent — one running through a framework Prismor does not see — is
 outside all of this, the same as every other Prismor control.
 
@@ -356,6 +396,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor check "<value>"` | `--type <command\|read\|write>`, `--explain`, `--from-log`, `--suggest-allowlist` | Dry-run a command or file path against the active policy. Returns ALLOW / WARN / BLOCK + reason without executing. Exit `2`=block, `1`=warn, `0`=clean. |
 | `prismor semantic-check [TEXT]` | `--mode <hybrid\|heuristic\|api>`, `--provider <claude\|codex\|api\|prismor>`, `--model`, `--json`, `--cli-path` | Run the semantic prompt-injection guard on text or stdin. See [Semantic Guard](semantic-guard.md). |
 | `prismor allow <rule>` | `--pattern`, `--expires`, `--observe`, `--off`, `--yes`, `--reason`, `--list`, `--undo`, `--workspace` | Make an exception to a rule that blocked you, narrowest first. With no `--pattern` it uses the text of the most recent block for that rule. `--observe` keeps the rule but stops it blocking; `--off` disables it for the workspace (needs `--yes`). Refuses self-protection rules, refuses to turn a floor rule off, and refuses everything where an org's signed policy governs. See [Making exceptions](#making-exceptions). |
+| `prismor approvals [list\|approve <id>\|deny <id>]` | `--all`, `--json` | One-shot human approval for a blocked action: the identical call runs once. Needs a terminal. See [Making exceptions](#making-exceptions). |
 | `prismor unlock` | `--for`, `--status`, `--set-password`, `--system-password`, `--forget`, `--workspace` | Open a short window (default 3 minutes) in which the agent may edit Prismor's own policy. Asks for your unlock password; needs a terminal. `--system-password` verifies against your operating-system account instead of storing a Prismor one. |
 | `prismor lock` | — | Close the self-edit window early. |
 | `prismor pause` | `--for DURATION` (default `24h`), `--reason` | Suspend local enforcement: tool calls are still screened and logged (observe), but nothing blocks. Auto-resumes after `--for` (`30m`, `2h`, `1d`). The reason is shown in the console next to the device. Agents cannot run it. See [Pause and resume](pause-and-login.md). |
@@ -379,6 +420,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor mirror passthrough <on\|off>` | `--workspace` | Runtime switch, no restart: `on` runs mirrored built-ins ungoverned (logged, not blocked or redacted). `prismor pause` does the same for hooks + gateway together, with auto-resume. |
 | `prismor mcp-gateway [serve]` | `--config` (default `~/.prismor/mcp-gateway.json`), `--upstream`, `--server name=<url\|command>`, `--mode <observe\|enforce>` (default observe), `--namespace <plain\|none>`, `--mirror`, `--workspace`, `--session-id`, `--identity-issuer`/`--identity-audience`/`--identity-jwks`/`--identity-mode`/`--identity-user-claim`/`--identity-team-claim`/`--identity-roles-claim` | One stdio MCP server in front of every server in `--config`. Each `tools/call` is policy-evaluated before it is forwarded, and each response is injection-scanned before the model sees it. Tools are namespaced `<server>__<tool>`. See [MCP Gateway](mcp-gateway.md). |
 | `prismor mcp-gateway install` | `--all`, `--mode` | Move this workspace's `.mcp.json` servers behind the gateway (backup kept). `--all` migrates every MCP config on the machine (Claude Desktop, Cursor, VS Code, …). `uninstall` restores the backup. |
+| `prismor acp -- <agent command…>` | `--mode <enforce\|observe>` (default enforce), `--workspace`, `--no-audit` | Stdio proxy for Agent Client Protocol editors (Zed, JetBrains, CodeCompanion, agent-shell). Put it in front of the agent in the editor's `agent_servers` entry. It screens `terminal/create`, `fs/*` and `session/request_permission` before the editor carries them out, redacts and scans what comes back, resolves `@@SECRET:…@@` placeholders, and turns `step_up` into the editor's own permission prompt. Tools the agent runs in-process are audited after the fact but can only be enforced by its native hooks. See [ACP proxy](acp.md). |
 | `prismor egress migrate` | `--workspace` | Convert a legacy warn-only `settings.egress_allowlist` into an enforceable `settings.egress`. |
 | `prismor egress request <host>` | `--reason` (required), `--workspace` | Enrolled devices: ask your org's admins to allow a host. Lands in the console under Policy → Requests; approving adds it to the egress allowlist of the policy governing your device. See [Network Isolation](network-isolation.md#when-your-agent-is-blocked-request-access). |
 | `prismor tags list` | `--last N`, `--workspace` | Tools seen in recent sessions + resolved tags + which tier resolved them (explicit / `_meta` / default / inference). See [Tool Tags](tool-tags.md). |
@@ -428,6 +470,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 |---|---|---|
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
 | `prismor audit judge` | `--since 24h`, `--sample 0.05`, `--max 50`, `--dry-run`, `--json`, `--workspace` | Has the configured LLM judge review a deterministic sample of tool calls the rules ALLOWED, after the fact, from the local store. Results go to the `judge_audit` table; flagged calls are printed and sent as one content-free `judge_audit` record each. Never blocks. Exits 2 when no judge is configured. See [Semantic Guard](semantic-guard.md#auditing-allowed-calls). |
+| `prismor aibom` | `--format <cyclonedx\|markdown>`, `-o FILE`, `--workspace` | AI bill of materials as CycloneDX 1.6: agents (and whether Prismor governs them), models used in the last 30 days, MCP servers, plugins, skills, third-party hooks and instruction files, with SHA-256, origin, capabilities and drift (`new`/`changed`/`approved`). Leaves out credentials, contents and prompts; paths are home-relative and URLs redacted, so it can be shared. |
 | `prismor scan` | `--agent`, `--scope <all\|project\|user>`, `--json`, `--workspace` | Scan installed MCP servers and skills for dangerous patterns. See [Skill Scanner](skill-scanner.md). |
 | `prismor extensions [list\|why\|approve\|wrap-hooks\|unwrap-hooks]` | `--kind`, `--json`, `--workspace` | Inventory of skills, plugins, third-party hooks and MCP servers with origin, installer, capabilities and the documents they caused to be fetched. See [Extension Ledger](extensions.md). |
 | `prismor skills audit` | `--json`, `--workspace` | Scan every installed `SKILL.md`: what it instructs, its TOFU baseline, remote fetches. Exit `1` if a skill is new, changed or flagged. The `immunity-agent` skill that setup installs shows as `bundled` while it matches the packaged copy. |
@@ -553,6 +596,7 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | `PRISMOR_AGENT_ID` | `iam` | Active agent identity for IAM enforcement. See [IAM](iam.md). |
 | `PRISMOR_ENVIRONMENT` | telemetry | Deployment environment label on every event (`prod`, `staging`, `ci`...). Lowercase `[a-z0-9_-]`, max 40; invalid values are dropped. |
 | `PRISMOR_RELEASE` | telemetry | Agent release label on every event (git sha, app version). Printable, no whitespace, max 64; invalid values are dropped. |
+| `PRISMOR_APPROVAL_WAIT` | hooks (Claude Code, Codex) | Seconds a blocked call waits for `prismor approvals approve` before it is denied (max 45, default 0). |
 | `PRISMOR_SWEEP_PASS` | `sweep` | Vault passphrase for non-interactive runs. |
 | `EDITOR` | `scope edit` | Editor for scoped-rule editing. |
 

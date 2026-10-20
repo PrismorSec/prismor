@@ -57,9 +57,24 @@ class TestDocsApi(unittest.TestCase):
         self.assertIsNotNone(hit)
         self.assertTrue(hit["hits"])
 
-    def test_search_requires_every_word(self):
-        status, data = self.get("/api/docs?q=" + urllib.parse.quote("gateway zzzznotaword"))
+    def test_search_prefers_pages_with_every_word(self):
+        # Pages with every word asked about win; one unknown word falls back
+        # to the closest pages rather than an empty list.
+        status, data = self.get("/api/docs?q=" + urllib.parse.quote("gateway install"))
         self.assertEqual(200, status)
+        self.assertEqual("mcp-gateway.md", data["results"][0]["name"])
+        status, data = self.get("/api/docs?q=" + urllib.parse.quote("gateway zzzznotaword"))
+        self.assertEqual("mcp-gateway.md", data["results"][0]["name"])
+
+    def test_search_answers_plain_questions(self):
+        # Filler words are dropped and words match by stem ("blocked" -> block),
+        # so a question finds the page that answers it.
+        for q, page in (("why was my command blocked", "faq.md"), ("what is a hook", "glossary.md"),
+                        ("how do i install", "installation.md")):
+            status, data = self.get("/api/docs?q=" + urllib.parse.quote(q))
+            self.assertEqual(200, status)
+            self.assertEqual(page, data["results"][0]["name"], q)
+        status, data = self.get("/api/docs?q=" + urllib.parse.quote("the of my"))
         self.assertEqual([], data["results"])
 
     def test_name_cannot_escape_the_docs_directory(self):

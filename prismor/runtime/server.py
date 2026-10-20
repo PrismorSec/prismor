@@ -18,6 +18,7 @@ Read endpoints:
     GET /api/workspaces    → registered workspaces + enrollment status
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
     GET /api/agents        → agent registry merged with per-agent call stats
+    POST /api/extensions/toggle → turn an extension off or on ({id, enabled})
     GET /api/docs          → bundled docs (?name=<file.md> one doc, ?q=… search)
     GET /api/query-prompt  → copy-paste prompt teaching an agent to query the store
     GET /metrics           → Prometheus text exposition (see docs/observability.md)
@@ -25,6 +26,7 @@ Read endpoints:
     GET /api/sessions/:id/dev → what went wrong + what changed (devlog.py)
     GET /api/files         → files agents wrote (?q=… path filter)
     GET /api/blame         → agent sessions that wrote ?path=…[&line=N], with diffs
+    GET /api/hooks         → every hook run across Claude Code sessions: runs, timing, failures, sessions (?days=7)
     GET /api/friction      → failures recurring across sessions (?workspace=…&days=14)
 
 Write endpoints (human-only — localhost):
@@ -32,6 +34,9 @@ Write endpoints (human-only — localhost):
     PUT /api/policy/project        → body: {yaml, workspace} — write project policy
     POST /api/agents/:name         → body: {enabled?, mode?, iam_profile?}
     PATCH /api/sessions/:id/control → body: {action, workspace, …data}
+    POST /api/pause                → body: {paused} — `prismor pause` / `prismor resume`
+    POST /api/update               → `prismor update`
+    (GET /api/runtime: versions + pause state; GET /api/changelog: notes since the installed version)
 
 Every request passes ``_request_allowed``: no CORS, a loopback-only Host header
 (DNS rebinding), same-origin only (CSRF), and a token when bound off loopback.
@@ -42,12 +47,14 @@ import hmac
 import ipaddress
 import json
 import os
+import re
 import secrets
 import sys
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, unquote, urlsplit
 
 from prismor.runtime.store import (
@@ -55,6 +62,7 @@ from prismor.runtime.store import (
     get_sessions_page,
     get_mcp_usage,
     get_dependency_usage,
+    get_hook_stats,
     get_network_calls,
     get_findings_page,
     get_events_page,
@@ -81,6 +89,10 @@ from prismor.runtime.store import (
 )
 
 _DASHBOARD_HTML = Path(__file__).with_name("dashboard.html")
+# Chart.js, marked and the logo ship with the package: a CDN copy left the
+# dashboard on its loading screen with no network (initCharts threw first).
+_STATIC_DIR = Path(__file__).with_name("static")
+_STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".png": "image/png"}
 
 
 def _mirror_server_names(workspace: Path) -> set:
@@ -327,15 +339,62 @@ def _docs_list(root: Path):
     return out
 
 
+# Words that carry no meaning in a question ("why was my command blocked").
+_DOC_STOPWORDS = frozenset(
+    "a an and are as at be by can do does for from how i if in is it its me my of on or "
+    "so that the this to was we what when where which who why will with you your prismor".split()
+)
+# Plain words a newcomer types, mapped to the words the docs use.
+_DOC_SYNONYMS = {
+    "block": ("deny", "stop"), "stop": ("block", "pause", "kill"), "deny": ("block",),
+    "allow": ("exempt", "permit"), "secret": ("key", "token", "credential", "cloak"),
+    "key": ("secret", "token", "credential"), "hide": ("cloak", "redact", "mask"),
+    "token": ("secret", "key"), "password": ("secret", "credential"),
+    "off": ("disable", "pause", "uninstall"), "disable": ("off", "pause"),
+    "remove": ("uninstall", "delete"), "delete": ("remove", "purge"),
+    "uninstall": ("remove",), "update": ("upgrade",), "upgrade": ("update",),
+    "slow": ("timeout", "latency"), "data": ("telemetry", "store"),
+    "leave": ("egress", "send", "upload"), "send": ("egress", "upload", "telemetry"),
+    "privacy": ("telemetry", "data", "redact"), "start": ("install", "setup", "getting"),
+    "begin": ("getting", "start"), "setup": ("install",), "install": ("setup",),
+    # Getting past a block: the docs say allow, approve, exempt, unlock or pause.
+    "unblock": ("allow", "approve", "exempt", "unlock", "pause"),
+    "bypass": ("allow", "exempt", "unlock", "pause"), "override": ("allow", "exempt", "unlock"),
+    "approve": ("approval", "allow"), "whitelist": ("allow", "allowlist"), "allowlist": ("allow",),
+    "false": ("allow", "exempt"), "positive": ("allow", "exempt"),
+}
+
+
+def _doc_stem(word: str) -> str:
+    """blocked/blocking/blocks -> block: enough for matching, not linguistics."""
+    for suffix in ("ing", "ed", "es", "s"):
+        if len(word) > len(suffix) + 3 and word.endswith(suffix):
+            return word[: -len(suffix)]
+    return word
+
+
+def _doc_terms(query: str) -> List[List[str]]:
+    """One group per meaningful word: the word's stem and its synonyms. A
+    section matches a group if any of them appears."""
+    words = [w for w in re.findall(r"[a-z0-9][a-z0-9_.-]*", query.lower()) if w not in _DOC_STOPWORDS]
+    groups = []
+    for w in words:
+        stem = _doc_stem(w)
+        groups.append(list(dict.fromkeys([stem, *_DOC_SYNONYMS.get(stem, ()), *_DOC_SYNONYMS.get(w, ())])))
+    return groups
+
+
 def _docs_search(root: Path, query: str, limit: int = 60):
-    """Case-insensitive substring scan over the docs. No index -- the corpus
-    is a few dozen small files."""
-    # Every word must appear in the line -- a two-word query matching only
-    # "decloak" or only "hook" is noise, and nobody types a phrase expecting
-    # an exact substring.
-    terms = [t for t in query.lower().split() if t]
-    if not terms:
+    """Ranked search over the docs: a page scores for each query word in its
+    title, its headings and its sections, so the page about the thing asked
+    comes first. Filler words are dropped, words match by stem, and a few
+    plain words also match the docs' own vocabulary (hide -> cloak). The
+    corpus is a few dozen small files, so it is scanned per query."""
+    groups = _doc_terms(query)
+    if not groups:
         return []
+    # "what is a hook" wants the definition first.
+    define = bool(re.match(r"\s*(what\s+(is|are|does)|what's|define|meaning)\b", query.lower()))
     results = []
     for f in sorted(root.glob("*.md")):
         try:
@@ -343,18 +402,64 @@ def _docs_search(root: Path, query: str, limit: int = 60):
         except OSError:
             continue
         title = _doc_title(text, f.name)
-        hits = []
+        tlow = (title + " " + f.stem.replace("-", " ")).lower()
+        score = sum(15 for g in groups if any(t in tlow for t in g))
+        if f.name == "glossary.md" and define:
+            score += 25
+        # Sections: the text under each heading, scored on its own.
+        sections, cur, fenced = [], {"heading": "", "line": 1, "lines": []}, False
         for i, line in enumerate(text.splitlines(), 1):
-            low = line.lower()
-            if all(t in low for t in terms):
-                hits.append({"line": i, "snippet": line.strip()[:200]})
-                if len(hits) >= 3:
-                    break
-        if hits or all(t in title.lower() for t in terms):
-            results.append({"name": f.name, "title": title, "hits": hits})
-        if len(results) >= limit:
-            break
-    return results
+            if line.startswith("```"):
+                fenced = not fenced
+            if line.startswith("#") and not fenced:
+                sections.append(cur)
+                cur = {"heading": line.lstrip("#").strip(), "line": i, "lines": []}
+            cur["lines"].append((i, line))
+        sections.append(cur)
+        best = []
+        for sec in sections:
+            body = " ".join(l for _, l in sec["lines"]).lower()
+            covered = [g for g in groups if any(t in body for t in g)]
+            if not covered:
+                continue
+            head = sec["heading"].lower()
+            in_head = sum(1 for g in groups if any(t in head for t in g))
+            sec_score = 3 * in_head + len(covered)
+            if in_head == len(groups):
+                # A heading that is the question or the term itself ("Why was
+                # my command blocked?", "Hook") is the answer, not a mention.
+                sec_score += 12 if len(head.split()) <= 2 * len(groups) + 1 else 8
+            if len(covered) == len(groups):
+                sec_score += 2 * len(groups)  # every word asked about, in one place
+            best.append((sec_score, sec))
+        best.sort(key=lambda x: -x[0])
+        score += sum(sc for sc, _ in best[:2])
+        if not score or (len(groups) > 1 and not best and score < 15 * len(groups)):
+            continue
+        hits = []
+        for _, sec in best[:3]:
+            lines = [(i, l) for i, l in sec["lines"] if l.strip() and not l.startswith("#")]
+            i, line = max(lines or sec["lines"], key=lambda il: sum(1 for g in groups if any(t in il[1].lower() for t in g)))
+            hits.append({"line": i, "snippet": line.strip()[:200], "section": sec["heading"]})
+        full = all(any(t in tlow or any(t in " ".join(l for _, l in sec["lines"]).lower() for _, sec in best) for t in g)
+                   for g in groups)
+        results.append({"name": f.name, "title": title, "hits": hits, "score": score, "full": full})
+    # Pages with every word asked about, when there are any; otherwise the
+    # closest, so one misspelt word does not empty the list.
+    if any(r["full"] for r in results):
+        results = [r for r in results if r["full"]]
+    for r in results:
+        del r["full"]
+    results.sort(key=lambda r: (-r["score"], r["title"]))
+    # Pages that only mention the words in passing are noise next to the
+    # page about them: keep what scores within reach of the best.
+    if results:
+        floor = results[0]["score"] * 0.35
+        results = [r for r in results if r["score"] >= floor][:20]
+    terms = sorted({t for g in groups for t in g}, key=len, reverse=True)
+    for r in results:
+        r["terms"] = terms
+    return results[:limit]
 
 
 # The workspace where the server was launched (set by run_server).
@@ -424,6 +529,43 @@ def _policy_write_status(result: dict) -> int:
     if result.get("ok"):
         return 200
     return 403 if result.get("reason") == "org_managed" else 400
+
+
+_CHANGELOG_URL = "https://raw.githubusercontent.com/PrismorSec/prismor/main/CHANGELOG.md"
+
+
+def _version_key(v: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", v or "")[:3])
+
+
+def _runtime_state() -> Dict[str, Any]:
+    from prismor.runtime import __version__
+    from prismor.runtime import pause as _pause
+    from prismor.runtime.version_check import latest_known_version
+    latest = latest_known_version()
+    state = _pause.active_state() or {}
+    return {
+        "version": __version__,
+        "latest": latest,
+        "update_available": bool(latest) and _version_key(latest) > _version_key(__version__),
+        "paused": bool(state),
+        # An org pause can't be lifted from here, same as `prismor resume`.
+        "paused_by_org": bool(state) and (_pause.org_state() or {}).get("paused") is True,
+        "paused_until": state.get("until"),
+    }
+
+
+def _changelog_since(current: str) -> List[Dict[str, str]]:
+    """Released sections of the upstream CHANGELOG newer than ``current``."""
+    import urllib.request
+    with urllib.request.urlopen(_CHANGELOG_URL, timeout=6) as resp:  # fixed URL  # nosec B310
+        text = resp.read().decode("utf-8", "replace")
+    out = []
+    for block in re.split(r"(?m)^(?=## \[)", text):
+        m = re.match(r"## \[(\d+\.\d+\.\d+)\][^\n]*", block)
+        if m and _version_key(m.group(1)) > _version_key(current):
+            out.append({"version": m.group(1), "heading": m.group(0)[3:], "body": block[m.end():].strip()})
+    return out
 
 
 class PrismorRequestHandler(BaseHTTPRequestHandler):
@@ -508,6 +650,21 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_static(self, name: str) -> None:
+        # Bare file names only: no subdirectories, so no traversal out of static/.
+        ctype = _STATIC_TYPES.get(Path(name).suffix)
+        target = _STATIC_DIR / name
+        if "/" in name or "\\" in name or name.startswith(".") or not ctype or not target.is_file():
+            self._send_json({"error": "not found"}, status=404)
+            return
+        body = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_json_body(self) -> Any:
         length = int(self.headers.get("Content-Length", 0) or 0)
         if not length:
@@ -538,6 +695,10 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
 
         if path in ("", "/dashboard"):
             self._send_html(_DASHBOARD_HTML)
+            return
+
+        if path.startswith("/static/"):
+            self._send_static(path[len("/static/"):])
             return
 
         if path == "/health":
@@ -608,6 +769,30 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 "home": str(prismor_home()),
                 "enrollment": enrollment,
             })
+            return
+
+        if path == "/api/runtime":
+            self._send_json(_runtime_state())
+            return
+
+        if path == "/api/agent-tools":
+            from prismor.runtime.store import get_agent_tools
+            self._send_json({"tools": get_agent_tools(qstr("name"), qint("days", 7))})
+            return
+
+        if path == "/api/approvals":
+            from prismor.runtime import approvals_local
+            reqs = [{k: v for k, v in r.items() if k != "fp"}
+                    for r in approvals_local.list_requests() if r.get("status") == "pending"]
+            self._send_json({"requests": reqs})
+            return
+
+        if path == "/api/changelog":
+            from prismor.runtime import __version__
+            try:
+                self._send_json({"version": __version__, "releases": _changelog_since(__version__)})
+            except Exception as exc:
+                self._send_json({"error": f"could not fetch the changelog: {exc}"}, status=502)
             return
 
         if path == "/api/policy":
@@ -715,6 +900,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     severity=qstr("severity"),
                     category=qstr("category"),
                     search=qstr("q"),
+                    since_hours=qint("days", 0) * 24,
                 )
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
@@ -729,6 +915,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     limit=qint("limit", 30),
                     verdict=qstr("verdict"),
                     agent=qstr("agent"),
+                    since_hours=qint("days", 0) * 24,
                 )
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
@@ -780,6 +967,14 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
+        if path == "/api/hooks":
+            try:
+                days = max(1, qint("days", 7))
+                self._send_json(get_hook_stats(hours=days * 24))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
         if path == "/api/dependencies":
             try:
                 days = max(1, qint("days", 30))
@@ -811,7 +1006,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 workspace = _SERVER_WORKSPACE or Path.cwd()
 
                 # Merge store stats with registry config
-                store_stats = {a["name"]: a for a in get_agents_overview()}
+                store_stats = {a["name"]: a for a in get_agents_overview(qint("days", 0))}
                 registry = {a.name: a for a in list_agents(workspace)}
 
                 # Union of both — include agents seen in store but not configured yet
@@ -834,7 +1029,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     })
 
                 iam_profiles = list_agent_ids(load_iam_config(workspace))
-                self._send_json({"agents": items, "iam_profiles": iam_profiles})
+                from prismor.runtime.agents import load_agents_config
+                cfg = load_agents_config(workspace)
+                self._send_json({"agents": items, "iam_profiles": iam_profiles,
+                                 # Tool rules that apply to every agent.
+                                 "global_deny_tools": list(cfg.get("global_deny_tools") or []),
+                                 "global_ask_tools": list(cfg.get("global_ask_tools") or [])})
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
             return
@@ -843,7 +1043,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             from prismor.runtime import devlog
             try:
                 if path == "/api/files":
-                    data = devlog.files(qstr("q"))
+                    data = devlog.files(qstr("q"), days=qint("days", 0))
                 elif path == "/api/blame":
                     data = devlog.blame(qstr("path"), qint("line", 0) or None)
                 else:
@@ -904,6 +1104,94 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, status=500)
             return
 
+        if path == "/api/approvals":
+            # Approve or deny one blocked call, once (approvals_local.py). Agents
+            # are kept off this route by prismor-self-edit; an unlock window
+            # lifts that rule, so while one is open the decision has to come
+            # from the terminal, as the CLI requires.
+            from prismor.runtime import approvals_local, unlock
+            try:
+                body = self._read_json_body()
+            except ValueError:
+                self._send_json({"error": "invalid JSON"}, status=400)
+                return
+            if unlock.is_open():
+                self._send_json({"error": "An unlock window is open, so approve from your terminal: "
+                                          "prismor approvals approve " + str(body.get("id") or "<id>")}, status=403)
+                return
+            rec = approvals_local.decide(str(body.get("id") or ""), bool(body.get("approve")))
+            if rec is None:
+                self._send_json({"error": "No such request (it may have expired)."}, status=404)
+                return
+            self._send_json({"ok": True, "status": rec.get("status"), "was_waiting": bool(rec.get("was_waiting"))})
+            return
+
+        if path == "/api/policy/floor-off":
+            # A pinned (safety-floor) rule off or back on. Off needs the unlock
+            # password; on only tightens, so it needs nothing. See floor_off.py.
+            from prismor.runtime import floor_off, unlock
+            from prismor.runtime.allow import is_floor_rule
+            from prismor.runtime.policy_engine import PolicyEngine, is_self_protection_rule
+            try:
+                body = self._read_json_body()
+            except ValueError:
+                self._send_json({"error": "invalid JSON"}, status=400)
+                return
+            rule_id = str(body.get("rule") or "")
+            if not body.get("off"):
+                floor_off.turn_on(rule_id)
+                self._send_json({"ok": True, "rule": rule_id, "off": False})
+                return
+            if not is_floor_rule(rule_id):
+                self._send_json({"error": f"{rule_id} is not pinned; use the normal toggle"}, status=400)
+                return
+            if is_self_protection_rule(rule_id):
+                self._send_json({"error": "This rule guards Prismor itself and cannot be turned off. "
+                                          "For a one-off change, run prismor unlock."}, status=403)
+                return
+            engine = PolicyEngine(workspace=self._resolve_workspace({}) or Path.cwd())
+            if engine.workspace_managed or engine.remote_policy_meta:
+                self._send_json({"error": "Your organization manages this workspace, so its safety floor "
+                                          "can only be changed by an org admin."}, status=403)
+                return
+            ok, msg = unlock.verify(str(body.get("password") or ""))
+            if not ok:
+                self._send_json({"error": msg}, status=401)
+                return
+            floor_off.turn_off(rule_id, by=os.environ.get("USER", ""))
+            self._send_json({"ok": True, "rule": rule_id, "off": True})
+            return
+
+        if path == "/api/pause":
+            from prismor.runtime import pause as _pause
+            try:
+                body = self._read_json_body()
+            except ValueError:
+                self._send_json({"error": "invalid JSON"}, status=400)
+                return
+            if body.get("paused"):
+                _pause.beat(agent="claude", state=_pause.set_paused(reason="paused from the dashboard"))
+            elif _pause.clear_paused():
+                _pause.beat_resumed(agent="claude")
+            self._send_json(_runtime_state())
+            return
+
+        if path == "/api/update":
+            import subprocess
+            # Same path as `prismor update`, in a fresh interpreter so its
+            # guidance refresh runs the new code.
+            try:
+                r = subprocess.run(
+                    [sys.executable, "-c", "from prismor.runtime.immunity_cli import main; main()", "update"],
+                    capture_output=True, text=True, timeout=600, check=False,
+                )
+            except subprocess.TimeoutExpired:
+                self._send_json({"ok": False, "output": "update timed out after 10 minutes"}, status=504)
+                return
+            self._send_json({"ok": r.returncode == 0, "output": (r.stdout + r.stderr)[-4000:]},
+                            status=200 if r.returncode == 0 else 500)
+            return
+
         # POST /api/extensions/approve — a human accepts an extension after review
         if path == "/api/extensions/approve":
             length = int(self.headers.get("Content-Length", 0))
@@ -915,6 +1203,21 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, **approve(workspace, str(body.get("id") or ""))})
             except SystemExit as exc:
                 self._send_json({"error": str(exc)}, status=404)
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=400)
+            return
+
+        # POST /api/extensions/toggle — turn one extension off or back on
+        if path == "/api/extensions/toggle":
+            length = int(self.headers.get("Content-Length", 0))
+            try:
+                body = json.loads(self.rfile.read(length)) if length else {}
+                from prismor.runtime.extensions import set_enabled
+                ws_str = body.get("workspace")
+                workspace = Path(ws_str) if ws_str else (_SERVER_WORKSPACE or Path.cwd())
+                self._send_json({"ok": True, **set_enabled(workspace, str(body.get("id") or ""), bool(body.get("enabled")))})
+            except SystemExit as exc:  # hooks not installed: nothing to wrap a hook with
+                self._send_json({"error": str(exc)}, status=409)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
             return
@@ -1123,6 +1426,18 @@ class _DashboardServer(ThreadingHTTPServer):
         super().handle_error(request, client_address)
 
 
+def _warm_dashboard_reads() -> None:
+    """Pay the one-off costs before anyone opens a page: the read index, and
+    the parse of recent shell commands the Files page lists."""
+    from prismor.runtime import devlog
+    from prismor.runtime.store import ensure_read_indexes
+    for step in (ensure_read_indexes, lambda: devlog.files("")):
+        try:
+            step()
+        except Exception:
+            pass
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 7070,
@@ -1144,6 +1459,7 @@ def run_server(
     if workspace:
         _migrate_workspace_runtime_state(workspace, prismor_home())
         initialize_database(workspace)
+    threading.Thread(target=_warm_dashboard_reads, daemon=True).start()
 
     import errno as _errno
     while True:
@@ -1160,7 +1476,6 @@ def run_server(
     url = f"http://{host}:{port}" + (f"/?token={_SERVER_TOKEN}" if _SERVER_TOKEN else "")
     print(f"[prismor] dashboard → {url}  (Ctrl-C to stop)  state → {prismor_home()}", flush=True)
     if open_browser:
-        import threading
         import webbrowser
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:

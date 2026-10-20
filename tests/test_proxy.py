@@ -567,6 +567,127 @@ def test_shutdown_still_flushes_inside_debounce_window(monkeypatch, tmp_path):
     assert saved == ["short-session"], "shutdown must flush what is unsnapshotted"
 
 
+@pytest.fixture(params=["with", "then"])
+def tag_screen(request, monkeypatch, tmp_path):
+    """Exercise the real runtime and ledger, not the stub used for framing."""
+    import yaml
+
+    policy_dir = tmp_path / ".prismor"
+    policy_dir.mkdir()
+    (policy_dir / "policy.yaml").write_text(yaml.safe_dump({
+        "version": "1.0",
+        "settings": {"tool_tags": {
+            "enabled": True, "mode": "enforce",
+            "tags": {"read_customers": ["private_data"],
+                     "send_report": ["external_comms"]},
+            "rules": [f"private_data {request.param} external_comms -> block"],
+        }},
+    }))
+    # Drive snapshots explicitly so a background rebuild cannot hide a broken
+    # real-time index by populating the ledger first.
+    monkeypatch.setattr(proxy_mod, "SNAPSHOT_DEBOUNCE", 3600)
+    return Screen(tmp_path, "enforce", "tag-history")
+
+
+def _tag_call(screen, name, session_id=""):
+    return screen.evaluate(screen.tool_event(name, {}, "anthropic", "synthetic",
+                                             None, session_id=session_id))
+
+
+def test_proxy_tag_history_blocks_repeated_completing_calls(tag_screen):
+    from prismor.runtime.store import read_session_events
+    from prismor.runtime.trifecta import TagLedger
+
+    assert _tag_call(tag_screen, "read_customers").allow
+    for index in (1, 2):
+        decision = _tag_call(tag_screen, "send_report")
+        assert not decision.allow
+        assert decision.blocking["ruleId"].startswith("tag-rule:")
+        assert decision.blocking["eventIndex"] == index
+    # Denied calls are logged, but their tags must not enter the ledger.
+    assert TagLedger(tag_screen.workspace, tag_screen.session_id).hist == {"private_data": [0]}
+    assert len(read_session_events(tag_screen.workspace, tag_screen.session_id)) == 3
+
+
+@pytest.mark.parametrize("snapshot", [False, True])
+def test_proxy_tag_history_survives_snapshot_and_restart(tag_screen, snapshot):
+    assert _tag_call(tag_screen, "read_customers").allow
+    if snapshot:
+        tag_screen.snapshot()
+        assert tag_screen._pending[tag_screen.session_id] == 0
+    assert not _tag_call(tag_screen, "send_report").allow
+    tag_screen._writer_stop.set()
+    tag_screen._writer.join(timeout=2)
+    resumed = Screen(tag_screen.workspace, "enforce", tag_screen.session_id)
+    decision = _tag_call(resumed, "send_report")
+    assert not decision.allow
+    assert decision.blocking["eventIndex"] == 2
+
+
+def test_proxy_tag_history_isolated_between_conversations(tag_screen):
+    a = tag_screen.session_for({}, explicit="a")
+    b = tag_screen.session_for({}, explicit="b")
+    assert _tag_call(tag_screen, "read_customers", a).allow
+    assert _tag_call(tag_screen, "send_report", b).allow
+    assert not _tag_call(tag_screen, "send_report", a).allow
+    assert _tag_call(tag_screen, "list_projects", b).allow
+    assert _tag_call(tag_screen, "send_report", b).allow
+    decision = _tag_call(tag_screen, "send_report", a)
+    assert not decision.allow
+    assert decision.blocking["eventIndex"] == 2
+
+
+def test_proxy_tag_history_serializes_concurrent_calls(tag_screen):
+    from concurrent.futures import ThreadPoolExecutor
+
+    assert _tag_call(tag_screen, "read_customers").allow
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        decisions = list(pool.map(lambda _: _tag_call(tag_screen, "send_report"), range(8)))
+    assert all(not d.allow for d in decisions)
+    assert sorted(d.blocking["eventIndex"] for d in decisions) == list(range(1, 9))
+
+
+def test_proxy_tag_history_resumes_existing_log_without_repeated_reads(tag_screen, monkeypatch):
+    from prismor.runtime import store
+    from prismor.runtime.runtime import evaluate_tool_call
+
+    # A pre-existing session may have been written by the ordinary runtime.
+    event = tag_screen.tool_event("read_customers", {}, "anthropic", "synthetic", None)
+    assert evaluate_tool_call(event=event, workspace=tag_screen.workspace,
+                              agent=proxy_mod.PROXY_AGENT,
+                              session_id=tag_screen.session_id).allow
+    original_read = store.read_session_events
+    reads = []
+
+    def counted_read(*args):
+        reads.append(args)
+        return original_read(*args)
+
+    monkeypatch.setattr(store, "read_session_events", counted_read)
+    for index in (1, 2):
+        decision = _tag_call(tag_screen, "send_report")
+        assert not decision.allow
+        assert decision.blocking["eventIndex"] == index
+    assert len(reads) == 1, "load persisted history once per session, not on every request"
+
+
+@pytest.mark.parametrize("operation", ["read_session_events", "append_session_event"])
+@pytest.mark.parametrize("mode", ["enforce", "observe"])
+def test_proxy_session_io_error_uses_failure_mode(monkeypatch, tmp_path, operation, mode):
+    from prismor.runtime import store
+
+    def unavailable(*args):
+        raise OSError("session log unavailable")
+
+    monkeypatch.setattr(store, operation, unavailable)
+    screen = Screen(tmp_path, mode, "io-error")
+    if mode == "enforce":
+        with pytest.raises(OSError, match="session log unavailable"):
+            _tag_call(screen, "send_report")
+    else:
+        assert _tag_call(screen, "send_report") is None
+
+
 def test_openai_style_tool_names_are_screened_as_native_calls(tmp_path):
     # A proposed `bash`/`shell` call must reach the command rules, not the
     # generic payload path: that is where ~/.ssh/id_rsa gets caught.

@@ -1332,7 +1332,7 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
     meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     out: Dict[str, Any] = {}
 
-    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url"):
+    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query"):
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)
@@ -1445,6 +1445,28 @@ def _extract_mcp_or_tool(raw_json: str) -> Optional[Dict[str, str]]:
 _MIGRATED_PATHS: set = set()
 
 
+def ensure_read_indexes() -> None:
+    """Indexes only the dashboard's reads need, built from the dashboard and
+    never from a hook: on a large store the first build takes seconds, and a
+    hook that waited on it would stall the agent.
+
+    events(ts, type) lets the tool-call breakdown count from the index
+    instead of reading every event row (7 s -> 30 ms on a 500 MB store)."""
+    for ws in _state_query_workspaces():
+        db_path = get_db_path(ws)
+        if not db_path.exists():
+            continue
+        try:
+            conn = sqlite3.connect(db_path, timeout=30)
+            try:
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts_type ON events(ts, type)")
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+
+
 def _connect_ro(db_path: Path):
     """Open a SQLite DB read-only; returns None if unavailable.
 
@@ -1554,26 +1576,26 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
         try:
             # ── KPIs ──────────────────────────────────────────────────────
             row = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE updated_at >= datetime('now', ?)",
+                "SELECT COUNT(*) FROM sessions WHERE updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
                 (f"-{hours} hours",),
             ).fetchone()
             active_sessions += (row[0] or 0)
 
             row = conn.execute(
-                "SELECT COUNT(*) FROM sessions WHERE updated_at >= datetime('now', ?) "
+                "SELECT COUNT(*) FROM sessions WHERE updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) "
                 "AND updated_at < datetime('now', ?)",
                 (f"-{hours * 2} hours", f"-{hours} hours"),
             ).fetchone()
             active_prev += (row[0] or 0)
 
             row = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE ts >= datetime('now', ?)",
+                "SELECT COUNT(*) FROM events WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
                 (f"-{hours} hours",),
             ).fetchone()
             tool_calls_24h += (row[0] or 0)
 
             row = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE ts >= datetime('now', ?) "
+                "SELECT COUNT(*) FROM events WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) "
                 "AND ts < datetime('now', ?)",
                 (f"-{hours * 2} hours", f"-{hours} hours"),
             ).fetchone()
@@ -1584,7 +1606,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT COUNT(*) FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
                 WHERE {_ENFORCED_SQL}
-                  AND s.updated_at >= datetime('now', ?)
+                  AND s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 """,  # _ENFORCED_SQL is a module constant  # nosec B608
                 (f"-{hours} hours",),
             ).fetchone()
@@ -1595,7 +1617,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT COUNT(*) FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
                 WHERE {_ENFORCED_SQL}
-                  AND s.updated_at >= datetime('now', ?)
+                  AND s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                   AND s.updated_at < datetime('now', ?)
                 """,  # _ENFORCED_SQL is a module constant  # nosec B608
                 (f"-{hours * 2} hours", f"-{hours} hours"),
@@ -1611,12 +1633,12 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT f.category, COUNT(*) as cnt
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                WHERE s.updated_at >= datetime('now', ?)
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 GROUP BY f.category
                 """,
                 (f"-{hours} hours",),
             ):
-                dash_cat = _CATEGORY_MAP.get(row["category"] or "", "dangerous_command")
+                dash_cat = _dash_category(row["category"])
                 threats_by_category[dash_cat] += row["cnt"]
 
             # Prior 24h window — for delta calculation.
@@ -1625,7 +1647,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT COUNT(*) as cnt
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                WHERE s.updated_at >= datetime('now', ?)
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                   AND s.updated_at <  datetime('now', ?)
                 """,
                 (f"-{hours * 2} hours", f"-{hours} hours"),
@@ -1637,7 +1659,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 """
                 SELECT date(ts) as day, COUNT(*) as total_events
                 FROM events e
-                WHERE e.ts >= datetime('now', '-30 days')
+                WHERE e.ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days')
                 GROUP BY day
                 """
             ):
@@ -1650,7 +1672,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT date(s.updated_at) as day, COUNT(*) as flagged_events
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                WHERE s.updated_at >= datetime('now', '-30 days') AND {_ENFORCED_SQL}
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days') AND {_ENFORCED_SQL}
                 GROUP BY day
                 """  # _ENFORCED_SQL is a module constant  # nosec B608
             ):
@@ -1667,7 +1689,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT s.agent, COUNT(*) as blocked
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                WHERE s.updated_at >= datetime('now', ?) AND {_ENFORCED_SQL}
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) AND {_ENFORCED_SQL}
                 GROUP BY s.agent
                 """,  # _ENFORCED_SQL is a module constant  # nosec B608
                 (f"-{hours} hours",),
@@ -1692,16 +1714,18 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                        COUNT(*) as count,
                        MAX(s.updated_at) as last_seen_ts
                 FROM findings f
-                LEFT JOIN sessions s ON s.session_id = f.session_id
+                JOIN sessions s ON s.session_id = f.session_id
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 GROUP BY f.title, f.category, f.severity
                 ORDER BY count DESC LIMIT 30
-                """
+                """,
+                (f"-{hours} hours",),
             ):
                 title = row["title"] or "Unknown"
                 if title not in patterns_acc:
                     patterns_acc[title] = {
                         "pattern": title,
-                        "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
+                        "category": _dash_category(row["category"]),
                         "severity": (row["severity"] or "low").lower(),
                         "count": 0,
                         "lastSeen": "",
@@ -1732,7 +1756,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                                       WHERE e2.session_id = e.session_id
                                         AND e2.id < e.id
                                     )
-                WHERE e.ts >= datetime('now', '-24 hours')
+                WHERE e.ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-24 hours')
                 ORDER BY e.ts DESC LIMIT 100
                 """  # _ENFORCED_SQL is a module constant  # nosec B608
             ):
@@ -1759,11 +1783,13 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                        COUNT(f.finding_id) as blocked,
                        MAX(s.updated_at) as last_seen_ts
                 FROM findings f
-                LEFT JOIN sessions s ON s.session_id = f.session_id
+                JOIN sessions s ON s.session_id = f.session_id
                 WHERE {_ENFORCED_SQL}
+                  AND s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 GROUP BY f.session_id
                 ORDER BY blocked DESC LIMIT 10
-                """  # _ENFORCED_SQL is a module constant  # nosec B608
+                """,  # _ENFORCED_SQL is a module constant  # nosec B608
+                (f"-{hours} hours",),
             ):
                 sid = row["sid"] or "unknown"
                 if sid not in top_users_acc:
@@ -1787,7 +1813,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
             for row in conn.execute(
                 f"""
                 SELECT e.raw_json, s.agent, (f.finding_id IS NOT NULL AND {_ENFORCED_SQL}) as blocked
-                FROM events e
+                FROM events e INDEXED BY idx_events_ts
                 JOIN sessions s ON s.session_id = e.session_id
                 LEFT JOIN findings f ON f.session_id = e.session_id
                                     AND f.event_index = (
@@ -1796,7 +1822,10 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                                         AND e2.id < e.id
                                     )
                 WHERE e.type != 'supply_chain'
-                  AND e.ts >= datetime('now', ?)
+                  AND e.ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
+                  -- Only MCP and Skill calls are counted here; skip parsing the rest.
+                  AND (instr(e.raw_json, 'mcp__') > 0 OR instr(e.raw_json, 'mcp_server') > 0
+                       OR instr(e.raw_json, '"Skill"') > 0)
                 LIMIT 20000
                 """,  # _ENFORCED_SQL is a module constant  # nosec B608
                 (f"-{hours} hours",),
@@ -1818,7 +1847,7 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
                 SELECT f.severity, COUNT(*) as cnt
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                WHERE s.updated_at >= datetime('now', ?)
+                WHERE s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 GROUP BY f.severity
                 """,
                 (f"-{hours} hours",),
@@ -1923,6 +1952,13 @@ def get_aggregate_stats(hours: int = 24) -> Dict[str, Any]:
 
 
 # ── Reverse category map (dashboard cat → list of raw DB cats) ────────────────
+def _dash_category(raw: Optional[str]) -> str:
+    """Dashboard category for a rule's raw category. One not in the map passes
+    through unchanged: folding the rest into "dangerous_command" labelled
+    lethal-trifecta, PII and memory-poisoning findings "Dangerous Cmd"."""
+    return _CATEGORY_MAP.get(raw or "", raw or "dangerous_command")
+
+
 _REVERSE_CATEGORY_MAP: Dict[str, List[str]] = {}
 for _raw_cat, _dash_cat in _CATEGORY_MAP.items():
     _REVERSE_CATEGORY_MAP.setdefault(_dash_cat, []).append(_raw_cat)
@@ -1936,6 +1972,24 @@ _VALID_SESSION_SORTS: Dict[str, str] = {
     "startedAt": "started_at",
     "updatedAt": "updated_at",
 }
+
+
+def _since_filter(since_hours: int):
+    """A predicate keeping ISO timestamps from the last ``since_hours`` (all when 0)."""
+    from datetime import datetime, timezone, timedelta
+    if not since_hours or since_hours <= 0:
+        return lambda raw: True
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+
+    def keep(raw: str) -> bool:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt >= cutoff
+        except Exception:
+            return False
+    return keep
 
 
 def get_sessions_page(
@@ -2005,33 +2059,26 @@ def get_sessions_page(
     }
     facets["workspaces"] = [{"path": p, "name": n} for p, n in facets["workspaces"]]
 
-    from datetime import datetime, timezone, timedelta
-    cutoff = None
-    if since_hours and since_hours > 0:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
-
-    def _active_since(raw: str) -> bool:
-        if cutoff is None:
-            return True
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt >= cutoff
-        except Exception:
-            return False
+    _active_since = _since_filter(since_hours)
 
     needle = (search or "").strip().lower()
     rows = [
         r for r in rows
         if (not agent or r["agent"] == agent)
         and (not workspace or r["workspace"] == workspace)
-        and (not needle or needle in r["sessionId"].lower())
         and (findings != "with" or r["findingsCount"] > 0)
         and (findings != "clean" or r["findingsCount"] == 0)
         and (not min_risk or r["riskScore"] >= min_risk)
         and _active_since(r["_updatedRaw"])
     ]
+
+    titles: Dict[str, str] = {}
+    if needle:
+        # Search the id or what the session was started to do (its first prompt);
+        # people remember "fix the login bug", not a uuid.
+        titles = _first_prompts([r["sessionId"] for r in rows], workspaces)
+        rows = [r for r in rows if needle in r["sessionId"].lower()
+                or needle in titles.get(r["sessionId"], "").lower()]
 
     rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
     total = len(rows)
@@ -2043,8 +2090,43 @@ def get_sessions_page(
     for r in items:
         r.pop("_sortRaw", None)
         r.pop("_updatedRaw", None)
+    if not needle:
+        titles = _first_prompts([r["sessionId"] for r in items], workspaces)
+    for r in items:
+        r["title"] = titles.get(r["sessionId"], "")
 
     return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit, "facets": facets}
+
+
+def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, str]:
+    """What each session was started to do: its first real prompt, one line.
+    A person recognises "fix the login bug" where a session id says nothing.
+    Slash-command wrappers and pasted tags are skipped."""
+    want, out = set(session_ids), {}
+    for ws in workspaces:
+        if not want:
+            break
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            for sid in list(want):
+                for (text,) in conn.execute(
+                    "SELECT substr(content_text, 1, 400) FROM events WHERE session_id = ? "
+                    "AND type = 'prompt' ORDER BY id LIMIT 5",
+                    (sid,),
+                ):
+                    line = re.sub(r"<[^>]+>", " ", text or "")
+                    line = " ".join(line.split())
+                    if line and not line.startswith("/") and not line.lower().startswith(("caveat:", "clear")):
+                        out[sid] = line[:140]
+                        want.discard(sid)
+                        break
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return out
 
 
 def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
@@ -2066,7 +2148,7 @@ def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
                                       SELECT COUNT(*) FROM events e2
                                       WHERE e2.session_id = e.session_id AND e2.id < e.id
                                     )
-                WHERE e.type != 'supply_chain' AND e.ts >= datetime('now', ?)
+                WHERE e.type != 'supply_chain' AND e.ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 LIMIT 20000
                 """,
                 (f"-{hours} hours",),
@@ -2121,25 +2203,30 @@ def get_mcp_usage(hours: int = 24 * 7) -> Dict[str, Dict[str, Any]]:
 # numbering must not be windowed: filtering by ts first restarts it at 0 and
 # silently joins a session's findings onto the wrong events whenever that
 # session began before the cutoff. Number everything, then filter.
+# Only the window's events are read, through the ts index; each one's
+# position in its session (what findings key on) is counted from the
+# (session_id, id) index. Numbering every event in the store instead read
+# the whole table and took seconds on a large one.
 _NET_SQL = """
-WITH numbered AS (
-    SELECT id, session_id, ts, type, command_text, url_text,
-           ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id) - 1 AS rn
-    FROM events
-)
-SELECT n.session_id, n.ts, n.type, n.command_text, n.url_text, f.enrichment_json
-FROM numbered n
+SELECT x.session_id, x.ts, x.type, x.command_text, x.url_text, f.enrichment_json
+FROM (
+    SELECT e.id, e.session_id, e.ts, e.type, e.command_text, e.url_text,
+           (SELECT COUNT(*) FROM events e2
+             WHERE e2.session_id = e.session_id AND e2.id < e.id) AS rn
+    FROM events e INDEXED BY idx_events_ts
+    WHERE e.ts >= ?
+      AND ((e.url_text IS NOT NULL AND e.url_text != '')
+       OR e.command_text LIKE '%://%' OR e.command_text LIKE '%curl%'
+       OR e.command_text LIKE '%wget%' OR e.command_text LIKE '%git %'
+       OR e.command_text LIKE '%ssh %' OR e.command_text LIKE '%scp %'
+       OR e.command_text LIKE '%nc %')
+    ORDER BY e.id DESC
+    LIMIT 40000
+) x
 LEFT JOIN findings f
-       ON f.session_id = n.session_id AND f.event_index = n.rn
+       ON f.session_id = x.session_id AND f.event_index = x.rn
       AND (f.category = 'network_isolation' OR f.enrichment_json LIKE '%egressHost%')
-WHERE n.ts >= ?
-  AND ((n.url_text IS NOT NULL AND n.url_text != '')
-   OR n.command_text LIKE '%://%' OR n.command_text LIKE '%curl%'
-   OR n.command_text LIKE '%wget%' OR n.command_text LIKE '%git %'
-   OR n.command_text LIKE '%ssh %' OR n.command_text LIKE '%scp %'
-   OR n.command_text LIKE '%nc %')
-ORDER BY n.id DESC
-LIMIT 40000
+ORDER BY x.id DESC
 """
 
 
@@ -2402,10 +2489,12 @@ def get_findings_page(
     severity: str = "",
     category: str = "",
     search: str = "",
+    since_hours: int = 0,
 ) -> Dict[str, Any]:
-    """Return a paginated, filtered list of findings across all registered workspaces."""
+    """Return a paginated, filtered list of findings across all registered workspaces,
+    limited to the last ``since_hours`` when set (the dashboard's time window)."""
     severity_filter = severity.lower() if severity else ""
-    raw_cats = _REVERSE_CATEGORY_MAP.get(category, []) if category else []
+    raw_cats = _REVERSE_CATEGORY_MAP.get(category, [category]) if category else []
     workspaces = _state_query_workspaces()
     rows: List[Dict[str, Any]] = []
 
@@ -2430,37 +2519,41 @@ def get_findings_page(
             if search:
                 where_clauses.append("(LOWER(f.title) LIKE ? OR LOWER(COALESCE(f.evidence,'')) LIKE ?)")
                 params.extend([f"%{search.lower()}%"] * 2)
+            if since_hours and since_hours > 0:
+                # A session is updated at or after each of its findings, so this
+                # narrows the scan without dropping anything the exact filter keeps.
+                where_clauses.append("s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)")
+                params.append(f"-{int(since_hours)} hours")
             where = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
             # The triggering event for a finding is identified by event_index
             # (its 0-based position in the session's event list). SQLite does
             # not support correlating an outer column inside a subquery's
-            # OFFSET clause (`OFFSET COALESCE(f.event_index, 0)` errors with
-            # "no such column: f.event_index" even though the column exists),
-            # so number each session's events with ROW_NUMBER() and join on
-            # equality instead — see PrismorSec/prismor#129.
+            # OFFSET clause, so number each session's events with
+            # ROW_NUMBER() and join on equality -- see PrismorSec/prismor#129.
+            # Only ids are numbered (a covering index answers it) and only the
+            # trigger's timestamp is read here: event rows carry the raw hook
+            # payload, so reading them all made this take ~30 s on a 500 MB
+            # store. The page's own rows get their trigger detail below.
             for row in conn.execute(
                 f"""
-                WITH numbered_events AS (
-                    SELECT *, ROW_NUMBER() OVER (
+                WITH numbered AS (
+                    SELECT id, session_id, ROW_NUMBER() OVER (
                         PARTITION BY session_id ORDER BY id
                     ) - 1 AS rn
                     FROM events
+                    WHERE session_id IN (SELECT session_id FROM findings)
                 )
                 SELECT f.finding_id, f.session_id, f.title, f.category,
-                       f.severity, f.evidence, f.event_index, s.agent,
-                       te.ts          as trig_ts,
-                       te.type        as trig_type,
-                       te.command_text as trig_cmd,
-                       te.path_text    as trig_path,
-                       te.url_text     as trig_url,
-                       te.content_text as trig_content,
-                       te.agent_event  as trig_hook,
+                       f.severity, substr(f.evidence, 1, 800) as evidence, s.agent,
+                       n.id            as trig_id,
+                       te.ts           as trig_ts,
                        s.updated_at    as session_updated
                 FROM findings f
                 JOIN sessions s ON s.session_id = f.session_id
-                LEFT JOIN numbered_events te
-                    ON te.session_id = f.session_id
-                    AND te.rn = COALESCE(f.event_index, 0)
+                LEFT JOIN numbered n
+                    ON n.session_id = f.session_id
+                    AND n.rn = COALESCE(f.event_index, 0)
+                LEFT JOIN events te ON te.id = n.id
                 {where}
                 ORDER BY COALESCE(te.ts, s.updated_at) DESC
                 LIMIT 20000
@@ -2468,30 +2561,27 @@ def get_findings_page(
                 params,
             ):
                 ts_raw = row["trig_ts"] or row["session_updated"] or ""
-                trig_kind = (row["trig_type"] or "").strip() or row["trig_hook"] or ""
-                trig_detail = (row["trig_cmd"] or row["trig_path"] or row["trig_url"]
-                              or row["trig_content"] or "")
                 rows.append({
                     "id": (row["finding_id"] or "")[:20],
                     "sessionId": row["session_id"] or "",
                     "title": row["title"] or "Unknown",
-                    "category": _CATEGORY_MAP.get(row["category"] or "", "dangerous_command"),
+                    "category": _dash_category(row["category"]),
                     "severity": (row["severity"] or "low").lower(),
-                    "evidence": (row["evidence"] or "")[:800],
+                    "evidence": row["evidence"] or "",
                     "agent": row["agent"] or "unknown",
                     "ts": _relative_time_store(ts_raw) if ts_raw else "",
                     "tsAbs": _absolute_time_store(ts_raw),
                     "_tsRaw": ts_raw,
-                    "trigger": {
-                        "kind": trig_kind,
-                        "detail": (trig_detail or "")[:1200],
-                    },
+                    "_db": db_path,
+                    "_trigId": row["trig_id"],
                 })
         except Exception:
             pass
         finally:
             conn.close()
 
+    keep = _since_filter(since_hours)
+    rows = [r for r in rows if keep(r["_tsRaw"])]
     rows.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
     all_agents = sorted({r["agent"] for r in rows})
     all_cats = sorted({r["category"] for r in rows})
@@ -2501,8 +2591,34 @@ def get_findings_page(
     page = max(1, min(page, pages))
     offset = (page - 1) * limit
     items = rows[offset: offset + limit]
+    # Trigger detail for this page only, one lookup by id per store.
+    by_db: Dict[Any, List[Dict[str, Any]]] = {}
     for r in items:
-        r.pop("_tsRaw", None)
+        by_db.setdefault(r["_db"], []).append(r)
+    for db_path, page_rows in by_db.items():
+        ids = [r["_trigId"] for r in page_rows if r["_trigId"] is not None]
+        found: Dict[int, Any] = {}
+        conn = _connect_ro(db_path) if ids else None
+        if conn is not None:
+            try:
+                for ev in conn.execute(
+                    "SELECT id, type, agent_event, command_text, path_text, url_text, content_text "
+                    f"FROM events WHERE id IN ({','.join('?' * len(ids))})",  # nosec B608
+                    ids,
+                ):
+                    found[ev["id"]] = ev
+            except Exception:
+                pass
+            finally:
+                conn.close()
+        for r in page_rows:
+            ev = found.get(r["_trigId"])
+            detail = (ev["command_text"] or ev["path_text"] or ev["url_text"] or ev["content_text"] or "") if ev else ""
+            r["trigger"] = {"kind": ((ev["type"] or "").strip() or ev["agent_event"] or "") if ev else "",
+                            "detail": detail[:1200]}
+    for r in rows:
+        for k in ("_tsRaw", "_db", "_trigId"):
+            r.pop(k, None)
 
     return {
         "items": items, "total": total, "page": page, "pages": pages, "limit": limit,
@@ -2639,8 +2755,10 @@ def get_events_page(
     limit: int = 30,
     verdict: str = "",
     agent: str = "",
+    since_hours: int = 0,
 ) -> Dict[str, Any]:
-    """Return a paginated, filtered list of events across all registered workspaces."""
+    """Return a paginated, filtered list of events across all registered workspaces,
+    limited to the last ``since_hours`` when set."""
     workspaces = _state_query_workspaces()
     rows: List[Dict[str, Any]] = []
 
@@ -2799,6 +2917,8 @@ def get_events_page(
         if key not in seen:
             seen.add(key)
             deduped.append(ev)
+    keep = _since_filter(since_hours)
+    deduped = [e for e in deduped if keep(e["_tsRaw"])]
     deduped.sort(key=lambda x: x["_tsRaw"] or "", reverse=True)
     if verdict == "blocked":
         deduped = [ev for ev in deduped if ev.get("verdict") == "blocked"]
@@ -3003,7 +3123,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
         try:
             for row in conn.execute(
                 "SELECT verdict, COUNT(*) as cnt FROM supply_chain_events "
-                "WHERE ts >= datetime('now', ?) GROUP BY verdict",
+                "WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) GROUP BY verdict",
                 (f"-{hours} hours",),
             ):
                 v = row["verdict"] or "allow"
@@ -3015,9 +3135,12 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                     allowed_24h += row["cnt"]
                 checked_24h += row["cnt"]
 
+            # Every panel uses the window the KPIs use, so the counts above
+            # and the rows below agree.
             for row in conn.execute(
                 "SELECT ecosystem, verdict, COUNT(*) as cnt "
-                "FROM supply_chain_events GROUP BY ecosystem, verdict"
+                "FROM supply_chain_events WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) GROUP BY ecosystem, verdict",
+                (f"-{hours} hours",),
             ):
                 eco = row["ecosystem"] or "unknown"
                 ecosystem_total[eco] += row["cnt"]
@@ -3026,8 +3149,9 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
 
             for row in conn.execute(
                 "SELECT package_name, ecosystem, ioc_id, COUNT(*) as cnt "
-                "FROM supply_chain_events WHERE verdict='block' "
-                "GROUP BY package_name ORDER BY cnt DESC LIMIT 20"
+                "FROM supply_chain_events WHERE verdict='block' AND ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) "
+                "GROUP BY package_name ORDER BY cnt DESC LIMIT 20",
+                (f"-{hours} hours",),
             ):
                 name = row["package_name"] or ""
                 pkg_blocks[name] += row["cnt"]
@@ -3043,10 +3167,11 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                        COALESCE(recommended_version, '') as recommended,
                        COALESCE(session_id, '') as session_id, ioc_id
                 FROM supply_chain_events
-                WHERE verdict IN ('block','warn')
+                WHERE verdict IN ('block','warn') AND ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 ORDER BY ts DESC
                 LIMIT 20000
-                """
+                """,
+                (f"-{hours} hours",),
             ):
                 try:
                     sigs = json.loads(row["signals_json"] or "[]")
@@ -3082,7 +3207,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                 FROM findings f JOIN sessions s ON s.session_id = f.session_id
                 WHERE json_valid(f.enrichment_json)
                   AND json_extract(f.enrichment_json, '$.ruleId') = 'pkg-install-vulnerable-version'
-                  AND s.updated_at >= datetime('now', ?)
+                  AND s.updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                 """,  # _ENFORCED_SQL is a module constant  # nosec B608
                 (f"-{hours} hours",),
             ):
@@ -3122,7 +3247,7 @@ def get_supply_chain_stats(hours: int = 24) -> Dict[str, Any]:
                        SUM(CASE WHEN verdict='warn'  THEN 1 ELSE 0 END) as warned,
                        COUNT(*) as total
                 FROM supply_chain_events
-                WHERE ts >= datetime('now', ?)
+                WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
                   AND session_id IS NOT NULL AND session_id != ''
                 GROUP BY session_id, install_cmd
                 ORDER BY last_seen DESC
@@ -3361,14 +3486,14 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
             "       COALESCE(SUM(output_tokens),0) as out,"
             "       COALESCE(SUM(cache_read_tokens),0) as cread,"
             "       COALESCE(SUM(cache_creation_tokens),0) as ccreate"
-            "  FROM token_usage WHERE ts >= datetime('now', ?)" + scope_sql,
+            "  FROM token_usage WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)" + scope_sql,
             window_args,
         ).fetchone()
         by_tool = [
             {"tool": r["tool_name"] or "unknown", "approxTokens": r["tok"] or 0, "calls": r["cnt"] or 0}
             for r in conn.execute(
                 "SELECT tool_name, SUM(approx_tokens) as tok, COUNT(*) as cnt"  # nosec B608
-                "  FROM tool_output_size WHERE ts >= datetime('now', ?)" + scope_sql +
+                "  FROM tool_output_size WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)" + scope_sql +
                 "  GROUP BY tool_name ORDER BY tok DESC LIMIT ?",
                 window_args + [limit],
             )
@@ -3377,7 +3502,7 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
             {"tool": r["tool_name"] or "unknown", "label": r["label"] or "", "approxTokens": r["approx_tokens"] or 0}
             for r in conn.execute(
                 "SELECT tool_name, label, approx_tokens FROM tool_output_size"  # nosec B608
-                "  WHERE ts >= datetime('now', ?) AND label != ''" + scope_sql +
+                "  WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?) AND label != ''" + scope_sql +
                 "  ORDER BY approx_tokens DESC LIMIT ?",
                 window_args + [limit],
             )
@@ -3395,8 +3520,43 @@ def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: in
     }
 
 
-def get_agents_overview() -> List[Dict[str, Any]]:
+def get_agent_tools(name: str, days: int = 7, limit: int = 40) -> List[Dict[str, Any]]:
+    """Tools an agent (instance label or framework id) called in the last
+    ``days``, busiest first, so its permissions grid lists what it really uses."""
+    from collections import Counter
+    counts: Counter = Counter()
+    for ws in _state_query_workspaces():
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            name_expr = "COALESCE(NULLIF(s.agent_name, ''), s.agent)" if "agent_name" in cols else "s.agent"
+            for row in conn.execute(
+                f"""
+                SELECT json_extract(e.raw_json, '$.metadata.tool_name') AS tool, COUNT(*) AS n
+                FROM events e JOIN sessions s ON s.session_id = e.session_id
+                WHERE {name_expr} = ? AND e.agent_event = 'PreToolUse'
+                  AND e.ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)
+                GROUP BY tool
+                """,  # name_expr is one of two literals  # nosec B608
+                (name, f"-{max(1, int(days))} days"),
+            ):
+                if row["tool"]:
+                    counts[row["tool"]] += row["n"]
+        except Exception:
+            pass
+        finally:
+            conn.close()
+    return [{"tool": t, "calls": n} for t, n in counts.most_common(limit)]
+
+
+def get_agents_overview(days: int = 0) -> List[Dict[str, Any]]:
     """Return per-agent-name stats: framework, last_seen, total_calls, blocked_calls.
+
+    Despite the names, ``total_calls`` counts sessions and ``blocked_calls``
+    sessions with at least one finding. With ``days`` both cover only sessions
+    active in that window; ``last_seen`` is always all-time.
 
     Groups across all registered workspace DBs. Falls back gracefully when
     the agent_name column doesn't exist yet (pre-migration DBs).
@@ -3423,6 +3583,8 @@ def get_agents_overview() -> List[Dict[str, Any]]:
                 if "agent_name" in cols
                 else "agent"
             )
+            in_window = (f"julianday(updated_at) >= julianday('now', '-{int(days)} days')"
+                         if days and days > 0 else "1")
 
             for row in conn.execute(
                 f"""
@@ -3430,8 +3592,8 @@ def get_agents_overview() -> List[Dict[str, Any]]:
                     COALESCE({name_expr}, 'unknown') as agent_name,
                     agent as framework,
                     MAX(updated_at) as last_seen,
-                    COUNT(*) as total_calls,
-                    SUM(CASE WHEN findings_count > 0 THEN 1 ELSE 0 END) as blocked_calls
+                    SUM(CASE WHEN {in_window} THEN 1 ELSE 0 END) as total_calls,
+                    SUM(CASE WHEN {in_window} AND findings_count > 0 THEN 1 ELSE 0 END) as blocked_calls
                 FROM sessions
                 WHERE {name_expr} IS NOT NULL AND {name_expr} != ''
                 GROUP BY {name_expr}
@@ -4057,10 +4219,15 @@ def get_policy_rule_catalog(workspace: Optional[Path] = None) -> List[Dict[str, 
     # dispatch — never recomputed here, or the dashboard would drift from
     # enforcement the first time the resolution rules change.
     modes: Dict[str, str] = {}
+    floor_off: set = set()
+    floor_off_allowed = False
     try:
         engine = PolicyEngine(workspace=workspace) if workspace else PolicyEngine()
         for compiled in engine.rules:
             modes[compiled.id] = engine._resolve_mode(compiled)
+        floor_off = set(getattr(engine, "floor_off", set()))
+        # Same condition the engine uses: the floor is local to waive only off-org.
+        floor_off_allowed = not engine.workspace_managed and not engine.remote_policy_meta
     except Exception:
         modes = {}
 
@@ -4076,6 +4243,8 @@ def get_policy_rule_catalog(workspace: Optional[Path] = None) -> List[Dict[str, 
             self_protect = is_self_protection_rule(rid)
             requested_enabled = rid not in disabled
             enabled = True if locked else requested_enabled
+            if rid in floor_off:
+                enabled = False
             mode = modes.get(rid, "")
             rules.append({
                 "id": rid,
@@ -4086,6 +4255,9 @@ def get_policy_rule_catalog(workspace: Optional[Path] = None) -> List[Dict[str, 
                 "enabled": enabled,
                 "locked": locked,
                 "selfProtect": self_protect,
+                # Pinned, but turned off with the unlock password (floor_off.py).
+                "floorOff": rid in floor_off,
+                "floorOffAllowed": bool(locked and not self_protect and floor_off_allowed),
                 "requestedEnabled": requested_enabled,
                 # What this rule does right now: stop the call, or report it.
                 "mode": mode,
@@ -4351,10 +4523,19 @@ def _format_duration(seconds: float) -> str:
     return f"{minutes // 60}h {minutes % 60}m"
 
 
+# How Claude Code logs one hook command's run. Context and system-message
+# attachments are not runs: they carry what an earlier run of the same event
+# printed, so they are folded into that run.
+_HOOK_RUN_OUTCOMES = {"hook_success": "ok", "hook_non_blocking_error": "error",
+                      "hook_blocking_error": "blocked", "hook_cancelled": "cancelled"}
+
+
 def _transcript_hook_runs(transcript: str) -> List[Dict[str, Any]]:
     """Every hook the agent ran, as Claude Code logs it in the transcript: one
     attachment per hook command, with its duration and exit code. Prismor only
-    sees its own hook, so this is the one place the third-party ones show up."""
+    sees its own hook, so this is the one place the third-party ones show up.
+    A run's outcome is ok, error, blocked (exit 2: the hook said no), timeout
+    (the agent killed it) or cancelled (the turn stopped first)."""
     runs: List[Dict[str, Any]] = []
     try:
         with open(transcript, encoding="utf-8", errors="replace") as fh:
@@ -4366,22 +4547,117 @@ def _transcript_hook_runs(transcript: str) -> List[Dict[str, Any]]:
                 except ValueError:
                     continue
                 att = rec.get("attachment") if isinstance(rec, dict) else None
-                if not isinstance(att, dict) or not str(att.get("type") or "").startswith("hook_"):
+                kind = str(att.get("type") or "") if isinstance(att, dict) else ""
+                if not kind.startswith("hook_"):
                     continue
+                if kind not in _HOOK_RUN_OUTCOMES:
+                    text = att.get("content")
+                    text = "\n".join(map(str, text)) if isinstance(text, list) else str(text or "")
+                    owner = next((r for r in reversed(runs) if r["event"] == att.get("hookEvent")), None)
+                    if owner is not None and text:
+                        owner["content"] = (owner["content"] + "\n" + text if owner["content"] else text)[:4000]
+                    continue
+                if not att.get("command"):
+                    continue  # cancelled before it started: nothing to attribute
                 try:
                     ms = int(att.get("durationMs"))
                 except (TypeError, ValueError):
                     ms = None
+                outcome = "timeout" if att.get("timedOut") else _HOOK_RUN_OUTCOMES[kind]
                 runs.append({"toolUseId": att.get("toolUseID") or "", "event": att.get("hookEvent") or "",
                              "name": att.get("hookName") or "", "command": str(att.get("command") or "")[:400],
                              "ms": ms, "exit": str(att.get("exitCode") if att.get("exitCode") is not None else ""),
-                             "ok": att.get("type") == "hook_success", "ts": rec.get("timestamp") or "",
+                             "ok": outcome in ("ok", "blocked"), "outcome": outcome, "ts": rec.get("timestamp") or "",
                              # What the hook sent back: stdout/stderr as printed,
                              # content as the agent put it in the model's context.
                              **{k: str(att.get(k) or "")[:4000] for k in ("stdout", "stderr", "content")}})
     except OSError:
         return []
     return runs
+
+
+def _hook_identity(command: str) -> str:
+    """One hook however it was launched: the same command run from another
+    venv or home folder, or with a PYTHONPATH prefix, is the same hook."""
+    c = re.sub(r'^(?:[A-Za-z_]\w*=(?:"[^"]*"|\'[^\']*\'|\S+)\s+)+', "", command.strip())
+    c = re.sub(r'(["\']?)(?:/|~/|\$\{?\w+\}?/)[^"\'\s]*/([^"\'/\s]+)\1', r"\2", c)
+    return re.sub(r"\bpython3?(?:\.\d+)?\b", "python", c)
+
+
+_HOOK_SCAN_CACHE: Dict[str, Tuple[float, str, List[Dict[str, Any]]]] = {}
+
+
+def get_hook_stats(hours: int = 24 * 7, root: Optional[Path] = None) -> Dict[str, Any]:
+    """Every hook that ran across recent Claude Code sessions: how often, how
+    long it made the agent wait, how often it failed, and in which sessions.
+    Read from the transcripts (the only record of third-party hooks), each one
+    cached by mtime so a refresh re-reads only what changed."""
+    import time
+    root = root or Path.home() / ".claude" / "projects"
+    cutoff = time.time() - hours * 3600
+    hooks: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for path in root.glob("*/*.jsonl"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        key = str(path)
+        cached = _HOOK_SCAN_CACHE.get(key)
+        if not cached or cached[0] != mtime:
+            cwd = ""
+            try:
+                with open(path, encoding="utf-8", errors="replace") as fh:
+                    for _, line in zip(range(20), fh):
+                        m = re.search(r'"cwd":\s*"([^"]*)"', line)
+                        if m:
+                            cwd = m.group(1)
+                            break
+            except OSError:
+                pass
+            cached = (mtime, cwd, _transcript_hook_runs(key))
+            _HOOK_SCAN_CACHE[key] = cached
+        _, cwd, runs = cached
+        for run in runs:
+            hook = hooks.setdefault((run["event"], _hook_identity(run["command"])), {
+                "event": run["event"], "name": run["name"], "commands": {},
+                "ms": [], "outcomes": {}, "last": "", "sessions": {}})
+            hook["commands"][run["command"]] = hook["commands"].get(run["command"], 0) + 1
+            sess = hook["sessions"].setdefault(path.stem, {
+                "sessionId": path.stem, "cwd": cwd, "runs": 0, "totalMs": 0, "failures": 0, "last": ""})
+            sess["runs"] += 1
+            if run["ms"] is not None:
+                hook["ms"].append(run["ms"])
+                sess["totalMs"] += run["ms"]
+            hook["outcomes"][run["outcome"]] = hook["outcomes"].get(run["outcome"], 0) + 1
+            if run["outcome"] in ("error", "timeout"):
+                sess["failures"] += 1
+            hook["last"] = max(hook["last"], run["ts"])
+            sess["last"] = max(sess["last"], run["ts"])
+
+    def pct(xs: List[int], q: float) -> Optional[int]:
+        return xs[min(len(xs) - 1, int(q * len(xs)))] if xs else None
+
+    out = []
+    for hook in hooks.values():
+        ms = sorted(hook.pop("ms"))
+        sessions = sorted(hook.pop("sessions").values(), key=lambda x: x["last"], reverse=True)
+        runs = sum(x["runs"] for x in sessions)
+        # The variant run most often names the hook; the rest are other
+        # launches of it (another machine's venv, an env prefix).
+        commands = sorted(hook.pop("commands").items(), key=lambda kv: -kv[1])
+        outcomes = hook["outcomes"]
+        out.append({**hook, "command": commands[0][0], "identity": _hook_identity(commands[0][0]),
+                    "variants": [c for c, _ in commands[1:6]],
+                    "runs": runs, "sessionCount": len(sessions), "totalMs": sum(ms),
+                    "failures": outcomes.get("error", 0) + outcomes.get("timeout", 0),
+                    "timeouts": outcomes.get("timeout", 0), "blocked": outcomes.get("blocked", 0),
+                    "cancelled": outcomes.get("cancelled", 0),
+                    "avgMs": round(sum(ms) / len(ms)) if ms else None, "p50Ms": pct(ms, 0.5),
+                    "p95Ms": pct(ms, 0.95), "maxMs": ms[-1] if ms else None, "sessions": sessions[:50]})
+    out.sort(key=lambda h: h["totalMs"], reverse=True)
+    return {"hours": hours, "hooks": out}
 
 
 _TOOL_HOOK_EVENTS = ["PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure"]
@@ -4499,6 +4775,49 @@ def get_extension_calls(ext_ids: List[str], session_ids: Optional[List[str]], li
             out.append({"session": row["session_id"], "ts": row["ts"], "agent": raw.get("agent") or "",
                         "tool": meta.get("tool_name") or hook.get("tool_name") or raw.get("type") or "",
                         "via": ext.get("via") or "",
+                        "input": json.dumps(hook.get("tool_input", raw.get("command") or raw.get("url") or ""),
+                                            indent=1, default=str)[:4000]})
+            if len(out) >= limit:
+                break
+    finally:
+        conn.close()
+    return out
+
+
+def get_hook_calls(session_ids: List[str], matcher: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """The tool calls a PreToolUse/PostToolUse hook ran around in the given
+    sessions: every call whose tool name the hook's matcher selects ("" or "*"
+    is every tool), newest first, with the input the agent passed."""
+    db = prismor_home() / "prismor.db"
+    if not session_ids or not db.exists():
+        return []
+    try:
+        pat = None if matcher in ("", "*") else re.compile(matcher)
+    except re.error:
+        pat = re.compile(re.escape(matcher))
+    conn = _connect_ro(db)
+    if conn is None:
+        return []
+    out, seen = [], set()
+    try:
+        rows = conn.execute("SELECT session_id, ts, raw_json FROM events WHERE agent_event = 'PreToolUse' AND "  # placeholders only, values bound  # nosec B608
+                            "session_id IN (%s) ORDER BY id DESC" % ",".join("?" * len(session_ids)), list(session_ids))
+        for row in rows:
+            try:
+                raw = json.loads(row["raw_json"] or "{}")
+            except ValueError:
+                continue
+            meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+            hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+            tool = str(meta.get("tool_name") or hook.get("tool_name") or "")
+            if not tool or (pat is not None and not pat.fullmatch(tool)):
+                continue
+            if hook.get("tool_use_id"):
+                if hook["tool_use_id"] in seen:
+                    continue
+                seen.add(hook["tool_use_id"])
+            out.append({"session": row["session_id"], "ts": row["ts"], "agent": raw.get("agent") or "",
+                        "tool": tool, "via": "",
                         "input": json.dumps(hook.get("tool_input", raw.get("command") or raw.get("url") or ""),
                                             indent=1, default=str)[:4000]})
             if len(out) >= limit:
