@@ -366,6 +366,24 @@ ability for a few minutes, run `prismor unlock` and enter your password
 agent can adjust policy; it still cannot touch the self-protection rules or the
 password itself, and the window closes on its own.
 
+### Let your agent create or edit policy
+
+You can have your agent (Claude Code, Codex, Cursor, ...) write a policy for
+you, or change one, as long as you open the door first:
+
+```
+prismor unlock              # asks for your password; 3 minutes by default
+prismor unlock --for 15m    # longer, up to an hour (or your org's cap)
+```
+
+Then ask the agent for what you want ("block curl to anything but our API",
+"stop flagging `git push` in this repo"). Inside the window it can edit
+`.prismor/policy.yaml`, run `prismor policy init` to scaffold one, and run
+`prismor allow`. Every change is logged. It still cannot relax the
+self-protection rules, read or change the unlock password, or extend its own
+window. `prismor lock` closes the window early; `prismor unlock --status` shows
+how long is left. Check the result with `prismor policy show`.
+
 An unhooked agent — one running through a framework Prismor does not see — is
 outside all of this, the same as every other Prismor control.
 
