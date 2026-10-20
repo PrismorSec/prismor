@@ -179,8 +179,10 @@ def signed_identity(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def signing_payload(record: Dict[str, Any]) -> Dict[str, Any]:
-    """The exact object that gets signed. Server reconstructs this from its
-    stored columns and verifies against the pinned pubkey."""
+    """The exact object that gets signed. The server rebuilds it from the raw
+    upload at ingest (its stored columns lose ``ts`` precision and cap the
+    identity strings), verifies it against the pinned pubkey, and keeps the
+    canonical bytes so the signature can be re-checked later."""
     return {
         "hash": record.get("hash"),
         "ts": record.get("ts"),
