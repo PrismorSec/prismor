@@ -9,6 +9,7 @@ against the dependency-free demo server in examples/mcp-block-demo/.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -961,3 +962,18 @@ def test_install_reports_the_new_inventory_right_away(tmp_path, monkeypatch):
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"fs": {"command": "npx"}}}))
     gw_mod.install_gateway(tmp_path)
     assert calls == [True]
+
+
+def test_help_and_docs_state_both_mode_defaults():
+    """Serving defaults to observe, install to enforce; help and docs must say so."""
+    from pathlib import Path
+    from prismor.runtime.cli import build_parser
+
+    parser = build_parser()
+    sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+    mode = next(a for a in sub.choices["mcp-gateway"]._actions if "--mode" in a.option_strings)
+    assert mode.default is None
+    assert "observe when serving" in mode.help and "install writes enforce" in mode.help
+    docs = (Path(__file__).resolve().parent.parent / "docs" / "mcp-gateway.md").read_text()
+    assert "--mode enforce` (default)" not in docs
+    assert "Serving\n  defaults to `observe`" in docs

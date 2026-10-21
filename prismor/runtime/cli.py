@@ -4288,7 +4288,8 @@ def build_parser() -> argparse.ArgumentParser:
     gw_parser.add_argument("--server", action="append",
                            help="Inline upstream as name=<url|command> (repeatable)")
     gw_parser.add_argument("--mode", choices=["observe", "enforce"], default=None,
-                           help="observe=log only (default), enforce=block policy violations")
+                           help="observe=log only, enforce=block policy violations. Default: observe "
+                           "when serving; install writes enforce unless --mode observe is given")
     gw_parser.add_argument("--workspace", help="Workspace path for policy + session store")
     gw_parser.add_argument("--session-id", dest="session_id", default="",
                            help="Stable session id (default: fresh per process). Hosted deployments "
