@@ -26,6 +26,7 @@ on the lines around it.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Set
@@ -89,6 +90,32 @@ def main(argv: List[str] | None = None) -> None:
             files[arg] = names
             total += len(names)
     print(json.dumps({"files": files, "total": total}))
+
+
+_WORD = re.compile(r"[A-Za-z0-9_.~/-]+")
+
+
+def local_text(command: str) -> str:
+    """``command`` with every word the LOCAL shell won't touch blanked out.
+
+    A path inside ``ssh host '<cmd>'`` (or another context-switching command's
+    quoted payload) names a file on the other machine; resolving it against
+    this machine's cwd denied commands that never read a local file. Uses the
+    same ``is_remote_payload`` the policy engine judges remote payloads with.
+    """
+    try:
+        from prismor.runtime.shell_context import is_remote_payload
+    except Exception:
+        return command
+    out = list(command)
+    for m in _WORD.finditer(command):
+        if is_remote_payload(command, m.start(), m.end()):
+            out[m.start():m.end()] = " " * (m.end() - m.start())
+    return "".join(out)
+
+
+def local_text_main() -> None:
+    sys.stdout.write(local_text(sys.stdin.read()))
 
 
 if __name__ == "__main__":

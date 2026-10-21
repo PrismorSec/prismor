@@ -55,6 +55,9 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     else:
         _failed += 1
         print(f"  FAIL  {name}  {detail}")
+    # Under pytest each test_* function is collected directly; without this a
+    # FAIL only printed and the case passed (#440's `/bin/cat` case never held).
+    assert ok or "pytest" not in sys.modules, f"{name}  {detail}"
 
 
 def run(payload: dict) -> dict | None:
@@ -155,10 +158,10 @@ def test_bash_ingest_command_allowed():
 
 def test_bash_path_invoked_ingest_allowed():
     for cmd in (
-        "/venv/bin/prismer cloak add --env-file .env",
-        "/Users/x/.local/pipx/venvs/prismer/bin/prismer cloak add --env-file .env",
-        "~/.local/bin/prismer cloak list",
-        "./venv/bin/prismer cloak add --env-file .env",
+        "/venv/bin/prismor cloak add --env-file .env",
+        "/Users/x/.local/pipx/venvs/prismor/bin/prismor cloak add --env-file .env",
+        "~/.local/bin/prismor cloak list",
+        "./venv/bin/prismor cloak add --env-file .env",
     ):
         res = bash_call(cmd)
         check(f"path-invoked `{cmd}` is allowed", res is None, str(res))
@@ -176,11 +179,30 @@ def test_bash_absolute_path_denied():
 
 def test_bash_prismer_mention_negative_denied():
     for cmd in (
-        f"echo prismer cloaking is nice; cat {_WS}/.env",
+        f"echo prismor cloaking is nice; cat {_WS}/.env",
         f"/bin/cat {_WS}/.env",
+        f"prismor cloak list; cat {_WS}/.env",
+        "prismor cloak list && sed -n 1p .env",
+        "prismor cloak add --env-file .env | cat .env",
     ):
         res = bash_call(cmd)
         check(f"non-exempt read denied: `{cmd}`", denied(res), str(res))
+
+
+def test_bash_remote_shell_paths_are_not_local():
+    """A dotenv path inside an ssh payload is a file on the other host."""
+    for cmd in (
+        "ssh -i ~/.ssh/k.pem user@host 'cd ~/app && cat .env'",
+        'ssh host "head -1 .env"',
+    ):
+        res = bash_call(cmd)
+        check(f"remote-only `{cmd}` is allowed", res is None, str(res))
+    for cmd in (
+        "ssh host 'ls'; cat .env",
+        'ssh host "echo $(cat .env)"',
+    ):
+        res = bash_call(cmd)
+        check(f"local read beside ssh `{cmd}` is denied", denied(res), str(res))
 
 
 # ── stand-down after import ─────────────────────────────────────────────────
@@ -225,6 +247,7 @@ def main() -> int:
         test_bash_unrelated_command_allowed,
         test_bash_absolute_path_denied,
         test_bash_prismer_mention_negative_denied,
+        test_bash_remote_shell_paths_are_not_local,
         test_stands_down_once_imported,
     ]:
         fn()

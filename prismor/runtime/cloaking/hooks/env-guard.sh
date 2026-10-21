@@ -55,21 +55,26 @@ _is_env_basename() {
   return 1
 }
 
+# The first interpreter that can import the checker. On Windows `python3` is
+# usually the Microsoft Store alias stub, which exits non-zero, so this check
+# failed and the read went through.
+_guard_python() {
+  local c
+  for c in "${PRISMOR_PYTHON:-}" python3 python; do
+    [[ -n "$c" ]] || continue
+    if PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$c" -c \
+        'import prismor.runtime.cloaking.env_guard' >/dev/null 2>&1; then printf '%s' "$c"; return; fi
+  done
+}
+
 # ── check files with the shared Python parser; deny if any entry unimported ─
 # $1 = human label for what was attempted; remaining args = existing env files.
 _deny_if_unprotected() {
   local how="$1"; shift
   [[ $# -gt 0 ]] || return 0
   local report
-  # The first interpreter that can import the checker. On Windows `python3`
-  # is usually the Microsoft Store alias stub, which exits non-zero, so this
-  # check failed and the read went through.
-  local py=""
-  for c in "${PRISMOR_PYTHON:-}" python3 python; do
-    [[ -n "$c" ]] || continue
-    if PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$c" -c \
-        'import prismor.runtime.cloaking.env_guard' >/dev/null 2>&1; then py="$c"; break; fi
-  done
+  local py
+  py="$(_guard_python)"
   [[ -n "$py" ]] || return 0
   report="$(PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$py" -c \
     'from prismor.runtime.cloaking.env_guard import main; main()' "$@" 2>/dev/null)" || return 0
@@ -101,9 +106,19 @@ cmd="$(printf '%s' "$input" | jq -r '.tool_input.command // empty')"
 [[ "$cmd" == *env* ]] || exit 0   # cheap fast path
 
 # The sanctioned ingestion path (`prismor cloak add --env-file`, list, ...)
-# names the file but never prints values — always allowed.
-if [[ "$cmd" =~ (^|[[:space:]])([/A-Za-z0-9_.-]*/)?prismer([[:space:]]+cloak([[:space:]]|$)|$) ]]; then
+# names the file but never prints values — allowed when it is the WHOLE
+# command. Anywhere-in-the-command matching let `prismor cloak list; cat .env`
+# through, and #440's `prismer` spelling exempted nothing real at all.
+if [[ "$cmd" =~ ^[[:space:]]*([/A-Za-z0-9_.~-]*/)?prismor[[:space:]]+cloak([[:space:]][^\;\&\|\`\$\<\>]*)?$ ]]; then
   exit 0
+fi
+
+# Judge only what runs HERE: a path inside `ssh host '<cmd>'` is a file on the
+# other machine, and a remote `cat` reads nothing local.
+_py="$(_guard_python)"
+if [[ -n "$_py" ]]; then
+  cmd="$(printf '%s' "$cmd" | PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$_py" -c \
+    'from prismor.runtime.cloaking.env_guard import local_text_main; local_text_main()' 2>/dev/null || printf '%s' "$cmd")"
 fi
 
 # Collect existing env-style files referenced by the command.
@@ -121,8 +136,8 @@ done < <(printf '%s' "$cmd" | grep -oE '[A-Za-z0-9_.~/-]+' | sort -u)
 
 # Is this command actually READING content? Appends and presence checks pass.
 is_reader=0
-_READERS='(^|[;&|(`[:space:]])(sudo[[:space:]]+)?(cat|bat|head|tail|less|more|most|nl|tac|strings|od|xxd|hexdump|column|paste|sort|uniq|rev|cut|tr|sed|awk|gawk|diff|cmp|source|python[0-9.]*|node|ruby|perl)([[:space:]]|$)'
-_GREPPERS='(^|[;&|(`[:space:]])(sudo[[:space:]]+)?(grep|egrep|fgrep|rg|ag|ack)([[:space:]]|$)'
+_READERS='(^|[;&|(`[:space:]])(sudo[[:space:]]+)?([/A-Za-z0-9_.~-]*/)?(cat|bat|head|tail|less|more|most|nl|tac|strings|od|xxd|hexdump|column|paste|sort|uniq|rev|cut|tr|sed|awk|gawk|diff|cmp|source|python[0-9.]*|node|ruby|perl)([[:space:]]|$)'
+_GREPPERS='(^|[;&|(`[:space:]])(sudo[[:space:]]+)?([/A-Za-z0-9_.~-]*/)?(grep|egrep|fgrep|rg|ag|ack)([[:space:]]|$)'
 _PRESENCE_FLAGS='[[:space:]]-(q|c|l|L)([[:space:]]|$)|--(quiet|silent|count|files-with-matches)'
 if [[ "$cmd" =~ $_READERS ]]; then
   is_reader=1
