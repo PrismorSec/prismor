@@ -733,8 +733,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 parts = []
                 unguarded = []
                 for agent, s in cov.items():
-                    if s["global"]:
+                    if s["global"] and not s.get("foreign"):
                         parts.append(f"{agent} (all projects)")
+                    elif s["global"] and s["project"]:
+                        parts.append(f"{agent} (this project only; the global hook is another Prismor install's)")
+                    elif s["global"]:
+                        parts.append(f"{agent} (all projects, via another Prismor install — not this enrollment)")
                     elif s["project"]:
                         parts.append(f"{agent} (this project only)")
                     else:

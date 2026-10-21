@@ -441,8 +441,29 @@ def coverage(workspace: Path) -> Dict[str, Dict[str, bool]]:
         out[agent] = {
             "project": hook_installed(agent, "project", workspace),
             "global": hook_installed(agent, "global", workspace),
+            "foreign": _hook_is_foreign(agent, "global", workspace),
         }
     return out
+
+
+def _hook_is_foreign(agent: str, scope: str, workspace: Path) -> bool:
+    """True when the hook at ``scope`` runs another Prismor home's dispatcher.
+
+    Each install writes its shim to ``<PRISMOR_HOME>/hook-dispatch.py``, so a
+    hook naming a shim at a different path reports to that install's identity,
+    not this one. Hooks that name no shim (a bare ``prismor`` on PATH) can't be
+    told apart and are treated as ours.
+    """
+    if not hook_installed(agent, scope, workspace):
+        return False
+    try:
+        text = _config_path(agent, scope, workspace).read_text(encoding="utf-8").replace("\\", "/")
+    except Exception:
+        return False
+    norm = lambda s: re.sub(r"/+", "/", s)  # JSON-escaped Windows paths double the separator
+    ours = norm(str(prismor_home() / _SHIM_NAME).replace("\\", "/"))
+    shims = {norm(s) for s in re.findall(r"[^\s\"']*/" + re.escape(_SHIM_NAME), text)}
+    return bool(shims) and ours not in shims
 
 
 def unguarded_agents(workspace: Path) -> List[str]:
