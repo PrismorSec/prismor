@@ -2209,8 +2209,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 # — is keyed on. Without it here the human has to go hunting at
                 # exactly the moment they need it.
                 reason += f" (rule: {blocking['ruleId']})"
-            if blocking.get("evidence"):
-                reason += f"\n{blocking['evidence']}"
+            if _shown_evidence(blocking):
+                reason += f"\n{_shown_evidence(blocking)}"
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
 
@@ -5446,6 +5446,18 @@ def _relative_time(ts: str) -> str:
 
 # ── New command implementations ─────────────────────────────────────────
 
+def _shown_evidence(finding: Dict[str, Any]) -> str:
+    """Evidence as Prismor prints it back. A project-memory finding's evidence is
+    the instruction-file text itself; printing it in `prismor status` or a deny
+    reason hands that text to the agent as tool output, where it was flagged
+    again (and again on the next status), so name the source instead."""
+    if not finding.get("evidence"):
+        return ""
+    if finding.get("source") == "project_memory":
+        return "(matched text from an agent instruction file; open the file to review it)"
+    return str(finding["evidence"])
+
+
 def _print_status(session: Dict[str, Any]) -> None:
     """Pretty-print the latest session status."""
     risk = session.get("riskScore", 0)
@@ -5463,8 +5475,8 @@ def _print_status(session: Dict[str, Any]) -> None:
         sev = finding.get("severity", "?")
         color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
         print(f"  {_color(f'[{sev}]', color)} {finding['title']} ({finding['category']})")
-        if finding.get("evidence"):
-            print(f"         {finding['evidence']}")
+        if _shown_evidence(finding):
+            print(f"         {_shown_evidence(finding)}")
 
 
 def _run_query(args) -> None:
@@ -7570,8 +7582,8 @@ def format_analysis(result: Dict[str, Any]) -> str:
     else:
         for finding in result["findings"]:
             lines.append(f"- [{finding['severity']}] {finding['title']} ({finding['category']})")
-            if finding.get("evidence"):
-                lines.append(f"  {finding['evidence']}")
+            if _shown_evidence(finding):
+                lines.append(f"  {_shown_evidence(finding)}")
 
     if result["feedMatches"]:
         lines.extend(["", "Relevant advisories", "------------------"])
@@ -7598,8 +7610,8 @@ def format_session(session: Dict[str, Any]) -> str:
     lines.extend(["", "Findings", "--------"])
     for finding in session["findings"]:
         lines.append(f"- [{finding['severity']}] {finding['title']} ({finding['category']})")
-        if finding.get("evidence"):
-            lines.append(f"  {finding['evidence']}")
+        if _shown_evidence(finding):
+            lines.append(f"  {_shown_evidence(finding)}")
     lines.extend(["", "Recent events", "-------------"])
     for event in session["events"][-10:]:
         parts = [event.get("ts"), event.get("type"), event.get("path"), event.get("command"), event.get("url")]
