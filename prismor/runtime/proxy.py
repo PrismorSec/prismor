@@ -7,7 +7,7 @@ hooked, wired, or imported. This surface requires only that the agent's model
 traffic pass through a URL we control::
 
     ANTHROPIC_BASE_URL=http://127.0.0.1:7080  claude
-    OPENAI_BASE_URL=http://127.0.0.1:7080/v1  codex
+    codex -c openai_base_url=http://127.0.0.1:7080/v1   # Codex ignores OPENAI_BASE_URL
 
     # Google Gen AI SDK (Gemini API, Vertex, Gemini Enterprise Agent Platform)
     genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))
@@ -2574,7 +2574,8 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     else:
         print("[prismor] auth pass-through (no virtual keys configured)")
     print(f"[prismor] point an agent at it:  ANTHROPIC_BASE_URL={base} claude")
-    print(f"[prismor]                        OPENAI_BASE_URL={base}/v1 codex")
+    print(f"[prismor]                        codex -c openai_base_url={base}/v1"
+          "   (Codex ignores OPENAI_BASE_URL)")
     print(f"[prismor]                        genai.Client(http_options="
           f"types.HttpOptions(base_url='{base}'))")
     print(f"[prismor]                        A2A client base URL={base}")
