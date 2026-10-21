@@ -43,7 +43,7 @@ def test_calls_accumulate_and_flush_debounces(monkeypatch):
     _enroll()
 
     sent = []
-    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(r for r in recs if r.get("type") == "agent_activity"))
 
     for _ in range(5):
         heartbeat.record_call(agent="claude", session_id="s1")
@@ -76,7 +76,7 @@ def test_per_instance_keying(monkeypatch):
     _enroll()
 
     sent = []
-    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(r for r in recs if r.get("type") == "agent_activity"))
 
     for _ in range(4):
         heartbeat.record_call(agent="openai-agents", agent_name="checkout-bot", session_id="s1")
@@ -107,7 +107,7 @@ def test_v1_file_migrates_to_framework_key(monkeypatch):
     ))
 
     sent = []
-    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(r for r in recs if r.get("type") == "agent_activity"))
     assert heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1) is True
     assert len(sent) == 1
     assert sent[0]["agent"] == "cursor" and sent[0]["count"] == 7
@@ -138,7 +138,7 @@ def test_failed_flush_lands_in_spool():
         heartbeat.record_call(agent="codex", session_id="s2")
     assert heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1) is True
 
-    spooled = telemetry_spool.drain(limit=10)
+    spooled = [r for r in telemetry_spool.drain(limit=10) if r["type"] == "agent_activity"]
     assert len(spooled) == 1
     assert spooled[0]["type"] == "agent_activity"
     assert spooled[0]["count"] == 3
@@ -183,5 +183,47 @@ def test_short_script_flushes_at_exit(tmp_path):
         srv.shutdown()
 
     assert len(bodies) == 1  # registered once, one upload
-    (rec,) = bodies[0]["events"]
-    assert rec["type"] == "agent_activity" and rec["count"] == 4
+    (rec,) = [e for e in bodies[0]["events"] if e["type"] == "agent_activity"]
+    assert rec["count"] == 4
+    assert [e["type"] for e in bodies[0]["events"]].count("device_status") == 1
+
+
+# ── device_status: version, install kind and per-agent coverage, hourly ──
+
+
+def test_device_status_rides_the_first_flush_then_hourly(monkeypatch):
+    from prismor.runtime.enterprise import heartbeat
+    _enroll()
+    sent = []
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    monkeypatch.setattr(heartbeat, "device_status_record", lambda: {"type": "device_status"})
+    t0 = time.time()
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=t0 + heartbeat.FLUSH_INTERVAL + 1)
+    assert [r["type"] for r in sent].count("device_status") == 1
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=t0 + 2 * heartbeat.FLUSH_INTERVAL + 2)
+    assert [r["type"] for r in sent].count("device_status") == 1  # not again within the hour
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=t0 + heartbeat.STATUS_INTERVAL + heartbeat.FLUSH_INTERVAL + 5)
+    assert [r["type"] for r in sent].count("device_status") == 2
+
+
+def test_device_status_reports_coverage_by_how_the_agent_is_hooked(monkeypatch):
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    monkeypatch.setattr(hooks, "coverage", lambda _ws: {
+        "claude": {"project": False, "global": True, "foreign": False},
+        "codex": {"project": True, "global": False, "foreign": False},   # one repo only
+        "gemini": {"project": False, "global": False, "foreign": False},
+    })
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: scope == "system" and a == "codex" and False)
+    d = heartbeat.device_status_record()["detail"]
+    assert d["agents"]["claude"] == {"covered": True, "via": "global"}
+    assert d["agents"]["codex"] == {"covered": False, "via": "project"}
+    assert d["unguarded"] == ["codex", "gemini"]
+    assert d["install"] == "user" and d["prismor_version"]
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: scope == "system")
+    d = heartbeat.device_status_record()["detail"]
+    assert d["agents"]["gemini"] == {"covered": True, "via": "system"}
+    assert d["unguarded"] == []

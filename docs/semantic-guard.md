@@ -187,8 +187,7 @@ prismor install-hooks --agent all --mode enforce
 
 An enrolled device can use Prismor's hosted judge: no CLI and no key, about two
 seconds a verdict. The server judges with `gpt-5.6-luna`, which scored 83/83
-injections with one false block in 74 benign texts on the evaluation set in
-`research/semantic-judge-coverage/`; the model is chosen server-side, so a
+injections with one false block in 74 benign texts on our internal evaluation set; the model is chosen server-side, so a
 device never configures one. The judged text (at most 3000 characters) and the heuristic score
 go to the control plane under the device key; the text is not stored. Verdicts count
 against the org's monthly judge quota and are cached like CLI verdicts. Not enrolled,

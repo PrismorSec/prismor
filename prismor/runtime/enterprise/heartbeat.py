@@ -33,6 +33,48 @@ from typing import Any, Dict, Optional
 from prismor.runtime.enterprise import identity as _identity
 
 FLUSH_INTERVAL = 60.0
+# How often a device_status record (version, install kind, per-agent hook
+# coverage) rides along with a flush. The console's coverage view and
+# version-drift tile read it; hourly is plenty for both.
+STATUS_INTERVAL = 3600.0
+
+
+def device_status_record() -> Dict[str, Any]:
+    """What the console needs to answer "is this machine covered?": the
+    running version, whether it is a system (every-user) or per-user install,
+    and for each agent found on the machine whether a Prismor hook covers it
+    machine-wide. Agent names only; no paths, commands or user data."""
+    import platform
+    import uuid
+    from prismor.runtime import __version__, system_install
+    from prismor.runtime.hooks import SYSTEM_HOOK_PATHS, coverage, hook_installed
+    home = Path.home()
+    agents: Dict[str, Any] = {}
+    try:
+        for agent, cov in coverage(home).items():
+            system = agent in SYSTEM_HOOK_PATHS and hook_installed(agent, "system", home)
+            via = "system" if system else ("global" if cov.get("global") and not cov.get("foreign")
+                                           else ("project" if cov.get("project") else None))
+            # Project-only hooks guard one repo, so they don't count as covering the machine.
+            agents[agent] = {"covered": via in ("system", "global"), "via": via}
+    except Exception:
+        pass
+    return {
+        "schema": "prismor.runtime.telemetry.v1",
+        "event_id": "evt_" + uuid.uuid4().hex,
+        "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "type": "device_status",
+        "verdict": "observed",
+        "title": "Device status",
+        "redacted": True,
+        "detail": {
+            "prismor_version": __version__,
+            "install": "system" if system_install.is_system_managed() else "user",
+            "platform": platform.system().lower(),
+            "agents": agents,
+            "unguarded": sorted(a for a, v in agents.items() if not v["covered"]),
+        },
+    }
 
 # Bound the counter file + flush fan-out. A single device running >64 distinct
 # agent instances is not a real topology (instances spread across a fleet of
@@ -137,9 +179,11 @@ def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float
             data = _load(path)
             counters: Dict[str, Any] = data.get("counters", {}) or {}
             last = float(data.get("last_flush", 0))
+            last_status = float(data.get("last_status", 0))
             t = time.time() if now is None else now
             if not force and (t - last) < FLUSH_INTERVAL:
                 return False
+            send_status = (t - last_status) >= STATUS_INTERVAL
             import uuid
             for key, slot in counters.items():
                 count = int(slot.get("count", 0))
@@ -161,9 +205,10 @@ def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float
                 if agent_name:
                     rec["agent_name"] = agent_name
                 records.append(rec)
-            # Reset all counters, keep the flush timestamp.
+            # Reset all counters, keep the flush (and status) timestamps.
             path.write_text(
-                json.dumps({"v": 2, "last_flush": t, "counters": {}}), encoding="utf-8"
+                json.dumps({"v": 2, "last_flush": t, "counters": {},
+                            "last_status": t if send_status else last_status}), encoding="utf-8"
             )
             try:  # audit #18
                 path.chmod(0o600)
@@ -172,6 +217,11 @@ def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float
     except (OSError, ValueError):
         return False
 
+    if send_status:
+        try:
+            records.append(device_status_record())
+        except Exception:
+            pass  # status is bookkeeping; never let it cost the heartbeat
     # Always call through, even with no counts of our own: upload_telemetry
     # drains the telemetry spool, and findings now ride that spool instead of
     # one POST each. This tick is what ships them.
