@@ -968,12 +968,34 @@ def _codex_home() -> Path:
 # managed-settings.json is never touched. Codex treats hooks in its system
 # requirements.toml as managed: trusted by policy, so no per-user trust step,
 # and not something a user can disable.
-SYSTEM_HOOK_PATHS: Dict[str, Path] = {
-    "claude": Path("/etc/claude-code/managed-settings.d/50-prismor.json"),
-    "cursor": Path("/etc/cursor/hooks.json"),
-    "gemini": Path("/etc/gemini-cli/settings.json"),
-    "codex": Path("/etc/codex/requirements.toml"),
-}
+def _system_hook_paths() -> Dict[str, Path]:
+    from prismor.runtime import system_install as _si
+    if _si.IS_WINDOWS:
+        pd, pf = _si.PROGRAM_DATA, _si.PROGRAM_FILES
+        return {
+            "claude": pf / "ClaudeCode" / "managed-settings.d" / "50-prismor.json",
+            "cursor": pd / "Cursor" / "hooks.json",
+            "gemini": pd / "gemini-cli" / "settings.json",
+            "codex": pd / "OpenAI" / "Codex" / "requirements.toml",
+        }
+    if _si.IS_MAC:
+        lib = _si.MAC_SUPPORT
+        return {
+            "claude": lib / "ClaudeCode" / "managed-settings.d" / "50-prismor.json",
+            "cursor": lib / "Cursor" / "hooks.json",
+            "gemini": lib / "GeminiCli" / "settings.json",
+            # Codex reads /etc/codex/requirements.toml on every Unix, macOS included.
+            "codex": Path("/etc/codex/requirements.toml"),
+        }
+    return {
+        "claude": Path("/etc/claude-code/managed-settings.d/50-prismor.json"),
+        "cursor": Path("/etc/cursor/hooks.json"),
+        "gemini": Path("/etc/gemini-cli/settings.json"),
+        "codex": Path("/etc/codex/requirements.toml"),
+    }
+
+
+SYSTEM_HOOK_PATHS: Dict[str, Path] = _system_hook_paths()
 
 _CODEX_REQ_BEGIN = "# >>> prismor system install (written by `prismor setup --system`) >>>"
 _CODEX_REQ_END = "# <<< prismor system install <<<"
@@ -995,8 +1017,9 @@ def _render_codex_requirements(command: str, managed_dir: Path) -> str:
     turned hooks off in their own config. Codex wants managed hook commands to
     run scripts under ``managed_dir``, which is where the shim lives.
     """
+    dir_key = "windows_managed_dir" if _IS_WINDOWS else "managed_dir"
     lines = [_CODEX_REQ_BEGIN, "[features]", "hooks = true", "", "[hooks]",
-             f"managed_dir = {json.dumps(str(managed_dir))}"]
+             f"{dir_key} = {json.dumps(str(managed_dir))}"]
     for event, entries in _merge_codex({}, command)["hooks"].items():
         for entry in entries:
             lines += ["", f"[[hooks.{event}]]", f"matcher = {json.dumps(entry['matcher'])}"]

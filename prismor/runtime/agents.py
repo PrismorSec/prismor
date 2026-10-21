@@ -171,6 +171,13 @@ def resolve_agent_control(
         return AgentControl(name=name, deny_tools=_global_deny, ask_tools=_ask)
 
     local_enabled = bool(entry.get("enabled", True))
+    local_mode = entry.get("mode") or None
+    if local_mode == "observe":
+        # agents.yaml (global or in the repo) is the user's to edit; on a
+        # system install it may tighten an agent but not switch it to observe.
+        from prismor.runtime import system_install as _si
+        if _si.is_system_managed():
+            local_mode = None
     remote_enabled = bool(remote.get("enabled", True))
     remote_mode = remote.get("mode") if remote.get("mode") in ("observe", "enforce") else None
     disabled_by = (
@@ -186,7 +193,7 @@ def resolve_agent_control(
         name=name,
         framework=entry.get("framework", ""),
         enabled=local_enabled and remote_enabled,
-        mode=remote_mode or entry.get("mode") or None,
+        mode=remote_mode or local_mode,
         org_mode=remote_mode,
         iam_profile=remote.get("iam_profile") or entry.get("iam_profile") or None,
         deny_tools=_merged_deny,

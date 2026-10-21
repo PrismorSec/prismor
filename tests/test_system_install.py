@@ -56,7 +56,7 @@ def test_managed_identity_and_pause_are_world_readable(sysdir):
     from prismor.runtime.enterprise import identity
     _manage(sysdir)
     p = identity.save_identity({"device_id": "d", "device_key": "prism_dev_x"})
-    assert stat.S_IMODE(p.stat().st_mode) == 0o644
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600  # the key is admin-only
     assert identity.load_identity()["device_id"] == "d"
     pause.set_paused(60)
     assert stat.S_IMODE(pause.pause_path().stat().st_mode) == 0o644
@@ -157,7 +157,7 @@ def test_pause_is_root_only_on_a_system_install(sysdir, tmp_path, monkeypatch):
     from prismor.runtime import cli
     _manage(sysdir)
     monkeypatch.setattr(system_install.os, "geteuid", lambda: 1000)
-    assert "root-only" in cli._pause_refusal("pause", tmp_path)
+    assert "admin-only" in cli._pause_refusal("pause", tmp_path)
     monkeypatch.setattr(system_install.os, "geteuid", lambda: 0)
     assert cli._pause_refusal("pause", tmp_path) is None  # MDM script: no terminal needed
 
@@ -206,3 +206,103 @@ def test_codex_refuses_to_redeclare_an_orgs_hooks_table(sysdir, tmp_path, monkey
     with pytest.raises(ValueError, match="Merge this into it by hand"):
         _install_codex()
     assert path.read_text() == original
+
+
+def test_device_key_is_admin_only_and_users_see_a_keyless_identity(sysdir, monkeypatch):
+    from prismor.runtime.enterprise import identity
+    _manage(sysdir)
+    p = identity.save_identity({"device_id": "d1", "org_id": "o1", "device_key": "prism_dev_secret"})
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    public = sysdir / "identity-public.json"
+    assert stat.S_IMODE(public.stat().st_mode) == 0o644
+    assert "prism_dev_secret" not in public.read_text()
+    # A user's process can't read the private file: no key, still enrolled.
+    monkeypatch.setattr(identity, "load_identity", lambda: None)
+    assert identity.keyless_identity()["device_id"] == "d1"
+    assert identity.is_enrolled()
+
+
+def test_keyless_user_spools_telemetry_instead_of_calling_out(sysdir, monkeypatch):
+    import urllib.request
+    from prismor.runtime import sinks
+    from prismor.runtime.enterprise import identity, telemetry_spool
+    _manage(sysdir)
+    identity.save_identity({"device_id": "d1", "org_id": "o1", "device_key": "k"})
+    monkeypatch.setattr(identity, "load_identity", lambda: None)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("network")))
+    sinks.upload_telemetry([{"id": "e1", "verdict": "blocked"}])
+    assert telemetry_spool.pending_count() == 1
+
+
+def test_system_sync_uploads_every_users_spool(sysdir, tmp_path, monkeypatch):
+    from prismor.runtime import sinks
+    from prismor.runtime.enterprise import identity, remote_policy, telemetry_spool
+    _manage(sysdir)
+    identity.save_identity({"device_id": "d1", "org_id": "o1", "device_key": "k"})
+    homes = []
+    for user in ("alice", "bob"):
+        h = tmp_path / user / ".prismor"
+        h.mkdir(parents=True)
+        monkeypatch.setenv("PRISMOR_HOME", str(h))
+        telemetry_spool.append([{"id": f"{user}-1"}, {"id": f"{user}-2"}])
+        homes.append(h)
+    monkeypatch.delenv("PRISMOR_HOME")
+    monkeypatch.setattr(system_install, "user_prismor_homes", lambda: homes)
+    monkeypatch.setattr(remote_policy, "fetch", lambda force=False: True)
+    sent = []
+
+    def fake_upload(records, **_):
+        sent.extend(telemetry_spool.drain(500) + records)
+    monkeypatch.setattr(sinks, "upload_telemetry", fake_upload)
+    res = system_install.sync()
+    assert res["policy_pulled"] and res["homes"] == 2
+    assert res["pending_before"] == 4 and res["pending_after"] == 0
+    assert sorted(r["id"] for r in sent) == ["alice-1", "alice-2", "bob-1", "bob-2"]
+
+
+def test_repo_policy_file_is_ignored_unless_admin_allows_it(sysdir, tmp_path, monkeypatch):
+    from prismor.runtime.enterprise import workspace_scope
+    from prismor.runtime.policy_engine import PolicyEngine
+    from prismor.runtime.setup_wizard import _render_selection_policy
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda _ws: False)
+    ws = tmp_path / "repo"
+    (ws / ".prismor").mkdir(parents=True)
+    (ws / ".prismor" / "policy.yaml").write_text(_render_selection_policy([]), encoding="utf-8")
+    _manage(sysdir)
+    sel = _render_selection_policy(["destructive-command"])
+
+    (sysdir / "policy.yaml").write_text(sel, encoding="utf-8")
+    eng = PolicyEngine(workspace=ws)
+    assert eng.project_policy_ignored == str(ws / ".prismor" / "policy.yaml")
+    assert eng._resolve_mode(next(r for r in eng.rules if r.id == "destructive-command")) == "enforce"
+    (sysdir / "policy.yaml").write_text(sel.replace("settings:\n", "settings:\n  allow_project_policy: true\n"),
+                                        encoding="utf-8")
+    assert PolicyEngine(workspace=ws).project_policy_ignored is None
+
+
+def test_local_agents_yaml_cannot_switch_an_agent_to_observe(sysdir, tmp_path):
+    from prismor.runtime import agents
+    from prismor.runtime.store import prismor_home
+    prismor_home().mkdir(parents=True, exist_ok=True)
+    (prismor_home() / "agents.yaml").write_text("agents:\n  claude:\n    mode: observe\n", encoding="utf-8")
+    agents._CONFIG_CACHE.clear()
+    assert agents.resolve_agent_control("claude", tmp_path).mode == "observe"
+    _manage(sysdir)
+    agents._CONFIG_CACHE.clear()
+    assert agents.resolve_agent_control("claude", tmp_path).mode is None
+
+
+def test_system_install_forbids_personal_workspaces(sysdir):
+    from prismor.runtime.enterprise import workspace_scope
+    assert workspace_scope.org_allows_personal()
+    _manage(sysdir)
+    assert not workspace_scope.org_allows_personal()
+
+
+def test_block_message_points_users_at_their_admin(sysdir, monkeypatch):
+    from prismor.runtime import unblock
+    _manage(sysdir)
+    monkeypatch.setattr(system_install, "is_elevated", lambda: False)
+    text = unblock.format_unblock({"ruleId": "destructive-command", "severity": "critical"})
+    assert "administrator" in text
+    assert "prismor allow" not in text and "prismor unlock" not in text

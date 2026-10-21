@@ -495,11 +495,16 @@ rules:
   - id: recursive-delete-home
     severity: HIGH
     category: destructive_command
-    title: Flags rm -rf of a directory under the home directory
+    title: Flags rm -rf (or Remove-Item -Recurse, rmdir /s) of a directory under the home directory
     event_types: [shell]
     fields: [command]
     patterns:
       - '(?:^|\s|;|&|\||\(|["''])rm\b(?=[^\n;&|]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|]*\s-[rR]\b|--recursive\b[^\n;&|]*--force\b|--force\b[^\n;&|]*--recursive\b))[^\n;&|]*\s+["'']?(?:~|\$\{?HOME\}?|/(?:home|Users)/[^/\s"'']+)/(?!(?:\.cache|Library/Caches|\.npm/_cacache|\.npm/_npx|\.yarn/cache|\.gradle/caches)(?:/(?:(?!\.\.)[^\s"'';&|])*)?(?:["'']|\s|$|;|&|\|))(?![^\s"'';&|]*?(?:^|/)?(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)/?(?:["'']|\s|$|;|&|\|))[^\s"'';&|]+'
+      # PowerShell and cmd.exe forms (Windows): Remove-Item/ri/rm/rd -Recurse,
+      # and rmdir/rd/del /s, on a folder under the user's profile. Build and
+      # cache folders and AppData\Local\Temp are skipped, as for rm -rf.
+      - '(?:^|[\s;&|("''])(?:remove-item|ri|rm|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?(?:~|\$home|\$env:userprofile|[a-z]:\\users\\[^\\\s"'';|&]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"'';|&]+'
+      - '(?:^|[\s;&|("''])(?:rmdir|rd|del|erase)\s+(?=(?:[^\n&|]*\s)?/s\b)[^\n&|]*?["'']?(?:%userprofile%|[a-z]:\\users\\[^\\\s"''&|]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"''&|]+'
     action: warn
 
   # ── CRITICAL: Secret exfiltration ─────────────────────────────────────
@@ -1186,6 +1191,8 @@ rules:
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
       # A system install keeps the machine's selection in /etc/prismor.
       - '(^|/)etc/prismor/policy\.yaml$'
+      - '(^|[/\\])programdata[/\\]prismor[/\\]policy\.yaml$'
+      - '(^|/)library/application support/prismor/policy\.yaml$'
     action: block
 
   # ── CRITICAL: Prismor self-edit ────────────────────────────────────
@@ -1268,6 +1275,8 @@ rules:
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'
+      - '(^|[/\\])programdata[/\\]prismor[/\\](pause|identity)\.json$'
+      - '(^|/)library/application support/prismor/(pause|identity)\.json$'
       # The session store. Reads are fine (`prismor query`, sqlite3 SELECT);
       # SQL writes are caught by db-modification, this catches the file.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|dd)\b[^\n;&|<>]*?)\bprismor\.db(?:-wal|-shm|-journal)?\b'

@@ -87,10 +87,10 @@ Prefer the interactive wizard? Drop the env vars:
 bash ~/.prismor/scripts/init.sh .
 ```
 
-## Fleet rollout (Linux, MDM / config management)
+## Fleet rollout (MDM / config management)
 
-One root install that screens every user on the machine, for Ansible, Chef,
-Intune for Linux and the like: [System install](system-install.md).
+One admin install that screens every user on a Linux or Windows machine, for
+Intune, SCCM, Ansible, Chef and the like: [System install](system-install.md).
 
 ## Windows
 

@@ -44,6 +44,13 @@ from prismor.runtime.enterprise import identity as _identity
 _VERIFIED: Dict[tuple, Dict[str, Any]] = {}
 
 
+def _policy_home() -> Path:
+    """The org policy cache sits with the rest of the policy: /etc/prismor on
+    a system install (pulled by the admin's sync, read by every user)."""
+    from prismor.runtime import system_install
+    return system_install.policy_home()
+
+
 def clear_policy_cache() -> None:
     _VERIFIED.clear()
 
@@ -77,7 +84,7 @@ def _refresh_interval() -> float:
 
 
 def _check_marker_path() -> Path:
-    return _identity.prismor_home() / "remote-policy.check"
+    return _policy_home() / "remote-policy.check"
 
 
 def current_version() -> Optional[int]:
@@ -613,15 +620,15 @@ def _current_tool_tags_sig() -> str:
 
 
 def cached_policy_path() -> Path:
-    return _identity.prismor_home() / "remote-policy.yaml"
+    return _policy_home() / "remote-policy.yaml"
 
 
 def _cached_sig_path() -> Path:
-    return _identity.prismor_home() / "remote-policy.yaml.sig"
+    return _policy_home() / "remote-policy.yaml.sig"
 
 
 def _meta_path() -> Path:
-    return _identity.prismor_home() / "remote-policy.meta.json"
+    return _policy_home() / "remote-policy.meta.json"
 
 
 def _verify_signature(payload: bytes, sig_b64: str) -> bool:
@@ -777,10 +784,11 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
                 "(metadata + hashes; no content leaves this machine).\n"
             )
 
-    home = _identity.prismor_home()
-    home.mkdir(parents=True, exist_ok=True)
-    cached_policy_path().write_text(policy_yaml, encoding="utf-8")
-    _cached_sig_path().write_text(signature, encoding="utf-8")
+    from prismor.runtime import system_install as _si
+    # write_shared: on a system install every user's hook reads this cache,
+    # whatever umask the admin's sync ran under.
+    _si.write_shared(cached_policy_path(), policy_yaml)
+    _si.write_shared(_cached_sig_path(), signature)
     # The cloak hooks are bash and read pattern files, not this YAML: project
     # the org's secret patterns to a file they load. Verified policy only -
     # this runs after the signature check above. Best-effort, never fatal.
@@ -789,13 +797,13 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         write_org_patterns(_extract_cloak_patterns(policy_yaml))
     except Exception as exc:
         sys.stderr.write(f"[prismor] could not apply org cloak patterns: {exc}\n")
-    _meta_path().write_text(json.dumps({
+    _si.write_shared(_meta_path(), json.dumps({
         "fetched_at": time.time(),
         "version": body.get("version"),
         "profile_id": body.get("profile_id"),
         "scope": body.get("scope"),
         "full_capture": full_capture,
-    }), encoding="utf-8")
+    }))
     return True
 
 

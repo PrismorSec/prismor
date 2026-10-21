@@ -1829,7 +1829,12 @@ def run_system_install(
         if blocked is not None:
             print(f"[prismor] {blocked} is not readable by other users, so their agents could not start "
                   f"the hook and would run unscreened.")
-            if str(blocked).startswith(("/root", "/home")):
+            if system_install.IS_WINDOWS:
+                print("  Install Prismor into a shared, admin-owned location instead:")
+                print('    py -3 -m venv "C:\\Program Files\\Prismor"')
+                print('    & "C:\\Program Files\\Prismor\\Scripts\\pip.exe" install prismor')
+                print('    & "C:\\Program Files\\Prismor\\Scripts\\prismor.exe" setup --system ...')
+            elif str(blocked).startswith(("/root", "/home")):
                 print("  Install Prismor into a shared, root-owned location instead:")
                 print("    python3 -m venv /opt/prismor && /opt/prismor/bin/pip install prismor")
                 print("    sudo /opt/prismor/bin/prismor setup --system ...")
@@ -1884,12 +1889,20 @@ def run_system_install(
         print(f"  ✗ {p} is not readable by other users ({b}); fix with: chmod a+rX {b}")
     if unreachable or failed:
         raise SystemExit(1)
+    try:
+        print(f"  ✓ sync     {system_install.install_sync_schedule()}")
+    except Exception as exc:  # the hooks already screen; sync only links the org
+        print(f"  ! sync     could not schedule `prismor system-sync` ({exc}); run it as admin "
+              "every minute so org policy and telemetry flow")
     print()
-    print("  Every user on this machine is now screened; policy, pause and unlock are root-only.")
-    print("  Link it to your org:   sudo prismor enroll <TOKEN>")
+    admin = "admin" if system_install.IS_WINDOWS else "root"
+    sudo = "" if system_install.IS_WINDOWS else "sudo "
+    rm = (f'Remove-Item -Recurse "{system_install.system_dir()}"' if system_install.IS_WINDOWS
+          else f"sudo rm -rf {system_install.system_dir()}")
+    print(f"  Every user on this machine is now screened; policy, pause and unlock are {admin}-only.")
+    print(f"  Link it to your org:   {sudo}prismor enroll <TOKEN>")
     print("  Check it (exit 0 = ok): prismor enroll-status")
-    print("  Remove it:             sudo prismor uninstall-hooks --scope system --agent all "
-          f"&& sudo rm -rf {system_install.system_dir()}")
+    print(f"  Remove it:             {sudo}prismor uninstall-hooks --scope system --agent all, then {rm}")
 
 
 def _wizard_steps(mode: str, gov_mode: Optional[str], offer_unlock: bool) -> List[str]:

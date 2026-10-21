@@ -652,9 +652,41 @@ def main(argv: Optional[List[str]] = None) -> None:
             pass
         return
 
+    if args.command == "system-sync":
+        from prismor.runtime import system_install as _sys
+        if not _sys.is_admin():
+            sys.stderr.write("prismor system-sync runs as an administrator on a system install "
+                             "(sudo, an Administrator shell, or the scheduled task).\n")
+            raise SystemExit(1)
+        res = _sys.sync()
+        for err in res["errors"]:
+            sys.stderr.write(f"prismor system-sync: {err}\n")
+        if not getattr(args, "quiet", False):
+            print(f"policy pulled: {res['policy_pulled']}  homes: {res['homes']}  "
+                  f"telemetry pending: {res['pending_before']} -> {res['pending_after']}")
+        if res["errors"]:
+            raise SystemExit(1)
+        return
+
     if args.command == "enroll-status":
         from prismor.runtime.enterprise import identity as _identity
         ident = _identity.load_identity()
+        public = None if ident else _identity.keyless_identity()
+        if public and not _identity.revoked_info():
+            # System install, seen by a user: the key is the admin's, and the
+            # admin's `prismor system-sync` does all control-plane traffic.
+            print("Enrolled (system install — the device key is held by the administrator)")
+            print(f"  org:        {public.get('org_name') or public.get('org_id')}")
+            print(f"  device id:  {public.get('device_id')}")
+            print(f"  label:      {public.get('label')}")
+            try:
+                from prismor.runtime.enterprise import remote_policy as _remote
+                meta = json.loads(_remote._meta_path().read_text(encoding="utf-8"))
+                age = int(time.time() - float(meta.get("fetched_at") or 0))
+                print(f"  policy:     v{meta.get('version')} (pulled {age}s ago by system-sync)")
+            except Exception:
+                print("  policy:     not pulled yet (system-sync runs every minute)")
+            return
         if not ident:
             print("Not enrolled. Run `prismor enroll <token>` to link this machine to an org.")
             # Non-zero so an MDM compliance / detection script can tell.
@@ -1646,6 +1678,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             agent=args.agent,
             scope=args.scope,
         )
+        if args.scope == "system" and args.agent == "all":
+            from prismor.runtime import system_install as _sys
+            _sys.remove_sync_schedule()
         for item in results:
             if item["removed"]:
                 print(f"Removed {item['agent']} hooks from {item['configPath']}")
@@ -2187,10 +2222,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _inline_ask = _v0 == "step_up" and not payload.get("agent_id") and (
                     args.agent in ("claude", "qwen", "copilot", "antigravity")
                     or (args.agent == "cursor" and _agent_event in _CURSOR_ASK_EVENTS))
+                from prismor.runtime import system_install as _si
+                # On a system install the machine's admin (or the org's
+                # approval queue) decides, not the user whose agent was blocked.
                 if (_v0 in ("block", "step_up") and not _inline_ask
                         and _hook_event in ("PreToolUse", "", None)
                         and str(blocking.get("ruleId") or "") not in _SP_IDS
-                        and not _ws_scope.is_managed(workspace)):
+                        and not _ws_scope.is_managed(workspace)
+                        and not _si.is_system_managed()):
                     from prismor.runtime import approvals_local as _appr
                     _afp = _appr.fingerprint(args.agent, workspace, payload, event)
                     _granted = _appr.consume(_afp)
@@ -4665,6 +4704,10 @@ def build_parser() -> argparse.ArgumentParser:
     enroll_parser.add_argument("--api-base", help="Control-plane base URL (default: $PRISMOR_API_BASE)")
 
     subparsers.add_parser("enroll-status", help="Show this machine's enrollment status")
+    sync_p = subparsers.add_parser(
+        "system-sync",
+        help="System install: pull org policy and upload every user's telemetry (admin; runs on a timer)")
+    sync_p.add_argument("--quiet", action="store_true", help="Print only errors (for the timer)")
 
     doctor_parser = subparsers.add_parser(
         "doctor",
@@ -6439,9 +6482,9 @@ def _pause_refusal(command: str, workspace: Path) -> Optional[str]:
     if _sys.is_system_managed():
         if _sys.is_admin():
             return None
+        how = "an Administrator shell" if _sys.IS_WINDOWS else f"sudo prismor {command}"
         return (f"This machine has a system-wide Prismor install; `prismor {command}` is "
-                f"root-only here (sudo prismor {command}), or ask your org admin to pause it "
-                f"from the console.")
+                f"admin-only here ({how}), or ask your org admin to pause it from the console.")
     try:
         if _unlock.remaining_seconds(workspace):
             return None

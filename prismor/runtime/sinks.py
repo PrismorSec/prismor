@@ -562,6 +562,9 @@ def upload_telemetry(
     from prismor.runtime.enterprise import telemetry_spool as _spool
 
     ident = _identity.load_identity()
+    if not ident and records and _identity.keyless_identity() is not None:
+        _spool.append(records)  # system install: `prismor system-sync` uploads it
+        return
     if not ident or _identity.revoked_backoff_active():
         return
 

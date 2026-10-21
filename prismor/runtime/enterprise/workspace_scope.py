@@ -130,6 +130,11 @@ def org_allows_personal() -> bool:
     are all ignored. This is the only way to close the scope-is-the-git-remote
     hole — a developer can always rewrite or drop ``origin`` to dodge a claimed
     pattern, so orgs that need full coverage must disable personal space."""
+    # A system install is the machine's admin deciding for every user, so no
+    # user can declare a workspace personal and step outside org policy.
+    from prismor.runtime import system_install as _si
+    if _si.is_system_managed():
+        return False
     return _org_settings().get("allow_personal_workspaces", True) is not False
 
 
@@ -176,7 +181,7 @@ def resolve_scope(workspace: Path) -> Dict[str, Any]:
          (backward-compatible "cover all dev machines"); if the org HAS claimed
          patterns, a non-matching repo is the developer's personal space.
     """
-    ident = _identity.load_identity()
+    ident = _identity.load_identity() or _identity.keyless_identity()
     remote = detect_git_remote(workspace)
     if not ident:
         return {"scope": "local", "reason": "not_enrolled", "remote": remote, "org_id": None}

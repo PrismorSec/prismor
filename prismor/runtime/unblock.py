@@ -452,6 +452,18 @@ def format_unblock(
     enrolled: bool = False,
 ) -> str:
     """Render the steps as a block of text, or "" when there is nothing to say."""
+    from prismor.runtime import system_install as _si
+    if _si.is_system_managed() and not _si.is_elevated():
+        # Every local way out (allow, unlock, policy edits, approvals) is the
+        # admin's on a system install; listing them only sends the user into
+        # permission errors.
+        rule_id = str(finding.get("ruleId") or "").strip()
+        lines = ["To unblock (tell the user — Prismor on this machine is managed by an administrator):",
+                 f"  Ask an administrator to allow it (rule: {rule_id})."]
+        from prismor.runtime.enterprise import identity as _ident
+        if enrolled and _ident.load_identity() is not None:
+            lines.append('  Or ask your org for an exception: prismor exempt request --reason "<why>"')
+        return "\n".join(lines)
     steps = unblock_steps(
         finding,
         workspace=workspace,

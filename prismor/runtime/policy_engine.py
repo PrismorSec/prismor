@@ -1434,6 +1434,7 @@ class PolicyEngine:
         settings: Dict[str, Any] = dict(default_raw.get("settings", {}) or {})
 
         # Merge project-level override if present.
+        self.project_policy_ignored: Optional[str] = None
         override_path = policy_path
         if override_path is None and workspace is not None:
             candidate = workspace / ".prismor" / "policy.yaml"
@@ -1458,6 +1459,19 @@ class PolicyEngine:
             user_path = system_install.policy_home() / "policy.yaml"
             if system_install.is_system_managed():
                 user_source = "system"
+                # A repo's .prismor/policy.yaml is anyone's to write, so on a
+                # system install it applies only if the admin's policy says so.
+                # Otherwise `prismor allow` in a checkout, or a hand-written
+                # `selection: explicit` with nothing listed, would undo the
+                # machine's selection one repo at a time.
+                try:
+                    _sys_raw = _load_yaml(user_path) if user_path.exists() else None
+                except Exception:
+                    _sys_raw = None
+                _sys_settings = (_sys_raw or {}).get("settings") or {} if isinstance(_sys_raw, dict) else {}
+                if override_path is not None and _sys_settings.get("allow_project_policy") is not True:
+                    self.project_policy_ignored = str(override_path)
+                    override_path = None
             if not user_path.exists() or (override_path is not None
                                           and user_path.resolve() == override_path.resolve()):
                 user_path = None

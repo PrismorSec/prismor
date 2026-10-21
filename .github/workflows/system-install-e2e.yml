@@ -1,0 +1,48 @@
+name: System install e2e
+
+# `prismor setup --system` on a real runner: machine-wide install as root, a
+# standard user's Claude Code and Codex driven against local mock model APIs,
+# and that user's attempts to switch screening off. See scripts/e2e/system_install.
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["prismor/runtime/**", "scripts/e2e/system_install/**", ".github/workflows/system-install-e2e.yml"]
+  pull_request:
+    paths: ["prismor/runtime/**", "scripts/e2e/system_install/**", ".github/workflows/system-install-e2e.yml"]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools a second user can run (not under the runner's home)
+        id: tools
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install -q node python@3.12 >/dev/null
+            echo "python=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_OUTPUT"
+            echo "path=$(brew --prefix)/bin" >> "$GITHUB_OUTPUT"
+          else
+            sudo apt-get install -y -qq python3-venv >/dev/null
+            echo "python=/usr/bin/python3" >> "$GITHUB_OUTPUT"
+            echo "path=$(dirname "$(command -v node)")" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the wheel
+        shell: bash
+        run: |
+          "${{ steps.tools.outputs.python }}" -m pip install --quiet --user build 2>/dev/null || "${{ steps.tools.outputs.python }}" -m pip install --quiet --break-system-packages build
+          "${{ steps.tools.outputs.python }}" -m build --wheel --outdir dist >/dev/null
+          ls dist
+      - name: System install end to end
+        shell: bash
+        run: |
+          sudo WHEEL="$(ls "$PWD"/dist/*.whl)" PYTHON="${{ steps.tools.outputs.python }}" TOOL_PATH="${{ steps.tools.outputs.path }}" \
+            bash scripts/e2e/system_install/run.sh
