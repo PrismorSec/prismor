@@ -939,11 +939,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("A reason is required: prismor exempt request --reason \"why this repo needs it\"")
             return
         import json as _json, urllib.request, urllib.error
+        from prismor.runtime import http_ua as _http_ua
         base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
         payload = _json.dumps({"repo": remote, "reason": reason}).encode("utf-8")
         req = urllib.request.Request(
             f"{base}/api/devices/exemptions", data=payload, method="POST",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {ident.get('device_key')}"},
+            headers={"Content-Type": "application/json", "User-Agent": _http_ua.user_agent(),
+                     "Authorization": f"Bearer {ident.get('device_key')}"},
         )
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:  # fixed or operator-configured URL  # nosec B310

@@ -463,8 +463,10 @@ def _typesafe_analyze(windows: List[str], model: str, t0: int) -> List[SemanticR
         questions[f"w{i}_exfil"] = _ts_question(_TS_EXFIL, f"w{i}")
     body = json.dumps({"model": model or "jev-latest", "state": state,
                        "questions": questions}).encode("utf-8")
+    from prismor.runtime.http_ua import user_agent
     req = urllib.request.Request(TYPESAFE_URL, data=body, method="POST", headers={
-        "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        "Authorization": f"Bearer {key}", "Content-Type": "application/json",
+        "User-Agent": user_agent()})
     try:
         with urllib.request.urlopen(req, timeout=TYPESAFE_TIMEOUT) as resp:  # fixed URL  # nosec B310
             answers = json.load(resp)["answers"]

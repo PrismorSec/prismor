@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from prismor.runtime.http_ua import user_agent
 from prismor.runtime.egress import (
     EgressPolicy, RULE_EXPLICIT_DENY, RULE_OFF_ALLOWLIST, extract_destinations,
 )
@@ -577,7 +578,7 @@ def egress_request(workspace: Path, host: str, reason: str = "") -> None:
     }).encode("utf-8")
     req = urllib.request.Request(
         f"{base}/api/devices/egress-requests", data=payload, method="POST",
-        headers={"Content-Type": "application/json",
+        headers={"Content-Type": "application/json", "User-Agent": user_agent(),
                  "Authorization": f"Bearer {ident.get('device_key')}"},
     )
     try:

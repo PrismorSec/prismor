@@ -391,12 +391,14 @@ def _post_registration(ident: Dict[str, Any], payload: Dict[str, Any]) -> None:
     try:
         import urllib.request
         from prismor.runtime.enterprise import identity as _identity
+        from prismor.runtime.http_ua import user_agent
         base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
         req = urllib.request.Request(
             f"{base}/api/agents/register",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
+                "User-Agent": user_agent(),
                 "Authorization": f"Bearer {ident.get('device_key')}",
             },
             method="POST",

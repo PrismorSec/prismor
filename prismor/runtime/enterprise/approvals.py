@@ -84,8 +84,10 @@ def _fingerprint(session_id: str, tool: str, evidence_hash: str) -> str:
 
 
 def _headers(ident: Dict[str, Any]) -> Dict[str, str]:
+    from prismor.runtime.http_ua import user_agent
     return {
         "Content-Type": "application/json",
+        "User-Agent": user_agent(),
         "Authorization": f"Bearer {ident.get('device_key')}",
     }
 

@@ -282,8 +282,10 @@ def default_model() -> str:
 
 def _post_json(url: str, body: Dict, headers: Dict[str, str]) -> Dict:
     import urllib.request
+    from prismor.runtime.http_ua import user_agent
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
-                                 headers={"Content-Type": "application/json", **headers})
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": user_agent(), **headers})
     with urllib.request.urlopen(req, timeout=30) as resp:  # fixed provider hosts  # nosec B310
         return json.loads(resp.read().decode("utf-8"))
 

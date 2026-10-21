@@ -274,6 +274,7 @@ def beacon(entry: Dict[str, Any], event: str, context: Optional[Dict[str, Any]] 
     try:
         import urllib.request
         import urllib.error
+        from prismor.runtime.http_ua import user_agent
         payload = {
             "event": event,
             "canary_id": entry["id"],
@@ -285,7 +286,8 @@ def beacon(entry: Dict[str, Any], event: str, context: Optional[Dict[str, Any]] 
         }
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+            url, data=data, headers={"Content-Type": "application/json", "User-Agent": user_agent()},
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=5) as resp:  # fixed or operator-configured URL  # nosec B310
             return 200 <= resp.status < 300

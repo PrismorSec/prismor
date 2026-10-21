@@ -62,6 +62,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from prismor.runtime.http_ua import user_agent
 from prismor.runtime.proxy import default_config_path
 
 API = os.environ.get("ELEVENLABS_API_BASE", "https://api.elevenlabs.io")
@@ -114,7 +115,8 @@ class Client:
         req = urllib.request.Request(
             self.base + path, method=method,
             data=json.dumps(body).encode() if body is not None else None,
-            headers={"xi-api-key": self.api_key, "Content-Type": "application/json"})
+            headers={"xi-api-key": self.api_key, "Content-Type": "application/json",
+                     "User-Agent": user_agent()})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:  # scheme checked http(s) in __init__  # nosec B310
                 raw = resp.read()
