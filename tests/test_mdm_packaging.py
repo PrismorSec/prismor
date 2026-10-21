@@ -25,7 +25,7 @@ def test_python_runtimes_are_pinned_with_checksums():
 
 def test_macos_scripts_are_executable_and_guard_removals():
     for name in ("prismor", "prismor-mdm-setup", "prismor-uninstall", "jamf-extension-attribute.sh",
-                 "build_pkg.sh", "scripts/postinstall"):
+                 "build_pkg.sh", "notarize.sh", "scripts/postinstall"):
         f = MDM / "macos" / name
         assert os.access(f, os.X_OK), name
         # A root postinstall must never be one empty variable away from rm -rf /.

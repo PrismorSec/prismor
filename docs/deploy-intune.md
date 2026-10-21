@@ -15,8 +15,27 @@ powershell -File packaging\mdm\windows\make_intunewin.ps1 -Package out\prismor-<
 ```
 
 `make_intunewin.ps1` uses Microsoft's Win32 Content Prep Tool, pinned to
-v1.8.7, and checks the tool's Microsoft signature before running it. The
-`MDM packages` CI workflow builds and tests the package on every change.
+v1.8.7, and checks the tool's Microsoft signature before running it.
+
+Each release attaches `prismor-<version>.intunewin` and
+`prismor-<version>-windows.zip` to its GitHub Release, each with a `.sha256`
+file. The `MDM packages` CI workflow builds and tests the package on every
+change.
+
+### Signing
+
+The install command runs with `-ExecutionPolicy Bypass`, so Intune doesn't
+need signed scripts. Devices that enforce `AllSigned` or WDAC script rules
+do, so sign the scripts before wrapping:
+
+```powershell
+powershell -File packaging\mdm\windows\sign_package.ps1 -Package out\prismor-<version>-windows -PfxPath codesign.pfx -PfxPassword <pw>
+# -SignRuntime also signs python.exe and every .dll/.pyd (needs signtool, Windows SDK)
+```
+
+The release workflow signs the scripts when the repository secrets
+`WINDOWS_CODESIGN_PFX` (the `.pfx`, base64) and `WINDOWS_CODESIGN_PASSWORD`
+are set. Without them it ships the scripts unsigned.
 
 ## Win32 app
 

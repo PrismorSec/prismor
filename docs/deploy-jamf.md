@@ -12,10 +12,38 @@ packaging/mdm/macos/build_pkg.sh dist/prismor-*.whl out
 # -> out/prismor-<version>-macos.pkg  (Apple Silicon and Intel)
 ```
 
-The `MDM packages` CI workflow builds the same package on every change and
-keeps it as a run artifact. To sign it, set
-`PRISMOR_PKG_SIGN_IDENTITY="Developer ID Installer: <Your Org> (TEAMID)"`
-before building. Jamf installs unsigned packages too.
+Each release attaches the package to its GitHub Release, as
+`prismor-<version>-macos.pkg` with a `.sha256` file. The `MDM packages` CI
+workflow also builds it on every change, as a run artifact.
+
+### Signing and notarization
+
+Jamf installs unsigned packages. Signed and notarized, the package also
+passes Gatekeeper when someone opens it by hand. To build one yourself:
+
+```bash
+PRISMOR_CODESIGN_IDENTITY="Developer ID Application: <Org> (TEAMID)" \
+PRISMOR_PKG_SIGN_IDENTITY="Developer ID Installer: <Org> (TEAMID)" \
+  packaging/mdm/macos/build_pkg.sh dist/prismor-*.whl out
+APPLE_NOTARY_KEY_PATH=AuthKey.p8 APPLE_NOTARY_KEY_ID=… APPLE_NOTARY_ISSUER_ID=… \
+  packaging/mdm/macos/notarize.sh out/prismor-*-macos.pkg
+```
+
+The first identity signs every binary in the bundled Python with the
+hardened runtime, which notarization requires. The second signs the
+package. The release workflow does the same when these repository secrets
+are set:
+
+| Secret | What |
+|---|---|
+| `MACOS_APP_CERT_P12` | Developer ID Application certificate + key, `.p12`, base64 |
+| `MACOS_INSTALLER_CERT_P12` | Developer ID Installer certificate + key, `.p12`, base64 |
+| `MACOS_CERT_PASSWORD` | Password for both `.p12` files |
+| `APPLE_NOTARY_KEY_P8` | App Store Connect API key (`.p8`), base64 |
+| `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | That key's id and issuer |
+
+Without the certificate secrets the release ships the package unsigned.
+Without the notary secrets it is signed but not notarized.
 
 The package installs:
 

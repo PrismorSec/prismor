@@ -65,8 +65,10 @@ jobs:
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\detect.ps1"; if ($LASTEXITCODE -ne 0) { throw "not detected" }
           $cmd = (Get-Content "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json" -Raw | ConvertFrom-Json).hooks.PreToolUse[0].hooks[0].command
           if ($cmd -notlike '*Prismor\current\python.exe*') { throw "hook command: $cmd" }
-          '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"Remove-Item -Recurse -Force $HOME\\canary"},"cwd":"C:\\"}' |
-            & "C:\Program Files\Prismor\current\python.exe" "C:\ProgramData\Prismor\hook-dispatch.py" hook-dispatch --agent codex --mode enforce
+          # From a file: Windows PowerShell re-encodes a string piped to a native
+          # exe (agents write the hook's stdin themselves, so they never hit this).
+          Set-Content -Encoding ascii payload.json '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"Remove-Item -Recurse -Force $HOME\\canary"},"cwd":"C:\\"}'
+          cmd /c "`"C:\Program Files\Prismor\current\python.exe`" C:\ProgramData\Prismor\hook-dispatch.py hook-dispatch --agent codex --mode enforce < payload.json"
           if ($LASTEXITCODE -ne 2) { throw "Remove-Item -Recurse on the profile was not blocked ($LASTEXITCODE)" }
           Remove-Item "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json"
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-detect.ps1"; if ($LASTEXITCODE -ne 1) { throw "drift not detected" }

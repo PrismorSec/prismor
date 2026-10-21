@@ -52,9 +52,12 @@ step "1. machine-wide install under a strict umask (as an MDM agent would)"
 umask 077
 if [ "$INSTALL" = pkg ]; then
   # What Jamf delivers: a configuration profile, then the package.
+  # An MDM drops the profile's plist here (managed domains are read-only to
+  # `defaults write`, so write the file the way mdmclient would).
   mkdir -p "/Library/Managed Preferences"
-  defaults write "/Library/Managed Preferences/dev.prismor" FleetToken fleet-ci-token
-  defaults write "/Library/Managed Preferences/dev.prismor" ApiBase http://127.0.0.1:8790
+  MP="/Library/Managed Preferences/dev.prismor.plist"
+  /usr/libexec/PlistBuddy -c "Add :FleetToken string fleet-ci-token" -c "Add :ApiBase string http://127.0.0.1:8790" "$MP" >/dev/null
+  chmod 644 "$MP"
   installer -pkg "$PKG" -target / >/tmp/installer.log 2>&1; rc=$?
   tail -3 /var/log/prismor-install.log 2>/dev/null
 else
@@ -75,7 +78,7 @@ if [ "$INSTALL" = pkg ]; then
   ea=$(/opt/prismor/bin/jamf-extension-attribute.sh); echo "  extension attribute: $ea"
   echo "$ea" | grep -q "<result>[0-9.]* enrolled</result>" && ok "Jamf extension attribute" || bad "extension attribute: $ea"
   [ -L /opt/prismor/current ] && ok "current -> $(readlink /opt/prismor/current)" || bad "no current symlink"
-  [ "$(ls /opt/prismor/runtime/*/ | tr -d '\n')" = "$(uname -m | sed 's/aarch64/arm64/')/" ] && ok "only this Mac's architecture kept" || bad "runtime arches: $(ls /opt/prismor/runtime/*/)"
+  [ "$(ls /opt/prismor/runtime/*/ | tr -d '\n')" = "$(uname -m | sed 's/aarch64/arm64/')" ] && ok "only this Mac's architecture kept" || bad "runtime arches: $(ls /opt/prismor/runtime/*/)"
   grep -q "/opt/prismor/current/bin/python3" "$CLAUDE_MANAGED" && ok "hooks run the bundled runtime" || bad "hook command: $(grep -o '"command": "[^"]*' "$CLAUDE_MANAGED" | head -1)"
 else
   $PRISMOR enroll-status >/dev/null 2>&1; [ $? -eq 1 ] && ok "enroll-status exits 1 before enrollment" || bad "enroll-status exit code"

@@ -2,7 +2,11 @@
 # Build the Prismor macOS installer package (both architectures; postinstall
 # keeps the one the Mac needs). Needs macOS (pkgbuild).
 #   packaging/mdm/macos/build_pkg.sh dist/prismor-X.whl out/
-# Set PRISMOR_PKG_SIGN_IDENTITY="Developer ID Installer: ..." to sign.
+# Signing (both optional; notarization needs both):
+#   PRISMOR_CODESIGN_IDENTITY="Developer ID Application: ..."  signs every
+#     Mach-O in the bundled runtime (hardened runtime, timestamp)
+#   PRISMOR_PKG_SIGN_IDENTITY="Developer ID Installer: ..."    signs the .pkg
+# Then: packaging/mdm/macos/notarize.sh out/prismor-X-macos.pkg
 set -euo pipefail
 WHEEL=$(cd "$(dirname "$1")" && pwd)/$(basename "$1"); OUT=${2:-out}
 HERE=$(cd "$(dirname "$0")" && pwd); MDM=$(dirname "$HERE")
@@ -15,6 +19,20 @@ python3 "$MDM/build_runtime.py" --target macos-arm64 --wheel "$WHEEL" --out "$RT
 # its bytecode comes from the arm64 one (same CPython version; pycs are portable).
 python3 "$MDM/build_runtime.py" --target macos-x86_64 --wheel "$WHEEL" --out "$RTDIR/x86_64" \
   --compile-with "$RTDIR/arm64/bin/python3"
+if [ -n "${PRISMOR_CODESIGN_IDENTITY:-}" ]; then
+  # Notarization rejects any unsigned Mach-O in the package, and libraries
+  # must be signed before the executables that load them.
+  n=0
+  while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q "Mach-O"; then
+      codesign --force --timestamp --options runtime --entitlements "$HERE/entitlements.plist" \
+        --sign "$PRISMOR_CODESIGN_IDENTITY" "$f"
+      n=$((n + 1))
+    fi
+  done < <(find "$RTDIR" -type f \( -name "*.so" -o -name "*.dylib" \) -print0; \
+           find "$RTDIR" -type f -perm -u+x ! -name "*.so" ! -name "*.dylib" -print0)
+  echo "signed $n Mach-O files with $PRISMOR_CODESIGN_IDENTITY"
+fi
 cp "$HERE/prismor" "$HERE/prismor-mdm-setup" "$HERE/prismor-uninstall" "$HERE/jamf-extension-attribute.sh" "$ROOT/opt/prismor/bin/"
 chmod 755 "$ROOT/opt/prismor/bin/"*
 chmod -R a+rX,go-w "$ROOT/opt"

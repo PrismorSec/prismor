@@ -10,8 +10,10 @@ for a in arm64 x86_64; do [ "$a" = "$ARCH" ] || rm -rf "${RT:?}/${a:?}"; done
 ln -sfn "$RT/$ARCH" /opt/prismor/current
 exec >>/var/log/prismor-install.log 2>&1
 echo "=== $(date -u +%FT%TZ) install $VER ($ARCH)"
-PREF="/Library/Managed Preferences/dev.prismor"
-rd(){ /usr/bin/defaults read "$PREF" "$1" 2>/dev/null || true; }
+# A configuration profile for domain dev.prismor lands here. Read the file
+# itself: cfprefsd can serve a stale view of a plist that just arrived.
+PREF="/Library/Managed Preferences/dev.prismor.plist"
+rd(){ [ -f "$PREF" ] && /usr/libexec/PlistBuddy -c "Print :$1" "$PREF" 2>/dev/null || true; }
 MODE=$(rd Mode)
 ARGS=(--mode "${MODE:-enforce}")
 [ -n "$(rd EnforceRules)" ] && ARGS+=(--rules "$(rd EnforceRules)")
