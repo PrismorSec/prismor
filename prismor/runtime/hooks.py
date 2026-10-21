@@ -618,6 +618,12 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                 _disable_plugin_in_config(_PLUGIN_DIR_NAME)
         elif scope == "system" and current_agent == "codex":
             removed = _remove_codex_requirements(config_path)
+        elif scope == "system" and current_agent == "claude":
+            # Our own drop-in: an empty one left behind still reads as a
+            # managed policy source in Claude Code's /status.
+            removed = config_path.exists()
+            if removed:
+                config_path.unlink()
         elif config_path.exists():
             config = _read_json(config_path)
             # Match the stable hook-dispatch token rather than a specific script

@@ -1,0 +1,91 @@
+name: MDM packages
+
+# Builds the macOS .pkg (Jamf) and the Windows Intune/SCCM package, then
+# installs each one the way the MDM would and checks it end to end.
+# See packaging/mdm.
+
+on:
+  push:
+    branches: ["**"]
+    paths: ["prismor/runtime/**", "packaging/mdm/**", "scripts/e2e/system_install/**", ".github/workflows/mdm-packages.yml"]
+  pull_request:
+    paths: ["prismor/runtime/**", "packaging/mdm/**", "scripts/e2e/system_install/**", ".github/workflows/mdm-packages.yml"]
+  workflow_dispatch:
+
+jobs:
+  macos-pkg:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools a second user can run
+        id: tools
+        run: |
+          brew install -q node python@3.12 >/dev/null
+          echo "python=$(brew --prefix python@3.12)/bin/python3.12" >> "$GITHUB_OUTPUT"
+          echo "path=$(brew --prefix)/bin" >> "$GITHUB_OUTPUT"
+      - name: Build the wheel and the package
+        run: |
+          PY="${{ steps.tools.outputs.python }}"
+          "$PY" -m pip install --quiet --break-system-packages build
+          "$PY" -m build --wheel --outdir dist >/dev/null
+          PATH="$(dirname "$PY"):$PATH" bash packaging/mdm/macos/build_pkg.sh dist/*.whl out
+          ls -la out
+      - name: Install it the Jamf way and test end to end
+        run: |
+          sudo INSTALL=pkg PKG="$(ls "$PWD"/out/*.pkg)" PYTHON="${{ steps.tools.outputs.python }}" \
+            TOOL_PATH="${{ steps.tools.outputs.path }}" bash scripts/e2e/system_install/run.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prismor-macos-pkg
+          path: out/*.pkg
+          retention-days: 7
+
+  windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel and the package
+        shell: pwsh
+        run: |
+          python -m pip install --quiet build
+          python -m build --wheel --outdir dist | Out-Null
+          python packaging/mdm/windows/build_package.py (Get-ChildItem dist/*.whl).FullName out
+      - name: Install, detect, remediate, uninstall (runner is an elevated admin)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pk = (Get-ChildItem out -Directory -Filter "prismor-*-windows").FullName
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\install.ps1"
+          if ($LASTEXITCODE -ne 0) { Get-Content C:\ProgramData\PrismorInstall\install.log -Tail 40; throw "install failed" }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\detect.ps1"; if ($LASTEXITCODE -ne 0) { throw "not detected" }
+          $cmd = (Get-Content "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json" -Raw | ConvertFrom-Json).hooks.PreToolUse[0].hooks[0].command
+          if ($cmd -notlike '*Prismor\current\python.exe*') { throw "hook command: $cmd" }
+          '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"Remove-Item -Recurse -Force $HOME\\canary"},"cwd":"C:\\"}' |
+            & "C:\Program Files\Prismor\current\python.exe" "C:\ProgramData\Prismor\hook-dispatch.py" hook-dispatch --agent codex --mode enforce
+          if ($LASTEXITCODE -ne 2) { throw "Remove-Item -Recurse on the profile was not blocked ($LASTEXITCODE)" }
+          Remove-Item "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-detect.ps1"; if ($LASTEXITCODE -ne 1) { throw "drift not detected" }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-fix.ps1"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-detect.ps1"; if ($LASTEXITCODE -ne 0) { throw "remediation failed" }
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\uninstall.ps1"
+          & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\detect.ps1"; if ($LASTEXITCODE -eq 0) { throw "still detected after uninstall" }
+          foreach ($p in "C:\Program Files\Prismor", "C:\ProgramData\Prismor", "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json") { if (Test-Path $p) { throw "left behind: $p" } }
+          "all checks passed"
+      - name: Wrap as .intunewin
+        shell: powershell
+        run: |
+          $pk = (Get-ChildItem out -Directory -Filter "prismor-*-windows").FullName
+          & powershell -NoProfile -ExecutionPolicy Bypass -File packaging/mdm/windows/make_intunewin.ps1 -Package $pk -Out out
+          if ($LASTEXITCODE -ne 0) { throw "intunewin failed" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prismor-windows-package
+          path: |
+            out/*.intunewin
+            out/*.zip
+          retention-days: 7

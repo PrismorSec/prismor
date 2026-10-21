@@ -1,0 +1,33 @@
+#!/bin/bash
+# Configure (or re-configure) the machine-wide Prismor install. Run as root.
+# Called by the package's postinstall with values from the configuration
+# profile (domain dev.prismor), and usable from a Jamf policy script:
+#   /opt/prismor/bin/prismor-mdm-setup --token "$4" --mode "${5:-enforce}"
+set -u
+MODE=enforce RULES="" TOKEN="" API="" LABEL=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --mode) MODE="${2:-enforce}"; shift 2 ;;
+    --rules) RULES="${2:-}"; shift 2 ;;
+    --token) TOKEN="${2:-}"; shift 2 ;;
+    --api-base) API="${2:-}"; shift 2 ;;
+    --label) LABEL="${2:-}"; shift 2 ;;
+    *) echo "prismor-mdm-setup: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+P=/opt/prismor/bin/prismor
+export PRISMOR_NO_UPDATE_CHECK=1
+if [ "$MODE" = observe ]; then SEL=()
+elif [ -n "$RULES" ]; then SEL=(--enforce-rules "$RULES")
+else SEL=(--recommended); fi
+"$P" setup --system --mode "$MODE" "${SEL[@]}" </dev/null || exit $?
+if [ -n "$TOKEN" ]; then
+  if "$P" enroll-status >/dev/null 2>&1; then
+    echo "prismor-mdm-setup: already enrolled; token not used"
+  else
+    [ -n "$LABEL" ] || LABEL=$(/usr/sbin/scutil --get ComputerName 2>/dev/null || hostname -s)
+    ARGS=(--token "$TOKEN" --label "$LABEL"); [ -n "$API" ] && ARGS+=(--api-base "$API")
+    "$P" enroll "${ARGS[@]}" </dev/null || { echo "prismor-mdm-setup: enrollment failed" >&2; exit 3; }
+    "$P" system-sync --quiet || true
+  fi
+fi

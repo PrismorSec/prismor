@@ -21,6 +21,8 @@ py -3 -m venv "C:\Program Files\Prismor"
 & "C:\Program Files\Prismor\Scripts\prismor.exe" enroll <TOKEN>
 ```
 
+Packaged installers that carry their own Python, with step-by-step MDM setup: [Deploy with Jamf Pro](deploy-jamf.md) (macOS `.pkg`) and [Deploy with Intune](deploy-intune.md) (Windows `.intunewin`, also SCCM/GPO).
+
 For a fleet, mint a **fleet token** in the console (Devices → Fleet token):
 one token, a use limit and an expiry, redeemed by every machine the script
 runs on.

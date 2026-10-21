@@ -7,6 +7,11 @@
 # switching screening off must not work.
 #
 #   sudo WHEEL=dist/prismor-*.whl PYTHON=python3 scripts/e2e/system_install/run.sh
+#   sudo INSTALL=pkg PKG=out/prismor-X-macos.pkg PYTHON=python3 scripts/e2e/system_install/run.sh
+#
+# INSTALL=pkg installs the macOS MDM package instead of a venv, the way Jamf
+# would: a configuration profile (dev.prismor) carries the fleet token, and
+# the postinstall enrolls against the mock control plane.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 OS=$(uname -s)
@@ -21,6 +26,8 @@ else
   SYS=/etc/prismor; CLAUDE_MANAGED=/etc/claude-code/managed-settings.d/50-prismor.json
 fi
 PRISMOR=/opt/prismor/bin/prismor
+INSTALL=${INSTALL:-venv}
+if [ "$INSTALL" = pkg ]; then RT_PY=/opt/prismor/current/bin/python3; else RT_PY=/opt/prismor/bin/python3; fi
 
 step "0. a standard user with Claude Code and Codex of their own"
 if [ "$OS" = Darwin ]; then
@@ -37,22 +44,42 @@ as_dev "mkdir -p ~/.codex ~/pt && printf 'model = \"mock-model\"\nmodel_provider
 # inside `sudo -u dev bash -c` dies with that sudo session.
 MOCK_CMD='rm -rf ~/canary' MOCK_LOG="$DH/pt/anthropic.log" nohup $PYTHON "$HERE/mock_anthropic.py" >/tmp/mock-a.err 2>&1 &
 MOCK_CMD='chmod -R 777 ~/canary' MOCK_LOG="$DH/pt/openai.log" nohup $PYTHON "$HERE/mock_openai.py" >/tmp/mock-o.err 2>&1 &
+MOCK_LOG=/tmp/cp.log nohup $PYTHON "$HERE/mock_cp.py" >/tmp/mock-cp.err 2>&1 &
 sleep 2
 curl -s -o /dev/null -w "  mock anthropic: HTTP %{http_code}\n" http://127.0.0.1:8787/ ; curl -s -o /dev/null -w "  mock openai: HTTP %{http_code}\n" http://127.0.0.1:8788/v1/models
 
 step "1. machine-wide install under a strict umask (as an MDM agent would)"
 umask 077
-$PYTHON -m venv /opt/prismor && /opt/prismor/bin/pip install -q "$WHEEL" 2>&1 | grep -v notice | tail -1
-chmod -R a+rX /opt/prismor   # a venv built under umask 077 is root-only; setup refuses it otherwise
-$PRISMOR setup --system --mode enforce --recommended </dev/null; rc=$?
+if [ "$INSTALL" = pkg ]; then
+  # What Jamf delivers: a configuration profile, then the package.
+  mkdir -p "/Library/Managed Preferences"
+  defaults write "/Library/Managed Preferences/dev.prismor" FleetToken fleet-ci-token
+  defaults write "/Library/Managed Preferences/dev.prismor" ApiBase http://127.0.0.1:8790
+  installer -pkg "$PKG" -target / >/tmp/installer.log 2>&1; rc=$?
+  tail -3 /var/log/prismor-install.log 2>/dev/null
+else
+  $PYTHON -m venv /opt/prismor && /opt/prismor/bin/pip install -q "$WHEEL" 2>&1 | grep -v notice | tail -1
+  chmod -R a+rX /opt/prismor   # a venv built under umask 077 is root-only; setup refuses it otherwise
+  $PRISMOR setup --system --mode enforce --recommended </dev/null; rc=$?
+fi
 umask 022
-[ $rc -eq 0 ] && ok "setup --system" || bad "setup --system exit $rc"
+[ $rc -eq 0 ] && ok "install ($INSTALL)" || { bad "install ($INSTALL) exit $rc"; cat /tmp/installer.log 2>/dev/null; tail -20 /var/log/prismor-install.log 2>/dev/null; }
 for f in "$CLAUDE_MANAGED" "$SYS/policy.yaml" "$SYS/system.json" "$SYS/hook-dispatch.py" /etc/codex/requirements.toml; do
   m=$(mode_of "$f" 2>/dev/null); [ "$m" = 644 ] && ok "$f 644" || bad "$f mode=$m"; done
 
 step "2. refusals"
 as_dev "$PRISMOR setup --system --mode enforce" >/tmp/o 2>&1 && bad "dev ran setup --system" || ok "non-root setup --system refused"
-$PRISMOR enroll-status >/dev/null 2>&1; [ $? -eq 1 ] && ok "enroll-status exits 1 before enrollment" || bad "enroll-status exit code"
+if [ "$INSTALL" = pkg ]; then
+  $PRISMOR enroll-status >/dev/null 2>&1; [ $? -eq 0 ] && ok "enrolled by the package from the profile's fleet token" || bad "pkg did not enroll"
+  grep -q "ENROLL .*ok=True" /tmp/cp.log && ok "control plane saw the enrollment" || bad "no enroll call"
+  ea=$(/opt/prismor/bin/jamf-extension-attribute.sh); echo "  extension attribute: $ea"
+  echo "$ea" | grep -q "<result>[0-9.]* enrolled</result>" && ok "Jamf extension attribute" || bad "extension attribute: $ea"
+  [ -L /opt/prismor/current ] && ok "current -> $(readlink /opt/prismor/current)" || bad "no current symlink"
+  [ "$(ls /opt/prismor/runtime/*/ | tr -d '\n')" = "$(uname -m | sed 's/aarch64/arm64/')/" ] && ok "only this Mac's architecture kept" || bad "runtime arches: $(ls /opt/prismor/runtime/*/)"
+  grep -q "/opt/prismor/current/bin/python3" "$CLAUDE_MANAGED" && ok "hooks run the bundled runtime" || bad "hook command: $(grep -o '"command": "[^"]*' "$CLAUDE_MANAGED" | head -1)"
+else
+  $PRISMOR enroll-status >/dev/null 2>&1; [ $? -eq 1 ] && ok "enroll-status exits 1 before enrollment" || bad "enroll-status exit code"
+fi
 
 reset_canary(){ rm -rf "$DH/canary"; as_dev "mkdir -m 755 ~/canary && touch ~/canary/keep"; }
 blocked(){ [ -f "$DH/canary/keep" ] && [ "$(mode_of "$DH/canary")" = 755 ] && grep -q -E "Prismor blocked|blocked by PreToolUse hook" "$1"; }
@@ -86,14 +113,13 @@ reset_canary; as_dev "ANTHROPIC_BASE_URL=http://127.0.0.1:8787 ANTHROPIC_API_KEY
 $PRISMOR resume >/dev/null 2>&1; run_claude "blocked again after resume"
 
 step "6. device key: admin-only; users keyless; the admin sync uploads their telemetry"
-/opt/prismor/bin/python3 -c "from prismor.runtime.enterprise import identity as i; i.save_identity({'device_id':'d-ci','org_id':'o','label':'ci','device_key':'prism_dev_FAKE','api_base':'http://127.0.0.1:8790'})"
+[ "$INSTALL" = pkg ] || $RT_PY -c "from prismor.runtime.enterprise import identity as i; i.save_identity({'device_id':'d-ci','org_id':'o','label':'ci','device_key':'prism_dev_FAKE','api_base':'http://127.0.0.1:8790'})"
 [ "$(mode_of "$SYS/identity.json")" = 600 ] && ok "identity.json 600" || bad "identity.json mode $(mode_of "$SYS/identity.json")"
 as_dev "cat '$SYS/identity.json'" >/dev/null 2>&1 && bad "dev read the key" || ok "dev can't read the key"
 as_dev "$PRISMOR enroll-status" >/tmp/o 2>&1; [ $? -eq 0 ] && grep -q "system install" /tmp/o && ok "dev: enrolled via system install" || { bad "dev enroll-status"; cat /tmp/o; }
 run_claude "blocked while keyless"
-as_dev "/opt/prismor/bin/python3 -c \"from prismor.runtime import sinks; sinks.upload_telemetry([{'id':'e-dev','verdict':'blocked'}])\""
+as_dev "$RT_PY -c \"from prismor.runtime import sinks; sinks.upload_telemetry([{'id':'e-dev','verdict':'blocked'}])\""
 [ -s "$DH/.prismor/telemetry-spool.jsonl" ] && ok "dev telemetry spooled" || bad "nothing spooled"
-MOCK_LOG=/tmp/cp.log nohup $PYTHON "$HERE/mock_cp.py" >/dev/null 2>&1 & sleep 1
 $PRISMOR system-sync || true
 grep -q "auth=Bearer prism_dev_FAK" /tmp/cp.log 2>/dev/null && ok "admin sync uploaded with the key" || { bad "control plane got nothing"; cat /tmp/cp.log 2>/dev/null; }
 [ ! -s "$DH/.prismor/telemetry-spool.jsonl" ] && ok "dev spool drained" || bad "spool not drained"
@@ -101,9 +127,22 @@ grep -q "auth=Bearer prism_dev_FAK" /tmp/cp.log 2>/dev/null && ok "admin sync up
 if [ "$OS" = Darwin ]; then launchctl print system/dev.prismor.system-sync >/dev/null 2>&1 && ok "LaunchDaemon loaded" || bad "LaunchDaemon not loaded"
 elif [ -d /run/systemd/system ]; then systemctl is-active --quiet prismor-sync.timer && ok "systemd timer active" || bad "timer not active"; fi
 
+if [ "$INSTALL" = pkg ]; then
+  step "6b. upgrade: install the package again over itself"
+  installer -pkg "$PKG" -target / >/tmp/installer.log 2>&1 && ok "reinstall" || bad "reinstall failed"
+  run_claude "blocked after reinstall"
+  [ "$(ls /opt/prismor/runtime | wc -l | tr -d ' ')" = 1 ] && ok "one runtime version on disk" || bad "runtimes: $(ls /opt/prismor/runtime)"
+fi
+
 step "7. uninstall"
-$PRISMOR uninstall-hooks --scope system --agent all >/dev/null 2>&1
-grep -q hook-dispatch "$CLAUDE_MANAGED" 2>/dev/null && bad "Claude hook left" || ok "Claude hook removed"
+if [ "$INSTALL" = pkg ]; then
+  /opt/prismor/bin/prismor-uninstall >/dev/null 2>&1
+  [ ! -e /opt/prismor ] && ok "/opt/prismor removed" || bad "/opt/prismor left"
+  pkgutil --pkgs | grep -q dev.prismor.system && bad "package receipt left" || ok "package receipt forgotten"
+else
+  $PRISMOR uninstall-hooks --scope system --agent all >/dev/null 2>&1
+fi
+[ ! -e "$CLAUDE_MANAGED" ] && ok "Claude drop-in removed" || bad "Claude drop-in left"
 [ ! -e /etc/codex/requirements.toml ] && ok "Codex requirements removed" || bad "requirements.toml left"
 if [ "$OS" = Darwin ]; then launchctl print system/dev.prismor.system-sync >/dev/null 2>&1 && bad "LaunchDaemon still loaded" || ok "LaunchDaemon removed"; fi
 

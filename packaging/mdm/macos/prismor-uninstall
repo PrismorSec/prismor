@@ -1,0 +1,6 @@
+#!/bin/bash
+# Remove the machine-wide Prismor install. Run as root.
+/opt/prismor/bin/prismor uninstall-hooks --scope system --agent all >/dev/null 2>&1
+rm -rf "/Library/Application Support/Prismor" /opt/prismor
+/usr/sbin/pkgutil --forget dev.prismor.system >/dev/null 2>&1
+echo "Prismor removed."

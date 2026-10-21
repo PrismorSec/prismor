@@ -1,0 +1,10 @@
+{
+  "_comment": "Pinned python-build-standalone runtimes bundled into the MDM installers. Bump deliberately; checksums from the release's SHA256SUMS.",
+  "release": "20261003",
+  "python": "3.12.15",
+  "runtimes": {
+    "macos-arm64":  {"asset": "cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz", "sha256": "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213", "pip_platform": "macosx_11_0_arm64"},
+    "macos-x86_64": {"asset": "cpython-3.12.15+20261003-x86_64-apple-darwin-install_only.tar.gz",  "sha256": "a8fd7a91852f19b6d959793ef41fad048631ccb2a334a9ecdf573255298f7978", "pip_platform": "macosx_10_13_x86_64"},
+    "windows-x64":  {"asset": "cpython-3.12.15+20261003-x86_64-pc-windows-msvc-install_only.tar.gz", "sha256": "4b6f0beebbb695a0f3ea237b8c3eaa5bd424f47a7bc25b2fbe3a43390c770f08", "pip_platform": "win_amd64"}
+  }
+}

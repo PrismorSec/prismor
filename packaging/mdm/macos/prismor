@@ -1,0 +1,4 @@
+#!/bin/sh
+# Installed by the Prismor macOS package. /opt/prismor/current is swapped on
+# upgrade, so hooks and this launcher always run the installed version.
+exec /opt/prismor/current/bin/python3 -m prismor.runtime.immunity_cli "$@"

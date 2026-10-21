@@ -99,6 +99,7 @@ def test_system_hooks_install_readable_and_uninstall(sysdir, tmp_path):
     assert hooks.hook_installed("claude", "system", tmp_path)
     hooks.uninstall_hooks(repo_root=repo_root, workspace=Path("/"), agent="all", scope="system")
     assert not hooks.hook_installed("claude", "system", tmp_path)
+    assert not claude.exists()  # Prismor's own drop-in goes away entirely
 
 
 def test_system_scope_rejects_agents_without_a_machine_location(sysdir):
@@ -306,3 +307,13 @@ def test_block_message_points_users_at_their_admin(sysdir, monkeypatch):
     text = unblock.format_unblock({"ruleId": "destructive-command", "severity": "critical"})
     assert "administrator" in text
     assert "prismor allow" not in text and "prismor unlock" not in text
+
+
+def test_enroll_never_prompts_on_a_system_install(sysdir, tmp_path, monkeypatch, capsys):
+    """An MDM install enrolls with no person attached; the per-user offer would block on input()."""
+    from prismor.runtime import cli
+    _manage(sysdir)
+    monkeypatch.setattr("builtins.input", lambda *_: (_ for _ in ()).throw(AssertionError("prompted")))
+    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
+    cli._offer_post_enroll_install(tmp_path)
+    assert "already screens every user" in capsys.readouterr().out

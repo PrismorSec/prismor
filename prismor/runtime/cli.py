@@ -188,6 +188,12 @@ def _offer_post_enroll_install(workspace: Path) -> None:
     so we install with the safe local default (observe) and the org controls
     observe/enforce from the console — no further local change. Non-interactive
     contexts (scripts/CI) just get the next-step hint, never a prompt."""
+    from prismor.runtime import system_install as _sys
+    if _sys.is_system_managed():
+        # The machine-wide hooks already cover every user. And an MDM install
+        # runs here with no person attached: a prompt would wait forever.
+        print("\nThis machine's system install already screens every user's agents.")
+        return
     try:
         from prismor.runtime.setup_wizard import _detect_agents, run_non_interactive
     except Exception:
