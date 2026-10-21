@@ -80,6 +80,9 @@ jobs:
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\detect.ps1"; if ($LASTEXITCODE -eq 0) { throw "still detected after uninstall" }
           foreach ($p in "C:\Program Files\Prismor", "C:\ProgramData\Prismor", "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json") { if (Test-Path $p) { throw "left behind: $p" } }
           "all checks passed"
+          # The runner exits with the last native exit code, which is detect.ps1's
+          # expected 1 ("not installed") after the uninstall.
+          exit 0
       - name: Wrap as .intunewin
         shell: powershell
         run: |
