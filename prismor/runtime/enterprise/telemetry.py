@@ -271,6 +271,10 @@ def build_record(
         "repo": extra.get("repo"),
         "workspace_path": extra.get("workspace"),
         "policy_scope": extra.get("policy_scope") or "org",
+        # Which layer decided this finding's mode: builtin | local | project |
+        # org | device | repo_exemption (PolicyEngine.decision_layer). A static
+        # label, so it survives redaction. Absent on findings no rule produced.
+        "policy_layer": finding.get("policyLayer"),
         # Which signed org policy was in force when this call was decided
         # (version + profile id from the verified remote-policy cache). Null on
         # local-only policy. Opaque int/id, not user data — survives redaction,

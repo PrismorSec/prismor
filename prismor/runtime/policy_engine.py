@@ -39,6 +39,10 @@ except ImportError:
 
 _DEFAULT_POLICY_PATH = Path(__file__).parent / "default_policy.yaml"
 
+# Internal layer names (rule ``_layer``) -> what telemetry and the console call them.
+_LAYER_NAMES = {"default": "builtin", "user": "local", "project": "project",
+                "remote": "org", "exemption": "repo_exemption"}
+
 # Rules that cannot be disabled or weakened by project-level policy overrides.
 # These protect against the most dangerous attack patterns (destructive commands,
 # credential exfiltration, reverse shells) and against disabling Prismor itself.
@@ -795,7 +799,7 @@ class CompiledRule:
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
         "transform",
         "severity_on_write", "severity_on_manifest",
-        "pattern_groups", "condition", "layer", "when", "match_all", "flags",
+        "pattern_groups", "condition", "layer", "mode_layer", "when", "match_all", "flags",
     )
 
     def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
@@ -804,6 +808,9 @@ class CompiledRule:
         # remote (signed org) or exemption. Answers "why is this rule
         # here, and who set it to that?" without reading four files.
         self.layer: str = str(raw.get("_layer") or "default")
+        # Which layer set this rule's ``mode`` (None: inherits default_mode).
+        # Differs from ``layer`` when a later layer merged other fields on top.
+        self.mode_layer: str = str(raw.get("_mode_layer") or self.layer)
         self.severity: str = raw["severity"]
         self.category: str = raw["category"]
         self.title: str = raw["title"]
@@ -1109,6 +1116,8 @@ class PolicyEngine:
         # Which policy layer last set the egress config. "remote" means the org
         # signed it, which is what makes an enforce verdict authoritative.
         self._egress_source: str = "default"
+        # Which policy layer set settings.default_mode (see decision_layer).
+        self._default_mode_source: str = "default"
         # Set when the workspace's .prismor/policy.yaml could not be parsed. The
         # broken layer is skipped (built-in + org policy still apply) rather
         # than raised: an exception here used to crash hook-dispatch with exit 1,
@@ -1207,6 +1216,20 @@ class PolicyEngine:
             return rule.mode, f"rule sets mode: {rule.mode}{note}"
         return self.default_mode, f"policy default_mode: {self.default_mode}{note}"
 
+    def decision_layer(self, rule: "CompiledRule") -> str:
+        """Which policy layer decided ``rule``'s observe/enforce, following the
+        same branches as :meth:`explain_mode`: builtin (self-protection or the
+        safety floor), device (console device override), or the layer that set
+        the rule's own mode / the policy default_mode -- local (~/.prismor),
+        project, org (signed remote) or repo_exemption."""
+        mode, why = self.explain_mode(rule)
+        if why.startswith(("self-protection", "safety floor")):
+            return "builtin"
+        if why.startswith("device mode"):
+            return "device"
+        src = rule.mode_layer if rule.mode else self._default_mode_source
+        return _LAYER_NAMES.get(src, src)
+
     def _match_exemption(self, workspace: Optional[Path], settings: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Find an admin-granted, non-expired exemption matching this workspace's
         repo, from the signed bundle's ``settings.repo_exemptions``. Returns the
@@ -1297,6 +1320,8 @@ class PolicyEngine:
                     if _adds:
                         merged["add_patterns"] = _adds
                     merged["_layer"] = source
+                    if "mode" in rule:
+                        merged["_mode_layer"] = source
                     rules_by_id[rule_id] = merged
                     continue
             # Field-level merge so a sparse overlay (e.g. just {id, mode: enforce})
@@ -1313,6 +1338,8 @@ class PolicyEngine:
                     if _u:
                         merged[_k] = _u
                 merged["_layer"] = source
+                if "mode" in rule:
+                    merged["_mode_layer"] = source
                 rules_by_id[rule["id"]] = merged
             else:
                 # No existing rule with this id. Treat it as a brand-new rule only
@@ -1330,6 +1357,8 @@ class PolicyEngine:
                     )
                     continue
                 rule["_layer"] = source
+                if "mode" in rule:
+                    rule["_mode_layer"] = source
                 rules_by_id[rule["id"]] = rule
         allowlist_raw.extend(override_raw.get("allowlists", []) or [])
         override_settings = dict(override_raw.get("settings", {}) or {})
@@ -1369,6 +1398,8 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        if "default_mode" in override_settings or "mode" in override_settings:
+            self._default_mode_source = source
         # semantic_guard is a nested stanza with its own defaults (enabled,
         # thresholds, fields). A layer that only sets `provider`/`model` must
         # not replace the whole dict, or the guard silently turns off.
@@ -1393,6 +1424,8 @@ class PolicyEngine:
         rules_by_id: Dict[str, Dict[str, Any]] = {}
         for rule in default_raw.get("rules", []):
             rule["_layer"] = "default"
+            if "mode" in rule:
+                rule["_mode_layer"] = "default"
             rules_by_id[rule["id"]] = rule
 
         allowlist_raw: List[Dict[str, Any]] = list(default_raw.get("allowlists", []) or [])
@@ -2042,6 +2075,8 @@ class PolicyEngine:
                 "source": _event_source(event),
                 # Effective observe/enforce for this finding — see _resolve_mode.
                 "mode": self._resolve_mode(rule),
+                # Which policy layer decided that mode — see decision_layer.
+                "policyLayer": self.decision_layer(rule),
                 # True when the match sits in inert text rather than executable
                 # position. should_block() never blocks on such a finding.
                 "contextInert": context_inert,
@@ -3163,6 +3198,7 @@ class PolicyEngine:
                     # floor -- so a root wipe hidden in a script is treated the
                     # same as one typed at the prompt.
                     "mode": "observe" if advisory else self._resolve_mode(rule),
+                    "policyLayer": self.decision_layer(rule),
                     # Advisory findings never block, by the same flag the
                     # inline contextual verifier uses.
                     "contextInert": advisory,

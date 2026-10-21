@@ -109,7 +109,7 @@ def _apply_rule_exemptions(
             out.append(f)
         elif str(match.get("action") or "allow") == "flag":
             # Keep the finding (auditable warning), but strip its ability to block.
-            downgraded = {**f, "mode": "observe", "exempted": "flag"}
+            downgraded = {**f, "mode": "observe", "exempted": "flag", "policyLayer": "org"}
             out.append(downgraded)
         # action == "allow": drop the finding entirely.
     return out

@@ -166,6 +166,10 @@ event type can arrive pre-action on one surface and post-action on another.
   `repo_exemption:<id>`) + `repo`.
 - `telemetry.build_record` — carries `repo` + `policy_scope` on every record (not
   sensitive: only managed/company repos report, so the repo id is org context).
+- `PolicyEngine.decision_layer` — which layer decided a rule finding's
+  observe/enforce (the layer that set the rule's `mode`, or `default_mode`, or
+  the built-in floor / device override). Shipped as `policy_layer` on every
+  rule finding, redacted mode included.
 - Tests: `tests/test_exemptions.py` (5) + `tests/test_workspace_scope.py` (9) —
   relax-non-core, floor-survives, non-match, expired, telemetry-tag. 499 total green.
 
