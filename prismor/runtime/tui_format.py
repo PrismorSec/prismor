@@ -52,6 +52,16 @@ def term_width() -> int:
         return 80
 
 
+def fit_list(items: List[str], width: int) -> str:
+    """Join items with ", " within width, ending in "+N more" when some don't fit."""
+    for n in range(len(items), 0, -1):
+        rest = len(items) - n
+        s = ", ".join(items[:n]) + (f", +{rest} more" if rest else "")
+        if len(s) <= width:
+            return s
+    return f"{len(items)} agents"
+
+
 def print_enroll_summary(
     *,
     workspace: Path,
@@ -82,11 +92,15 @@ def print_enroll_summary(
         p = " " * max(0, W - vl - 2)
         return w("  │", DIM) + " " + content + p + " " + w("│", DIM)
 
+    VW = W - 2 - 14  # value column: box interior minus the key column
+
     def kv(k: str, v: str, vc: str = WHT) -> str:
+        if len(v) > VW:
+            v = v[:VW - 1] + "…"
         return f"{pad(w(k, DIM), 14)}{w(v, vc)}"
 
     tw = term_width()
-    agents_str = ", ".join(agents) if agents else "none installed"
+    agents_str = fit_list(agents, VW) if agents else "none installed"
     lines: List[str] = [
         "",
         f"  {w('PRISMOR', BOLD, CYAN)}  {w('· ' + VERSION, DIM)}",
@@ -95,12 +109,12 @@ def print_enroll_summary(
         bdr("╭", "─", "╮"),
         row(w("ENROLLED", BOLD, GRN)),
         row(),
-        row(kv("Org", org[:30])),
-        row(kv("Device", f"{device_label}  ({device_id[:12]})"[:44])),
-        row(kv("Project", ws_disp[:30])),
+        row(kv("Org", org)),
+        row(kv("Device", f"{device_label}  ({device_id[:12]})")),
+        row(kv("Project", ws_disp)),
         row(kv("Mode", mode or "not installed", GRN if mode == "enforce" else YEL)),
         row(kv("Rules", f"{rules_active} active")),
-        row(kv("Agents", agents_str[:34], WHT if agents else DIM)),
+        row(kv("Agents", agents_str, WHT if agents else DIM)),
         row(kv("Cloak", "yes  (secret prevention)" if cloak_installed else "no",
                 GRN if cloak_installed else DIM)),
         row(kv("Telemetry", "full capture" if full_capture else "redacted",
