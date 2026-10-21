@@ -33,10 +33,12 @@ as_dev(){ sudo -u dev -H env PATH="$DH/npm/bin:${TOOL_PATH:-}:/usr/local/bin:/us
 as_dev "npm i -g -s --prefix ~/npm @anthropic-ai/claude-code@latest @openai/codex@latest >/dev/null 2>&1"
 echo "  $(as_dev 'claude --version') / $(as_dev 'codex --version')"
 as_dev "mkdir -p ~/.codex ~/pt && printf 'model = \"mock-model\"\nmodel_provider = \"mock\"\n[model_providers.mock]\nname = \"mock\"\nbase_url = \"http://127.0.0.1:8788/v1\"\nwire_api = \"responses\"\nenv_key = \"MOCK_KEY\"\n' > ~/.codex/config.toml"
-cp "$HERE"/mock_*.py "$DH/pt/" && chown -R dev "$DH/pt"
-as_dev "MOCK_CMD='rm -rf ~/canary' MOCK_LOG=~/pt/anthropic.log nohup $PYTHON ~/pt/mock_anthropic.py >/dev/null 2>&1 &"
-as_dev "MOCK_CMD='chmod -R 777 ~/canary' MOCK_LOG=~/pt/openai.log nohup $PYTHON ~/pt/mock_openai.py >/dev/null 2>&1 &"
+# The mocks run from this (root) shell: on macOS a background job started
+# inside `sudo -u dev bash -c` dies with that sudo session.
+MOCK_CMD='rm -rf ~/canary' MOCK_LOG="$DH/pt/anthropic.log" nohup $PYTHON "$HERE/mock_anthropic.py" >/tmp/mock-a.err 2>&1 &
+MOCK_CMD='chmod -R 777 ~/canary' MOCK_LOG="$DH/pt/openai.log" nohup $PYTHON "$HERE/mock_openai.py" >/tmp/mock-o.err 2>&1 &
 sleep 2
+curl -s -o /dev/null -w "  mock anthropic: HTTP %{http_code}\n" http://127.0.0.1:8787/ ; curl -s -o /dev/null -w "  mock openai: HTTP %{http_code}\n" http://127.0.0.1:8788/v1/models
 
 step "1. machine-wide install under a strict umask (as an MDM agent would)"
 umask 077
