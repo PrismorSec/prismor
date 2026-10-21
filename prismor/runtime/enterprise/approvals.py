@@ -296,6 +296,10 @@ def await_step_up(
             "provenance": finding.get("provenance"),
         }
 
+    # How long this agent will poll before failing closed, so the console stops
+    # offering an approve that can no longer change anything.
+    body["wait_seconds"] = round(_timeout())
+
     def _record(status: str, approval_id: Optional[str] = None) -> None:
         _audit_outcome(
             body, status=status, approval_id=approval_id,

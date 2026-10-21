@@ -80,6 +80,11 @@ class ApprovalClient(unittest.TestCase):
         self.assertEqual(self._posts[0]["reason"], "Prod DB write requires approval")
         self.assertEqual(len(self._posts[0]["fingerprint"]), 32)
 
+    def test_request_says_how_long_the_agent_waits(self):
+        self._status_seq = ["approved"]
+        approvals.await_step_up(_decision(), session_id="s1")
+        self.assertEqual(self._posts[0]["wait_seconds"], 2)  # PRISMOR_APPROVAL_TIMEOUT in setUp
+
     def test_denied(self):
         self._status_seq = ["pending", "denied"]
         self.assertFalse(approvals.await_step_up(_decision(), session_id="s1"))
