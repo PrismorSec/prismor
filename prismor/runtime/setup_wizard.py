@@ -1801,6 +1801,89 @@ def run_non_interactive(
     _do_install(target, mode, rules, agents, cloak=cloak, scope=scope, judge=judge)
 
 
+def run_system_install(
+    *,
+    repo_root: Path,
+    mode: str = "observe",
+    agents: Optional[List[str]] = None,
+    enforce_rules: Optional[List[str]] = None,
+    recommended: bool = False,
+) -> None:
+    """`prismor setup --system`: one root install that governs every user.
+
+    Writes /etc/prismor (marker, rule selection, dispatcher) and each agent's
+    machine-wide hook config. See system_install for what moves under /etc.
+    """
+    from prismor.runtime import system_install
+    from prismor.runtime.hooks import SYSTEM_HOOK_PATHS, install_hooks
+    import prismor
+
+    problem = system_install.check_supported()
+    if problem:
+        print(f"[prismor] Can't do a system install: {problem}")
+        raise SystemExit(1)
+    for path in (Path(sys.executable), Path(prismor.__file__).parent):
+        blocked = system_install.unreadable_by_others(path)
+        if blocked is not None:
+            print(f"[prismor] {blocked} is not readable by other users, so their agents could not start "
+                  f"the hook and would run unscreened.")
+            if str(blocked).startswith(("/root", "/home")):
+                print("  Install Prismor into a shared, root-owned location instead:")
+                print("    python3 -m venv /opt/prismor && /opt/prismor/bin/pip install prismor")
+                print("    sudo /opt/prismor/bin/prismor setup --system ...")
+            else:  # usually a venv built under an MDM agent's umask 077
+                print(f"  Make it readable, then re-run:  chmod -R a+rX {blocked}")
+            raise SystemExit(1)
+
+    if agents is None:
+        agents = list(SYSTEM_HOOK_PATHS)
+    skipped = [a for a in agents if a not in SYSTEM_HOOK_PATHS]
+    agents = [a for a in agents if a in SYSTEM_HOOK_PATHS]
+    if skipped:
+        print(f"[prismor] No machine-wide hook location for: {', '.join(skipped)} (skipped; "
+              f"those agents need a per-user `prismor setup --scope global`)")
+
+    rules = _load_rules()
+    selected: List[str] = []
+    if mode == "enforce":
+        wanted = set(enforce_rules or [])
+        selected = [r["id"] for r in rules
+                    if r["id"] in wanted or (recommended and r.get("recommended", False))]
+
+    system_install.write_marker(mode=mode, selected=len(selected))
+    policy = system_install.system_dir() / "policy.yaml"
+    if mode == "enforce":
+        system_install.write_shared(policy, _render_selection_policy(selected))
+    elif policy.exists():
+        policy.unlink()  # observe: a stale selection would keep blocking
+
+    print(f"[prismor] System install  (mode={mode}, agents={','.join(agents) or 'none'})")
+    for agent in agents:
+        for r in install_hooks(repo_root=repo_root, workspace=Path("/"), agent=agent,
+                               scope="system", mode=mode):
+            print(f"  ✓ {r['agent']:<8} {r['configPath']}")
+    if mode == "enforce":
+        print(f"  ✓ policy   {policy}  ({len(selected)} rule(s) block)" if selected else
+              f"  ! policy   {policy}  (no rules selected: detects and reports, blocks nothing; "
+              f"add --recommended)")
+    print(f"  ✓ marker   {system_install.marker_path()}")
+    # Every user's agent must reach these, whatever the directories above them
+    # already were; a file it can't read leaves that agent unhooked.
+    unreachable = [(p, b) for p in [*(SYSTEM_HOOK_PATHS[a] for a in agents),
+                                    system_install.system_dir() / "hook-dispatch.py"]
+                   if (b := system_install.unreadable_by_others(p)) is not None]
+    for p, b in unreachable:
+        print(f"  ✗ {p} is not readable by other users ({b}); fix with: chmod a+rX {b}")
+    if unreachable:
+        raise SystemExit(1)
+    print()
+    print("  Every user on this machine is now screened; policy, pause and unlock are root-only.")
+    print("  Link it to your org:   sudo prismor enroll <TOKEN>")
+    print("  Check it (exit 0 = ok): prismor enroll-status")
+    print("  Remove it:             sudo prismor uninstall-hooks --scope system --agent all "
+          f"&& sudo rm -rf {system_install.system_dir()}")
+
+
 def _wizard_steps(mode: str, gov_mode: Optional[str], offer_unlock: bool) -> List[str]:
     """The ordered, named wizard steps for the current choices.
 

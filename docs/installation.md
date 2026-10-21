@@ -87,6 +87,11 @@ Prefer the interactive wizard? Drop the env vars:
 bash ~/.prismor/scripts/init.sh .
 ```
 
+## Fleet rollout (Linux, MDM / config management)
+
+One root install that screens every user on the machine, for Ansible, Chef,
+Intune for Linux and the like: [System install](system-install.md).
+
 ## Windows
 
 <img src="https://svgl.app/library/windows.svg" width="16" height="16" alt=""> Install with pip and run the wizard — the curl installer and `init.sh` are

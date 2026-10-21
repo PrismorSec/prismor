@@ -1184,6 +1184,8 @@ rules:
     patterns:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
+      # A system install keeps the machine's selection in /etc/prismor.
+      - '(^|/)etc/prismor/policy\.yaml$'
     action: block
 
   # ── CRITICAL: Prismor self-edit ────────────────────────────────────
@@ -1256,6 +1258,9 @@ rules:
       # Other Prismor state an agent has no legitimate reason to rewrite.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
+      # System install: world-readable so every user's hook can load it, which
+      # makes the device key one `Read` away from any agent on the box.
+      - '(^|/)etc/prismor/(pause|identity)\.json$'
       # The session store. Reads are fine (`prismor query`, sqlite3 SELECT);
       # SQL writes are caught by db-modification, this catches the file.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|dd)\b[^\n;&|<>]*?)\bprismor\.db(?:-wal|-shm|-journal)?\b'

@@ -3635,7 +3635,8 @@ def get_agents_overview(days: int = 0) -> List[Dict[str, Any]]:
 # ── Policy management helpers ─────────────────────────────────────────────────
 
 def _global_policy_path() -> Path:
-    return prismor_home() / "policy.yaml"
+    from prismor.runtime import system_install
+    return system_install.policy_home() / "policy.yaml"
 
 
 def _project_policy_path(workspace: Path) -> Path:

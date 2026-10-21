@@ -67,7 +67,15 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
 
 
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str, portable: bool = False) -> List[Dict[str, str]]:
-    agents = list(_SUPPORTED_AGENTS) if agent == "all" else [agent]
+    system = scope == "system"
+    if agent == "all":
+        agents = list(SYSTEM_HOOK_PATHS) if system else list(_SUPPORTED_AGENTS)
+    else:
+        agents = [agent]
+    shim_home = None
+    if system:
+        from prismor.runtime import system_install
+        shim_home = system_install.system_dir()
     results = []
     for current_agent in agents:
         config_path = _config_path(current_agent, scope, workspace)
@@ -103,6 +111,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
         command = _dispatcher_command(
             repo_root=repo_root, workspace=workspace, agent=current_agent, mode=mode,
             pin_workspace=(scope == "project" and not portable), portable=portable,
+            shim_home=shim_home,
         )
         if current_agent == "claude":
             config = _merge_claude(config, command, workspace, pin_workspace=(scope == "project" and not portable))
@@ -136,8 +145,15 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
         else:
             config = _merge_windsurf(config, command, workspace)
 
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if system:
+            system_install.mkdir_public(config_path.parent)
+        else:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        if system:
+            # An MDM shell can run with umask 077, and a managed file the
+            # user's agent can't read leaves that agent with no hooks.
+            config_path.chmod(0o644)
         results.append({"agent": current_agent, "configPath": str(config_path)})
         if current_agent == "codex":
             # Codex only reads [features].hooks from the USER-level config.toml
@@ -203,7 +219,7 @@ def codex_hook_trust(workspace: Path, codex_home: Optional[Path] = None) -> Dict
 
 def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
     """True if a Prismor PreToolUse hook is present in this agent's config at
-    ``scope`` ("project" | "global"). Text-based — the dispatcher command embeds
+    ``scope`` ("project" | "global" | "system"). Text-based — the dispatcher command embeds
     the stable ``hook-dispatch`` marker in every agent's config format — so it
     works regardless of the JSON/TOML shape."""
     # _config_path falls through to the Windsurf path for any agent it does
@@ -438,10 +454,12 @@ def coverage(workspace: Path) -> Dict[str, Dict[str, bool]]:
     for agent, present in _detect_agents(workspace).items():
         if not present:
             continue
+        # A machine-wide (system) hook guards every project for every user.
+        system = agent in SYSTEM_HOOK_PATHS and hook_installed(agent, "system", workspace)
         out[agent] = {
             "project": hook_installed(agent, "project", workspace),
-            "global": hook_installed(agent, "global", workspace),
-            "foreign": _hook_is_foreign(agent, "global", workspace),
+            "global": system or hook_installed(agent, "global", workspace),
+            "foreign": not system and _hook_is_foreign(agent, "global", workspace),
         }
     return out
 
@@ -565,7 +583,10 @@ def _ensure_codex_hooks_feature_enabled(config_toml_path: Path) -> None:
 
 
 def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str) -> List[Dict[str, Any]]:
-    agents = list(_SUPPORTED_AGENTS) if agent == "all" else [agent]
+    if agent == "all":
+        agents = list(SYSTEM_HOOK_PATHS) if scope == "system" else list(_SUPPORTED_AGENTS)
+    else:
+        agents = [agent]
     results = []
     for current_agent in agents:
         config_path = _config_path(current_agent, scope, workspace)
@@ -931,8 +952,24 @@ def _codex_home() -> Path:
     return Path(os.environ["CODEX_HOME"]) if os.environ.get("CODEX_HOME") else Path.home() / ".codex"
 
 
+# Where each agent reads machine-wide (administrator) hooks on Linux. Every
+# one of these outranks, and merges with, the user's own config, and only root
+# can write it. Claude Code gets its own drop-in so an org's existing
+# managed-settings.json is never touched.
+SYSTEM_HOOK_PATHS: Dict[str, Path] = {
+    "claude": Path("/etc/claude-code/managed-settings.d/50-prismor.json"),
+    "cursor": Path("/etc/cursor/hooks.json"),
+    "gemini": Path("/etc/gemini-cli/settings.json"),
+}
+
+
 def _config_path(agent: str, scope: str, workspace: Path) -> Path:
     home = Path.home()
+    if scope == "system":
+        if agent not in SYSTEM_HOOK_PATHS:
+            raise ValueError(f"{agent} has no machine-wide hook location; "
+                             f"system installs cover {', '.join(SYSTEM_HOOK_PATHS)}")
+        return SYSTEM_HOOK_PATHS[agent]
     if scope == "project":
         if agent == "claude":
             return workspace / ".claude" / "settings.json"
@@ -1035,7 +1072,7 @@ _SHIM_TEMPLATE = (
 )
 
 
-def _write_dispatch_shim(repo_root: Path) -> Path:
+def _write_dispatch_shim(repo_root: Path, home: Optional[Path] = None) -> Path:
     """Write the launcher the hook command points at, and return its path.
 
     ``sys.path.insert`` replaces the old ``PYTHONPATH=`` shell prefix: it is
@@ -1043,9 +1080,11 @@ def _write_dispatch_shim(repo_root: Path) -> Path:
     site-packages (Claude Code does), and it costs nothing when prismor is
     already importable from the interpreter's own site-packages.
     """
-    shim = prismor_home() / _SHIM_NAME
+    shim = (home or prismor_home()) / _SHIM_NAME
     shim.parent.mkdir(parents=True, exist_ok=True)
     shim.write_text(_SHIM_TEMPLATE.format(repo_root=str(repo_root)), encoding="utf-8")
+    if home is not None:
+        shim.chmod(0o644)  # system install: every user's hook runs it
     return shim
 
 
@@ -1065,7 +1104,7 @@ _PORTABLE_TEMPLATE = (
 )
 
 
-def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True, portable: bool = False) -> str:
+def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True, portable: bool = False, shim_home: Optional[Path] = None) -> str:
     if portable:
         return _PORTABLE_TEMPLATE.format(agent=agent, mode=mode)
     # Route through the prismor CLI for consistency (one canonical entry point),
@@ -1073,7 +1112,7 @@ def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: s
     # the `prismor` console script, which is not reliably on PATH inside the
     # IDE/agent's hook environment.
     py = sys.executable or "python3"
-    shim = _write_dispatch_shim(repo_root)
+    shim = _write_dispatch_shim(repo_root, shim_home)
     ws_flag = f'--workspace "{workspace}" ' if pin_workspace else ""
     command = f'"{py}" "{shim}" hook-dispatch --agent {agent} {ws_flag}--mode {mode}'
     if _IS_WINDOWS and agent in _POWERSHELL_HOOK_AGENTS:

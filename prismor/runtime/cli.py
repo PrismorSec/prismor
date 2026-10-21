@@ -657,7 +657,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         ident = _identity.load_identity()
         if not ident:
             print("Not enrolled. Run `prismor enroll <token>` to link this machine to an org.")
-            return
+            # Non-zero so an MDM compliance / detection script can tell.
+            raise SystemExit(1)
         revoked = _identity.revoked_info()
         # An env key (PRISMOR_AGENT_KEY) carries no org/device/label, so the
         # local view alone prints "org: None" on a perfectly healthy deployed
@@ -750,6 +751,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                           f"prismor setup --scope global")
         except Exception:
             pass
+        # Unreachable is still enrolled (it spools and retries); revoked or a
+        # refused key is not, and a compliance check must see that.
+        if revoked or (not verified.get("ok") and "unreachable" not in str(verified.get("error", ""))):
+            raise SystemExit(1)
         return
 
     if args.command == "doctor":
@@ -1605,7 +1610,12 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── uninstall-hooks ────────────────────────────────────────────────
     if args.command == "uninstall-hooks":
-        if not sys.stdin.isatty():
+        if args.scope == "system":
+            from prismor.runtime import system_install as _sys
+            if (why := _sys.check_supported()):
+                sys.stderr.write(f"prismor uninstall-hooks --scope system: {why}\n")
+                raise SystemExit(1)
+        elif not sys.stdin.isatty():
             sys.stderr.write(
                 "prismor uninstall-hooks needs a terminal. Run it yourself, not through an agent.\n"
             )
@@ -2648,6 +2658,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "setup":
         from prismor.runtime.setup_wizard import run_wizard, run_non_interactive
         target = Path(getattr(args, "target", None) or ".").resolve()
+        if getattr(args, "system", False):
+            from prismor.runtime.setup_wizard import run_system_install
+            agents_str = getattr(args, "agents", None)
+            rules_str = getattr(args, "enforce_rules", None)
+            run_system_install(
+                repo_root=repo_root,
+                mode=getattr(args, "mode", None) or os.environ.get("PRISMOR_MODE", "observe"),
+                agents=[a.strip() for a in agents_str.split(",")] if agents_str else None,
+                enforce_rules=[r.strip() for r in rules_str.split(",") if r.strip()] if rules_str else None,
+                recommended=bool(getattr(args, "recommended", False)),
+            )
+            return
         scope = getattr(args, "scope", None) or os.environ.get("PRISMOR_SCOPE", "project")
         if scope not in ("project", "global"):
             scope = "project"
@@ -4252,7 +4274,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser = subparsers.add_parser("install-hooks", help="Install IDE hooks for real-time monitoring")
     install_parser.add_argument("--workspace", help="Workspace path")
     install_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
-    install_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope (default: project)")
+    install_parser.add_argument("--scope", choices=["project", "user", "global", "system"], default="project",
+                                help="Hook scope (default: project). system = every user on this Linux machine (root)")
     install_parser.add_argument("--mode", choices=["observe", "enforce"], default="observe", help="observe=log only, enforce=block dangerous actions")
     install_parser.add_argument("--portable", action="store_true", help="Write a hook command with no machine-specific paths, for a config file committed to the repo and cloned onto a hosted agent's VM (needs sh)")
 
@@ -4267,7 +4290,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     uninstall_parser.add_argument("--workspace", help="Workspace path")
     uninstall_parser.add_argument("--agent", choices=[*_SUPPORTED_AGENTS, "all"], required=True, help="Which agent/IDE")
-    uninstall_parser.add_argument("--scope", choices=["project", "user", "global"], default="project", help="Hook scope")
+    uninstall_parser.add_argument("--scope", choices=["project", "user", "global", "system"], default="project", help="Hook scope")
 
     # ── mcp-gateway ────────────────────────────────────────────────────
     gw_parser = subparsers.add_parser(
@@ -4912,6 +4935,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="project = hooks in ./.claude only; global = ~/.claude, guards every workspace "
              "(recommended for an enrolled device — no unguarded directories)",
+    )
+    setup_parser.add_argument(
+        "--system",
+        action="store_true",
+        help="Machine-wide install for every user (Linux, run as root; for MDM / config "
+             "management). Hooks go where each agent reads admin policy, and policy, pause "
+             "and unlock become root-only. Takes --mode/--recommended/--enforce-rules/--agents",
     )
     setup_parser.add_argument(
         "--enforce-rules",
@@ -6368,8 +6398,17 @@ def _pause_refusal(command: str, workspace: Path) -> Optional[str]:
     unlock window already lets the agent edit policy, so it may pause too.
     """
     import getpass
+    from prismor.runtime import system_install as _sys
     from prismor.runtime import unlock as _unlock
 
+    # A system install's pause covers every user, so it is root's call alone,
+    # and root (an MDM script included) needs no terminal to make it.
+    if _sys.is_system_managed():
+        if _sys.is_admin():
+            return None
+        return (f"This machine has a system-wide Prismor install; `prismor {command}` is "
+                f"root-only here (sudo prismor {command}), or ask your org admin to pause it "
+                f"from the console.")
     try:
         if _unlock.remaining_seconds(workspace):
             return None

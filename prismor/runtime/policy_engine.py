@@ -1337,7 +1337,7 @@ class PolicyEngine:
         # local-only affordance for a developer's own machine. Arriving from the
         # signed org bundle (or a repo exemption overlay) it would mean an admin
         # had turned the floor off fleet-wide, which the floor exists to prevent.
-        if source not in ("project", "user") and "selection" in override_settings:
+        if source not in ("project", "user", "system") and "selection" in override_settings:
             sys.stderr.write(
                 f"[prismor] Ignoring settings.selection from the {source} policy layer "
                 f"(the safety floor stays on for managed workspaces)\n"
@@ -1417,14 +1417,19 @@ class PolicyEngine:
         # caller names the policy file outright, and when it is the project
         # file (workspace == ~).
         user_path: Optional[Path] = None
+        user_source = "user"
         if policy_path is None:
-            from prismor.runtime.store import prismor_home
-            user_path = prismor_home() / "policy.yaml"
+            # On a system install root's /etc/prismor/policy.yaml replaces the
+            # per-user file, so a user can't weaken the machine's selection.
+            from prismor.runtime import system_install
+            user_path = system_install.policy_home() / "policy.yaml"
+            if system_install.is_system_managed():
+                user_source = "system"
             if not user_path.exists() or (override_path is not None
                                           and user_path.resolve() == override_path.resolve()):
                 user_path = None
 
-        for layer_path, source in ((user_path, "user"), (override_path, "project")):
+        for layer_path, source in ((user_path, user_source), (override_path, "project")):
             if layer_path is None or not layer_path.exists():
                 continue
             try:

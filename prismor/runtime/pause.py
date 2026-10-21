@@ -39,7 +39,8 @@ def prismor_home() -> Path:
 
 
 def pause_path() -> Path:
-    return prismor_home() / "pause.json"
+    from prismor.runtime import system_install
+    return system_install.policy_home() / "pause.json"
 
 
 def parse_duration(text: str) -> int:
@@ -86,14 +87,8 @@ def set_paused(duration_seconds: Optional[int] = None, reason: str = "", by: str
         "by": (by or "")[:120],
         "last_beat": 0.0,
     }
-    home = prismor_home()
-    home.mkdir(parents=True, exist_ok=True)
-    path = pause_path()
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    from prismor.runtime import system_install
+    system_install.write_shared(pause_path(), json.dumps(record, indent=2))
     return record
 
 
@@ -311,9 +306,8 @@ def beat(agent: Optional[str] = None, state: Optional[Dict[str, Any]] = None) ->
     # failure just means we heartbeat again sooner, which is harmless.
     try:
         rec["last_beat"] = now
-        path = pause_path()
-        path.write_text(json.dumps(rec, indent=2), encoding="utf-8")
-        path.chmod(0o600)
+        from prismor.runtime import system_install
+        system_install.write_shared(pause_path(), json.dumps(rec, indent=2))
     except OSError:
         pass
     return True

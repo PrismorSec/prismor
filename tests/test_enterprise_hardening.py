@@ -124,7 +124,12 @@ def test_enroll_status_reports_before_remote_check(tmp_path, monkeypatch, capsys
 
     monkeypatch.setattr(identity, "verify_remote", verify)
     monkeypatch.setattr(hooks, "coverage", lambda _workspace: {})
-    cli.main(["--workspace", str(tmp_path), "enroll-status"])
+    if revoked:  # a compliance check must see a revoked device as not enrolled
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["--workspace", str(tmp_path), "enroll-status"])
+        assert exc.value.code == 1
+    else:  # unreachable is still enrolled: it spools and retries
+        cli.main(["--workspace", str(tmp_path), "enroll-status"])
     output = capsys.readouterr().out
     assert ("REJECTED" if revoked else "control plane unreachable") in output
 

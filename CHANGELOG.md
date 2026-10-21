@@ -1,3 +1,11 @@
+## [Unreleased]
+
+### Added
+- **`prismor setup --system`: one root install that screens every user on a Linux machine.** An MDM or config-management push runs as root, and a root `setup --scope global` hooked only root's own agents, so every employee's Claude Code ran unscreened. A system install writes the hooks where each agent reads administrator policy (`/etc/claude-code/managed-settings.d/50-prismor.json`, `/etc/cursor/hooks.json`, `/etc/gemini-cli/settings.json`) and moves everything that can weaken screening into `/etc/prismor`: the rule selection, the device identity, the pause marker and the unlock/floor-off state. A user's own `~/.prismor/policy.yaml`, `prismor pause`, `prismor unlock` and `PRISMOR_HOME` no longer switch screening off; root, or the org console, decides. Setup refuses an interpreter other users can't run (a `pip --user` or umask-077 venv), and creates every directory 0755 and every config 0644 even under umask 077, because an unreadable `/etc/claude-code` left Claude Code with no hooks at all. `uninstall-hooks --scope system` and root's `pause`/`resume` work without a terminal, for MDM scripts. Verified on Linux with Claude Code 2.1.306 driven by a scripted model as an unprivileged user: `rm -rf` blocked with no per-user setup, and still blocked after the user set `disableAllHooks`, wrote a weak policy file, ran `prismor pause` or pointed `PRISMOR_HOME` elsewhere. See [System install](docs/system-install.md).
+
+### Changed
+- **`prismor enroll-status` exits 1 when the machine is not enrolled, or its key was revoked or refused.** It always exited 0, so an MDM detection script saw every device as healthy. An unreachable control plane still exits 0: the device spools and retries.
+
 ## [1.63.0] — 2026-10-19
 
 ### Security

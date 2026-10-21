@@ -64,8 +64,11 @@ _MAX_LOCKOUT_SECONDS = 3600
 
 
 def prismor_home() -> Path:
-    """Prismor home dir, honoring $PRISMOR_HOME (default ~/.prismor)."""
-    return Path(os.environ.get("PRISMOR_HOME", str(Path.home() / ".prismor")))
+    """Prismor home dir, honoring $PRISMOR_HOME (default ~/.prismor). On a
+    system install this is /etc/prismor: only root may set the password or
+    open a window, so a user can't unlock their own screening."""
+    from prismor.runtime import system_install
+    return system_install.policy_home()
 
 
 def credential_path() -> Path:

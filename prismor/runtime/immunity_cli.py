@@ -189,7 +189,15 @@ def main(argv: Optional[List[str]] = None) -> None:
     # prismor subcommand) forwards straight through: `prismor <cmd> ...`.
     if cmd in _prismor_commands():
         from prismor.runtime.cli import main as prismor_main
-        prismor_main([cmd, *rest])
+        try:
+            prismor_main([cmd, *rest])
+        except PermissionError as exc:
+            from prismor.runtime.system_install import permission_hint
+            hint = permission_hint(exc)
+            if hint is None or cmd == "hook-dispatch":
+                raise
+            sys.stderr.write(f"prismor: {exc.filename} is read-only for you. {hint}\n")
+            raise SystemExit(1)
         return
 
     _unknown_command(cmd)

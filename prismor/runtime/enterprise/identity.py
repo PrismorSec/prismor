@@ -38,6 +38,10 @@ def prismor_home() -> Path:
 
 
 def identity_path() -> Path:
+    # A system install enrolls the machine once, as root, for every user.
+    from prismor.runtime import system_install
+    if system_install.is_system_managed():
+        return system_install.system_dir() / "identity.json"
     return prismor_home() / "identity.json"
 
 
@@ -99,20 +103,21 @@ def is_enrolled() -> bool:
 
 
 def save_identity(identity: Dict[str, Any]) -> Path:
-    """Persist the device identity with 0600 perms. Returns the path written."""
-    home = prismor_home()
-    home.mkdir(parents=True, exist_ok=True)
-    try:
-        home.chmod(0o700)
-    except (PermissionError, OSError):
-        pass
-    record = {"schema": _SCHEMA, **identity}
+    """Persist the device identity with 0600 perms (0644 on a system install,
+    where every user's hook reads it). Returns the path written."""
+    from prismor.runtime import system_install
     path = identity_path()
-    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except (PermissionError, OSError):
-        pass
+    home = path.parent
+    home.mkdir(parents=True, exist_ok=True)
+    if not system_install.is_system_managed():
+        try:
+            home.chmod(0o700)
+        except (PermissionError, OSError):
+            pass
+    record = {"schema": _SCHEMA, **identity}
+    # ponytail: on a system install any local user can read the device key and
+    # report as this machine; a root-only key needs a privileged helper.
+    system_install.write_shared(path, json.dumps(record, indent=2))
     return path
 
 
