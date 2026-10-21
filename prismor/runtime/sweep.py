@@ -33,7 +33,9 @@ _SWEEP_CONFIG = Path(__file__).parent / "sweep-gitleaks.toml"
 
 # Basic fallback patterns used when gitleaks is not installed
 _FALLBACK_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("openai-api-key",    re.compile(r'sk-[A-Za-z0-9]{20,48}')),
+    # Project/service-account/admin keys (sk-proj-…) carry a dash after the
+    # prefix, which the legacy sk-<alnum> shape never matched.
+    ("openai-api-key",    re.compile(r'sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}|sk-[A-Za-z0-9]{20,48}')),
     ("anthropic-api-key", re.compile(r'sk-ant-[A-Za-z0-9\-_]{20,}')),
     ("huggingface-token", re.compile(r'hf_[A-Za-z0-9]{30,50}')),
     ("github-pat",        re.compile(r'ghp_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}')),

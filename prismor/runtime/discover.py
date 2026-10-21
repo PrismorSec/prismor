@@ -860,6 +860,11 @@ def _scan_config_credentials(workspace: Path, cloak: Set[str]) -> List[Credentia
         candidate = workspace / name
         if candidate.exists() and candidate.is_file():
             targets.append(candidate)
+    # Claude Code keeps user-scope MCP servers (and their env tokens) in
+    # ~/.claude.json, beside ~/.claude rather than inside it.
+    home_claude = Path.home() / ".claude.json"
+    if home_claude.is_file():
+        targets.append(home_claude)
     for tool_dir in TOOL_DIRS.values():
         if not tool_dir.is_dir():
             continue
@@ -877,8 +882,16 @@ def _scan_config_credentials(workspace: Path, cloak: Set[str]) -> List[Credentia
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        specific = [p for name, p in _FALLBACK_PATTERNS if name != "generic-api-key"]
         for provider, pattern in _FALLBACK_PATTERNS:
-            if not pattern.search(text):
+            if provider == "generic-api-key":
+                # `api_key=<value>` is only generic when no provider shape claims
+                # the value; OPENAI_API_KEY=sk-proj-… is an OpenAI key.
+                hit = any(not any(s.search(m.group(1)) for s in specific)
+                          for m in pattern.finditer(text))
+            else:
+                hit = bool(pattern.search(text))
+            if not hit:
                 continue
             key = (provider, str(path))
             if key in seen:
