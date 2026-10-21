@@ -140,7 +140,11 @@ def _block_reason(finding: Dict[str, Any]) -> str:
     parts = [f"[{finding.get('severity', 'high')}] {finding.get('title', 'blocked')}"]
     # Scoped-agent and IAM findings carry the title sentence again as their
     # evidence; printing both showed every deny reason twice.
-    if finding.get("evidence") and str(finding["evidence"]) not in parts[0]:
+    # Project-memory evidence is instruction-file text; the reason goes back to
+    # the agent and into its transcript, so name the source instead of quoting it.
+    if finding.get("source") == "project_memory":
+        parts.append("Matched text from an agent instruction file (not shown).")
+    elif finding.get("evidence") and str(finding["evidence"]) not in parts[0]:
         parts.append(str(finding["evidence"]))
     if finding.get("remediation"):
         parts.append(f"Recommended fix: {finding['remediation']}")
@@ -154,7 +158,12 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 # does, and $PRISMOR_HOME ships one) makes every request a block attributed to
 # source: project_memory. Scanning the wrong project is not a weaker check, it
 # is a check on the wrong subject.
-_NO_PROJECT_AGENTS = frozenset({"prismor-proxy"})
+#
+# The MCP gateway and the SDK adapters (events carrying metadata.framework) are
+# the same case: neither loads CLAUDE.md/AGENTS.md, so the operator's
+# ~/.claude/CLAUDE.md was judged as if it were their instructions and its text
+# came back in the block reason a production agent sees.
+_NO_PROJECT_AGENTS = frozenset({"prismor-proxy", "mcp-gateway"})
 
 
 _PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
@@ -437,7 +446,7 @@ def evaluate_tool_call(
             # content rules above; add the drift check on top.
             findings.extend(check_memory_drift(meta.get("memory_digests") or {}))
         elif (_session_seq == 0 and event.get("type") != "prompt"
-              and agent not in _NO_PROJECT_AGENTS):
+              and agent not in _NO_PROJECT_AGENTS and not meta.get("framework")):
             _mem = _read_project_memory(Path(meta.get("cwd") or workspace))
             if _mem["content"]:
                 _mem_event = {
