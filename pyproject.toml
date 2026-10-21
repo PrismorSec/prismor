@@ -82,9 +82,9 @@ frameworks = [
 ]
 
 [project.urls]
-Homepage = "https://prismor.dev"
+Homepage = "https://www.prismor.dev"
 Repository = "https://github.com/PrismorSec/prismor"
-Documentation = "https://docs.prismor.dev"
+Documentation = "https://www.prismor.dev/docs"
 
 [project.scripts]
 prismor = "prismor.runtime.immunity_cli:main"

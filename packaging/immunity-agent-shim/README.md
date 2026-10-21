@@ -16,6 +16,6 @@ deprecated alias).
 Prismor provides runtime security for AI coding agents: policy enforcement,
 secret prevention (cloaking), and supply-chain blocking.
 
-- Homepage: https://prismor.dev
-- Docs: https://docs.prismor.dev
+- Homepage: https://www.prismor.dev
+- Docs: https://www.prismor.dev/docs
 - Source: https://github.com/PrismorSec/prismor

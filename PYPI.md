@@ -153,5 +153,5 @@ prismor cloak run -- curl https://api.stripe.com -H "Authorization: Bearer @@SEC
 ## Links
 
 - **Repository**: https://github.com/PrismorSec/prismor
-- **Docs**: https://docs.prismor.dev
-- **Dashboard**: https://prismor.dev
+- **Docs**: https://www.prismor.dev/docs
+- **Dashboard**: https://www.prismor.dev

@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://prismor.dev"
+Homepage = "https://www.prismor.dev"
 Repository = "https://github.com/PrismorSec/prismor"
 
 [tool.hatch.build.targets.wheel]
