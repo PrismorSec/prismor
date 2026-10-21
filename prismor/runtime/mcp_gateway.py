@@ -780,11 +780,16 @@ class Gateway:
         try:
             from prismor.runtime.runtime import evaluate_tool_call
             with self._eval_lock:
+                # A probe is not a call: record=False keeps it out of telemetry
+                # and the heartbeat (every listed tool showed up in the console
+                # session as a call that never happened), and no session id
+                # keeps its tags out of the trifecta/influence ledgers. Neither
+                # is needed for the argument-independent decisions used below.
                 decision = evaluate_tool_call(
                     event=self._build_call_event(route, {}), workspace=self.workspace,
-                    agent=GATEWAY_AGENT, mode=self.mode, session_id=self.session_id,
-                    agent_name=self.agent_name, persist=False, register_agent=False,
-                    flush_at_exit=False)
+                    agent=GATEWAY_AGENT, mode=self.mode, session_id="",
+                    agent_name=self.agent_name, persist=False, record=False,
+                    register_agent=False, flush_at_exit=False)
         except Exception:
             return False  # a broken probe hides nothing; the call is still checked
         b = decision.blocking

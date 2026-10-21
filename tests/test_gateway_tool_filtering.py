@@ -92,3 +92,21 @@ def test_call_event_carries_structured_arguments(ws):
         assert ev["metadata"]["kwargs"] == {"amount": 7}
     finally:
         g.close()
+
+
+def test_tools_list_probes_are_not_recorded_as_calls(ws, monkeypatch):
+    """Each tool was probed with a full evaluation at tools/list, and every
+    probe was reported to the console as a tool call (phantom write_file /
+    edit_file calls in a read-only session)."""
+    from prismor.runtime import runtime
+    from prismor.runtime.enterprise import heartbeat
+    recorded = []
+    monkeypatch.setattr(runtime, "_dispatch_telemetry", lambda **kw: recorded.append(kw))
+    monkeypatch.setattr(heartbeat, "record_call", lambda **kw: recorded.append(kw))
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:bob")
+    g, _, tools = _session(ws)
+    try:
+        assert "shop__export_all_customers" not in tools  # probing still hides
+        assert recorded == []
+    finally:
+        g.close()
