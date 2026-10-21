@@ -205,6 +205,51 @@ def test_bash_remote_shell_paths_are_not_local():
         check(f"local read beside ssh `{cmd}` is denied", denied(res), str(res))
 
 
+# ── cd earlier in the same command ─────────────────────────────────────────
+
+_OTHER = _HOME / "other"           # holds an unimported .env
+_OTHER.mkdir()
+(_OTHER / ".env").write_text(f"API_KEY={_API_KEY}\n")
+_CLEAN = _HOME / "clean"           # no .env at all
+_CLEAN.mkdir()
+
+
+def bash_at(command: str, cwd: Path, **env: str) -> dict | None:
+    full = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+    proc = subprocess.run(["bash", str(_GUARD)], input=json.dumps(full),
+                          capture_output=True, text=True, env={**os.environ, **env})
+    out = proc.stdout.strip()
+    return json.loads(out) if out else None
+
+
+def test_bash_cd_moves_relative_paths():
+    """`cd x && cat .env` reads x/.env, not the session cwd's .env."""
+    for cmd, cwd, env, want in (
+        (f"cd {_OTHER} && cat .env", _CLEAN, {}, True),
+        (f"cd {_CLEAN} && cat .env", _WS, {}, False),
+        (f"cd {_CLEAN}; cat .env", _WS, {}, False),
+        ("cd ../other && head -1 .env", _CLEAN, {}, True),
+        (f"(cd {_CLEAN}; ls); cat .env", _WS, {}, True),        # subshell cd doesn't leak
+        (f"cd {_CLEAN} | cat .env", _WS, {}, True),             # nor does a pipeline stage's
+        (f"pushd {_OTHER} && cat .env", _CLEAN, {}, True),
+        (f"pushd {_OTHER} && popd && cat .env", _CLEAN, {}, False),
+        (f"cd {_OTHER} && cd {_CLEAN} && cd - && cat .env", _CLEAN, {}, True),
+        ("cd && cat .env", _CLEAN, {"HOME": str(_OTHER)}, True),
+        ("cd ~ && cat .env", _CLEAN, {"HOME": str(_OTHER)}, True),
+        ("cd $GUARD_DIR && cat .env", _CLEAN, {"GUARD_DIR": str(_OTHER)}, True),
+        ("cd $GUARD_DIR && cat .env", _WS, {"GUARD_DIR": str(_CLEAN)}, False),
+        # Can't be resolved before it runs: fail closed rather than guess.
+        ('cd "$(mktemp -d)" && cat .env', _CLEAN, {}, True),
+        ("cd $UNSET_GUARD_DIR_XYZ && cat .env", _CLEAN, {}, True),
+        # ...but an unresolvable cd alone, or one before a non-read, passes.
+        ('cd "$(mktemp -d)" && ls', _CLEAN, {}, False),
+        ('cd "$(mktemp -d)" && echo K=V >> .env', _CLEAN, {}, False),
+    ):
+        res = bash_at(cmd, cwd, **env)
+        check(f"`{cmd}` from {cwd.name} {'denied' if want else 'allowed'}",
+              denied(res) == want, str(res))
+
+
 # ── stand-down after import ─────────────────────────────────────────────────
 
 def test_stands_down_once_imported():
@@ -248,6 +293,7 @@ def main() -> int:
         test_bash_absolute_path_denied,
         test_bash_prismer_mention_negative_denied,
         test_bash_remote_shell_paths_are_not_local,
+        test_bash_cd_moves_relative_paths,
         test_stands_down_once_imported,
     ]:
         fn()

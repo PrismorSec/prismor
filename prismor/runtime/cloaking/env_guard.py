@@ -26,6 +26,7 @@ on the lines around it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -116,6 +117,107 @@ def local_text(command: str) -> str:
 
 def local_text_main() -> None:
     sys.stdout.write(local_text(sys.stdin.read()))
+
+
+_CMD_SEP = {"&&", "||", ";", "|", "&", "\n", "(", ")", "|&", ";;"}
+UNKNOWN = "?"
+
+
+def _cd_target(arg: str | None, cur: str, prev: str) -> str:
+    """Where ``cd arg`` lands from ``cur``, or UNKNOWN if it can't be known statically."""
+    if arg is None:
+        return os.path.expanduser("~")
+    if arg == "-":
+        return prev
+    target = os.path.expandvars(os.path.expanduser(arg))
+    if "$" in target or "`" in target:
+        return UNKNOWN
+    if cur == UNKNOWN and not os.path.isabs(target):
+        return UNKNOWN
+    return os.path.normpath(os.path.join(cur, target))
+
+
+def word_dirs(command: str, cwd: str) -> List[tuple]:
+    """``(word, dir)`` for every word of ``command``: the directory the shell is
+    in when that word runs, following ``cd``/``pushd``/``popd`` (subshells and
+    pipeline stages don't leak). ``dir`` is UNKNOWN after a ``cd`` whose target
+    is a variable or command substitution.
+
+    Unparseable input (unbalanced quotes) falls back to the session cwd for
+    every word, which is the old behaviour.
+    """
+    import shlex
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lex.whitespace_split = True
+        tokens = []
+        for t in lex:
+            # shlex glues adjacent punctuation (`);`, `)&&`); split it back
+            # into operators so a subshell's `)` is seen.
+            if t and set(t) <= set(";&|()"):
+                tokens += re.findall(r"&&|\|\||\|&|;;|[;&|()]", t)
+            else:
+                tokens.append(t)
+    except ValueError:
+        return [(w, cwd) for w in command.split()]
+
+    out: List[tuple] = []
+    cur, prev, stack, dstack = cwd, cwd, [], []
+    at_start = True
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok in _CMD_SEP:
+            if tok == "(":
+                stack.append((cur, prev))
+            elif tok == ")" and stack:
+                cur, prev = stack.pop()
+            at_start = True
+            i += 1
+            continue
+        out.append((tok, cur))
+        if at_start and tok in ("cd", "pushd", "popd"):
+            args, j = [], i + 1
+            while j < len(tokens) and tokens[j] not in _CMD_SEP:
+                out.append((tokens[j], cur))
+                args.append(tokens[j])
+                j += 1
+            ends = tokens[j] if j < len(tokens) else ""
+            if ends not in ("|", "&", "|&"):  # a pipeline stage or background job runs in a subshell
+                args = [a for a in args if a not in ("-L", "-P", "-e", "-@", "--")]
+                if tok == "popd":
+                    new = dstack.pop() if dstack else cur
+                else:
+                    new = _cd_target(args[0] if args else None, cur, prev)
+                    if tok == "pushd":
+                        dstack.append(cur)
+                prev, cur = cur, new
+            i = j
+            continue
+        at_start = False
+        i += 1
+    return out
+
+
+def candidate_paths(command: str, cwd: str) -> List[str]:
+    """Every path ``command`` could name, resolved against the directory the
+    shell is in at that point. A relative path after an unresolvable ``cd`` is
+    returned as ``?<word>`` so the hook can fail closed instead of guessing."""
+    seen: List[str] = []
+    for word, d in word_dirs(command, cwd):
+        for m in _WORD.finditer(word):
+            tok = m.group(0)
+            path = os.path.expanduser(tok)
+            if not os.path.isabs(path):
+                path = UNKNOWN + tok if d == UNKNOWN else os.path.join(d, path)
+            if path not in seen:
+                seen.append(path)
+    return seen
+
+
+def candidate_paths_main() -> None:
+    cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+    sys.stdout.write("\n".join(candidate_paths(sys.stdin.read(), cwd)))
 
 
 if __name__ == "__main__":

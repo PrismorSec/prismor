@@ -121,18 +121,29 @@ if [[ -n "$_py" ]]; then
     'from prismor.runtime.cloaking.env_guard import local_text_main; local_text_main()' 2>/dev/null || printf '%s' "$cmd")"
 fi
 
-# Collect existing env-style files referenced by the command.
+# Collect existing env-style files referenced by the command. Relative paths
+# resolve against the directory the shell is in at that point, so an earlier
+# `cd elsewhere &&` is followed (env_guard.candidate_paths). A relative env
+# file after a `cd "$VAR"` can't be located statically: remember it and fail
+# closed below if the command reads it.
 env_files=()
-while IFS= read -r tok; do
-  [[ -n "$tok" ]] || continue
-  _is_env_basename "$tok" || continue
-  path="$tok"
+unknown_env=""
+if [[ -n "$_py" ]]; then
+  _paths="$(printf '%s' "$cmd" | PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$_py" -c \
+    'from prismor.runtime.cloaking.env_guard import candidate_paths_main; candidate_paths_main()' "$cwd" 2>/dev/null)"
+else
+  _paths="$(printf '%s' "$cmd" | grep -oE '[A-Za-z0-9_.~/-]+' | sort -u)"
+fi
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  _is_env_basename "$path" || continue
+  if [[ "$path" == "?"* ]]; then unknown_env="${path#\?}"; continue; fi
   [[ "$path" == /* || "$path" == "~"* ]] || path="$cwd/$path"
   path="${path/#\~\//$HOME/}"
   [[ -f "$path" ]] || continue
   env_files+=("$path")
-done < <(printf '%s' "$cmd" | grep -oE '[A-Za-z0-9_.~/-]+' | sort -u)
-[[ ${#env_files[@]} -gt 0 ]] || exit 0
+done <<< "$_paths"
+[[ ${#env_files[@]} -gt 0 || -n "$unknown_env" ]] || exit 0
 
 # Is this command actually READING content? Appends and presence checks pass.
 is_reader=0
@@ -160,6 +171,13 @@ else
   done
 fi
 [[ "$is_reader" -eq 1 ]] || exit 0
+
+if [[ -n "$unknown_env" ]]; then
+  reason="Prismor cloaking: this command changes into a directory that can't be resolved before it runs (a variable or command substitution), then reads '$unknown_env'. Prismor can't check whether that file holds secrets missing from the cloak vault, so it is blocked. Use the file's absolute path, or import it first: prismor cloak add --env-file <absolute path>"
+  jq -n --arg r "$reason" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+fi
 
 _deny_if_unprotected "this command reads" "${env_files[@]}"
 exit 0
