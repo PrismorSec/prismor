@@ -201,6 +201,8 @@ def enqueue_step_up(
     agent: str = "",
     session_id: str = "",
     timeout: float = 2.0,
+    tool: str = "",
+    agent_name: str = "",
 ) -> Optional[str]:
     """Post an approval request and return immediately with its id (or None).
 
