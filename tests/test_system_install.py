@@ -160,3 +160,49 @@ def test_pause_is_root_only_on_a_system_install(sysdir, tmp_path, monkeypatch):
     assert "root-only" in cli._pause_refusal("pause", tmp_path)
     monkeypatch.setattr(system_install.os, "geteuid", lambda: 0)
     assert cli._pause_refusal("pause", tmp_path) is None  # MDM script: no terminal needed
+
+
+def _codex_req(sysdir, tmp_path, monkeypatch):
+    path = tmp_path / "etc-codex" / "requirements.toml"
+    hooks.SYSTEM_HOOK_PATHS["codex"] = path
+    _manage(sysdir)
+    return path
+
+
+def _install_codex():
+    repo_root = Path(__file__).resolve().parent.parent
+    return hooks.install_hooks(repo_root=repo_root, workspace=Path("/"), agent="codex",
+                               scope="system", mode="enforce")
+
+
+def test_codex_requirements_written_as_managed_hooks(sysdir, tmp_path, monkeypatch):
+    path = _codex_req(sysdir, tmp_path, monkeypatch)
+    _install_codex()
+    data = hooks._toml_loads(path.read_text())
+    assert data["features"]["hooks"] is True
+    assert data["hooks"]["managed_dir"] == str(sysdir)
+    cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+    assert str(sysdir / "hook-dispatch.py") in cmd and "--agent codex" in cmd
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    _install_codex()  # idempotent: one block, still valid TOML
+    assert path.read_text().count(hooks._CODEX_REQ_BEGIN) == 1
+
+
+def test_codex_keeps_an_orgs_requirements_and_uninstalls_cleanly(sysdir, tmp_path, monkeypatch):
+    path = _codex_req(sysdir, tmp_path, monkeypatch)
+    path.parent.mkdir(parents=True)
+    path.write_text('allowed_sandbox_modes = ["read-only"]\n')
+    _install_codex()
+    assert hooks._toml_loads(path.read_text())["allowed_sandbox_modes"] == ["read-only"]
+    hooks.uninstall_hooks(repo_root=Path("."), workspace=Path("/"), agent="codex", scope="system")
+    assert path.read_text() == 'allowed_sandbox_modes = ["read-only"]\n'
+
+
+def test_codex_refuses_to_redeclare_an_orgs_hooks_table(sysdir, tmp_path, monkeypatch):
+    path = _codex_req(sysdir, tmp_path, monkeypatch)
+    path.parent.mkdir(parents=True)
+    original = "[features]\nhooks = false\n"
+    path.write_text(original)
+    with pytest.raises(ValueError, match="Merge this into it by hand"):
+        _install_codex()
+    assert path.read_text() == original

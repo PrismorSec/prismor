@@ -1858,10 +1858,16 @@ def run_system_install(
         policy.unlink()  # observe: a stale selection would keep blocking
 
     print(f"[prismor] System install  (mode={mode}, agents={','.join(agents) or 'none'})")
+    failed = []
     for agent in agents:
-        for r in install_hooks(repo_root=repo_root, workspace=Path("/"), agent=agent,
-                               scope="system", mode=mode):
-            print(f"  ✓ {r['agent']:<8} {r['configPath']}")
+        try:
+            for r in install_hooks(repo_root=repo_root, workspace=Path("/"), agent=agent,
+                                   scope="system", mode=mode):
+                print(f"  ✓ {r['agent']:<8} {r['configPath']}")
+        except ValueError as exc:  # e.g. an org requirements.toml we must not rewrite
+            failed.append(agent)
+            print(f"  ✗ {agent:<8} {exc}")
+    agents = [a for a in agents if a not in failed]
     if mode == "enforce":
         print(f"  ✓ policy   {policy}  ({len(selected)} rule(s) block)" if selected else
               f"  ! policy   {policy}  (no rules selected: detects and reports, blocks nothing; "
@@ -1874,7 +1880,7 @@ def run_system_install(
                    if (b := system_install.unreadable_by_others(p)) is not None]
     for p, b in unreachable:
         print(f"  ✗ {p} is not readable by other users ({b}); fix with: chmod a+rX {b}")
-    if unreachable:
+    if unreachable or failed:
         raise SystemExit(1)
     print()
     print("  Every user on this machine is now screened; policy, pause and unlock are root-only.")

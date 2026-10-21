@@ -98,6 +98,14 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
             results.append({"agent": current_agent, "configPath": str(config_path),
                             "loadWarning": plugin_load_warning(current_agent, scope, workspace)})
             continue
+        if system and current_agent == "codex":
+            command = _dispatcher_command(repo_root=repo_root, workspace=workspace, agent="codex",
+                                          mode=mode, pin_workspace=False, shim_home=shim_home)
+            system_install.mkdir_public(config_path.parent)
+            _write_codex_requirements(config_path, command, shim_home)
+            config_path.chmod(0o644)
+            results.append({"agent": current_agent, "configPath": str(config_path)})
+            continue
         config = _read_json(config_path)
         # Idempotent + auto-migrating: drop any prior hook-dispatch hook (this
         # version's, or an older one that used a prismor/runtime/cli.py path) before adding
@@ -608,6 +616,8 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
                     _config_path("hermes", "global" if scope == "project" else "project", workspace).exists()):
                 from prismor.runtime.cloaking.hermes_installer import _disable_plugin_in_config
                 _disable_plugin_in_config(_PLUGIN_DIR_NAME)
+        elif scope == "system" and current_agent == "codex":
+            removed = _remove_codex_requirements(config_path)
         elif config_path.exists():
             config = _read_json(config_path)
             # Match the stable hook-dispatch token rather than a specific script
@@ -955,12 +965,76 @@ def _codex_home() -> Path:
 # Where each agent reads machine-wide (administrator) hooks on Linux. Every
 # one of these outranks, and merges with, the user's own config, and only root
 # can write it. Claude Code gets its own drop-in so an org's existing
-# managed-settings.json is never touched.
+# managed-settings.json is never touched. Codex treats hooks in its system
+# requirements.toml as managed: trusted by policy, so no per-user trust step,
+# and not something a user can disable.
 SYSTEM_HOOK_PATHS: Dict[str, Path] = {
     "claude": Path("/etc/claude-code/managed-settings.d/50-prismor.json"),
     "cursor": Path("/etc/cursor/hooks.json"),
     "gemini": Path("/etc/gemini-cli/settings.json"),
+    "codex": Path("/etc/codex/requirements.toml"),
 }
+
+_CODEX_REQ_BEGIN = "# >>> prismor system install (written by `prismor setup --system`) >>>"
+_CODEX_REQ_END = "# <<< prismor system install <<<"
+_CODEX_REQ_BLOCK_RE = re.compile(re.escape(_CODEX_REQ_BEGIN) + r".*?" + re.escape(_CODEX_REQ_END) + r"\n?", re.S)
+
+
+def _toml_loads(text: str) -> Dict[str, Any]:
+    try:
+        import tomllib
+    except ImportError:  # Python < 3.11
+        import tomli as tomllib  # type: ignore[no-redef]
+    return tomllib.loads(text)
+
+
+def _render_codex_requirements(command: str, managed_dir: Path) -> str:
+    """Prismor's block for /etc/codex/requirements.toml.
+
+    ``[features].hooks = true`` here keeps the hooks on even for a user who
+    turned hooks off in their own config. Codex wants managed hook commands to
+    run scripts under ``managed_dir``, which is where the shim lives.
+    """
+    lines = [_CODEX_REQ_BEGIN, "[features]", "hooks = true", "", "[hooks]",
+             f"managed_dir = {json.dumps(str(managed_dir))}"]
+    for event, entries in _merge_codex({}, command)["hooks"].items():
+        for entry in entries:
+            lines += ["", f"[[hooks.{event}]]", f"matcher = {json.dumps(entry['matcher'])}"]
+            for h in entry["hooks"]:
+                # A JSON string is a valid TOML basic string (same escapes).
+                lines += ["", f"[[hooks.{event}.hooks]]", f"type = {json.dumps(h['type'])}",
+                          f"command = {json.dumps(h['command'])}"]
+    return "\n".join(lines + [_CODEX_REQ_END]) + "\n"
+
+
+def _write_codex_requirements(path: Path, command: str, managed_dir: Path) -> None:
+    """Add (or refresh) Prismor's block in an org's requirements.toml without
+    touching the rest. TOML can't declare a table twice, so if the org already
+    has [features] or [hooks] the merge is theirs to make: refuse and say how."""
+    rest = _CODEX_REQ_BLOCK_RE.sub("", path.read_text(encoding="utf-8")) if path.exists() else ""
+    block = _render_codex_requirements(command, managed_dir)
+    clash = sorted({"features", "hooks"} & set(_toml_loads(rest)))
+    if clash:
+        raise ValueError(
+            f"{path} already defines [{'] and ['.join(clash)}], so Prismor can't add its own. "
+            f"Merge this into it by hand:\n\n{block}")
+    text = (rest.rstrip() + "\n\n" + block) if rest.strip() else block
+    _toml_loads(text)  # never leave Codex a file it can't parse
+    path.write_text(text, encoding="utf-8")
+
+
+def _remove_codex_requirements(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    rest = _CODEX_REQ_BLOCK_RE.sub("", text)
+    if rest == text:
+        return False
+    if rest.strip():
+        path.write_text(rest.rstrip() + "\n", encoding="utf-8")
+    else:
+        path.unlink()
+    return True
 
 
 def _config_path(agent: str, scope: str, workspace: Path) -> Path:

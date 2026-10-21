@@ -14,7 +14,7 @@ python3 -m venv /opt/prismor
 ```
 
 No user needs to run anything. The next time anyone on the machine starts
-Claude Code, Cursor or Gemini CLI, its tool calls go through Prismor.
+Claude Code, Codex, Cursor or Gemini CLI, its tool calls go through Prismor.
 
 ## What it writes
 
@@ -23,6 +23,7 @@ Claude Code, Cursor or Gemini CLI, its tool calls go through Prismor.
 | `/etc/claude-code/managed-settings.d/50-prismor.json` | Claude Code hooks. A drop-in, so an existing `managed-settings.json` is left alone. |
 | `/etc/cursor/hooks.json` | Cursor enterprise hooks (merged with any already there) |
 | `/etc/gemini-cli/settings.json` | Gemini CLI system settings (merged) |
+| `/etc/codex/requirements.toml` | Codex managed hooks, with `[features].hooks = true` pinned and `managed_dir = "/etc/prismor"`. Added as a marked block, so an org's own requirements stay as they are. |
 | `/etc/prismor/system.json` | Marks the machine as system-managed |
 | `/etc/prismor/policy.yaml` | The rule selection (`--recommended` / `--enforce-rules`) |
 | `/etc/prismor/hook-dispatch.py` | The launcher every user's hook runs |
@@ -35,10 +36,16 @@ All of them are root-owned and world-readable.
   unload them (verified with Claude Code 2.1.306).
 - **Cursor** documents enterprise hooks as highest priority, run alongside
   the user's, with any deny winning.
+- **Codex** treats hooks from its system `requirements.toml` as managed:
+  trusted by policy (no `/hooks` trust step per user), not disableable from
+  the hook browser, and still on when a user sets `[features] hooks = false`
+  (verified with codex-cli 0.163.0). If the org's file already declares
+  `[features]` or `[hooks]`, TOML can't hold a second copy, so setup leaves
+  the file alone, skips Codex and prints the block to merge by hand.
 - **Gemini CLI** ranks system settings above user and project settings; its
   docs don't say whether hook lists merge across levels.
 
-Other agents (Codex, Copilot CLI, Windsurf, …) have no machine-wide hook
+Other agents (Copilot CLI, Windsurf, …) have no machine-wide hook
 location that Prismor writes yet; `--agents` skips them with a note, and they
 still need a per-user `prismor setup --scope global`.
 
@@ -88,6 +95,4 @@ Both run without a terminal as root.
 
 - Any local user can read `/etc/prismor/identity.json`, so a user could report
   to your org as this machine. Agents are blocked from reading it.
-- Codex reads `/etc/codex/config.toml` and `requirements.toml`, but Prismor
-  does not install system hooks there yet.
 - macOS and Windows system installs are not built yet.
