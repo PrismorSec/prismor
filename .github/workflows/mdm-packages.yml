@@ -68,8 +68,10 @@ jobs:
           # From a file: Windows PowerShell re-encodes a string piped to a native
           # exe (agents write the hook's stdin themselves, so they never hit this).
           Set-Content -Encoding ascii payload.json '{"session_id":"s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"Remove-Item -Recurse -Force $HOME\\canary"},"cwd":"C:\\"}'
-          cmd /c "`"C:\Program Files\Prismor\current\python.exe`" C:\ProgramData\Prismor\hook-dispatch.py hook-dispatch --agent codex --mode enforce < payload.json"
-          if ($LASTEXITCODE -ne 2) { throw "Remove-Item -Recurse on the profile was not blocked ($LASTEXITCODE)" }
+          # On Windows the Codex hook denies with JSON on stdout (Codex runs hooks
+          # under PowerShell, which reports a native exit 2 as 1).
+          $out = cmd /c "`"C:\Program Files\Prismor\current\python.exe`" C:\ProgramData\Prismor\hook-dispatch.py hook-dispatch --agent codex --mode enforce < payload.json 2>nul"
+          if (($out | Out-String) -notmatch '"permissionDecision": "deny"') { throw "Remove-Item -Recurse on the profile was not denied: $out" }
           Remove-Item "C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json"
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-detect.ps1"; if ($LASTEXITCODE -ne 1) { throw "drift not detected" }
           & powershell -NoProfile -ExecutionPolicy Bypass -File "$pk\remediation-fix.ps1"
