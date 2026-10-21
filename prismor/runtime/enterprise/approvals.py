@@ -220,7 +220,7 @@ def enqueue_step_up(
     if not ident or _identity.revoked_backoff_active():
         return None  # no control plane to approve through → fail closed
 
-    tool = str(finding.get("toolName") or (event or {}).get("type") or "tool")
+    tool = str(tool or finding.get("toolName") or (event or {}).get("type") or "tool")
     body = {
         "fingerprint": _fingerprint(
             session_id, tool,
@@ -231,7 +231,7 @@ def enqueue_step_up(
         "rule_id": finding.get("ruleId"),
         "severity": finding.get("severity"),
         "session_id": session_id or None,
-        "agent": agent or None,
+        "agent": agent_name or agent or None,
     }
     created = _post_request(ident, body, timeout=timeout)
     approval_id = str(created.get("id")) if created and created.get("id") else None
@@ -254,8 +254,14 @@ def await_step_up(
     event: Optional[Dict[str, Any]] = None,
     agent: str = "",
     session_id: str = "",
+    tool: str = "",
+    agent_name: str = "",
 ) -> "ApprovalOutcome":
     """Post an approval request for a STEP_UP finding and block until decided.
+
+    ``tool`` and ``agent_name`` label the request for the approver: SDK
+    findings carry no ``toolName``, so without them every request read
+    tool "tool" and agent "<framework>" instead of the guarded instance.
 
     Returns an :class:`ApprovalOutcome` that is truthy only on an explicit
     ``approved`` (so existing ``if await_step_up(...)`` callers keep working).
@@ -274,7 +280,7 @@ def await_step_up(
     if not ident or _identity.revoked_backoff_active():
         return ApprovalOutcome(False)  # no control plane to approve through → fail closed
 
-    tool = str(finding.get("toolName") or (event or {}).get("type") or "tool")
+    tool = str(tool or finding.get("toolName") or (event or {}).get("type") or "tool")
     body = {
         "fingerprint": _fingerprint(session_id, tool, str(finding.get("evidence_hash") or finding.get("evidenceHash") or "")),
         "tool": tool,
@@ -283,7 +289,7 @@ def await_step_up(
         "category": finding.get("category"),
         "severity": finding.get("severity"),
         "session_id": session_id or None,
-        "agent": agent or None,
+        "agent": agent_name or agent or None,
     }
     # Data-boundary context so the approver sees WHAT is being sent, WHERE,
     # and which doc induced it — labels only (classes/tier/kind), the masked
@@ -341,6 +347,8 @@ async def await_step_up_async(
     event: Optional[Dict[str, Any]] = None,
     agent: str = "",
     session_id: str = "",
+    tool: str = "",
+    agent_name: str = "",
 ) -> "ApprovalOutcome":
     """Event-loop-safe :func:`await_step_up`.
 
@@ -356,7 +364,8 @@ async def await_step_up_async(
     import asyncio
 
     return await asyncio.to_thread(
-        await_step_up, decision, event=event, agent=agent, session_id=session_id
+        await_step_up, decision, event=event, agent=agent, session_id=session_id,
+        tool=tool, agent_name=agent_name,
     )
 
 

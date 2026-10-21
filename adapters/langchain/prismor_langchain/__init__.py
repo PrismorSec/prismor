@@ -158,7 +158,9 @@ def prismor_guard_tool(
             if approvals:
                 try:
                     from prismor.runtime.enterprise import approvals as _approvals
-                    outcome = _approvals.await_step_up(decision, agent=agent, session_id=sid)
+                    outcome = _approvals.await_step_up(
+                        decision, agent=agent, session_id=sid, tool=tool_name, agent_name=_agent_name
+                    )
                     if outcome:
                         # "Approve redacted": the approver let the call through
                         # on condition that the flagged values are stripped
@@ -321,7 +323,7 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
             if self._approvals:
                 try:
                     from prismor.runtime.enterprise import approvals as _approvals
-                    if _approvals.await_step_up(decision, agent=self._agent, session_id=self._sid):
+                    if _approvals.await_step_up(decision, agent=self._agent, session_id=self._sid, tool=name):
                         return  # approved → allowed
                 except Exception:
                     pass

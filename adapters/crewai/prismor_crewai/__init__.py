@@ -122,7 +122,9 @@ def prismor_guard_tool(
             if approvals:
                 try:
                     from prismor.runtime.enterprise import approvals as _approvals
-                    outcome = _approvals.await_step_up(decision, agent=agent, session_id=sid)
+                    outcome = _approvals.await_step_up(
+                        decision, agent=agent, session_id=sid, tool=tool_name, agent_name=_agent_name
+                    )
                     if outcome:
                         # "Approve redacted": strip the flagged values on-device
                         # before running (the console only saw masked values).

@@ -306,7 +306,8 @@ def _guard_function_tool(
                     # async variant: the wait runs in a worker thread so this
                     # event loop keeps servicing concurrent tools and streams.
                     outcome = await _approvals.await_step_up_async(
-                        decision, event=event, agent=agent, session_id=sid
+                        decision, event=event, agent=agent, session_id=sid,
+                        tool=tool_name, agent_name=_agent_name,
                     )
                     if outcome:
                         if getattr(outcome, "redacted", False):

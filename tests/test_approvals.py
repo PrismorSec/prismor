@@ -85,6 +85,24 @@ class ApprovalClient(unittest.TestCase):
         approvals.await_step_up(_decision(), session_id="s1")
         self.assertEqual(self._posts[0]["wait_seconds"], 2)  # PRISMOR_APPROVAL_TIMEOUT in setUp
 
+    def test_request_names_the_guarded_tool_and_instance(self):
+        # SDK findings carry no toolName; the adapter's own labels must reach
+        # the approver instead of "tool" / the framework id.
+        d = _decision()
+        d.blocking.pop("toolName")
+        self._status_seq = ["approved"]
+        approvals.await_step_up(d, session_id="s1", agent="langchain", tool="deploy", agent_name="deploy-bot")
+        self.assertEqual(self._posts[0]["tool"], "deploy")
+        self.assertEqual(self._posts[0]["agent"], "deploy-bot")
+
+    def test_request_without_labels_keeps_old_fallbacks(self):
+        d = _decision()
+        d.blocking.pop("toolName")
+        self._status_seq = ["approved"]
+        approvals.await_step_up(d, session_id="s1", agent="langchain")
+        self.assertEqual(self._posts[0]["tool"], "tool")
+        self.assertEqual(self._posts[0]["agent"], "langchain")
+
     def test_denied(self):
         self._status_seq = ["pending", "denied"]
         self.assertFalse(approvals.await_step_up(_decision(), session_id="s1"))

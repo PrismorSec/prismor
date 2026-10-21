@@ -954,7 +954,7 @@ class Gateway:
                 try:
                     from prismor.runtime.enterprise import approvals as _approvals
                     outcome = _approvals.await_step_up(
-                        decision, event=None, agent=GATEWAY_AGENT, session_id=self.session_id
+                        decision, event=None, agent=GATEWAY_AGENT, session_id=self.session_id, tool=name,
                     )
                     if outcome:
                         if getattr(outcome, "redacted", False):
