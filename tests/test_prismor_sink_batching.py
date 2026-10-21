@@ -90,4 +90,6 @@ def test_heartbeat_tick_drains_the_spool_with_no_counts(monkeypatch, tmp_path):
         json.dumps({"v": 2, "last_flush": 0, "counters": {}}), encoding="utf-8")
 
     assert heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1) is True
-    assert sent == [[]], "the tick must still call upload_telemetry to drain the spool"
+    # The only thing it may carry is the hourly device_status (none sent yet here).
+    assert len(sent) == 1, "the tick must still call upload_telemetry to drain the spool"
+    assert [r["type"] for r in sent[0]] in ([], ["device_status"])

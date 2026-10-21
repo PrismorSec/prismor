@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Added
+- **Devices report which of their agents Prismor covers.** Once an hour the heartbeat carries a `device_status` record with the running version, whether the machine has a system (every-user) or per-user install, and, for each AI agent found on it, whether a Prismor hook covers it machine-wide, and how (`system`, `global`, or `project`, which covers one repo only). It contains agent names only. `prismor system-sync` sends the machine's own status from the admin side. The console uses it for a coverage column, a per-person coverage view and a "behind latest" count. It also keeps the device's version current: until now the console only knew the version a device enrolled with.
+
 ## [1.64.0] — 2026-10-21
 
 ### Added

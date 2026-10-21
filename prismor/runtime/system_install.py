@@ -294,6 +294,13 @@ def sync() -> Dict[str, Any]:
         out["errors"].append("not enrolled (or the key is unreadable): run `prismor enroll <TOKEN>` as admin")
         return out
     out["policy_pulled"] = remote_policy.fetch(force=True)
+    # The machine's own status, from the admin's side: system hooks cover
+    # every user, so this is the authoritative coverage for the device.
+    try:
+        from prismor.runtime.enterprise.heartbeat import device_status_record
+        sinks.upload_telemetry([device_status_record()])
+    except Exception as exc:
+        out["errors"].append(f"device status: {exc}")
     saved = os.environ.get("PRISMOR_HOME")
     try:
         for home in user_prismor_homes():

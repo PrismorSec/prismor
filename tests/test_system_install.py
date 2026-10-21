@@ -257,7 +257,8 @@ def test_system_sync_uploads_every_users_spool(sysdir, tmp_path, monkeypatch):
     res = system_install.sync()
     assert res["policy_pulled"] and res["homes"] == 2
     assert res["pending_before"] == 4 and res["pending_after"] == 0
-    assert sorted(r["id"] for r in sent) == ["alice-1", "alice-2", "bob-1", "bob-2"]
+    assert sorted(r["id"] for r in sent if "id" in r) == ["alice-1", "alice-2", "bob-1", "bob-2"]
+    assert [r.get("type") for r in sent].count("device_status") == 1  # the machine's own status
 
 
 def test_repo_policy_file_is_ignored_unless_admin_allows_it(sysdir, tmp_path, monkeypatch):
