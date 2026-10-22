@@ -513,3 +513,14 @@ def test_channel_blocks_reach_the_console(tmp_path, monkeypatch):
     assert all(kw["agent"] == "copilot-studio" and kw["agent_name"] == "Sales assistant" for kw in sent)
     assert all(f["mode"] == "enforce" for kw in sent for f in kw["findings"]
                if f["ruleId"].startswith("copilot-studio-"))
+
+
+def test_console_kill_switch_stops_a_copilot_studio_agent(tmp_path, monkeypatch):
+    # Agents page: turning off "Sales assistant" (framework copilot-studio)
+    # ships settings.agent_controls; every tool that agent runs then blocks.
+    _clean_env(monkeypatch, tmp_path)
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda ws: True)
+    monkeypatch.setattr(remote_policy, "verify_and_load",
+                        lambda: {"settings": {"agent_controls": {"Sales assistant": {"enabled": False}}}})
+    assert cs.analyze(cs.sample_request("clean"), tmp_path)["blockAction"]
