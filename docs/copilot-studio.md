@@ -93,9 +93,21 @@ judged depends on who your agent's users are:
 | `user_messages` | |
 |---|---|
 | `user` (default) | an employee talking to an internal agent. The text is screened as a user prompt: an injection attempt is recorded, and does not block |
-| `untrusted` | a public or customer-facing agent. The text is screened like tool output: an injection attempt blocks every tool call in that turn |
+| `untrusted` | a public or customer-facing agent. The text is screened like tool output: an injection attempt blocks every tool call in that turn, even when your policy only observes `prompt-injection` |
 
-Set it in the console or with `PRISMOR_COPILOT_STUDIO_USER_MESSAGES`.
+Set it in the console (**Who talks to your agents: Employees / The public**)
+or with `PRISMOR_COPILOT_STUDIO_USER_MESSAGES`.
+
+### Allowed email domains
+
+List your company's domains in the console (**Allowed email domains**) and
+any connector call that addresses someone else is blocked: Outlook's
+`send_email_v2_to/cc/bcc`, `to`, `cc`, `bcc`, `recipients` and meeting
+attendees. Subdomains count as the domain (`eu.contoso.com` is `contoso.com`).
+An address that only appears in a message body is not a recipient and does
+not block. The block is reported to the console as
+`copilot-studio-recipient-outside-domains`. Without the console, use
+`PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS`.
 
 ## What blocks out of the box
 
@@ -113,8 +125,8 @@ If your policy enforces only the rules you picked (a policy with its own
 injections are recorded but not blocked.
 
 The default policy does **not** know who your customers are, so a call such as
-an email to an outside address is allowed unless your policy says which
-recipients are allowed. Add a rule for it:
+an email to an outside address is allowed until you set allowed email domains
+(above). For finer control, write a rule; in the console, under Policies:
 
 ```yaml
 # .prismor/policy.yaml in the eval-server's workspace, or your org policy
@@ -221,7 +233,11 @@ Repeat for each environment whose agents you want covered.
 ### 4. Connect it to your org and run it
 
 In the console, **Integrations → Microsoft Copilot Studio**: add the tenant id
-and the app id, choose how user messages are treated, and create an agent key.
+and the app id, choose how user messages are treated, list your email domains,
+and create an agent key. Everything after this point is managed there: the
+allowlist, the user-message setting, the email domains, and the org policy
+(rules, which ones enforce) under Policies. Changes reach the server within
+about 30 seconds, and its blocks show up under that agent and conversation.
 Then run the server with that key:
 
 ```bash
@@ -242,6 +258,7 @@ console. Without the console, set the allowlist with environment variables:
 | `PRISMOR_COPILOT_STUDIO_ALLOWED_APP_IDS` | comma-separated Entra app (client) ids allowed to call, added to the console's |
 | `PRISMOR_COPILOT_STUDIO_ALLOWED_TENANTS` | comma-separated tenant ids, added to the console's. Empty everywhere means any tenant whose token is valid and comes from an allowed app |
 | `PRISMOR_COPILOT_STUDIO_USER_MESSAGES` | `user` (default) or `untrusted`; overrides the console |
+| `PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS` | comma-separated domains, added to the console's. A recipient outside them blocks |
 | `PRISMOR_COPILOT_STUDIO_BUDGET_MS` | evaluation budget, default `800` |
 | `PRISMOR_COPILOT_STUDIO_FAIL_OPEN` | `1` allows a call whose evaluation timed out or failed. Default is to block it |
 | `PRISMOR_COPILOT_STUDIO_INSECURE_NO_AUTH` | `1` skips auth; ignored unless the server is bound to localhost |

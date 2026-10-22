@@ -38,6 +38,7 @@ the org's ``PRISMOR_AGENT_KEY`` and every decision lands in that org.
     PRISMOR_COPILOT_STUDIO_ALLOWED_APP_IDS   comma list of Entra app ids
     PRISMOR_COPILOT_STUDIO_ALLOWED_TENANTS   comma list of tenant ids (optional)
     PRISMOR_COPILOT_STUDIO_USER_MESSAGES     user (default) | untrusted
+    PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS  comma list; a recipient outside blocks
     PRISMOR_COPILOT_STUDIO_INSECURE_NO_AUTH  1 = skip auth; localhost bind only
     PRISMOR_COPILOT_STUDIO_BUDGET_MS         evaluation budget (default 800)
     PRISMOR_COPILOT_STUDIO_FAIL_OPEN         1 = allow on timeout/error
@@ -111,6 +112,11 @@ def _ids(value: Any) -> List[str]:
     return [str(v).strip().lower() for v in items if str(v).strip()]
 
 
+def _domains(value: Any) -> List[str]:
+    items = value if isinstance(value, list) else str(value or "").split(",")
+    return [str(v).strip().lower().lstrip("@") for v in items if str(v).strip()]
+
+
 _ORG_TTL = 30.0
 _org_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _org_lock = threading.Lock()
@@ -153,6 +159,8 @@ def config(workspace: Optional[Path] = None) -> Dict[str, Any]:
         "app_ids": sorted(set(_csv("PRISMOR_COPILOT_STUDIO_ALLOWED_APP_IDS")) | set(_ids(org.get("app_ids")))),
         "tenants": sorted(set(_csv("PRISMOR_COPILOT_STUDIO_ALLOWED_TENANTS")) | set(_ids(org.get("tenants")))),
         "user_messages": "untrusted" if trust == "untrusted" else "user",
+        "email_domains": sorted(set(_domains(os.environ.get("PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS")))
+                                | set(_domains(org.get("email_domains")))),
     }
 
 
@@ -286,7 +294,8 @@ def _user_turns(planner: Dict[str, Any]) -> List[str]:
     return seen
 
 
-def to_events(body: Any, user_messages: str = "user") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def to_events(body: Any, user_messages: str = "user",
+              email_domains: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """An analyze-tool-execution body -> (events in order, request context)."""
     if not isinstance(body, dict):
         raise CopilotStudioError(400, "request body must be a JSON object")
@@ -316,6 +325,8 @@ def to_events(body: Any, user_messages: str = "user") -> Tuple[List[Dict[str, An
         "tool_name": str(tool.get("name") or tool.get("id")),
         # The user's turn is screened once, not on every tool call it causes.
         "turn_key": f"{conversation}:{meta.get('messageId')}" if conversation and meta.get("messageId") else None,
+        "user_messages": user_messages,
+        "email_domains": list(email_domains or []),
     }
     common = {
         "tenant_id": tenant, "environment_id": agent.get("environmentId"),
@@ -427,16 +438,31 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
         if not screened_turn and event["metadata"].get("source") != "user_message":
             _remember_turn(key, None)
             screened_turn = True
+        # "The public" in the console: an injection in a user message blocks
+        # even where the org's policy only observes prompt-injection. That
+        # turn is recorded here, once, with the verdict it actually got.
+        escalate = (event["metadata"].get("source") == "user_message"
+                    and ctx.get("user_messages") == "untrusted")
         decision = evaluate_tool_call(
             event=event, workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"],
             mode="enforce", session_id=ctx["session_id"], subject=subject,
             # A shared server: no per-tenant transcript on disk, no inventory.
-            persist=False, register_agent=False, taint_store=taint, record=record,
+            persist=False, register_agent=False, taint_store=taint, record=record and not escalate,
         )
-        if decision.blocking is not None:
+        blocking = decision.blocking
+        if escalate:
+            if blocking is None:
+                hit = next((f for f in decision.findings
+                            if str(f.get("category") or "").startswith("prompt_injection")), None)
+                if hit is not None:
+                    blocking = dict(hit, mode="enforce", action="block")
+            findings = [blocking if f.get("id") == (blocking or {}).get("id") else f
+                        for f in decision.findings] if blocking else list(decision.findings)
+            _report(findings, event, ctx, workspace, record)
+        if blocking is not None:
             if event["metadata"].get("source") == "user_message":
-                _remember_turn(key, decision.blocking)
-            return decision.blocking  # deny wins; the first denial is the reason
+                _remember_turn(key, blocking)
+            return blocking  # deny wins; the first denial is the reason
     # A credential in the arguments is leaving through the connector. The
     # inference-hook channel's DLP check, on the call's arguments only.
     from prismor.runtime.inference_hook import screen_secrets
@@ -444,19 +470,74 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
     call = events[-1]
     found = screen_secrets([{"type": "text", "content": call["response"],
                              "metadata": {"source": ctx["tool_name"]}}])
-    if not found:
+    blocking: Optional[Dict[str, Any]] = None
+    if found:
+        vendor = str(found[0]["title"]).partition("(")[2].rstrip(")") or "unknown key"
+        blocking = {**found[0], "ruleId": "copilot-studio-credential-in-arguments",
+                    "title": f"Credential in tool arguments ({vendor})", "channel": AGENT_ID}
+    else:
+        outside = _recipients_outside(call["metadata"].get("kwargs") or {}, ctx.get("email_domains") or [])
+        if outside:
+            blocking = {
+                "id": f"{ctx['session_id']}:recipient-outside-domains", "ruleId": "copilot-studio-recipient-outside-domains",
+                "title": f"Recipient outside your allowed email domains ({outside[0].split('@', 1)[1]})",
+                "category": "data_boundary", "severity": "HIGH", "channel": AGENT_ID,
+            }
+    if blocking is None:
         return None
-    vendor = str(found[0]["title"]).partition("(")[2].rstrip(")") or "unknown key"
-    return {**found[0], "ruleId": "copilot-studio-credential-in-arguments",
-            "title": f"Credential in tool arguments ({vendor})", "channel": AGENT_ID}
+    # Decided here, not by a policy rule, so it reaches the console here.
+    _report([dict(blocking, mode="enforce", action="block")], call, ctx, workspace, record)
+    return blocking
+
+
+#: Argument names that hold recipients across Outlook, Teams and Graph
+#: connectors: to/cc/bcc, the send_email_v2_* family, attendees, recipients.
+_RECIPIENT_KEY = re.compile(r"(^|_)(to|cc|bcc|recipients?|attendees?|requiredattendees|optionalattendees)$", re.I)
+_EMAIL = re.compile(r"[\w.+'-]+@([\w-]+(?:\.[\w-]+)+)")
+
+
+def _recipients_outside(kwargs: Dict[str, Any], domains: List[str]) -> List[str]:
+    """Addresses in recipient arguments whose domain is not an allowed one
+    (or a subdomain of one). Empty when no domains are configured."""
+    if not domains:
+        return []
+    out: List[str] = []
+    for k, v in kwargs.items():
+        if not _RECIPIENT_KEY.search(str(k)):
+            continue
+        for m in _EMAIL.finditer(_text(v)):
+            host = m.group(1).lower()
+            if not any(host == d or host.endswith("." + d) for d in domains):
+                out.append(m.group(0))
+    return out
+
+
+def _report(findings: List[Dict[str, Any]], event: Dict[str, Any], ctx: Dict[str, Any],
+            workspace: Path, record: bool) -> None:
+    """Send findings this module decided to the org's sinks (the console)."""
+    if not record or not findings:
+        return
+    try:
+        from prismor.runtime.policy_engine import PolicyEngine
+        from prismor.runtime.principal import resolve_subject
+        from prismor.runtime.runtime import _dispatch_telemetry
+
+        _dispatch_telemetry(
+            engine=PolicyEngine(workspace=workspace), findings=findings, event=event,
+            workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"], mode="enforce",
+            session_id=ctx["session_id"], subject=resolve_subject(ctx["subject"]),
+        )
+    except Exception as exc:  # reporting must never change the verdict
+        sys.stderr.write(f"[prismor] copilot-studio: report failed: {exc}\n")
 
 
 def analyze(body: Any, workspace: Path, user_messages: Optional[str] = None,
             record: bool = True) -> Dict[str, Any]:
     """Screen one tool execution. Raises CopilotStudioError on a bad request."""
+    cfg = config(workspace)
     if user_messages is None:
-        user_messages = config(workspace)["user_messages"]
-    events, ctx = to_events(body, user_messages=user_messages)
+        user_messages = cfg["user_messages"]
+    events, ctx = to_events(body, user_messages=user_messages, email_domains=cfg["email_domains"])
     budget = float(os.environ.get("PRISMOR_COPILOT_STUDIO_BUDGET_MS") or 800) / 1000
     t0 = time.perf_counter()
     future = _pool.submit(_evaluate, events, ctx, workspace, record)

@@ -460,3 +460,56 @@ def test_warm_up_records_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "evaluate_tool_call", lambda **kw: seen.append(kw["record"]) or real(**kw))
     cs.warm(tmp_path)
     assert seen and not any(seen)
+
+
+# ── managed from the console: email domains, public agents, reporting ──────
+
+
+def test_recipient_outside_the_allowed_domains_blocks(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS", "contoso.com")
+    out = cs.analyze(cs.sample_request("external"), tmp_path)
+    assert out["blockAction"] and out["reasonCode"] == cs.REASON_CODES["data_boundary"]
+    assert "example.com" in out["reason"]
+    assert cs.analyze(cs.sample_request("clean"), tmp_path) == {"blockAction": False}
+
+
+def test_email_domains_come_from_the_console(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(cs, "org_settings", lambda ws: {"email_domains": ["@Contoso.com"]})
+    assert cs.config(tmp_path)["email_domains"] == ["contoso.com"]
+    assert cs.analyze(cs.sample_request("external"), tmp_path)["blockAction"]
+
+
+def test_only_recipient_arguments_count():
+    k = {"send_email_v2_to": "a@contoso.com; b@eu.contoso.com", "send_email_v2_body": "write to x@evil.com",
+         "requiredAttendees": "c@evil.com"}
+    assert cs._recipients_outside(k, ["contoso.com"]) == ["c@evil.com"]
+    assert cs._recipients_outside(k, []) == []
+
+
+def test_public_agents_block_injection_even_when_policy_only_observes(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    # An org policy that enforces only its own rule: built-ins like
+    # prompt-injection then observe. "The public" must still block.
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump(RECIPIENT_POLICY))
+    out = cs.analyze(cs.sample_request("injection"), tmp_path, user_messages="untrusted")
+    assert out["blockAction"] and out["reasonCode"] == cs.REASON_CODES["prompt_injection"]
+    assert cs.analyze(cs.sample_request("injection"), tmp_path, user_messages="user") == {"blockAction": False}
+
+
+def test_channel_blocks_reach_the_console(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    sent = []
+    from prismor.runtime import runtime
+    monkeypatch.setattr(runtime, "_dispatch_telemetry", lambda **kw: sent.append(kw))
+    monkeypatch.setenv("PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS", "contoso.com")
+    cs.analyze(cs.sample_request("external"), tmp_path)
+    cs.analyze(cs.sample_request("credential"), tmp_path)
+    rules = [kw["findings"][0]["ruleId"] for kw in sent if kw["findings"]]
+    assert "copilot-studio-recipient-outside-domains" in rules
+    assert "copilot-studio-credential-in-arguments" in rules
+    assert all(kw["agent"] == "copilot-studio" and kw["agent_name"] == "Sales assistant" for kw in sent)
+    assert all(f["mode"] == "enforce" for kw in sent for f in kw["findings"]
+               if f["ruleId"].startswith("copilot-studio-"))
