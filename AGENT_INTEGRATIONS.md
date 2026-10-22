@@ -63,6 +63,7 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Agno | framework | sdk | ✅ | `throw` |
 | Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
 | Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
+| Microsoft Agent Framework | framework | sdk | ✅ | `throw` |
 | Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | ✅ | `json-permission` |
