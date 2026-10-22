@@ -192,6 +192,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .grid-3 { grid-template-columns: repeat(3, 1fr); }
   .grid-2 { grid-template-columns: repeat(2, 1fr); }
   .grid-1-2 { grid-template-columns: 1fr 2fr; }
+  /* let wide tables scroll inside their card instead of stretching the grid */
+  .grid > * { min-width: 0; }
 
   /* ── Cards ── */
   .card {
@@ -563,7 +565,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .policy-scope-pane.active { display: block; }
 
   /* Per-rule toggle list */
-  .rules-toolbar { display:flex; align-items:center; gap:8px; margin:12px 0; }
+  .rules-toolbar { display:flex; align-items:center; gap:8px; margin:12px 0; flex-wrap:wrap; }
   .rules-search {
     flex:1; font-family:inherit; font-size:13px; padding:8px 12px;
     border:1px solid var(--gray-200); border-radius:6px; color:var(--gray-900);
@@ -737,7 +739,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   /* ── Session Control tab ── */
   .sess-ctrl-row {
-    display: grid; grid-template-columns: 1fr auto;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
     gap: 8px; align-items: start;
     padding: 10px 0; border-bottom: 1px solid var(--gray-100);
   }
@@ -2618,6 +2620,74 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   /* Small caps labels: one recipe */
   .kpi-label, .steps-label, .ring-cap, .policy-scope-sep, th { font-size: 11px; font-weight: 500; letter-spacing: .06em; }
+
+  /* Tablets and small laptops: the top bar holds up to nine controls, which
+     ran off the right edge below ~1100px. Labels go first, then it scrolls. */
+  @media (max-width: 1100px) {
+    .topbar-left { flex-shrink: 0; }
+    .topbar-right { min-width: 0; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+    .topbar-right::-webkit-scrollbar { display: none; }
+    .topbar-right > * { flex: none; }
+    #rtVersion:not(:has(button)) { display: none; }
+    #refreshBtn, #upgradeBtn { font-size: 0; gap: 0; padding-left: 8px; padding-right: 8px; }
+  }
+
+  /* Icon rail: its footer has 60px, room for the theme dot and nothing else. */
+  @media (max-width: 900px) {
+    .tab-nav-footer #statusBadge { display: none; }
+    .tab-nav-footer .theme-toggle { font-size: 0; gap: 0; padding: 0; width: 32px; height: 32px; justify-content: center; align-self: center; }
+  }
+
+  /* Phones: the icon rail still costs 60px of a ~390px screen, so the sidebar
+     becomes a scrollable bottom tab bar. (The top bar is handled at 720px.) */
+  @media (max-width: 640px) {
+    :root { --bottom-nav-h: 58px; }
+    .tab-nav {
+      top: auto; bottom: 0; left: 0; right: 0; width: auto;
+      flex-direction: row; align-items: center; gap: 2px; padding: 6px 8px;
+      padding-bottom: calc(6px + env(safe-area-inset-bottom));
+      height: calc(var(--bottom-nav-h) + env(safe-area-inset-bottom));
+      overflow-x: auto; overflow-y: hidden; border-right: none; border-top: 1px solid var(--hairline);
+      scrollbar-width: none;
+    }
+    .tab-nav::-webkit-scrollbar { display: none; }
+    .tab-nav .tab-btn { flex: 0 0 auto; width: 48px; height: 44px; padding: 0; justify-content: center; }
+    .tab-nav .tab-btn .icon { width: 20px; height: 20px; }
+    .tab-nav .tab-lock, #statusBadge { display: none; }
+    .tab-nav-footer { flex-direction: row; margin: 0 0 0 auto; padding: 0 0 0 6px; border-top: none; flex: 0 0 auto; }
+    .tab-nav-footer .theme-toggle { padding: 6px 10px; font-size: 12px; }
+    .page, .prismor-cta { margin-left: 0; }
+    .prismor-cta { margin: 12px 14px; }
+    .page { padding: 12px 14px calc(var(--bottom-nav-h) + 24px + env(safe-area-inset-bottom)); }
+    /* session: flow and detail panes stack, each scrolls within ~70% of the screen */
+    #page-session.page.active { height: auto; }
+    #page-session .session-layout > div { height: 70vh; }
+    #page-session .flow-head { flex-wrap: wrap; gap: 8px; }
+    .flow-legend { flex-wrap: wrap; }
+    /* docs: page list stacked above the reader, page scrolls as a whole */
+    #page-docs.page.active { height: auto; }
+    .docs-layout, .docs-layout.collapsed { grid-template-columns: 1fr; }
+    .docs-pages { max-height: 40vh; }
+    .docs-layout.collapsed .docs-pages-head { justify-content: space-between; }
+    .docs-layout.collapsed .docs-pages-head > span { display: inline; }
+    #docsCollapseBtn { transform: rotate(90deg); }
+
+
+    .policy-scope-nav { overflow-x: auto; scrollbar-width: none; }
+    .policy-scope-btn { flex: 0 0 auto; white-space: nowrap; }
+    .bar-right { margin-left: 0; flex-wrap: wrap; }
+    .finput { width: 100%; }
+    .fleet-preview { overflow: hidden; }
+    .pager { flex-wrap: wrap; }
+    .rt-cell { flex-wrap: wrap; }
+    .rt-bar .rt-grow { flex-basis: 100%; }
+    #rtPolicy > * { flex-wrap: wrap; }
+    .section { flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+    .section .hint { flex-basis: 100%; }
+    .prec-details > summary { flex-wrap: wrap; gap: 4px 10px; }
+    .prec-summary { flex-basis: 100%; order: 1; }
+    .prec-toggle { margin-left: auto; }
+  }
 </style>
 </head>
 <body>
