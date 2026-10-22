@@ -16,7 +16,8 @@ on your existing agent or controller object, with no changes to your tool logic.
 | AutoGen Core (Microsoft) | Python | `pip install "prismor[autogen-core]"` | `PrismorInterventionHandler(...)` | `subject="user:alice"` |
 | Agno | Python | `pip install "prismor[agno]"` | `tool_hooks=[prismor_tool_hook]` | `subject="user:alice"` |
 | Semantic Kernel (Microsoft) | Python | `pip install "prismor[semantic-kernel]"` | `add_filter(..., make_filter(...))` | `subject="user:alice"` |
-| Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` | `subject="user:alice"` |
+| Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` or `plugins=[PrismorPlugin(...)]` | `subject="user:alice"` |
+| Microsoft Agent Framework | Python | `pip install "prismor[agent-framework]"` | `middleware=[PrismorMiddleware(...)]` | `use_subject("user:alice")` |
 | BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` | `subject="user:alice"` |
 | Claude Code Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` | `subject="user:alice"` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
@@ -75,7 +76,8 @@ Regardless of framework, every adapter does the same three things:
 | AutoGen Core (Microsoft) | `InterventionHandler.on_send(message, ...)` | before any `FunctionCall` message reaches a `ToolAgent` |
 | Agno | `tool_hooks` list on `Agent`/`Team` | before `function_call(**arguments)` continues the chain |
 | Semantic Kernel (Microsoft) | filter `filter_fn(context, next)` in the invocation middleware stack | before `await next(context)` — which calls `context.function.invoke(...)` |
-| Google ADK | `before_tool_callback(tool, args, tool_context)` | before the tool call — returning a dict skips it entirely |
+| Google ADK | `before_tool_callback(tool, args, tool_context)` (agent or `BasePlugin`) | before the tool call — returning a dict skips it entirely |
+| Microsoft Agent Framework | `FunctionMiddleware.process(context, call_next)` | before `call_next()` — which runs the function |
 | BeeAI Framework | `Tool`'s `Emitter` `"start"` event | before `self._run(...)` inside `Tool.run()` |
 | Claude Code Agent SDK | `PreToolUse` hook (`HookMatcher`) | before Claude runs the tool — same hook system as the CLI |
 | Vercel AI SDK | `tool.execute` | before the tool body runs, after the LLM emits the tool call |
@@ -248,7 +250,8 @@ choosing which client a request belongs to is your app's authentication job.
 - [AutoGen Core (Microsoft)](frameworks-autogen-core.md) — `PrismorInterventionHandler`, `on_send`
 - [Agno](frameworks-agno.md) — `tool_hooks`, `make_tool_hook`
 - [Semantic Kernel (Microsoft)](frameworks-semantic-kernel.md) — `make_filter`, `AUTO_FUNCTION_INVOCATION`
-- [Google ADK](frameworks-google-adk.md) — `make_before_tool_callback`, `before_tool_callback`
+- [Google ADK](frameworks-google-adk.md) — `make_before_tool_callback`, `PrismorPlugin`
+- [Microsoft Agent Framework](frameworks-agent-framework.md) — `PrismorMiddleware`, function middleware
 - [BeeAI Framework](frameworks-beeai.md) — `guard_tool`, `Emitter` `"start"` event
 - [Claude Code Agent SDK](frameworks-claude-agent-sdk.md) — `prismor_hook_matcher`, `PreToolUse` hooks
 - [Vercel AI SDK](frameworks-vercel-ai.md) — `prismorTools`, TypeScript, eval-server HTTP protocol

@@ -32,7 +32,28 @@ agent = LlmAgent(
     model="gemini-flash-latest",  # or a LiteLlm-wrapped model, e.g. openai/gpt-4o-mini
     name="ops",
     tools=[run_shell],
-    before_tool_callback=make_before_tool_callback(subject="user:alice", mode="enforce"),
+    before_tool_callback=make_before_tool_callback(
+        name="ops-bot", subject="user:alice", mode="enforce",
+    ),
+)
+```
+
+`name=` is the instance label the console shows and controls on its own;
+without it the agent reports as the unnamed "Google ADK" row.
+
+### Guard every agent with one plugin
+
+ADK plugins run before agent-level callbacks and apply to every agent a
+`Runner` hosts, sub-agents included. `PrismorPlugin` takes the same keyword
+arguments and also redacts tool results:
+
+```python
+from google.adk.runners import InMemoryRunner
+from prismor.google_adk import PrismorPlugin
+
+runner = InMemoryRunner(
+    agent=root_agent, app_name="support",
+    plugins=[PrismorPlugin(name="support-bot", mode="enforce")],
 )
 ```
 

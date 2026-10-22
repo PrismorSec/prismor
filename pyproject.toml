@@ -60,6 +60,7 @@ autogen-core = ["autogen-core>=0.4"]
 agno = ["agno>=1.0"]
 semantic-kernel = ["semantic-kernel>=1.0"]
 google-adk = ["google-adk>=1.0"]
+agent-framework = ["agent-framework>=1.0"]
 beeai = ["beeai-framework>=0.1"]
 # Live-verified separately from the rest of this list, against an
 # authenticated Claude Code CLI session rather than the shared OpenAI key
@@ -77,6 +78,7 @@ frameworks = [
     "agno>=1.0",
     "semantic-kernel>=1.0",
     "google-adk>=1.0",
+    "agent-framework>=1.0",
     "beeai-framework>=0.1",
     "claude-agent-sdk>=0.1",
 ]
@@ -112,6 +114,7 @@ packages = [
     "adapters/agno/prismor_agno",
     "adapters/semantic-kernel/prismor_semantic_kernel",
     "adapters/google-adk/prismor_google_adk",
+    "adapters/agent-framework/prismor_agent_framework",
     "adapters/beeai/prismor_beeai",
     "adapters/claude-agent-sdk/prismor_claude_agent_sdk",
 ]
@@ -129,6 +132,7 @@ packages = [
 "adapters/agno/prismor/agno/__init__.py" = "prismor/agno/__init__.py"
 "adapters/semantic-kernel/prismor/semantic_kernel/__init__.py" = "prismor/semantic_kernel/__init__.py"
 "adapters/google-adk/prismor/google_adk/__init__.py" = "prismor/google_adk/__init__.py"
+"adapters/agent-framework/prismor/agent_framework/__init__.py" = "prismor/agent_framework/__init__.py"
 "adapters/beeai/prismor/beeai/__init__.py" = "prismor/beeai/__init__.py"
 "adapters/claude-agent-sdk/prismor/claude_agent_sdk/__init__.py" = "prismor/claude_agent_sdk/__init__.py"
 "immunity-agent.pth" = "immunity-agent.pth"
@@ -167,6 +171,7 @@ packages = [
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/faq.md" = "prismor/runtime/data/docs/faq.md"
+"docs/frameworks-agent-framework.md" = "prismor/runtime/data/docs/frameworks-agent-framework.md"
 "docs/frameworks-agno.md" = "prismor/runtime/data/docs/frameworks-agno.md"
 "docs/frameworks-autogen-core.md" = "prismor/runtime/data/docs/frameworks-autogen-core.md"
 "docs/frameworks-beeai.md" = "prismor/runtime/data/docs/frameworks-beeai.md"

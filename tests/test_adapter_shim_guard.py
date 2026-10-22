@@ -19,6 +19,7 @@ SHIMS = {
     "crewai": _ROOT / "adapters/crewai/prismor/crewai/__init__.py",
     "langchain": _ROOT / "adapters/langchain/prismor/langchain/__init__.py",
     "browser_use": _ROOT / "adapters/browser-use/prismor/browser_use/__init__.py",
+    "agent_framework": _ROOT / "adapters/agent-framework/prismor/agent_framework/__init__.py",
 }
 
 

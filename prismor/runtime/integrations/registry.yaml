@@ -586,6 +586,18 @@ agents:
     notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) (or as a BasePlugin method, which take precedence over agent-level callbacks). Deny-by-substitution by default, not exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead — the model never sees the tool actually run. raise_on_block=True raises PrismorBlocked instead. Verified live (2026-07) against a real LlmAgent using ADK's LiteLlm wrapper for openai/gpt-4o-mini with a genuine OpenAI key (pip install \"google-adk[extensions]\"): a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install \"prismor[google-adk]\"."
     sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
 
+  - id: agent-framework
+    name: Microsoft Agent Framework
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [function_middleware]
+    blocking: throw
+    normalizer: "prismor_agent_framework"
+    notes: "PrismorMiddleware is a FunctionMiddleware passed as Agent(middleware=[...]); process(context, call_next) wraps every tool invocation and the innermost link runs the function. Deny by not awaiting call_next() and setting context.result to the denial, so the model sees a coherent tool response and the run continues (MiddlewareTermination would end the whole loop); raise_on_block=True raises PrismorBlocked. The tool's output is redacted after call_next. Verified live (2026-10) on agent-framework 1.22.0 with Agent(client=OpenAIChatClient(model='gpt-6-luna')) and a genuine OpenAI key: a curl -d @/etc/passwd upload was denied before the tool's Python implementation ran; a benign lookup executed normally. pip install \"prismor[agent-framework]\"."
+    sources: ["https://learn.microsoft.com/en-us/agent-framework/"]
+
   - id: mastra
     name: Mastra (TypeScript)
     kind: framework
