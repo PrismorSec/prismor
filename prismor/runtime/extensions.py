@@ -106,7 +106,10 @@ def _read_json(path: Path) -> Any:
 def _hosts(text: str) -> List[str]:
     out: List[str] = []
     for u in _URL_RE.findall(text):
-        h = (urlparse(u).hostname or "").lower()
+        try:
+            h = (urlparse(u).hostname or "").lower()
+        except ValueError:  # "http://[not-ipv6" in some skill's prose: skip it, don't abort discovery
+            continue
         if h and h not in out and "." in h and not h.endswith((".example", ".invalid", ".test")) \
                 and h not in ("localhost", "127.0.0.1"):
             out.append(h)
@@ -796,10 +799,10 @@ def session_notice(workspace: Path, session_id: str = "") -> Optional[str]:
     rows = sync(workspace, session_id=session_id)  # parents sort first
     if session_id:
         data = _load(workspace)
-        sess = _session(data, session_id)
+        sess = _session(data, session_id, workspace)
         for r in rows:
             if r["kind"] == "hook":
-                _link(sess, r["id"], "ambient", r)
+                _link(data, sess, r["id"], "ambient", r)
         _save(workspace, data)
     hot: Dict[str, Dict[str, Any]] = {}
     for r in rows:
@@ -884,19 +887,34 @@ def set_agent(agent: str) -> None:
     _AGENT = str(agent or "")
 
 
-def _session(data: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+def _session(data: Dict[str, Any], session_id: str, workspace: Optional[Path] = None) -> Dict[str, Any]:
     sess = data["sessions"].setdefault(session_id, {})
     if _AGENT:
         sess.setdefault("agent", _AGENT)
+    # The ledger is one file for the whole machine, but a session in a personal
+    # (unmanaged) workspace is not the org's to see: remember which it was so
+    # report_payload can leave it out. Resolved once, when the session starts.
+    if workspace is not None and "managed" not in sess:
+        try:
+            from prismor.runtime.enterprise import workspace_scope as _scope
+            sess["managed"] = _scope.is_managed(workspace)
+        except Exception:
+            sess["managed"] = False
     for key, default in (("ts", _now()), ("hosts", {}), ("caveated", []), ("fetched", []), ("links", {})):
         sess.setdefault(key, default)
     return sess
 
 
-def _link(sess: Dict[str, Any], ext_id: str, role: str, entry: Dict[str, Any]) -> bool:
+def _link(data: Dict[str, Any], sess: Dict[str, Any], ext_id: str, role: str, entry: Dict[str, Any]) -> bool:
     if ext_id in sess["links"]:
         return False
     sess["links"][ext_id] = {"role": role, "ts": _now(), "kind": entry.get("kind"), "name": entry.get("name")}
+    # A new link is news for the console's session page. Only sync() reports, and
+    # it reported nothing unless an extension was installed or changed, so most
+    # sessions never showed what they ran under. Flag it here (no network on the
+    # hook path); the next prompt's registry_changed() -> sync() sends it.
+    if sess.get("managed"):
+        data["report_due"] = True
     return True
 
 
@@ -973,7 +991,7 @@ def tag_event(workspace: Path, session_id: str, event: Dict[str, Any]) -> Option
             ext_id = _observe_mcp(data, server, session_id)
         if ext_id:
             tag = _tag(ext_id, items[ext_id], "serves this tool")
-            dirty = _link(_session(data, session_id), ext_id, "mcp", items[ext_id])
+            dirty = _link(data, _session(data, session_id, workspace), ext_id, "mcp", items[ext_id])
     if tag:
         meta["extension"] = tag
     if dirty:
@@ -1034,8 +1052,8 @@ def on_skill_invoked(workspace: Path, session_id: str, skill_name: str) -> Optio
     entry = data["items"].get(row["id"]) or {}
     entry["invocations"] = (entry.get("invocations") or [])[-19:] + [{"session": session_id, "ts": _now()}]
     data["items"][row["id"]] = entry
-    sess = _session(data, session_id)
-    _link(sess, row["id"], "invoked", row)
+    sess = _session(data, session_id, workspace)
+    _link(data, sess, row["id"], "invoked", row)
     for h in row["hosts"]:
         sess["hosts"].setdefault(h, row["id"])
     _save(workspace, data)
@@ -1630,7 +1648,8 @@ def report_payload(workspace: Path) -> Dict[str, Any]:
     sessions = [{"session": sid, "agent": sess.get("agent") or "", "ts": sess.get("ts"), "fetched": (sess.get("fetched") or [])[:40],
                  "links": [{"id": eid, "role": link.get("role"), "ts": link.get("ts")}
                            for eid, link in (sess.get("links") or {}).items()]}
-                for sid, sess in data["sessions"].items() if sess.get("links")]
+                for sid, sess in data["sessions"].items() if sess.get("links") and sess.get("managed")]
+    sessions.sort(key=lambda x: x["ts"] or "")
     return {"cli_version": _version, "events": view["events"], "sessions": sessions[-50:],
             "extensions": [{k: r.get(k) for k in keep} for r in view["rows"][:2000]]}
 
