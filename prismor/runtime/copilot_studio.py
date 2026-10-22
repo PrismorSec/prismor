@@ -407,7 +407,8 @@ def _remember_turn(key: Optional[str], blocking: Optional[Dict[str, Any]]) -> No
             _turns.popitem(last=False)
 
 
-def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path) -> Optional[Dict[str, Any]]:
+def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path,
+              record: bool = True) -> Optional[Dict[str, Any]]:
     from prismor.runtime.policy_engine import InMemoryTaintStore
     from prismor.runtime.principal import resolve_subject
     from prismor.runtime.runtime import evaluate_tool_call
@@ -430,7 +431,7 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
             event=event, workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"],
             mode="enforce", session_id=ctx["session_id"], subject=subject,
             # A shared server: no per-tenant transcript on disk, no inventory.
-            persist=False, register_agent=False, taint_store=taint,
+            persist=False, register_agent=False, taint_store=taint, record=record,
         )
         if decision.blocking is not None:
             if event["metadata"].get("source") == "user_message":
@@ -450,14 +451,15 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
             "title": f"Credential in tool arguments ({vendor})", "channel": AGENT_ID}
 
 
-def analyze(body: Any, workspace: Path, user_messages: Optional[str] = None) -> Dict[str, Any]:
+def analyze(body: Any, workspace: Path, user_messages: Optional[str] = None,
+            record: bool = True) -> Dict[str, Any]:
     """Screen one tool execution. Raises CopilotStudioError on a bad request."""
     if user_messages is None:
         user_messages = config(workspace)["user_messages"]
     events, ctx = to_events(body, user_messages=user_messages)
     budget = float(os.environ.get("PRISMOR_COPILOT_STUDIO_BUDGET_MS") or 800) / 1000
     t0 = time.perf_counter()
-    future = _pool.submit(_evaluate, events, ctx, workspace)
+    future = _pool.submit(_evaluate, events, ctx, workspace, record)
     try:
         return to_response(future.result(timeout=budget))
     except Exception as exc:
@@ -469,6 +471,17 @@ def analyze(body: Any, workspace: Path, user_messages: Optional[str] = None) -> 
         return {"blockAction": True, "reasonCode": REASON_FAIL,
                 "reason": f"Prismor could not finish screening this tool call ({what}); blocked fail-closed",
                 "diagnostics": json.dumps({"fail": "closed", "detail": what})}
+
+
+def warm(workspace: Path) -> None:
+    """Load the policy, the org settings and the detectors before the first real
+    call. Cold, the first analyze took ~950ms live: past Copilot Studio's 1s
+    window once network time is added, so that call would have gone through."""
+    try:
+        config(workspace)
+        analyze(sample_request("clean"), workspace, user_messages="user", record=False)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] copilot-studio: warm-up failed: {exc}\n")
 
 
 def handle(path: str, headers: Any, body: Any, *, workspace: Path, bound_host: str) -> Tuple[int, Dict[str, Any]]:

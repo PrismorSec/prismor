@@ -450,3 +450,13 @@ def test_cli_test_prints_verdicts(tmp_path, monkeypatch, capsys):
     assert cmd_test(["clean", "credential"], tmp_path) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0].startswith("ALLOW  clean") and out[1].startswith("BLOCK  credential")
+
+
+def test_warm_up_records_nothing(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    from prismor.runtime import runtime
+    seen = []
+    real = runtime.evaluate_tool_call
+    monkeypatch.setattr(runtime, "evaluate_tool_call", lambda **kw: seen.append(kw["record"]) or real(**kw))
+    cs.warm(tmp_path)
+    assert seen and not any(seen)

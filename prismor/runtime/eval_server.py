@@ -418,6 +418,7 @@ def run_eval_server(
               f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
     from prismor.runtime import copilot_studio as _cs
     if _cs.enabled(host, ws):
+        _cs.warm(ws)
         print(f"[prismor] POST {_cs.PREFIX}/validate, {_cs.ANALYZE_PATH}  →  Copilot Studio threat detection"
               + (" (NO AUTH, localhost only)" if _cs.insecure(host) else " (Entra auth)"))
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
