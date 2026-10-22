@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-llamaindex"
+version = "0.1.0"
+description = "Prismor adapter for LlamaIndex — per-user runtime tool-call policy for production agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["llamaindex", "llama-index", "rag", "agents", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+llamaindex = ["llama-index-core>=0.12"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_llamaindex", "prismor"]

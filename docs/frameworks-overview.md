@@ -18,6 +18,9 @@ on your existing agent or controller object, with no changes to your tool logic.
 | Semantic Kernel (Microsoft) | Python | `pip install "prismor[semantic-kernel]"` | `add_filter(..., make_filter(...))` | `subject="user:alice"` |
 | Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` or `plugins=[PrismorPlugin(...)]` | `subject="user:alice"` |
 | Microsoft Agent Framework | Python | `pip install "prismor[agent-framework]"` | `middleware=[PrismorMiddleware(...)]` | `use_subject("user:alice")` |
+| LlamaIndex | Python | `pip install "prismor[llamaindex]"` | `guard_tools([...])` | `use_subject("user:alice")` |
+| Hugging Face smolagents | Python | `pip install "prismor[smolagents]"` | `guard_agent(agent)` | `use_subject("user:alice")` |
+| AG2 | Python | `pip install "prismor[ag2]"` | `middleware=[prismor_middleware(...)]` / `guard_agent(agent)` | `use_subject("user:alice")` |
 | BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` | `subject="user:alice"` |
 | Claude Code Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` | `subject="user:alice"` |
 | Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
@@ -78,6 +81,9 @@ Regardless of framework, every adapter does the same three things:
 | Semantic Kernel (Microsoft) | filter `filter_fn(context, next)` in the invocation middleware stack | before `await next(context)` — which calls `context.function.invoke(...)` |
 | Google ADK | `before_tool_callback(tool, args, tool_context)` (agent or `BasePlugin`) | before the tool call — returning a dict skips it entirely |
 | Microsoft Agent Framework | `FunctionMiddleware.process(context, call_next)` | before `call_next()` — which runs the function |
+| LlamaIndex | `FunctionTool._fn` / `_async_fn` (other tools: `call` / `acall`) | before your function runs — every agent calls `tool.acall` |
+| Hugging Face smolagents | `Tool.forward` on each tool instance | before the tool runs — including calls from a `CodeAgent`'s generated code |
+| AG2 | `BaseMiddleware.on_tool_execution` (1.x); executor `function_map` (0.x) | before `call_next` / before the registered function runs |
 | BeeAI Framework | `Tool`'s `Emitter` `"start"` event | before `self._run(...)` inside `Tool.run()` |
 | Claude Code Agent SDK | `PreToolUse` hook (`HookMatcher`) | before Claude runs the tool — same hook system as the CLI |
 | Vercel AI SDK | `tool.execute` | before the tool body runs, after the LLM emits the tool call |
@@ -252,6 +258,9 @@ choosing which client a request belongs to is your app's authentication job.
 - [Semantic Kernel (Microsoft)](frameworks-semantic-kernel.md) — `make_filter`, `AUTO_FUNCTION_INVOCATION`
 - [Google ADK](frameworks-google-adk.md) — `make_before_tool_callback`, `PrismorPlugin`
 - [Microsoft Agent Framework](frameworks-agent-framework.md) — `PrismorMiddleware`, function middleware
+- [LlamaIndex](frameworks-llamaindex.md) — `guard_tools`, FunctionTool wrapping
+- [Hugging Face smolagents](frameworks-smolagents.md) — `guard_agent`, `Tool.forward`, CodeAgent coverage
+- [AG2](frameworks-ag2.md) — `prismor_middleware`, `guard_agent` (1.x and 0.x)
 - [BeeAI Framework](frameworks-beeai.md) — `guard_tool`, `Emitter` `"start"` event
 - [Claude Code Agent SDK](frameworks-claude-agent-sdk.md) — `prismor_hook_matcher`, `PreToolUse` hooks
 - [Vercel AI SDK](frameworks-vercel-ai.md) — `prismorTools`, TypeScript, eval-server HTTP protocol

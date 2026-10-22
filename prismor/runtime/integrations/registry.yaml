@@ -598,6 +598,42 @@ agents:
     notes: "PrismorMiddleware is a FunctionMiddleware passed as Agent(middleware=[...]); process(context, call_next) wraps every tool invocation and the innermost link runs the function. Deny by not awaiting call_next() and setting context.result to the denial, so the model sees a coherent tool response and the run continues (MiddlewareTermination would end the whole loop); raise_on_block=True raises PrismorBlocked. The tool's output is redacted after call_next. Verified live (2026-10) on agent-framework 1.22.0 with Agent(client=OpenAIChatClient(model='gpt-6-luna')) and a genuine OpenAI key: a curl -d @/etc/passwd upload was denied before the tool's Python implementation ran; a benign lookup executed normally. pip install \"prismor[agent-framework]\"."
     sources: ["https://learn.microsoft.com/en-us/agent-framework/"]
 
+  - id: llamaindex
+    name: LlamaIndex
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [tool_call]
+    blocking: return-block
+    normalizer: "prismor_llamaindex"
+    notes: "guard_tools([...]) wraps each FunctionTool's _fn/_async_fn, which FunctionTool.call/acall run; FunctionAgent, ReActAgent and AgentWorkflow all execute tools through acall, so one wrap covers every agent type. Plain functions are wrapped in FunctionTool.from_defaults; other BaseTools are guarded at call/acall. A denial is returned as the tool output so the run continues; allowed output is redacted. pip install \"prismor[llamaindex]\"."
+    sources: ["https://docs.llamaindex.ai/en/stable/module_guides/deploying/agents/tools/"]
+
+  - id: smolagents
+    name: Hugging Face smolagents
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [tool_forward]
+    blocking: return-block
+    normalizer: "prismor_smolagents"
+    notes: "guard_agent(agent) / guard_tools([...]) wrap each Tool instance's forward, which Tool.__call__ runs. ToolCallingAgent calls tools directly and CodeAgent's LocalPythonExecutor hands the same tool objects to generated code, so both agent types are covered. CodeAgent's own Python (code that calls no tool) is not a tool call and stays with smolagents' import allowlist/sandbox; remote executors serialize tools and are not covered. final_answer is not screened. pip install \"prismor[smolagents]\"."
+    sources: ["https://huggingface.co/docs/smolagents/tutorials/tools"]
+
+  - id: ag2
+    name: AG2
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [on_tool_execution, function_map]
+    blocking: return-block
+    normalizer: "prismor_ag2"
+    notes: "AG2 1.x: prismor_middleware() is a Middleware factory for Agent(middleware=[...]); BaseMiddleware.on_tool_execution wraps every tool execution and a deny returns ToolResultEvent.from_call(event, denial) without awaiting call_next, the same shape as AG2's own approval_required. AG2 0.x (import autogen): guard_agent(executor) wraps every function in the executor's function_map. Distinct from autogen-core (id: autogen-core). pip install \"prismor[ag2]\"."
+    sources: ["https://docs.ag2.ai/"]
+
   - id: mastra
     name: Mastra (TypeScript)
     kind: framework

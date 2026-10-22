@@ -61,6 +61,9 @@ agno = ["agno>=1.0"]
 semantic-kernel = ["semantic-kernel>=1.0"]
 google-adk = ["google-adk>=1.0"]
 agent-framework = ["agent-framework>=1.0"]
+llamaindex = ["llama-index-core>=0.12"]
+smolagents = ["smolagents>=1.0"]
+ag2 = ["ag2>=0.9"]
 beeai = ["beeai-framework>=0.1"]
 # Live-verified separately from the rest of this list, against an
 # authenticated Claude Code CLI session rather than the shared OpenAI key
@@ -79,6 +82,9 @@ frameworks = [
     "semantic-kernel>=1.0",
     "google-adk>=1.0",
     "agent-framework>=1.0",
+    "llama-index-core>=0.12",
+    "smolagents>=1.0",
+    "ag2>=0.9",
     "beeai-framework>=0.1",
     "claude-agent-sdk>=0.1",
 ]
@@ -115,6 +121,9 @@ packages = [
     "adapters/semantic-kernel/prismor_semantic_kernel",
     "adapters/google-adk/prismor_google_adk",
     "adapters/agent-framework/prismor_agent_framework",
+    "adapters/llamaindex/prismor_llamaindex",
+    "adapters/smolagents/prismor_smolagents",
+    "adapters/ag2/prismor_ag2",
     "adapters/beeai/prismor_beeai",
     "adapters/claude-agent-sdk/prismor_claude_agent_sdk",
 ]
@@ -133,6 +142,9 @@ packages = [
 "adapters/semantic-kernel/prismor/semantic_kernel/__init__.py" = "prismor/semantic_kernel/__init__.py"
 "adapters/google-adk/prismor/google_adk/__init__.py" = "prismor/google_adk/__init__.py"
 "adapters/agent-framework/prismor/agent_framework/__init__.py" = "prismor/agent_framework/__init__.py"
+"adapters/llamaindex/prismor/llamaindex/__init__.py" = "prismor/llamaindex/__init__.py"
+"adapters/smolagents/prismor/smolagents/__init__.py" = "prismor/smolagents/__init__.py"
+"adapters/ag2/prismor/ag2/__init__.py" = "prismor/ag2/__init__.py"
 "adapters/beeai/prismor/beeai/__init__.py" = "prismor/beeai/__init__.py"
 "adapters/claude-agent-sdk/prismor/claude_agent_sdk/__init__.py" = "prismor/claude_agent_sdk/__init__.py"
 "immunity-agent.pth" = "immunity-agent.pth"
@@ -173,6 +185,9 @@ packages = [
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/faq.md" = "prismor/runtime/data/docs/faq.md"
 "docs/frameworks-agent-framework.md" = "prismor/runtime/data/docs/frameworks-agent-framework.md"
+"docs/frameworks-llamaindex.md" = "prismor/runtime/data/docs/frameworks-llamaindex.md"
+"docs/frameworks-smolagents.md" = "prismor/runtime/data/docs/frameworks-smolagents.md"
+"docs/frameworks-ag2.md" = "prismor/runtime/data/docs/frameworks-ag2.md"
 "docs/frameworks-agno.md" = "prismor/runtime/data/docs/frameworks-agno.md"
 "docs/frameworks-autogen-core.md" = "prismor/runtime/data/docs/frameworks-autogen-core.md"
 "docs/frameworks-beeai.md" = "prismor/runtime/data/docs/frameworks-beeai.md"

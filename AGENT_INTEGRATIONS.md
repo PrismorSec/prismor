@@ -64,6 +64,9 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
 | Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
 | Microsoft Agent Framework | framework | sdk | ✅ | `throw` |
+| LlamaIndex | framework | sdk | ✅ | `return-block` |
+| Hugging Face smolagents | framework | sdk | ✅ | `return-block` |
+| AG2 | framework | sdk | ✅ | `return-block` |
 | Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
 | BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` |
 | Claude Code Agent SDK | framework | sdk | ✅ | `json-permission` |

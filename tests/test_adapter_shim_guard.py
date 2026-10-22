@@ -20,6 +20,9 @@ SHIMS = {
     "langchain": _ROOT / "adapters/langchain/prismor/langchain/__init__.py",
     "browser_use": _ROOT / "adapters/browser-use/prismor/browser_use/__init__.py",
     "agent_framework": _ROOT / "adapters/agent-framework/prismor/agent_framework/__init__.py",
+    "llamaindex": _ROOT / "adapters/llamaindex/prismor/llamaindex/__init__.py",
+    "smolagents": _ROOT / "adapters/smolagents/prismor/smolagents/__init__.py",
+    "ag2": _ROOT / "adapters/ag2/prismor/ag2/__init__.py",
 }
 
 
