@@ -2,7 +2,7 @@
 
 How Prismor integrates with each major AI coding agent — what ships today, what's planned, and what mechanism each agent exposes for runtime security monitoring.
 
-_Last updated: 2026-07-30._
+_Last updated: 2026-10-22._
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "name": "prismor",
-  "version": "1.13.0",
+  "version": "1.64.0",
   "description": "Runtime security for AI coding agents: policy enforcement, secret prevention, and supply-chain blocking.",
   "license": "Apache-2.0",
   "keywords": [
