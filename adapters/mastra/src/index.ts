@@ -41,6 +41,8 @@ export interface PrismorMastraOptions {
   workspace?: string;
   /** Framework identifier for telemetry. Default: "mastra" */
   agent?: string;
+  /** Per-instance agent name for the console's per-agent row and controls. Example: "support-bot". */
+  agentName?: string;
 }
 
 interface PrismorDecision {
@@ -68,6 +70,7 @@ function resolveOpts(opts: PrismorMastraOptions): Required<PrismorMastraOptions>
     timeoutMs: opts.timeoutMs ?? 10_000,
     workspace: opts.workspace ?? (typeof process !== "undefined" ? process.cwd() : "."),
     agent: opts.agent ?? "mastra",
+    agentName: opts.agentName ?? "",
   };
 }
 
@@ -90,12 +93,14 @@ async function evaluateToolCall(
       headers: {
         "Content-Type": "application/json",
         ...(resolved.apiKey ? { Authorization: `Bearer ${resolved.apiKey}` } : {}),
+        ...(resolved.agentName ? { "X-Prismor-Agent-Name": resolved.agentName } : {}),
       },
       body: JSON.stringify({
         tool_name: toolName,
         arguments: args && typeof args === "object" ? args : { value: args },
         event_type: "shell",
         agent: resolved.agent,
+        agent_name: resolved.agentName,
         mode: resolved.mode,
         session_id: sessionId,
         subject: resolved.subject,

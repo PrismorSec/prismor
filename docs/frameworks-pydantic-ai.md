@@ -9,7 +9,7 @@ Registry entry: `id: pydantic-ai` in
 ## Install
 
 ```bash
-pip install "prismor[pydantic-ai]"
+pip install "prismor[pydantic-ai]" "pydantic-ai-slim[openai]"   # or the provider group for your model
 ```
 
 ## Connect to the console
@@ -40,7 +40,7 @@ from prismor.pydantic_ai import guard_toolsets
 toolset = FunctionToolset([run_shell, read_file])
 agent = Agent(
     "openai:gpt-4o-mini",
-    toolsets=guard_toolsets([toolset], subject="user:alice", mode="enforce"),
+    toolsets=guard_toolsets([toolset], name="support-bot", subject="user:alice", mode="enforce"),
 )
 ```
 

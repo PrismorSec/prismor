@@ -48,10 +48,13 @@ agent = Agent(
 )
 ```
 
+Pass `make_tool_hook(name="support-bot", mode="enforce")` to give the agent its
+own row and controls in the console.
+
 Use `make_tool_hook(subject="user:alice", mode="enforce", ...)` instead of
 the bare `prismor_tool_hook` to customize subject/workspace/mode. A denied
-call raises `RuntimeError` by default (Agno surfaces this to the model as a
-tool error); pass `raise_on_block=True` (via `make_tool_hook`) to raise
+call returns the denial (`⛔ Prismor blocked this tool call: …`) as the tool's
+result by default, so the model reads why and the run continues; pass `raise_on_block=True` (via `make_tool_hook`) to raise
 `PrismorBlocked` instead for a hard stop. `mode="observe"` is log-only.
 
 ## Per-user control

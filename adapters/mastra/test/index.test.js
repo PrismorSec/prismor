@@ -92,3 +92,16 @@ test("does not double-wrap an already-guarded tool", async () => {
     },
   );
 });
+
+test("agentName is sent so the console can name and control this agent", async () => {
+  const bodies = [];
+  await withMockFetch(
+    async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, json: async () => ALLOW }; },
+    async () => {
+      const guarded = prismorTool("run_shell", { execute: async () => "ok" }, { agentName: "support-mastra" });
+      await guarded.execute({ command: "echo hi" });
+    },
+  );
+  assert.equal(bodies[0].agent, "mastra");
+  assert.equal(bodies[0].agent_name, "support-mastra");
+});

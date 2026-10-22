@@ -70,6 +70,7 @@ class PrismorToolset(WrapperToolset):
         subject: Optional[Union[str, Subject]] = None,
         workspace: Optional[Union[str, Path]] = None,
         agent: str = "pydantic-ai",
+        name: Optional[str] = None,
         mode: str = "enforce",
         session_id: Optional[str] = None,
         event_type: str = "shell",
@@ -79,6 +80,7 @@ class PrismorToolset(WrapperToolset):
         object.__setattr__(self, "_prismor_subject", subject)
         object.__setattr__(self, "_prismor_ws", Path(workspace) if workspace else Path.cwd())
         object.__setattr__(self, "_prismor_agent", agent)
+        object.__setattr__(self, "_prismor_name", name or "")
         object.__setattr__(self, "_prismor_mode", mode)
         object.__setattr__(self, "_prismor_sid", session_id or f"pydantic-ai-{os.getpid()}")
         object.__setattr__(self, "_prismor_event_type", event_type)
@@ -104,6 +106,7 @@ class PrismorToolset(WrapperToolset):
             event=event,
             workspace=self._prismor_ws,  # type: ignore[attr-defined]
             agent=self._prismor_agent,  # type: ignore[attr-defined]
+            agent_name=self._prismor_name,  # type: ignore[attr-defined]
             mode=self._prismor_mode,  # type: ignore[attr-defined]
             session_id=event["session_id"],
             subject=resolve_subject(self._prismor_subject),  # type: ignore[attr-defined]

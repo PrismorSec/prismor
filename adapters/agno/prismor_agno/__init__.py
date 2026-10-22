@@ -61,6 +61,7 @@ def make_tool_hook(
     subject: Optional[Union[str, Subject]] = None,
     workspace: Optional[Union[str, Path]] = None,
     agent: str = "agno",
+    name: Optional[str] = None,
     mode: str = "enforce",
     session_id: Optional[str] = None,
     event_type: str = "shell",
@@ -91,7 +92,7 @@ def make_tool_hook(
             },
         }
         decision: Decision = evaluate_tool_call(
-            event=event, workspace=ws, agent=agent, mode=mode,
+            event=event, workspace=ws, agent=agent, agent_name=name or "", mode=mode,
             session_id=sid, subject=resolve_subject(subject),
         )
         if not decision.allow:

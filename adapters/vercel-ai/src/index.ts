@@ -370,7 +370,8 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
   opts: PrismorOptions = {},
 ): T {
   if ((tool as any).__prismor_guarded__) return tool;
-  const resolved = resolveOpts(opts);
+  // LangChain / LangGraph JS reports under its own framework id, not vercel-ai.
+  const resolved = resolveOpts({ agent: "langchain", ...opts });
   const sid = sessionId();
   const toolName = tool.name || "tool";
   const original = tool.invoke.bind(tool);

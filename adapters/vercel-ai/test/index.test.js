@@ -373,3 +373,14 @@ test("identityToken is sent as X-Prismor-Identity, never in the body", async () 
     assert.equal(JSON.stringify(requests[0].body).includes("eyJ.test.sig"), false);
   });
 });
+
+test("langchain: tools report under the langchain framework id, not vercel-ai", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const { prismorLangChainTool } = require("../dist/index.js");
+    const t = prismorLangChainTool({ name: "run_shell", invoke: async () => "ok" }, { agentName: "support-langgraph-js" });
+    await t.invoke({ command: "echo hi" });
+  });
+  assert.equal(requests[0].body.agent, "langchain");
+  assert.equal(requests[0].body.agent_name, "support-langgraph-js");
+});
