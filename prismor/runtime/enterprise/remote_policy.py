@@ -323,11 +323,19 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_identity_sig is not None
         and str(latest_identity_sig) != str(_current_identity_sig())
     )
+    # Copilot Studio's tenant + app allowlist (settings.copilot_studio), also
+    # served without a version bump: registering a tenant in the console must
+    # reach the eval-server before its first /validate times out.
+    latest_cs_sig = body.get("copilotStudioSig")
+    copilot_studio_changed = (
+        latest_cs_sig is not None
+        and str(latest_cs_sig) != str(_settings_block_sig("copilot_studio"))
+    )
     if (version_changed or profile_changed or capture_changed or guardrails_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
-            or self_edit_changed or identity_changed):
+            or self_edit_changed or identity_changed or copilot_studio_changed):
         return fetch(force=True)
     return False
 
@@ -571,6 +579,21 @@ def _current_prompt_guardrails_sig() -> str:
     try:
         pol = verify_and_load()
         block = ((pol or {}).get("settings") or {}).get("prompt_guardrails")
+        if not isinstance(block, dict) or not block:
+            return ""
+        import hashlib
+        blob = json.dumps(block, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _settings_block_sig(key: str) -> str:
+    """Canonical JSON of settings.<key> → sha256 → 16 hex (empty when unset),
+    matching the server's blockSig for that block."""
+    try:
+        pol = verify_and_load()
+        block = ((pol or {}).get("settings") or {}).get(key)
         if not isinstance(block, dict) or not block:
             return ""
         import hashlib

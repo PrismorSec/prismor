@@ -120,3 +120,20 @@ class PauseRefreshTrigger(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CopilotStudioRefreshTrigger(PauseRefreshTrigger):
+    """Same wiring check for settings.copilot_studio (the console's tenant +
+    app allowlist for the Copilot Studio eval-server)."""
+
+    def test_a_registered_tenant_triggers_a_signed_repull(self):
+        with patch.object(remote_policy, "_settings_block_sig", return_value=""):
+            with self._respond({**STEADY_STATE, "copilotStudioSig": "0123456789abcdef"}):
+                self.assertTrue(remote_policy.check_and_refresh(interval=0))
+        self.fetch.assert_called_once_with(force=True)
+
+    def test_same_copilot_studio_sig_is_not_a_change(self):
+        with patch.object(remote_policy, "_settings_block_sig", return_value="0123456789abcdef"):
+            with self._respond({**STEADY_STATE, "copilotStudioSig": "0123456789abcdef"}):
+                self.assertFalse(remote_policy.check_and_refresh(interval=0))
+        self.fetch.assert_not_called()
