@@ -308,9 +308,10 @@ def test_routes_absent_when_not_configured(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _fresh_caches():
+def _fresh_caches(monkeypatch):
     cs._org_cache.clear()
     cs._turns.clear()
+    monkeypatch.setattr(cs, "_keepwarm_thread", None)
     yield
     cs._org_cache.clear()
     cs._turns.clear()
@@ -458,7 +459,7 @@ def test_warm_up_records_nothing(tmp_path, monkeypatch):
     seen = []
     real = runtime.evaluate_tool_call
     monkeypatch.setattr(runtime, "evaluate_tool_call", lambda **kw: seen.append(kw["record"]) or real(**kw))
-    cs.warm(tmp_path)
+    cs.warm(tmp_path, keepwarm=False)
     assert seen and not any(seen)
 
 
@@ -524,3 +525,28 @@ def test_console_kill_switch_stops_a_copilot_studio_agent(tmp_path, monkeypatch)
     monkeypatch.setattr(remote_policy, "verify_and_load",
                         lambda: {"settings": {"agent_controls": {"Sales assistant": {"enabled": False}}}})
     assert cs.analyze(cs.sample_request("clean"), tmp_path)["blockAction"]
+
+
+def test_background_refresh_keeps_keys_and_settings_off_the_request_path(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    refreshed = []
+
+    class Client:
+        def get_jwk_set(self, refresh=False):
+            refreshed.append(refresh)
+
+    monkeypatch.setattr(cs, "_jwks_client", lambda uri: Client())
+    monkeypatch.setattr(cs, "_seen_tenants", {TID})
+    cs._refresh_once(tmp_path, keys=True)
+    assert refreshed == [True]
+    assert str(tmp_path) in cs._org_cache
+    # With the refresher running, an expired entry is served, not reloaded.
+    cs._org_cache[str(tmp_path)] = (0.0, {"app_ids": [APP]})
+    monkeypatch.setattr(cs, "_keepwarm_alive", lambda: True)
+    assert cs.org_settings(tmp_path) == {"app_ids": [APP]}
+
+
+def test_warm_up_records_nothing_and_starts_no_thread_when_asked(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    cs.warm(tmp_path, keepwarm=False)
+    assert not cs._keepwarm_alive()

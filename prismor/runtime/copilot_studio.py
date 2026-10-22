@@ -133,7 +133,9 @@ def org_settings(workspace: Optional[Path]) -> Dict[str, Any]:
     now = time.monotonic()
     with _org_lock:
         hit = _org_cache.get(key)
-        if hit and now - hit[0] < _ORG_TTL:
+        # With the keep-warm thread refreshing in the background, a request
+        # never pays for a reload: it takes the last value, however old.
+        if hit and (now - hit[0] < _ORG_TTL or _keepwarm_alive()):
             return hit[1]
     cfg: Dict[str, Any] = {}
     try:
@@ -206,6 +208,7 @@ def authenticate(authorization: str, bound_host: str, cfg: Optional[Dict[str, An
         raise CopilotStudioError(401, "invalid token: no tenant (tid) claim")
     if tenants and tid.lower() not in tenants:
         raise CopilotStudioError(403, f"tenant {tid} is not allowed")
+    _seen_tenants.add(tid.lower())
     base = "https://login.microsoftonline.com/" + tid
     try:
         key = _jwks_client(base + "/discovery/v2.0/keys").get_signing_key_from_jwt(token)
@@ -554,15 +557,63 @@ def analyze(body: Any, workspace: Path, user_messages: Optional[str] = None,
                 "diagnostics": json.dumps({"fail": "closed", "detail": what})}
 
 
-def warm(workspace: Path) -> None:
+_seen_tenants: set = set()
+_keepwarm_thread: Optional[threading.Thread] = None
+_KEEPWARM_S = 20.0      # org settings; the console's edits land within this
+_JWKS_EVERY = 12        # x _KEEPWARM_S = 4 min, inside the keys' 10 min cache
+
+
+def _keepwarm_alive() -> bool:
+    return _keepwarm_thread is not None and _keepwarm_thread.is_alive()
+
+
+def _refresh_once(workspace: Path, keys: bool) -> None:
+    """Reload the org settings, and (every few minutes) each seen tenant's
+    signing keys, off the request path."""
+    cfg: Dict[str, Any] = {}
+    try:
+        from prismor.runtime.enterprise import remote_policy as _remote
+        from prismor.runtime.policy_engine import PolicyEngine
+
+        _remote.check_and_refresh()
+        cfg = dict(PolicyEngine(workspace=workspace).copilot_studio or {})
+        with _org_lock:
+            _org_cache[str(workspace)] = (time.monotonic(), cfg)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] copilot-studio: background refresh failed: {exc}\n")
+    if not keys:
+        return
+    for tid in list(_seen_tenants):
+        try:
+            _jwks_client(f"https://login.microsoftonline.com/{tid}/discovery/v2.0/keys").get_jwk_set(refresh=True)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] copilot-studio: key refresh for {tid} failed: {exc}\n")
+
+
+def warm(workspace: Path, keepwarm: bool = True) -> None:
     """Load the policy, the org settings and the detectors before the first real
-    call. Cold, the first analyze took ~950ms live: past Copilot Studio's 1s
-    window once network time is added, so that call would have gone through."""
+    call, then keep them loaded. Cold, the first analyze took ~950ms live, and
+    after 10 idle minutes a call refetched the tenant's signing keys (~420ms)
+    inline: either can push the answer past Copilot Studio's 1s window, which
+    its default error behavior turns into an allow."""
+    global _keepwarm_thread
     try:
         config(workspace)
         analyze(sample_request("clean"), workspace, user_messages="user", record=False)
     except Exception as exc:
         sys.stderr.write(f"[prismor] copilot-studio: warm-up failed: {exc}\n")
+    if not keepwarm or _keepwarm_alive():
+        return
+
+    def loop() -> None:
+        tick = 0
+        while True:
+            time.sleep(_KEEPWARM_S)
+            tick += 1
+            _refresh_once(workspace, keys=tick % _JWKS_EVERY == 0)
+
+    _keepwarm_thread = threading.Thread(target=loop, name="copilot-studio-keepwarm", daemon=True)
+    _keepwarm_thread.start()
 
 
 def handle(path: str, headers: Any, body: Any, *, workspace: Path, bound_host: str) -> Tuple[int, Dict[str, Any]]:
