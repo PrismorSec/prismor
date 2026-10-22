@@ -437,16 +437,6 @@ There's no bulk-clear — each session is cleared by ID individually. If a sessi
 
 ---
 
-## Benchmarks<a name="benchmarks" />
-
-Measured overhead is 0.8 ms per tool call across 10,000 simulated agent sessions, below the 1 ms threshold for every task category tested.
-
-![Prismor Simulation Results](assets/prismor-simulation.png)
-
-See [benchmark.md](benchmark.md) for the full methodology, per-category breakdown, and latency analysis.
-
----
-
 ## Contributing<a name="contributing" />
 
 PRs are welcome. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before you start — it explains the one thing that matters most here: **reuse the mechanisms that already exist, and solve the problem in the fewest lines you can.** Smaller diffs get merged faster.
