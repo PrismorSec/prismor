@@ -169,7 +169,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         from prismor.runtime import authzen as _az
         from prismor.runtime import copilot_studio as _cs
         route = self.path.split("?", 1)[0]  # Copilot Studio appends ?api-version=
-        if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0]):
+        if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0], self.workspace):
             self._copilot_studio(route)
             return
         if self.path not in ("/v1/evaluate", "/v1/redact", _az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
@@ -417,7 +417,7 @@ def run_eval_server(
         print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
               f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
     from prismor.runtime import copilot_studio as _cs
-    if _cs.enabled(host):
+    if _cs.enabled(host, ws):
         print(f"[prismor] POST {_cs.PREFIX}/validate, {_cs.ANALYZE_PATH}  →  Copilot Studio threat detection"
               + (" (NO AUTH, localhost only)" if _cs.insecure(host) else " (Entra auth)"))
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")

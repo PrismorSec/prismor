@@ -302,3 +302,151 @@ def test_routes_absent_when_not_configured(tmp_path, monkeypatch):
         assert _req(base + "/validate" + Q)[0] == 404
     finally:
         srv.shutdown()
+
+
+# ── org binding: the console's tenant + app allowlist ──────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _fresh_caches():
+    cs._org_cache.clear()
+    cs._turns.clear()
+    yield
+    cs._org_cache.clear()
+    cs._turns.clear()
+
+
+def test_console_settings_widen_the_env_allowlist(monkeypatch, tmp_path):
+    _clean_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("PRISMOR_COPILOT_STUDIO_ALLOWED_APP_IDS", APP)
+    monkeypatch.setattr(cs, "org_settings", lambda ws: {
+        "audience": AUD, "app_ids": ["BBBBBBBB-bbbb-cccc-dddd-eeeeeeeeeeee"],
+        "tenants": [TID], "user_messages": "untrusted"})
+    cfg = cs.config(tmp_path)
+    assert cfg["audience"] == AUD
+    assert cfg["app_ids"] == sorted([APP, "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee"])
+    assert cfg["tenants"] == [TID] and cfg["user_messages"] == "untrusted"
+    assert cs.enabled("0.0.0.0", tmp_path)  # routes on from console config alone
+
+
+def test_console_registered_tenant_and_app_authenticate(authed, monkeypatch):
+    base, _ = authed
+    other = "99999999-bbbb-cccc-dddd-eeeeeeeeeeee"
+    monkeypatch.setenv("PRISMOR_COPILOT_STUDIO_ALLOWED_TENANTS", "22222222-2222-3333-4444-555555555555")
+    monkeypatch.setattr(cs, "org_settings", lambda ws: {"app_ids": [other], "tenants": [TID]})
+    assert _req(base + "/validate" + Q, headers={"Authorization": _token(appid=other)})[0] == 200
+
+
+def test_copilot_studio_settings_from_a_repo_layer_are_ignored(tmp_path, monkeypatch, capsys):
+    _clean_env(monkeypatch, tmp_path)
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump(
+        {"settings": {"copilot_studio": {"app_ids": [APP], "tenants": [TID]}}}))
+    from prismor.runtime.policy_engine import PolicyEngine
+    assert PolicyEngine(workspace=tmp_path).copilot_studio == {}
+    assert "Ignoring settings.copilot_studio" in capsys.readouterr().err
+
+
+def test_copilot_studio_settings_from_the_signed_org_layer_apply(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    from prismor.runtime.policy_engine import PolicyEngine
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda ws: True)
+    monkeypatch.setattr(remote_policy, "verify_and_load",
+                        lambda: {"settings": {"copilot_studio": {"app_ids": [APP]}}})
+    assert PolicyEngine(workspace=tmp_path).copilot_studio == {"app_ids": [APP]}
+
+
+# ── attribution ────────────────────────────────────────────────────────────
+
+
+def test_real_request_attribution():
+    body = cs.sample_request("clean", tenant_id=TID)
+    body["conversationMetadata"]["agent"]["id"] = cs._NIL_GUID  # a draft agent
+    events, ctx = cs.to_events(body)
+    meta = body["conversationMetadata"]
+    assert ctx["agent_name"] == "Sales assistant"
+    assert ctx["session_id"] == f"cs-{meta['conversationId']}"
+    assert ctx["subject"] == f"user:{meta['user']['id']}"
+    call = events[-1]["metadata"]
+    assert call["agent_id"] is None and call["tenant_id"] == TID and call["channel"] == "msteams"
+    assert call["tool_name"] == "send_email_v2" and call["source"] == "tool_call"
+
+
+def test_nested_connector_arguments_reach_when_rules(server, tmp_path):
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({"rules": [{
+        "id": "no-mail-to-example", "title": "No mail to example.com", "severity": "HIGH",
+        "category": "data_boundary", "event_types": ["tool_result"], "fields": ["response"],
+        "patterns": ["."], "when": "tool.name == 'send_email_v2' and args.send_email_v2_to == 'someone@example.com'",
+        "action": "block", "mode": "enforce"}]}))
+    assert _req(server + "/analyze-tool-execution" + Q, cs.sample_request("external"))[1]["blockAction"]
+    assert not _req(server + "/analyze-tool-execution" + Q, cs.sample_request("clean"))[1]["blockAction"]
+
+
+
+# ── the user's message, screened once per turn ─────────────────────────────
+
+
+def test_injected_user_message_is_flagged_not_blocked_by_default(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    assert cs.analyze(cs.sample_request("injection"), tmp_path, user_messages="user") == {"blockAction": False}
+
+
+def test_injected_user_message_blocks_when_users_are_untrusted(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    out = cs.analyze(cs.sample_request("injection"), tmp_path, user_messages="untrusted")
+    assert out["blockAction"] and out["reasonCode"] == cs.REASON_CODES["prompt_injection"]
+
+
+def test_a_turn_is_screened_once_and_a_blocked_turn_stays_blocked(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    clean = cs.sample_request("clean")
+    events, _ = cs.to_events(clean)
+    assert sum(e["metadata"].get("source") == "user_message" for e in events) == 1
+    cs.analyze(clean, tmp_path, user_messages="untrusted")
+    key = f"{clean['conversationMetadata']['conversationId']}:{clean['conversationMetadata']['messageId']}"
+    assert key in cs._turns and cs._turns[key] is None  # screened, clean
+
+    bad = cs.sample_request("injection")
+    first = cs.analyze(bad, tmp_path, user_messages="untrusted")
+    # A second tool in the same turn: blocked from the cache, even with a benign call.
+    bad["inputValues"] = {"emailMessage": {"send_email_v2_to": "colleague@contoso.com"}}
+    assert cs.analyze(bad, tmp_path, user_messages="untrusted") == first
+
+
+def test_history_user_turns_are_screened():
+    body = cs.sample_request("clean")
+    body["plannerContext"]["chatHistory"] = [
+        {"role": "user", "content": "earlier ask"}, {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": body["plannerContext"]["userMessage"]}]
+    texts = [e.get("prompt") for e in cs.to_events(body)[0] if e["metadata"].get("source") == "user_message"]
+    assert texts == ["earlier ask", body["plannerContext"]["userMessage"]]
+
+
+# ── setup values ───────────────────────────────────────────────────────────
+
+
+def test_fic_subject_matches_a_live_tenant():
+    # The exact subject Copilot Studio presented for this tenant + endpoint in a
+    # live end-to-end run (validate returned 200).
+    assert cs.fic_subject("cc24c074-6f9b-4241-9d11-772b2dfbf69a", "https://cs.prismor.dev/copilot-studio") == (
+        "/eid1/c/pub/t/dMAkzJtvQUKdEXcrLfv2mg/a/m1WPnYRZpEaQKq1Cceg--g/"
+        "aHR0cHM6Ly9jcy5wcmlzbW9yLmRldi9jb3BpbG90LXN0dWRpbw")
+
+
+def test_setup_values_validate_input():
+    v = cs.setup_values(TID, "https://security.contoso.com/copilot-studio/", APP)
+    assert v["entra_app"]["application_id_uri"] == "https://security.contoso.com"
+    assert v["server_env"]["PRISMOR_COPILOT_STUDIO_AUDIENCE"] == "https://security.contoso.com"
+    for bad in [("nope", AUD), (TID, "http://x.com/copilot-studio"), (TID, "https://x.com/other")]:
+        with pytest.raises(ValueError):
+            cs.setup_values(*bad)
+
+
+def test_cli_test_prints_verdicts(tmp_path, monkeypatch, capsys):
+    _clean_env(monkeypatch, tmp_path)
+    from prismor.runtime.copilot_studio_cli import cmd_test
+    assert cmd_test(["clean", "credential"], tmp_path) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert out[0].startswith("ALLOW  clean") and out[1].startswith("BLOCK  credential")

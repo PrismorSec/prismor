@@ -1381,6 +1381,14 @@ class PolicyEngine:
                 f"(only the signed org policy or eval-server flags may set it)\n"
             )
             override_settings.pop("identity", None)
+        # Same reasoning for Copilot Studio: its tenant / app allowlist decides
+        # whose Entra tokens the eval-server accepts. Console or env only.
+        if source != "remote" and "copilot_studio" in override_settings:
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.copilot_studio from the {source} policy layer "
+                f"(only the signed org policy or PRISMOR_COPILOT_STUDIO_* env may set it)\n"
+            )
+            override_settings.pop("copilot_studio", None)
         if "block_categories" in override_settings:
             cats = set(override_settings.get("block_categories") or [])
             dropped = _CORE_BLOCK_CATEGORIES - cats
@@ -1587,6 +1595,10 @@ class PolicyEngine:
         # see the layer filter in _apply_override and identity_token.py.
         _idc = settings.get("identity")
         self.identity: Dict[str, Any] = _idc if isinstance(_idc, dict) else {}
+        # Copilot Studio provider config (settings.copilot_studio): the Entra
+        # tenants and app ids an org registered in the console. Signed layer only.
+        _csc = settings.get("copilot_studio")
+        self.copilot_studio: Dict[str, Any] = _csc if isinstance(_csc, dict) else {}
         # Tool-combination governance config (settings.tool_tags):
         # customizable tags + forbidden combinations (generalized trifecta).
         _tt = settings.get("tool_tags")

@@ -433,6 +433,20 @@ def main(argv: Optional[List[str]] = None) -> None:
         )
         return
 
+    # ── copilot-studio: setup values + in-process check ──────────────────
+    if args.command == "copilot-studio":
+        from pathlib import Path as _Path
+        from prismor.runtime import copilot_studio_cli as _csc
+        sub = getattr(args, "cs_command", None)
+        if sub == "setup":
+            sys.exit(_csc.cmd_setup(args.tenant, args.endpoint, args.app_id or "", bool(args.json)))
+        if sub == "test":
+            sys.exit(_csc.cmd_test(list(args.sample or []),
+                                   _Path(args.workspace) if args.workspace else None,
+                                   args.user_messages, bool(args.json)))
+        parser.parse_args(["copilot-studio", "--help"])
+        return
+
     # ── proxy: the LLM lane ──────────────────────────────────────────────
     if args.command == "proxy":
         from pathlib import Path as _Path
@@ -3955,6 +3969,30 @@ def build_parser() -> argparse.ArgumentParser:
         "surfaces",
         help="Show which enforcement surfaces (hooks, MCP mirror, gateway) are active",
     )
+
+    # ── copilot-studio: Microsoft Copilot Studio threat detection helpers ──
+    _cs = subparsers.add_parser(
+        "copilot-studio",
+        help="Microsoft Copilot Studio threat detection: print setup values (setup), screen sample requests (test)",
+        description=(
+            "Copilot Studio calls Prismor before every tool its agents run (served by `prismor eval-server`). "
+            "`setup` prints the Entra app, federated credential and Power Platform values; "
+            "`test` screens real-shaped sample requests against this workspace's policy."
+        ),
+    )
+    _cs_sub = _cs.add_subparsers(dest="cs_command")
+    _cs_setup = _cs_sub.add_parser("setup", help="Print the Entra + Power Platform values for an endpoint")
+    _cs_setup.add_argument("--tenant", required=True, help="Microsoft Entra tenant id (GUID)")
+    _cs_setup.add_argument("--endpoint", required=True, help="Public base URL, e.g. https://cs.example.com/copilot-studio")
+    _cs_setup.add_argument("--app-id", default=None, help="Entra app (client) id, once registered")
+    _cs_setup.add_argument("--json", action="store_true", help="Print the values as JSON")
+    _cs_test = _cs_sub.add_parser("test", help="Screen sample tool calls in-process and print ALLOW/BLOCK")
+    _cs_test.add_argument("--sample", action="append", choices=("clean", "external", "credential", "injection", "all"),
+                          help="Which sample(s) (default: all)")
+    _cs_test.add_argument("--workspace", default=None, help="Workspace whose policy applies (default: cwd)")
+    _cs_test.add_argument("--user-messages", choices=("user", "untrusted"), default=None,
+                          help="Screen the user's message as a trusted user (default) or as untrusted content")
+    _cs_test.add_argument("--json", action="store_true", help="One JSON verdict per line")
 
     # ── inference-hook: Claude Inference Hooks AI-security server ──────
     def _add_ih_serve_args(p: argparse.ArgumentParser) -> None:
