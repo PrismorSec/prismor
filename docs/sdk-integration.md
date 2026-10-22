@@ -115,7 +115,7 @@ with use_subject("user:alice"):
 ### Vercel AI SDK / any language (HTTP)
 Run the sidecar: `prismor eval-server --port 7071 --workspace .`
 ```ts
-import { prismorTools } from "prismor-warden";
+import { prismorTools } from "@prismor/vercel-ai";
 const tools = prismorTools({ run_shell, search_web }, { subject: `user:${userId}` });
 await generateText({ model, tools, prompt });
 ```

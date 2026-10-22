@@ -23,16 +23,16 @@ on your existing agent or controller object, with no changes to your tool logic.
 | AG2 | Python | `pip install "prismor[ag2]"` | `middleware=[prismor_middleware(...)]` / `guard_agent(agent)` | `use_subject("user:alice")` |
 | BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` | `subject="user:alice"` |
 | Claude Code Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` | `subject="user:alice"` |
-| Vercel AI SDK | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
-| LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
-| Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` | `subject: "user:alice"` |
+| Vercel AI SDK | TypeScript | `npm install @prismor/vercel-ai` | `prismorTools(tools)` | `useSubject("user:alice", fn)` |
+| LangChain JS / LangGraph JS | TypeScript | `npm install @prismor/vercel-ai` | `prismorLangChainTools([...])` | `useSubject("user:alice", fn)` |
+| Mastra | TypeScript | `npm install @prismor/mastra` | `prismorTool(name, tool)` | `subject: "user:alice"` |
 | Any language | Any | — (HTTP client only) | `POST /v1/evaluate` | `X-Prismor-Subject` header |
 
 > The Python adapters ship inside the `prismor` package (no separate PyPI
 > packages) — each extra just pulls the framework itself.
 > `prismor[frameworks]` installs all of them. Vercel AI SDK / LangChain JS
-> ship as the `prismor-warden` npm package; Mastra ships separately as
-> `prismor-mastra` since it wraps tools directly rather than going through
+> ship as the `@prismor/vercel-ai` npm package; Mastra ships separately as
+> `@prismor/mastra` since it wraps tools directly rather than going through
 > an eval-server client — both are genuinely separate packages since a
 > Python wheel can't bundle TypeScript.
 
@@ -124,7 +124,7 @@ Validated live on an Ubuntu EC2 instance with real OpenAI function calls:
 
 | Language | Adapter size | Dependencies |
 |---|---|---|
-| TypeScript (Vercel AI SDK) | ~80 lines | `npm install prismor-warden` |
+| TypeScript (Vercel AI SDK) | ~80 lines | `npm install @prismor/vercel-ai` |
 | Node.js (raw) | ~25 lines | built-in `fetch` |
 | Ruby | ~20 lines | stdlib `Net::HTTP` |
 | Java 21 | ~25 lines | stdlib `java.net.http` |

@@ -1,6 +1,8 @@
 # Vercel AI SDK — Prismor adapter
 
-The Vercel AI SDK adapter (`prismor-warden` on npm) is a TypeScript package that
+> Published as `@prismor/vercel-ai` from 0.4.0. Versions up to 0.3.0 were published as `prismor-warden`, which is deprecated; replace it with `npm install @prismor/vercel-ai` and update the import path. The API is unchanged.
+
+The Vercel AI SDK adapter (`@prismor/vercel-ai` on npm) is a TypeScript package that
 intercepts every tool `execute()` call before it runs. It is the reference
 implementation of the **HTTP adapter pattern**: a thin language-native client
 calls the Prismor **eval-server** (a sidecar Python process) to evaluate each
@@ -38,7 +40,7 @@ The server exposes:
 ## Install
 
 ```bash
-npm install prismor-warden
+npm install @prismor/vercel-ai
 ```
 
 ## Connect to the console
@@ -57,7 +59,7 @@ Without a key the eval-server still enforces your local policy but reports nothi
 import { generateText, tool } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
-import { prismorTools } from "prismor-warden";
+import { prismorTools } from "@prismor/vercel-ai";
 
 const run_shell = tool({
   description: "Execute a shell command",
@@ -91,7 +93,7 @@ original value is returned unchanged; redaction never fails a tool call.
 A denied call in enforce mode throws `PrismorBlocked`:
 
 ```typescript
-import { PrismorBlocked, prismorTools, useSubject } from "prismor-warden";
+import { PrismorBlocked, prismorTools, useSubject } from "@prismor/vercel-ai";
 
 const tools = prismorTools(myTools); // once, at module scope
 
@@ -282,11 +284,11 @@ process, not something that runs inside a Vercel Function.
 
 ## LangChain JS / LangGraph JS
 
-`prismor-warden` also guards LangChain JS tools in place — and therefore
+`@prismor/vercel-ai` also guards LangChain JS tools in place — and therefore
 LangGraph agents, whose `ToolNode` / `createReactAgent` execute those tools:
 
 ```typescript
-import { prismorLangChainTools, useSubject } from "prismor-warden";
+import { prismorLangChainTools, useSubject } from "@prismor/vercel-ai";
 
 const tools = prismorLangChainTools([run_shell, fetch_url]);
 const agent = createReactAgent({ llm, tools });

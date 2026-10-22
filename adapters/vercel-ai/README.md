@@ -1,4 +1,4 @@
-# prismor-warden
+# @prismor/vercel-ai
 
 Prismor adapter for the [Vercel AI SDK](https://sdk.vercel.ai).
 
@@ -17,7 +17,7 @@ prismor eval-server --port 7071 --workspace /path/to/project
 ## Install
 
 ```bash
-npm install prismor-warden
+npm install @prismor/vercel-ai
 ```
 
 ## Usage
@@ -26,7 +26,7 @@ npm install prismor-warden
 import { generateText, tool } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
-import { prismorTools } from "prismor-warden";
+import { prismorTools } from "@prismor/vercel-ai";
 
 const run_shell = tool({
   description: "Run a shell command",
@@ -49,7 +49,7 @@ const result = await generateText({
 A blocked call throws `PrismorBlocked`. In a Next.js API route:
 
 ```typescript
-import { PrismorBlocked } from "prismor-warden";
+import { PrismorBlocked } from "@prismor/vercel-ai";
 
 try {
   const result = await generateText({ model, tools, prompt });
@@ -68,7 +68,7 @@ Guard the tools once at module scope, then wrap each request handler in
 matching the Python adapters' `use_subject()`:
 
 ```typescript
-import { prismorTools, useSubject } from "prismor-warden";
+import { prismorTools, useSubject } from "@prismor/vercel-ai";
 
 const tools = prismorTools(myTools); // once, at module scope
 
@@ -99,7 +99,7 @@ is wrapped in place:
 ```typescript
 import { tool } from "@langchain/core/tools";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
-import { prismorLangChainTools, useSubject } from "prismor-warden";
+import { prismorLangChainTools, useSubject } from "@prismor/vercel-ai";
 
 const tools = prismorLangChainTools([run_shell, fetch_url]);
 const agent = createReactAgent({ llm, tools });

@@ -393,7 +393,7 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
  * Python adapters' `guard_tools([...])`. Returns the same array.
  *
  * @example
- * import { prismorLangChainTools, useSubject } from "prismor-warden";
+ * import { prismorLangChainTools, useSubject } from "@prismor/vercel-ai";
  * const tools = prismorLangChainTools([run_shell, fetch_url]);
  * const agent = createReactAgent({ llm, tools });
  * await useSubject(`user:${userId}`, () => agent.invoke({ messages }));

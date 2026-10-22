@@ -642,8 +642,8 @@ agents:
     config_paths: {}
     events: [execute]
     blocking: throw
-    normalizer: "prismor-mastra (npm)"
-    notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install prismor-mastra."
+    normalizer: "@prismor/mastra (npm)"
+    notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install @prismor/mastra."
     sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
 
   - id: beeai

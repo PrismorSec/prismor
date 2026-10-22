@@ -430,7 +430,7 @@ telemetry scope to the end-user.
 ### Mastra (TypeScript)
 
 - **Surface:** in-process tool wrapper, via the Prismor eval-server sidecar (`surface: sdk`).
-- **Package:** [`adapters/mastra/`](adapters/mastra/) → `prismor-mastra` (npm).
+- **Package:** [`adapters/mastra/`](adapters/mastra/) → `@prismor/mastra` (npm).
   `prismorTool("run_shell", runShell, { mode: "enforce", subject: "user:alice" })`.
 - **Hook:** wraps a tool's `execute` function directly — the same pattern
   the CrewAI/LangChain adapters use — calling the Prismor eval-server
