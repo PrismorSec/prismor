@@ -305,6 +305,8 @@ prismor policy show
 bash scripts/query.sh count
 ```
 
+If your own session is hooked by Prismor in enforce mode, the two `prismor check` lines are blocked before they run: `destructive-command` and the exfiltration rules match the quoted argument text. Do not reword them to get past the block. Ask the human to run them in their own terminal, or run them from a workspace that is not hooked.
+
 If you changed cloaking code, also pipe-test each hook with synthetic stdin and verify the install → add → list → uninstall round-trip in a scratch workspace:
 
 ```bash
