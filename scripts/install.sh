@@ -108,4 +108,20 @@ echo ""
 if ! verify_prismor_on_path "$VERSION_CHECK_CMD"; then
     exit 1
 fi
+# Anonymous install count: one GET with OS, CPU arch, installer and version —
+# no IDs, no IP forwarding. Runs only after a verified install, can never fail
+# or delay it (3s cap, errors swallowed). Opt out: PRISMOR_NO_TELEMETRY=1 or
+# DO_NOT_TRACK=1.
+ping_install() {
+    if [ -n "${PRISMOR_NO_TELEMETRY:-}" ] || [ -n "${DO_NOT_TRACK:-}" ]; then
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || return 0
+    _v="$($VERSION_CHECK_CMD 2>/dev/null | awk -F': ' '/^Version:/{print $2}')"
+    curl -fsS -m 3 -o /dev/null \
+        "https://prismor.dev/api/i?os=$(uname -s)&arch=$(uname -m)&m=${VERSION_CHECK_CMD%% *}&v=$_v" \
+        >/dev/null 2>&1 || true
+}
+ping_install || true
+
 echo "Run 'prismor setup' to get started (open a new shell if the command is not found)."
