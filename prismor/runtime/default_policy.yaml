@@ -597,7 +597,9 @@ rules:
       # Instruction override — direct phrase attacks
       - '(ignore\s+(all\s+)?(any\s+)?((your|the|my)\s+)?((previous|prior|above)\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?))'
       # Directives need an object; bare "exfiltration" / "jailbreak" occur in security docs.
-      - '(?<!not\s)(?<!n''t\s)(?<!never\s)\bexfiltrate\s+\S+'
+      - '(?<!not\s)(?<!n''t\s)(?<!never\s)\bexfiltrat(?:e|es|ing)\s+\S+'
+      - '\b(?:perform|begin|start|carry\s+out|execute)\s+(?:(?:the|an?)\s+)?exfiltration\b'
+      - '\b(?:enter|enable|activate|switch\s+to|now\s+in)\s+(?:\w+\s+){0,2}jailbreak\b'
       - '(?<!not\s)(?<!n''t\s)(?<!never\s)\bjailbreak\s+(?:yourself|(?:(?:the|this|that|your|our|a|an)\s+)?(?:models?|assistants?|system|chatbot|llm))\b'
       # Keep print/show within a clause, allowing soft wraps and dotted identifiers.
       # A request ending at secret names/IDs/counts does not request their values.
