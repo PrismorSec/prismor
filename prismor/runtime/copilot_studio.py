@@ -598,10 +598,14 @@ def warm(workspace: Path, keepwarm: bool = True) -> None:
     its default error behavior turns into an allow."""
     global _keepwarm_thread
     try:
-        config(workspace)
+        # Tenants on the allowlist are known before their first call: fetch
+        # their signing keys now, not inside that call.
+        _seen_tenants.update(t for t in config(workspace)["tenants"] if _GUID.match(t))
         analyze(sample_request("clean"), workspace, user_messages="user", record=False)
     except Exception as exc:
         sys.stderr.write(f"[prismor] copilot-studio: warm-up failed: {exc}\n")
+    if keepwarm:
+        _refresh_once(workspace, keys=True)
     if not keepwarm or _keepwarm_alive():
         return
 
