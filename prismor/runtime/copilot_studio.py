@@ -139,16 +139,24 @@ def org_settings(workspace: Optional[Path]) -> Dict[str, Any]:
             return hit[1]
     cfg: Dict[str, Any] = {}
     try:
-        from prismor.runtime.enterprise import remote_policy as _remote
-        from prismor.runtime.policy_engine import PolicyEngine
-
-        _remote.check_and_refresh()
-        cfg = dict(PolicyEngine(workspace=workspace).copilot_studio or {})
+        cfg = _load_org(workspace)
     except Exception as exc:  # a broken policy must not take the routes down
         sys.stderr.write(f"[prismor] copilot-studio: org settings unavailable: {exc}\n")
     with _org_lock:
         _org_cache[key] = (now, cfg)
     return cfg
+
+
+def _load_org(workspace: Path) -> Dict[str, Any]:
+    """settings.copilot_studio, plus the console's per-agent controls under
+    ``_agent_controls``: both come from the same policy load, so a request
+    reads the kill switch from cache instead of building another engine."""
+    from prismor.runtime.enterprise import remote_policy as _remote
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    _remote.check_and_refresh()
+    engine = PolicyEngine(workspace=workspace)
+    return {**dict(engine.copilot_studio or {}), "_agent_controls": dict(engine.agent_controls or {})}
 
 
 def config(workspace: Optional[Path] = None) -> Dict[str, Any]:
@@ -278,6 +286,42 @@ def _flat_args(inputs: Dict[str, Any]) -> Dict[str, Any]:
     return {**flat, **inputs}
 
 
+def _inputs(raw: Any) -> Dict[str, Any]:
+    """inputValues as an object. Arriving as JSON text or a list, it is still
+    the call's arguments: dropping it would let them skip every check."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return {"value": raw}
+    if isinstance(raw, dict):
+        return raw
+    return {} if raw is None else {"value": raw}
+
+
+#: A base64 run this long is file content (an attachment's contentBytes), not
+#: text a rule or detector can read; scanning it only costs time.
+_BLOB = re.compile(r"[A-Za-z0-9+/]{4096,}={0,2}")
+#: Past this much text the screen cannot finish inside Copilot Studio's 1s
+#: (~4ms/KB), and a slow scan holds the GIL against every other request.
+_MAX_SCREEN_CHARS = 128 * 1024
+
+
+def _screen_text(inputs: Dict[str, Any]) -> str:
+    return _BLOB.sub("[binary content]", _text(inputs))
+
+
+def _clip(text: str) -> str:
+    """Context too long to screen whole (a document an earlier tool read): its
+    head and tail. ponytail: an injection buried mid-document is missed;
+    chunked screening across requests if that matters."""
+    text = _BLOB.sub("[binary content]", text)
+    if len(text) <= _MAX_SCREEN_CHARS:
+        return text
+    half = _MAX_SCREEN_CHARS // 2
+    return text[:half] + "\n[...]\n" + text[-half:]
+
+
 _NIL_GUID = "00000000-0000-0000-0000-000000000000"
 
 
@@ -309,7 +353,7 @@ def to_events(body: Any, user_messages: str = "user",
     meta = body.get("conversationMetadata") if isinstance(body.get("conversationMetadata"), dict) else {}
     agent = meta.get("agent") if isinstance(meta.get("agent"), dict) else {}
     user = meta.get("user") if isinstance(meta.get("user"), dict) else {}
-    inputs = body.get("inputValues") if isinstance(body.get("inputValues"), dict) else {}
+    inputs = _inputs(body.get("inputValues"))
 
     # One Prismor session per Copilot Studio conversation, so the console groups
     # a conversation's tool calls. Stateless per request all the same: Copilot
@@ -339,7 +383,7 @@ def to_events(body: Any, user_messages: str = "user",
     }
 
     events: List[Dict[str, Any]] = []
-    for text in _user_turns(planner):
+    for text in map(_clip, _user_turns(planner)):
         if user_messages == "untrusted":
             # A public-facing agent: whoever types is not the principal, so the
             # text is screened like tool output and an injection blocks.
@@ -354,7 +398,7 @@ def to_events(body: Any, user_messages: str = "user",
     for out in prior if isinstance(prior, list) else []:
         if not isinstance(out, dict):
             continue
-        text = _output_text(out.get("outputs"))
+        text = _clip(_output_text(out.get("outputs")))
         if text:
             events.append(_event(session_id, len(events), type="tool_result", response=text, metadata={
                 **common, "tool_name": str(out.get("toolName") or out.get("toolId") or ""),
@@ -364,7 +408,7 @@ def to_events(body: Any, user_messages: str = "user",
         session_id, len(events),
         # Same shape the MCP path gives a local tool's pre-call: the arguments
         # as JSON text, so secret / injection / data-boundary rules see them.
-        type="tool_result", response=_text(inputs),
+        type="tool_result", response=_screen_text(inputs),
         metadata={
             **common, "source": "tool_call",
             "tool_name": ctx["tool_name"], "tool_id": tool.get("id"), "tool_type": tool.get("type"),
@@ -427,6 +471,13 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
     from prismor.runtime.principal import resolve_subject
     from prismor.runtime.runtime import evaluate_tool_call
 
+    # The call's own arguments leave the tenant: those are screened whole or not at all.
+    if len(events[-1].get("response") or "") > _MAX_SCREEN_CHARS:
+        blocking = {"ruleId": "copilot-studio-too-large", "category": "", "severity": "MEDIUM",
+                    "title": f"Tool call too large to screen in time (over {_MAX_SCREEN_CHARS // 1024} KB of text)",
+                    "channel": AGENT_ID}
+        _report([dict(blocking, mode="enforce", action="block")], events[-1], ctx, workspace, record)
+        return blocking
     key = ctx.get("turn_key")
     known, verdict = _turn_verdict(key)
     if known and verdict is not None:
@@ -488,11 +539,10 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
 def _agent_control(ctx: Dict[str, Any], workspace: Path) -> Any:
     """The console's kill switch and mode for this Copilot Studio agent."""
     from prismor.runtime.agents import AgentControl, resolve_agent_control
-    from prismor.runtime.policy_engine import PolicyEngine
 
     try:
         return resolve_agent_control(ctx["agent_name"], workspace,
-                                     remote_controls=PolicyEngine(workspace=workspace).agent_controls)
+                                     remote_controls=org_settings(workspace).get("_agent_controls"))
     except Exception:
         return AgentControl(name=ctx["agent_name"])
 
@@ -505,6 +555,11 @@ def _own_check(call: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[Dict[str, 
 
     found = screen_secrets([{"type": "text", "content": call["response"],
                              "metadata": {"source": ctx["tool_name"]}}])
+    if not found:
+        hit = next((name for name, rx in _CREDENTIALS if rx.search(call["response"])), None)
+        if hit:
+            found = [{"ruleId": "copilot-studio-credential-in-arguments", "category": "secret_exfiltration",
+                      "severity": "high", "title": f"Credential ({hit})"}]
     if found:
         vendor = str(found[0]["title"]).partition("(")[2].rstrip(")") or "unknown key"
         return {**found[0], "ruleId": "copilot-studio-credential-in-arguments",
@@ -520,24 +575,47 @@ def _own_check(call: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[Dict[str, 
 
 
 #: Argument names that hold recipients across Outlook, Teams and Graph
-#: connectors: to/cc/bcc, the send_email_v2_* family, attendees, recipients.
-_RECIPIENT_KEY = re.compile(r"(^|_)(to|cc|bcc|recipients?|attendees?|requiredattendees|optionalattendees)$", re.I)
+#: connectors: to/cc/bcc, the send_email_v2_* family, Graph's toRecipients,
+#: ForwardTo, attendees. Matched on the key's last word, snake or camel case.
+_RECIPIENT_WORDS = {"to", "cc", "bcc", "recipient", "recipients", "attendee", "attendees"}
 _EMAIL = re.compile(r"[\w.+'-]+@([\w-]+(?:\.[\w-]+)+)")
+#: Credentials the data-boundary classifier does not name: key material and
+#: connection strings, which travel in email bodies and HTTP connector calls.
+_CREDENTIALS = (
+    ("private key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----")),
+    ("storage account key", re.compile(r"AccountKey=[A-Za-z0-9+/]{40,}={0,2}")),
+    ("shared access key", re.compile(r"SharedAccessKey=[A-Za-z0-9+/]{30,}={0,2}")),
+    ("password in a connection string", re.compile(r"(?i)(?:^|[;\s\"'])(?:password|pwd)\s*=\s*[^\s;\"'<>]{8,}")),
+)
+
+
+def _is_recipient_key(key: str) -> bool:
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower().replace("-", "_").split("_")
+    return words[-1] in _RECIPIENT_WORDS
 
 
 def _recipients_outside(kwargs: Dict[str, Any], domains: List[str]) -> List[str]:
-    """Addresses in recipient arguments whose domain is not an allowed one
-    (or a subdomain of one). Empty when no domains are configured."""
+    """Addresses in recipient arguments, at any depth, whose domain is not an
+    allowed one (or a subdomain of one). Empty when no domains are configured."""
     if not domains:
         return []
     out: List[str] = []
-    for k, v in kwargs.items():
-        if not _RECIPIENT_KEY.search(str(k)):
-            continue
-        for m in _EMAIL.finditer(_text(v)):
-            host = m.group(1).lower()
-            if not any(host == d or host.endswith("." + d) for d in domains):
-                out.append(m.group(0))
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if _is_recipient_key(str(k)):
+                    for m in _EMAIL.finditer(_text(v)):
+                        host = m.group(1).lower()
+                        if not any(host == d or host.endswith("." + d) for d in domains):
+                            out.append(m.group(0))
+                else:
+                    walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                walk(v)
+
+    walk(kwargs)
     return out
 
 
@@ -601,8 +679,7 @@ def _refresh_once(workspace: Path, keys: bool) -> None:
         from prismor.runtime.enterprise import remote_policy as _remote
         from prismor.runtime.policy_engine import PolicyEngine
 
-        _remote.check_and_refresh()
-        cfg = dict(PolicyEngine(workspace=workspace).copilot_studio or {})
+        cfg = _load_org(workspace)
         with _org_lock:
             _org_cache[str(workspace)] = (time.monotonic(), cfg)
     except Exception as exc:

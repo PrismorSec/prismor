@@ -42,6 +42,7 @@ that vendor was just fetched (the "follow the SKILL.md" shape).
 
 from __future__ import annotations
 
+import functools
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -1166,18 +1167,27 @@ def _truncate(value: str, max_length: int = 220) -> str:
 
 # ── Self identity discovery ───────────────────────────────────────────────────
 
-def discover_self_identity(workspace: Any = None) -> List[str]:
-    """Best-effort: the user's own email(s) from git config and enrolment."""
-    out: Set[str] = set()
+@functools.lru_cache(maxsize=64)
+def _git_emails(cwd: Optional[str]) -> Tuple[str, ...]:
+    """git's user.email (global, then repo). Cached per process: every policy
+    load asks, and a long-running server (the eval-server builds an engine per
+    request) would otherwise fork git twice a call."""
+    out: List[str] = []
     try:
         import subprocess
         for scope in (["--global"], []):
             r = subprocess.run(["git", "config", *scope, "user.email"], capture_output=True,
-                               text=True, timeout=2, cwd=str(workspace) if workspace else None)
+                               text=True, timeout=2, cwd=cwd)
             if r.returncode == 0 and r.stdout.strip():
-                out.add(r.stdout.strip().lower())
+                out.append(r.stdout.strip().lower())
     except Exception:
         pass
+    return tuple(out)
+
+
+def discover_self_identity(workspace: Any = None) -> List[str]:
+    """Best-effort: the user's own email(s) from git config and enrolment."""
+    out: Set[str] = set(_git_emails(str(workspace) if workspace else None))
     try:
         from prismor.runtime.enterprise.identity import load_identity
         ident = load_identity() or {}
