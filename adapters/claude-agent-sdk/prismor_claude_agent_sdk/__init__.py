@@ -16,22 +16,17 @@ mode), mirroring this repo's own CLI-level ``_merge_claude()`` /
 ``_normalize_claude()`` hook-config dispatch, just invoked in-process
 instead of via subprocess.
 
-VERIFICATION NOTE: unlike every other adapter in this repo, this one
-cannot be live-verified against an OpenAI-backed agent — the Claude Agent
-SDK requires real Anthropic/Claude Code authentication to run at all. It
-was instead live-tested on a separate host with an authenticated Claude
-Code CLI session. A naive destructive test command (``rm -rf /``, cloud
-metadata SSRF) is an unreliable signal here: Claude refuses those on its
-own regardless of any hook (confirmed via a zero-hooks baseline run that
-also refused). The discriminating test that actually isolates this
-adapter's effect is a benign-framed write to ``.claude/settings.json``
-(this repo's own ``agent-config-tampering`` policy rule) — Claude
-executes it readily with no hook installed, and this adapter denies it
-once installed. That test also caught a real bug: an earlier default
-``matcher`` regex never matched custom MCP tool names
-(``mcp__<server>__<tool>``), so the hook silently never fired for
-anything but Claude's own built-in tools — ``matcher`` now defaults to
-``None`` (every tool call) for exactly this reason.
+VERIFICATION: live-tested with an ANTHROPIC_API_KEY on claude-sonnet-5-5
+(the SDK's bundled claude CLI authenticates with it like any API client),
+each request run with and without the hook. Claude refuses obvious attacks
+(``rm -rf /``, posting /etc/passwd to an unknown host) with no hook at all,
+so those say nothing about this adapter; the discriminating requests are
+ones Claude runs on its own -- a ``.claude/settings.json`` write
+(``agent-config-tampering``) and a ``curl -X POST ... -d`` through a custom
+MCP tool (``network-exfil-tool``) -- which run without the hook and are
+denied with it. ``matcher`` defaults to ``None`` (every tool call) because
+an earlier built-in-names regex never matched custom MCP tool names
+(``mcp__<server>__<tool>``) and silently exempted them.
 
 RESULT REDACTION: not available here, and not for want of trying — this is
 a PreToolUse hook, which is handed the request and answers with a permission
@@ -107,8 +102,13 @@ def prismor_pre_tool_use_hook(
     mode: str = "enforce",
     session_id: Optional[str] = None,
     raise_on_block: bool = False,
+    name: Optional[str] = None,
 ):
     """Build a HookCallback for the PreToolUse event.
+
+    ``name`` labels this agent instance, so it gets its own row and its own
+    controls (pause, mode override, blocked tools) in the console instead of
+    reporting as the unnamed ``claude-agent-sdk`` framework.
 
     Returned callable matches the SDK's HookCallback signature:
     ``async def callback(input_data, tool_use_id, context) -> HookJSONOutput``.
@@ -128,8 +128,8 @@ def prismor_pre_tool_use_hook(
             **_normalize(tool_name, tool_input),
         }
         decision: Decision = evaluate_tool_call(
-            event=event, workspace=ws, agent="claude-agent-sdk", mode=mode,
-            session_id=sid, subject=resolve_subject(subject),
+            event=event, workspace=ws, agent="claude-agent-sdk", agent_name=name or "",
+            mode=mode, session_id=sid, subject=resolve_subject(subject),
         )
         if not decision.allow:
             reason = decision.reason or "policy violation"

@@ -54,3 +54,20 @@ def test_pydantic_ai_toolset_sends_agent_name(monkeypatch, tmp_path):
     ts = prismor_pydantic_ai.PrismorToolset(FunctionToolset([]), workspace=tmp_path, name="support-pydantic")
     assert asyncio.run(ts.call_tool("lookup_order", {"order_id": "1"}, None, None)) == "ok"
     assert seen["agent"] == "pydantic-ai" and seen["agent_name"] == "support-pydantic"
+
+
+def test_claude_agent_sdk_hook_sends_agent_name(monkeypatch, tmp_path):
+    _adapter_path("claude-agent-sdk")
+    import prismor_claude_agent_sdk
+
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        return Decision(allow=True, findings=[], reason="")
+
+    monkeypatch.setattr(prismor_claude_agent_sdk, "evaluate_tool_call", fake)
+    hook = prismor_claude_agent_sdk.prismor_pre_tool_use_hook(workspace=tmp_path, name="support-claude")
+    out = asyncio.run(hook({"tool_name": "Bash", "tool_input": {"command": "ls"}}, "t1", {}))
+    assert out == {}
+    assert seen["agent"] == "claude-agent-sdk" and seen["agent_name"] == "support-claude"

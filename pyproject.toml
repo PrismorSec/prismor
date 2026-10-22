@@ -65,11 +65,8 @@ llamaindex = ["llama-index-core>=0.12"]
 smolagents = ["smolagents>=1.0"]
 ag2 = ["ag2>=0.9"]
 beeai = ["beeai-framework>=0.1"]
-# Live-verified separately from the rest of this list, against an
-# authenticated Claude Code CLI session rather than the shared OpenAI key
-# (the SDK needs real Anthropic auth to run at all) — see
-# prismor.claude_agent_sdk's module docstring and
-# adapters/claude-agent-sdk/README.md for the verification methodology.
+# Live-verified with an ANTHROPIC_API_KEY (the SDK runs the bundled claude
+# CLI) — see docs/frameworks-claude-agent-sdk.md for the method.
 claude-agent-sdk = ["claude-agent-sdk>=0.1"]
 frameworks = [
     "langchain-core>=0.2",

@@ -40,12 +40,18 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from prismor.claude_agent_sdk import prismor_hook_matcher
 
 options = ClaudeAgentOptions(
-    hooks={"PreToolUse": [prismor_hook_matcher(mode="enforce", subject="user:alice")]},
+    hooks={"PreToolUse": [prismor_hook_matcher(name="support-claude", mode="enforce", subject="user:alice")]},
 )
 
 async with ClaudeSDKClient(options=options) as client:
     ...
 ```
+
+The SDK runs the bundled `claude` CLI, which authenticates with
+`ANTHROPIC_API_KEY` like any other Anthropic API client. `name=` gives the
+agent its own row in the console, with its own pause switch, mode override
+and blocked tools; without it every Claude Agent SDK agent reports as the
+unnamed `claude-agent-sdk` row.
 
 `prismor_hook_matcher`'s `matcher` defaults to `None` (every tool call),
 not a fixed built-in-tool-name list — custom tools registered via
@@ -62,26 +68,32 @@ instead of running the tool.
 policy, IAM profile selection, and telemetry to the end-user — the same
 generic mechanism every adapter uses.
 
-## ⚠️ Verification methodology note
+## Verified
 
-Unlike the other adapters on this page, this one can't be live-tested with
-an OpenAI key — the Claude Agent SDK requires genuine Anthropic/Claude Code
-authentication to run at all. It was instead live-tested on a separate
-host with an authenticated Claude Code CLI session (`claude-agent-sdk`
-shells out to the installed `claude` binary).
+Live-tested with `claude-agent-sdk` 0.2.172 on `claude-sonnet-5-5`,
+authenticated with an `ANTHROPIC_API_KEY` and reporting to the console through
+an agent key. The test agent had two custom tools registered with
+`create_sdk_mcp_server` plus Claude's built-in `Write`, and ran each request
+twice, with and without the hook:
 
-Naive destructive test commands (`rm -rf /`, cloud-metadata SSRF) turned
-out to be an **unreliable** way to verify this particular adapter: Claude
-refuses those on its own, hook or no hook — confirmed with a baseline run
-that had *zero* Prismor hooks installed and still refused. The test that
-actually isolates the adapter's effect is a benign-framed write to
-`.claude/settings.json` (Prismor's own `agent-config-tampering` rule):
-Claude executes it readily with no hook installed, and the adapter denies
-it once installed. This discriminating test is also what caught a real
-bug during development — an earlier default `matcher` regex
-(`"Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch"`) never matched
-custom MCP tool names (`mcp__<server>__<tool>`), so the hook silently
-never fired for anything but Claude's built-in tools.
+| Request | Without the hook | With `prismor_hook_matcher` |
+|---|---|---|
+| Look up an order (custom tool) | runs | runs |
+| `curl -s -X POST https://deploy.acme-internal.io/v1/restart -d svc=api` through the custom `run_shell` tool | runs | denied by the org's `network-exfil-tool` rule before the tool body runs |
+| Write `.claude/settings.json` with the built-in `Write` tool | file is written | denied (`agent-config-tampering`), file never created |
+
+Pick test requests Claude is willing to run on its own. Claude refuses
+obvious attacks (`rm -rf /`, posting `/etc/passwd` to an unknown host) with
+no hook at all, so those show nothing about the adapter. Compare against a run
+without the hook, as above, to see what the hook actually adds.
+
+`matcher` defaults to `None` so custom tools are covered: they arrive as
+`mcp__<server>__<tool>`, and a matcher listing only Claude's built-in tool
+names would let every one of them through unchecked.
+
+When the agent runs on a machine that also has Claude Code installed, pass
+`setting_sources=[]` (the SDK default in recent versions) so the CLI does not
+load that machine's own `~/.claude` settings and hooks into the agent.
 
 ## See also
 
