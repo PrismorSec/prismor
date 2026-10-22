@@ -796,7 +796,7 @@ class CompiledRule:
 
     __slots__ = (
         "id", "severity", "category", "title", "event_types",
-        "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
+        "fields", "patterns", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
         "transform",
         "severity_on_write", "severity_on_manifest",
         "pattern_groups", "condition", "layer", "mode_layer", "when", "match_all", "flags",
@@ -811,6 +811,11 @@ class CompiledRule:
         # Which layer set this rule's ``mode`` (None: inherits default_mode).
         # Differs from ``layer`` when a later layer merged other fields on top.
         self.mode_layer: str = str(raw.get("_mode_layer") or self.layer)
+        # An admin wrote `action: warn` on their own rule: report, never block,
+        # unless the rule itself also sets mode: enforce. Rules shipped in
+        # default_policy.yaml (overlays keep `_builtin`) carry warn as legacy
+        # metadata and keep following default_mode.
+        self.warn_only: bool = raw.get("action") == "warn" and not raw.get("_builtin")
         self.severity: str = raw["severity"]
         self.category: str = raw["category"]
         self.title: str = raw["title"]
@@ -859,6 +864,7 @@ class CompiledRule:
         # AttrCondition. Core rules refuse it for the same reason they refuse
         # ``condition:``: it can only narrow, and narrowing is disabling.
         self.when: Optional[AttrCondition] = None
+        self.when_invalid: bool = False
         raw_when = raw.get("when")
         if raw_when:
             if raw["id"] in _NON_OVERRIDABLE_RULE_IDS or raw["category"] in _CORE_BLOCK_CATEGORIES:
@@ -869,7 +875,13 @@ class CompiledRule:
                 try:
                     self.when = AttrCondition(str(raw_when), named)
                 except ConditionError as exc:
-                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored\n")
+                    # Fail toward detection, not toward blocking: without its
+                    # ``when`` the rule matches everything its patterns do (a
+                    # rule scoped to one tool would block them all), so it
+                    # reports but never blocks until the expression is fixed.
+                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored; "
+                                     "the rule reports but cannot block until it is fixed\n")
+                    self.when_invalid = True
         # A rule may match on attributes alone (no patterns). Such a rule fires
         # on every event of its types for which ``when`` holds. If its ``when``
         # failed to parse it has nothing left to match on, and firing on every
@@ -1210,10 +1222,17 @@ class PolicyEngine:
             and self.explicit_selection
         )
         note = " (floor waived: settings.selection is explicit)" if floor_waived else ""
+        if rule.when_invalid:
+            return "observe", "when: does not parse — reports only until it is fixed"
         if self.device_mode:
             return self.device_mode, f"device mode override{note}"
         if rule.mode:
             return rule.mode, f"rule sets mode: {rule.mode}{note}"
+        if rule.warn_only:
+            # An admin who wrote "warn" meant report, not block: an enforcing
+            # default_mode must not turn their rule into a hard block. Setting
+            # mode: enforce on the rule itself still does.
+            return "observe", "action: warn — reports only (set mode: enforce on the rule to block)"
         return self.default_mode, f"policy default_mode: {self.default_mode}{note}"
 
     def decision_layer(self, rule: "CompiledRule") -> str:
@@ -1432,6 +1451,7 @@ class PolicyEngine:
         rules_by_id: Dict[str, Dict[str, Any]] = {}
         for rule in default_raw.get("rules", []):
             rule["_layer"] = "default"
+            rule["_builtin"] = True
             if "mode" in rule:
                 rule["_mode_layer"] = "default"
             rules_by_id[rule["id"]] = rule
@@ -3020,7 +3040,21 @@ class PolicyEngine:
         # surface that has a deadline of its own (`prismor proxy --judge-budget-ms`
         # in front of a voice agent that retries a turn after a few seconds).
         budget = float(cfg.get("budget_ms") or os.environ.get("PRISMOR_SEMANTIC_BUDGET_MS") or 0) / 1000
-        result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
+        if _is_pre_action_event(event):
+            result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
+        else:
+            # The tool already ran: this verdict reports and taints, it cannot
+            # block. A judge round trip on every tool result was ~0.6s p50 and
+            # 10s p99 of the agent's wall time (#716), so it gets a budget, and
+            # while enforcement is paused (nothing to taint for) the heuristic.
+            from prismor.runtime import pause as _pause
+            if _pause.is_paused():
+                from prismor.runtime.semantic_guard import _heuristic_analyze
+                result = _heuristic_analyze(text)
+            else:
+                post = float(cfg.get("post_tool_budget_ms")
+                             or os.environ.get("PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS") or 1500) / 1000
+                result = _analyze_within(guard, text, min(budget, post) if budget > 0 else post)
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)
         if str(getattr(risk, "reason", "")).startswith("[LLM fallback]"):

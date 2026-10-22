@@ -180,7 +180,10 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:  # fixed or operator-configured URL  # nosec B310
+        # On the hot path (no explicit interval) a slow control plane must not
+        # hold the tool call: 8s showed up as 15s PostToolUse stalls (#716).
+        # The next debounce window retries.
+        with urllib.request.urlopen(req, timeout=8 if interval is not None else 3) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
         _identity.clear_revoked()
         _spool.clear_backoff()

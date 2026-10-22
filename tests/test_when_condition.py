@@ -247,3 +247,16 @@ def test_golden_named_valid(case):
 def test_golden_named_invalid(expr):
     with pytest.raises(ConditionError):
         AttrCondition(expr, _NAMED)
+
+
+def test_unparseable_when_reports_but_never_blocks(tmp_path):
+    # Dropping a broken `when` widens the rule to every event its patterns
+    # match: a rule scoped to one tool, with pattern '.', blocked every tool
+    # (#721). It still detects, so the typo is visible, but cannot block.
+    eng = _engine(tmp_path, {
+        "id": "scoped", "severity": "HIGH", "category": "custom", "title": "scoped",
+        "event_types": ["tool_result"], "fields": ["response"], "patterns": ["."],
+        "when": "tool.name == 'send_mail' and 'x' in args.subject.lower()",
+        "action": "block", "mode": "enforce"})
+    rule = next(r for r in eng.rules if r.id == "scoped")
+    assert rule.when_invalid and eng.explain_mode(rule)[0] == "observe"
