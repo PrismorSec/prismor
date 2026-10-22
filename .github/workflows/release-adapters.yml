@@ -54,7 +54,7 @@ jobs:
         if: env.NPM_TOKEN != ''
         working-directory: adapters/${{ matrix.adapter }}
         run: |
-          npm install
+          npm ci
           npm run build
           npm publish --access public
         env:
