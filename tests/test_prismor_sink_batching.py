@@ -93,3 +93,65 @@ def test_heartbeat_tick_drains_the_spool_with_no_counts(monkeypatch, tmp_path):
     # The only thing it may carry is the hourly device_status (none sent yet here).
     assert len(sent) == 1, "the tick must still call upload_telemetry to drain the spool"
     assert [r["type"] for r in sent[0]] in ([], ["device_status"])
+
+
+def test_background_mode_keeps_uploads_off_the_request_thread(monkeypatch, tmp_path):
+    """The Copilot Studio server answers on a 1s deadline: a blocked verdict's
+    upload goes to the spool and the daemon thread ships it, never inline."""
+    import threading
+    import urllib.request
+
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    ident.save_identity({
+        "device_id": "d", "org_id": "o", "user_id": "u",
+        "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1",
+    })
+    posted, done = [], threading.Event()
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return b""
+
+    def fake_urlopen(req, timeout=None):
+        posted.append(threading.current_thread().name)
+        done.set()
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(sinks, "_bg_thread", None)
+    monkeypatch.setattr(sinks, "_bg_kick", threading.Event())
+    sinks.upload_in_background()
+
+    sinks.upload_telemetry([{"verdict": "blocked", "title": "t"}])
+
+    assert done.wait(5), "the background thread never uploaded"
+    assert posted == ["prismor-telemetry"]
+    assert spool.pending_count() == 0
+
+
+def test_background_mode_drains_observed_records_without_a_kick(monkeypatch, tmp_path):
+    # Observed findings only spool; on an idle server nothing else ships them.
+    import threading
+    import urllib.request
+
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    ident.save_identity({
+        "device_id": "d", "org_id": "o", "user_id": "u",
+        "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1",
+    })
+    done = threading.Event()
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self, n=-1): return b""
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: (done.set(), _Resp())[1])
+    monkeypatch.setattr(sinks, "_bg_thread", None)
+    monkeypatch.setattr(sinks, "_bg_kick", threading.Event())
+    monkeypatch.setattr(sinks, "_BG_DRAIN_S", 0.05)
+    spool.append([{"verdict": "observed", "title": "t"}])
+    sinks.upload_in_background()
+
+    assert done.wait(5), "spooled records never shipped"

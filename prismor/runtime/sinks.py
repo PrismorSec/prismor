@@ -48,6 +48,7 @@ import os
 import re
 import socket
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -537,6 +538,37 @@ def _dispatch_prismor(
         upload_telemetry([], timeout=timeout)
 
 
+#: Set by upload_in_background(): the daemon thread that does the uploading.
+_bg_thread: Optional[threading.Thread] = None
+_bg_kick = threading.Event()
+_BG_DRAIN_S = 20.0
+
+
+def upload_in_background() -> None:
+    """Take control-plane uploads off the calling thread, for a long-running
+    server that answers on a deadline: Copilot Studio waits 1s, and an inline
+    upload of a blocked verdict (or a spool flush) could take seconds. Records
+    go to the spool and a daemon thread ships them at once, so the console
+    still sees a block within moments. Observed records, which a hook leaves
+    for the heartbeat tick, ship on the thread's own 20s drain: an idle
+    server has no tick."""
+    global _bg_thread
+    if _bg_thread is not None:
+        return
+
+    def loop() -> None:
+        while True:
+            _bg_kick.wait(_BG_DRAIN_S)
+            _bg_kick.clear()
+            try:
+                upload_telemetry([])
+            except Exception as exc:  # spooled by upload_telemetry; the next kick retries
+                sys.stderr.write(f"[prismor] telemetry upload deferred: {exc}\n")
+
+    _bg_thread = threading.Thread(target=loop, name="prismor-telemetry", daemon=True)
+    _bg_thread.start()
+
+
 def upload_telemetry(
     records: List[Dict[str, Any]],
     timeout: float = 6.0,
@@ -566,6 +598,11 @@ def upload_telemetry(
         _spool.append(records)  # system install: `prismor system-sync` uploads it
         return
     if not ident or _identity.revoked_backoff_active():
+        return
+    if _bg_thread is not None and threading.current_thread() is not _bg_thread:
+        if records:
+            _spool.append(records)
+        _bg_kick.set()
         return
 
     # After a network/5xx failure, don't pay a connect timeout on every hook

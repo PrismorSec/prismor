@@ -441,6 +441,20 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
         if not screened_turn and event["metadata"].get("source") != "user_message":
             _remember_turn(key, None)
             screened_turn = True
+        if event is events[-1]:
+            # The planned call. Checked before the policy so a call these stop
+            # is recorded once, not also as the policy's "allowed". The
+            # console's per-agent controls apply: turned off, the policy's
+            # kill switch answers instead; in observe, it would block.
+            control = _agent_control(ctx, workspace)
+            own = _own_check(event, ctx) if control.enabled else None
+            if own is not None:
+                if control.mode == "observe":
+                    _report([dict(own, mode="observe", action="warn")], event, ctx, workspace, record,
+                            mode="observe")
+                    return None
+                _report([dict(own, mode="enforce", action="block")], event, ctx, workspace, record)
+                return own
         # "The public" in the console: an injection in a user message blocks
         # even where the org's policy only observes prompt-injection. That
         # turn is recorded here, once, with the verdict it actually got.
@@ -449,8 +463,10 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
         decision = evaluate_tool_call(
             event=event, workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"],
             mode="enforce", session_id=ctx["session_id"], subject=subject,
-            # A shared server: no per-tenant transcript on disk, no inventory.
-            persist=False, register_agent=False, taint_store=taint, record=record and not escalate,
+            # A shared server: no per-tenant transcript on disk. Registering
+            # puts the agent's tools on its console page (Tool access), off
+            # the request path (a daemon-thread POST, debounced on disk).
+            persist=False, register_agent=record, taint_store=taint, record=record and not escalate,
         )
         blocking = decision.blocking
         if escalate:
@@ -466,31 +482,41 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
             if event["metadata"].get("source") == "user_message":
                 _remember_turn(key, blocking)
             return blocking  # deny wins; the first denial is the reason
-    # A credential in the arguments is leaving through the connector. The
-    # inference-hook channel's DLP check, on the call's arguments only.
+    return None
+
+
+def _agent_control(ctx: Dict[str, Any], workspace: Path) -> Any:
+    """The console's kill switch and mode for this Copilot Studio agent."""
+    from prismor.runtime.agents import AgentControl, resolve_agent_control
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    try:
+        return resolve_agent_control(ctx["agent_name"], workspace,
+                                     remote_controls=PolicyEngine(workspace=workspace).agent_controls)
+    except Exception:
+        return AgentControl(name=ctx["agent_name"])
+
+
+def _own_check(call: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Checks this module decides, not a policy rule: a credential in the
+    arguments (the inference-hook channel's DLP check, on the arguments only)
+    or an email recipient outside the org's allowed domains."""
     from prismor.runtime.inference_hook import screen_secrets
 
-    call = events[-1]
     found = screen_secrets([{"type": "text", "content": call["response"],
                              "metadata": {"source": ctx["tool_name"]}}])
-    blocking: Optional[Dict[str, Any]] = None
     if found:
         vendor = str(found[0]["title"]).partition("(")[2].rstrip(")") or "unknown key"
-        blocking = {**found[0], "ruleId": "copilot-studio-credential-in-arguments",
-                    "title": f"Credential in tool arguments ({vendor})", "channel": AGENT_ID}
-    else:
-        outside = _recipients_outside(call["metadata"].get("kwargs") or {}, ctx.get("email_domains") or [])
-        if outside:
-            blocking = {
-                "id": f"{ctx['session_id']}:recipient-outside-domains", "ruleId": "copilot-studio-recipient-outside-domains",
-                "title": f"Recipient outside your allowed email domains ({outside[0].split('@', 1)[1]})",
-                "category": "data_boundary", "severity": "HIGH", "channel": AGENT_ID,
-            }
-    if blocking is None:
-        return None
-    # Decided here, not by a policy rule, so it reaches the console here.
-    _report([dict(blocking, mode="enforce", action="block")], call, ctx, workspace, record)
-    return blocking
+        return {**found[0], "ruleId": "copilot-studio-credential-in-arguments",
+                "title": f"Credential in tool arguments ({vendor})", "channel": AGENT_ID}
+    outside = _recipients_outside(call["metadata"].get("kwargs") or {}, ctx.get("email_domains") or [])
+    if outside:
+        return {
+            "id": f"{ctx['session_id']}:recipient-outside-domains", "ruleId": "copilot-studio-recipient-outside-domains",
+            "title": f"Recipient outside your allowed email domains ({outside[0].split('@', 1)[1]})",
+            "category": "data_boundary", "severity": "HIGH", "channel": AGENT_ID,
+        }
+    return None
 
 
 #: Argument names that hold recipients across Outlook, Teams and Graph
@@ -516,7 +542,7 @@ def _recipients_outside(kwargs: Dict[str, Any], domains: List[str]) -> List[str]
 
 
 def _report(findings: List[Dict[str, Any]], event: Dict[str, Any], ctx: Dict[str, Any],
-            workspace: Path, record: bool) -> None:
+            workspace: Path, record: bool, mode: str = "enforce") -> None:
     """Send findings this module decided to the org's sinks (the console)."""
     if not record or not findings:
         return
@@ -527,7 +553,7 @@ def _report(findings: List[Dict[str, Any]], event: Dict[str, Any], ctx: Dict[str
 
         _dispatch_telemetry(
             engine=PolicyEngine(workspace=workspace), findings=findings, event=event,
-            workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"], mode="enforce",
+            workspace=workspace, agent=AGENT_ID, agent_name=ctx["agent_name"], mode=mode,
             session_id=ctx["session_id"], subject=resolve_subject(ctx["subject"]),
         )
     except Exception as exc:  # reporting must never change the verdict
@@ -597,6 +623,10 @@ def warm(workspace: Path, keepwarm: bool = True) -> None:
     inline: either can push the answer past Copilot Studio's 1s window, which
     its default error behavior turns into an allow."""
     global _keepwarm_thread
+    if keepwarm:
+        # A server answering on a 1s deadline must never wait on the console.
+        from prismor.runtime.sinks import upload_in_background
+        upload_in_background()
     try:
         # Tenants on the allowlist are known before their first call: fetch
         # their signing keys now, not inside that call.

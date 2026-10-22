@@ -312,6 +312,11 @@ def _fresh_caches(monkeypatch):
     cs._org_cache.clear()
     cs._turns.clear()
     monkeypatch.setattr(cs, "_keepwarm_thread", None)
+    # warm() turns on background uploads process-wide; keep it to this test.
+    import threading
+    from prismor.runtime import sinks
+    monkeypatch.setattr(sinks, "_bg_thread", None)
+    monkeypatch.setattr(sinks, "_bg_kick", threading.Event())
     yield
     cs._org_cache.clear()
     cs._turns.clear()
@@ -525,6 +530,48 @@ def test_console_kill_switch_stops_a_copilot_studio_agent(tmp_path, monkeypatch)
     monkeypatch.setattr(remote_policy, "verify_and_load",
                         lambda: {"settings": {"agent_controls": {"Sales assistant": {"enabled": False}}}})
     assert cs.analyze(cs.sample_request("clean"), tmp_path)["blockAction"]
+
+
+def _org_controls(monkeypatch, controls):
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda ws: True)
+    monkeypatch.setattr(remote_policy, "verify_and_load",
+                        lambda: {"settings": {"agent_controls": {"Sales assistant": controls}}})
+
+
+def _recorded(monkeypatch):
+    sent = []
+    from prismor.runtime import runtime
+    monkeypatch.setattr(runtime, "_dispatch_telemetry", lambda **kw: sent.append(kw))
+    monkeypatch.setenv("PRISMOR_COPILOT_STUDIO_ALLOWED_EMAIL_DOMAINS", "contoso.com")
+    return sent
+
+
+def test_a_blocked_call_is_recorded_once_as_blocked(tmp_path, monkeypatch):
+    # Not also as the policy's "allowed": the console showed both for one call.
+    _clean_env(monkeypatch, tmp_path)
+    sent = _recorded(monkeypatch)
+    assert cs.analyze(cs.sample_request("external"), tmp_path)["blockAction"]
+    calls = [kw for kw in sent if kw["event"]["metadata"].get("source") != "user_message"]
+    assert len(calls) == 1
+    assert calls[0]["findings"][0]["ruleId"] == "copilot-studio-recipient-outside-domains"
+
+
+def test_console_observe_lets_the_call_through_and_records_would_block(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    _org_controls(monkeypatch, {"mode": "observe"})
+    sent = _recorded(monkeypatch)
+    assert cs.analyze(cs.sample_request("external"), tmp_path) == {"blockAction": False}
+    hit = [kw for kw in sent if kw["findings"] and kw["findings"][0]["ruleId"].startswith("copilot-studio-")]
+    assert len(hit) == 1 and hit[0]["mode"] == "observe"
+
+
+def test_turned_off_agent_answers_with_the_kill_switch(tmp_path, monkeypatch):
+    _clean_env(monkeypatch, tmp_path)
+    _org_controls(monkeypatch, {"enabled": False})
+    _recorded(monkeypatch)
+    out = cs.analyze(cs.sample_request("external"), tmp_path)
+    assert out["blockAction"] and "outside your allowed" not in out["reason"]
 
 
 def test_background_refresh_keeps_keys_and_settings_off_the_request_path(tmp_path, monkeypatch):
