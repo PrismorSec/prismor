@@ -90,7 +90,7 @@ With no `fields:`, a rule matches the full `mcp__server__tool` tag, which is wha
 | `mcp_args`         | The serialized call arguments on either transport. Matches the pre-call only, never the tool's output.             |
 | `outbound_payload` | The raw remote-transport form of the arguments. Prefer `mcp_args` unless you want to match remote calls only.       |
 
-`action` decides what happens when a pattern hits. `block` denies the call, `step_up` asks a human, and `warn`/`log` record the call and let it through. A rule needs `mode: enforce` to gate anything; in observe mode every rule only logs.
+`action` decides what happens when a pattern hits. `block` denies the call, `step_up` asks a human, and `warn`/`log` record the call and let it through. A rule needs `mode: enforce` to gate anything; in observe mode every rule only logs. A rule you write with `action: warn` keeps reporting even under `default_mode: enforce`; give the rule its own `mode: enforce` if it should block.
 
 #### What it doesn't cover yet
 

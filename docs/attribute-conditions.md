@@ -86,7 +86,10 @@ its `event_types` for which `when:` holds:
 
 A patternless rule whose `when:` does not parse is disabled (it would otherwise
 match everything), and `prismor policy validate` / the console refuse to save
-it. A rule that has patterns and a broken `when:` keeps firing on its patterns.
+it. A rule that has patterns and a broken `when:` keeps reporting on its
+patterns but cannot block until the expression is fixed: without its `when:` it
+would match every event its patterns do, so a rule meant for one tool would
+block them all.
 
 ## Recipes
 

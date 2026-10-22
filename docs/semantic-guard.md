@@ -236,6 +236,12 @@ Without a policy setting, `prismor proxy --judge typesafe --judge-budget-ms 1500
 the same thing for that one proxy process (`PRISMOR_SEMANTIC_PROVIDER` /
 `PRISMOR_SEMANTIC_BUDGET_MS`). An explicit policy value wins.
 
+On a tool's **result** (PostToolUse) the judge's verdict reports and taints the
+session but cannot block, because the tool already ran. There it gets
+`post_tool_budget_ms` (default `1500`, or `PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS`)
+even when `budget_ms` is unset, and falls back to the heuristic when it runs
+over. While enforcement is paused, tool results get the heuristic only.
+
 ### Judging every ingested text
 
 The judge only sees text whose heuristic score falls in `[low_threshold, high_threshold)`.
