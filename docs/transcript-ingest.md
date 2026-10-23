@@ -123,7 +123,6 @@ pattern, and the raw upstream payload is dropped entirely.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--discover` | off | Sweep the machine instead of reading `--input` |
 | `--agent` | all | Comma-separated adapters to run |
 | `--since` | `30d` | Window by file mtime; `all` for everything |
 | `--max-events` | 50000 | Ceiling per sweep |
