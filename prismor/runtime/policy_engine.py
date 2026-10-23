@@ -185,7 +185,13 @@ _TEXT_CONTENT_TYPES = frozenset({"prompt", "tool_result"})
 # loaded at session start) is folded in here so no rule can silently exempt the
 # project-memory source from block-category evaluation (issue #155).
 _UNTRUSTED_CONTENT_ALIASES: Dict[str, set[str]] = {
-    "tool_result": {"memory", "subagent_spawn"},
+    # file_read/network carry the tool's output as `response` after the call
+    # (hooks._attach_tool_result) and nothing before it, so a Read or WebFetch
+    # result is screened like any other tool output.
+    # ponytail: shell output is left out — replaying st3ve's store, 1.6% of it
+    # (mostly grep/sed of code) tripped prompt-injection vs ~0.3% of reads.
+    # Add "shell" once the rule can tell an agent's own code search from a file.
+    "tool_result": {"memory", "subagent_spawn", "file_read", "network"},
 }
 
 # Human-readable provenance tag attached to each finding, so telemetry and the
@@ -795,7 +801,7 @@ class CompiledRule:
     """A single policy rule with compiled regex patterns."""
 
     __slots__ = (
-        "id", "severity", "category", "title", "event_types",
+        "id", "severity", "category", "title", "event_types", "declared_types",
         "fields", "patterns", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
         "transform",
         "severity_on_write", "severity_on_manifest",
@@ -826,6 +832,7 @@ class CompiledRule:
         # this at load time — rather than per-rule in YAML — makes it a
         # structural invariant: no current or future block-category rule can
         # silently exempt the project-memory source.
+        self.declared_types: frozenset[str] = frozenset(self.event_types)
         for base_type, aliases in _UNTRUSTED_CONTENT_ALIASES.items():
             if base_type in self.event_types:
                 self.event_types |= aliases
@@ -1866,6 +1873,10 @@ class PolicyEngine:
                 check_fields = rule.fields
             elif matched_via_mcp_alias:
                 check_fields = _MCP_ALIAS_DEFAULT_FIELDS
+            elif event_type not in rule.declared_types:
+                # Reached via _UNTRUSTED_CONTENT_ALIASES: screen the content,
+                # not the alias type's own field (a command, path or URL).
+                check_fields = ["combined_text"]
             else:
                 check_fields = _DEFAULT_FIELDS.get(event_type, [])
             if _dry_run and "command" in check_fields:
