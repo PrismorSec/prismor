@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -190,6 +191,78 @@ def record_dismissal(
 
 _EVASION_THRESHOLD = 0.6
 
+# Rules that decide from session state (earlier calls, tags, files written
+# before) rather than from a pattern in the blocked command's own text. A
+# command blocked by one of these says nothing about the command's shape, so a
+# similar later command is not evading anything (#595). Matched as a whole id
+# or as the prefix of a finding id (`staged-exec-0`, `tag-rule:x-12`).
+_STATEFUL_RULES = (
+    "staged-execution", "staged-exec", "evasion-detection", "evasion",
+    "tag-rule", "tool-category-crossover", "cross-agent-flow",
+    "taint-escalation", "memory-self-reinforcement", "scoped-agent",
+    "agent-tool-deny", "agent-disabled", "identity-unverified", "iam",
+)
+
+# Commands that only print what is already on disk. Kept deliberately short:
+# `rg` is out (`--pre` runs a program), `sed` only in its `-n 'N,Mp'` form.
+_READ_ONLY_BASES = {"cat", "head", "tail", "wc", "ls", "grep"}
+_SED_PRINT_RANGE = re.compile(r"^[\d,$]+p$")
+
+
+def _is_stateful_rule(rule_id: str) -> bool:
+    return any(
+        rule_id == name or rule_id.startswith(name + "-") or rule_id.startswith(name + ":")
+        for name in _STATEFUL_RULES
+    )
+
+
+def _blocking_rule_id(finding_id: str, enrichment_json: Optional[str]) -> str:
+    """The rule behind a stored finding: ``enrichment_json.ruleId``, else the
+    finding id with its session prefix stripped (older rows)."""
+    try:
+        rule_id = (json.loads(enrichment_json or "{}") or {}).get("ruleId")
+    except (ValueError, TypeError, AttributeError):
+        rule_id = None
+    if rule_id:
+        return str(rule_id)
+    return str(finding_id or "").split(":", 1)[-1]
+
+
+def _is_read_only(command: str) -> bool:
+    """True when every segment of ``command`` only reads non-sensitive files.
+
+    Anything that could write, run another program or hide one (redirects,
+    substitutions, heredocs, a lone ``&``, newlines) disqualifies it, as does an
+    argument naming a secret-bearing path: a re-worded ``cat .env`` must still
+    reach the similarity check.
+    """
+    from prismor.runtime.policies import SENSITIVE_PATH_PATTERN
+
+    s = command.strip()
+    if not s or "\n" in s or any(ch in s for ch in "<>`") or "$(" in s:
+        return False
+    if "&" in s.replace("&&", ""):
+        return False
+    for seg in _SHELL_SPLIT.split(s):
+        try:
+            parts = shlex.split(seg)
+        except ValueError:
+            return False
+        if not parts:
+            return False
+        base, args = parts[0], parts[1:]
+        if base == "sed":
+            if "-n" not in args or any(a.startswith(("-i", "--in-place")) for a in args):
+                return False
+            script = [a for a in args if not a.startswith("-")]
+            if not script or not _SED_PRINT_RANGE.match(script[0]):
+                return False
+        elif base not in _READ_ONLY_BASES:
+            return False
+        if any(SENSITIVE_PATH_PATTERN.search(a) for a in args):
+            return False
+    return True
+
 
 def detect_evasion(
     workspace: Path,
@@ -213,6 +286,11 @@ def detect_evasion(
     if not base:
         return []
 
+    # Printing a file cannot evade anything: the read is evaluated on its own
+    # (#595: `sed -n 'N,Mp' f` retries after an unrelated block).
+    if _is_read_only(command):
+        return []
+
     db_path = get_db_path(workspace)
     if not db_path.exists():
         return []
@@ -229,7 +307,7 @@ def detect_evasion(
         # into `events` before this runs) self-matches at 100%.
         finding_rows = conn.execute(
             """
-            SELECT event_index, finding_id, title, category
+            SELECT event_index, finding_id, title, category, enrichment_json
             FROM findings
             WHERE session_id = ? AND event_index IS NOT NULL
             """,
@@ -249,15 +327,22 @@ def detect_evasion(
 
         evasion_findings = []
         seen_blocked: set = set()
-        for event_index, finding_id, title, category in finding_rows:
+        for event_index, finding_id, title, category, enrichment_json in finding_rows:
             if event_index is None or event_index < 0 or event_index >= len(ordered_cmds):
+                continue
+            # Only a block that came from the command's own text can be evaded
+            # by rewording it. Session-state rules (staged-execution, tag
+            # rules, ...) fire on what happened before, not on the shape.
+            if _is_stateful_rule(_blocking_rule_id(finding_id, enrichment_json)):
                 continue
             blocked_cmd = ordered_cmds[event_index]
             if not blocked_cmd:
                 continue
-            # The current command passed policy (no findings); never compare it
-            # against itself.
-            if blocked_cmd == command:
+            # The same command again (modulo whitespace) is a retry, not an
+            # evasion: it just passed policy on its own, so whatever blocked it
+            # before was not its text. Also stops the current command, already
+            # snapshotted into `events`, from matching itself.
+            if _WHITESPACE.sub(" ", blocked_cmd.strip()) == _WHITESPACE.sub(" ", command.strip()):
                 continue
             if blocked_cmd in seen_blocked:
                 continue
