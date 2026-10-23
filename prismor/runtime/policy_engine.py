@@ -2314,7 +2314,6 @@ class PolicyEngine:
                 _vault = ""
         if _vault:
             _hit_vault = None
-            _vault_inert = False
             if event_type in ("file_read", "file_write"):
                 _p = field_values.get("path", "")
                 if _p:
@@ -2326,20 +2325,9 @@ class PolicyEngine:
                 # ".prismor/secrets" matches every expansion form of the default
                 # location (~/, $HOME/, absolute); _vault matches a custom dir.
                 # Mentions under another user's (nonexistent) home are test
-                # fixtures, not this vault (#592). A mention that only sits in
-                # a cat/tee heredoc body is still reported, but as inert.
-                # Both spellings are scanned: the normalized command exposes
-                # substitution payloads, the raw one keeps the shell structure
-                # (`$(...)` in a heredoc body) that inertness is judged on.
-                _raw_cmd = str(event.get("command") or "")
-                _vault_hits = _shell_vault_mentions(_cmd, _vault) if _cmd else []
-                _raw_hits = _shell_vault_mentions(_raw_cmd, _vault) if _raw_cmd else []
-                if _vault_hits or _raw_hits:
-                    _hit_vault = _cmd or _raw_cmd
-                    # Normalization surfacing an extra mention (a folded
-                    # confusable, a substitution payload) keeps it live.
-                    _vault_inert = (len(_vault_hits) <= len(_raw_hits)
-                                    and _vault_mentions_inert(_raw_cmd, _raw_hits))
+                # fixtures, not this vault (#592).
+                if _cmd and _shell_vault_mentions(_cmd, _vault):
+                    _hit_vault = _cmd
             if _hit_vault is not None:
                 finding_id = f"prismor-vault-access-{index}"
                 prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2357,9 +2345,6 @@ class PolicyEngine:
                     "eventIndex": index,
                     "ruleId": "prismor-vault-access",
                     "action": "block",
-                    # Text written to a file by a cat/tee heredoc, never run:
-                    # reported, but should_block() does not block on it.
-                    "contextInert": _vault_inert,
                 })
 
         # Canary marker found in tool stdout/stderr (PostToolUse content
@@ -4079,27 +4064,6 @@ def _shell_vault_mentions(cmd: str, vault: str) -> List[Tuple[int, int]]:
             hits.append((i, i + len(vault)))
             i = cmd.find(vault, i + 1)
     return hits
-
-
-def _vault_mentions_inert(cmd: str, hits: List[Tuple[int, int]]) -> bool:
-    """True when every vault mention sits in the body of a ``cat``/``tee``
-    heredoc that is written or printed, never run (see
-    shell_context.is_inert_match). Deliberately NOT the quoted-argument form
-    of inertness: ``grep -r x "$HOME/.prismor/secrets"`` reads the vault even
-    though grep is a text sink for other rules."""
-    if not hits:
-        return False
-    try:
-        from prismor.runtime.shell_context import heredocs, is_inert_match
-        bodies = [(h.body_start, h.body_end) for h in heredocs(cmd)]
-        for s, e in hits:
-            if not any(bs <= s and e <= be for bs, be in bodies):
-                return False
-            if not is_inert_match(cmd, s, e):
-                return False
-        return True
-    except Exception:
-        return False
 
 
 def _dequote_shell(cmd: str) -> Optional[str]:

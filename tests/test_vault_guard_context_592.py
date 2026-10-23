@@ -138,19 +138,8 @@ def test_custom_secrets_dir_still_blocks(home, tmp_path, monkeypatch):
     assert blocks("cat ~/.prismor/secrets/k")
 
 
-def test_heredoc_body_written_to_file_is_inert(home):
-    command = (
-        "cat > tests/fixture.py <<'EOF'\n"
-        "VAULT_RE = re.compile(r\"~/\\.prismor/secrets/[A-Za-z0-9_]+\")\n"
-        "EOF"
-    )
-    hits = vault_findings(command)
-    assert hits and all(f["contextInert"] for f in hits)
-    assert not blocks(command)
-
-
 @pytest.mark.parametrize("command", [
-    # Executed later in the same call: the interpreter check keeps it live.
+    # Heredocs are not exempt: every one of these still blocks.
     "cat > x.py <<'EOF'\nopen('~/.prismor/secrets/k')\nEOF\npython3 x.py",
     # Unquoted delimiter: the substitution runs while the body is written.
     "cat > out.txt <<EOF\n$(cat ~/.prismor/secrets/k)\nEOF",
