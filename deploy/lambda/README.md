@@ -18,8 +18,10 @@ REPO=$ACCOUNT.dkr.ecr.$AWS_REGION.amazonaws.com/prismor-eval
 
 aws ecr create-repository --repository-name prismor-eval >/dev/null 2>&1 || true
 aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%/*}"
-docker build --platform linux/amd64 -f deploy/lambda/Dockerfile -t "$REPO:latest" .
-docker push "$REPO:latest"
+# Lambda rejects OCI manifests with build attestations ("image manifest ... media
+# type ... is not supported"), which current Docker pushes by default.
+docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+  -f deploy/lambda/Dockerfile -t "$REPO:latest" --push .
 ```
 
 ## Execution role (once)
@@ -43,7 +45,8 @@ PRISMOR_AGENT_KEY=prism_agent_... \
 ```
 
 It creates `prismor-eval-acme` (1024 MB, 15 s timeout) with a Function URL
-(`auth-type NONE`; the bearer key is enforced in code, and a function without
+(`auth-type NONE`, with both `lambda:InvokeFunctionUrl` and a URL-only
+`lambda:InvokeFunction` permission, which AWS requires for a public URL; the bearer key is enforced in code, and a function without
 `PRISMOR_EVAL_KEY` refuses every evaluation) and prints `PRISMOR_EVAL_URL` and a
 new `PRISMOR_EVAL_KEY` once. Hand both to the org. Rerunning it updates the code
 and rotates the key.
@@ -52,13 +55,24 @@ Sizing: 1024 MB gives the policy engine enough CPU that a warm call is fast.
 Lambda bills per request and per GB-second, and an idle function costs nothing.
 Set provisioned concurrency only for an org that cannot accept a cold start.
 
+## Check it
+
+```bash
+curl -s "$PRISMOR_EVAL_URL/health"                       # 200
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$PRISMOR_EVAL_URL/v1/evaluate" \
+  -H 'content-type: application/json' -d '{"tool_name":"run_shell","arguments":{"command":"ls"},"event_type":"shell"}'   # 401 without the key
+```
+
+A 403 on every path, `/health` included, means the `lambda:InvokeFunction`
+permission is missing (rerun `provision.sh`).
+
 ## Permissions for whoever deploys
 
 - `ecr:CreateRepository`, `ecr:GetAuthorizationToken`, `ecr:BatchCheckLayerAvailability`,
   `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:PutImage`
 - `lambda:CreateFunction`, `lambda:UpdateFunctionCode`, `lambda:UpdateFunctionConfiguration`,
   `lambda:GetFunction`, `lambda:CreateFunctionUrlConfig`, `lambda:GetFunctionUrlConfig`,
-  `lambda:AddPermission`
+  `lambda:AddPermission`, `lambda:GetPolicy`
 - `iam:PassRole` on the execution role (and `iam:CreateRole` / `iam:AttachRolePolicy` once)
 - `logs:*` is not needed by the deployer; the execution role writes the function's logs.
 

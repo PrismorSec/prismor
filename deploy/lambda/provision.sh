@@ -29,6 +29,13 @@ else
   aws lambda add-permission --function-name "$FN" --statement-id public-url \
     --action lambda:InvokeFunctionUrl --principal '*' --function-url-auth-type NONE >/dev/null
 fi
+# A public Function URL also needs lambda:InvokeFunction, limited to calls that
+# come through the URL. Without it every request, /health included, gets a 403
+# from AWS before reaching the function. Idempotent: skipped if already granted.
+if ! aws lambda get-policy --function-name "$FN" --query Policy --output text 2>/dev/null | grep -q public-url-invoke; then
+  aws lambda add-permission --function-name "$FN" --statement-id public-url-invoke \
+    --action lambda:InvokeFunction --principal '*' --invoked-via-function-url >/dev/null
+fi
 URL="$(aws lambda get-function-url-config --function-name "$FN" --query FunctionUrl --output text)"
 echo "PRISMOR_EVAL_URL=${URL%/}"
 echo "PRISMOR_EVAL_KEY=${EVAL_KEY}"
