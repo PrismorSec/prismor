@@ -21,8 +21,8 @@ Any command that isn't a recognised package install passes through transparently
 
 ```bash
 # Alias-based transparent wrapping
-alias npm="python3 /path/to/immunity-agent/prismor supplychain npm"
-alias pip="python3 /path/to/immunity-agent/prismor supplychain pip"
+alias npm="prismor supplychain npm"
+alias pip="prismor supplychain pip"
 ```
 
 ---
@@ -30,7 +30,7 @@ alias pip="python3 /path/to/immunity-agent/prismor supplychain pip"
 ## Output
 
 ```
-  IMMUNITY  supply chain  [npm]
+  PRISMOR  supply chain  [npm]
   ────────────────────────────────────────────────────
 
   BLOCK  score 100  @tanstack/react-router  age 1d, 3 maintainers

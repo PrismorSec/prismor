@@ -32,14 +32,14 @@ Claude Code, Codex, Cursor or Gemini CLI, its tool calls go through Prismor.
 
 ## What it writes
 
-| Linux | Windows | What |
-|---|---|---|
-| `/etc/claude-code/managed-settings.d/50-prismor.json` | `C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json` | Claude Code hooks. A drop-in, so an existing `managed-settings.json` is left alone. |
-| `/etc/codex/requirements.toml` | `C:\ProgramData\OpenAI\Codex\requirements.toml` | Codex managed hooks, with `[features].hooks = true` pinned. Added as a marked block, so an org's own requirements stay as they are. |
-| `/etc/cursor/hooks.json` | `C:\ProgramData\Cursor\hooks.json` | Cursor enterprise hooks (merged with any already there) |
-| `/etc/gemini-cli/settings.json` | `C:\ProgramData\gemini-cli\settings.json` | Gemini CLI system settings (merged) |
-| `/etc/prismor/` | `C:\ProgramData\Prismor\` | Marker (`system.json`), rule selection (`policy.yaml`), the hook launcher, the device identity and the org policy cache |
-| systemd `prismor-sync.timer` | scheduled task `Prismor System Sync` (SYSTEM) | Runs `prismor system-sync` every minute |
+| Linux | macOS | Windows | What |
+|---|---|---|---|
+| `/etc/claude-code/managed-settings.d/50-prismor.json` | `/Library/Application Support/ClaudeCode/managed-settings.d/50-prismor.json` | `C:\Program Files\ClaudeCode\managed-settings.d\50-prismor.json` | Claude Code hooks. A drop-in, so an existing `managed-settings.json` is left alone. |
+| `/etc/codex/requirements.toml` | `/etc/codex/requirements.toml` | `C:\ProgramData\OpenAI\Codex\requirements.toml` | Codex managed hooks, with `[features].hooks = true` pinned. Added as a marked block, so an org's own requirements stay as they are. |
+| `/etc/cursor/hooks.json` | `/Library/Application Support/Cursor/hooks.json` | `C:\ProgramData\Cursor\hooks.json` | Cursor enterprise hooks (merged with any already there) |
+| `/etc/gemini-cli/settings.json` | `/Library/Application Support/GeminiCli/settings.json` | `C:\ProgramData\gemini-cli\settings.json` | Gemini CLI system settings (merged) |
+| `/etc/prismor/` | `/Library/Application Support/Prismor/` | `C:\ProgramData\Prismor\` | Marker (`system.json`), rule selection (`policy.yaml`), the hook launcher, the device identity and the org policy cache |
+| systemd `prismor-sync.timer` | launchd `/Library/LaunchDaemons/dev.prismor.system-sync.plist` | scheduled task `Prismor System Sync` (SYSTEM) | Runs `prismor system-sync` every minute |
 
 Everything is admin-owned and readable by every user, except the device key.
 On Windows, `C:\ProgramData\Prismor` gets an explicit ACL (SYSTEM and
@@ -96,7 +96,7 @@ user's spooled telemetry with the device key.
 
 ## Requirements and checks
 
-- Linux as root, or Windows elevated / as SYSTEM. Setup refuses otherwise.
+- Linux or macOS as root (`sudo prismor setup --system`), or Windows elevated / as SYSTEM. Setup refuses otherwise.
 - The interpreter and package must be reachable by every user, or their
   agents can't start the hook. Setup refuses a venv under `/root`, `/home` or
   `C:\Users`, and on Linux one built under `umask 077` (fix:

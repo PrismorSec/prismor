@@ -92,7 +92,7 @@ prismor
 │   ├─ acp -- <agent…>        ACP stdio proxy — agents hosted by Zed, JetBrains and other ACP editors
 │   ├─ proxy                  LLM/A2A proxy — screens model traffic and proposed tool calls
 │   ├─ elevenlabs <action>    status · connect · disconnect — ElevenLabs voice agents via the proxy
-│   ├─ sandbox <action>       status · check · run — Docker command sandbox
+│   ├─ sandbox <action>       status · check · on · off · run — Docker command sandbox
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
 │   └─ eval-server            HTTP evaluation endpoint for non-Python adapters
 │
@@ -122,10 +122,10 @@ prismor
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak`, `--judge <claude\|codex\|api\|prismor>`, `--judge-model`, `--system` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK`, `PRISMOR_JUDGE`, `PRISMOR_JUDGE_MODEL` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, picks which login judges uncertain events (see [Semantic Guard](semantic-guard.md)), and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). `--system` (Linux, root) installs once for every user on the machine; see [System install](system-install.md). |
-| `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user>`, `--portable` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. `--portable` writes a command with no machine-specific paths, so the file can be committed and cloned onto a hosted agent's VM — see [cloud-agents.md](cloud-agents.md). |
+| `prismor setup [DIR]` | `--non-interactive`, `--mode`, `--enforce-rules`, `--recommended`, `--agents`, `--cloak/--no-cloak`, `--judge <claude\|codex\|api\|prismor>`, `--judge-model`, `--system` | Interactive wizard (or scripted with flags / `PRISMOR_MODE`, `PRISMOR_CLOAK`, `PRISMOR_JUDGE`, `PRISMOR_JUDGE_MODEL` env vars). Picks mode, chooses which rules block, selects agents, enables cloaking, picks which login judges uncertain events (see [Semantic Guard](semantic-guard.md)), and optionally sets an unlock password. See [Choosing what blocks](#choosing-what-blocks). `--system` (Linux/macOS as root, Windows elevated) installs once for every user on the machine; see [System install](system-install.md). |
+| `prismor install-hooks` | `--agent <name\|all>` (required), `--mode <observe\|enforce>`, `--scope <project\|user\|global\|system>` (default project), `--portable` | Writes hook config for the chosen agent so Prismor sees tool calls. Without hooks, nothing is monitored. `--portable` writes a command with no machine-specific paths, so the file can be committed and cloned onto a hosted agent's VM — see [cloud-agents.md](cloud-agents.md). |
 | `prismor uninstall-hooks` | `--agent <name\|all>`, `--scope` (`system` removes a [system install](system-install.md)'s hooks, as root) | Removes Prismor hooks for an agent. For `claude`/`all`, this also removes cloaking hooks (`prismor cloak install`) — secrets are no longer protected at the tool boundary until you reinstall with `prismor cloak install`. |
-| `prismor status` | `--workspace`, `--all`, `--days N` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. |
+| `prismor status` | `--workspace`, `--all`, `--days N`, `--perf [N]`, `--json` | Health check: hooks, mode, cloak state, latest session, and the single next action. Run this first every session. `--all` shows every registered workspace. `--perf` reports hook latency (p50/p95 by agent and event, slowest stages and rules) over the last N calls (default 500); `--json` with it for raw output. |
 | `prismor doctor` | `--json`, `--self-test` | Inspect hook configuration, launcher files, policy, enrollment, telemetry, and chain state. Optionally probe recognized dispatchers. Exits non-zero when a check fails. |
 | `prismor surfaces` | — | Which enforcement surface governs each agent on this machine (hooks, MCP mirror, gateway), and which agents nothing governs. |
 | `prismor login` | `--no-browser`, `--label`, `--api-base`, `--force`, `--set-judge` | Sign in and connect this machine to the Prismor API, which gives you the hosted semantic judge (1,000 free verdicts a month). `--set-judge` also sets `semantic_guard.provider: prismor` for this workspace. See [Semantic Guard](semantic-guard.md). |
@@ -408,7 +408,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
 | `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
-| `prismor sandbox <status\|check\|run>` | `--workspace` | Docker-backed command sandbox: show config, check the backend, or run one command isolated. See [Docker sandbox](docker.md). |
+| `prismor sandbox <status\|check\|on\|off\|run>` | `--workspace` | Docker-backed command sandbox: show config, check the backend, turn it on or off for this workspace, or run one command isolated. See [Docker sandbox](docker.md). |
 | `prismor egress show` | `--workspace` | Effective network egress policy, its mode, and which layer (default / project / org) set it. See [Network Isolation](network-isolation.md). |
 | `prismor egress report` | `--last N`, `--fail-on-block`, `--workspace` | Every destination recorded sessions actually contacted, with the verdict the current policy gives it. The on-ramp before flipping to enforce; `--fail-on-block` gates CI. |
 | `prismor egress test <target>...` | `--agent <name>`, `--workspace` | Dry-run a URL, host, or whole shell command against the policy. Exit `1` if anything would be blocked. |
@@ -419,7 +419,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor mirror status` | `--workspace` | Where the mirror is configured, whether it is governing / passing through / paused, its tool roster, live gateway processes. |
 | `prismor mirror passthrough <on\|off>` | `--workspace` | Runtime switch, no restart: `on` runs mirrored built-ins ungoverned (logged, not blocked or redacted). `prismor pause` does the same for hooks + gateway together, with auto-resume. |
 | `prismor mcp-gateway [serve]` | `--config` (default `~/.prismor/mcp-gateway.json`), `--upstream`, `--server name=<url\|command>`, `--mode <observe\|enforce>` (default observe), `--namespace <plain\|none>`, `--mirror`, `--workspace`, `--session-id`, `--identity-issuer`/`--identity-audience`/`--identity-jwks`/`--identity-mode`/`--identity-user-claim`/`--identity-team-claim`/`--identity-roles-claim` | One stdio MCP server in front of every server in `--config`. Each `tools/call` is policy-evaluated before it is forwarded, and each response is injection-scanned before the model sees it. Tools are namespaced `<server>__<tool>`. See [MCP Gateway](mcp-gateway.md). |
-| `prismor mcp-gateway install` | `--all`, `--mode` | Move this workspace's `.mcp.json` servers behind the gateway (backup kept). `--all` migrates every MCP config on the machine (Claude Desktop, Cursor, VS Code, …). `uninstall` restores the backup. |
+| `prismor mcp-gateway install` | `--all`, `--mode` (default enforce) | Move this workspace's `.mcp.json` servers behind the gateway (backup kept). The entry it writes pins `--mode enforce` unless you pass `--mode observe`. `--all` migrates every MCP config on the machine (Claude Desktop, Cursor, VS Code, …). `uninstall` restores the backup. |
 | `prismor acp -- <agent command…>` | `--mode <enforce\|observe>` (default enforce), `--workspace`, `--no-audit` | Stdio proxy for Agent Client Protocol editors (Zed, JetBrains, CodeCompanion, agent-shell). Put it in front of the agent in the editor's `agent_servers` entry. It screens `terminal/create`, `fs/*` and `session/request_permission` before the editor carries them out, redacts and scans what comes back, resolves `@@SECRET:…@@` placeholders, and turns `step_up` into the editor's own permission prompt. Tools the agent runs in-process are audited after the fact but can only be enforced by its native hooks. See [ACP proxy](acp.md). |
 | `prismor egress migrate` | `--workspace` | Convert a legacy warn-only `settings.egress_allowlist` into an enforceable `settings.egress`. |
 | `prismor egress request <host>` | `--reason` (required), `--workspace` | Enrolled devices: ask your org's admins to allow a host. Lands in the console under Policy → Requests; approving adds it to the egress allowlist of the policy governing your device. See [Network Isolation](network-isolation.md#when-your-agent-is-blocked-request-access). |
@@ -454,7 +454,7 @@ outside all of this, the same as every other Prismor control.
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor inference-hook serve` | `--host`, `--port` (7072), `--signing-secret`, `--previous-signing-secret`, `--fail-open`, `--mode enforce|shadow`, `--allow-unsigned`, `--api-key`, `--config`, `--workspace`, `-v` | Run the AI security server for [Claude Inference Hooks](inference-hook.md): Anthropic POSTs each governed prompt (claude.ai, Claude Code, Cowork) as a signed frame; Prismor evaluates the transcript and returns `{action: allow|deny}`. Fail-closed by default; any path is the endpoint; `GET /health`. |
+| `prismor inference-hook serve` | `--host`, `--port` (7072), `--signing-secret`, `--previous-signing-secret`, `--fail-open`, `--mode enforce|observe|shadow`, `--allow-unsigned`, `--api-key`, `--config`, `--workspace`, `-v` | Run the AI security server for [Claude Inference Hooks](inference-hook.md): Anthropic POSTs each governed prompt (claude.ai, Claude Code, Cowork) as a signed frame; Prismor evaluates the transcript and returns `{action: allow|deny}`. Fail-closed by default; any path is the endpoint; `GET /health`. |
 | `prismor inference-hook test` | `--url`, `--secret`, `--sample clean|pci|secret|injection|config-test|all`, `--frame file.json`, `--unsigned`, `--bearer`, `--expect`, `--json` | Send Standard-Webhooks-signed sample frames to a server (or evaluate in-process with no `--url`) and print the verdicts. Exit 0 allow · 1 deny · 2 error/mismatch. |
 | `prismor inference-hook secret` | — | Print a fresh `whsec_` secret for local end-to-end runs. |
 
@@ -482,8 +482,9 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor analyze-history --coverage` | `--json` | Show sessions that ran with no live Prismor record — activity that executed ungoverned. |
 | `prismor analyze-history --show <rule>` | — | List the individual tool calls behind one rule id. |
 | `prismor analyze-history --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
-| `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json` | List stored sessions, optionally only flagged ones, optionally across all workspaces. |
-| `prismor session <id>` | `--json`, `--changes` | Drill into one session's tool-call trace + findings. `--changes` lists the files it wrote (as diffs), the commands it ran, and a drafted PR description. See [Dev insights](dev-insights.md). |
+| `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json`, `--shared` | List stored sessions, optionally only flagged ones, optionally across all workspaces. `--shared` lists sessions teammates shared with you (needs `prismor login`). |
+| `prismor session <id>` | `--json`, `--changes`, `--remote`, `--limit` | Drill into one session's tool-call trace + findings. `--changes` lists the files it wrote (as diffs), the commands it ran, and a drafted PR description. `--remote` reads the session from your org's console (implied by a pasted link); `--limit N` caps it to the last N events (default 400). See [Dev insights](dev-insights.md). |
+| `prismor session share [SESSION]` | `--org`, `--with <emails>`, `--public` | Share a session (default: this workspace's latest) as a console link. `--org` lets anyone in your org open it, `--with` adds named teammates, `--public` makes it readable by anyone with the link without sign-in. `--public` is for you to run, not your agent. Needs `prismor login`. |
 | `prismor rca [session]` | `--workspace`, `--json` | What went wrong in a session (default: the latest): the first failure with the calls before it, retry loops, reverted edits. See [Dev insights](dev-insights.md). |
 | `prismor blame <path[:line]>` | `--workspace`, `--json` | Which agent session wrote this file or line, and what that session was asked. |
 | `prismor friction` | `--days`, `--all`, `--workspace`, `--json` | Failures that recur across sessions, grouped by command and printed as AGENTS.md lines. |
@@ -507,7 +508,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor cloak install` | `--scope`, `--no-userprompt-guard`, `--no-secret-guard`, `--sweep-on-stop` | Install cloaking hooks so real secrets stay out of model context. |
+| `prismor cloak install` | `--scope`, `--no-userprompt-guard`, `--no-secret-guard`, `--no-read-guard`, `--no-env-guard`, `--sweep-on-stop` | Install cloaking hooks so real secrets stay out of model context. `--no-read-guard` skips the hook that denies reading files containing a registered secret; `--no-env-guard` skips the one that denies reading `.env`-style files not yet imported with `prismor cloak add --env-file`. |
 | `prismor cloak add <name>` | `--from-file` | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. |
 | `prismor cloak add --env-file .env` | — | Import every `KEY=VALUE` entry from a dotenv file as `@@SECRET:KEY@@`. |
 | `prismor cloak list` | — | List registered placeholder names (never values). |
@@ -562,7 +563,7 @@ Deep dive: [Learning](learning.md).
 
 | Command | Key flags | Description |
 |---|---|---|
-| `prismor enroll <token>` | `--label`, `--api-base` | Exchange a single-use org token (minted in the dashboard) for this machine's device identity; pulls the signed org policy. |
+| `prismor enroll <token>` | `--token`, `--token-file`, `--label`, `--api-base` | Exchange a single-use org token (minted in the dashboard) for this machine's device identity; pulls the signed org policy. `--token-file` (or `$PRISMOR_ENROLL_TOKEN`) keeps a fleet token out of `ps` and shell history. |
 | `prismor enroll-status` | — | Show enrollment state, device label, and the applied policy version. Exits 1 when the machine is not enrolled or its key was revoked or refused, so an MDM compliance script can use it; an unreachable control plane still exits 0. |
 | `prismor workspace [managed\|personal\|auto]` | — | With no argument, shows whether this workspace is org-managed (org policy + telemetry) or personal (local-only). Pass `managed`/`personal`/`auto` to set it. Org-claimed repos can't be downgraded, and `personal` is ignored entirely when the org policy sets `allow_personal_workspaces: false`. |
 | `prismor exempt request` | `--reason` | Ask an org admin to relax specific non-floor rules for this repo; served back in the signed policy. |

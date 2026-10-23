@@ -2,7 +2,7 @@
 
 ## The goal
 
-An org admin opens **Admin → Observability** and sees their developers' AI-agent
+An org admin opens **Admin → Activity** and sees their developers' AI-agent
 security activity **stream in live, automatically** — no per-developer manual
 steps, no refreshing. When a developer's Claude/Cursor/etc. session triggers a
 Prismor finding (a blocked `rm -rf`, a secret-exfil attempt, a risky MCP call),
@@ -46,6 +46,7 @@ Diagnosed on 2026-06-10. The dashboard was frozen at ~3h old because:
 
 1. The user's Claude Code hooks invoke the **pipx-installed** runtime:
    `~/.local/pipx/venvs/immunity-agent/.../prismor/runtime/cli.py hook-dispatch …`
+   (the package was then still called `immunity-agent`; it is now `prismor`)
 2. That install is **v1.5.8 — predating the cloud sink**. It's missing
    `identity.py`, `telemetry.py`, `remote_policy.py`, and its `sinks.py` has no
    `prismor` dispatcher.
@@ -58,9 +59,9 @@ In short: **enrolled ✓, but the live hook runs old code with no uploader.**
 ## The solution
 
 ### Production (the real "automatic")
-Publish **immunity-agent ≥ 1.6.x** (this branch — `identity`/`telemetry`/
-`remote_policy` + the `prismor` sink) to PyPI. Developers `pipx upgrade
-immunity-agent`. Their existing hooks already call the installed
+Ship the cloud sink (`identity`/`telemetry`/`remote_policy` + the `prismor`
+sink, since 1.6.x) on PyPI as `prismor`. Developers `pipx upgrade prismor`
+(or `pip install -U prismor`). Their existing hooks already call the installed
 `prismor/runtime/cli.py`, so once it's the new code, **every finding uploads live with
 zero further steps**. Enrollment is one-time (`prismor enroll <token>`).
 
