@@ -58,7 +58,12 @@ from prismor.runtime.egress import (
     _split_host_port,
     _tokenize,
 )
-from prismor.runtime.shell_context import heredocs, is_inert_match, quoted_spans
+from prismor.runtime.shell_context import (
+    command_substitution_spans,
+    heredocs,
+    is_inert_match,
+    quoted_spans,
+)
 
 __all__ = [
     "CATEGORY",
@@ -526,12 +531,36 @@ def _dest_from_url(url: str) -> Optional[Destination]:
 # command itself: `if x; then curl ...`, `for f in *; do curl ...`.
 _SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
 
+# Builtins that only declare variables: `local code=$(curl ...)`.
+_DECLARE_BUILTINS = frozenset({"local", "export", "declare", "readonly", "typeset"})
+
 
 def _split_argv_prefix(tokens: List[str]) -> List[str]:
     while tokens:
         tok = tokens[0]
         if tok in _SHELL_KEYWORDS:
             tokens.pop(0)
+            continue
+        if tok == "case":
+            # `case $x in a) curl ...`: the command starts after the first pattern.
+            arm = next((i for i, t in enumerate(tokens) if t.endswith(")")), None)
+            tokens = tokens[arm + 1:] if arm is not None else []
+            continue
+        if tok.endswith(")") and "(" not in tok and len(tokens) > 1:
+            tokens.pop(0)  # a later case arm, `b) curl ...` after `;;`
+            continue
+        if tok.startswith("(") and not tok.startswith("$("):
+            # `(cd x && curl ...)` subshell or `((`: the command follows the paren.
+            tokens[0] = tok.lstrip("(")
+            if tokens[-1].endswith(")"):
+                tokens[-1] = tokens[-1][:-1]
+            if not tokens[0]:
+                tokens.pop(0)
+            continue
+        if tok in _DECLARE_BUILTINS:
+            tokens.pop(0)
+            while tokens and tokens[0].startswith("-"):
+                tokens.pop(0)
             continue
         if not _ENV_ASSIGN_RE.match(tok):
             break
@@ -581,6 +610,8 @@ def _all_print_only(text: str, spans) -> bool:
     bounds = [0] + [p for m in _SHELL_SEP_RE.finditer(bare) for p in (m.start(), m.end())] + [len(bare)]
     for s, e in zip(bounds[::2], bounds[1::2]):
         words = bare[s:e].split()
+        while words and _ENV_ASSIGN_RE.match(words[0]):
+            words.pop(0)  # `NO_COLOR=1 prismor ...`
         if not words:
             if text[s:e].strip():  # the whole command word was quoted
                 return False
@@ -622,6 +653,68 @@ def _split_segments(command: str) -> List[str]:
         start = m.end()
     out.append(command[start:])
     return out
+
+
+# Words that run text as shell. When one appears anywhere outside heredoc
+# bodies, every body is kept as commands: `bash <<EOF`, `ssh host <<EOF`, and
+# `cat > x <<EOF ... EOF; sh x` all run the body.
+_HEREDOC_SHELLS = frozenset({
+    "bash", "sh", "zsh", "ksh", "dash", "ash", "mksh", "fish", "csh", "tcsh",
+    "busybox", "pwsh", "powershell", "ssh", "su", "sudo", "doas", "eval", "exec",
+    "source", ".", "xargs",
+})
+_HEREDOC_TARGET_RE = re.compile(r"(?:>>?|\btee(?:\s+-a)?)\s*([^\s;&|<>()]+)")
+
+
+def _blank_data_heredocs(command: str) -> str:
+    """Blank the heredoc bodies that are data, not commands: `cat > f.py
+    <<EOF`, `python3 - <<PY`, `gh pr create --body "$(cat <<'EOF'`. A body
+    is kept when a shell word appears outside the bodies, or when the file it
+    is written to is named again (`cat > x.sh <<EOF ... EOF && ./x.sh`). In a
+    blanked body with an unquoted delimiter, `$(...)` and backticks still run,
+    so they are kept for the substitution pass."""
+    docs = heredocs(command)
+    if not docs:
+        return command
+    chars = list(command)
+    for h in docs:
+        chars[h.body_start:h.body_end] = " " * (h.body_end - h.body_start)
+    outside = "".join(chars)
+    # Quotes are dropped first so `"sh"` and `s''h` read as sh; a variable
+    # (`$SHELL`) could name any shell, so it keeps the bodies too.
+    words = re.split(r"[\s;|&()`<>$]+", outside.replace("'", "").replace('"', ""))
+    if any(w.rsplit("/", 1)[-1] in _HEREDOC_SHELLS for w in words) or re.search(r"\$\{?[A-Za-z_]", outside):
+        return command
+    for target in _HEREDOC_TARGET_RE.findall(outside):
+        name = target.rsplit("/", 1)[-1]
+        if name and outside.count(name) > 1:
+            return command
+    chars = list(command)
+    for h in docs:
+        keep: Set[int] = set()
+        if h.expands:
+            for s, e in command_substitution_spans(command[h.body_start:h.body_end]):
+                keep.update(range(h.body_start + s, h.body_start + e))
+        for k in range(h.body_start, h.body_end):
+            if k not in keep and chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
+def _cut_substitutions(text: str) -> Tuple[str, List[str]]:
+    """Blank every `$(...)` and backtick substitution the shell runs (any not
+    inside single quotes) and return their bodies alongside."""
+    singles = [(s, e) for s, e, _payload, _closed in quoted_spans(text) if text[s] == "'"]
+    chars = list(text)
+    bodies: List[str] = []
+    for s, e in command_substitution_spans(text):
+        if any(qs < s <= qe for qs, qe in singles):
+            continue
+        open_len = 2 if text.startswith("$(", s) else 1
+        closed = e - s > open_len and text[e - 1] == (")" if open_len == 2 else "`")
+        bodies.append(text[s + open_len:e - 1 if closed else e])
+        chars[s:e] = " " * (e - s)
+    return "".join(chars), bodies
 
 
 def _query_text(url: str) -> str:
@@ -776,8 +869,16 @@ def extract_outbound(event: Dict[str, Any]) -> List[Outbound]:
     command = str(event.get("command") or "")
     if not command:
         return out
+    return _shell_outbound(command)
 
-    for sub in _split_segments(command):
+
+def _shell_outbound(command: str, depth: int = 0) -> List[Outbound]:
+    """Outbound calls in a shell command. Each command substitution is parsed
+    as a command of its own (it runs), and blanked in the outer one so its
+    words cannot become the outer argv0 (`code=$(curl ...)`, `$(curl ...)`)."""
+    out: List[Outbound] = []
+    text, inner = _cut_substitutions(_blank_data_heredocs(command))
+    for sub in _split_segments(text):
         sub = sub.strip()
         if not sub:
             continue
@@ -797,6 +898,9 @@ def extract_outbound(event: Dict[str, Any]) -> List[Outbound]:
             ob = _generic_outbound(argv0, args, sub, vendor)
             if ob.parts or ob.files:
                 out.append(ob)
+    if depth < 8:
+        for body in inner:
+            out.extend(_shell_outbound(body, depth + 1))
     return out
 
 
