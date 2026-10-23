@@ -48,13 +48,6 @@ def test_sed_range_read_after_unrelated_block_is_not_evasion(tmp_path):
     assert _detect(tmp_path, "sed -n '200,260p' prismor/runtime/hooks.py") == []
 
 
-def test_sed_range_read_after_pattern_block_is_not_evasion(tmp_path):
-    # Different line range of the same file: a read, judged on its own.
-    _seed(tmp_path, "s1", SED, "some-pattern-rule")
-    assert _detect(tmp_path, "sed -n '200,260p' prismor/runtime/hooks.py") == []
-    assert _detect(tmp_path, "head -n 40 prismor/runtime/hooks.py") == []
-
-
 def test_heredoc_script_after_staged_execution_block_is_not_evasion(tmp_path):
     _seed(tmp_path, "s1", HEREDOC, "staged-execution")
     assert _detect(tmp_path, "python3 - <<'PY'\nimport json\nprint(json.dumps({'b': 2}))\nPY") == []
@@ -77,15 +70,3 @@ def test_reworded_exfil_after_pattern_block_is_still_evasion(tmp_path):
     ):
         found = _detect(tmp_path, variant)
         assert [f["ruleId"] for f in found] == ["evasion-detection"], variant
-
-
-def test_reading_a_secret_file_is_not_treated_as_read_only(tmp_path):
-    _seed(tmp_path, "s1", "cat .env", "secret-file-read")
-    found = _detect(tmp_path, "cat  .env  .env.local")
-    assert [f["ruleId"] for f in found] == ["evasion-detection"]
-
-
-def test_sed_that_writes_is_not_read_only(tmp_path):
-    _seed(tmp_path, "s1", "sed -i 's/a/b/' setup.py", "some-pattern-rule")
-    found = _detect(tmp_path, "sed -i -e 's/a/b/' setup.py")
-    assert [f["ruleId"] for f in found] == ["evasion-detection"]

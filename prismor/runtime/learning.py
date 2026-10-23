@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,12 +202,6 @@ _STATEFUL_RULES = (
     "agent-tool-deny", "agent-disabled", "identity-unverified", "iam",
 )
 
-# Commands that only print what is already on disk. Kept deliberately short:
-# `rg` is out (`--pre` runs a program), `sed` only in its `-n 'N,Mp'` form.
-_READ_ONLY_BASES = {"cat", "head", "tail", "wc", "ls", "grep"}
-_SED_PRINT_RANGE = re.compile(r"^[\d,$]+p$")
-
-
 def _is_stateful_rule(rule_id: str) -> bool:
     return any(
         rule_id == name or rule_id.startswith(name + "-") or rule_id.startswith(name + ":")
@@ -227,41 +220,6 @@ def _blocking_rule_id(finding_id: str, enrichment_json: Optional[str]) -> str:
         return str(rule_id)
     return str(finding_id or "").split(":", 1)[-1]
 
-
-def _is_read_only(command: str) -> bool:
-    """True when every segment of ``command`` only reads non-sensitive files.
-
-    Anything that could write, run another program or hide one (redirects,
-    substitutions, heredocs, a lone ``&``, newlines) disqualifies it, as does an
-    argument naming a secret-bearing path: a re-worded ``cat .env`` must still
-    reach the similarity check.
-    """
-    from prismor.runtime.policies import SENSITIVE_PATH_PATTERN
-
-    s = command.strip()
-    if not s or "\n" in s or any(ch in s for ch in "<>`") or "$(" in s:
-        return False
-    if "&" in s.replace("&&", ""):
-        return False
-    for seg in _SHELL_SPLIT.split(s):
-        try:
-            parts = shlex.split(seg)
-        except ValueError:
-            return False
-        if not parts:
-            return False
-        base, args = parts[0], parts[1:]
-        if base == "sed":
-            if "-n" not in args or any(a.startswith(("-i", "--in-place")) for a in args):
-                return False
-            script = [a for a in args if not a.startswith("-")]
-            if not script or not _SED_PRINT_RANGE.match(script[0]):
-                return False
-        elif base not in _READ_ONLY_BASES:
-            return False
-        if any(SENSITIVE_PATH_PATTERN.search(a) for a in args):
-            return False
-    return True
 
 
 def detect_evasion(
@@ -284,11 +242,6 @@ def detect_evasion(
 
     base = _base_command(command)
     if not base:
-        return []
-
-    # Printing a file cannot evade anything: the read is evaluated on its own
-    # (#595: `sed -n 'N,Mp' f` retries after an unrelated block).
-    if _is_read_only(command):
         return []
 
     db_path = get_db_path(workspace)
