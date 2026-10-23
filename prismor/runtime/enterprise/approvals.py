@@ -109,16 +109,20 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
         return None
 
 
-def _get_status(ident: Dict[str, Any], approval_id: str, timeout: float) -> Optional[str]:
-    """Current status string, or None on any transport error."""
-    status, _mode = _get_status_ex(ident, approval_id, timeout)
-    return status
+def _decision_mode(data: Dict[str, Any]) -> str:
+    """``"full"`` only when the response says so explicitly; a missing or
+    unrecognised mode reads as ``"redacted"``. An approval never grants more
+    than the approver can be shown to have chosen (#667)."""
+    mode = str(data.get("decision_mode") or data.get("decisionMode") or "").strip().lower()
+    return "full" if mode == "full" else "redacted"
 
 
 def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> Tuple[Optional[str], str]:
     """``(status, decision_mode)``. ``decision_mode`` is ``"redacted"`` when the
     approver chose "approve with sensitive values stripped" — the runtime then
-    redacts locally before the call runs (see :func:`redact_approved_payload`)."""
+    redacts locally before the call runs (see :func:`redact_approved_payload`).
+    Status and mode come from the same response; callers must not re-fetch one
+    without the other."""
     import urllib.request
     import urllib.error
 
@@ -130,10 +134,9 @@ def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> T
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
         status = str(data.get("status") or "").lower() or None
-        mode = str(data.get("decision_mode") or data.get("decisionMode") or "full").lower()
-        return status, mode
-    except (urllib.error.URLError, OSError, ValueError):
-        return None, "full"
+        return status, _decision_mode(data)
+    except (urllib.error.URLError, OSError, ValueError, AttributeError):
+        return None, "redacted"
 
 
 def _audit_outcome(
@@ -323,7 +326,7 @@ def await_step_up(
         return ApprovalOutcome(False, status="request_failed")
     approval_id = str(created["id"])
     if str(created.get("status") or "").lower() == _APPROVED:
-        _mode = str(created.get("decision_mode") or created.get("decisionMode") or "full").lower()
+        _mode = _decision_mode(created)
         _record("approved" if _mode != "redacted" else "approved_redacted", approval_id)
         return ApprovalOutcome(True, redacted=_mode == "redacted", approval_id=approval_id, status="approved")
 
