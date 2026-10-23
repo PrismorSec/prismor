@@ -40,11 +40,17 @@ PROMPT_INJECTION_PATTERN = re.compile(
     r"ignore\s+(?:all\s+)?(?:any\s+)?(?:previous\s+)?instructions"
     r"|reveal\s+(?:your|the)\s+system\s+prompt"
     r"|developer\s+instructions"
-    r"|exfiltrat(?:e|ion)"
-    r"|print\s+.*(?:secret|token|key|credential|password)"
-    r"|show\s+.*(?:token|secret|key|credential|password)"
+    # Directives need an object and skip negated forms; security docs and
+    # project memory say "secret exfiltration" or "never print secrets" (#591).
+    # Kept in step with the prompt-injection rule in default_policy.yaml.
+    r"|(?<!not\s)(?<!n't\s)(?<!never\s)\bexfiltrat(?:e|es|ing)\s+\S+"
+    r"|\b(?:perform|begin|start|carry\s+out|execute)\s+(?:(?:the|an?)\s+)?exfiltration\b"
+    r"|(?<!not\s)(?<!n't\s)(?<!never\s)\b(?:print|show)\s+(?:[^\n.!?;]|\.(?=\w)|\n(?![ \t\r]*\n))*"
+    r"(?:secret|token|key|credential|password)(?!s?[ \t]+(?:names|ids|counts?)\b[ \t]*(?:[.!?;]|$))"
     r"|bypass(?:es|ed|ing)?\s+guardrails"
-    r"|jailbreak"
+    r"|\b(?:enter|enable|activate|switch\s+to|now\s+in)\s+(?:\w+\s+){0,2}jailbreak\b"
+    r"|(?<!not\s)(?<!n't\s)(?<!never\s)\bjailbreak\s+(?:yourself|(?:(?:the|this|that|your|our|a|an)\s+)?"
+    r"(?:models?|assistants?|system|chatbot|llm))\b"
     # Covert exfiltration — natural-language instructions to send data silently
     r"|(?:silently|quietly|covertly|secretly)\s+(?:send|forward|transmit|upload|share|post)\b"
     r"|without\s+(?:the\s+)?user\s+(?:knowing|noticing|seeing|being\s+aware|realizing)"
