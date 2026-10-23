@@ -25,15 +25,15 @@ from email.message import Message
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-os.environ.setdefault("PRISMOR_HOME", "/tmp/prismor")
-os.environ.setdefault("HOME", "/tmp")
+os.environ.setdefault("PRISMOR_HOME", "/tmp/prismor")  # Lambda's only writable dir, private per instance  # nosec B108
+os.environ.setdefault("HOME", "/tmp")  # Lambda's only writable dir, private per instance  # nosec B108
 os.environ.setdefault("PRISMOR_WORKSPACE_SCOPE", "managed")
 
 from prismor.runtime import remote_eval  # noqa: E402
 from prismor.runtime.eval_server import EvalHandler  # noqa: E402
 
 remote_eval.SERVING = True
-WORKSPACE = Path(os.environ.get("PRISMOR_WORKSPACE", "/tmp/prismor/ws"))
+WORKSPACE = Path(os.environ.get("PRISMOR_WORKSPACE", "/tmp/prismor/ws"))  # private per Lambda instance  # nosec B108
 WORKSPACE.mkdir(parents=True, exist_ok=True)
 EvalHandler.workspace = WORKSPACE
 EvalHandler.api_key = os.environ.get("PRISMOR_EVAL_KEY") or None
@@ -47,7 +47,7 @@ _CORS = {
 
 
 class _Server:
-    server_address = ("0.0.0.0", 443)
+    server_address = ("0.0.0.0", 443)  # placeholder for EvalHandler; no socket is opened  # nosec B104
 
 
 class _Call(EvalHandler):
