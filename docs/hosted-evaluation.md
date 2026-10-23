@@ -11,14 +11,18 @@ agent key on the agent's machine.
 
 ## Get access
 
-Hosted evaluation is part of the **Enterprise** plan. Ask your Prismor contact (or
-contact@prismor.dev) to turn it on for your org. You receive:
+Hosted evaluation is part of the **Enterprise** plan. An org admin turns it on in
+the console: **Agents → SDK & deployed agents → Hosted evaluation → Turn on**. Setup
+takes under a minute, and then the console shows:
 
 - **`PRISMOR_EVAL_URL`**: your org's evaluator endpoint. It runs in its own
   isolated function, holding only your org's key and policy.
 - **`PRISMOR_EVAL_KEY`**: a bearer key for that endpoint, shown once. Store it in
-  your secret manager. Requests without it get `401`. Ask for a new one at any time;
-  rotating it invalidates the old key.
+  your secret manager. Requests without it get `401`. **Rotate key** on the same
+  card issues a new one and invalidates the old key at once.
+
+The evaluator reports as a service identity named **Hosted evaluation** in your
+console.
 
 Your org's policy, per-agent controls (pause, mode override, blocked tools) and
 console views all work as they do for self-run agents.
