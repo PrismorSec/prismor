@@ -63,9 +63,12 @@ try {
             Write-Output "already enrolled; token not used"
         } else {
             if (-not $Label) { $Label = $env:COMPUTERNAME }
-            $enroll = @("--token", $Token, "--label", $Label)
+            $enroll = @("--label", $Label)
             if ($ApiBase) { $enroll += @("--api-base", $ApiBase) }
-            $null | & $py -m prismor.runtime.immunity_cli enroll @enroll
+            # Through the environment, not argv: the fleet token is org-wide.
+            $env:PRISMOR_ENROLL_TOKEN = $Token
+            try { $null | & $py -m prismor.runtime.immunity_cli enroll @enroll }
+            finally { Remove-Item Env:PRISMOR_ENROLL_TOKEN -ErrorAction SilentlyContinue }
             if ($LASTEXITCODE -ne 0) { throw "enrollment failed ($LASTEXITCODE)" }
             $null | & $py -m prismor.runtime.immunity_cli system-sync --quiet
         }

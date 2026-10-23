@@ -450,6 +450,8 @@ The short version:
 
 By participating you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
 
+Found a vulnerability? Report it privately as described in [SECURITY.md](./SECURITY.md), not in a public issue.
+
 ---
 
 - [Prismor.dev](https://prismor.dev)

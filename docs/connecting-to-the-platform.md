@@ -57,10 +57,13 @@ lives in the proprietary control plane.
 ```
 prismor enroll <TOKEN>
 prismor enroll --token <TOKEN> --label "ci-runner-3" --api-base https://prismor.dev
+prismor enroll --token-file /path/to/token          # or: PRISMOR_ENROLL_TOKEN=<TOKEN> prismor enroll
 ```
 
 - **Token:** a one-time enrollment token from the dashboard (Admin → Devices →
-  Enroll), exchanged exactly once.
+  Enroll), exchanged exactly once. Use `--token-file` or
+  `PRISMOR_ENROLL_TOKEN` for a fleet token so it never shows up in `ps` or
+  shell history; the MDM packages pass it this way.
 - **What happens:** `identity.enroll()` POSTs `{token, label, platform,
   prismor_version}` to `/api/devices/enroll`; the server returns `device_id`,
   `org_id`, `user_id`, `device_key`, `org_name`.

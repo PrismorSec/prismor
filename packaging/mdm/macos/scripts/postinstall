@@ -17,7 +17,7 @@ rd(){ [ -f "$PREF" ] && /usr/libexec/PlistBuddy -c "Print :$1" "$PREF" 2>/dev/nu
 MODE=$(rd Mode)
 ARGS=(--mode "${MODE:-enforce}")
 [ -n "$(rd EnforceRules)" ] && ARGS+=(--rules "$(rd EnforceRules)")
-[ -n "$(rd FleetToken)" ] && ARGS+=(--token "$(rd FleetToken)")
+export PRISMOR_ENROLL_TOKEN="$(rd FleetToken)"
 [ -n "$(rd ApiBase)" ] && ARGS+=(--api-base "$(rd ApiBase)")
 /opt/prismor/bin/prismor-mdm-setup "${ARGS[@]}"; rc=$?
 # Older versions: hooks run through current/, so nothing points at them now.

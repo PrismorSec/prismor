@@ -575,11 +575,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "enroll":
         from prismor.runtime.enterprise import identity as _identity
         token = getattr(args, "token", None) or getattr(args, "token_flag", None)
+        token_file = getattr(args, "token_file", None)
+        if not token and token_file:
+            try:
+                token = Path(token_file).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                sys.stderr.write(f"error: cannot read --token-file: {exc}\n")
+                raise SystemExit(1)
+        # The env var keeps an org-wide fleet token out of argv and shell history.
+        token = token or os.environ.get("PRISMOR_ENROLL_TOKEN", "").strip()
         if not token:
             sys.stderr.write(
                 "error: enrollment token required\n"
                 "  Generate one in the Prismor dashboard (Admin → Devices → Enroll)\n"
                 "  then run:  prismor enroll <token>\n"
+                "  (or --token-file <path>, or set PRISMOR_ENROLL_TOKEN)\n"
             )
             raise SystemExit(1)
         try:
@@ -4744,6 +4754,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enroll_parser.add_argument("token", nargs="?", help="One-time enrollment token from the Prismor dashboard")
     enroll_parser.add_argument("--token", dest="token_flag", help="Enrollment token (alternative to positional)")
+    enroll_parser.add_argument("--token-file", help="Read the enrollment token from a file (default: $PRISMOR_ENROLL_TOKEN)")
     enroll_parser.add_argument("--label", help="Human-readable device label (default: hostname)")
     enroll_parser.add_argument("--api-base", help="Control-plane base URL (default: $PRISMOR_API_BASE)")
 
