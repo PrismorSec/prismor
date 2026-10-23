@@ -190,6 +190,30 @@ class HookDispatchForSubagents(unittest.TestCase):
         self.assertEqual(ev["response"], "Prismor blocked chmod; nothing changed.")
         self.assertEqual(ev["metadata"]["subagent_id"], "01a1-sub")
 
+    def test_session_end_flushes_the_outbox_and_screens_nothing(self):
+        # Observed events ride the spool to a heartbeat tick that only runs in a
+        # hook; SessionEnd is the session's last chance to ship them.
+        code, out = self._dispatch({"hook_event_name": "SessionEnd", "reason": "prompt_input_exit"})
+        self.assertEqual(code, 0)
+        self.assertIsNone(out)
+        from prismor.runtime import cli
+        with mock.patch("prismor.runtime.enterprise.telemetry_spool.clear_backoff") as clear, \
+             mock.patch("prismor.runtime.enterprise.heartbeat.maybe_flush") as flush, \
+             mock.patch("prismor.runtime.cli.evaluate_tool_call") as evaluate, \
+             mock.patch("sys.stdin", new=__import__("io").StringIO(json.dumps(
+                 {"hook_event_name": "SessionEnd", "session_id": "s9", "cwd": str(self.ws)}))), \
+             mock.patch.dict(os.environ, {"PRISMOR_HOME": str(self.root / "home" / ".prismor")}):
+            cli.main(["hook-dispatch", "--agent", "claude", "--workspace", str(self.ws), "--mode", "observe"])
+        clear.assert_called_once()
+        flush.assert_called_once_with(force=True, timeout=6.0)
+        evaluate.assert_not_called()
+
+    def test_claude_install_registers_session_end(self):
+        from prismor.runtime.hooks import _merge_claude
+        cfg = _merge_claude({}, "prismor-hook", self.ws)
+        self.assertEqual(cfg["hooks"]["SessionEnd"][0]["hooks"][0]["command"], "prismor-hook")
+        self.assertEqual(len(_merge_claude(cfg, "prismor-hook", self.ws)["hooks"]["SessionEnd"]), 1)
+
     def test_codex_install_registers_subagent_stop(self):
         from prismor.runtime.hooks import _merge_codex
         cfg = _merge_codex({}, "prismor-hook")

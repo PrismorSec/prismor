@@ -1294,6 +1294,14 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
         hooks.get("SubagentStop", []),
         {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
     )
+    # SessionEnd: ship the telemetry outbox. Observed events ride the spool to
+    # the heartbeat's 60s tick, which only runs inside a hook, so without this a
+    # session's last events wait for the device's next agent activity. Small
+    # payload (session id + reason), unlike Stop below.
+    hooks["SessionEnd"] = _merge_claude_entries(
+        hooks.get("SessionEnd", []),
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    )
     # Skip "Stop" hook — the payload contains the full assistant response which
     # exceeds OS argument limits (E2BIG) on long conversations. Stop fires after
     # all actions are complete so it has no security enforcement value.

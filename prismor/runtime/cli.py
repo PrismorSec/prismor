@@ -1765,6 +1765,20 @@ def main(argv: Optional[List[str]] = None) -> None:
                 workspace = _git_root_or_self(Path(_cwd))
         register_workspace(workspace)
 
+        # The session is over: nothing to screen, and no later hook in it will
+        # run the heartbeat tick, so ship the outbox now. Clear the backoff an
+        # earlier cold-start timeout left behind: this is the last chance, and a
+        # failure sets it again. Never blocks the exit on an error.
+        if str(payload.get("hook_event_name") or "") == "SessionEnd":
+            try:
+                from prismor.runtime.enterprise import heartbeat as _heartbeat
+                from prismor.runtime.enterprise import telemetry_spool as _spool
+                _spool.clear_backoff()
+                _heartbeat.maybe_flush(force=True, timeout=6.0)
+            except Exception:
+                pass
+            return
+
         # A subagent finished: queue a line telling the person what Prismor did
         # inside it. Its blocks and warnings went to the subagent; a background
         # subagent's work never shows in the main chat. The line is shown by the
