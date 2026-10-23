@@ -98,7 +98,25 @@ _sig(r"(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|pr
 # ``export GH_TOKEN=$(gh auth token)`` is the shell builtin setting a variable
 # for the next command, not a request to export credentials -- it blocked a
 # plain `gh api` call live. The ``VAR=`` form is exempt; the prose form is not.
-_sig(r"(export(?!\s+[A-Za-z_][A-Za-z0-9_]*=)|output|include|copy|dump)\s+.{0,60}(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)", 0.70, "credential_exfil_request")
+#
+# The verb must not sit in a negated list ("Never read out, export or print
+# session tokens" is a rule, not a request). Same shape as the prompt-injection
+# rule in default_policy.yaml: match from a clause start, let the prefix skip a
+# negated span, and make that span end at the list's last verb so backtracking
+# cannot shorten it (no atomic groups on Python < 3.11).
+_CRED_VERB = r"(?:export|output|include|copy|dump)"
+_LIST_SEP = r"(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+)"
+_LIST_ITEM = r"(?!mind\b)[a-z]+(?:\s+out)?" + _LIST_SEP
+_NEGATED_CRED_VERB = (
+    r"(?:\bnever|\bnot|n't|\bcannot|\bavoid)\s+(?:ever\s+)?(?:" + _LIST_ITEM + r")*"
+    + _CRED_VERB + r"\b(?!" + _LIST_SEP + r"(?:" + _LIST_ITEM + r")*" + _CRED_VERB + r"\b)"
+)
+_sig(
+    r"(?:^|(?<=[.!?;\n]))(?:" + _NEGATED_CRED_VERB + r"|(?!" + _NEGATED_CRED_VERB + r")[^\n.!?;])*?"
+    r"\b(export(?!\s+[A-Za-z_][A-Za-z0-9_]*=)|output|include|copy|dump)\s+.{0,60}"
+    r"(credential|secret|password|token|key|\.env|\.aws|shadow|passwd)",
+    0.70, "credential_exfil_request",
+)
 _sig(r"(service\s+account\s+key|api\s+key|access\s+token)\s+.{0,40}(file|include|export)", 0.70, "credential_collection")
 _sig(r"(vendor|partner|support\s+team)\s+.{0,60}(credential|key|secret)", 0.60, "third_party_credential_share")
 
