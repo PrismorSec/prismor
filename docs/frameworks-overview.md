@@ -93,6 +93,9 @@ Regardless of framework, every adapter does the same three things:
 
 ## Eval-server (non-Python languages)
 
+> On the enterprise plan Prismor can host this evaluator for you, for every
+> language including Python: see [Hosted evaluation](hosted-evaluation.md).
+
 For TypeScript, Go, Ruby, Java, Rust — any language that can make an HTTP request
 — run the **eval-server** as a sidecar and call it before executing each tool:
 

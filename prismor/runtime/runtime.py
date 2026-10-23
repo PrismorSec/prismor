@@ -281,6 +281,17 @@ def evaluate_tool_call(
     if resource is not None:
         meta["resource"] = resource
 
+    # Hosted evaluation (PRISMOR_EVAL_URL): the Prismor-run server decides,
+    # records and reports, so nothing is written or uploaded from here.
+    from prismor.runtime import remote_eval as _remote_eval
+    _remote = _remote_eval.remote_url()
+    if _remote:
+        return _remote_eval.evaluate_remote(
+            _remote, event=event, agent=agent, agent_name=agent_name, mode=mode,
+            session_id=session_id, subject=subject,
+            identity_token=identity_token or current_token(), explain=explain,
+        )
+
     perf.lap()
     if not record:
         persist = False

@@ -46,6 +46,10 @@ url|content, metadata{tool_name, framework, args, kwargs} }`. `type` selects the
 matched field: `shell→command`, `file_read|file_write→path`, `network→url`,
 `prompt|tool_result→content`.
 
+> **Hosted evaluation (enterprise):** set `PRISMOR_EVAL_URL` and `PRISMOR_EVAL_KEY`
+> and the runtime sends each call to a Prismor-run evaluator instead of the
+> local engine. See [hosted-evaluation.md](hosted-evaluation.md).
+
 ## Multi-tenant subjects
 
 One deployed agent serves many users. Attribute each call with `use_subject`

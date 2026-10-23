@@ -167,6 +167,8 @@ class EvalHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         from prismor.runtime import authzen as _az
+        from prismor.runtime import remote_eval
+        remote_eval.serving_this_thread()  # this request is the evaluator: never forward
         from prismor.runtime import copilot_studio as _cs
         route = self.path.split("?", 1)[0]  # Copilot Studio appends ?api-version=
         if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0], self.workspace):
@@ -389,6 +391,8 @@ def run_eval_server(
     for /v1/evaluate so the server can be exposed beyond localhost.
     """
     ws = workspace or Path.cwd()
+    from prismor.runtime import remote_eval
+    remote_eval.SERVING = True  # this server IS the evaluator; never forward
     EvalHandler.workspace = ws
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
 
