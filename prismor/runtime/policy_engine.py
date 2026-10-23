@@ -2306,9 +2306,15 @@ class PolicyEngine:
             # way — avoids symlink mismatches like macOS /var → /private/var.
             _vault = os.path.normpath(os.path.expanduser(str(_secrets_dir())))
         except Exception:
-            _vault = ""
+            # Fail closed: an import or env error must not switch the guard
+            # off, so fall back to the default location.
+            try:
+                _vault = os.path.normpath(os.path.expanduser("~/.prismor/secrets"))
+            except Exception:
+                _vault = ""
         if _vault:
             _hit_vault = None
+            _vault_inert = False
             if event_type in ("file_read", "file_write"):
                 _p = field_values.get("path", "")
                 if _p:
@@ -2319,8 +2325,21 @@ class PolicyEngine:
                 _cmd = field_values.get("command", "")
                 # ".prismor/secrets" matches every expansion form of the default
                 # location (~/, $HOME/, absolute); _vault matches a custom dir.
-                if _cmd and (".prismor/secrets" in _cmd or _vault in _cmd):
-                    _hit_vault = _cmd
+                # Mentions under another user's (nonexistent) home are test
+                # fixtures, not this vault (#592). A mention that only sits in
+                # a cat/tee heredoc body is still reported, but as inert.
+                # Both spellings are scanned: the normalized command exposes
+                # substitution payloads, the raw one keeps the shell structure
+                # (`$(...)` in a heredoc body) that inertness is judged on.
+                _raw_cmd = str(event.get("command") or "")
+                _vault_hits = _shell_vault_mentions(_cmd, _vault) if _cmd else []
+                _raw_hits = _shell_vault_mentions(_raw_cmd, _vault) if _raw_cmd else []
+                if _vault_hits or _raw_hits:
+                    _hit_vault = _cmd or _raw_cmd
+                    # Normalization surfacing an extra mention (a folded
+                    # confusable, a substitution payload) keeps it live.
+                    _vault_inert = (len(_vault_hits) <= len(_raw_hits)
+                                    and _vault_mentions_inert(_raw_cmd, _raw_hits))
             if _hit_vault is not None:
                 finding_id = f"prismor-vault-access-{index}"
                 prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2338,6 +2357,9 @@ class PolicyEngine:
                     "eventIndex": index,
                     "ruleId": "prismor-vault-access",
                     "action": "block",
+                    # Text written to a file by a cat/tee heredoc, never run:
+                    # reported, but should_block() does not block on it.
+                    "contextInert": _vault_inert,
                 })
 
         # Canary marker found in tool stdout/stderr (PostToolUse content
@@ -3933,6 +3955,151 @@ def _fold_confusables(text: str) -> str:
 
 _ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+
+
+# ── Vault-guard context (issue #592) ────────────────────────────────────────
+# The shell form of prismor-vault-access looks for the vault's directory name
+# anywhere in a command. Test fixtures and docs routinely spell a FAKE home,
+# e.g. `PRISMOR_SECRETS_DIR=/home/u/.prismor/secrets pytest`, which is not this
+# user's vault. Such a mention is exempt only when every one of these holds,
+# otherwise it still fires (fail closed):
+#   * the whole path word is a literal absolute path: no `~`, `$`, globs,
+#     braces, backslashes or backticks the shell could rewrite;
+#   * after lexical normalisation (so `/home/u/../ubuntu` collapses) it is
+#     `/home/<name>/.prismor/secrets[/...]` or `/Users/<name>/...`;
+#   * that home is not the current user's ($HOME or the passwd entry), even
+#     through a symlink, and its `.prismor` is not $PRISMOR_HOME;
+#   * the path is not the live vault, and nothing exists there on disk -- a
+#     real directory under another home is someone's actual vault.
+_VAULT_DIRNAME = ".prismor/secrets"
+# Characters that end a path word when scanning outwards from a mention.
+_VAULT_WORD_DELIMS = frozenset(" \t\r\n\"'`;|&<>()=")
+# Characters that let the shell turn the word into a different path.
+_VAULT_UNSAFE_CHARS = frozenset("~$*?[]{}\\!`")
+_FOREIGN_HOME_RE = re.compile(r"^/(?:home|Users)/[^/]+$")
+
+
+def _current_homes() -> Set[str]:
+    homes: Set[str] = set()
+    try:
+        homes.add(os.path.expanduser("~"))
+    except Exception:
+        pass
+    try:
+        import pwd
+        homes.add(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        pass
+    out: Set[str] = set()
+    for h in homes:
+        if h and h.startswith("/"):
+            out.add(os.path.normpath(h))
+            try:
+                out.add(os.path.realpath(h))
+            except Exception:
+                pass
+    return out
+
+
+def _vault_word_bounds(cmd: str, start: int, end: int) -> Tuple[int, int]:
+    """Expand ``cmd[start:end]`` outwards to the enclosing path word."""
+    lo = start
+    while lo > 0 and cmd[lo - 1] not in _VAULT_WORD_DELIMS:
+        lo -= 1
+    hi = end
+    while hi < len(cmd) and cmd[hi] not in _VAULT_WORD_DELIMS:
+        hi += 1
+    return lo, hi
+
+
+def _is_foreign_home_vault_mention(cmd: str, start: int, vault: str) -> bool:
+    """True when the ``.prismor/secrets`` at ``cmd[start:]`` is a literal path
+    under ANOTHER user's home that does not exist here. Anything uncertain
+    returns False so the guard fires."""
+    import posixpath
+
+    end = start + len(_VAULT_DIRNAME)
+    lo, hi = _vault_word_bounds(cmd, start, end)
+    word = cmd[lo:hi]
+    if not word.startswith("/") or any(c in _VAULT_UNSAFE_CHARS for c in word):
+        return False
+    # The home is whatever precedes the mention, normalised so `..`, `.` and
+    # doubled slashes cannot disguise the real home.
+    home = posixpath.normpath(cmd[lo:start] or "/")
+    if not _FOREIGN_HOME_RE.match(home):
+        return False
+    foreign_vault = home + "/" + _VAULT_DIRNAME
+    full = posixpath.normpath(word.rstrip("/") or "/")
+    # The rest of the word must stay inside that foreign vault.
+    if full != foreign_vault and not full.startswith(foreign_vault + "/"):
+        return False
+    try:
+        real_homes = _current_homes()
+        if home in real_homes or os.path.realpath(home) in real_homes:
+            return False
+        prismor_home = os.environ.get("PRISMOR_HOME")
+        if prismor_home and posixpath.normpath(
+                os.path.expanduser(prismor_home)) == home + "/.prismor":
+            return False
+        if vault:
+            for candidate in (foreign_vault, os.path.realpath(foreign_vault)):
+                if candidate == vault or candidate.startswith(vault + "/"):
+                    return False
+            real_vault = os.path.realpath(vault)
+            real_cand = os.path.realpath(foreign_vault)
+            if real_cand == real_vault or real_cand.startswith(real_vault + "/"):
+                return False
+        # Fixtures name homes that do not exist. A vault that really exists
+        # under another home is somebody's secrets: keep guarding it.
+        if os.path.lexists(foreign_vault) or os.path.lexists(home + "/.prismor"):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _shell_vault_mentions(cmd: str, vault: str) -> List[Tuple[int, int]]:
+    """``(start, end)`` of every mention in ``cmd`` the vault guard acts on.
+
+    The default directory name matches every expansion form of the default
+    location (``~/``, ``$HOME/``, absolute, relative); ``vault`` matches a
+    custom ``PRISMOR_SECRETS_DIR``. A default-name mention that sits under
+    another user's home (a test fixture) is dropped, see
+    _is_foreign_home_vault_mention.
+    """
+    hits: List[Tuple[int, int]] = []
+    i = cmd.find(_VAULT_DIRNAME)
+    while i != -1:
+        if not _is_foreign_home_vault_mention(cmd, i, vault):
+            hits.append((i, i + len(_VAULT_DIRNAME)))
+        i = cmd.find(_VAULT_DIRNAME, i + 1)
+    if vault:
+        i = cmd.find(vault)
+        while i != -1:
+            hits.append((i, i + len(vault)))
+            i = cmd.find(vault, i + 1)
+    return hits
+
+
+def _vault_mentions_inert(cmd: str, hits: List[Tuple[int, int]]) -> bool:
+    """True when every vault mention sits in the body of a ``cat``/``tee``
+    heredoc that is written or printed, never run (see
+    shell_context.is_inert_match). Deliberately NOT the quoted-argument form
+    of inertness: ``grep -r x "$HOME/.prismor/secrets"`` reads the vault even
+    though grep is a text sink for other rules."""
+    if not hits:
+        return False
+    try:
+        from prismor.runtime.shell_context import heredocs, is_inert_match
+        bodies = [(h.body_start, h.body_end) for h in heredocs(cmd)]
+        for s, e in hits:
+            if not any(bs <= s and e <= be for bs, be in bodies):
+                return False
+            if not is_inert_match(cmd, s, e):
+                return False
+        return True
+    except Exception:
+        return False
 
 
 def _dequote_shell(cmd: str) -> Optional[str]:
