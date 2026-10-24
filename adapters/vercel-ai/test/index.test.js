@@ -384,3 +384,22 @@ test("langchain: tools report under the langchain framework id, not vercel-ai", 
   assert.equal(requests[0].body.agent, "langchain");
   assert.equal(requests[0].body.agent_name, "support-langgraph-js");
 });
+
+test("a toolset run inside another agent's tool reports as a subagent", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const fetch_url = { execute: async ({ url }) => `fetched ${url}` };
+    const researcherTools = prismorTools({ fetch_url }, { agentName: "researcher" });
+    const ask_researcher = {
+      // A subagent: this tool runs another agent, which calls its own tools.
+      execute: async ({ q }) => researcherTools.fetch_url.execute({ url: q }, { toolCallId: "inner-1" }),
+    };
+    const mainTools = prismorTools({ fetch_url, ask_researcher }, { agentName: "support-bot" });
+    await mainTools.fetch_url.execute({ url: "https://a.test" }, { toolCallId: "c1" });
+    await mainTools.ask_researcher.execute({ q: "https://b.test" }, { toolCallId: "c2" });
+  });
+  const by = (n) => requests.filter((r) => r.body.tool_name === n);
+  assert.equal(by("fetch_url")[0].body.subagent, undefined);          // main agent
+  assert.equal(by("ask_researcher")[0].body.subagent, undefined);     // main agent launching it
+  assert.deepEqual(by("fetch_url")[1].body.subagent, { id: "support-bot:c2", type: "researcher" });
+});

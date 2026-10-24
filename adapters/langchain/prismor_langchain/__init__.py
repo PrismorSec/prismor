@@ -109,6 +109,34 @@ def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_t
     )
 
 
+def _subagent_from_metadata(md: Any) -> tuple:
+    """(subagent_id, subagent_type) from LangGraph run metadata, or (None, None).
+
+    ``langgraph_checkpoint_ns`` is the path of graphs the call runs in, e.g.
+    ``researcher:<uuid>|tools:<uuid>``. One segment is the top-level graph: the
+    main agent, even though its tool node is named ``tools``. More than one
+    means the call runs inside a subgraph, which is how a multi-agent graph (and
+    langgraph-supervisor) runs each agent; the outer segment names that agent
+    and, with its uuid, identifies this run of it.
+    """
+    if not isinstance(md, dict):
+        return None, None
+    ns = str(md.get("langgraph_checkpoint_ns") or md.get("checkpoint_ns") or "")
+    parts = [p for p in ns.split("|") if p]
+    if len(parts) < 2:
+        return None, None
+    return parts[0], parts[0].split(":", 1)[0]
+
+
+def _graph_subagent() -> tuple:
+    """The calling subagent when a guarded tool runs inside a LangGraph graph."""
+    try:
+        from langgraph.config import get_config
+        return _subagent_from_metadata((get_config() or {}).get("metadata"))
+    except Exception:  # not in a graph, or langgraph not installed
+        return None, None
+
+
 class _RunWith:
     """Sentinel from ``_decide``: run the tool, but with these (redacted) args."""
 
@@ -146,9 +174,11 @@ def prismor_guard_tool(
     tool_name = getattr(tool, "name", None) or getattr(tool, "__name__", "tool")
 
     def _decide(args: tuple, kwargs: dict):
+        sub_id, sub_type = _graph_subagent()
         decision = _evaluate(
             tool_name=tool_name, args=args, kwargs=kwargs, subject=subject, ws=ws,
             agent=agent, agent_name=_agent_name, mode=mode, sid=sid, event_type=event_type,
+            subagent_id=sub_id, subagent_type=sub_type,
         )
         log_observe_findings(decision, mode=mode, tool_name=tool_name)
         _engine[0] = decision.engine
@@ -305,14 +335,9 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         name = (serialized or {}).get("name", "tool")
-        # LangGraph stamps the executing graph node onto callback metadata for
-        # every run inside a StateGraph; a multi-agent graph names each agent
-        # node distinctly, so this is that framework's subagent identity.
-        run_metadata = kwargs.get("metadata") or {}
-        node = run_metadata.get("langgraph_node") if isinstance(run_metadata, dict) else None
-        run_id = kwargs.get("run_id")
-        sub_type = str(node) if node else None
-        sub_id = f"{node}-{run_id}" if node and run_id else None
+        # LangGraph stamps the graph path onto callback metadata; a call inside
+        # an agent subgraph is that framework's subagent (see _subagent_from_metadata).
+        sub_id, sub_type = _subagent_from_metadata(kwargs.get("metadata"))
         decision = _evaluate(
             tool_name=name, args=(input_str,), kwargs={}, subject=self._subject,
             ws=self._ws, agent=self._agent, mode=self._mode, sid=self._sid,

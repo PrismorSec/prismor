@@ -91,9 +91,9 @@ def test_callback_handler_blocks_on_tool_start(tmp_path):
 
 
 def test_callback_handler_captures_langgraph_node_as_subagent(tmp_path, monkeypatch):
-    """LangGraph stamps the executing graph node onto callback run metadata.
-    In a multi-agent StateGraph each node is a distinct agent, so this is that
-    framework's subagent identity — must flow into event metadata."""
+    """LangGraph stamps the graph path onto callback run metadata. A call
+    inside an agent subgraph is a subagent; the top-level graph (including a
+    single ReAct agent's "tools" node) is the main agent."""
     import prismor_langchain as pl
 
     captured = []
@@ -108,16 +108,24 @@ def test_callback_handler_captures_langgraph_node_as_subagent(tmp_path, monkeypa
     handler = PrismorCallbackHandler(mode="observe", workspace=tmp_path)
     # No LangGraph metadata: a plain single-agent call, no subagent.
     handler.on_tool_start({"name": "run_shell"}, "echo hi")
-    # Inside a LangGraph node named "researcher": attributed to that subagent.
+    # A single ReAct agent: its tool node is "tools", one graph level. Still the
+    # main agent (shapes captured from a live LangGraph 1.x run).
     handler.on_tool_start(
-        {"name": "run_shell"}, "echo hi",
-        run_id="run-1", metadata={"langgraph_node": "researcher"},
+        {"name": "run_shell"}, "echo hi", run_id="run-1",
+        metadata={"langgraph_node": "tools", "langgraph_checkpoint_ns": "tools:e3e2"},
+    )
+    # The "researcher" agent subgraph of a multi-agent graph: a subagent.
+    handler.on_tool_start(
+        {"name": "run_shell"}, "echo hi", run_id="run-2",
+        metadata={"langgraph_node": "tools",
+                  "langgraph_checkpoint_ns": "researcher:9933|tools:f019"},
     )
 
-    assert len(captured) == 2
+    assert len(captured) == 3
     assert captured[0]["metadata"]["subagent_type"] is None
-    assert captured[1]["metadata"]["subagent_type"] == "researcher"
-    assert captured[1]["metadata"]["subagent_id"] == "researcher-run-1"
+    assert captured[1]["metadata"]["subagent_type"] is None
+    assert captured[2]["metadata"]["subagent_type"] == "researcher"
+    assert captured[2]["metadata"]["subagent_id"] == "researcher:9933"
 
 
 def _write_iam(workspace: Path) -> None:

@@ -79,8 +79,10 @@ def _build_event(
     subject_str: Optional[str] = None,
     available_tools: Optional[list[str]] = None,
     resource: Optional[dict] = None,
+    subagent: Optional[dict] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
+    sub = subagent if isinstance(subagent, dict) else {}
     # Serialize arguments to a single value string (values only — for regex matching)
     value = " ".join(str(v) for v in arguments.values() if v is not None).strip()
     return {
@@ -100,6 +102,10 @@ def _build_event(
             "resource": resource or {},
             "available_tools": available_tools or [],
             "surface": "eval-server",
+            # The subagent that made the call, as the caller's SDK reports it
+            # (caller-asserted, like `arguments`). Feeds `when: subagent.*`.
+            "subagent_id": str(sub["id"])[:200] if sub.get("id") else None,
+            "subagent_type": str(sub["type"])[:200] if sub.get("type") else None,
         },
     }
 
@@ -265,6 +271,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
             if isinstance(body.get("available_tools"), list) else [],
             resource=body.get("resource") if isinstance(body.get("resource"), dict) else None,
+            subagent=body.get("subagent"),
         )
 
         try:
