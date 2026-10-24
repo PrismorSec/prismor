@@ -35,7 +35,7 @@ Prismor is highly customizable based on user's own policies. Observe or enforce 
 
 ---
 <p align="center">
-  <img src="assets/readme-demo.gif" width="90%" alt="Prismor demo"/>
+  <img src="assets/readme-demo.gif" width="90%" alt="Prismor demo: pip install prismor, prismor setup, then the dashboard's overview, sessions, extensions and MCP servers views"/>
 </p>
 
 ---
