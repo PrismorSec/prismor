@@ -99,14 +99,23 @@ def fingerprint(agent: str, workspace: Any, payload: Dict[str, Any], event: Dict
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def consume(fp: str) -> Optional[Dict[str, Any]]:
-    """Spend an approval for this action. Returns it, or None if there is none."""
+def consume(fp: str, call_id: str = "") -> Optional[Dict[str, Any]]:
+    """Spend an approval for this action. Returns it, or None if there is none.
+
+    `call_id` is the agent's id for this one tool call. With a global and a
+    project install, two hooks screen the same call; the second must see the
+    approval the first just spent on that call, or it blocks it under a new id."""
     with _locked() as state:
         _expire(state["requests"])
         for rec in state["requests"].values():
-            if rec.get("fp") == fp and rec.get("status") == "approved":
+            if rec.get("fp") != fp:
+                continue
+            if rec.get("status") == "approved":
                 rec["status"] = "used"
                 rec["used_at"] = time.time()
+                rec["used_by"] = call_id
+                return dict(rec)
+            if call_id and rec.get("status") == "used" and rec.get("used_by") == call_id:
                 return dict(rec)
     return None
 
@@ -214,7 +223,9 @@ def _demo() -> None:
     r = request(fp, agent="codex", session_id="s", finding={"ruleId": "r"}, summary="rm -rf x")
     assert request(fp, agent="codex", session_id="s", finding={}, summary="")["id"] == r["id"]
     assert decide(r["id"], True)["status"] == "approved"
-    assert consume(fp)["id"] == r["id"] and consume(fp) is None  # once only
+    assert consume(fp, "t1")["id"] == r["id"] and consume(fp) is None  # once only
+    assert consume(fp, "t1")["id"] == r["id"]  # second hook on the same call
+    assert consume(fp, "t2") is None  # a later call is not covered
     r2 = request(fp, agent="codex", session_id="s", finding={}, summary="")
     assert r2["id"] != r["id"]
     decide(r2["id"], False)

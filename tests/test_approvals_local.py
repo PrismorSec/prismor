@@ -41,12 +41,15 @@ class TestHookApprovals(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("PRISMOR_HOME", None)
 
-    def _hook(self, command, agent="codex"):
+    def _hook(self, command, agent="codex", call_id=None, workspace_flag=False):
         payload = {"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": str(self.ws),
                    "tool_name": "Bash", "tool_input": {"command": command}}
+        if call_id:
+            payload["tool_use_id"] = call_id
+        ws_args = ["--workspace", str(self.ws)] if workspace_flag else []
         return subprocess.run(
             [sys.executable, "-m", "prismor.runtime.immunity_cli", "hook-dispatch",
-             "--agent", agent, "--mode", "enforce"],
+             "--agent", agent, "--mode", "enforce", *ws_args],
             input=json.dumps(payload), capture_output=True, text=True, cwd=self.ws,
             env=self.env, timeout=120)
 
@@ -65,6 +68,19 @@ class TestHookApprovals(unittest.TestCase):
         again = self._hook("echo approval-canary")
         self.assertEqual(again.returncode, 2, "an approval is spent by the call it lets through")
         self.assertNotEqual(self._pending()[0]["id"], req["id"])
+
+    def test_global_and_project_hook_share_one_approval(self):
+        # #752: a global hook (no --workspace) and a project hook both screen
+        # each call. The first spent the approval, the second blocked the same
+        # call under a new id, forever.
+        cmd = "echo approval-canary"
+        self.assertEqual(self._hook(cmd, call_id="t1").returncode, 2)
+        self.assertEqual(self._hook(cmd, call_id="t1", workspace_flag=True).returncode, 2)
+        (req,) = self._pending()
+        approvals_local.decide(req["id"], approve=True)
+        self.assertEqual(self._hook(cmd, call_id="t2").returncode, 0)
+        self.assertEqual(self._hook(cmd, call_id="t2", workspace_flag=True).returncode, 0)
+        self.assertEqual(self._hook(cmd, call_id="t3").returncode, 2, "still once only")
 
     def test_approval_is_for_that_exact_call(self):
         self._hook("echo approval-canary one")
