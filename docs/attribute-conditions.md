@@ -35,6 +35,9 @@ they all go through one [decision contract](decision-contract.md).
 | `args.*` | the tool call's arguments | adapter / eval-server `arguments`, or a hook's `tool_input` |
 | `resource.kind`, `resource.id`, `resource.attr.*` | the call's target | `resource` on the eval-server body or `evaluate_tool_call(resource=...)` |
 | `tool.name` | tool name | `metadata.tool_name` |
+| `subagent.active` | `true` when a subagent made the call, `false` for the main agent | the agent host's hook payload, or the SDK adapter |
+| `subagent.id` | the subagent's runtime id (`null` on the main agent) | same |
+| `subagent.type` | the subagent's type, e.g. `general-purpose` (`null` on the main agent) | same |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a
@@ -53,7 +56,7 @@ unless a role is present therefore stays a deny for every unverified caller.
 | Function | `has(path)` — whether the path exists |
 
 Anything else is rejected when the policy loads, including calls, arithmetic
-and names outside the four roots. The expression is parsed into a checked tree
+and names outside the five roots. The expression is parsed into a checked tree
 and never passed to Python's `eval`, so a signed org policy cannot carry code.
 
 ## Missing attributes fire the rule
@@ -119,6 +122,20 @@ when: "resource.attr.env == 'prod' and not principal.verified"
 when: "args.currency not in ['USD', 'EUR', 'GBP']"
 ```
 
+**Keep subagents off the network**
+
+```yaml
+when: "subagent.active and tool.name in ['WebFetch', 'WebSearch']"
+```
+
+A subagent runs under its parent's identity, so `principal` is the same for
+both; `subagent` tells them apart. In Claude Code and Codex the values come
+from the hook payload the host sets, not from the model. Through an SDK
+adapter they come from the framework (a handoff or graph node), which the
+calling code controls, the same as `args`. On the parent's call that launches
+a subagent, `subagent.active` is `false`; the type being launched is
+`args.subagent_type`.
+
 ## Named conditions
 
 Conditions you use in several rules can be named once in `settings.conditions`
@@ -139,7 +156,7 @@ rules:
     when: "not (is_owner or is_finance)"
 ```
 
-A named condition reads the same four roots as `when:`. It cannot refer to
+A named condition reads the same five roots as `when:`. It cannot refer to
 other names, so there are no cycles. Names merge per name across policy layers:
 the signed org policy can redefine `is_finance` without erasing a project's
 other names. A missing attribute inside a named condition fails toward

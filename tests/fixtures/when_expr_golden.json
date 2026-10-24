@@ -37,6 +37,11 @@
     },
     "tool": {
       "name": "refund_order"
+    },
+    "subagent": {
+      "id": "a-1",
+      "type": "general-purpose",
+      "active": true
     }
   },
   "valid": [
@@ -182,6 +187,18 @@
     },
     {
       "expr": "not principal.claims",
+      "result": false
+    },
+    {
+      "expr": "subagent.type == 'general-purpose'",
+      "result": true
+    },
+    {
+      "expr": "not subagent.active",
+      "result": false
+    },
+    {
+      "expr": "subagent.active and tool.name == 'WebFetch'",
       "result": false
     }
   ],

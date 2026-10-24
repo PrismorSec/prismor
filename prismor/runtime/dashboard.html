@@ -6704,6 +6704,7 @@ function renderNodePanel(ev){
           (policy.title?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Rule</span><div style="font-size: 12px;color:var(--gray-700);line-height:1.4">'+safe(policy.title)+'</div></div>':'')+
           (policy.matched?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Matched</span><div class="match-hit">'+safe(policy.matched)+'</div></div>':'')+
           (policy.pattern?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Pattern</span><div><details><summary>Show the regex ('+String(policy.pattern).length+' chars)</summary><div class="match-pattern">'+safe(policy.pattern)+'</div></details></div></div>':'')+
+          (policy.when?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Condition that held</span><div class="drawer-code">when: '+safe(policy.when)+'</div></div>':'')+
           (policy.evidence?'<div class="drawer-rule-row stack"><span class="drawer-rule-label">Why it matched</span>'+reasonHtml(policy)+'</div>':'')+
           '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">What happened</span>'+modeHtml(policy, v)+'</div>'+
           (v!=='allow'?'<div class="drawer-rule-row" style="margin:8px 0 0"><a class="link" onclick="openDoc(\'faq.md\',\'How do I allow something that was blocked?\')">How do I allow this?</a>'+

@@ -136,6 +136,15 @@ def test_record_carries_matched_pattern_not_evidence():
     telemetry.assert_redacted(rec)
 
 
+def test_when_only_finding_sends_its_condition_as_the_pattern():
+    f = dict(FINDING, pattern=None, when="subagent.active and tool.name == 'WebFetch'")
+    rec = telemetry.build_record(f, EVENT, extra={})
+    assert rec["matched_pattern"] == "when: subagent.active and tool.name == 'WebFetch'"
+    telemetry.assert_redacted(rec)
+    # A patterned rule keeps its pattern even when it also has a `when:`.
+    assert telemetry.build_record(dict(FINDING, when="x"), EVENT, extra={})["matched_pattern"] == FINDING["pattern"]
+
+
 def test_assert_redacted_rejects_pattern_equal_to_evidence():
     # If matched_pattern ever carries the raw evidence (redaction miswire),
     # the sink must fail closed before upload.

@@ -113,6 +113,20 @@ def test_when_only_rule_matches_on_attributes(tmp_path):
     assert not _hit(eng, _event("other", {"amount": 900}))
 
 
+def test_when_targets_the_subagent_that_made_the_call(tmp_path):
+    rule = {k: v for k, v in _REFUND.items() if k not in ("patterns", "fields")}
+    rule["when"] = "subagent.type == 'general-purpose' and tool.name == 'WebFetch'"
+    eng = _engine(tmp_path, rule)
+    main = _event("WebFetch", {"url": "https://x.test"})
+    inner = _event("WebFetch", {"url": "https://x.test"})
+    inner["metadata"].update(subagent_id="a-1", subagent_type="general-purpose")
+    assert _hit(eng, inner)
+    finding = next(f for f in eng.evaluate(inner, 0) if f["ruleId"] == "refund-cap")
+    assert finding["when"] == rule["when"]  # the reason, shown in place of a pattern
+    # The main agent carries no subagent: a comparison is false, not a missing path.
+    assert not _hit(eng, main)
+
+
 def test_when_only_rule_with_broken_expression_matches_nothing(tmp_path):
     rule = {k: v for k, v in _REFUND.items() if k not in ("patterns", "fields")}
     rule["when"] = "args.amount >="

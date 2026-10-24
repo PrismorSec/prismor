@@ -970,6 +970,7 @@ def save_session_snapshot(
                             "action": finding.get("action"),
                             "mode": finding.get("mode"),
                             "pattern": finding.get("pattern"),
+                            "when": finding.get("when"),
                         }
                     ),
                 )
@@ -1071,6 +1072,7 @@ def persist_runtime_findings(
                     # the match path already; dropping it here left every
                     # blocked row saying only that some rule said no.
                     "pattern": finding.get("pattern"),
+                    "when": finding.get("when"),
                     "source": "runtime",
                 }),
             ))
@@ -5005,6 +5007,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                         "mode": enrichment.get("mode") or "",
                         "source": enrichment.get("source") or ("finding" if finding_id else ""),
                         "pattern": enrichment.get("pattern") or "",
+                        "when": enrichment.get("when") or "",
                     },
                 })
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
