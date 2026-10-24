@@ -6944,10 +6944,18 @@ function sessCountLabel(total) {
 Object.values(SESS_FILTER_IDS).forEach(id => {
   const el = document.getElementById(id);
   if (!el) return;
-  el.addEventListener(el.tagName === 'INPUT' ? 'input' : 'change', () => {
+  const apply = () => {
     sessState.page = 1; _sessCtrlData.page = 1;
     document.getElementById('sfClear').hidden = !sessFiltersActive();
     loadSessions(); loadSessionControl();
+  };
+  if (el.tagName !== 'INPUT') { el.addEventListener('change', apply); return; }
+  // Search every prompt only once typing pauses, not per keystroke.
+  let t;
+  el.addEventListener('input', () => {
+    clearTimeout(t);
+    document.getElementById('sessCount').textContent = 'Searching…';
+    t = setTimeout(apply, 400);
   });
 });
 document.getElementById('sfClear').addEventListener('click', () => {
@@ -6957,10 +6965,13 @@ document.getElementById('sfClear').addEventListener('click', () => {
   loadSessions(); loadSessionControl();
 });
 
+let _sessSeq = 0;
 async function loadSessions() {
   const {page,limit,sort,dir} = sessState;
+  const seq = ++_sessSeq;
   try {
     const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=${sort}&dir=${dir}` + sessFilterQuery() + sessWindowQuery());
+    if (seq !== _sessSeq) return;  // a newer search superseded this one
     sessState.page=data.page; sessState.pages=data.pages; sessState.total=data.total;
     fillSessFacets(data.facets);
     renderSessions(data.items);
@@ -7685,12 +7696,15 @@ function renderEnrollBanners(enrollment) {
   });
 }
 
+let _sessCtrlSeq = 0;
 async function loadSessionControl() {
   if (!_wsCache) await loadWorkspaces();
   const ws = activeWorkspace();
   const { page, limit } = _sessCtrlData;
+  const seq = ++_sessCtrlSeq;
   try {
     const data = await apiFetch(`/api/sessions?page=${page}&limit=${limit}&sort=updatedAt&dir=desc` + sessFilterQuery() + sessWindowQuery());
+    if (seq !== _sessCtrlSeq) return;
     fillSessFacets(data.facets);
     _sessCtrlData.items = data.items || [];
     _sessCtrlData.total = data.total || 0;

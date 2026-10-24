@@ -2017,8 +2017,8 @@ def get_sessions_page(
     """Return a paginated list of sessions across all registered workspaces.
 
     Filters apply before paging: ``agent`` and ``workspace`` match exactly,
-    ``search`` is a substring of the session id, ``findings`` is ``with`` or
-    ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
+    ``search`` is a substring of the session id or of any prompt in it,
+    ``findings`` is ``with`` or ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
     keeps sessions active within that window. ``facets`` lists the agents and
     workspaces of the unfiltered set so a picker can offer every value.
     """
@@ -2082,13 +2082,11 @@ def get_sessions_page(
         and _active_since(r["_updatedRaw"])
     ]
 
-    titles: Dict[str, str] = {}
     if needle:
-        # Search the id or what the session was started to do (its first prompt);
-        # people remember "fix the login bug", not a uuid.
-        titles = _first_prompts([r["sessionId"] for r in rows], workspaces)
-        rows = [r for r in rows if needle in r["sessionId"].lower()
-                or needle in titles.get(r["sessionId"], "").lower()]
+        # Search the id or anything the session was asked; people remember
+        # "fix the login bug", not a uuid.
+        hits = _sessions_with_prompt(needle, workspaces)
+        rows = [r for r in rows if needle in r["sessionId"].lower() or r["sessionId"] in hits]
 
     rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
     total = len(rows)
@@ -2100,12 +2098,32 @@ def get_sessions_page(
     for r in items:
         r.pop("_sortRaw", None)
         r.pop("_updatedRaw", None)
-    if not needle:
-        titles = _first_prompts([r["sessionId"] for r in items], workspaces)
+    titles = _first_prompts([r["sessionId"] for r in items], workspaces)
     for r in items:
         r["title"] = titles.get(r["sessionId"], "")
 
     return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit, "facets": facets}
+
+
+def _sessions_with_prompt(needle: str, workspaces: List[Path]) -> set:
+    """Session ids with any prompt containing ``needle`` (lowercased), not
+    just the first one: people search for something they asked mid-session."""
+    out: set = set()
+    for ws in workspaces:
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            out.update(sid for (sid,) in conn.execute(
+                "SELECT DISTINCT session_id FROM events WHERE type = 'prompt' "
+                "AND instr(lower(content_text), ?) > 0",
+                (needle,),
+            ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return out
 
 
 def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, str]:
