@@ -36,6 +36,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
+from prismor.runtime.subagent_context import nested_subagent, running
 
 try:  # the base class only matters to Agent Framework's middleware sorter
     from agent_framework import FunctionMiddleware as _Base
@@ -77,7 +78,9 @@ class PrismorMiddleware(_Base):
     Pass it in ``Agent(..., middleware=[PrismorMiddleware(...)])`` (or on the
     chat client). ``name`` is the instance label the console shows and
     controls; ``subject`` binds one end user, otherwise ``use_subject`` /
-    ``PRISMOR_SUBJECT`` / the device identity apply per call.
+    ``PRISMOR_SUBJECT`` / the device identity apply per call. Give an agent
+    used as a tool its own middleware and name: its calls then report as
+    subagent ``name`` for ``when: subagent.*`` rules.
     """
 
     def __init__(
@@ -103,6 +106,10 @@ class PrismorMiddleware(_Base):
 
     async def process(self, context: Any, call_next: Callable[[], Awaitable[None]]) -> None:
         args = _args(getattr(context, "arguments", None))
+        # An agent used as a tool (agent.as_tool()) runs inside the parent's
+        # function call, so its own middleware sees the parent still running:
+        # that call is a subagent's, typed by this middleware's name.
+        sub_id, sub_type = nested_subagent(self.name)
         field = _TYPE_FIELD.get(self.event_type, "command")
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -115,6 +122,8 @@ class PrismorMiddleware(_Base):
                 "tool_name": getattr(context.function, "name", str(context.function)),
                 "framework": "agent-framework",
                 "args": args,
+                "subagent_id": sub_id,
+                "subagent_type": sub_type,
             },
         }
         decision: Decision = evaluate_tool_call(
@@ -129,7 +138,8 @@ class PrismorMiddleware(_Base):
             # Short-circuit: without call_next() the function never runs.
             context.result = f"⛔ Prismor blocked this tool call: {reason}"
             return
-        await call_next()
+        with running(self.name):
+            await call_next()
         # Redact the tool's OUTPUT before the framework hands it to the model.
         result = getattr(context, "result", None)
         if result is not None:

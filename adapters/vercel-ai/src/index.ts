@@ -402,6 +402,21 @@ function langChainArgs(input: any): Record<string, unknown> {
 }
 
 /**
+ * The subagent a LangGraph JS tool call comes from. `langgraph_checkpoint_ns`
+ * is the graph path (`researcher:<uuid>|tools:<uuid>`): one segment is the
+ * top-level graph, the main agent even though its tool node is `tools`; more
+ * means an agent subgraph, named by the outer segment. Outside a graph, falls
+ * back to nesting inside another guarded tool.
+ */
+function langGraphSubagent(config: any, agentName: string): Subagent | undefined {
+  const ns = String(config?.metadata?.langgraph_checkpoint_ns ?? config?.configurable?.checkpoint_ns ?? "");
+  const parts = ns.split("|").filter(Boolean);
+  if (parts.length >= 2) return { id: parts[0], type: parts[0].split(":")[0] };
+  if (parts.length === 1) return undefined;
+  return currentSubagent(agentName);
+}
+
+/**
  * Guard a LangChain JS / LangGraph JS tool so every `invoke()` is evaluated by
  * Prismor first. Works on anything StructuredTool-shaped — `tool(fn, {...})`
  * from `@langchain/core/tools`, and therefore the tools LangGraph's
@@ -425,12 +440,14 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
   const original = tool.invoke.bind(tool);
 
   (tool as any).invoke = async (input: any, config?: any) => {
-    const decision = await evaluate(toolName, langChainArgs(input), resolved, sid);
+    const decision = await evaluate(toolName, langChainArgs(input), resolved, sid,
+      langGraphSubagent(config, resolved.agentName));
     logObserveFindings(decision, resolved.mode, toolName);
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
-    return redactResult(await original(input, config), resolved);
+    const callId = String(input?.id ?? config?.toolCall?.id ?? ++_callCounter);
+    return redactResult(await asRunning(resolved.agentName, callId, () => original(input, config)), resolved);
   };
   (tool as any).__prismor_guarded__ = true;
   return tool;

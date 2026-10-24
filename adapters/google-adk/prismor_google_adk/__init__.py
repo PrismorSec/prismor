@@ -35,6 +35,7 @@ from typing import Any, Callable, Dict, Optional, Union
 from prismor.runtime.principal import Subject, resolve_subject
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
+from prismor.runtime.subagent_context import nested_subagent, running
 
 __all__ = ["make_before_tool_callback", "make_after_tool_callback", "PrismorPlugin", "PrismorBlocked"]
 
@@ -56,6 +57,50 @@ class PrismorBlocked(Exception):
 
 def _payload(args: Dict[str, Any]) -> str:
     return " ".join(str(v) for v in (args or {}).values()).strip()
+
+
+def _call_key(tool_context: Any) -> str:
+    inv = getattr(tool_context, "invocation_id", None) or ""
+    return f"{inv}#{getattr(tool_context, 'function_call_id', None) or ''}"
+
+
+def _subagent_of(tool_context: Any) -> tuple:
+    """(subagent_id, subagent_type) for this call, or (None, None) on the root agent.
+
+    A transfer to one of ``sub_agents`` keeps the invocation: the active agent
+    is not its tree's ``root_agent``. An ``AgentTool`` runs its agent as a new
+    invocation, where that agent is its own root; it is recognised by running
+    inside the parent's AgentTool call (see _nest_agent_tool).
+    """
+    ic = getattr(tool_context, "_invocation_context", None)
+    active = getattr(ic, "agent", None)
+    name = getattr(tool_context, "agent_name", None) or getattr(active, "name", None) or "agent"
+    inv = getattr(tool_context, "invocation_id", None) or ""
+    if active is not None and getattr(active, "root_agent", active) is not active:
+        return f"{name}:{inv}", name
+    return nested_subagent(name)
+
+
+def _nest_agent_tool(tool: Any, parent: str) -> None:
+    """Run an AgentTool's agent inside running(), so its tool calls read as a
+    subagent of ``parent``. Wrapping run_async scopes the context to exactly
+    that run: nothing is left set if the run fails or no after-callback is
+    installed (a left-over context would make later main-agent calls read as
+    a subagent's)."""
+    if getattr(tool, "__prismor_nests__", False):
+        return
+    original = tool.run_async
+
+    async def run_async(*a: Any, **kw: Any) -> Any:
+        ctx = kw.get("tool_context")
+        with running(getattr(ctx, "agent_name", None) or parent, _call_key(ctx)):
+            return await original(*a, **kw)
+
+    try:
+        object.__setattr__(tool, "run_async", run_async)
+        object.__setattr__(tool, "__prismor_nests__", True)
+    except Exception:  # an immutable tool keeps running unattributed
+        pass
 
 
 def make_before_tool_callback(
@@ -80,6 +125,7 @@ def make_before_tool_callback(
     def callback(tool: Any, args: Dict[str, Any], tool_context: Any) -> Optional[Dict[str, Any]]:
         field = _TYPE_FIELD.get(event_type, "command")
         run_id = getattr(tool_context, "invocation_id", None) or sid
+        sub_id, sub_type = _subagent_of(tool_context)
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": run_id,
@@ -91,6 +137,8 @@ def make_before_tool_callback(
                 "tool_name": getattr(tool, "name", str(tool)),
                 "framework": "google-adk",
                 "args": dict(args or {}),
+                "subagent_id": sub_id,
+                "subagent_type": sub_type,
             },
         }
         decision: Decision = evaluate_tool_call(
@@ -105,6 +153,9 @@ def make_before_tool_callback(
             # entirely and becomes the tool's result -- ADK's own mechanism,
             # not an exception.
             return {"error": f"⛔ Prismor blocked this tool call: {reason}"}
+        if type(tool).__name__ == "AgentTool":
+            # The agent this tool runs is a subagent of the calling agent.
+            _nest_agent_tool(tool, getattr(tool_context, "agent_name", None) or "agent")
         return None  # None -> proceed with the real tool call
 
     return callback

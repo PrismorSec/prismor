@@ -5,7 +5,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { prismorTool, prismorTools, PrismorBlocked } = require("../dist/index.js");
+const { prismorTool, prismorTools, PrismorBlocked, registerSubagents } = require("../dist/index.js");
 
 function withMockFetch(impl, fn) {
   const original = globalThis.fetch;
@@ -104,4 +104,27 @@ test("agentName is sent so the console can name and control this agent", async (
   );
   assert.equal(bodies[0].agent, "mastra");
   assert.equal(bodies[0].agent_name, "support-mastra");
+});
+
+test("sub-agents report as subagents; the main agent does not", async () => {
+  const bodies = [];
+  await withMockFetch(
+    async (url, init) => { bodies.push(JSON.parse(init.body)); return { ok: true, json: async () => ALLOW }; },
+    async () => {
+      // Shapes from a live @mastra/core 1.79 run: ctx.agent.agentId names the running agent.
+      const researcher = { id: "researcher", listAgents: () => ({}) };
+      registerSubagents({ id: "support-bot", listAgents: () => ({ researcher }) });
+      const fetchUrl = prismorTool("fetch_url", { execute: async () => "ok" });
+      await fetchUrl.execute({ url: "a" }, { agent: { agentId: "support-bot", toolCallId: "c1" }, runId: "r1" });
+      await fetchUrl.execute({ url: "b" }, { agent: { agentId: "researcher", toolCallId: "c2" }, runId: "r2" });
+      // Agent as tool: another agent run from inside a guarded tool.
+      const inner = prismorTool("fetch_url", { execute: async () => "ok" }, { agentName: "writer" });
+      const askWriter = prismorTool("ask_writer", { execute: async () => inner.execute({ url: "c" }) });
+      await askWriter.execute({ q: "x" }, { agent: { agentId: "support-bot", toolCallId: "c3" } });
+    },
+  );
+  assert.equal(bodies[0].subagent, undefined);
+  assert.deepEqual(bodies[1].subagent, { id: "researcher:r2", type: "researcher" });
+  assert.equal(bodies[2].subagent, undefined); // ask_writer itself, called by the main agent
+  assert.deepEqual(bodies[3].subagent, { id: "support-bot:c3", type: "writer" });
 });

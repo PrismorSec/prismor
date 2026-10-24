@@ -403,3 +403,16 @@ test("a toolset run inside another agent's tool reports as a subagent", async ()
   assert.equal(by("ask_researcher")[0].body.subagent, undefined);     // main agent launching it
   assert.deepEqual(by("fetch_url")[1].body.subagent, { id: "support-bot:c2", type: "researcher" });
 });
+
+test("langgraph js: a call inside an agent subgraph is a subagent; a lone ReAct agent is not", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const { prismorLangChainTool } = require("../dist/index.js");
+    const t = prismorLangChainTool({ name: "fetch_url", invoke: async () => "ok" });
+    // Shapes from a live @langchain/langgraph 1.5 run.
+    await t.invoke({ url: "a" }, { metadata: { langgraph_checkpoint_ns: "tools:84a9" } });
+    await t.invoke({ url: "b" }, { metadata: { langgraph_checkpoint_ns: "researcher:a730|tools:cd9a" } });
+  });
+  assert.equal(requests[0].body.subagent, undefined);
+  assert.deepEqual(requests[1].body.subagent, { id: "researcher:a730", type: "researcher" });
+});

@@ -16,11 +16,18 @@ Easy path::
 
     tools = guard_tools([run_shell], subject="user:alice")
     agent = Agent(role="ops", tools=tools, ...)
+
+For a crew, :func:`guard_crew` guards every agent's tools and also tracks
+which agent is working: an agent doing a task another agent delegated to it
+(``allow_delegation``, or every worker of a hierarchical crew under its
+manager) is a subagent, typed by its role, for ``when: subagent.*`` rules.
 """
 from __future__ import annotations
 
+import contextvars
 import functools
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Union
@@ -29,7 +36,24 @@ from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
-__all__ = ["guard_tools", "prismor_guard_tool", "use_subject", "PrismorBlocked"]
+__all__ = ["guard_crew", "guard_tools", "prismor_guard_tool", "use_subject", "PrismorBlocked"]
+
+# Agents currently executing a task, outermost first: (role, subagent id or
+# None for an agent doing its own task). Set by guard_crew's execute_task
+# wrapper; CrewAI runs a delegated task synchronously inside the delegating
+# agent's tool call, so the nesting is visible here.
+# ponytail: contextvars do not cross threads; a task CrewAI runs on a worker
+# thread (async_execution, max_execution_time) starts a fresh stack there.
+_WORKING: contextvars.ContextVar[tuple] = contextvars.ContextVar("prismor_crewai_working", default=())
+
+
+def _current_subagent() -> tuple:
+    """(subagent_id, subagent_type) of the agent making this call, or (None, None)."""
+    stack = _WORKING.get()
+    if not stack or stack[-1][1] is None:
+        return None, None
+    role, sub_id = stack[-1]
+    return sub_id, role
 
 _TYPE_FIELD = {
     "shell": "command",
@@ -58,6 +82,7 @@ def _payload(args: tuple, kwargs: dict) -> str:
 
 def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="") -> Decision:
     field = _TYPE_FIELD.get(event_type, "command")
+    sub_id, sub_type = _current_subagent()
     event = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": sid,
@@ -70,6 +95,8 @@ def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_t
             "framework": "crewai",
             "args": list(args),
             "kwargs": dict(kwargs or {}),
+            "subagent_id": sub_id,
+            "subagent_type": sub_type,
         },
     }
     return evaluate_tool_call(
@@ -221,3 +248,52 @@ def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
         except Exception:
             pass
     return guarded
+
+
+def _track_working(crew_agent: Any, *, delegated: bool) -> None:
+    """Wrap one agent's execute_task so its tool calls know who is working.
+
+    ``delegated``: every task this agent runs was handed to it by a manager
+    (a hierarchical crew's worker), even when the manager is CrewAI's own.
+    """
+    if getattr(crew_agent, "__prismor_tracked__", False):
+        return
+    original = crew_agent.execute_task
+    role = str(getattr(crew_agent, "role", None) or "agent")
+
+    @functools.wraps(original)
+    def execute_task(*args: Any, **kwargs: Any) -> Any:
+        stack = _WORKING.get()
+        sub_id = f"{role}:{uuid.uuid4().hex[:8]}" if (stack or delegated) else None
+        token = _WORKING.set(stack + ((role, sub_id),))
+        try:
+            return original(*args, **kwargs)
+        finally:
+            _WORKING.reset(token)
+
+    # CrewAI agents are pydantic models; bypass their __setattr__ validation.
+    object.__setattr__(crew_agent, "execute_task", execute_task)
+    object.__setattr__(crew_agent, "__prismor_tracked__", True)
+
+
+def guard_crew(crew: Any, **kwargs: Any) -> Any:
+    """Guard every agent of a Crew and attribute delegated work to subagents.
+
+    In a sequential crew each agent doing its own task is the main agent; one
+    working on a task delegated by a coworker is a subagent. In a hierarchical
+    crew the manager is the main agent and every worker is a subagent. Takes
+    the same options as :func:`guard_tools`; returns the crew.
+    """
+    hierarchical = str(getattr(getattr(crew, "process", None), "value", getattr(crew, "process", ""))) == "hierarchical"
+    manager = getattr(crew, "manager_agent", None)
+    for crew_agent in getattr(crew, "agents", None) or []:
+        if crew_agent is manager:
+            continue
+        if getattr(crew_agent, "tools", None):
+            guard_tools(crew_agent.tools, **kwargs)
+        _track_working(crew_agent, delegated=hierarchical)
+    if manager is not None:
+        if getattr(manager, "tools", None):
+            guard_tools(manager.tools, **kwargs)
+        _track_working(manager, delegated=False)
+    return crew
