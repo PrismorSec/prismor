@@ -6954,7 +6954,7 @@ Object.values(SESS_FILTER_IDS).forEach(id => {
   let t;
   el.addEventListener('input', () => {
     clearTimeout(t);
-    document.getElementById('sessCount').textContent = 'Searching…';
+    ['sessCount', 'scSessCount'].forEach(id => { const c = document.getElementById(id); if (c) c.textContent = 'Searching…'; });
     t = setTimeout(apply, 400);
   });
 });
@@ -7714,7 +7714,10 @@ async function loadSessionControl() {
     renderSessionControl(data.items || [], ws);
     document.getElementById('scSessCount').textContent = sessCountLabel(data.total || 0);
     buildPager('scSessPager', _sessCtrlData, () => loadSessionControl());
-  } catch(e) { console.error('[prismor] session-ctrl:', e); }
+  } catch(e) {
+    console.error('[prismor] session-ctrl:', e);
+    if (seq === _sessCtrlSeq) document.getElementById('scSessCount').textContent = 'Search failed — try again';
+  }
   loadSessions();
 }
 
