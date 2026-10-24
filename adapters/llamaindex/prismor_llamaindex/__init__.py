@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Union
@@ -34,6 +35,7 @@ from typing import Any, List, Optional, Sequence, Union
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
+from prismor.runtime.subagent_context import nested_subagent, running
 
 __all__ = ["guard_tools", "prismor_guard_tool", "use_subject", "PrismorBlocked"]
 
@@ -57,6 +59,37 @@ class PrismorBlocked(Exception):
 
 def _payload(args: tuple, kwargs: dict) -> str:
     return " ".join([str(a) for a in args] + [str(v) for v in kwargs.values()]).strip()
+
+
+# Root agent of each AgentWorkflow run, keyed by id of the run's state store
+# (a finalizer drops the entry with the run).
+_ROOT: dict = {}
+
+
+async def _workflow_subagent() -> tuple:
+    """(subagent_id, subagent_type) inside a multi-agent AgentWorkflow, else (None, None).
+
+    The workflow keeps the active agent in ``current_agent_name``; it starts as
+    the root agent and changes on a handoff, which also sets ``next_agent``.
+    The root is remembered from the first guarded call made before any handoff.
+    """
+    try:
+        from workflows import Context
+        store = Context.get_step_context().store
+        current = await store.get("current_agent_name", default=None)
+        if not current:
+            return None, None
+        key = id(store)
+        if key not in _ROOT:
+            if await store.get("next_agent", default=None) is not None:
+                # ponytail: the root handed off before any guarded call of its
+                # own, so it was never seen; the active agent is a handoff target.
+                return f"{current}:{key:x}", str(current)
+            _ROOT[key] = current
+            weakref.finalize(store, _ROOT.pop, key, None)
+    except Exception:  # not in a workflow step, or not a multi-agent workflow
+        return None, None
+    return (None, None) if current == _ROOT[key] else (f"{current}:{key:x}", str(current))
 
 
 def prismor_guard_tool(
@@ -83,7 +116,7 @@ def prismor_guard_tool(
     ctx_param = getattr(tool, "ctx_param_name", None)
     engine: List[Any] = [None]
 
-    def _decide(args: tuple, kwargs: dict) -> Optional[str]:
+    def _decide(args: tuple, kwargs: dict, sub: tuple = (None, None)) -> Optional[str]:
         # The workflow Context is plumbing, not tool input.
         kwargs = {k: v for k, v in kwargs.items() if k != ctx_param}
         field = _TYPE_FIELD.get(event_type, "command")
@@ -95,7 +128,8 @@ def prismor_guard_tool(
             "type": event_type,
             field: _payload(args, kwargs),
             "metadata": {"tool_name": tool_name, "framework": "llamaindex",
-                         "args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()}},
+                         "args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()},
+                         "subagent_id": sub[0], "subagent_type": sub[1]},
         }
         decision: Decision = evaluate_tool_call(
             event=event, workspace=ws, agent=agent, agent_name=name, mode=mode,
@@ -113,16 +147,28 @@ def prismor_guard_tool(
     def _redact(out: Any) -> Any:
         return redact_tool_result(out, workspace=ws, engine=engine[0])
 
+    async def _sub() -> tuple:
+        # The workflow's own handoff signal first; else an agent run inside
+        # another guarded tool (an agent used as a tool) is a subagent.
+        found = await _workflow_subagent()
+        return found if found[0] else nested_subagent(name or agent)
+
     if hasattr(tool, "_fn") and hasattr(tool, "_async_fn"):  # FunctionTool
         fn, afn = tool._fn, tool._async_fn
 
         def guarded_fn(*args: Any, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
-            return denial if denial is not None else _redact(fn(*args, **kwargs))
+            denial = _decide(args, kwargs, nested_subagent(name or agent))
+            if denial is not None:
+                return denial
+            with running(name or agent):
+                return _redact(fn(*args, **kwargs))
 
         async def guarded_afn(*args: Any, **kwargs: Any) -> Any:
-            denial = await asyncio.to_thread(_decide, args, kwargs)
-            return denial if denial is not None else _redact(await afn(*args, **kwargs))
+            denial = await asyncio.to_thread(_decide, args, kwargs, await _sub())
+            if denial is not None:
+                return denial
+            with running(name or agent):
+                return _redact(await afn(*args, **kwargs))
 
         tool._fn, tool._async_fn = guarded_fn, guarded_afn
     else:  # any other BaseTool: guard the public entry points
@@ -134,14 +180,20 @@ def prismor_guard_tool(
                               raw_input={"args": args, "kwargs": kwargs}, raw_output=text)
 
         def guarded_call(*args: Any, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
-            return _denied(denial, args, kwargs) if denial is not None else call(*args, **kwargs)
+            denial = _decide(args, kwargs, nested_subagent(name or agent))
+            if denial is not None:
+                return _denied(denial, args, kwargs)
+            with running(name or agent):
+                return call(*args, **kwargs)
 
         tool.call = guarded_call
         if acall is not None:
             async def guarded_acall(*args: Any, **kwargs: Any) -> Any:
-                denial = await asyncio.to_thread(_decide, args, kwargs)
-                return _denied(denial, args, kwargs) if denial is not None else await acall(*args, **kwargs)
+                denial = await asyncio.to_thread(_decide, args, kwargs, await _sub())
+                if denial is not None:
+                    return _denied(denial, args, kwargs)
+                with running(name or agent):
+                    return await acall(*args, **kwargs)
             tool.acall = guarded_acall
 
     tool.__prismor_guarded__ = True

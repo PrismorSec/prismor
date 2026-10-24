@@ -24,9 +24,11 @@ live model) and on OpenAI Agents SDK ``FunctionTool`` objects.
 """
 from __future__ import annotations
 
+import contextvars
 import functools
 import json
 import os
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Union
@@ -213,6 +215,43 @@ def prismor_guard(
 
 # ── OpenAI Agents SDK FunctionTool support ──────────────────────────────────
 
+# Which agent is the main one is a property of the run, not of the `name=`
+# label: the first agent whose tool runs is the main agent, and an agent
+# reached by a handoff is a subagent. Every ToolContext of one run shares the
+# run's Usage object, so it keys the run (by id: Usage is an unhashable
+# dataclass; a finalizer drops the entry when the run is gone). An agent used as a tool runs a nested
+# Runner inside the parent's tool call, so that whole nested run is a subagent;
+# _RUNNING_AGENT carries the parent across that boundary.
+_RUN_ROOT: dict = {}
+_RUNNING_AGENT: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "prismor_openai_running_agent", default=None)
+
+
+def _subagent_of(ctx: Any) -> tuple:
+    """(subagent_id, subagent_type) for this call, or (None, None) on the main agent."""
+    active = getattr(ctx, "agent", None)
+    if active is None:
+        return None, None
+    outer = _RUNNING_AGENT.get()
+    nested = outer is not None and outer != id(active)
+    usage = getattr(ctx, "usage", None)
+    if usage is None:  # no run to key on: treat the agent as the main one
+        root = id(active)
+    else:
+        key = id(usage)
+        if key not in _RUN_ROOT:
+            _RUN_ROOT[key] = id(active)
+            try:
+                weakref.finalize(usage, _RUN_ROOT.pop, key, None)
+            except TypeError:
+                pass
+        root = _RUN_ROOT[key]
+    if not nested and root == id(active):
+        return None, None
+    name = getattr(active, "name", None) or "agent"
+    return f"{name}-{id(active)}", name
+
+
 def _is_function_tool(obj: Any) -> bool:
     """Duck-type an OpenAI Agents SDK FunctionTool (has an async on_invoke_tool)."""
     return hasattr(obj, "on_invoke_tool") and hasattr(obj, "name")
@@ -265,16 +304,17 @@ def _guard_function_tool(
     @functools.wraps(original)
     async def guarded(ctx: Any, input_str: Any) -> Any:
         # ctx (a ToolContext) carries the SDK's active agent for this call.
-        # It differs from the statically-guarded top-level agent when the run
-        # reached this tool via a handoff or an agent-as-tool nested run —
-        # that's the Agents SDK's equivalent of Claude Code's subagent spawn.
-        active_agent = getattr(ctx, "agent", None)
-        active_name = getattr(active_agent, "name", None)
-        sub_id: Optional[str] = None
-        sub_type: Optional[str] = None
-        if active_name and active_name != (_agent_name or agent):
-            sub_type = active_name
-            sub_id = f"{active_name}-{id(active_agent)}"
+        # A handoff or an agent-as-tool nested run makes it a subagent, the
+        # Agents SDK's equivalent of Claude Code's subagent spawn.
+        sub_id, sub_type = _subagent_of(ctx)
+        active = getattr(ctx, "agent", None)
+        _token = _RUNNING_AGENT.set(id(active) if active is not None else None)
+        try:
+            return await _run(ctx, input_str, sub_id, sub_type)
+        finally:
+            _RUNNING_AGENT.reset(_token)
+
+    async def _run(ctx: Any, input_str: Any, sub_id: Optional[str], sub_type: Optional[str]) -> Any:
         event = build_event(
             tool_name=tool_name,
             payload=_payload_from_tool_input(input_str),

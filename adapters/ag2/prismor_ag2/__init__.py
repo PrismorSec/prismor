@@ -24,6 +24,11 @@ AG2 0.x (``import autogen``) executes tools from the executor agent's
 
     register_function(run_shell, caller=assistant, executor=user_proxy, ...)
     guard_agent(user_proxy, name="support-bot", mode="enforce")
+
+Subagents: an agent (or chat) run from inside a guarded tool is a subagent of
+the agent whose tool launched it; its guarded calls carry subagent type = its
+own ``name=``, so give each agent its own name. Group-chat peers and nested
+chats started from a reply (not a tool) are not subagents here.
 """
 from __future__ import annotations
 
@@ -39,6 +44,7 @@ from typing import Any, Callable, Dict, Optional, Union
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
+from prismor.runtime.subagent_context import nested_subagent, running
 
 try:  # AG2 1.x; the adapter stays importable (and testable) without it
     from ag2.middleware.base import BaseMiddleware as _Base
@@ -70,6 +76,8 @@ def _check(tool_name: str, args: Dict[str, Any], *, subject, workspace: Path, ag
            raise_on_block: bool) -> "tuple[Optional[str], Decision]":
     """One policy check. Returns (denial text or None, decision)."""
     field = _TYPE_FIELD.get(event_type, "command")
+    # asyncio.to_thread copies the context, so this sees a launching tool too.
+    sub_id, sub_type = nested_subagent(name or agent)
     event = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "session_id": session_id,
@@ -78,7 +86,8 @@ def _check(tool_name: str, args: Dict[str, Any], *, subject, workspace: Path, ag
         "type": event_type,
         field: " ".join(str(v) for v in args.values()).strip(),
         "metadata": {"tool_name": tool_name, "framework": "ag2",
-                     "args": {k: str(v) for k, v in args.items()}},
+                     "args": {k: str(v) for k, v in args.items()},
+                     "subagent_id": sub_id, "subagent_type": sub_type},
     }
     decision: Decision = evaluate_tool_call(
         event=event, workspace=workspace, agent=agent, agent_name=name, mode=mode,
@@ -130,7 +139,8 @@ class PrismorMiddleware(_Base):
         if denial is not None:
             from ag2.events import ToolResultEvent
             return ToolResultEvent.from_call(event, result=denial)
-        result = await call_next(event, context)
+        with running(self._opts["name"] or self._opts["agent"], getattr(event, "id", None)):
+            result = await call_next(event, context)
         # Mask credentials in the tool's output before the model reads it.
         for i, part in enumerate(getattr(getattr(result, "result", None), "parts", None) or []):
             text = getattr(part, "content", None)
@@ -190,7 +200,9 @@ def guard_agent(
                 denial, decision = await asyncio.to_thread(_check, tool_name, kwargs, **opts)
                 if denial is not None:
                     return denial
-                return redact_tool_result(await fn(**kwargs), workspace=opts["workspace"],
+                with running(name or "ag2"):
+                    result = await fn(**kwargs)
+                return redact_tool_result(result, workspace=opts["workspace"],
                                           engine=decision.engine)
         else:
             @functools.wraps(fn)
@@ -198,7 +210,9 @@ def guard_agent(
                 denial, decision = _check(tool_name, kwargs, **opts)
                 if denial is not None:
                     return denial
-                return redact_tool_result(fn(**kwargs), workspace=opts["workspace"],
+                with running(name or "ag2"):
+                    result = fn(**kwargs)
+                return redact_tool_result(result, workspace=opts["workspace"],
                                           engine=decision.engine)
         guarded.__prismor_guarded__ = True
         return guarded

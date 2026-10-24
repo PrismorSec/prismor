@@ -297,7 +297,10 @@ def build_record(
         # own rule configuration), so it survives redaction — it lets the
         # dashboard's event inspector show WHY a call was flagged without
         # carrying any captured user content.
-        "matched_pattern": finding.get("pattern"),
+        # A rule with only a `when:` has no pattern; its condition is the reason
+        # instead, sent as "when: <expr>" (also static policy text).
+        "matched_pattern": finding.get("pattern") or (
+            f"when: {finding['when']}" if finding.get("when") else None),
         # Guard-eval duration (ms) and on-device session position, measured by
         # the runtime. Non-sensitive operational metadata.
         "eval_ms": extra.get("eval_ms"),

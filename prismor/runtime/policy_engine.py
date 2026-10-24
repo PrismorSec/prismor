@@ -574,7 +574,7 @@ class RuleCondition:
         return hits >= need
 
 
-_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool"})
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent"})
 _WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
 
 
@@ -592,9 +592,10 @@ class AttrCondition:
         when: "resource.attr.owner != principal.id"
         when: "not principal.verified"
         when: "has(args.dry_run) and args.dry_run == false"
+        when: "subagent.type == 'general-purpose' and tool.name == 'WebFetch'"
 
-    Names are dotted paths rooted at ``principal``, ``resource``, ``args`` or
-    ``tool``; ``args['x-y']`` reaches keys that are not identifiers. Only
+    Names are dotted paths rooted at ``principal``, ``resource``, ``args``,
+    ``tool`` or ``subagent``; ``args['x-y']`` reaches keys that are not identifiers. Only
     and/or/not, comparisons (== != < <= > >= in, not in), literals, lists and
     ``has(path)`` are accepted — same no-``eval`` whitelist as RuleCondition.
 
@@ -723,7 +724,7 @@ _RESERVED_NAMES = _WHEN_ROOTS | {"true", "false", "null", "True", "False", "None
 
 def compile_named_conditions(raw: Any) -> Tuple[Dict[str, AttrCondition], List[str]]:
     """settings.conditions → ({name: AttrCondition}, errors). Each body may read
-    the four attribute roots; names cannot refer to other names (no cycles)."""
+    the five attribute roots; names cannot refer to other names (no cycles)."""
     out: Dict[str, AttrCondition] = {}
     errors: List[str] = []
     if raw is None:
@@ -789,11 +790,16 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
         "claims": dict(getattr(subject, "claims", None) or {}),
     }
     resource = meta.get("resource") if isinstance(meta.get("resource"), dict) else {}
+    # The subagent that made this call, set by the normalizers on calls from
+    # inside one. Keys are always present (None on the main agent) so a
+    # comparison is simply false there, not a missing path that fires the rule.
+    sub_id = meta.get("subagent_id")
     return {
         "principal": principal,
         "resource": resource,
         "args": args,
         "tool": {"name": str(meta.get("tool_name") or "")},
+        "subagent": {"id": sub_id, "type": meta.get("subagent_type"), "active": bool(sub_id)},
     }
 
 
@@ -2126,6 +2132,10 @@ class PolicyEngine:
                 # Attributed against the folded copy when that is what matched,
                 # otherwise the pattern would re-scan text it cannot match.
                 "pattern": rule.matched_pattern(folded_evidence or matched_evidence),
+                # The rule's `when:` condition, which held for this call. Static
+                # policy text like `pattern`; for a rule with only a `when:` it
+                # is the whole reason it fired.
+                "when": rule.when.source if rule.when else None,
                 "eventIndex": index,
                 "ruleId": rule.id,
                 "action": rule.action,

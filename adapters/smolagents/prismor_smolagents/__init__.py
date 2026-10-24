@@ -71,8 +71,13 @@ def prismor_guard_tool(
     session_id: Optional[str] = None,
     event_type: str = "shell",
     raise_on_block: bool = False,
+    subagent: Optional[tuple] = None,
 ) -> Any:
-    """Guard one smolagents ``Tool`` in place (wraps its ``forward``)."""
+    """Guard one smolagents ``Tool`` in place (wraps its ``forward``).
+
+    ``subagent``: (id, type) when the tool belongs to a managed agent, set by
+    :func:`guard_agent`; None for the agent that runs the whole task.
+    """
     if getattr(tool, "__prismor_guarded__", False) or getattr(tool, "name", "") in _SKIP:
         return tool
     ws = Path(workspace) if workspace else Path.cwd()
@@ -91,7 +96,9 @@ def prismor_guard_tool(
             "type": event_type,
             field: " ".join([str(a) for a in args] + [str(v) for v in kwargs.values()]).strip(),
             "metadata": {"tool_name": tool_name, "framework": "smolagents",
-                         "args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()}},
+                         "args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()},
+                         "subagent_id": subagent[0] if subagent else None,
+                         "subagent_type": subagent[1] if subagent else None},
         }
         decision: Decision = evaluate_tool_call(
             event=event, workspace=ws, agent=agent, agent_name=name, mode=mode,
@@ -115,12 +122,31 @@ def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
     return [prismor_guard_tool(t, **kwargs) for t in tools]
 
 
+def _managed(agent: Any) -> List[Any]:
+    managed = getattr(agent, "managed_agents", None) or {}
+    return list(managed.values()) if isinstance(managed, dict) else list(managed)
+
+
 def guard_agent(agent: Any, **kwargs: Any) -> Any:
-    """Guard every tool a ``ToolCallingAgent`` / ``CodeAgent`` holds. Call it
-    after constructing the agent; returns the agent. Managed (sub)agents are
-    not tools — guard them with their own ``guard_agent`` call."""
+    """Guard every tool a ``ToolCallingAgent`` / ``CodeAgent`` holds, and the
+    tools of its ``managed_agents`` (recursively). Call it after constructing
+    the agent; returns the agent.
+
+    The agent passed in is the main agent; a managed agent's tool calls are
+    attributed to that subagent (type = its ``name``) for ``when: subagent.*``
+    rules. Ownership is static: smolagents runs tool calls on a thread pool, so
+    a run-time context would not reach them. A tool object shared between two
+    agents keeps the attribution of the first agent that guarded it.
+    """
     tools = list(getattr(agent, "tools", {}).values())
     guard_tools(tools, **kwargs)
+    pending = _managed(agent)
+    while pending:
+        sub = pending.pop()
+        sub_name = str(getattr(sub, "name", None) or type(sub).__name__)
+        guard_tools(list(getattr(sub, "tools", {}).values()),
+                    subagent=(f"{sub_name}-{id(sub)}", sub_name), **kwargs)
+        pending.extend(_managed(sub))
     try:
         from prismor.runtime.agents import record_seen
         framework = kwargs.get("agent", "smolagents")

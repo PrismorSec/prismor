@@ -384,3 +384,35 @@ test("langchain: tools report under the langchain framework id, not vercel-ai", 
   assert.equal(requests[0].body.agent, "langchain");
   assert.equal(requests[0].body.agent_name, "support-langgraph-js");
 });
+
+test("a toolset run inside another agent's tool reports as a subagent", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const fetch_url = { execute: async ({ url }) => `fetched ${url}` };
+    const researcherTools = prismorTools({ fetch_url }, { agentName: "researcher" });
+    const ask_researcher = {
+      // A subagent: this tool runs another agent, which calls its own tools.
+      execute: async ({ q }) => researcherTools.fetch_url.execute({ url: q }, { toolCallId: "inner-1" }),
+    };
+    const mainTools = prismorTools({ fetch_url, ask_researcher }, { agentName: "support-bot" });
+    await mainTools.fetch_url.execute({ url: "https://a.test" }, { toolCallId: "c1" });
+    await mainTools.ask_researcher.execute({ q: "https://b.test" }, { toolCallId: "c2" });
+  });
+  const by = (n) => requests.filter((r) => r.body.tool_name === n);
+  assert.equal(by("fetch_url")[0].body.subagent, undefined);          // main agent
+  assert.equal(by("ask_researcher")[0].body.subagent, undefined);     // main agent launching it
+  assert.deepEqual(by("fetch_url")[1].body.subagent, { id: "support-bot:c2", type: "researcher" });
+});
+
+test("langgraph js: a call inside an agent subgraph is a subagent; a lone ReAct agent is not", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const { prismorLangChainTool } = require("../dist/index.js");
+    const t = prismorLangChainTool({ name: "fetch_url", invoke: async () => "ok" });
+    // Shapes from a live @langchain/langgraph 1.5 run.
+    await t.invoke({ url: "a" }, { metadata: { langgraph_checkpoint_ns: "tools:84a9" } });
+    await t.invoke({ url: "b" }, { metadata: { langgraph_checkpoint_ns: "researcher:a730|tools:cd9a" } });
+  });
+  assert.equal(requests[0].body.subagent, undefined);
+  assert.deepEqual(requests[1].body.subagent, { id: "researcher:a730", type: "researcher" });
+});

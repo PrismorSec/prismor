@@ -35,6 +35,9 @@ they all go through one [decision contract](decision-contract.md).
 | `args.*` | the tool call's arguments | adapter / eval-server `arguments`, or a hook's `tool_input` |
 | `resource.kind`, `resource.id`, `resource.attr.*` | the call's target | `resource` on the eval-server body or `evaluate_tool_call(resource=...)` |
 | `tool.name` | tool name | `metadata.tool_name` |
+| `subagent.active` | `true` when a subagent made the call, `false` for the main agent | the agent host's hook payload, or the SDK adapter |
+| `subagent.id` | the subagent's runtime id (`null` on the main agent) | same |
+| `subagent.type` | the subagent's type, e.g. `general-purpose` (`null` on the main agent) | same |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a
@@ -53,7 +56,7 @@ unless a role is present therefore stays a deny for every unverified caller.
 | Function | `has(path)` — whether the path exists |
 
 Anything else is rejected when the policy loads, including calls, arithmetic
-and names outside the four roots. The expression is parsed into a checked tree
+and names outside the five roots. The expression is parsed into a checked tree
 and never passed to Python's `eval`, so a signed org policy cannot carry code.
 
 ## Missing attributes fire the rule
@@ -119,6 +122,46 @@ when: "resource.attr.env == 'prod' and not principal.verified"
 when: "args.currency not in ['USD', 'EUR', 'GBP']"
 ```
 
+**Keep subagents off the network**
+
+```yaml
+when: "subagent.active and tool.name in ['WebFetch', 'WebSearch']"
+```
+
+A subagent runs under its parent's identity, so `principal` is the same for
+both; `subagent` tells them apart. In Claude Code and Codex the values come
+from the hook payload the host sets, not from the model. Through an SDK
+adapter they come from the framework, which the calling code controls, the
+same as `args`:
+
+| Framework | A subagent is | `subagent.type` |
+|---|---|---|
+| Claude Agent SDK | a Task/Agent subagent (hook `agent_id`) | its `agent_type` |
+| OpenAI Agents SDK | an agent reached by a handoff, or an agent used as a tool | the agent's `name` |
+| LangGraph (Python and JS) | an agent subgraph of a multi-agent graph | the subgraph's node name |
+| Google ADK | a `sub_agents` member transferred to, or an `AgentTool` | the agent's `name` |
+| CrewAI (`guard_crew`) | a coworker doing delegated work; every worker in a hierarchical crew | the agent's `role` |
+| smolagents | a `managed_agents` member | its `name` |
+| LlamaIndex | an `AgentWorkflow` handoff target, or an agent run inside a tool | the agent's `name` |
+| Agno | a `Team` member running a delegated task | the member's `name` |
+| AutoGen Core | any agent other than `main_agent=` sending the tool call | its AgentId type |
+| Mastra | an agent's `agents: {…}` member (`registerSubagents`), or an agent run inside a tool | the agent's id |
+| BeeAI | the agent reached by a `HandoffTool` | its `name` |
+| Vercel AI SDK, Pydantic AI, AG2, Semantic Kernel, Agent Framework | an agent run inside another agent's guarded tool | that agent's `agentName` / `name=` |
+| eval-server callers | whatever the caller sends as `subagent` | `subagent.type` |
+
+For the "agent run inside a guarded tool" rows, give each agent's guard its
+own `name=` (`agentName` in JS): that name is the subagent's type. Tool names
+are framework-specific too (Claude Agent SDK custom tools arrive as
+`mcp__<server>__<tool>`, Semantic Kernel prefixes the plugin name), so name
+them that way in `tool.name` conditions. browser-use runs one agent and has
+no subagents.
+
+The main (entry) agent always reads as `subagent.active == false`, whatever
+`name` it was given. On the parent's call that launches a subagent,
+`subagent.active` is `false`; the type being launched is
+`args.subagent_type`.
+
 ## Named conditions
 
 Conditions you use in several rules can be named once in `settings.conditions`
@@ -139,7 +182,7 @@ rules:
     when: "not (is_owner or is_finance)"
 ```
 
-A named condition reads the same four roots as `when:`. It cannot refer to
+A named condition reads the same five roots as `when:`. It cannot refer to
 other names, so there are no cycles. Names merge per name across policy layers:
 the signed org policy can redefine `is_finance` without erasing a project's
 other names. A missing attribute inside a named condition fails toward

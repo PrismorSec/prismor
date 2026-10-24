@@ -22,6 +22,9 @@
  *     name: "ops", model: openai("gpt-4o-mini"),
  *     tools: { run_shell: prismorTool("run_shell", runShell, { mode: "enforce" }) },
  *   });
+ *
+ * Sub-agents (`agents: { researcher }`): call `registerSubagents(agent)` once so
+ * their tool calls report as subagents for `when: subagent.*` rules.
  */
 
 export interface PrismorMastraOptions {
@@ -81,11 +84,67 @@ function timeoutSignal(ms: number): AbortSignal | undefined {
   return undefined;
 }
 
+// ── Subagents ───────────────────────────────────────────────────────────────
+// Mastra runs a sub-agent (`agents: { researcher }`) through a tool of its own
+// making, and the sub-agent's tool calls carry only its own agentId: nothing
+// links them to the parent. So the hierarchy comes from the Agent objects:
+// registerSubagents() records which agent ids are sub-agents, and a guarded
+// call whose ctx.agent.agentId is one reports as that subagent. An agent
+// called from inside another agent's guarded tool (the agent-as-tool
+// pattern) is also a subagent, found through AsyncLocalStorage as in the
+// AI SDK adapter.
+
+export interface Subagent { id: string; type: string }
+
+// ponytail: per-process set; an agent used both standalone and as a sub-agent
+// reads as a subagent everywhere once registered. Key by parent if that matters.
+const _subagentIds = new Set<string>();
+
+interface AgentLike { id?: string; name?: string; listAgents?: (...a: any[]) => any }
+
+/** Record `agent`'s configured sub-agents (recursively) so their tool calls report as subagents. */
+export function registerSubagents<T extends AgentLike>(agent: T): T {
+  const add = (subs: Record<string, AgentLike> | undefined) => {
+    for (const sub of Object.values(subs ?? {})) {
+      const id = sub?.id ?? sub?.name;
+      if (id && !_subagentIds.has(id)) { _subagentIds.add(id); registerSubagents(sub); }
+    }
+  };
+  const listed = agent.listAgents?.();
+  if (listed && typeof listed.then === "function") listed.then(add, () => undefined);
+  else add(listed);
+  return agent;
+}
+
+interface Running { agent: string; callId: string }
+let _running: { run<T>(s: Running, fn: () => T): T; getStore(): Running | undefined } | null | undefined;
+function running() {
+  if (_running !== undefined) return _running;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    _running = new (require("node:async_hooks").AsyncLocalStorage)();
+  } catch {
+    _running = null;
+  }
+  return _running;
+}
+
+function subagentOf(ctx: any, agentName: string): Subagent | undefined {
+  const agentId: string | undefined = ctx?.agent?.agentId;
+  const parent = running()?.getStore();
+  if (parent && parent.agent !== (agentId ?? agentName)) {
+    return { id: `${parent.agent}:${parent.callId}`, type: agentId ?? (agentName || "agent") };
+  }
+  if (agentId && _subagentIds.has(agentId)) return { id: `${agentId}:${ctx?.runId ?? ""}`, type: agentId };
+  return undefined;
+}
+
 async function evaluateToolCall(
   toolName: string,
   args: unknown,
   resolved: Required<PrismorMastraOptions>,
   sessionId: string,
+  subagent?: Subagent,
 ): Promise<PrismorDecision> {
   try {
     const res = await fetch(`${resolved.evalUrl}/v1/evaluate`, {
@@ -105,6 +164,7 @@ async function evaluateToolCall(
         session_id: sessionId,
         subject: resolved.subject,
         workspace: resolved.workspace,
+        ...(subagent ? { subagent } : {}),
       }),
       signal: timeoutSignal(resolved.timeoutMs),
     });
@@ -144,11 +204,14 @@ export function prismorTool<T extends { execute?: (...args: any[]) => any }>(
   const original = tool.execute.bind(tool);
 
   const guarded = async (inputData: unknown, ...rest: any[]) => {
-    const decision = await evaluateToolCall(toolName, inputData, resolved, sid);
+    const ctx = rest[0];
+    const decision = await evaluateToolCall(toolName, inputData, resolved, sid, subagentOf(ctx, resolved.agentName));
     if (!decision.allow) {
       throw new PrismorBlocked(decision.reason ?? "policy violation");
     }
-    return original(inputData, ...rest);
+    const store = running();
+    const me: Running = { agent: ctx?.agent?.agentId ?? resolved.agentName, callId: String(ctx?.agent?.toolCallId ?? ctx?.writer?.callId ?? Date.now()) };
+    return store ? store.run(me, () => original(inputData, ...rest)) : original(inputData, ...rest);
   };
 
   return { ...tool, execute: guarded, __prismor_guarded__: true } as T;

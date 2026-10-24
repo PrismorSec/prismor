@@ -46,6 +46,8 @@ A normalized event describes one thing an agent is about to do (or just did).
     "kwargs": {"command": "rm -rf /"},  # optional: raw arguments, read as `args.*`
     "resource": {"kind": "doc", "id": "d-1", "attr": {"owner": "alice"}},
                                # optional: the call's target, read as `resource.*`
+    "subagent_id": "Researcher-4411", "subagent_type": "Researcher",
+                               # optional: the subagent making the call, read as `subagent.*`
   },
 }
 ```
@@ -53,7 +55,9 @@ A normalized event describes one thing an agent is about to do (or just did).
 The eval-server also speaks [AuthZEN](authzen.md) for callers that use that
 standard instead.
 
-`kwargs` and `resource` feed [attribute conditions](attribute-conditions.md).
+`kwargs`, `resource` and the subagent fields feed
+[attribute conditions](attribute-conditions.md). On `POST /v1/evaluate` the
+subagent goes in the body as `"subagent": {"id": "...", "type": "..."}`.
 Both are additive; the contract version is unchanged. A caller that passes
 `explain=True` also gets `Decision.explain`, a trace of the rules that matched
 (see [explaining a decision](attribute-conditions.md#explaining-a-decision)).

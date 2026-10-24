@@ -19,6 +19,11 @@ Easy path::
     agent = Agent('openai:gpt-4o-mini', toolsets=guard_toolsets(
         [my_toolset], subject="user:alice", mode="enforce",
     ))
+
+Subagents: Pydantic AI delegates by running another agent inside a tool
+(``await researcher.run(..., usage=ctx.usage)``). A guarded call made while a
+guarded tool is running is attributed to a subagent whose type is the inner
+toolset's ``name=``, so give each agent's toolsets their own name.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from pydantic_ai.toolsets import WrapperToolset
 from prismor.runtime.principal import Subject, resolve_subject
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
+from prismor.runtime.subagent_context import nested_subagent, running
 
 __all__ = ["guard_toolsets", "PrismorToolset", "PrismorBlocked"]
 
@@ -88,6 +94,8 @@ class PrismorToolset(WrapperToolset):
 
     async def call_tool(self, name: str, tool_args: Dict[str, Any], ctx: Any, tool: Any) -> Any:
         field = _TYPE_FIELD.get(self._prismor_event_type, "command")  # type: ignore[attr-defined]
+        label = self._prismor_name or self._prismor_agent  # type: ignore[attr-defined]
+        sub_id, sub_type = nested_subagent(label)
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": getattr(ctx, "run_id", None) or self._prismor_sid,  # type: ignore[attr-defined]
@@ -100,6 +108,8 @@ class PrismorToolset(WrapperToolset):
                 "framework": "pydantic-ai",
                 "tool_call_id": getattr(ctx, "tool_call_id", None),
                 "args": dict(tool_args or {}),
+                "subagent_id": sub_id,
+                "subagent_type": sub_type,
             },
         }
         decision: Decision = evaluate_tool_call(
@@ -121,8 +131,11 @@ class PrismorToolset(WrapperToolset):
             raise ToolFailed(f"⛔ Prismor blocked this tool call: {reason}")
         # call_tool is also the single choke point the RESULT comes back
         # through, so the same wrapper that refuses a call can repair one.
+        # An agent run inside this tool is a subagent of this one.
+        with running(label, getattr(ctx, "tool_call_id", None)):
+            result = await super().call_tool(name, tool_args, ctx, tool)
         return redact_tool_result(
-            await super().call_tool(name, tool_args, ctx, tool),
+            result,
             workspace=self._prismor_ws,  # type: ignore[attr-defined]
             engine=decision.engine,
         )

@@ -119,12 +119,18 @@ def prismor_pre_tool_use_hook(
     async def callback(input_data: dict, tool_use_id: Optional[str], context: dict) -> dict:
         tool_name = input_data.get("tool_name", "")
         tool_input = input_data.get("tool_input", {})
+        # Calls from inside a subagent (the Agent/Task tool) carry agent_id, as
+        # in Claude Code. agent_type alone also appears on the main thread of a
+        # session started with --agent, so only agent_id marks a subagent.
+        sub_id = input_data.get("agent_id") or None
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": sid,
             "agent": "claude-agent-sdk",
             "agent_event": "PreToolUse",
-            "metadata": {"tool_name": tool_name, "tool_use_id": tool_use_id, "raw_input": tool_input},
+            "metadata": {"tool_name": tool_name, "tool_use_id": tool_use_id, "raw_input": tool_input,
+                         "subagent_id": sub_id,
+                         "subagent_type": (input_data.get("agent_type") or None) if sub_id else None},
             **_normalize(tool_name, tool_input),
         }
         decision: Decision = evaluate_tool_call(
