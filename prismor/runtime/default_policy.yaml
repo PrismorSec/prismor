@@ -1292,8 +1292,12 @@ rules:
       # SQL writes are caught by db-modification, this catches the file.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|dd)\b[^\n;&|<>]*?)\bprismor\.db(?:-wal|-shm|-journal)?\b'
       # The local dashboard's write API (loopback, unauthenticated by design
-      # — it assumes only the human reaches it).
-      - '(curl|wget|http|nc)[^\n]*(127\.0\.0\.1|localhost)[^\n]*/api/(policy|tool-policy|agents|sessions|pause|update|approvals)'
+      # — it assumes only the human reaches it). Matched per shell segment.
+      # A curl/wget with no method, body, config or variable flag anywhere on
+      # the line is a GET, and every GET on these routes is read-only, so an
+      # agent may read its own sessions; anything else that reaches the
+      # routes (a write flag, `$FLAGS`, an interpreter, nc) is still blocked.
+      - '(?:^|[;&|\n])(?![ \t]*(?:curl|wget)\b(?![^\n]*(?:\s(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next))|[$`])))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals)'
       # The same URL built by joining the path in the interpreter.
       - '/api/["'']\s*\+\s*["''](?:policy|tool-policy)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a

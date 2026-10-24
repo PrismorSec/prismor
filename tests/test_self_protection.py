@@ -67,6 +67,14 @@ BLOCKED_COMMANDS = [
     # The local dashboard's unauthenticated write API.
     "curl -X PUT http://127.0.0.1:7070/api/policy/rules -d '{}'",
     "curl -X POST http://localhost:7070/api/agents/claude -d '{}'",
+    "curl -sXPATCH http://127.0.0.1:7070/api/sessions/abc/control --json '{}'",
+    "curl --request=POST http://127.0.0.1:7070/api/pause",
+    "curl -s http://127.0.0.1:7070/api/pause $FLAGS",
+    "curl -K req.cfg http://127.0.0.1:7070/api/policy",
+    "wget --method=PUT http://localhost:7070/api/policy",
+    "cd /x && curl http://127.0.0.1:7070/api/approvals -d '{\"id\":1}'",
+    "python3 -c \"import urllib.request as u;u.urlopen('http://127.0.0.1:7070/api/pause',data=b'{}')\"",
+    "echo hi; nc localhost 7070 /api/policy",
     # Wrappers whose only purpose would be to disguise one of the above.
     "script -q /dev/null prismor allow risky-write --off",
     # Wrapped in a shell, which is how the anchoring would otherwise be
@@ -123,6 +131,14 @@ ALLOWED_COMMANDS = [
     "prismor session share --with bob@example.com",
     "prismor session https://www.prismor.dev/s/Tk9x",
     'grep -n "session share --public" SKILL.md',
+    # Reading the dashboard API is not writing it: every GET on these routes
+    # is read-only. An agent checking why a session search came back empty
+    # was blocked for exactly this.
+    "curl -s 'http://127.0.0.1:7070/api/sessions?q=i%20added%20in%20secrets'",
+    "curl -fsSL http://localhost:7070/api/policy | jq .",
+    "d=/tmp/x; sed -n 1,5p $d/store.py; curl -s --max-time 30 'http://127.0.0.1:7070/api/sessions?q=c88c21eb' | head -c 400",
+    "curl -s http://127.0.0.1:7070/api/sessions | python3 -c \"import sys,json;print(json.load(sys.stdin)['total'])\"",
+    "wget -qO- http://127.0.0.1:7070/api/approvals",
 ]
 
 
