@@ -97,16 +97,38 @@ def load_agents_config(workspace: Optional[Path] = None) -> Dict[str, Any]:
         if project_cfg:
             project_agents = project_cfg.get("agents", {})
             if project_agents:
-                config.setdefault("agents", {}).update(project_agents)
+                merged = dict(config.get("agents") or {})
+                for name, entry in project_agents.items():
+                    merged[name] = _merge_agent_entry(merged.get(name), entry)
+                config["agents"] = merged
             # Carry project-level across-agents controls through the merge —
-            # load_agents_config otherwise only pulls the ``agents`` map.
-            if project_cfg.get("global_deny_tools"):
-                config["global_deny_tools"] = project_cfg["global_deny_tools"]
-            if project_cfg.get("global_ask_tools"):
-                config["global_ask_tools"] = project_cfg["global_ask_tools"]
+            # load_agents_config otherwise only pulls the ``agents`` map. A
+            # project adds to the global lists; it cannot drop from them.
+            for key in ("global_deny_tools", "global_ask_tools"):
+                if project_cfg.get(key):
+                    config[key] = list(dict.fromkeys([*(config.get(key) or ()), *project_cfg[key]]))
 
     _CONFIG_CACHE[cache_key] = config
     return config
+
+
+def _merge_agent_entry(global_entry: Any, project_entry: Any) -> Dict[str, Any]:
+    """One agent's global entry with its project entry on top, never looser.
+
+    The project file also holds auto-registration bookkeeping (framework,
+    last_seen, tools): replacing the whole global entry with it silently
+    dropped a global pause, deny list or IAM profile as soon as the agent ran
+    in a repo. Fields merge; a pause in either holds; deny/ask lists add up.
+    """
+    g = global_entry if isinstance(global_entry, dict) else {}
+    p = project_entry if isinstance(project_entry, dict) else {}
+    out = {**g, **p}
+    if "enabled" in g or "enabled" in p:
+        out["enabled"] = bool(g.get("enabled", True)) and bool(p.get("enabled", True))
+    for key in ("deny_tools", "ask_tools"):
+        if g.get(key) or p.get(key):
+            out[key] = list(dict.fromkeys([*(g.get(key) or ()), *(p.get(key) or ())]))
+    return out
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -129,6 +151,43 @@ class AgentControl:
     # Which layer disabled the agent: "local" (agents.yaml), "org" (the signed
     # remote policy's settings.agent_controls), "both", or None when enabled.
     disabled_by: Optional[str] = None
+    # IAM profiles a subagent inherits from the agents above it; checked in
+    # addition to its own iam_profile (see inherit_control).
+    parent_iam_profiles: tuple = ()
+
+
+def inherit_control(child: AgentControl, parent: AgentControl) -> AgentControl:
+    """A subagent's control: its own, tightened by its parent's.
+
+    A subagent runs on its parent's authority, so nothing set for the subagent
+    may loosen what is set for the parent: disabled if either is; enforce if
+    either enforces; denied tools are the union; asked tools the union minus
+    denied; the parent's IAM profile is checked on top of the subagent's.
+    """
+    def stricter(a: Optional[str], b: Optional[str]) -> Optional[str]:
+        # observe only when both say so: a parent that follows the global mode
+        # keeps its subagent there too.
+        if "enforce" in (a, b):
+            return "enforce"
+        return "observe" if a == b == "observe" else None
+
+    deny = tuple(dict.fromkeys([*child.deny_tools, *parent.deny_tools]))
+    profiles = tuple(dict.fromkeys(
+        p for p in (*child.parent_iam_profiles, parent.iam_profile, *parent.parent_iam_profiles)
+        if p and p != child.iam_profile))
+    return AgentControl(
+        name=child.name,
+        framework=child.framework,
+        enabled=child.enabled and parent.enabled,
+        mode=stricter(child.mode, parent.mode),
+        org_mode=stricter(child.org_mode, parent.org_mode),
+        iam_profile=child.iam_profile,
+        deny_tools=deny,
+        ask_tools=tuple(t for t in dict.fromkeys([*child.ask_tools, *parent.ask_tools]) if t not in deny),
+        last_seen=child.last_seen,
+        disabled_by=child.disabled_by or (f"parent agent {parent.name}" if not parent.enabled else None),
+        parent_iam_profiles=profiles,
+    )
 
 
 _DEFAULT = AgentControl(name="")  # sentinel — used for agents not in the registry
@@ -427,7 +486,11 @@ def make_disabled_finding(
     "org", "both") so the developer sees WHERE to go to lift it — a local
     re-enable can never lift an org-pushed pause.
     """
-    if disabled_by == "org":
+    if disabled_by and disabled_by.startswith("parent agent "):
+        parent = disabled_by[len("parent agent "):]
+        evidence = f"agent '{name}' is a subagent of '{parent}', which is paused"
+        remediation = f"Re-enable '{parent}': a subagent cannot run while the agent that launched it is paused."
+    elif disabled_by == "org":
         evidence = f"agent '{name}' is paused by your org's control plane (signed policy)"
         remediation = f"Ask an org admin to re-enable '{name}' in the dashboard's fleet view."
     elif disabled_by == "both":

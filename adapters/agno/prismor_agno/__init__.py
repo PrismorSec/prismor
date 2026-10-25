@@ -26,6 +26,7 @@ Easy path::
 from __future__ import annotations
 
 import os
+import weakref
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
@@ -35,7 +36,7 @@ from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call
 from prismor.runtime.subagent_context import nested_subagent, running
 
-__all__ = ["make_tool_hook", "prismor_tool_hook", "PrismorBlocked"]
+__all__ = ["make_tool_hook", "prismor_tool_hook", "guard_team", "PrismorBlocked"]
 
 _TYPE_FIELD = {
     "shell": "command",
@@ -55,6 +56,28 @@ class PrismorBlocked(Exception):
 
 def _payload(arguments: Dict[str, Any]) -> str:
     return " ".join(str(v) for v in (arguments or {}).values()).strip()
+
+
+# The guard name each team leader's own calls are evaluated under, so a
+# member's call (which may carry a hook of its own) inherits the leader's
+# per-agent controls. Keyed by id(team); a finalizer drops it with the team.
+_TEAM_GUARD: Dict[int, str] = {}
+
+
+def _team_guard(team: Any, agent_obj: Any, guard_name: str) -> Optional[str]:
+    """Record the leader's guard name; for a member call, return it as the parent."""
+    if team is None:
+        return None
+    key = id(team)
+    if agent_obj is None:  # the leader's own call
+        if key not in _TEAM_GUARD:
+            _TEAM_GUARD[key] = guard_name
+            try:
+                weakref.finalize(team, _TEAM_GUARD.pop, key, None)
+            except TypeError:
+                pass
+        return None
+    return _TEAM_GUARD.get(key)
 
 
 def _subagent_of(agent_obj: Any, team: Any, label: str) -> tuple:
@@ -98,6 +121,8 @@ def make_tool_hook(
         field = _TYPE_FIELD.get(event_type, "command")
         label = getattr(team, "name", None) or getattr(agent, "name", None) or name or agent_label
         sub_id, sub_type = _subagent_of(agent, team, label)
+        guard_name = name or agent_label
+        parent = _team_guard(team, agent, guard_name)
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": sid,
@@ -111,6 +136,7 @@ def make_tool_hook(
                 "args": dict(arguments or {}),
                 "subagent_id": sub_id,
                 "subagent_type": sub_type,
+                "parent_agent_name": parent if sub_id else None,
             },
         }
         decision: Decision = evaluate_tool_call(
@@ -127,7 +153,7 @@ def make_tool_hook(
             return f"⛔ Prismor blocked this tool call: {reason}"
         # The hook chain hands back the tool's own return value: redact it
         # here, the last point before Agno folds it into the model's context.
-        with running(label):
+        with running(label, agent_name=guard_name):
             result = function_call(**arguments)
         return redact_tool_result(result, workspace=ws, engine=decision.engine)
 
@@ -138,3 +164,24 @@ def make_tool_hook(
 # subject) -- pass directly to Agent(tool_hooks=[prismor_tool_hook]) for the
 # common case; use make_tool_hook(...) to customize.
 prismor_tool_hook = make_tool_hook()
+
+
+def guard_team(team: Any, **kwargs: Any) -> Any:
+    """Add one Prismor tool hook to a ``Team`` and every member, recursively
+    (nested teams included). Members run delegated work on the leader's
+    authority, so they share its hook and per-agent controls; their calls are
+    told apart by ``when: subagent.*``. A member left without a hook would run
+    its tools unchecked. Takes make_tool_hook's arguments; returns the team.
+    """
+    hook = make_tool_hook(**kwargs)
+    pending, seen = [team], set()
+    while pending:
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        hooks = list(getattr(node, "tool_hooks", None) or [])
+        if hook not in hooks:
+            node.tool_hooks = hooks + [hook]
+        pending.extend(getattr(node, "members", None) or [])
+    return team

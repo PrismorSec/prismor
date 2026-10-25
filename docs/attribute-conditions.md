@@ -151,7 +151,9 @@ same as `args`:
 | eval-server callers | whatever the caller sends as `subagent` | `subagent.type` |
 
 For the "agent run inside a guarded tool" rows, give each agent's guard its
-own `name=` (`agentName` in JS): that name is the subagent's type. Tool names
+own `name=` (`agentName` in JS): that name is the subagent's type. Its
+parent's per-agent controls still apply to it (see
+[a subagent's policy](subagents.md#a-subagents-policy)). Tool names
 are framework-specific too (Claude Agent SDK custom tools arrive as
 `mcp__<server>__<tool>`, Semantic Kernel prefixes the plugin name), so name
 them that way in `tool.name` conditions. browser-use runs one agent and has
@@ -161,6 +163,17 @@ The main (entry) agent always reads as `subagent.active == false`, whatever
 `name` it was given. On the parent's call that launches a subagent,
 `subagent.active` is `false`; the type being launched is
 `args.subagent_type`.
+
+**Only approved subagent types**
+
+```yaml
+event_types: [subagent_spawn]
+when: "args.subagent_type not in ['Explore', 'Plan']"
+```
+
+The Claude Code or Codex call that launches a subagent is a
+`subagent_spawn` event, so this blocks the launch itself: the subagent never
+starts.
 
 ## Named conditions
 

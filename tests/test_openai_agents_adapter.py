@@ -239,7 +239,7 @@ class TestRealAgentSDK:
 
         # A nested run (agent as tool) has its own Usage but runs inside the
         # parent's tool call.
-        token = po._RUNNING_AGENT.set(id(primary))
+        token = po._RUNNING_AGENT.set((id(primary), "support-bot"))
         try:
             call(researcher, Usage())
         finally:
@@ -249,3 +249,31 @@ class TestRealAgentSDK:
         assert types == [None, "researcher", None, "researcher"]
         assert captured[1]["metadata"]["subagent_id"] is not None
         assert captured[0]["metadata"]["subagent_id"] is None
+        # A subagent names the guard it runs under: its controls apply on top.
+        assert captured[1]["metadata"]["parent_agent_name"] == "support-bot"
+        assert captured[3]["metadata"]["parent_agent_name"] == "support-bot"
+        assert "parent_agent_name" not in captured[0]["metadata"]
+
+
+def test_guard_agent_also_guards_handoff_and_as_tool_agents(tmp_path):
+    """Guarding the main agent covers every agent it can run: an agent left
+    unguarded would run its tools with no policy at all."""
+    pytest.importorskip("agents")
+    from agents import Agent, function_tool, handoff
+    import prismor_openai as po
+
+    def mk():
+        @function_tool
+        def fetch_url(url: str) -> str:
+            return "ok"
+        return fetch_url
+
+    deep = Agent(name="deep", tools=[mk()])
+    researcher = Agent(name="researcher", tools=[mk()], handoffs=[deep])
+    summarizer = Agent(name="summarizer", tools=[mk()])
+    main = Agent(name="main", tools=[mk(), summarizer.as_tool(tool_name="ask", tool_description="x")],
+                 handoffs=[handoff(researcher)])
+    researcher.handoffs.append(main)   # a cycle must not loop
+    po.guard_agent(main, workspace=tmp_path)
+    for a in (main, researcher, summarizer, deep):
+        assert all(getattr(t, "__prismor_guarded__", False) for t in a.tools), a.name

@@ -106,6 +106,8 @@ def _build_event(
             # (caller-asserted, like `arguments`). Feeds `when: subagent.*`.
             "subagent_id": str(sub["id"])[:200] if sub.get("id") else None,
             "subagent_type": str(sub["type"])[:200] if sub.get("type") else None,
+            # The agent it runs under; its per-agent controls apply on top.
+            "parent_agent_name": str(sub["parent"])[:200] if sub.get("parent") else None,
         },
     }
 

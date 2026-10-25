@@ -201,6 +201,23 @@ def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
         event["path"] = paths[0]
 
 
+def _parent_agent_of(event: Dict[str, Any], agent_name: str) -> Optional[str]:
+    """The agent a subagent call runs under, when it differs from ``agent_name``.
+
+    Adapters (and eval-server callers) name it in ``metadata.parent_agent_name``;
+    otherwise, for a subagent call made inside another guarded tool of this
+    process, it is the agent whose tool is running (subagent_context).
+    """
+    meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    if not meta.get("subagent_id"):
+        return None
+    parent = meta.get("parent_agent_name")
+    if not parent:
+        from prismor.runtime.subagent_context import current_parent
+        parent = current_parent()
+    return str(parent) if parent and parent != agent_name else None
+
+
 def evaluate_tool_call(
     *,
     event: Dict[str, Any],
@@ -272,6 +289,12 @@ def evaluate_tool_call(
     _agent_name = agent_name or agent
 
     _retype_adapter_file_call(event)
+
+    # A subagent runs on its parent's authority: the parent's per-agent
+    # controls are applied on top of its own (see agents.inherit_control).
+    _parent_agent = _parent_agent_of(event, _agent_name)
+    if _parent_agent:
+        event.setdefault("metadata", {}).setdefault("parent_agent_name", _parent_agent)
 
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})
@@ -370,6 +393,12 @@ def evaluate_tool_call(
             _agent_name, workspace,
             remote_controls=getattr(engine, "agent_controls", None),
         )
+        if _parent_agent:
+            from prismor.runtime.agents import inherit_control
+            _control = inherit_control(_control, resolve_agent_control(
+                _parent_agent, workspace,
+                remote_controls=getattr(engine, "agent_controls", None),
+            ))
         # Throttled auto-registration.  The current tool is observed; an SDK
         # may declare its full roster in metadata.available_tools; exact tools
         # in a synthesized session scope are registered as scoped access.
@@ -605,7 +634,7 @@ def evaluate_tool_call(
                     _sid = _d.get("scopeId")
                     _hit = (
                         _scope in ("org", "device")
-                        or (_scope == "agent" and _sid == _agent_name)
+                        or (_scope == "agent" and _sid in (_agent_name, _parent_agent))
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
@@ -646,7 +675,9 @@ def evaluate_tool_call(
                     _asid = _a.get("scopeId")
                     _ahit = (
                         _ascope in ("org", "device")
-                        or (_ascope == "agent" and _asid == _agent_name)
+                        # A subagent's own allow must not lift what its parent
+                        # is denied; the parent's allow covers its subagents.
+                        or (_ascope == "agent" and _asid == (_parent_agent or _agent_name))
                         or (_ascope == "session" and _asid == session_id)
                     )
                     if _ahit:
@@ -675,6 +706,15 @@ def evaluate_tool_call(
             agent_profile=_control.iam_profile if _control else None,
             remote_controls=getattr(engine, "subject_controls", None),
         )
+        # A subagent is also held to the IAM profile of the agents above it.
+        for _profile in (getattr(_control, "parent_iam_profiles", ()) if not iam_finding else ()):
+            iam_finding = check_iam(
+                workspace=workspace, event=event, session_id=session_id,
+                subject=subject, agent_profile=_profile,
+                remote_controls=getattr(engine, "subject_controls", None),
+            )
+            if iam_finding:
+                break
         if iam_finding:
             findings.append(iam_finding)
     except Exception as exc:

@@ -25,23 +25,24 @@ class _Ctx:
         self.store = store
 
 
-def _run(store):
+def _run(store, guard="support-bot"):
     with patch("workflows.Context.get_step_context", lambda: _Ctx(store)):
-        return asyncio.run(li._workflow_subagent())
+        return asyncio.run(li._workflow_subagent(guard))
 
 
 def test_root_agent_then_handoff_target():
     store = _Store(current_agent_name="Coordinator")
-    assert _run(store) == (None, None)
+    assert _run(store) == (None, None, None)
     store.kv.update(current_agent_name="Researcher", next_agent="Researcher")
-    sub_id, sub_type = _run(store)
+    sub_id, sub_type, parent = _run(store, guard="researcher-guard")
     assert sub_type == "Researcher" and sub_id.startswith("Researcher:")
+    assert parent == "support-bot"  # the root's guard: its controls apply to the handoff target
     store.kv["current_agent_name"] = "Coordinator"   # handed back
-    assert _run(store) == (None, None)
+    assert _run(store) == (None, None, None)
 
 
 def test_outside_a_workflow_is_the_main_agent():
-    assert asyncio.run(li._workflow_subagent()) == (None, None)
+    assert asyncio.run(li._workflow_subagent()) == (None, None, None)
 
 
 def test_agent_run_inside_a_guarded_tool_is_a_subagent(tmp_path):

@@ -80,3 +80,30 @@ def test_agent_tool_leaves_no_context_behind(tmp_path):
         before(SimpleNamespace(name="fetch_url"), {}, _ctx(coordinator, "e-10", "c2"))
     assert seen[1]["subagent_type"] is None
     assert nested_subagent("x") == (None, None)
+
+
+def test_plugin_guards_agent_tool_without_plugins(tmp_path):
+    """AgentTool(include_plugins=False) runs its agent on a Runner without the
+    plugin; the plugin puts its callbacks on that agent tree instead."""
+    seen = []
+    with _spy(seen):
+        plugin = adk.PrismorPlugin(workspace=tmp_path, mode="enforce")
+        mine = lambda *a: None
+        leaf = SimpleNamespace(name="Leaf", before_tool_callback=None, after_tool_callback=None, sub_agents=[])
+        inner = SimpleNamespace(name="Summarizer", before_tool_callback=mine, after_tool_callback=None,
+                                sub_agents=[leaf])
+        tool = AgentTool(lambda: None)
+        tool.agent, tool.include_plugins = inner, False
+        ctx = _ctx(_agent("Coordinator"), "e-1", "c1")
+        asyncio.run(plugin.before_tool_callback(tool=tool, tool_args={}, tool_context=ctx))
+        asyncio.run(plugin.before_tool_callback(tool=tool, tool_args={}, tool_context=ctx))  # idempotent
+
+    assert inner.before_tool_callback == [plugin._before, mine]
+    assert leaf.before_tool_callback == [plugin._before] and leaf.after_tool_callback == [plugin._after]
+
+    tool2 = AgentTool(lambda: None)
+    tool2.agent = SimpleNamespace(name="X", before_tool_callback=None, after_tool_callback=None, sub_agents=[])
+    tool2.include_plugins = True
+    with _spy([]):
+        asyncio.run(plugin.before_tool_callback(tool=tool2, tool_args={}, tool_context=ctx))
+    assert tool2.agent.before_tool_callback is None  # the plugin reaches it; no double screening

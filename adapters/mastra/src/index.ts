@@ -87,36 +87,18 @@ function timeoutSignal(ms: number): AbortSignal | undefined {
 // ── Subagents ───────────────────────────────────────────────────────────────
 // Mastra runs a sub-agent (`agents: { researcher }`) through a tool of its own
 // making, and the sub-agent's tool calls carry only its own agentId: nothing
-// links them to the parent. So the hierarchy comes from the Agent objects:
-// registerSubagents() records which agent ids are sub-agents, and a guarded
-// call whose ctx.agent.agentId is one reports as that subagent. An agent
-// called from inside another agent's guarded tool (the agent-as-tool
-// pattern) is also a subagent, found through AsyncLocalStorage as in the
-// AI SDK adapter.
+// links them to the parent. registerSubagents() wraps the parent's run entry
+// points (generate, stream, ...) so the run carries the parent in
+// AsyncLocalStorage; a guarded call made under it by another agent (a
+// sub-agent, or an agent called from inside a guarded tool) is a subagent of
+// it. The same agent run on its own has no parent and is the main agent.
 
-export interface Subagent { id: string; type: string }
+/** `parent`: the agent it runs under, whose per-agent controls also apply. */
+export interface Subagent { id: string; type: string; parent?: string }
 
-// ponytail: per-process set; an agent used both standalone and as a sub-agent
-// reads as a subagent everywhere once registered. Key by parent if that matters.
-const _subagentIds = new Set<string>();
+interface AgentLike { id?: string; name?: string; [k: string]: any }
 
-interface AgentLike { id?: string; name?: string; listAgents?: (...a: any[]) => any }
-
-/** Record `agent`'s configured sub-agents (recursively) so their tool calls report as subagents. */
-export function registerSubagents<T extends AgentLike>(agent: T): T {
-  const add = (subs: Record<string, AgentLike> | undefined) => {
-    for (const sub of Object.values(subs ?? {})) {
-      const id = sub?.id ?? sub?.name;
-      if (id && !_subagentIds.has(id)) { _subagentIds.add(id); registerSubagents(sub); }
-    }
-  };
-  const listed = agent.listAgents?.();
-  if (listed && typeof listed.then === "function") listed.then(add, () => undefined);
-  else add(listed);
-  return agent;
-}
-
-interface Running { agent: string; callId: string }
+interface Running { agent: string; callId: string; name: string }
 let _running: { run<T>(s: Running, fn: () => T): T; getStore(): Running | undefined } | null | undefined;
 function running() {
   if (_running !== undefined) return _running;
@@ -129,13 +111,40 @@ function running() {
   return _running;
 }
 
+const RUN_METHODS = ["generate", "stream", "streamUntilIdle", "resumeStream", "resumeGenerate",
+  "generateLegacy", "streamLegacy", "network", "resumeNetwork"];
+let _runCounter = 0;
+
+/**
+ * Make `agent`'s runs carry it as the parent of the sub-agents it calls, so
+ * their tool calls report as its subagents and inherit its per-agent controls
+ * (pause, mode, denied tools). `agentName` is the Prismor agentName the
+ * parent's tools are guarded under (default: the agent's id). Sub-agents need
+ * their own tools guarded (prismorTools). Returns the agent.
+ */
+export function registerSubagents<T extends AgentLike>(agent: T, opts: { agentName?: string } = {}): T {
+  if ((agent as any).__prismor_parent__) return agent;
+  const id = agent.id ?? agent.name ?? "agent";
+  const name = opts.agentName ?? id;
+  for (const m of RUN_METHODS) {
+    const original = agent[m];
+    if (typeof original !== "function") continue;
+    (agent as any)[m] = function (this: any, ...args: any[]) {
+      const store = running();
+      const me: Running = { agent: id, callId: `run${++_runCounter}`, name };
+      return store ? store.run(me, () => original.apply(this, args)) : original.apply(this, args);
+    };
+  }
+  (agent as any).__prismor_parent__ = true;
+  return agent;
+}
+
 function subagentOf(ctx: any, agentName: string): Subagent | undefined {
   const agentId: string | undefined = ctx?.agent?.agentId;
   const parent = running()?.getStore();
   if (parent && parent.agent !== (agentId ?? agentName)) {
-    return { id: `${parent.agent}:${parent.callId}`, type: agentId ?? (agentName || "agent") };
+    return { id: `${parent.agent}:${parent.callId}`, type: agentId ?? (agentName || "agent"), parent: parent.name };
   }
-  if (agentId && _subagentIds.has(agentId)) return { id: `${agentId}:${ctx?.runId ?? ""}`, type: agentId };
   return undefined;
 }
 
@@ -210,7 +219,7 @@ export function prismorTool<T extends { execute?: (...args: any[]) => any }>(
       throw new PrismorBlocked(decision.reason ?? "policy violation");
     }
     const store = running();
-    const me: Running = { agent: ctx?.agent?.agentId ?? resolved.agentName, callId: String(ctx?.agent?.toolCallId ?? ctx?.writer?.callId ?? Date.now()) };
+    const me: Running = { name: resolved.agentName || resolved.agent, agent: ctx?.agent?.agentId ?? resolved.agentName, callId: String(ctx?.agent?.toolCallId ?? ctx?.writer?.callId ?? Date.now()) };
     return store ? store.run(me, () => original(inputData, ...rest)) : original(inputData, ...rest);
   };
 

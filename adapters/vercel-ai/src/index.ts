@@ -197,10 +197,11 @@ function asRunning<T>(agentName: string, callId: string, fn: () => T): T {
 
 function currentSubagent(agentName: string): Subagent | undefined {
   const parent = runningStorage()?.getStore();
-  return parent ? { id: `${parent.agentName}:${parent.callId}`, type: agentName } : undefined;
+  return parent ? { id: `${parent.agentName}:${parent.callId}`, type: agentName, parent: parent.agentName } : undefined;
 }
 
-export interface Subagent { id: string; type: string }
+/** `parent`: the agent it runs under, whose per-agent controls also apply. */
+export interface Subagent { id: string; type: string; parent?: string }
 
 function resolveSubject(explicit: string): string {
   if (explicit) return explicit;

@@ -20,7 +20,8 @@ import uuid
 from contextlib import contextmanager
 from typing import Iterator, Optional, Tuple
 
-_RUNNING: contextvars.ContextVar[Optional[Tuple[str, str]]] = contextvars.ContextVar(
+# (label, call id, the guard's agent name, type for an unnamed nested call)
+_RUNNING: contextvars.ContextVar[Optional[Tuple[str, str, str, Optional[str]]]] = contextvars.ContextVar(
     "prismor_running_tool", default=None)
 
 
@@ -34,13 +35,28 @@ def nested_subagent(agent_label: str) -> Tuple[Optional[str], Optional[str]]:
     parent = _RUNNING.get()
     if parent is None:
         return None, None
-    return f"{parent[0]}:{parent[1]}", agent_label or "agent"
+    return f"{parent[0]}:{parent[1]}", agent_label or parent[3] or "agent"
+
+
+def current_parent() -> Optional[str]:
+    """The agent name (as its guard reports it) whose tool is running right
+    now, if any: the parent of any subagent call made underneath it, whose
+    per-agent controls also apply to that call."""
+    parent = _RUNNING.get()
+    return parent[2] if parent else None
 
 
 @contextmanager
-def running(agent_label: str, call_id: Optional[str] = None) -> Iterator[None]:
-    """Mark the body as tool call ``call_id`` of ``agent_label``."""
-    token = _RUNNING.set((agent_label or "agent", str(call_id or uuid.uuid4().hex[:12])))
+def running(agent_label: str, call_id: Optional[str] = None, *,
+            agent_name: Optional[str] = None, child_type: Optional[str] = None) -> Iterator[None]:
+    """Mark the body as tool call ``call_id`` of ``agent_label``.
+
+    ``agent_name`` is the name the guard evaluates this agent's calls under
+    (default ``agent_label``); ``child_type`` is the type to report for a
+    nested call whose own guard has no label (e.g. the agent a handoff runs).
+    """
+    label = agent_label or "agent"
+    token = _RUNNING.set((label, str(call_id or uuid.uuid4().hex[:12]), agent_name or label, child_type))
     try:
         yield
     finally:

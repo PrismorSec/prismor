@@ -401,7 +401,7 @@ test("a toolset run inside another agent's tool reports as a subagent", async ()
   const by = (n) => requests.filter((r) => r.body.tool_name === n);
   assert.equal(by("fetch_url")[0].body.subagent, undefined);          // main agent
   assert.equal(by("ask_researcher")[0].body.subagent, undefined);     // main agent launching it
-  assert.deepEqual(by("fetch_url")[1].body.subagent, { id: "support-bot:c2", type: "researcher" });
+  assert.deepEqual(by("fetch_url")[1].body.subagent, { id: "support-bot:c2", type: "researcher", parent: "support-bot" });
 });
 
 test("langgraph js: a call inside an agent subgraph is a subagent; a lone ReAct agent is not", async () => {

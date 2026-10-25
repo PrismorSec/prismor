@@ -103,6 +103,23 @@ def _nest_agent_tool(tool: Any, parent: str) -> None:
         pass
 
 
+def _guard_tree(agent: Any, before: Callable, after: Callable) -> None:
+    """Put Prismor's callbacks first on every agent in ``agent``'s tree. Used
+    where the plugin can't reach: an AgentTool that leaves plugins out."""
+    if agent is None or getattr(agent, "__prismor_guarded__", False):
+        return
+    for field, cb in (("before_tool_callback", before), ("after_tool_callback", after)):
+        if hasattr(agent, field):
+            cur = getattr(agent, field)
+            setattr(agent, field, [cb] + (list(cur) if isinstance(cur, list) else [cur] if cur else []))
+    try:
+        object.__setattr__(agent, "__prismor_guarded__", True)
+    except Exception:
+        pass
+    for sub in getattr(agent, "sub_agents", None) or []:
+        _guard_tree(sub, before, after)
+
+
 def make_before_tool_callback(
     *,
     subject: Optional[Union[str, Subject]] = None,
@@ -208,7 +225,12 @@ class PrismorPlugin(_BasePlugin):
 
     async def before_tool_callback(self, *, tool: Any, tool_args: Dict[str, Any],
                                    tool_context: Any) -> Optional[Dict[str, Any]]:
-        return self._before(tool, tool_args, tool_context)
+        verdict = self._before(tool, tool_args, tool_context)
+        if verdict is None and getattr(tool, "include_plugins", True) is False:
+            # AgentTool(include_plugins=False) runs its agent on a Runner
+            # without this plugin; guard that agent tree directly instead.
+            _guard_tree(getattr(tool, "agent", None), self._before, self._after)
+        return verdict
 
     async def after_tool_callback(self, *, tool: Any, tool_args: Dict[str, Any],
                                   tool_context: Any, result: Any) -> Optional[Any]:

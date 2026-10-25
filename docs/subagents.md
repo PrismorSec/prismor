@@ -36,6 +36,49 @@ same rules on them.
   sessions to reach a host that egress had just blocked; this closes that path
   for main agents and subagents alike.
 
+## A subagent's policy
+
+A subagent runs on its parent's authority. Its policy is the parent's, plus
+anything set for the subagent itself, and it can only be narrower:
+
+- **The parent's rules and per-agent controls apply.** In Claude Code and
+  Codex a subagent's calls run under the parent's session and agent, so this
+  holds by construction. Through an SDK adapter, a subagent's calls carry the
+  parent's agent name (`parent_agent_name`). The parent's pause, mode, denied
+  and asked tools, IAM profile and org agent-scoped denies are applied on top
+  of the subagent's own, and the stricter value wins. Pausing `support-bot`
+  stops its subagents too. A subagent's own `observe` override does not
+  relax a parent that follows the global mode.
+- **A subagent can be held tighter.** Write a rule with
+  [`when: subagent.*`](attribute-conditions.md#keep-subagents-off-the-network),
+  for example `subagent.type == 'researcher' and tool.name == 'fetch_url'`.
+- **Nothing scoped to a subagent loosens it.** An org allow scoped to the
+  subagent's own name does not lift a deny its parent carries; the parent's
+  allow does.
+
+**Guard the main agent and its subagents are covered.** These adapters reach
+the agents the main one can run:
+
+| Adapter | Covered from the main agent |
+|---|---|
+| OpenAI Agents SDK | `guard_agent(main)`: handoff targets and `as_tool` agents, recursively |
+| Google ADK | `PrismorPlugin` on the `Runner`: sub-agents and `AgentTool`s, including `include_plugins=False` ones |
+| CrewAI | `guard_crew(crew)`: every agent in the crew |
+| smolagents | `guard_agent(manager)`: managed agents, recursively |
+| Agno | `guard_team(team)`: every member, nested teams included |
+| LlamaIndex | `guard_workflow(workflow)`: every agent in the `AgentWorkflow` |
+| BeeAI | a guarded `HandoffTool` guards its target agent's tools |
+| AutoGen Core | the runtime's `PrismorInterventionHandler`: every agent |
+| LangGraph | `PrismorCallbackHandler` in the run config: subgraphs too |
+| Claude Agent SDK | the hooks: every subagent |
+
+Where your own code builds an agent and runs it from inside a tool (Vercel AI
+SDK, Mastra agent-as-tool, Pydantic AI, AG2, Semantic Kernel, Agent
+Framework, LangGraph `guard_tools`), guard that agent's tools too. An
+unguarded agent's tools run with no policy at all. Its calls then inherit the
+parent's controls automatically. For Mastra `agents: {…}` sub-agents, call
+`registerSubagents(main)` so their calls are tied to the parent's run.
+
 ## What the person sees
 
 Each screened call inside a subagent adds one line to a per-session ledger

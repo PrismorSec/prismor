@@ -37,7 +37,7 @@ from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 from prismor.runtime.subagent_context import nested_subagent, running
 
-__all__ = ["guard_tools", "prismor_guard_tool", "use_subject", "PrismorBlocked"]
+__all__ = ["guard_tools", "guard_workflow", "prismor_guard_tool", "use_subject", "PrismorBlocked"]
 
 _TYPE_FIELD = {
     "shell": "command",
@@ -61,35 +61,39 @@ def _payload(args: tuple, kwargs: dict) -> str:
     return " ".join([str(a) for a in args] + [str(v) for v in kwargs.values()]).strip()
 
 
-# Root agent of each AgentWorkflow run, keyed by id of the run's state store
-# (a finalizer drops the entry with the run).
+# Root agent of each AgentWorkflow run and the guard name its calls are
+# evaluated under, keyed by id of the run's state store (a finalizer drops the
+# entry with the run).
 _ROOT: dict = {}
 
 
-async def _workflow_subagent() -> tuple:
-    """(subagent_id, subagent_type) inside a multi-agent AgentWorkflow, else (None, None).
+async def _workflow_subagent(guard_name: str = "") -> tuple:
+    """(subagent_id, subagent_type, parent guard name) inside a multi-agent
+    AgentWorkflow, else (None, None, None).
 
     The workflow keeps the active agent in ``current_agent_name``; it starts as
     the root agent and changes on a handoff, which also sets ``next_agent``.
-    The root is remembered from the first guarded call made before any handoff.
+    The root is remembered from the first guarded call made before any handoff,
+    with its guard name: a handoff target inherits that agent's controls.
     """
     try:
         from workflows import Context
         store = Context.get_step_context().store
         current = await store.get("current_agent_name", default=None)
         if not current:
-            return None, None
+            return None, None, None
         key = id(store)
         if key not in _ROOT:
             if await store.get("next_agent", default=None) is not None:
                 # ponytail: the root handed off before any guarded call of its
                 # own, so it was never seen; the active agent is a handoff target.
-                return f"{current}:{key:x}", str(current)
-            _ROOT[key] = current
+                return f"{current}:{key:x}", str(current), None
+            _ROOT[key] = (current, guard_name)
             weakref.finalize(store, _ROOT.pop, key, None)
     except Exception:  # not in a workflow step, or not a multi-agent workflow
-        return None, None
-    return (None, None) if current == _ROOT[key] else (f"{current}:{key:x}", str(current))
+        return None, None, None
+    root, root_guard = _ROOT[key]
+    return (None, None, None) if current == root else (f"{current}:{key:x}", str(current), root_guard or None)
 
 
 def prismor_guard_tool(
@@ -129,7 +133,9 @@ def prismor_guard_tool(
             field: _payload(args, kwargs),
             "metadata": {"tool_name": tool_name, "framework": "llamaindex",
                          "args": [str(a) for a in args], "kwargs": {k: str(v) for k, v in kwargs.items()},
-                         "subagent_id": sub[0], "subagent_type": sub[1]},
+                         "subagent_id": sub[0], "subagent_type": sub[1],
+                         # A handoff target runs on the root agent's authority.
+                         "parent_agent_name": sub[2] if len(sub) > 2 else None},
         }
         decision: Decision = evaluate_tool_call(
             event=event, workspace=ws, agent=agent, agent_name=name, mode=mode,
@@ -150,7 +156,7 @@ def prismor_guard_tool(
     async def _sub() -> tuple:
         # The workflow's own handoff signal first; else an agent run inside
         # another guarded tool (an agent used as a tool) is a subagent.
-        found = await _workflow_subagent()
+        found = await _workflow_subagent(name or agent)
         return found if found[0] else nested_subagent(name or agent)
 
     if hasattr(tool, "_fn") and hasattr(tool, "_async_fn"):  # FunctionTool
@@ -216,3 +222,19 @@ def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
     except Exception:
         pass
     return guarded
+
+
+def guard_workflow(workflow: Any, **kwargs: Any) -> Any:
+    """Guard the tools of every agent in an ``AgentWorkflow``, with the same
+    settings. Agents reached by a handoff run on the root agent's authority, so
+    they are held to the same policy (told apart by ``when: subagent.*``); an
+    agent left unguarded would run its tools unchecked. Returns the workflow.
+
+    An agent that one of these tools runs inside its body (an agent used as a
+    tool) is created by your code: guard its tools too.
+    """
+    for member in (getattr(workflow, "agents", None) or {}).values():
+        tools = getattr(member, "tools", None)
+        if tools:
+            member.tools = guard_tools(list(tools), **kwargs)
+    return workflow

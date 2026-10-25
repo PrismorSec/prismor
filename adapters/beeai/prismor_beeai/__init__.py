@@ -94,13 +94,11 @@ def guard_tool(
 
     target = getattr(tool, "_target", None)  # HandoffTool: the agent it runs
     target_meta = getattr(target, "meta", None)
-    run_label = getattr(target_meta, "name", None) or name or agent
+    target_name = getattr(target_meta, "name", None)
 
     async def guarded_run(input: Any, options: Any, context: Any) -> Any:
         field = _TYPE_FIELD.get(event_type, "command")
         sub_id, sub_type = nested_subagent(name)
-        if sub_id and not name:
-            sub_type = sub_id.split(":", 1)[0]  # the agent the enclosing handoff ran
         payload_event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": sid,
@@ -129,13 +127,26 @@ def guard_tool(
             # which re-wraps it as a generic EmitterError ("Error during event
             # emission"): the reason was lost and the agent run crashed.
             raise ToolError(f"⛔ Prismor blocked this tool call: {reason}")
-        with running(run_label, getattr(context, "run_id", None)):
+        # The agent a handoff runs reports as <target name> when its own
+        # tools carry no name=; this guard's agent is its parent.
+        with running(name or agent, getattr(context, "run_id", None),
+                     agent_name=name or agent, child_type=target_name):
             return await original_run(input, options, context)
 
     # ponytail: wraps the body, so a hit in the tool's (opt-in) result cache is
     # served without a policy check. Move the check ahead of the cache if a
     # guarded tool ever enables one.
     tool._run = guarded_run
+
+    # The agent a HandoffTool runs is a subagent on this agent's authority:
+    # guard its tools with the same settings, so guarding the main agent's
+    # tools covers what it hands off to (recursively, via its own handoffs).
+    # They report under the target's name; this agent's controls still apply
+    # to them as their parent (the running() context below names it).
+    for sub_tool in list(getattr(target, "_tools", None) or []):
+        guard_tool(sub_tool, subject=subject, workspace=workspace, agent=agent,
+                   mode=mode, session_id=session_id, event_type=event_type,
+                   raise_on_block=raise_on_block, name=target_name or "")
 
     # A HandoffTool clones its target agent, and RequirementAgent.clone clones
     # every tool; FunctionTool.clone builds a fresh tool, which dropped this
