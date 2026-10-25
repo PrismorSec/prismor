@@ -3,6 +3,12 @@
 # install exists, so this runs the runtime bundled in vendor/. Blocking needs
 # no network; console reporting needs agent.key and www.prismor.dev on the
 # sandbox's allowed domains.
+# The desktop app also runs synced plugins in local sessions on the user's own
+# machine. vendor/ is built for Linux, and a laptop is governed by its own
+# Prismor install, so step aside there instead of screening twice and
+# reporting the laptop under the plugin's key.
+# ponytail: OS check, so a local session on a Linux desktop still runs this.
+[ "$(uname -s)" = Linux ] || exit 0
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 export PRISMOR_HOME="${CLAUDE_PLUGIN_DATA:-${TMPDIR:-/tmp}/prismor-cowork}"
 mkdir -p "$PRISMOR_HOME"

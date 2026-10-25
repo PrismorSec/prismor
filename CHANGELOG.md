@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Fixed
+- **Hook coverage no longer counts agents that are not there, or one laptop twice.** Agent detection took any config dir as proof of an install, and installing a global hook creates one: `~/.codeium/windsurf/hooks.json` alone made Windsurf "covered" on machines without it. A dir now counts only if it holds something Prismor did not write. Coverage scans run with the home dir as the workspace, where Gemini CLI's project marker `.gemini` is Antigravity's `~/.gemini`, so project markers no longer count there. An agent-key identity (an SDK workload, the Cowork plugin) no longer reports machine coverage: the Cowork plugin, run by the Claude desktop app in local sessions, scanned the laptop and reported it a second time under its key, with the laptop's own hooks marked unguarded. The Cowork plugin now does nothing outside its Linux sandbox; the laptop's own install governs local sessions.
+
 ## [1.67.0] — 2026-10-25
 
 ### Added

@@ -227,3 +227,15 @@ def test_device_status_reports_coverage_by_how_the_agent_is_hooked(monkeypatch):
     d = heartbeat.device_status_record()["detail"]
     assert d["agents"]["gemini"] == {"covered": True, "via": "system"}
     assert d["unguarded"] == []
+
+
+def test_agent_key_identity_reports_no_machine_coverage(monkeypatch):
+    # An agent key is a workload. The Cowork plugin, run by the desktop app on a
+    # laptop, scanned the laptop and reported it a second time under its key.
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    monkeypatch.setattr(hooks, "coverage", lambda _ws: {"claude": {"project": False, "global": True, "foreign": False}})
+    monkeypatch.setenv("PRISMOR_AGENT_KEY", "prism_agent_test")
+    d = heartbeat.device_status_record()["detail"]
+    assert "agents" not in d and "unguarded" not in d
+    assert d["prismor_version"]

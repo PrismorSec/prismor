@@ -29,15 +29,18 @@ def _plugin(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     (bindir / "python3").symlink_to(sys.executable)
+    # The wrapper only runs on Linux (the sandbox); pretend, so this runs anywhere.
+    (bindir / "uname").write_text('#!/bin/sh\necho "${FAKE_UNAME:-Linux}"\n')
+    (bindir / "uname").chmod(0o755)
     return root, bindir
 
 
-def _hook(root, bindir, tmp_path, event):
+def _hook(root, bindir, tmp_path, event, **extra_env):
     work = tmp_path / "work"
     work.mkdir(exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith("PRISMOR_")}
     env.update(PATH=f"{bindir}{os.pathsep}{env.get('PATH', '')}", CLAUDE_PLUGIN_ROOT=str(root),
-               CLAUDE_PLUGIN_DATA=str(tmp_path / "data"), HOME=str(tmp_path))
+               CLAUDE_PLUGIN_DATA=str(tmp_path / "data"), HOME=str(tmp_path), **extra_env)
     payload = {"session_id": "cowork-t", "cwd": str(work), **event}
     return subprocess.run(["sh", str(root / "hooks" / "prismor-hook.sh")], input=json.dumps(payload),
                           capture_output=True, text=True, env=env, cwd=work, timeout=120)
@@ -64,3 +67,13 @@ def test_web_fetch_is_reported_not_blocked(tmp_path):
     r = _hook(root, bindir, tmp_path, {"hook_event_name": "PreToolUse", "tool_name": "WebFetch",
                                        "tool_input": {"url": "https://example.com"}})
     assert r.returncode == 0, r.stderr
+
+
+def test_steps_aside_outside_the_linux_sandbox(tmp_path):
+    # The desktop app runs synced plugins in local sessions too; the laptop's own
+    # install governs those, so the plugin must not screen or report there.
+    root, bindir = _plugin(tmp_path)
+    r = _hook(root, bindir, tmp_path, {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                       "tool_input": {"command": "cat .env"}}, FAKE_UNAME="Darwin")
+    assert r.returncode == 0 and not r.stderr
+    assert not (tmp_path / "data").exists()

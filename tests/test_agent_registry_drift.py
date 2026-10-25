@@ -69,3 +69,31 @@ def test_status_scan_sees_agents_outside_the_old_hardcoded_list(tmp_path, agent)
     install_hooks(repo_root=REPO_ROOT, workspace=tmp_path, agent=agent, scope="project", mode="enforce")
     by_scope = _hooks_by_scope(tmp_path)
     assert by_scope["project"].get(agent) == "enforce"
+
+
+def test_prismor_hook_file_alone_is_not_an_install(tmp_path, monkeypatch):
+    # Installing the Windsurf hook creates ~/.codeium/windsurf/hooks.json; that
+    # file alone made Windsurf look installed, so coverage counted it as covered.
+    from prismor.runtime import hooks
+    from prismor.runtime.setup_wizard import _detect_agents
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    cfg = hooks._config_path("windsurf", "global", home)
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("{}")
+    assert _detect_agents(home)["windsurf"] is False
+    (home / ".codeium" / "windsurf" / "user_settings.pb").write_text("x")
+    assert _detect_agents(home)["windsurf"] is True
+
+
+def test_home_gemini_dir_is_not_gemini_cli(tmp_path, monkeypatch):
+    # Coverage scans with the home dir as the workspace; ~/.gemini belongs to
+    # Antigravity, so it must not count as Gemini CLI's project marker there.
+    from prismor.runtime.setup_wizard import _detect_agents
+    home = tmp_path / "home"
+    (home / ".gemini" / "antigravity").mkdir(parents=True)
+    (home / ".gemini" / "antigravity" / "state.json").write_text("{}")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    assert _detect_agents(home)["gemini"] is False

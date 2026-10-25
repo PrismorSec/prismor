@@ -290,29 +290,76 @@ def _default_rules() -> List[dict]:
 
 # ── Agent detection ──────────────────────────────────────────────────────────
 
+_AGENT_IDS = ("claude", "cursor", "windsurf", "openclaw", "hermes", "codex", "grok", "kiro",
+              "crush", "openhands", "qwen", "continue", "goose", "antigravity", "copilot",
+              "gemini", "opencode")
+
+
+def _prismor_hook_files(target: Path) -> set:
+    """Every file a Prismor hook install writes, at global and project scope."""
+    from prismor.runtime import hooks
+    out = set()
+    for agent in _AGENT_IDS:
+        for scope in ("global", "project"):
+            try:
+                out.add(hooks._config_path(agent, scope, target))
+            except Exception:
+                pass
+    return out
+
+
+def _holds_real_config(p: Path, ours: set) -> bool:
+    """True when ``p`` exists and holds something Prismor did not write.
+
+    Installing a global hook creates the agent's config dir (~/.codeium/windsurf/
+    hooks.json, say), so a bare existence check reported the hook as proof the
+    agent is installed, and coverage counted agents that were never there.
+    """
+    if not p.exists():
+        return False
+    if p.is_file():
+        return p not in ours
+    seen_ours = False
+    for root, dirs, files in os.walk(p):
+        seen_ours = seen_ours or "prismor" in dirs
+        dirs[:] = [d for d in dirs if d != "prismor"]  # our plugin dirs (openclaw, hermes, goose)
+        for f in files:
+            if Path(root, f) not in ours and f != "prismor.js":
+                return True
+            seen_ours = True
+    return not seen_ours  # an empty marker dir still counts, as it always has
+
+
 def _detect_agents(target: Path) -> dict:
     home = Path.home()
+    ours = _prismor_hook_files(target)
+    found = lambda p: _holds_real_config(p, ours)
+    # Coverage runs with the home dir as the workspace, where a project marker
+    # is the global dir under another name: ~/.gemini is Antigravity's, which
+    # made Gemini CLI look installed. Project markers only count elsewhere.
+    in_project = target.resolve() != home.resolve()
+    found_t = lambda p: in_project and found(p)
     return {
-        "claude":   shutil.which("claude") is not None or (target / ".claude").exists() or (home / ".claude").exists(),
-        "cursor":   (target / ".cursor").exists() or (home / ".cursor").exists(),
-        "windsurf": (target / ".windsurf").exists() or (home / ".codeium").exists(),
-        "openclaw": shutil.which("openclaw") is not None or (target / ".openclaw").exists(),
-        "hermes":   shutil.which("hermes") is not None or (target / ".hermes").exists(),
-        "codex":    shutil.which("codex") is not None or (target / ".codex").exists() or (home / ".codex").exists(),
-        "grok":     shutil.which("grok") is not None or (target / ".grok").exists() or (home / ".grok").exists(),
-        "kiro":     shutil.which("kiro-cli") is not None or shutil.which("kiro") is not None or (target / ".kiro").exists() or (home / ".kiro").exists(),
-        "crush":    shutil.which("crush") is not None or (target / "crush.json").exists() or (home / ".config" / "crush").exists(),
-        "openhands": shutil.which("openhands") is not None or (target / ".openhands").exists() or (home / ".openhands").exists(),
-        "qwen":     shutil.which("qwen") is not None or (target / ".qwen").exists() or (home / ".qwen").exists(),
-        "continue": shutil.which("cn") is not None or (target / ".continue").exists() or (home / ".continue").exists(),
-        "goose":    shutil.which("goose") is not None or (home / ".config" / "goose").exists(),
-        "antigravity": shutil.which("agy") is not None or (home / ".antigravity").exists() or (home / ".gemini" / "antigravity").exists(),
+        "claude":   shutil.which("claude") is not None or found_t(target / ".claude") or found(home / ".claude"),
+        "cursor":   found_t(target / ".cursor") or found(home / ".cursor"),
+        "windsurf": found_t(target / ".windsurf") or found(home / ".codeium"),
+        "openclaw": shutil.which("openclaw") is not None or found_t(target / ".openclaw") or found(home / ".openclaw"),
+        "hermes":   shutil.which("hermes") is not None or found_t(target / ".hermes") or found(home / ".hermes"),
+        "codex":    shutil.which("codex") is not None or found_t(target / ".codex") or found(home / ".codex"),
+        "grok":     shutil.which("grok") is not None or found_t(target / ".grok") or found(home / ".grok"),
+        "kiro":     shutil.which("kiro-cli") is not None or shutil.which("kiro") is not None or found_t(target / ".kiro") or found(home / ".kiro"),
+        "crush":    shutil.which("crush") is not None or found_t(target / "crush.json") or found(home / ".config" / "crush"),
+        "openhands": shutil.which("openhands") is not None or found_t(target / ".openhands") or found(home / ".openhands"),
+        "qwen":     shutil.which("qwen") is not None or found_t(target / ".qwen") or found(home / ".qwen"),
+        "continue": shutil.which("cn") is not None or found_t(target / ".continue") or found(home / ".continue"),
+        "goose":    shutil.which("goose") is not None or found(home / ".config" / "goose"),
+        "antigravity": shutil.which("agy") is not None or found(home / ".antigravity") or found(home / ".gemini" / "antigravity"),
         # A bare .github is in most repos, so only Copilot's own hooks dir counts.
-        "copilot":  shutil.which("copilot") is not None or (target / ".github" / "hooks").exists() or (home / ".copilot").exists(),
+        "copilot":  shutil.which("copilot") is not None or found_t(target / ".github" / "hooks") or found(home / ".copilot"),
         # ~/.gemini is shared with Antigravity (~/.gemini/antigravity), so look
         # for Gemini CLI's own settings file rather than the bare directory.
-        "gemini":   shutil.which("gemini") is not None or (target / ".gemini").exists() or (home / ".gemini" / "settings.json").exists(),
-        "opencode": shutil.which("opencode") is not None or (target / ".opencode").exists() or (target / "opencode.json").exists() or (home / ".config" / "opencode").exists(),
+        "gemini":   shutil.which("gemini") is not None or found_t(target / ".gemini") or found(home / ".gemini" / "settings.json"),
+        "opencode": shutil.which("opencode") is not None or found_t(target / ".opencode") or found_t(target / "opencode.json") or found(home / ".config" / "opencode"),
     }
 
 

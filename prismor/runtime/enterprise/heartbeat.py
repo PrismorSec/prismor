@@ -50,8 +50,12 @@ def device_status_record() -> Dict[str, Any]:
     from prismor.runtime.hooks import SYSTEM_HOOK_PATHS, coverage, hook_installed
     home = Path.home()
     agents: Dict[str, Any] = {}
+    # An agent key is a workload, not a machine. Scanning here reported the
+    # host's hooks under the key's name: the Cowork plugin, run by the desktop
+    # app on a laptop, counted that laptop a second time.
+    scan = _identity._env_identity() is None
     try:
-        for agent, cov in coverage(home).items():
+        for agent, cov in (coverage(home).items() if scan else ()):
             system = agent in SYSTEM_HOOK_PATHS and hook_installed(agent, "system", home)
             via = "system" if system else ("global" if cov.get("global") and not cov.get("foreign")
                                            else ("project" if cov.get("project") else None))
@@ -71,8 +75,8 @@ def device_status_record() -> Dict[str, Any]:
             "prismor_version": __version__,
             "install": "system" if system_install.is_system_managed() else "user",
             "platform": platform.system().lower(),
-            "agents": agents,
-            "unguarded": sorted(a for a, v in agents.items() if not v["covered"]),
+            **({"agents": agents,
+                "unguarded": sorted(a for a, v in agents.items() if not v["covered"])} if scan else {}),
         },
     }
 
