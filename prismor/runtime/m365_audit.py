@@ -265,5 +265,6 @@ def pull(workspace: Path, since_hours: Optional[float] = None, record: bool = Tr
                     sys.stderr.write(f"[prismor] m365-copilot: report failed: {exc}\n")
         seen.append(cid)
         seen_set.add(cid)
-    _save_cursor({"end": now.isoformat(), "seen": seen[-_SEEN_MAX:]})
+    if record:  # a dry run must not hide content from the next real pull
+        _save_cursor({"end": now.isoformat(), "seen": seen[-_SEEN_MAX:]})
     return counts

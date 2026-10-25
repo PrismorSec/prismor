@@ -95,6 +95,12 @@ def test_pull_pages_dedupes_and_resumes(monkeypatch, tmp_path):
     assert m._load_cursor()["end"] == NOW.isoformat()
 
 
+def test_dry_run_leaves_the_cursor_alone(monkeypatch, tmp_path):
+    monkeypatch.setattr(m, "_request", FakeAPI())
+    assert m.pull(tmp_path, record=False, now=NOW)["copilot"] == 2
+    assert m._load_cursor() == {}
+
+
 def test_window_never_reaches_past_seven_days(monkeypatch, tmp_path):
     api = FakeAPI()
     monkeypatch.setattr(m, "_request", api)
