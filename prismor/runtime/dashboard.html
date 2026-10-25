@@ -2318,11 +2318,16 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .confirm-inner p { margin-top: 8px; font-size: 13px; line-height: 1.55; color: var(--ink-2); white-space: pre-line; }
   .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
   .appr-list { padding: 8px 28px 22px; max-height: 60vh; overflow-y: auto; }
-  .appr-row { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--hairline); }
+  .appr-row { padding: 14px 0; border-bottom: 1px solid var(--hairline); }
   .appr-row:last-child { border-bottom: 0; }
-  .appr-main { flex: 1; min-width: 0; }
-  .appr-what { font-size: 13px; color: var(--ink); overflow-wrap: anywhere; }
-  .appr-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .appr-why { display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
+  .appr-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .appr-meta a, .appr-meta .link { cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+  .appr-cmd { margin: 8px 0 0; padding: 8px 10px; border-radius: 6px; background: var(--gray-50); border: 1px solid var(--hairline);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 6em; overflow: hidden; cursor: pointer; }
+  .appr-cmd.open { max-height: 40vh; overflow-y: auto; cursor: auto; }
+  .appr-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
   .upgrade-btn.rt-paused { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
   html[data-theme="dark"] .upgrade-btn.rt-paused { color: #fbbf24; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
   .cl-body { padding: 8px 28px 22px; font-size: 13px; line-height: 1.55; color: var(--gray-700); max-height: 55vh; overflow-y: auto; }
@@ -3736,9 +3741,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div class="up-modal-overlay" id="apprOverlay" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="up-modal" role="dialog" aria-modal="true" aria-labelledby="apprTitle">
     <div class="up-modal-hero">
-      <button class="up-modal-close" onclick="document.getElementById('apprOverlay').classList.remove('open')" aria-label="Close">✕</button>
+      <button class="up-modal-close" onclick="closeApprovals()" aria-label="Close">✕</button>
       <h3 id="apprTitle">Waiting for you</h3>
-      <p>Each request is one blocked call. Approving lets that exact call run once; nothing in the policy changes.</p>
+      <p>Each request is one blocked call. Approving lets that exact call run once; nothing in the policy changes. Calls that run another way (allowed in the agent's prompt or with <code>prismor allow</code>) drop off this list.</p>
     </div>
     <div id="apprList" class="appr-list"></div>
   </div>
@@ -7944,16 +7949,26 @@ async function loadApprovals() {
   if (document.getElementById('apprOverlay').classList.contains('open')) renderApprovals();
 }
 function openApprovals() { renderApprovals(); document.getElementById('apprOverlay').classList.add('open'); }
+function closeApprovals() { document.getElementById('apprOverlay').classList.remove('open'); }
 function renderApprovals() {
   const el = document.getElementById('apprList');
   el.innerHTML = !_approvals.length ? '<div class="empty">Nothing is waiting.</div>' : _approvals.map(r => {
     const held = r.waiting_until && r.waiting_until * 1000 > Date.now();
+    const sev = String(r.severity || '').toLowerCase();
+    const meta = [
+      r.agent ? '<span class="link" onclick="closeApprovals();openAgentView(\'' + safeJsArg(r.agent) + '\')">' + safe(extAgentName(r.agent)) + '</span>' : 'agent',
+      r.tool ? safe(r.tool) : '',
+      r.session_id ? '<a title="Open the session this call came from" onclick="closeApprovals();navigateToSession(\'' + safeJsArg(r.session_id) + '\',\'' + safeJsArg(r.workspace || '') + '\')">session ' + safe(String(r.session_id).slice(0, 8)) + '</a>' : '',
+      r.rule ? 'rule ' + safe(r.rule) : '',
+      safe(extWhen(new Date(r.created * 1000).toISOString())),
+    ].filter(Boolean).join(' · ');
     return '<div class="appr-row">'
-      + '<div class="appr-main"><div class="appr-what">' + safe(r.summary || r.title) + '</div>'
-      + '<div class="appr-meta"><span onclick="document.getElementById(\'apprOverlay\').classList.remove(\'open\')">' + (r.agent ? agentLink(r.agent, safe(r.agent)) : 'agent') + '</span> · ' + safe(r.rule) + ' · ' + safe(extWhen(new Date(r.created * 1000).toISOString()))
-      + (held ? ' · <b>the agent is waiting</b>' : '') + '</div></div>'
+      + '<div class="appr-why">' + (sev ? '<span class="sev-badge sev-' + safeAttr(sev) + '">' + safe(sev) + '</span>' : '') + '<span>' + safe(r.title || 'Blocked call') + '</span></div>'
+      + '<div class="appr-meta">' + meta + (held ? ' · <b>the agent is waiting</b>' : '') + '</div>'
+      + (r.summary ? '<pre class="appr-cmd" title="Click to show all" onclick="this.classList.add(\'open\')">' + safe(r.summary) + '</pre>' : '')
+      + '<div class="appr-actions">'
       + '<button class="btn-ghost" onclick="decideApproval(\'' + safeJsArg(r.id) + '\', false)">Deny</button>'
-      + '<button class="btn-primary" onclick="decideApproval(\'' + safeJsArg(r.id) + '\', true)">Approve once</button></div>';
+      + '<button class="btn-primary" onclick="decideApproval(\'' + safeJsArg(r.id) + '\', true)">Approve once</button></div></div>';
   }).join('');
 }
 async function decideApproval(id, approve) {

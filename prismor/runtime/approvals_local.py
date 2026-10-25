@@ -121,7 +121,8 @@ def consume(fp: str, call_id: str = "") -> Optional[Dict[str, Any]]:
 
 
 def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
-            summary: str, waiting_seconds: int = 0) -> Dict[str, Any]:
+            summary: str, waiting_seconds: int = 0, workspace: str = "",
+            tool: str = "") -> Dict[str, Any]:
     """Open (or reuse) the pending request for this action."""
     with _locked() as state:
         _expire(state["requests"])
@@ -133,11 +134,11 @@ def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
                 rid = secrets.token_hex(3)
             rec = {
                 "id": rid, "fp": fp, "status": "pending", "created": time.time(),
-                "agent": agent, "session_id": session_id,
+                "agent": agent, "session_id": session_id, "workspace": workspace, "tool": tool,
                 "rule": str(finding.get("ruleId") or ""),
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
-                "summary": summary[:300],
+                "summary": summary[:4000],
             }
             state["requests"][rid] = rec
         rec["attempts"] = int(rec.get("attempts", 0)) + 1
@@ -165,6 +166,27 @@ def wait(rid: str, seconds: float) -> bool:
         if rec is not None:
             rec["waiting_until"] = 0
     return False
+
+
+def resolve(fp: str) -> bool:
+    """This exact call just ran without our approval (allowed in the agent's
+    own prompt, by `prismor allow`, or a policy change): close its pending
+    request. Runs on every allowed call, so read without the lock first and
+    only take it when there is something to close."""
+    try:
+        reqs = json.loads(path().read_text(encoding="utf-8")).get("requests") or {}
+    except (OSError, ValueError):
+        return False
+    if not any(r.get("fp") == fp and r.get("status") == "pending" for r in reqs.values()):
+        return False
+    hit = False
+    with _locked() as state:
+        for rec in state["requests"].values():
+            if rec.get("fp") == fp and rec.get("status") == "pending":
+                rec["status"] = "resolved"
+                rec["decided_at"] = time.time()
+                hit = True
+    return hit
 
 
 def decide(rid: str, approve: bool) -> Optional[Dict[str, Any]]:
@@ -230,6 +252,9 @@ def _demo() -> None:
     assert r2["id"] != r["id"]
     decide(r2["id"], False)
     assert consume(fp) is None
+    r3 = request(fp, agent="codex", session_id="s", finding={}, summary="")
+    assert resolve(fp) and not resolve(fp)  # ran another way: closed once
+    assert all(r["id"] != r3["id"] for r in list_requests())
     print("ok")
 
 

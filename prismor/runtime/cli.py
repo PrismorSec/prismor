@@ -2283,7 +2283,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                                     or blocking.get("evidence") or normalized.get("toolName") or "")
                         _approval_req = _appr.request(
                             _afp, agent=args.agent, session_id=str(normalized.get("sessionId") or ""),
-                            finding=blocking, summary=_what, waiting_seconds=_wait)
+                            finding=blocking, summary=_what, waiting_seconds=_wait,
+                            workspace=str(workspace or ""), tool=str(normalized.get("toolName") or payload.get("tool_name") or payload.get("toolName") or ""))
                         if _wait:
                             _appr.notify(f"Prismor: {args.agent} is waiting",
                                          f"{blocking.get('title')} - prismor approvals approve {_approval_req['id']}")
@@ -2312,6 +2313,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                             pass
             except Exception:
                 _approval_req = None  # approvals are a way out, never a reason to fail
+        elif _hook_event in ("PreToolUse", "", None):
+            # The call is running: if it was waiting for a decision (the person
+            # allowed it another way, e.g. in the agent's own prompt or with
+            # `prismor allow`), close the request so the dashboard stops asking.
+            try:
+                from prismor.runtime import approvals_local as _appr
+                _appr.resolve(_appr.fingerprint(args.agent, workspace, payload, event))
+            except Exception:
+                pass
 
         if blocking is not None and not force_observe and _pstate is None:
             # R4 authorization verdict, driven by the surfaced enforce finding's

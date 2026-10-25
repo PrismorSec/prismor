@@ -82,6 +82,17 @@ class TestHookApprovals(unittest.TestCase):
         self.assertEqual(self._hook(cmd, call_id="t2", workspace_flag=True).returncode, 0)
         self.assertEqual(self._hook(cmd, call_id="t3").returncode, 2, "still once only")
 
+    def test_call_allowed_another_way_closes_its_request(self):
+        # Allowed in the agent's prompt, by `prismor allow` or a policy change:
+        # the call ran, so the dashboard must stop asking about it.
+        self._hook("echo approval-canary")
+        (req,) = self._pending()
+        self.assertEqual(req["tool"], "Bash")
+        self.assertEqual(Path(req["workspace"]).resolve(), self.ws.resolve())
+        (self.ws / ".prismor" / "policy.yaml").write_text("rules: []\n")
+        self.assertEqual(self._hook("echo approval-canary").returncode, 0)
+        self.assertEqual(self._pending(), [])
+
     def test_approval_is_for_that_exact_call(self):
         self._hook("echo approval-canary one")
         approvals_local.decide(self._pending()[0]["id"], approve=True)
