@@ -2,6 +2,8 @@
 
 When running AI agents in containers (Docker, Kubernetes, CI runners), Prismor provides runtime monitoring but containers require additional hardening to be secure. The agent process has the same filesystem and network access as any other process running as that user.
 
+This page is about hardening a container an agent runs in. To run Prismor itself as a container — the published `ghcr.io/prismorsec/prismor` image for the proxy and eval-server — see [Deploying Prismor as a service](deploy-docker.md).
+
 Prismor also includes an opt-in Docker-backed command sandbox for Claude Code Bash tool calls. This is defense in depth: Prismor still evaluates the original command against policy first, then rewrites allowed Bash commands to run through `prismor sandbox run`.
 
 ## Prerequisites

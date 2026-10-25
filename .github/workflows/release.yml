@@ -63,6 +63,84 @@ jobs:
           packages-dir: dist-shim
           skip-existing: true
 
+  # The service image (packaging/docker): ghcr.io/prismorsec/prismor, multi-arch.
+  # Only after the release job, so an image never exists for a version PyPI
+  # does not have. `latest` moves on final releases only (metadata-action's
+  # default for semver tags), never on a pre-release.
+  docker:
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/prismorsec/prismor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          load: true
+          tags: prismor:smoke
+          cache-to: type=gha,mode=max
+      # Healthy only means listening, so the policy is exercised too: a
+      # hardened container that cannot write its home still reports healthy.
+      - name: Smoke test — version, both surfaces healthy, a real allow and block
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got=$(docker run --rm prismor:smoke --version | awk '{print $2}')
+          [ "$got" = "$want" ] || { echo "image reports $got, tag is $want"; exit 1; }
+          hardened=(--health-interval 2s --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges)
+          docker run -d --name proxy "${hardened[@]}" -v proxy_home:/var/lib/prismor prismor:smoke proxy
+          docker run -d --name eval "${hardened[@]}" -v eval_home:/var/lib/prismor \
+            -e PRISMOR_EVAL_KEY=smoke -p 127.0.0.1:7071:7071 prismor:smoke eval-server
+          for c in proxy eval; do
+            for _ in $(seq 30); do
+              s=$(docker inspect -f '{{.State.Health.Status}}' $c)
+              [ "$s" = healthy ] && break
+              sleep 2
+            done
+            [ "$s" = healthy ] || { docker logs $c; echo "$c: $s"; exit 1; }
+          done
+          verdict() {
+            curl -fsS -H 'Authorization: Bearer smoke' -H 'Content-Type: application/json' \
+              -d "$1" http://127.0.0.1:7071/v1/evaluate | jq -r .verdict
+          }
+          [ "$(verdict '{"tool_name":"Bash","arguments":{"command":"echo hi"}}')" = allow ]
+          [ "$(verdict '{"tool_name":"Read","event_type":"file_read","arguments":{"file_path":"/home/u/.ssh/id_rsa"}}')" = block ]
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -d '{}' http://127.0.0.1:7071/v1/evaluate)" = 401 ]
+          if docker run --rm prismor:smoke eval-server; then
+            echo "eval-server started without a key"; exit 1
+          fi
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push linux/amd64 + linux/arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packaging/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          provenance: mode=max
+          sbom: true
+
   # MDM installers (packaging/mdm), attached to the same GitHub Release. Each
   # signs when its secrets exist and ships unsigned otherwise; see
   # docs/deploy-jamf.md and docs/deploy-intune.md for what to configure.
