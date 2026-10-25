@@ -144,3 +144,31 @@ def test_handoff_block_explains_the_handoff_setting(tmp_path):
     steps = "\n".join(data_boundary_steps({"handoffTo": "researcher", "dataClasses": ["email"]}, tmp_path))
     assert "handoffs.per_subagent" in steps and '"researcher": {email: allow}' in steps
     assert "per_domain" not in steps
+
+
+def test_parallel_launches_each_reserve_their_own_number(tmp_path):
+    """Claude Code starts several subagents at once: each hook must see the
+    others' reservations, or a cap of one lets them all through."""
+    from concurrent.futures import ThreadPoolExecutor
+    _policy(tmp_path, _rule("subagent.number > 1"))
+
+    def launch(i):
+        return runtime.evaluate_tool_call(
+            event={"type": "subagent_spawn", "agent_event": "PreToolUse", "subagent_type": "Explore",
+                   "prompt": "x", "metadata": {"tool_name": "Agent", "raw": {"tool_use_id": f"tu-{i}"}}},
+            workspace=tmp_path, agent="claude", mode="enforce", session_id="par", persist=False).allow
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        allowed = list(pool.map(launch, range(4)))
+    assert allowed.count(True) == 1
+    assert [r["number"] for r in delegations.records("par")] == [1]   # the refused three were released
+
+
+def test_second_install_of_one_agent_reads_the_same_number(tmp_path):
+    _policy(tmp_path, _rule("subagent.number > 1"))
+    ev = lambda: {"type": "subagent_spawn", "agent_event": "PreToolUse", "subagent_type": "Explore",
+                  "prompt": "x", "metadata": {"tool_name": "Agent", "raw": {"tool_use_id": "tu-1"}}}
+    first = runtime.evaluate_tool_call(event=ev(), workspace=tmp_path, agent="claude", mode="enforce",
+                                       session_id="dup", persist=False)
+    second = runtime.evaluate_tool_call(event=ev(), workspace=tmp_path, agent="claude", mode="enforce",
+                                        session_id="dup", persist=False, record=False)
+    assert first.allow and second.allow

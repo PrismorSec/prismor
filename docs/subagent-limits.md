@@ -42,9 +42,8 @@ Numbers are counted per parent, per session. For an SDK subagent, the session
 is the main agent's: frameworks often give each agent run its own session id,
 and Prismor counts a subagent under the main agent's call that launched it.
 
-Two calls that launch subagents at the same instant can both read the same
-number, so a cap can be exceeded by the number of launches running in
-parallel.
+Launches that run in parallel (Claude Code often starts several subagents
+at once) each reserve their own number, so a cap holds for them too.
 
 ## Let a delegation expire
 
