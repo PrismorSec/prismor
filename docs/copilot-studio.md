@@ -305,43 +305,11 @@ Signing keys are cached for ten minutes.
 - **Copilot Studio agents only.** Agents built in Microsoft 365 Copilot's
   Agent Builder, and Microsoft 365 Copilot chat itself, never call the
   provider. Copy an Agent Builder agent to Copilot Studio to bring it under
-  this check, or import their activity from the audit log (below).
+  this check, or import their activity from the audit log
+  ([Microsoft 365 Copilot](m365-copilot.md)).
 
-## Microsoft 365 Copilot activity (audit log)
+## Microsoft 365 Copilot
 
-Microsoft 365 Copilot and Agent Builder agents give no third party a hook
-before a tool runs, so Prismor cannot block them. Every interaction does land
-in the Microsoft 365 audit log as a `CopilotInteraction` record, and
-`prismor m365-copilot pull` imports those into the console: one observed
-event per interaction, with the user, the app (Teams, Word, Outlook...), the
-agent, whether it searched the web, and how many files, emails and labelled
-items it read. No prompt or response text is in the record.
-
-Microsoft's own detections become findings:
-
-| Record field | Rule | Category |
-|---|---|---|
-| `Messages[].JailbreakDetected` | `m365-copilot-jailbreak` | `prompt_injection` |
-| `AccessedResources[].XPIADetected` | `m365-copilot-xpia` | `prompt_injection` |
-
-To set it up:
-
-1. Turn on auditing in Microsoft Purview (on by default in most tenants).
-2. Register an Entra app in the tenant. Under **API permissions**, add
-   **Office 365 Management APIs > Application > ActivityFeed.Read** and grant
-   admin consent. Create a client secret and keep it in `prismor cloak`.
-3. Run the import with the org's agent key, so the events land in your org:
-
-```bash
-export PRISMOR_AGENT_KEY=...            # from the console
-export PRISMOR_M365_TENANT_ID=<tenant id>
-export PRISMOR_M365_CLIENT_ID=<app id>
-export PRISMOR_M365_CLIENT_SECRET=<client secret>
-prismor m365-copilot pull               # every 5 minutes; --once for cron
-```
-
-The first pass looks back 24 hours (`--since-hours` up to 7 days, the API's
-limit); later passes resume from `$PRISMOR_HOME/m365-audit-cursor.json`.
-Records reach the audit log minutes to hours after the interaction, and the
-console shows them at the time they happened. `--dry-run` counts records
-without reporting them.
+Microsoft 365 Copilot chat and Agent Builder agents never call this provider.
+Prismor can still show their activity in the console, from the Microsoft 365
+audit log, but cannot block it. See [Microsoft 365 Copilot](m365-copilot.md).

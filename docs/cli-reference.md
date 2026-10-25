@@ -94,6 +94,7 @@ prismor
 │   ├─ elevenlabs <action>    status · connect · disconnect — ElevenLabs voice agents via the proxy
 │   ├─ sandbox <action>       status · check · on · off · run — Docker command sandbox
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
+│   ├─ copilot-studio <action> setup · test — Copilot Studio threat detection values and checks
 │   └─ eval-server            HTTP evaluation endpoint for non-Python adapters
 │
 ├─ Sessions & evidence
@@ -101,6 +102,7 @@ prismor
 │   ├─ analyze                Run the engine over a JSONL session
 │   ├─ analyze-history       Reconstruct past agent activity from on-disk transcripts
 │   ├─ tokens                 Token usage and estimated cost
+│   ├─ m365-copilot pull      Import Microsoft 365 Copilot activity from the audit log
 │   ├─ trail <action>         verify · show · checkpoint — signed audit trail
 │   ├─ attest [verify|coverage]  Evidence bundle + framework coverage
 │   ├─ query                  Read-only SQL over the local session store
@@ -468,6 +470,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 
 | Command | Key flags | Description |
 |---|---|---|
+| `prismor m365-copilot pull` | `--once`, `--interval` (300), `--since-hours` (24, max 168), `--dry-run`, `--json`, `--workspace` | Import Microsoft 365 Copilot and Agent Builder activity from the Microsoft 365 audit log as observed events, with Microsoft's jailbreak and XPIA flags as findings. Reads `PRISMOR_M365_TENANT_ID`, `PRISMOR_M365_CLIENT_ID`, `PRISMOR_M365_CLIENT_SECRET`. See [Microsoft 365 Copilot](m365-copilot.md). |
 | `prismor audit` | `--fix`, `--json`, `--workspace` | Posture audit across hooks, policy, cloak, permissions, feed, network, supply chain. `--fix` applies safe remediations. |
 | `prismor audit judge` | `--since 24h`, `--sample 0.05`, `--max 50`, `--dry-run`, `--json`, `--workspace` | Has the configured LLM judge review a deterministic sample of tool calls the rules ALLOWED, after the fact, from the local store. Results go to the `judge_audit` table; flagged calls are printed and sent as one content-free `judge_audit` record each. Never blocks. Exits 2 when no judge is configured. See [Semantic Guard](semantic-guard.md#auditing-allowed-calls). |
 | `prismor aibom` | `--format <cyclonedx\|markdown>`, `-o FILE`, `--workspace` | AI bill of materials as CycloneDX 1.6: agents (and whether Prismor governs them), models used in the last 30 days, MCP servers, plugins, skills, third-party hooks and instruction files, with SHA-256, origin, capabilities and drift (`new`/`changed`/`approved`). Leaves out credentials, contents and prompts; paths are home-relative and URLs redacted, so it can be shared. |
@@ -599,6 +602,7 @@ Scoring table, IOC feed, ecosystem support: [Supply Chain](supply-chain.md).
 | `PRISMOR_RELEASE` | telemetry | Agent release label on every event (git sha, app version). Printable, no whitespace, max 64; invalid values are dropped. |
 | `PRISMOR_APPROVAL_WAIT` | hooks (Claude Code, Codex) | Seconds a blocked call waits for `prismor approvals approve` before it is denied (max 45, default 0). |
 | `PRISMOR_SWEEP_PASS` | `sweep` | Vault passphrase for non-interactive runs. |
+| `PRISMOR_M365_TENANT_ID`, `PRISMOR_M365_CLIENT_ID`, `PRISMOR_M365_CLIENT_SECRET` | `m365-copilot pull` | Entra tenant, app and secret for reading the Microsoft 365 audit log. See [Microsoft 365 Copilot](m365-copilot.md). |
 | `EDITOR` | `scope edit` | Editor for scoped-rule editing. |
 
 ---

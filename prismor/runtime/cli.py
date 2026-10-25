@@ -4059,7 +4059,7 @@ def build_parser() -> argparse.ArgumentParser:
     _m365_pull.add_argument("--since-hours", type=float, default=None,
                             help="Look back this far instead of resuming from the cursor (max 7 days)")
     _m365_pull.add_argument("--workspace", default=None, help="Workspace whose policy (sinks) applies (default: cwd)")
-    _m365_pull.add_argument("--dry-run", action="store_true", help="Count records without reporting them")
+    _m365_pull.add_argument("--dry-run", action="store_true", help="Count records without reporting them or moving the cursor")
     _m365_pull.add_argument("--json", action="store_true", help="Print each pass's counts as JSON")
 
     # ── inference-hook: Claude Inference Hooks AI-security server ──────
