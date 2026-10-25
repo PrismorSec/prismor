@@ -2134,6 +2134,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tab-nav .tab-btn.active .icon { color: var(--ink); }
   .tab-count { margin-left: auto; font: 12px var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
   .tab-count:empty { display: none; }
+  .tab-lbl { display: flex; flex-direction: column; line-height: 1.2; text-align: left; }
+  .tab-sub { font-size: 11px; font-weight: 400; color: var(--muted); margin-top: 2px; }
   .tab-lock { margin-left: auto; opacity: .55; }
   .tab-lock .icon { width: 13px; height: 13px; }
   .topbar, .page, .prismor-cta { margin-left: 0; }
@@ -2379,6 +2381,34 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .mcp-card .tp-btns { display: inline-flex; align-items: center; gap: 8px; }
   .mcp-card-direct { border-color: #efdcae; }
   .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .mcp-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .mcp-cols, .mcp-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px 110px 96px 150px; align-items: center; gap: 12px; }
+  .mcp-cols { padding: 0 17px 6px 37px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .mcp-card > summary.mcp-row::before { position: absolute; margin-left: -18px; }
+  .mcp-card > summary.mcp-row { position: relative; padding-left: 18px; flex-wrap: nowrap; }
+  .mcp-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .mcp-id { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
+  .mcp-sub { flex-basis: 100%; }
+  .mcp-sub .mcp-kind { font-size: 11px; padding: 0; background: none; border: 0; color: var(--muted); }
+  .mcp-col { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--ink); display: flex; flex-direction: column; }
+  .mcp-col small { font-size: 11px; color: var(--muted); }
+  .mcp-col.mcp-tools { flex-direction: row; align-items: baseline; }
+  details.tp-block > summary { display: flex; align-items: center; gap: 12px; cursor: pointer; list-style: none; }
+  details.tp-block > summary::-webkit-details-marker { display: none; }
+  details.tp-block > summary::before { content: "\25B8"; color: var(--muted); font-size: 12px; transition: transform .12s; }
+  details.tp-block[open] > summary::before { transform: rotate(90deg); }
+  details.tp-block > summary label { cursor: pointer; }
+  details.tp-block[open] > summary { margin-bottom: 8px; }
+  .mcp-col small.mcp-blocked { color: var(--bad, #b91c1c); }
+  .mcp-row .mcp-head-right { justify-content: flex-end; }
+  .mcp-idle { margin-top: 18px; }
+  .mcp-idle > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--ink); padding: 6px 0 10px; }
+  .mcp-idle > summary .mcp-muted { font-weight: 400; margin-left: 6px; }
+  @media (max-width: 760px) {
+    .mcp-cols { display: none; }
+    .mcp-row { grid-template-columns: minmax(0, 1fr) auto; }
+    .mcp-row .mcp-col { display: none; }
+  }
   .mcp-avatar { width: 28px; height: 28px; border-radius: 6px; background: var(--md-primary-soft); color: var(--ink); display: inline-grid; place-items: center; font-weight: 600; font-size: 13px; }
   .mcp-name { font-family: var(--font-mono); font-size: 14px; font-weight: 600; }
   .mcp-head-right { margin-left: auto; }
@@ -2739,8 +2769,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span><span class="tab-count" id="navAgents"></span></button>
   <div class="nav-group">Policy</div>
   <button class="tab-btn" data-tab="policy" data-label="Policy Control"><svg class="icon"><use href="#i-shield"/></svg><span>Policy Control</span><span class="tab-count" id="navRules"></span></button>
-  <button class="tab-btn" data-tab="mcpservers" data-label="MCP Servers"><svg class="icon"><use href="#i-database"/></svg><span>MCP Servers</span></button>
-  <button class="tab-btn" data-tab="extensions" data-label="Extensions"><svg class="icon"><use href="#i-puzzle"/></svg><span>Extensions</span></button>
+  <button class="tab-btn" data-tab="extensions" data-label="Extensions" title="Skills, MCP servers, plugins, hooks, secrets and packages your agents load"><svg class="icon"><use href="#i-puzzle"/></svg><span class="tab-lbl">Extensions<small class="tab-sub">Skills · MCP · plugins · hooks</small></span></button>
   <div class="nav-group">Govern</div>
   <button class="tab-btn" data-tab="fleet" data-label="Fleet"><svg class="icon"><use href="#i-building"/></svg><span>Fleet</span><span class="tab-lock"><svg class="icon"><use href="#i-lock"/></svg></span></button>
   <div class="nav-group">Platform</div>
@@ -2789,17 +2818,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
 </div>
 
-<!-- ═══ PAGE: MCP PLAYGROUND ══════════════════════════════════════ -->
-<div id="page-mcpservers" class="page">
-  <div class="section"><h2>MCP Servers</h2><div class="rule"></div>
-    <span class="hint">where each server is configured, and how its tools are handled</span>
-    <button class="inline-link-btn" style="margin-left:auto" onclick="mcpExpandAll()">Expand all</button>
-    <button class="inline-link-btn" onclick="mcpExpandAll(false)">Collapse all</button>
-  </div>
-  <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
-  <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
-</div>
-
 <div id="page-files" class="page">
   <div class="section" style="margin-top:0"><h2>Files</h2><div class="rule"></div>
     <span class="hint">every file an agent wrote, and the session that changed it</span>
@@ -2822,6 +2840,15 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span class="hint">Skills, MCP servers, plugins and hooks installed here. Flagged again if their files change.</span>
   </div>
   <div class="ext-views ext-kinds" id="extKinds"></div>
+  <div id="mcpPane" style="display:none">
+    <div class="mcp-pane-head">
+      <span class="hint">Where each server is configured, and how its tools are handled. Open one to switch its tools.</span>
+      <button class="inline-link-btn" style="margin-left:auto" onclick="mcpExpandAll()">Expand all</button>
+      <button class="inline-link-btn" onclick="mcpExpandAll(false)">Collapse all</button>
+    </div>
+    <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
+    <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
+  </div>
   <div id="extSummary" class="ext-summary"></div>
   <div class="ext-views" id="extViews"></div>
   <div class="ext-layout" id="extLayout">
@@ -3332,17 +3359,17 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   <div class="agent-stats" id="agentStats"></div>
 
-  <div class="card agent-ctrl-card" id="agentControlsCard">
-    <div class="card-title" style="margin-bottom:6px">Controls</div>
-    <div id="agentControls"></div>
-  </div>
-
-  <div class="card" id="agentExtCard" style="margin-bottom:16px" hidden>
+  <div class="card" id="agentExtCard" style="margin-bottom:16px">
     <div class="bar" style="margin-bottom:10px">
       <div class="card-title">Extensions this agent loads</div>
       <div class="bar-right"><a class="ext-sess" onclick="openExtensionsFor(_agentViewName)">open in ledger</a></div>
     </div>
     <div id="agentExtBody"></div>
+  </div>
+
+  <div class="card agent-ctrl-card" id="agentControlsCard">
+    <div class="card-title" style="margin-bottom:6px">Controls</div>
+    <div id="agentControls"></div>
   </div>
 
   <div class="card">
@@ -3358,6 +3385,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         </tr></thead>
         <tbody id="agentSessBody"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
       </table>
+      <div id="agentSessPagerWrap"></div>
     </div>
   </div>
 </div>
@@ -3969,7 +3997,7 @@ function toggleTheme() {
 const PAGE_DOCS = {
   overview: ['getting-started.md', 'A tour of the dashboard'], sessions: ['dashboard.md', 'Drilling in: `sessions` and `session`'],
   files: ['dashboard.md'], agents: ['modes.md'], policy: ['policy-layers-and-exemptions.md'],
-  mcpservers: ['mcp-gateway.md'], extensions: ['extensions.md'], fleet: ['connecting-to-the-platform.md'], docs: ['getting-started.md'],
+  extensions: ['extensions.md', 'mcp-gateway.md'], fleet: ['connecting-to-the-platform.md'], docs: ['getting-started.md'],
 };
 function openPageHelp() {
   const tab = (document.querySelector('.tab-btn.active') || {}).dataset?.tab || 'overview';
@@ -4009,8 +4037,11 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       if (_agentsCache) renderAgents(_agentsCache);
       loadAgents();           // silent background refresh
     }
-    if (btn.dataset.tab === 'mcpservers') loadMcpServers();
-    if (btn.dataset.tab === 'extensions') loadExtensions();
+    if (btn.dataset.tab === 'extensions') {
+      // The MCP list has its own endpoint: show it without waiting on the ledger scan.
+      if (_extTab === 'mcp') renderExtensions();
+      loadExtensions();
+    }
     if (btn.dataset.tab === 'files') loadFiles();
     if (btn.dataset.tab === 'docs') loadDocs();
   });
@@ -4205,9 +4236,9 @@ let _extViewId = null, _extDetail = null;
 async function openExtension(id, isBack) {
   if (!isBack) { recordView({view:'extension', id: id}); _pushCurrentView(); }
   _extViewId = id; _extDetail = null;
-  // Opened from MCP Servers, the crumb leads back there rather than to Extensions.
+  // Opened from the MCP servers list, the crumb says so (Extensions keeps that tab).
   const from = (document.querySelector('.tab-btn.active') || {}).dataset?.tab, par = document.getElementById('extdParent');
-  if (!isBack && from) { par.dataset.tab = from === 'mcpservers' ? 'mcpservers' : 'extensions'; par.textContent = from === 'mcpservers' ? 'MCP Servers' : 'Extensions'; }
+  if (!isBack && from) { par.dataset.tab = 'extensions'; par.textContent = from === 'extensions' && _extTab === 'mcp' ? 'MCP servers' : 'Extensions'; }
   showSubPage('page-extension');
   document.getElementById('extdCrumb').textContent = id;
   ['extdHead', 'extdUsage', 'extdAgents', 'extdCalls', 'extdSessions'].forEach(k => document.getElementById(k).innerHTML = '<div class="empty">Loading…</div>');
@@ -4700,18 +4731,24 @@ function renderExtAgents(d) {
 }
 async function renderAgentExtensions(agentName) {
   const card = document.getElementById('agentExtCard');
-  card.hidden = true;
+  card.hidden = false;
+  document.getElementById('agentExtBody').innerHTML = '<div class="empty">Loading extensions…</div>';
   try {
     if (!_extCache) _extCache = await apiFetch('/api/extensions' + (_serverWorkspace ? '?workspace=' + encodeURIComponent(_serverWorkspace) : ''), {timeoutMs: 20000});
     const a = (_extCache.agents || []).find(x => x.agent === agentName);
-    if (!a || _agentViewName !== agentName) return;
+    if (_agentViewName !== agentName) return;
+    if (!a) { card.hidden = true; return; }
     document.getElementById('agentExtBody').innerHTML = extAgentBody(a, _extCache);
     card.hidden = false;
-  } catch (e) { /* the agent page works without it */ }
+  } catch (e) { card.hidden = true; /* the agent page works without it */ }
 }
 function renderExtensions() {
   const d = _extCache || {rows: [], events: [], counts: {}};
   renderExtKindTabs();
+  const mcp = _extTab === 'mcp';
+  ['extSummary', 'extLayout'].forEach(id => { document.getElementById(id).style.display = mcp ? 'none' : ''; });
+  document.getElementById('mcpPane').style.display = mcp ? '' : 'none';
+  if (mcp) { document.getElementById('extViews').style.display = 'none'; renderMcpServers(); return loadMcpServers(); }
   if (_extTab === 'hook') return renderHookStats();
   if (_extTab !== 'all') return renderExtKind(_extTab);
   const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
@@ -5068,9 +5105,15 @@ function renderMcpServers() {
   const order = { mirror: 0, gateway: 1, remote: 2, seen: 3, direct: 4 };
   // Mirror first, then whatever the agents actually use; idle servers sink.
   const nCalls = s => (s.usage || {}).calls || 0;
-  const pg = clientPage('mcpPager', servers.slice().sort((a, b) => (order[a.kind] === 0) !== (order[b.kind] === 0) ? (order[a.kind] - order[b.kind]) : (nCalls(b) - nCalls(a)) || (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name)),
-    25, renderMcpServers, servers.length);
-  el.innerHTML = pg.rows.map(s => s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s)).join('') + pg.html;
+  const idleList = servers.filter(s => s.kind !== 'mirror' && !nCalls(s)).sort((a, b) => a.name.localeCompare(b.name));
+  const pg = clientPage('mcpPager', servers.filter(s => s.kind === 'mirror' || nCalls(s)).sort((a, b) => (order[a.kind] === 0) !== (order[b.kind] === 0) ? (order[a.kind] - order[b.kind]) : (nCalls(b) - nCalls(a)) || (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name)),
+    25, renderMcpServers, servers.length - idleList.length);
+  const card = s => s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s);
+  const head = '<div class="mcp-cols"><span>Server</span><span>Tools on</span><span>Calls · 7d</span><span>Last call</span><span></span></div>';
+  el.innerHTML = (pg.rows.length ? head + pg.rows.map(card).join('') + pg.html : '') +
+    (idleList.length ? '<details class="mcp-idle"' + (_mcpOpen['\u0000idle'] || !pg.rows.length ? ' open' : '') + ' ontoggle="_mcpOpen[\'\\u0000idle\']=this.open">' +
+      '<summary>' + idleList.length + ' idle server' + (idleList.length === 1 ? '' : 's') + ' <span class="mcp-muted">configured, no calls in the last 7 days</span></summary>' +
+      head + idleList.map(card).join('') + '</details>' : '');
   pg.wire();
 }
 
@@ -5119,15 +5162,14 @@ let _mcpOpen = {};
 function mcpCard(s, cls, extra, body) {
   const u = s.usage || {}, tools = s.tools || [];
   const on = tools.filter(t => s.kind === 'mirror' ? t.enabled !== false : t.state !== 'deny').length;
-  const brief = [tools.length ? on + '/' + tools.length + ' tools on' : 'no tools yet',
-    fmtNum(u.calls || 0) + ' calls', u.blocked ? fmtNum(u.blocked) + ' blocked' : '', u.last || '']
-    .filter(Boolean).map(x => '<span>' + safe(x) + '</span>').join('');
   return '<details class="card mcp-card' + (cls || '') + '"' + (_mcpOpen[s.name] ? ' open' : '') +
       ' ontoggle="_mcpOpen[\'' + safeJsArg(s.name) + '\']=this.open">' +
-    '<summary class="card-title mcp-head">' +
-      '<span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span>' +
-      '<span class="mcp-name">' + safe(s.name) + '</span>' + mcpKindChip(s) + mcpRiskChip(s) +
-      '<span class="mcp-brief">' + brief + '</span>' +
+    '<summary class="mcp-head mcp-row">' +
+      '<span class="mcp-who"><span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span>' +
+        '<span class="mcp-id"><span class="mcp-name">' + safe(s.name) + '</span>' + mcpRiskChip(s) + '<span class="mcp-sub">' + mcpKindChip(s) + '</span></span></span>' +
+      '<span class="mcp-col mcp-tools">' + (tools.length ? on + '<small>/' + tools.length + '</small>' : '<span class="mcp-muted">none yet</span>') + '</span>' +
+      '<span class="mcp-col">' + fmtNum(u.calls || 0) + (u.blocked ? '<small class="mcp-blocked">' + fmtNum(u.blocked) + ' blocked</small>' : '') + '</span>' +
+      '<span class="mcp-col mcp-muted">' + safe(u.last || '—') + '</span>' +
       '<span class="mcp-head-right">' + (u.sessions ? '<button class="inline-link-btn" title="Sessions that called this server" ' +
         'onclick="event.preventDefault();mcpOpenSessions(\'' + safeJsArg(s.name) + '\')">' + fmtNum(u.sessions) + ' session' + (u.sessions === 1 ? '' : 's') + ' \u2192</button>' : '') +
         (extra || '') + '</span></summary>' +
@@ -6070,6 +6112,7 @@ function parseHash(){
     : m[1] === 'extension' ? {view:'extension', id:decodeURIComponent(m[2])}
     : {view:'agent', name:decodeURIComponent(m[2])};
   const t = /^#\/([a-z-]+)$/.exec(location.hash || '');
+  if (t && t[1] === 'mcpservers') { _extTab = 'mcp'; return {view:'tab', tab:'extensions'}; }
   return t ? {view:'tab', tab:t[1]} : null;
 }
 function applyViewState(st){
@@ -6226,6 +6269,7 @@ const MIRROR_BUILTINS = ['Bash','Read','Write','Edit','Glob','Grep'];
 
 // Per-tool three-state control: Allow / Ask (human approval) / Deny. The middle
 // state maps to a step_up finding the gateway routes to the approvals queue.
+let _tpOpen = {};
 function renderToolPolicyGrid(a){
   const deny = new Set(a.deny_tools || []);
   const ask  = new Set(a.ask_tools  || []);
@@ -6245,10 +6289,14 @@ function renderToolPolicyGrid(a){
         btn(t,'ask','Ask','Requires human approval (step-up)')+
         btn(t,'deny','Deny','Blocked in real time')+
       '</span></div>').join('');
-  return '<div class="agent-ctrl tp-block"><label>Tool permissions</label>'+
+  const nAsk = tools.filter(t => state(t) === 'ask').length, nDeny = tools.filter(t => state(t) === 'deny').length;
+  const brief = tools.length + ' tools · ' + ([nAsk ? nAsk + ' ask' : '', nDeny ? nDeny + ' deny' : ''].filter(Boolean).join(' · ') || 'all allowed');
+  const key = a.name || '\u0000global';
+  return '<details class="agent-ctrl tp-block"' + (_tpOpen[key] ? ' open' : '') + ' ontoggle="_tpOpen[\''+safeJsArg(key)+'\']=this.open">'+
+    '<summary><label>Tool permissions</label><span class="agent-ctrl-hint">'+safe(brief)+'</span></summary>'+
     '<div class="tp-grid">'+rows+'</div>'+
     '<span class="agent-ctrl-hint">Per-tool handling for '+(a.name ? 'this agent' : 'every agent')+'. Ask routes the call '+
-    'to the approvals queue; a headless gateway waits and fails closed if unanswered.</span></div>';
+    'to the approvals queue; a headless gateway waits and fails closed if unanswered.</span></details>';
 }
 
 async function toolPolicySet(agent, tool, action){
@@ -6282,8 +6330,12 @@ function renderAgentSessions(agentName){
   const rows = _allSessionsCache.filter(s=>sessionBelongsToAgent(s, agentName));
   const tbody = document.getElementById('agentSessBody');
   document.getElementById('agentSessCount').textContent = fmtNum(rows.length)+' session'+(rows.length===1?'':'s');
+  const pager = document.getElementById('agentSessPagerWrap');
+  pager.innerHTML = '';
   if(!rows.length){ tbody.innerHTML='<tr><td colspan="5" class="empty">No sessions recorded for this agent yet.</td></tr>'; return; }
-  tbody.innerHTML = rows.map(s=>{
+  const pg = clientPage('agentSessPager', rows, 25, () => renderAgentSessions(agentName), agentName);
+  pager.innerHTML = pg.html;
+  tbody.innerHTML = pg.rows.map(s=>{
     const rc=riskClass(s.riskScore);
     return '<tr class="clickable-row" onclick="openSessionView(\''+safeAttr(s.sessionId)+'\',\''+safeAttr(s.workspace)+'\')">'+
       '<td'+(s.title?' class="sess-cell-title"':' class="mono"')+' title="'+safeAttr(s.sessionId)+'">'+safe(s.title||shortId(s.sessionId,24))+'</td>'+
@@ -6292,6 +6344,7 @@ function renderAgentSessions(agentName){
       '<td class="right"'+(s.findingsCount>0?' style="color:var(--pink-600);font-weight:600"':'')+'>'+s.findingsCount+'</td>'+
       '<td>'+tsCell(s.updatedAt,s.updatedAtAbs)+'</td></tr>';
   }).join('');
+  pg.wire();
 }
 
 // ── Session flow view ──────────────────────────────────────────────────

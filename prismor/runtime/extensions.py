@@ -36,6 +36,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from itertools import islice
@@ -143,7 +144,7 @@ def _save(workspace: Path, data: Dict[str, Any]) -> None:
             data["sessions"].pop(sid, None)
     p = _store_path(workspace)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp = p.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
     tmp.replace(p)
 
@@ -688,7 +689,8 @@ def _audit(event: str, row: Dict[str, Any], session_id: str = "", **extra: Any) 
         sys.stderr.write(f"[prismor] extension audit error: {exc}\n")
 
 
-def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[Dict[str, Any]]:
+def sync(workspace: Path, *, session_id: str = "", record: bool = True,
+         background_report: bool = False) -> List[Dict[str, Any]]:
     """Diff what is installed against the ledger. Rows gain ``status``
     (new | changed | unchanged | approved) and ``installed_by``.
 
@@ -755,7 +757,11 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[
             except OSError:
                 data["mtimes"][str(p)] = 0
         _save(workspace, data)
-    if report:
+    if report and background_report:
+        # The dashboard: the upload can take its full timeout, and every
+        # Extensions load used to wait on it.
+        threading.Thread(target=send_report, args=(workspace,), name="prismor-ext-report", daemon=True).start()
+    elif report:
         send_report(workspace)
     return rows
 
@@ -1544,7 +1550,7 @@ def overview(workspace: Path, events: int = 40) -> Dict[str, Any]:
     """Everything a dashboard needs in one call: the ledger rows with what each
     one caused (sessions, pinned documents), plus the recent lifecycle records
     from the signed trail."""
-    rows = sync(workspace)
+    rows = sync(workspace, background_report=True)
     data = _load(workspace)
     docs: Dict[str, List[Dict[str, Any]]] = {}
     for url, ref in data["remote_refs"].items():

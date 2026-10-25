@@ -2349,9 +2349,11 @@ _PKG_NAME_RE = re.compile(r"^(?:@[a-z0-9._-]+/)?[A-Za-z][A-Za-z0-9._-]{1,100}$")
 
 # Narrow the scan in SQL: a dependency always leaves one of these marks, and
 # the alternative is a json.loads() of every tool call ever recorded.
+# Pinned to the ts index like _NET_SQL: left to itself SQLite walks the id
+# order for the ORDER BY and reads the whole table (8s vs 1.6s on a 3GB store).
 _DEP_SQL = """
     SELECT session_id, ts, raw_json, command_text, url_text
-    FROM events
+    FROM events INDEXED BY idx_events_ts
     WHERE ts >= ? AND (
         raw_json LIKE '%mcp__%' OR raw_json LIKE '%"Skill"%'
         OR command_text LIKE '%@@SECRET:%' OR url_text LIKE '%@@SECRET:%'
