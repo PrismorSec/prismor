@@ -94,12 +94,18 @@ function timeoutSignal(ms: number): AbortSignal | undefined {
 // it. The same agent run on its own has no parent and is the main agent.
 
 /** `parent`: the agent it runs under, whose per-agent controls also apply. */
-export interface Subagent { id: string; type: string; parent?: string }
+export interface Subagent { id: string; type: string; parent?: string; depth?: number; chain?: string[] }
 
 interface AgentLike { id?: string; name?: string; [k: string]: any }
 
-interface Running { agent: string; callId: string; name: string }
+// chain: names of every running agent above this point, outermost first
+interface Running { agent: string; callId: string; name: string; chain: string[] }
 let _running: { run<T>(s: Running, fn: () => T): T; getStore(): Running | undefined } | null | undefined;
+function chainWith(name: string): string[] {
+  const outer = running()?.getStore()?.chain ?? [];
+  return outer[outer.length - 1] === name ? outer : [...outer, name];
+}
+
 function running() {
   if (_running !== undefined) return _running;
   try {
@@ -131,7 +137,7 @@ export function registerSubagents<T extends AgentLike>(agent: T, opts: { agentNa
     if (typeof original !== "function") continue;
     (agent as any)[m] = function (this: any, ...args: any[]) {
       const store = running();
-      const me: Running = { agent: id, callId: `run${++_runCounter}`, name };
+      const me: Running = { agent: id, callId: `run${++_runCounter}`, name, chain: chainWith(name) };
       return store ? store.run(me, () => original.apply(this, args)) : original.apply(this, args);
     };
   }
@@ -143,7 +149,9 @@ function subagentOf(ctx: any, agentName: string): Subagent | undefined {
   const agentId: string | undefined = ctx?.agent?.agentId;
   const parent = running()?.getStore();
   if (parent && parent.agent !== (agentId ?? agentName)) {
-    return { id: `${parent.agent}:${parent.callId}`, type: agentId ?? (agentName || "agent"), parent: parent.name };
+    const chain = parent.chain.filter((n) => n !== agentName);
+    return { id: `${parent.agent}:${parent.callId}`, type: agentId ?? (agentName || "agent"), parent: parent.name,
+             depth: Math.max(chain.length, 1), chain };
   }
   return undefined;
 }
@@ -219,7 +227,9 @@ export function prismorTool<T extends { execute?: (...args: any[]) => any }>(
       throw new PrismorBlocked(decision.reason ?? "policy violation");
     }
     const store = running();
-    const me: Running = { name: resolved.agentName || resolved.agent, agent: ctx?.agent?.agentId ?? resolved.agentName, callId: String(ctx?.agent?.toolCallId ?? ctx?.writer?.callId ?? Date.now()) };
+    const name = resolved.agentName || resolved.agent;
+    const me: Running = { name, agent: ctx?.agent?.agentId ?? resolved.agentName, chain: chainWith(name),
+                          callId: String(ctx?.agent?.toolCallId ?? ctx?.writer?.callId ?? Date.now()) };
     return store ? store.run(me, () => original(inputData, ...rest)) : original(inputData, ...rest);
   };
 

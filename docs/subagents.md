@@ -136,8 +136,11 @@ that predate `SubagentStop` ignore the entry; their other hooks keep running
 
 ## Limits
 
-- Subagent attribution and enforcement cover Claude Code and Codex. Other
-  agents don't tag subagent calls with an `agent_id`.
+- Coverage outside Claude Code and Codex comes from the SDK adapters above,
+  and their values are caller-asserted, the same as `args`.
+- There is no cap on how many subagents one agent launches, or on their
+  combined spend. `subagent.depth` limits nesting; a spawn rule limits which
+  types may start.
 - The summary line reaches the person in Claude Code only. For Codex it is
   queued, but no main-thread hook Prismor installs fires at a point where
   Codex shows it; the dashboard has the same information.

@@ -295,6 +295,12 @@ def evaluate_tool_call(
     _parent_agent = _parent_agent_of(event, _agent_name)
     if _parent_agent:
         event.setdefault("metadata", {}).setdefault("parent_agent_name", _parent_agent)
+    if (event.get("metadata") or {}).get("subagent_id"):
+        # Where in the agent tree the call sits, for `when: subagent.depth/chain`.
+        from prismor.runtime.subagent_context import current_chain
+        _chain = [n for n in current_chain() if n != _agent_name] or ([_parent_agent] if _parent_agent else [])
+        event["metadata"].setdefault("subagent_chain", _chain)
+        event["metadata"].setdefault("subagent_depth", max(len(event["metadata"]["subagent_chain"]), 1))
 
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})

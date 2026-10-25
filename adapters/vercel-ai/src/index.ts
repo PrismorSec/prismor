@@ -168,7 +168,8 @@ export function useSubject<T>(subject: string, fn: () => T): T {
 // called underneath it belongs to a subagent: its type is that toolset's
 // agentName, its id the tool call that started it.
 
-interface Running { agentName: string; callId: string }
+// chain: agent names of every running guarded tool, outermost first
+interface Running { agentName: string; callId: string; chain: string[] }
 interface RunningStorage {
   run<T>(store: Running, fn: () => T): T;
   getStore(): Running | undefined;
@@ -192,16 +193,23 @@ let _callCounter = 0;
 /** Run `fn` as tool call `callId` of `agentName`, and say which subagent (if any) is calling. */
 function asRunning<T>(agentName: string, callId: string, fn: () => T): T {
   const storage = runningStorage();
-  return storage ? storage.run({ agentName, callId }, fn) : fn();
+  if (!storage) return fn();
+  const outer = storage.getStore()?.chain ?? [];
+  const chain = outer[outer.length - 1] === agentName ? outer : [...outer, agentName];
+  return storage.run({ agentName, callId, chain }, fn);
 }
 
 function currentSubagent(agentName: string): Subagent | undefined {
   const parent = runningStorage()?.getStore();
-  return parent ? { id: `${parent.agentName}:${parent.callId}`, type: agentName, parent: parent.agentName } : undefined;
+  if (!parent) return undefined;
+  const chain = parent.chain.filter((n) => n !== agentName);
+  return { id: `${parent.agentName}:${parent.callId}`, type: agentName, parent: parent.agentName,
+           depth: Math.max(chain.length, 1), chain };
 }
 
 /** `parent`: the agent it runs under, whose per-agent controls also apply. */
-export interface Subagent { id: string; type: string; parent?: string }
+/** `depth`/`chain`: how deep it is nested, and the agents above it (outermost first). */
+export interface Subagent { id: string; type: string; parent?: string; depth?: number; chain?: string[] }
 
 function resolveSubject(explicit: string): string {
   if (explicit) return explicit;

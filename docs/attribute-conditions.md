@@ -38,6 +38,8 @@ they all go through one [decision contract](decision-contract.md).
 | `subagent.active` | `true` when a subagent made the call, `false` for the main agent | the agent host's hook payload, or the SDK adapter |
 | `subagent.id` | the subagent's runtime id (`null` on the main agent) | same |
 | `subagent.type` | the subagent's type, e.g. `general-purpose` (`null` on the main agent) | same |
+| `subagent.depth` | how deep the call is nested: `0` on the main agent, `1` for its subagent, `2` for a subagent's subagent | the SDK adapter, or the nesting of guarded tools in this process |
+| `subagent.chain` | the agents above the caller, outermost first, e.g. `['support-bot', 'researcher']` (`[]` on the main agent) | same |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a
@@ -174,6 +176,18 @@ when: "args.subagent_type not in ['Explore', 'Plan']"
 The Claude Code or Codex call that launches a subagent is a
 `subagent_spawn` event, so this blocks the launch itself: the subagent never
 starts.
+
+**Limit how deep subagents go**
+
+```yaml
+when: "subagent.depth > 1"
+```
+
+A subagent may work, but a subagent it launches may not. Claude Code and
+Codex subagents are always depth 1. Through an SDK adapter, depth counts the
+guarded agents nested above the call, so each agent needs its own `name=`.
+`"'support-bot' not in subagent.chain"` holds a subagent to one parent
+instead.
 
 ## Named conditions
 

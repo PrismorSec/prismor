@@ -3026,6 +3026,7 @@ _MEMORY_BASENAMES: Tuple[str, ...] = (
 _MEMORY_GLOBS: Tuple[str, ...] = (
     ".claude/rules/*.md",
     ".claude/agents/*.md",
+    ".codex/agents/*.toml",
     ".cursor/rules/*.mdc",
     ".github/copilot-instructions.md",
     ".devin/rules/*.md",
@@ -3156,7 +3157,11 @@ def _discover_memory_files(workspace: Path) -> List[Path]:
         search_dirs.extend(ws.parents[:3])
     except Exception:
         search_dirs.append(workspace)
+    # Global memory: ~/.claude/CLAUDE.md, plus the home-level rule and agent
+    # directories (~/.claude/agents, ~/.codex/agents), which the globs reach
+    # from the home directory itself.
     search_dirs.append(Path.home() / ".claude")
+    search_dirs.append(Path.home())
 
     seen: set = set()
     found: List[Path] = []

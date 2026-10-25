@@ -794,12 +794,21 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
     # inside one. Keys are always present (None on the main agent) so a
     # comparison is simply false there, not a missing path that fires the rule.
     sub_id = meta.get("subagent_id")
+    chain = meta.get("subagent_chain")
+    if not isinstance(chain, list):
+        parent = meta.get("parent_agent_name")
+        chain = [parent] if sub_id and parent else []
+    try:
+        depth = int(meta.get("subagent_depth") or (max(len(chain), 1) if sub_id else 0))
+    except (TypeError, ValueError):
+        depth = max(len(chain), 1) if sub_id else 0
     return {
         "principal": principal,
         "resource": resource,
         "args": args,
         "tool": {"name": str(meta.get("tool_name") or "")},
-        "subagent": {"id": sub_id, "type": meta.get("subagent_type"), "active": bool(sub_id)},
+        "subagent": {"id": sub_id, "type": meta.get("subagent_type"), "active": bool(sub_id),
+                     "depth": depth, "chain": [str(c) for c in chain]},
     }
 
 

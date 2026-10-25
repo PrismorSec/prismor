@@ -108,6 +108,8 @@ def _build_event(
             "subagent_type": str(sub["type"])[:200] if sub.get("type") else None,
             # The agent it runs under; its per-agent controls apply on top.
             "parent_agent_name": str(sub["parent"])[:200] if sub.get("parent") else None,
+            **({"subagent_depth": sub["depth"]} if isinstance(sub.get("depth"), int) and not isinstance(sub.get("depth"), bool) else {}),
+            **({"subagent_chain": [str(c)[:200] for c in sub["chain"][:32]]} if isinstance(sub.get("chain"), list) else {}),
         },
     }
 

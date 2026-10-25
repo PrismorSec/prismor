@@ -41,7 +41,12 @@
     "subagent": {
       "id": "a-1",
       "type": "general-purpose",
-      "active": true
+      "active": true,
+      "depth": 2,
+      "chain": [
+        "support-bot",
+        "researcher"
+      ]
     }
   },
   "valid": [
@@ -200,6 +205,18 @@
     {
       "expr": "subagent.active and tool.name == 'WebFetch'",
       "result": false
+    },
+    {
+      "expr": "subagent.depth > 1",
+      "result": true
+    },
+    {
+      "expr": "'researcher' in subagent.chain",
+      "result": true
+    },
+    {
+      "expr": "subagent.chain[0] == 'support-bot'",
+      "result": true
     }
   ],
   "invalid": [

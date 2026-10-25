@@ -127,6 +127,33 @@ def test_when_targets_the_subagent_that_made_the_call(tmp_path):
     assert not _hit(eng, main)
 
 
+def test_when_reads_subagent_depth_and_chain(tmp_path):
+    rule = {k: v for k, v in _REFUND.items() if k not in ("patterns", "fields")}
+    rule["when"] = "subagent.depth > 1 or 'support-bot' not in subagent.chain"
+    eng = _engine(tmp_path, rule)
+    shallow = _event("lookup", {})
+    shallow["metadata"].update(subagent_id="a-1", subagent_type="researcher", parent_agent_name="support-bot")
+    assert not _hit(eng, shallow)  # depth 1 under support-bot (depth/chain filled from the parent)
+    deep = _event("lookup", {})
+    deep["metadata"].update(subagent_id="a-2", subagent_type="summarizer",
+                            subagent_depth=2, subagent_chain=["support-bot", "researcher"])
+    assert _hit(eng, deep)
+    main = _event("lookup", {})
+    eng2 = _engine(tmp_path, {**rule, "when": "subagent.depth == 0 and subagent.chain == []"})
+    assert _hit(eng2, main)  # the main agent: depth 0, no chain
+
+
+def test_runtime_stamps_depth_from_nested_guards(tmp_path):
+    from prismor.runtime.runtime import evaluate_tool_call
+    from prismor.runtime.subagent_context import running
+    ev = {"type": "shell", "command": "x", "agent": "t",
+          "metadata": {"tool_name": "lookup", "subagent_id": "s:1", "subagent_type": "summarizer"}}
+    with running("support-bot", "c1"), running("researcher", "c2"):
+        evaluate_tool_call(event=ev, workspace=tmp_path, agent="t", agent_name="summarizer", mode="observe")
+    assert ev["metadata"]["subagent_chain"] == ["support-bot", "researcher"]
+    assert ev["metadata"]["subagent_depth"] == 2
+
+
 def test_when_only_rule_with_broken_expression_matches_nothing(tmp_path):
     rule = {k: v for k, v in _REFUND.items() if k not in ("patterns", "fields")}
     rule["when"] = "args.amount >="
