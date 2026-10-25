@@ -21,6 +21,9 @@ where it runs.
    **Download plugin**. This mints an agent key for Cowork (it counts as one
    device and is revoked like any other agent key) and returns
    `prismor-cowork.plugin` with the key inside.
+
+   ![The Claude Cowork card on the console's Integrations page, with the Download plugin button](claude-cowork/console-integrations.png)
+
 2. On claude.ai, add `www.prismor.dev` to the allowed domains: **Settings →
    Capabilities** on an individual plan, **Organization settings →
    Capabilities** on Team and Enterprise. Without it the plugin still blocks,
