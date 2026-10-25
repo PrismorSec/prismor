@@ -231,7 +231,8 @@ def build_record(
         # with skip-duplicates, so a retried upload (network blip, pooler
         # connection reset mid-insert) can never create a duplicate event.
         "event_id": _event_id(),
-        "ts": _now_iso(),
+        # Imported activity (the M365 audit log) carries when it happened.
+        "ts": event.get("occurred_at") or _now_iso(),
         "session_id": extra.get("session_id"),
         "device_id": extra.get("device_id"),
         # End-user principal the tool call is attributed to ({source,user_id,
