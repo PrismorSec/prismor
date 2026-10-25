@@ -25,14 +25,27 @@ where it runs.
    Capabilities** on an individual plan, **Organization settings →
    Capabilities** on Team and Enterprise. Without it the plugin still blocks,
    but nothing reaches the console.
-3. In the Claude app, open **Settings → Plugins** and upload the file. On Team
-   and Enterprise, an admin can publish it through a private plugin
-   marketplace instead, so every member gets it.
+3. In the Claude app, open **Settings → Plugins**, then **Add → Upload
+   plugin**, and drop the file in. On Team and Enterprise, an admin can
+   publish it through a private plugin marketplace instead, so every member
+   gets it.
+
+![The Plugins page in the Claude app with the Add menu open on Upload plugin](claude-cowork/upload-menu.png)
+
+![The Upload a plugin dialog, which takes a .zip or .plugin archive](claude-cowork/upload-dialog.png)
+
+Once uploaded, the plugin is listed with its four hooks and switched on:
+
+![The Prismor Cowork plugin installed and enabled, showing 4 hooks](claude-cowork/installed.png)
 
 To check it, start a Cowork task: `create a file .env containing
 GREETING=hello, then run cat .env`. The file is written, `cat .env` is
 blocked by `secret-file-shell-read`, and the session appears in the console's
 activity view under the agent key.
+
+![A Cowork task where cat .env was blocked by the Prismor hook with the Cowork message](claude-cowork/blocked.png)
+
+![The console activity view filtered to the Cowork agent key: the prompt, two allowed writes to /home/claude/.env and the blocked cat](claude-cowork/console-activity.png)
 
 ## Policy
 
