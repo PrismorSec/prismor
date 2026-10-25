@@ -1,0 +1,5 @@
+{
+  "name": "prismor-cowork",
+  "version": "__VERSION__",
+  "description": "Prismor runtime security for Claude Cowork: screens prompts and tool calls inside the session sandbox and blocks risky actions. Enforces offline; reports to the Prismor console when the plugin carries an agent key."
+}

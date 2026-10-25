@@ -251,3 +251,28 @@ jobs:
             out/*.zip
             out/*.intunewin
             out/*.sha256
+
+  # Claude Cowork plugin templates (packaging/cowork). Stable asset names so the
+  # console can fetch releases/latest/download/<name> and add an org agent key.
+  cowork-plugin:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the wheel and both plugins
+        run: |
+          python -m pip install --quiet build pyyaml
+          python -m build --wheel --outdir dist >/dev/null
+          for arch in x86_64 aarch64; do
+            python packaging/cowork/build_plugin.py dist/*.whl out --arch "$arch"
+          done
+          cd out && for f in *.plugin; do sha256sum "$f" > "$f.sha256"; done
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/*.plugin
+            out/*.plugin.sha256
