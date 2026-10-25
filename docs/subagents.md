@@ -52,6 +52,9 @@ anything set for the subagent itself, and it can only be narrower:
 - **A subagent can be held tighter.** Write a rule with
   [`when: subagent.*`](attribute-conditions.md#keep-subagents-off-the-network),
   for example `subagent.type == 'researcher' and tool.name == 'fetch_url'`.
+- **A subagent can be limited in number, time and data.** Cap how many an
+  agent launches, let a delegation expire, and screen what it is handed: see
+  [Limiting subagents](subagent-limits.md).
 - **Nothing scoped to a subagent loosens it.** An org allow scoped to the
   subagent's own name does not lift a deny its parent carries; the parent's
   allow does.
@@ -138,9 +141,9 @@ that predate `SubagentStop` ignore the entry; their other hooks keep running
 
 - Coverage outside Claude Code and Codex comes from the SDK adapters above,
   and their values are caller-asserted, the same as `args`.
-- There is no cap on how many subagents one agent launches, or on their
-  combined spend. `subagent.depth` limits nesting; a spawn rule limits which
-  types may start.
+- There is no limit on subagents' combined spend. [Limiting
+  subagents](subagent-limits.md) covers launch caps, expiry and what a
+  subagent may be handed; `subagent.depth` limits nesting.
 - The summary line reaches the person in Claude Code only. For Codex it is
   queued, but no main-thread hook Prismor installs fires at a point where
   Codex shows it; the dashboard has the same information.

@@ -486,6 +486,40 @@
           "description": "Data boundary: screens what an outbound call SENDS (emails, phones, cards, secrets, files) against where it is going (internal / trusted / external / untrusted). Catches agents that follow third-party docs into shipping the user's own data to a service the user never approved, while letting synthetic/test payloads and trusted destinations through silently.",
           "additionalProperties": false,
           "properties": {
+            "handoffs": {
+              "type": "object",
+              "description": "What an agent may hand to a subagent: an action per data class (email, phone, ssn, card, iban, secret) for a Claude Code launch prompt or an adapter-marked handoff. Inert unless set. per_subagent overrides by subagent type.",
+              "properties": {
+                "per_subagent": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "enum": [
+                        "allow",
+                        "observe",
+                        "warn",
+                        "step_up",
+                        "redact",
+                        "block"
+                      ]
+                    }
+                  }
+                }
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "observe",
+                  "warn",
+                  "step_up",
+                  "redact",
+                  "block"
+                ]
+              }
+            },
             "enabled": {
               "type": "boolean",
               "description": "Opt in. Defaults to false."

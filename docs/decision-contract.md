@@ -58,7 +58,10 @@ standard instead.
 `kwargs`, `resource` and the subagent fields feed
 [attribute conditions](attribute-conditions.md). On `POST /v1/evaluate` the
 subagent goes in the body as `"subagent": {"id": "...", "type": "...", "parent": "...", "depth": 2, "chain": ["..."]}`
-(`parent`, `depth` and `chain` optional; without them depth is 1 and the chain is the parent).
+(`parent`, `depth` and `chain` optional; without them depth is 1 and the chain is the parent;
+`root` names the session the caller's subagents are counted in, for `subagent.number`).
+A call that hands work to a subagent can carry `"handoff_to": "<subagent type>"`, so
+`settings.data_boundary.handoffs` screens its arguments.
 Both are additive; the contract version is unchanged. A caller that passes
 `explain=True` also gets `Decision.explain`, a trace of the rules that matched
 (see [explaining a decision](attribute-conditions.md#explaining-a-decision)).

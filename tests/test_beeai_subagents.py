@@ -53,6 +53,7 @@ def test_handoff_target_is_a_subagent_and_the_clone_stays_guarded(tmp_path):
     names = [(m["tool_name"], m["subagent_type"]) for m in seen]
     assert names == [("fetch_url", None), ("researcher", None), ("fetch_url", "Researcher")]
     assert seen[2]["subagent_id"] == "beeai:r1"  # the handoff call (by the main agent) that ran it
+    assert seen[1].get("handoff_to") == "Researcher" and "handoff_to" not in seen[0]
 
 
 def test_clone_is_guarded(tmp_path):

@@ -277,3 +277,23 @@ def test_guard_agent_also_guards_handoff_and_as_tool_agents(tmp_path):
     po.guard_agent(main, workspace=tmp_path)
     for a in (main, researcher, summarizer, deep):
         assert all(getattr(t, "__prismor_guarded__", False) for t in a.tools), a.name
+
+
+def test_as_tool_call_is_marked_as_a_handoff(tmp_path):
+    """An agent-as-tool's input is what its agent is handed: data_boundary.handoffs screens it."""
+    pytest.importorskip("agents")
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from agents import Agent
+    import prismor_openai as po
+    from prismor.runtime.runtime import Decision
+
+    tool = Agent(name="summarizer").as_tool(tool_name="ask", tool_description="x")
+    po._guard_function_tool(tool, subject=None, workspace=tmp_path, agent="openai-agents", mode="observe",
+                            session_id="s", event_type="shell", raise_on_block=False, name="main")
+    seen = []
+    with patch("prismor_openai.evaluate_tool_call",
+               lambda *, event, **kw: seen.append(event["metadata"]) or Decision(allow=False, reason="stop")):
+        asyncio.run(tool.on_invoke_tool(SimpleNamespace(context=None, usage=SimpleNamespace()), '{"input": "hi"}'))
+    assert seen[0]["handoff_to"] == "summarizer"

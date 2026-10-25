@@ -61,6 +61,12 @@ export interface PrismorOptions {
    */
   agentName?: string;
   /**
+   * Tools that hand work to another agent, mapped to that agent's name
+   * (`{ ask_researcher: "researcher" }`). Their arguments are screened by
+   * `settings.data_boundary.handoffs` as what the subagent is handed.
+   */
+  handoffs?: Record<string, string>;
+  /**
    * Map tool argument keys to a Prismor event type.
    * Default: "shell" (args serialised to command string).
    * Use "network" for URL-fetching tools, "file_write" for file-writing tools.
@@ -168,8 +174,9 @@ export function useSubject<T>(subject: string, fn: () => T): T {
 // called underneath it belongs to a subagent: its type is that toolset's
 // agentName, its id the tool call that started it.
 
-// chain: agent names of every running guarded tool, outermost first
-interface Running { agentName: string; callId: string; chain: string[] }
+// chain: agent names of every running guarded tool, outermost first;
+// root: the outermost guard's session, where the tree's subagents are counted
+interface Running { agentName: string; callId: string; chain: string[]; root: string }
 interface RunningStorage {
   run<T>(store: Running, fn: () => T): T;
   getStore(): Running | undefined;
@@ -191,12 +198,13 @@ function runningStorage(): RunningStorage | null {
 let _callCounter = 0;
 
 /** Run `fn` as tool call `callId` of `agentName`, and say which subagent (if any) is calling. */
-function asRunning<T>(agentName: string, callId: string, fn: () => T): T {
+function asRunning<T>(agentName: string, callId: string, sessionId: string, fn: () => T): T {
   const storage = runningStorage();
   if (!storage) return fn();
-  const outer = storage.getStore()?.chain ?? [];
+  const store = storage.getStore();
+  const outer = store?.chain ?? [];
   const chain = outer[outer.length - 1] === agentName ? outer : [...outer, agentName];
-  return storage.run({ agentName, callId, chain }, fn);
+  return storage.run({ agentName, callId, chain, root: store?.root ?? sessionId }, fn);
 }
 
 function currentSubagent(agentName: string): Subagent | undefined {
@@ -204,12 +212,12 @@ function currentSubagent(agentName: string): Subagent | undefined {
   if (!parent) return undefined;
   const chain = parent.chain.filter((n) => n !== agentName);
   return { id: `${parent.agentName}:${parent.callId}`, type: agentName, parent: parent.agentName,
-           depth: Math.max(chain.length, 1), chain };
+           depth: Math.max(chain.length, 1), chain, root: parent.root };
 }
 
 /** `parent`: the agent it runs under, whose per-agent controls also apply. */
 /** `depth`/`chain`: how deep it is nested, and the agents above it (outermost first). */
-export interface Subagent { id: string; type: string; parent?: string; depth?: number; chain?: string[] }
+export interface Subagent { id: string; type: string; parent?: string; depth?: number; chain?: string[]; root?: string }
 
 function resolveSubject(explicit: string): string {
   if (explicit) return explicit;
@@ -279,6 +287,7 @@ async function evaluate(
         subject,
         workspace: opts.workspace,
         ...(subagent ? { subagent } : {}),
+        ...(opts.handoffs[toolName] ? { handoff_to: opts.handoffs[toolName] } : {}),
       }),
       signal: timeoutSignal(opts.timeoutMs),
     });
@@ -336,6 +345,7 @@ function resolveOpts(opts: PrismorOptions): Required<PrismorOptions> {
     agent,
     agentName: opts.agentName ?? agent,
     eventType: opts.eventType ?? "shell",
+    handoffs: opts.handoffs ?? {},
   };
 }
 
@@ -354,10 +364,9 @@ function sessionId(): string {
  */
 export function prismorTool<
   T extends { execute?: (...args: any[]) => any },
->(toolName: string, tool: T, opts: PrismorOptions = {}): T {
+>(toolName: string, tool: T, opts: PrismorOptions = {}, sid: string = sessionId()): T {
   if (!tool.execute) return tool;
   const resolved = resolveOpts(opts);
-  const sid = sessionId();
   const original = tool.execute;
 
   const guarded = async (args: Record<string, unknown>, ctx: unknown) => {
@@ -367,7 +376,7 @@ export function prismorTool<
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
     const callId = String((ctx as { toolCallId?: string } | undefined)?.toolCallId ?? ++_callCounter);
-    return redactResult(await asRunning(resolved.agentName, callId, () => original(args, ctx)), resolved);
+    return redactResult(await asRunning(resolved.agentName, callId, sid, () => original(args, ctx)), resolved);
   };
 
   return { ...tool, execute: guarded };
@@ -384,8 +393,10 @@ export function prismorTool<
 export function prismorTools<
   T extends Record<string, { execute?: (...args: any[]) => any }>,
 >(tools: T, opts: PrismorOptions = {}): T {
+  // One toolset, one session: the subagents its tools launch are counted together.
+  const sid = sessionId();
   return Object.fromEntries(
-    Object.entries(tools).map(([name, t]) => [name, prismorTool(name, t, opts)]),
+    Object.entries(tools).map(([name, t]) => [name, prismorTool(name, t, opts, sid)]),
   ) as T;
 }
 
@@ -456,7 +467,7 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
     const callId = String(input?.id ?? config?.toolCall?.id ?? ++_callCounter);
-    return redactResult(await asRunning(resolved.agentName, callId, () => original(input, config)), resolved);
+    return redactResult(await asRunning(resolved.agentName, callId, sid, () => original(input, config)), resolved);
   };
   (tool as any).__prismor_guarded__ = true;
   return tool;

@@ -56,6 +56,7 @@ def test_root_transfer_and_agent_tool(tmp_path):
 
     types = [m["subagent_type"] for m in seen]
     assert types == [None, "Researcher", None, "Summarizer", None]
+    assert [m.get("handoff_to") for m in seen] == [None, None, "Summarizer", None, None]
     assert seen[3]["subagent_id"] == "Coordinator:e-1#c3"
     assert seen[1]["subagent_id"] == "Researcher:e-1"
 

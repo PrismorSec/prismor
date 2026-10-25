@@ -112,6 +112,8 @@ def guard_tool(
                 "raw_input": str(input),
                 "subagent_id": sub_id,
                 "subagent_type": sub_type,
+                # A HandoffTool's input is what its target agent is handed.
+                **({"handoff_to": target_name or tool_name} if target is not None else {}),
             },
         }
         decision: Decision = evaluate_tool_call(

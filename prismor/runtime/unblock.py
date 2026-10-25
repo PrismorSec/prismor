@@ -394,6 +394,17 @@ def data_boundary_steps(finding: Dict[str, Any], workspace: Optional[Path]) -> L
     host = str(finding.get("destHost") or "").strip() or "<destination host>"
     classes = list(finding.get("dataClasses") or []) or ["<class>"]
     per_class = ", ".join(f"{c}: allow" for c in classes)
+    if finding.get("handoffTo") is not None:  # what an agent hands a subagent
+        target = str(finding.get("handoffTo") or "") or "<subagent type>"
+        return [
+            "This is the data boundary on handoffs (settings.data_boundary.handoffs), not a "
+            "policy rule, so `prismor allow` cannot relax it. Edit "
+            f"{path}:",
+            f'1. Allow this data for this subagent:  under settings.data_boundary.handoffs.per_subagent add  "{target}": {{{per_class}}}',
+            "2. Or hand over a reference (a record id, a file path) instead of the value itself.",
+            "3. Or keep reporting but stop blocking:  settings.data_boundary.mode: observe",
+            f"Check the file with: prismor policy validate {path}  — then retry the call.",
+        ]
     return [
         "This is the data boundary (settings.data_boundary), not a policy rule, "
         "so `prismor allow` cannot relax it. Edit "

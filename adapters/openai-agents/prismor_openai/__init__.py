@@ -348,6 +348,9 @@ def _guard_function_tool(
         if sub_id and parent:
             # The agent it runs under; its per-agent controls apply on top.
             event["metadata"]["parent_agent_name"] = parent
+        _inner = getattr(tool, "_agent_instance", None)  # Agent.as_tool(): the input is a handoff
+        if _inner is not None and isinstance(getattr(_inner, "name", None), str):
+            event["metadata"]["handoff_to"] = _inner.name
         decision = evaluate_tool_call(
             event=event,
             workspace=ws,

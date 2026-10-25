@@ -767,6 +767,13 @@ def _compare(op, left: Any, right: Any) -> bool:
     return left >= right
 
 
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, Any]:
     """The attribute namespaces a ``when:`` expression can read."""
     meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
@@ -808,7 +815,8 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
         "args": args,
         "tool": {"name": str(meta.get("tool_name") or "")},
         "subagent": {"id": sub_id, "type": meta.get("subagent_type"), "active": bool(sub_id),
-                     "depth": depth, "chain": [str(c) for c in chain]},
+                     "depth": depth, "chain": [str(c) for c in chain],
+                     "number": _int(meta.get("subagent_number")), "age": _int(meta.get("subagent_age"))},
     }
 
 
@@ -2490,6 +2498,16 @@ class PolicyEngine:
                 ))
             except Exception as _db_exc:  # never let data-boundary screening break evaluation
                 sys.stderr.write(f"[prismor] data_boundary evaluation error: {_db_exc}\n")
+
+        # Data boundary on handoffs: what an agent passes to a subagent.
+        if self.data_boundary.enabled and (event_type == "subagent_spawn"
+                                           or (event.get("metadata") or {}).get("handoff_to")):
+            try:
+                findings.extend(self.data_boundary.evaluate_handoff(
+                    event, index, session_id=session_id,
+                    default_mode=self.default_mode, device_mode=self.device_mode))
+            except Exception as _ho_exc:
+                sys.stderr.write(f"[prismor] data_boundary handoff error: {_ho_exc}\n")
 
         # ── Provenance bookkeeping: doc/skill loads and installs ───────────
         # Cheap and detection-independent: record where instructions came from

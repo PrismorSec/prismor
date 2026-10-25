@@ -321,6 +321,11 @@ def evaluate_tool_call(
             identity_token=identity_token or current_token(), explain=explain,
         )
 
+    from prismor.runtime import delegations as _delegations
+    from prismor.runtime.subagent_context import tree_session
+    _scope = str(meta.get("delegation_scope") or tree_session(session_id, bool(meta.get("subagent_id"))))
+    _delegations.stamp(event, _agent_name, _scope)
+
     perf.lap()
     if not record:
         persist = False
@@ -935,6 +940,8 @@ def evaluate_tool_call(
         }
     if blocking is None and mode == "observe" and meta.get("framework"):
         _warn_observe_adapter(str(meta["framework"]), findings)
+    if blocking is None and record:
+        _delegations.record(event, _agent_name, _scope)
     return Decision(
         allow=blocking is None,
         findings=findings,

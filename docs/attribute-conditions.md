@@ -40,6 +40,8 @@ they all go through one [decision contract](decision-contract.md).
 | `subagent.type` | the subagent's type, e.g. `general-purpose` (`null` on the main agent) | same |
 | `subagent.depth` | how deep the call is nested: `0` on the main agent, `1` for its subagent, `2` for a subagent's subagent | the SDK adapter, or the nesting of guarded tools in this process |
 | `subagent.chain` | the agents above the caller, outermost first, e.g. `['support-bot', 'researcher']` (`[]` on the main agent) | same |
+| `subagent.number` | which of its parent's subagents made the call (1 = first); on a launch, the number the new subagent gets; `0` otherwise | Prismor's [delegation records](subagent-limits.md#delegation-records) |
+| `subagent.age` | seconds since the subagent's first allowed call (`0` on the main agent) | same |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a
@@ -173,9 +175,13 @@ event_types: [subagent_spawn]
 when: "args.subagent_type not in ['Explore', 'Plan']"
 ```
 
-The Claude Code or Codex call that launches a subagent is a
-`subagent_spawn` event, so this blocks the launch itself: the subagent never
-starts.
+The Claude Code call that launches a subagent is a `subagent_spawn` event,
+so this blocks the launch itself: the subagent never starts. Codex has no
+launch event; hold its subagents with `subagent.type` rules.
+
+To cap how many subagents an agent launches (`subagent.number > 5`) or let a
+delegation expire (`subagent.age > 900`), see
+[Limiting subagents](subagent-limits.md).
 
 **Limit how deep subagents go**
 

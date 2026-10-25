@@ -46,7 +46,9 @@
       "chain": [
         "support-bot",
         "researcher"
-      ]
+      ],
+      "number": 2,
+      "age": 30
     }
   },
   "valid": [
@@ -216,6 +218,14 @@
     },
     {
       "expr": "subagent.chain[0] == 'support-bot'",
+      "result": true
+    },
+    {
+      "expr": "subagent.number > 5",
+      "result": false
+    },
+    {
+      "expr": "subagent.age >= 30 and subagent.number == 2",
       "result": true
     }
   ],

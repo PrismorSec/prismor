@@ -153,6 +153,7 @@ Users without an explicit IAM profile fall through to org-wide defaults.
 | `workspace` | `string` | `process.cwd()` | Project path for policy + IAM lookup |
 | `agent` | `string` | `"vercel-ai"` | Agent label in telemetry |
 | `agentName` | `string` | same as `agent` | Per-instance name for kill-switch / per-agent controls |
+| `handoffs` | `Record<string, string>` | `{}` | Tools that hand work to another agent, mapped to its name; their arguments are screened by `settings.data_boundary.handoffs` ([Limiting subagents](subagent-limits.md)) |
 | `eventType` | `string` | `"shell"` | `shell`, `network`, `file_write`, `file_read` |
 
 ## Event type mapping

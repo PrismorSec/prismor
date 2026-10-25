@@ -55,6 +55,22 @@ def current_chain() -> Tuple[str, ...]:
     return parent[4] if parent else ()
 
 
+# The session of the last main-agent call screened in this context. Frameworks
+# give each agent run its own session id, so a subagent's calls are counted in
+# the delegation records of the main agent's session instead.
+_TREE: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("prismor_tree_session", default=None)
+
+
+def tree_session(session_id: str, is_subagent: bool) -> str:
+    """The session a call's delegation records belong to."""
+    if not is_subagent:
+        _TREE.set(session_id)
+        return session_id
+    # Only while a guarded tool runs the subagent: outside one, a remembered
+    # session may belong to an earlier, unrelated run.
+    return (_TREE.get() if _RUNNING.get() is not None else None) or session_id
+
+
 @contextmanager
 def running(agent_label: str, call_id: Optional[str] = None, *,
             agent_name: Optional[str] = None, child_type: Optional[str] = None) -> Iterator[None]:

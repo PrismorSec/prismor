@@ -158,6 +158,8 @@ def make_before_tool_callback(
                 "subagent_type": sub_type,
             },
         }
+        if type(tool).__name__ == "AgentTool":  # its arguments are what its agent is handed
+            event["metadata"]["handoff_to"] = getattr(getattr(tool, "agent", None), "name", None) or event["metadata"]["tool_name"]
         decision: Decision = evaluate_tool_call(
             event=event, workspace=ws, agent=agent, agent_name=name or "",
             mode=mode, session_id=run_id, subject=resolve_subject(subject),

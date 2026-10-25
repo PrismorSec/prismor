@@ -43,6 +43,7 @@ that vendor was just fetched (the "follow the SKILL.md" shape).
 from __future__ import annotations
 
 import functools
+import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -83,6 +84,8 @@ RULE_SELF_EXTERNAL = "self-identity-to-external"
 RULE_SECRET_NONVENDOR = "secret-to-non-vendor"
 RULE_BULK = "bulk-pii-outbound"
 RULE_FILE_UPLOAD = "file-upload-to-external"
+RULE_PII_HANDOFF = "pii-to-subagent"
+RULE_SECRET_HANDOFF = "secret-to-subagent"
 
 ACTIONS = ("allow", "observe", "warn", "step_up", "redact", "block")
 _ACTION_LADDER = ["allow", "observe", "warn", "step_up", "redact", "block"]
@@ -905,7 +908,8 @@ class DataBoundaryPolicy:
     """Compiled ``settings.data_boundary``. Inert unless enabled."""
 
     __slots__ = ("enabled", "mode", "trusted", "classes", "per_domain", "bulk_threshold",
-                 "self_identity", "unknown_cli", "source", "errors", "_trusted_policy")
+                 "self_identity", "unknown_cli", "source", "errors", "_trusted_policy",
+                 "handoffs", "handoffs_per_subagent")
 
     def __init__(self) -> None:
         self.enabled = False
@@ -919,6 +923,9 @@ class DataBoundaryPolicy:
         self.source = ""
         self.errors: List[str] = []
         self._trusted_policy: Optional[EgressPolicy] = None
+        # What may be handed to a subagent: class -> action, plus per-type overrides.
+        self.handoffs: Dict[str, str] = {}
+        self.handoffs_per_subagent: Dict[str, Dict[str, str]] = {}
 
     @classmethod
     def from_settings(cls, settings: Dict[str, Any], *, source: str = "") -> "DataBoundaryPolicy":
@@ -957,6 +964,17 @@ class DataBoundaryPolicy:
             pol.errors.append("bulk_threshold must be an integer")
         pol.self_identity = [str(s).strip().lower() for s in (raw.get("self_identity") or []) if str(s).strip()]
         pol.unknown_cli = _norm_action(raw.get("unknown_cli"), "observe")
+        ho = raw.get("handoffs")
+        if isinstance(ho, dict):
+            for key, val in ho.items():
+                if key == "per_subagent" and isinstance(val, dict):
+                    pol.handoffs_per_subagent = {
+                        str(t): {k: _norm_action(a) for k, a in cmap.items()}
+                        for t, cmap in val.items() if isinstance(cmap, dict)}
+                elif str(val).lower() in ACTIONS:
+                    pol.handoffs[str(key)] = _norm_action(val)
+                else:
+                    pol.errors.append(f"handoffs.{key}: unknown action {val!r}")
         # Compile the trusted list through the egress matcher for wildcard/CIDR support.
         pol._trusted_policy = EgressPolicy._from_dict({
             "enabled": True, "default": "deny", "allow_private": True,
@@ -1146,6 +1164,70 @@ class DataBoundaryPolicy:
             ))
         return findings
 
+    def evaluate_handoff(self, event: Dict[str, Any], index: int, *, session_id: str = "",
+                         default_mode: str = "observe", device_mode: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Screen what an agent hands to a subagent (``settings.data_boundary.handoffs``).
+
+        A handoff is a Claude Code launch (``subagent_spawn``: its prompt and
+        description) or a call an adapter marks with ``metadata.handoff_to``
+        (an ADK AgentTool, an OpenAI Agents SDK agent-as-tool, a BeeAI
+        HandoffTool, an eval-server caller): its arguments.
+        """
+        if not (self.enabled and (self.handoffs or self.handoffs_per_subagent)):
+            return []
+        meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        if str(event.get("type") or "") == "subagent_spawn":
+            target = str(event.get("subagent_type") or "")
+            text = "\n".join(str(event.get(k) or "") for k in ("description", "prompt"))
+        elif meta.get("handoff_to"):
+            target = str(meta["handoff_to"])
+            parts = {k: meta.get(k) for k in ("args", "kwargs", "raw_input") if meta.get(k)}
+            parts.update({k: event[k] for k in ("command", "content", "url") if event.get(k)})
+            text = json.dumps(parts, default=str)
+        else:
+            return []
+        by_kind: Dict[str, List[Match]] = {}
+        for m in classify(text, policy=self, context="body"):
+            if not m.synthetic:
+                by_kind.setdefault(m.kind, []).append(m)
+        override = self.handoffs_per_subagent.get(target, {})
+        action, kind = "allow", ""
+        for k in by_kind:
+            act = override.get(k, self.handoffs.get(k, "allow"))
+            if _ACTION_LADDER.index(act) > _ACTION_LADDER.index(action):
+                action, kind = act, k
+        if action == "allow":
+            return []
+        if action == "redact":
+            action = "step_up"  # a handoff's text is not rewritten
+        if action in ("observe", "warn"):
+            mode = "observe"
+        else:
+            mode = "enforce" if str(self.mode or device_mode or default_mode).lower() == "enforce" else "observe"
+        matches = [m for ms in by_kind.values() for m in ms]
+        rule_id = RULE_SECRET_HANDOFF if "secret" in by_kind else RULE_PII_HANDOFF
+        fid = f"{rule_id}-{index}"
+        finding: Dict[str, Any] = {
+            "id": f"{session_id}:{fid}" if session_id else fid,
+            "severity": "CRITICAL" if "secret" in by_kind else "HIGH",
+            "category": CATEGORY,
+            "title": f"Handoff gives subagent '{target or 'agent'}' {', '.join(sorted(by_kind))}",
+            "evidence": _truncate(", ".join(m.as_dict()["masked"] for m in matches)),
+            "eventIndex": index,
+            "ruleId": rule_id,
+            "action": {"observe": "warn", "warn": "warn", "step_up": "step_up", "block": "block"}[action],
+            "mode": mode,
+            "dataClasses": sorted(by_kind),
+            "dataSubject": "self" if any(m.is_self for m in matches) else "third_party",
+            "destTrust": "subagent",
+            "handoffTo": target,
+            "remediation": (f"Pass a reference instead of the value, or allow {kind} for this subagent "
+                            f"under settings.data_boundary.handoffs.per_subagent.{target or '<type>'}."),
+        }
+        if mode == "enforce" and self.source == "remote":
+            finding["authoritative"] = True
+        return [finding]
+
     def _finding(self, rule_id: str, severity: str, action: str, index: int, session_id: str,
                  event: Dict[str, Any], ob: Outbound, tier: str, matches: List[Match], *,
                  title: str, provenance: Optional[Dict[str, Any]], default_mode: str,
@@ -1198,6 +1280,8 @@ class DataBoundaryPolicy:
             "per_domain": self.per_domain, "bulk_threshold": self.bulk_threshold,
             "self_identity": [mask(s) for s in self.self_identity],
             "unknown_cli": self.unknown_cli, "source": self.source or "default",
+            "handoffs": {**self.handoffs, **({"per_subagent": self.handoffs_per_subagent}
+                                             if self.handoffs_per_subagent else {})},
             "errors": list(self.errors),
         }
 

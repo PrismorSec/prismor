@@ -80,6 +80,7 @@ def _build_event(
     available_tools: Optional[list[str]] = None,
     resource: Optional[dict] = None,
     subagent: Optional[dict] = None,
+    handoff_to: Optional[str] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
     sub = subagent if isinstance(subagent, dict) else {}
@@ -108,6 +109,10 @@ def _build_event(
             "subagent_type": str(sub["type"])[:200] if sub.get("type") else None,
             # The agent it runs under; its per-agent controls apply on top.
             "parent_agent_name": str(sub["parent"])[:200] if sub.get("parent") else None,
+            # The agent tree the call runs in: delegation records count under it.
+            **({"delegation_scope": str(sub["root"])[:200]} if sub.get("root") else {}),
+            # The subagent this call hands work to, screened by data_boundary.handoffs.
+            **({"handoff_to": str(handoff_to)[:200]} if handoff_to else {}),
             **({"subagent_depth": sub["depth"]} if isinstance(sub.get("depth"), int) and not isinstance(sub.get("depth"), bool) else {}),
             **({"subagent_chain": [str(c)[:200] for c in sub["chain"][:32]]} if isinstance(sub.get("chain"), list) else {}),
         },
@@ -276,6 +281,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             if isinstance(body.get("available_tools"), list) else [],
             resource=body.get("resource") if isinstance(body.get("resource"), dict) else None,
             subagent=body.get("subagent"),
+            handoff_to=body.get("handoff_to") if isinstance(body.get("handoff_to"), str) else None,
         )
 
         try:

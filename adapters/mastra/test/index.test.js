@@ -135,5 +135,8 @@ test("sub-agents report as subagents of a registered parent's run; alone they ar
   assert.equal(bodies[1].subagent.parent, "support-bot");
   assert.equal(bodies[2].subagent, undefined);
   assert.equal(bodies[3].subagent, undefined); // ask_writer itself, called by the main agent
-  assert.deepEqual(bodies[4].subagent, { id: "support-bot:c4", type: "writer", parent: "mastra", depth: 1, chain: ["mastra"] });
+  const { root, ...writer } = bodies[4].subagent;
+  assert.deepEqual(writer, { id: "support-bot:c4", type: "writer", parent: "mastra", depth: 1, chain: ["mastra"] });
+  assert.equal(root, bodies[3].session_id);  // counted in the launching tool's session
+  assert.ok(bodies[1].subagent.root.startsWith("mastra-"));  // or the registered parent's run
 });
