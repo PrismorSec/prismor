@@ -24,10 +24,17 @@ where it runs.
 
    ![The Claude Cowork card on the console's Integrations page, with the Download plugin button](claude-cowork/console-integrations.png)
 
-2. On claude.ai, add `www.prismor.dev` to the allowed domains: **Settings →
-   Capabilities** on an individual plan, **Organization settings →
-   Capabilities** on Team and Enterprise. Without it the plugin still blocks,
-   but nothing reaches the console.
+2. Let the sandbox reach the console. In **Settings → Capabilities**, under
+   **Code execution and file creation**, turn on **Allow network egress**,
+   keep the **Domain allowlist** on **Package managers only**, and add
+   `www.prismor.dev` and `prismor.dev` under **Additional allowed domains**.
+   On Team and Enterprise this lives in **Organization settings →
+   Capabilities** and an admin sets it. Without these domains the plugin still
+   blocks, but nothing reaches the console: the sandbox's egress proxy refuses
+   the connection.
+
+   ![Claude settings, Capabilities: network egress on, domain allowlist set to package managers only, with prismor.dev and www.prismor.dev added](claude-cowork/allowed-domains.png)
+
 3. In the Claude app, open **Settings → Plugins**, then **Add → Upload
    plugin**, and drop the file in. On Team and Enterprise, an admin can
    publish it through a private plugin marketplace instead, so every member
