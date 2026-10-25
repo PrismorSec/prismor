@@ -1,11 +1,9 @@
 """Subagent attribution and hook-matcher migration.
 
-Every hook invocation is a separate process and Claude runs subagents
-concurrently, so a session's tag ledger is written by several processes at
-once. A lost update silently un-taints a session, so the forbidden tool
-combination is never blocked — that failure mode is fail-*open*.
+Concurrent ledger writes from parallel subagents are covered by
+test_ledger_concurrency.py.
 
-This file also pins down subagent_id/subagent_type attribution: Claude tags
+This file pins down subagent_id/subagent_type attribution: Claude tags
 tool calls made inside a spawned subagent with agent_id/agent_type, and the
 normalizer/telemetry layer must promote those into metadata.subagent_id /
 subagent_type (and the Task/Agent tool itself into a subagent_spawn event) so
@@ -13,97 +11,17 @@ the control plane can attribute an action to the subagent that took it.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import sys
 import unittest
-from multiprocessing import Process
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prismor.runtime.enterprise.telemetry import build_record  # noqa: E402
 from prismor.runtime.hooks import _merge_claude_entries, _normalize_claude  # noqa: E402
-from prismor.runtime.trifecta import (  # noqa: E402
-    CRITICAL,
-    UNTRUSTED,
-    TagLedger,
-    normalize_incompatible,
-)
 
 SESSION = "sess"
-INCOMPATIBLE = normalize_incompatible(None)  # the default red/blue pair
-
-
-def _record_worker(home: str, tag: str, index: int, tool: str, barrier: str) -> None:
-    """Runs in a child process, mimicking one hook invocation."""
-    os.environ["PRISMOR_HOME"] = home
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from prismor.runtime.trifecta import TagLedger as Ledger
-
-    while not Path(barrier).exists():  # collide the writes as hard as possible
-        pass
-    Ledger(Path(home), SESSION).record({tag}, index, tool)
-
-
-def _run_concurrently(home: Path, specs) -> None:
-    barrier = home / "GO"
-    procs = [
-        Process(target=_record_worker, args=(str(home), tag, idx, tool, str(barrier)))
-        for tag, idx, tool in specs
-    ]
-    for p in procs:
-        p.start()
-    barrier.write_text("go")
-    for p in procs:
-        p.join()
-
-
-class ConcurrentLedgerWrites(unittest.TestCase):
-    """Parallel subagents must not drop each other's ledger records."""
-
-    def setUp(self) -> None:
-        import tempfile
-
-        self.home = Path(tempfile.mkdtemp(prefix="prismor-test-"))
-        self._prior_home = os.environ.get("PRISMOR_HOME")
-        os.environ["PRISMOR_HOME"] = str(self.home)
-
-    def tearDown(self) -> None:
-        import shutil
-
-        if self._prior_home is None:
-            os.environ.pop("PRISMOR_HOME", None)
-        else:
-            os.environ["PRISMOR_HOME"] = self._prior_home
-        shutil.rmtree(self.home, ignore_errors=True)
-
-    def test_no_lost_updates_under_concurrent_writers(self):
-        n = 12
-        _run_concurrently(self.home, [(f"tag{i}", i, f"tool{i}") for i in range(n)])
-        ledger = TagLedger(self.home, SESSION)
-        missing = {f"tag{i}" for i in range(n)} - set(ledger.seen)
-        self.assertEqual(missing, set(), f"lost {len(missing)} concurrent records")
-
-    def test_ledger_file_never_tears(self):
-        _run_concurrently(self.home, [(f"tag{i}", i, f"tool{i}") for i in range(12)])
-        path = self.home / "trifecta" / f"{SESSION}.json"
-        # A torn file is swallowed by the loader's except-and-continue, which
-        # resets the session to clean state — so it must be impossible, not rare.
-        json.loads(path.read_text(encoding="utf-8"))
-
-    def test_concurrent_writers_do_not_open_the_trifecta_gate(self):
-        """The security consequence of a lost update: one subagent fetches
-        untrusted content while others write concurrently; a later critical
-        action must still be blocked."""
-        specs = [(UNTRUSTED, 0, "WebFetch")]
-        specs += [(f"noise{i}", i + 1, f"tool{i}") for i in range(11)]
-        _run_concurrently(self.home, specs)
-        done = TagLedger(self.home, SESSION).completes(
-            {CRITICAL}, INCOMPATIBLE, current_index=99
-        )
-        self.assertIsNotNone(done, "forbidden combination was not detected")
 
 
 class HookMatcherMigration(unittest.TestCase):

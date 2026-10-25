@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLI = str(REPO_ROOT / "prismor" / "runtime" / "cli.py")
-IMMUNITY_CLI = str(REPO_ROOT / "bin" / "immunity")
+IMMUNITY_CLI = str(REPO_ROOT / "bin" / "prismor")
 SAMPLE = str(REPO_ROOT / "prismor" / "runtime" / "examples" / "sample-session.jsonl")
 
 

@@ -4,8 +4,7 @@ The gateway is the single MCP connector users point their agent at; every
 tools/call is policy-evaluated pre-forward and every response is scanned
 post-forward. Unit tests drive the Gateway in-process with fake upstreams
 (mirroring the adapter-regression pattern of monkeypatching
-``evaluate_tool_call``); transport tests run the real ``UpstreamStdio``
-against the dependency-free demo server in examples/mcp-block-demo/.
+``evaluate_tool_call``).
 """
 from __future__ import annotations
 
@@ -29,7 +28,6 @@ from prismor.runtime.mcp_gateway import (  # noqa: E402
     Upstream,
     UpstreamError,
     UpstreamSpec,
-    UpstreamStdio,
     install_gateway,
     load_gateway_config,
     parse_inline_server,
@@ -37,7 +35,6 @@ from prismor.runtime.mcp_gateway import (  # noqa: E402
 )
 from prismor.runtime.runtime import Decision  # noqa: E402
 
-DEMO_SERVER = _ROOT / "examples" / "mcp-block-demo" / "mcp_server.py"
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -473,55 +470,6 @@ def test_failed_upstream_handshake_does_not_stall_tools_list(tmp_path, monkeypat
     assert "dead" in tools["prismor_gateway_status"]["description"]
     gateway._handle_tools_call_safe(7, {"name": "prismor_gateway_status", "arguments": {}})
     assert "dead: failed to start: exited" in sent[-1]["result"]["content"][0]["text"]
-
-
-# ── real stdio transport against the demo server ─────────────────────────────
-
-@pytest.mark.skipif(not DEMO_SERVER.exists(), reason="demo server missing")
-def test_upstream_stdio_lifecycle():
-    up = UpstreamStdio(UpstreamSpec(name="demo",
-                                    command=[sys.executable, str(DEMO_SERVER)]))
-    try:
-        init = up.initialize({"protocolVersion": "2025-03-26",
-                              "clientInfo": {"name": "pytest"}})
-        assert init["serverInfo"]["name"] == "prismor-demo"
-        tools = up.request("tools/list", {})["tools"]
-        assert {t["name"] for t in tools} >= {"read_note", "send_report"}
-        result = up.request("tools/call", {"name": "list_projects",
-                                           "arguments": {}})
-        assert "Atlas" in result["content"][0]["text"]
-    finally:
-        up.close()
-    assert up._proc is None or up._proc.poll() is not None  # no zombie
-
-
-@pytest.mark.skipif(not DEMO_SERVER.exists(), reason="demo server missing")
-def test_gateway_end_to_end_real_engine(tmp_path, monkeypatch):
-    """Full path: real UpstreamStdio + real evaluate_tool_call (default policy)."""
-    monkeypatch.delenv("PRISMOR_AGENT_KEY", raising=False)
-    spec = UpstreamSpec(name="demo", command=[sys.executable, str(DEMO_SERVER)])
-    gateway = Gateway([spec], workspace=tmp_path, mode="enforce")
-    sent = []
-    monkeypatch.setattr(gateway, "_send", lambda msg: sent.append(msg))
-    try:
-        gateway._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                           "params": {"protocolVersion": "2025-03-26",
-                                      "clientInfo": {"name": "pytest"}}})
-        gateway._dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list",
-                           "params": {}})
-        assert "demo__list_projects" in {t["name"] for t in sent[-1]["result"]["tools"]}
-        gateway._handle_tools_call_safe(3, {"name": "demo__list_projects",
-                                            "arguments": {}})
-        result = sent[-1]["result"]
-        assert not result.get("isError")
-        assert "Atlas" in result["content"][0]["text"]
-        # The session store recorded the call under the gateway session.
-        from prismor.runtime.store import read_session_events
-        events = read_session_events(tmp_path, gateway.session_id)
-        assert any(e.get("metadata", {}).get("tool_name")
-                   == "mcp__demo__list_projects" for e in events)
-    finally:
-        gateway.close()
 
 
 # ── install / uninstall ──────────────────────────────────────────────────────

@@ -258,3 +258,9 @@ include = [
     "PYPI.md",
     "LICENSE",
 ]
+
+# Type checking is advisory (not a CI gate). Scoped to shipped code so a local
+# venv/, build/ or a nested worktree is never walked (#585). See CONTRIBUTING.md.
+[tool.pyright]
+include = ["prismor", "adapters", "supplychain"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", "venv", "build", "dist"]

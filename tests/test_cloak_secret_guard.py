@@ -169,3 +169,9 @@ shutil.rmtree(_HOME, ignore_errors=True)
 print(f"\n{_passed} passed, {_failed} failed")
 if __name__ == "__main__":
     sys.exit(1 if _failed else 0)
+
+
+def test_secret_guard_no_failures():
+    # The checks above run at import; this makes them fail the pytest run
+    # (CI collects this file via scripts/run_security_tests.sh).
+    assert _failed == 0, f"{_failed} secret-guard check(s) failed"
