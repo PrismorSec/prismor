@@ -184,9 +184,27 @@ def test_bash_prismer_mention_negative_denied():
         f"prismor cloak list; cat {_WS}/.env",
         "prismor cloak list && sed -n 1p .env",
         "prismor cloak add --env-file .env | cat .env",
+        "prismor cloak add --env-file .env 2>&1 | cat .env",
+        "prismor cloak list `cat .env`",
+        "prismor cloak list $(cat .env)",
+        "prismor cloak list `cat ./x .env`",
     ):
         res = bash_call(cmd)
         check(f"non-exempt read denied: `{cmd}`", denied(res), str(res))
+
+
+def test_bash_ingest_with_redirects_and_filters_allowed():
+    # The guard's own remedy, as an agent actually types it: stderr merged,
+    # the update nag filtered. Denied before because the whole-command regex
+    # refused any `&`/`|`/`>` and `grep` then counted as reading .env.
+    for cmd in (
+        "prismor cloak add --env-file .env 2>&1",
+        f"prismor cloak add --env-file {_WS}/.env 2>&1 | grep -v 'is available'",
+        "prismor cloak add --env-file .env > /dev/null && prismor cloak list",
+        "/venv/bin/prismor cloak add --env-file .env | tail -3",
+    ):
+        res = bash_call(cmd)
+        check(f"ingest pipeline allowed: `{cmd}`", res is None, str(res))
 
 
 def test_bash_remote_shell_paths_are_not_local():
@@ -292,6 +310,7 @@ def main() -> int:
         test_bash_unrelated_command_allowed,
         test_bash_absolute_path_denied,
         test_bash_prismer_mention_negative_denied,
+        test_bash_ingest_with_redirects_and_filters_allowed,
         test_bash_remote_shell_paths_are_not_local,
         test_bash_cd_moves_relative_paths,
         test_stands_down_once_imported,
