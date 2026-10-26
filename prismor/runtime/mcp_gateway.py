@@ -1346,13 +1346,26 @@ def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[st
     Still skips ``contextInert`` matches (an injection quoted inside a commit
     message or grep pattern describes rather than performs) and any category
     outside the curated withhold set. Returns None when nothing qualifies.
+
+    A semantic finding no model produced is keyword scoring, and the engine
+    only lets it block at its higher heuristic threshold, because on its own it
+    flags SDK docs and source code (``export async function`` + ``context.env``
+    read as "export .env"). Withholding on its warn would hide ordinary docs
+    from the model, so such a finding withholds only when it reached block.
     """
     from prismor.runtime.contract import strongest
     return strongest([
         f for f in (findings or [])
         if not f.get("contextInert")
         and f.get("category") in _WITHHOLD_CATEGORIES
+        and not _heuristic_semantic_warn(f)
     ])
+
+
+def _heuristic_semantic_warn(finding: Dict[str, Any]) -> bool:
+    return (finding.get("category") == "prompt_injection_semantic"
+            and not finding.get("judged")
+            and finding.get("action") != "block")
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],
