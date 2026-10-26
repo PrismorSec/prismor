@@ -175,8 +175,24 @@ def clear_identity() -> bool:
 REVOKED_RETRY_SECONDS = 3600.0
 
 
+def identity_scope() -> str:
+    """Suffix for per-identity state files under $PRISMOR_HOME.
+
+    "" for the machine's enrolled identity (paths unchanged). For a
+    ``$PRISMOR_AGENT_KEY`` identity, ``.agent-<sha256(key)[:16]>``: an SDK agent
+    run on a developer machine must not drain the machine's telemetry spool
+    (its hook events were uploaded as the agent's), nor mark the machine
+    revoked when the agent's key is rejected.
+    """
+    key = (os.environ.get("PRISMOR_AGENT_KEY") or "").strip()
+    if not key:
+        return ""
+    import hashlib
+    return ".agent-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
 def _revoked_marker_path() -> Path:
-    return prismor_home() / "device-revoked.json"
+    return prismor_home() / f"device-revoked{identity_scope()}.json"
 
 
 def mark_revoked(reason: str = "") -> None:
