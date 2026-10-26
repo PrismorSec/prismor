@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from prismor.runtime import perf
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
@@ -237,6 +237,7 @@ def evaluate_tool_call(
     identity_token: Optional[str] = None,
     explain: bool = False,
     session_seq: Optional[int] = None,
+    deny_tools: Sequence[str] = (),
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -250,6 +251,10 @@ def evaluate_tool_call(
         repo_root: repo root for analysis (defaults to ``workspace``).
         subject: resolved end-user principal; if ``None`` it is resolved from
             ``PRISMOR_SUBJECT`` / device identity so single-user installs are unchanged.
+        deny_tools: extra tool tags denied for this call by the caller's own
+            scope, merged into the agent's deny list (same finding, logging and
+            hiding as an operator deny). The MCP gateway passes a tool its
+            server entry's tool selection leaves out.
         record: when False, decide only - no event, finding, telemetry, heartbeat
             or audit record. Used when another hook process (a global and a
             project install of the same agent) already records this call.
@@ -569,6 +574,14 @@ def evaluate_tool_call(
 
     if _identity_finding is not None:
         findings.insert(0, _identity_finding)
+
+    # A caller-scoped deny (the MCP gateway's per-server tool selection) joins
+    # the agent's own list, so it hides, blocks and logs exactly like one.
+    if deny_tools:
+        from dataclasses import replace as _dc_replace
+        from prismor.runtime.agents import AgentControl
+        _base = _control if _control is not None else AgentControl(name=_agent_name)
+        _control = _dc_replace(_base, deny_tools=tuple(_base.deny_tools) + tuple(deny_tools))
 
     # Per-agent / global tool-tag deny list (operator-set from the dashboard's
     # Tool Call panel). Resolves the tool tag the same way scoped rules do, so

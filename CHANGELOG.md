@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Added
+- **Choose which of a server's tools the MCP gateway exposes.** A server entry in the gateway config can carry `"tools": {"allow": [...], "deny": [...]}` (tool names as the server lists them, globs allowed). A tool left out is hidden from `tools/list` in every mode, and a call to it by name is denied and logged like an operator deny. Hosted MCP endpoints use it for their per-endpoint tool selection and for "new tools start off" (the console sends the tools you have reviewed as `allow`). `evaluate_tool_call` takes the matching `deny_tools=` for any caller with its own scope. See docs/mcp-gateway.md.
+
 ## [1.68.2] — 2026-10-26
 
 ### Fixed
