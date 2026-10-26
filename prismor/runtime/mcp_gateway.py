@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import fnmatch
 import re
 import shlex
 import signal
@@ -83,6 +84,19 @@ class UpstreamSpec:
     #: In-process mirrored built-ins (see runtime/mirror.py) — no child
     #: process, no socket. Served by UpstreamLocal.
     local: bool = False
+    #: Which of the server's tools this gateway exposes, from the entry's
+    #: ``"tools": {"allow": [...], "deny": [...]}`` (tool names as the server
+    #: lists them, globs allowed). ``allow`` None = every tool. A tool left out
+    #: is hidden from tools/list and, if called by name anyway, denied through
+    #: the normal policy pipeline (agent-control finding, logged). Hosted MCP
+    #: endpoints use it for their tool selection and for "new tools start off".
+    allow_tools: Optional[List[str]] = None
+    deny_tools: List[str] = field(default_factory=list)
+
+    def excludes(self, tool: str) -> bool:
+        if any(fnmatch.fnmatchcase(tool, p) for p in self.deny_tools):
+            return True
+        return self.allow_tools is not None and not any(fnmatch.fnmatchcase(tool, p) for p in self.allow_tools)
 
     @property
     def remote(self) -> bool:
@@ -120,6 +134,16 @@ def load_gateway_config(path: Path) -> List[UpstreamSpec]:
     return specs
 
 
+def _tool_selection(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    sel = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    allow = sel.get("allow")
+    deny = sel.get("deny")
+    return {
+        "allow_tools": [str(t) for t in allow] if isinstance(allow, list) else None,
+        "deny_tools": [str(t) for t in deny] if isinstance(deny, list) else [],
+    }
+
+
 def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
     # {"mirror": true} / {"type": "mirror"} — the in-process built-ins.
     if cfg.get("mirror") is True or str(cfg.get("type") or "").lower() == "mirror":
@@ -133,7 +157,7 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
         return UpstreamSpec(name=name, url=meta["url"],
                             transport=meta["transport"] or "http",
-                            headers=dict(headers or {}))
+                            headers=dict(headers or {}), **_tool_selection(cfg))
     command = cfg.get("command")
     if isinstance(command, str):
         argv = [command] + [str(a) for a in cfg.get("args") or []]
@@ -143,7 +167,8 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         raise GatewayConfigError(f"server '{name}' has neither a url nor a command")
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
     return UpstreamSpec(name=name, command=argv, transport="stdio",
-                        env={str(k): str(v) for k, v in (env or {}).items()})
+                        env={str(k): str(v) for k, v in (env or {}).items()},
+                        **_tool_selection(cfg))
 
 
 def parse_inline_server(value: str) -> UpstreamSpec:
@@ -772,6 +797,8 @@ class Gateway:
         Anything else (a pattern that might match some arguments and not
         others) stays a call-time decision. Observe mode hides nothing.
         """
+        if self._selection_denies(route):
+            return True  # not exposed by this gateway's tool selection, in any mode
         if self.mode != "enforce" or self._passthrough(route):
             return False
         # ponytail: one full evaluation per tool (~20 ms each: the engine is
@@ -787,6 +814,7 @@ class Gateway:
                 # is needed for the argument-independent decisions used below.
                 decision = evaluate_tool_call(
                     event=self._build_call_event(route, {}), workspace=self.workspace,
+                    deny_tools=self._selection_denies(route),
                     agent=GATEWAY_AGENT, mode=self.mode, session_id="",
                     agent_name=self.agent_name, persist=False, record=False,
                     register_agent=False, flush_at_exit=False)
@@ -931,7 +959,8 @@ class Gateway:
         passthrough = self._passthrough(route)
 
         # Pre-call evaluation.
-        decision = self._evaluate(self._build_call_event(route, arguments))
+        decision = self._evaluate(self._build_call_event(route, arguments),
+                                  deny_tools=self._selection_denies(route))
         if decision is not None:
             from prismor.runtime.runtime import log_observe_findings
             log_observe_findings(decision, tool_name=name,
@@ -1185,7 +1214,14 @@ class Gateway:
         if refusal:
             raise UpstreamError(refusal)
 
-    def _evaluate(self, event: Dict[str, Any]):
+    def _selection_denies(self, route: "_Route") -> List[str]:
+        """The route's tool tag when the server entry's tool selection leaves it out."""
+        spec = route.upstream.spec
+        if spec.local or not spec.excludes(route.tool):
+            return []
+        return [f"mcp__{route.server}__{route.tool}"]
+
+    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None):
         """Run one event through the shared runtime pipeline.
 
         Serialized: the trifecta TagLedger depends on session ordering, and
@@ -1202,6 +1238,7 @@ class Gateway:
                     mode=self.mode,
                     session_id=self.session_id,
                     agent_name=self.agent_name,
+                    deny_tools=deny_tools or (),
                 )
         except Exception as exc:
             # Fail open on engine *errors* only in observe mode; in enforce

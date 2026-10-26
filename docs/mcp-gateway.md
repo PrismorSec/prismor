@@ -100,9 +100,36 @@ The token file is re-read on every call, so a refresher can rotate it as the
 token expires; `PRISMOR_IDENTITY_TOKEN` works for a static token. When the
 token changes to another user, the gateway sends `tools/list_changed` on the
 next call so the host re-lists with that user's tools. Under `require`, no
-valid token means no tools. See [identity verification](identity-verification.md). Calling a hidden tool by name returns
-"not available to this caller (denied by policy)". Observe mode hides nothing.
+valid token means no tools. See [identity verification](identity-verification.md). Calling a hidden tool by name anyway is
+blocked by the policy that hid it and logged like any other blocked call, so an
+agent probing for denied tools shows up in the console. Observe mode hides
+nothing (except tools a server entry's tool selection leaves out, below).
 The gateway also passes each call's arguments to `when:` rules as `args.*`.
+
+### Exposing only some of a server's tools
+
+A server entry can name the tools the gateway exposes, by the names the server
+lists them under (globs allowed):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": { "Authorization": "Bearer ${GITHUB_PAT}" },
+      "tools": { "allow": ["get_*", "list_*", "search_*"], "deny": ["get_secret_scanning_alert"] }
+    }
+  }
+}
+```
+
+`allow` keeps only the matching tools (leave it out to keep every tool); `deny`
+removes tools from what is left. A tool left out is hidden from `tools/list` in
+every mode, and a call to it by name is denied and logged as an agent-control
+block. Hosted endpoints use this for the tools you select per endpoint in the
+console, and for **New tools start off**, where `allow` is the tools you have
+reviewed, so a tool the server adds later stays off until you turn it on.
 
 ## Modes and flags
 

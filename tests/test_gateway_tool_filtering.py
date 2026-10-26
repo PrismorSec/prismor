@@ -145,3 +145,60 @@ def test_tools_list_probes_are_not_recorded_as_calls(ws, monkeypatch):
         assert recorded == []
     finally:
         g.close()
+
+
+# ── a server entry's tool selection (hosted endpoints, "new tools start off") ──
+
+def _selected_session(ws, mode="enforce", **selection):
+    spec = UpstreamSpec(name="shop", command=[sys.executable, str(SERVER)], **selection)
+    g = Gateway([spec], workspace=ws, mode=mode)
+    sent = []
+    g._send = lambda m: sent.append(m)
+    g._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                 "params": {"protocolVersion": "2025-03-26", "clientInfo": {"name": "t"}}})
+    g._dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    return g, sent, {t["name"] for t in sent[-1]["result"]["tools"]}
+
+
+def test_a_tool_the_selection_denies_is_hidden_blocked_and_logged(ws, monkeypatch):
+    from prismor.runtime import runtime
+    recorded = []
+    monkeypatch.setattr(runtime, "_dispatch_telemetry", lambda **kw: recorded.append(kw))
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:carol")
+    g, sent, tools = _selected_session(ws, deny_tools=["refund_*"])
+    try:
+        assert "shop__refund_order" not in tools and "shop__list_orders" in tools
+        r = _call(g, sent, "shop__refund_order", {"amount": 1})
+        assert r["result"]["isError"] and "Blocked by Prismor" in r["result"]["content"][0]["text"]
+        assert any(f.get("category") == "agent-control" for kw in recorded for f in kw["findings"])
+    finally:
+        g.close()
+
+
+def test_an_allow_list_keeps_only_the_known_tools(ws, monkeypatch):
+    """"New tools start off": the console sends the reviewed tools as allow."""
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:carol")
+    g, sent, tools = _selected_session(ws, allow_tools=["list_orders"])
+    try:
+        assert tools == {"shop__list_orders"}
+        assert not _call(g, sent, "shop__list_orders", {})["result"].get("isError")
+        assert _call(g, sent, "shop__export_all_customers", {})["result"]["isError"]
+    finally:
+        g.close()
+
+
+def test_the_selection_hides_even_in_observe_mode(ws, monkeypatch):
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:carol")
+    g, _, tools = _selected_session(ws, mode="observe", deny_tools=["list_orders"])
+    try:
+        assert "shop__list_orders" not in tools
+    finally:
+        g.close()
+
+
+def test_the_selection_is_read_from_the_server_entry():
+    from prismor.runtime.mcp_gateway import _spec_from_entry
+    s = _spec_from_entry("gh", {"url": "https://x.example/mcp", "tools": {"allow": ["get_*"], "deny": ["get_secret"]}})
+    assert s.allow_tools == ["get_*"] and s.deny_tools == ["get_secret"]
+    assert s.excludes("get_secret") and s.excludes("push_files") and not s.excludes("get_file")
+    assert _spec_from_entry("t", {"command": "x"}).allow_tools is None
