@@ -577,14 +577,15 @@ def evaluate_tool_call(
     # operator decision, not a passive detection.
     if _control is not None and getattr(_control, "deny_tools", ()):  # noqa: SIM102
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import make_agent_tool_deny_finding
             # Deny on any tag this event answers to: the bare "Skill" tag
-            # blocks every skill, "Skill:<name>" blocks just the one.
-            for _tname in resolve_tool_tags(event):
-                if _tname in _control.deny_tools:
-                    findings.append(make_agent_tool_deny_finding(_agent_name, _tname, session_id))
-                    break
+            # blocks every skill, "Skill:<name>" blocks just the one, and
+            # "mcp__<server>__*" a whole MCP server.
+            _tags = resolve_tool_tags(event, families=True)
+            _hit_deny = next((d for d in _control.deny_tools if tag_matches(d, _tags)), None)
+            if _hit_deny is not None:
+                findings.append(make_agent_tool_deny_finding(_agent_name, _hit_deny, session_id))
         except Exception as exc:
             sys.stderr.write(f"[prismor] tool-deny error: {exc}\n")
 
@@ -605,15 +606,16 @@ def evaluate_tool_call(
     # both blocked and queued for approval.
     if _control is not None and getattr(_control, "ask_tools", ()):  # noqa: SIM102
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import make_agent_tool_step_up_finding
             _denied = getattr(_control, "deny_tools", ())
-            for _tname in resolve_tool_tags(event):
-                if _tname in _control.ask_tools and _tname not in _denied:
+            _tags = resolve_tool_tags(event, families=True)
+            if not any(tag_matches(d, _tags) for d in _denied):
+                _hit_ask = next((a for a in _control.ask_tools if tag_matches(a, _tags)), None)
+                if _hit_ask is not None:
                     findings.append(make_agent_tool_step_up_finding(
-                        _agent_name, _tname, session_id, scope_label="agent",
+                        _agent_name, _hit_ask, session_id, scope_label="agent",
                         rule_id="agent-tool-step-up"))
-                    break
         except Exception as exc:
             sys.stderr.write(f"[prismor] tool-ask error: {exc}\n")
 
@@ -625,12 +627,13 @@ def evaluate_tool_call(
     _org_denies = getattr(engine, "tool_denies", None)
     if _org_denies:
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import (
                 make_agent_tool_deny_finding,
                 make_agent_tool_step_up_finding,
             )
-            _otags = resolve_tool_tags(event)
+            # families: one `mcp__<server>__*` entry switches off a whole server.
+            _otags = resolve_tool_tags(event, families=True)
             if _otags:
                 for _d in _org_denies:
                     # 'allow' entries are handled in the block below; anything
@@ -639,7 +642,7 @@ def evaluate_tool_call(
                     if not isinstance(_d, dict) or _d.get("action", "deny") not in ("deny", "step_up"):
                         continue
                     _otn = _d.get("tool")
-                    if _otn not in _otags:
+                    if not tag_matches(_otn, _otags):
                         continue
                     _scope = _d.get("scope") or "org"
                     _sid = _d.get("scopeId")

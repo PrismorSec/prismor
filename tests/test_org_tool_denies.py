@@ -208,3 +208,110 @@ def test_org_deny_copy_names_console_not_local_override(tmp_path, monkeypatch):
     assert "MCP Hub" in f["remediation"] and "Tool Call panel" not in f["remediation"]
     steps = "\n".join(unblock_steps(f, workspace=tmp_path))
     assert "prismor allow" not in steps and "MCP Hub" in steps
+
+
+# ── Server-wide MCP denies: one `mcp__<server>__*` entry switches off a whole
+# MCP server (the console's Extensions "Off" switch). ──────────────────────
+
+def test_mcp_server_tags_shapes():
+    from prismor.runtime.scoped_agent import mcp_server_tags
+    assert mcp_server_tags("mcp__posthog__exec") == ["mcp__posthog__*"]
+    # Through the gateway the agent's hook sees the gateway's prefix too.
+    assert mcp_server_tags("mcp__prismor__github__create_issue") == ["mcp__prismor__*", "mcp__github__*"]
+    assert mcp_server_tags("mcp__prismor__status") == ["mcp__prismor__*"]
+    assert mcp_server_tags("mcp__plugin_cloudflare_cloudflare-api__authenticate") == ["mcp__plugin_cloudflare_cloudflare-api__*"]
+    for not_mcp in ("Bash", "Skill", "mcp__", "mcp__nameonly", "mcp____x", "xmcp__a__b"):
+        assert mcp_server_tags(not_mcp) == [], not_mcp
+
+
+def test_server_wide_deny_blocks_every_tool_of_that_server(tmp_path, monkeypatch):
+    denies = [{"id": "f1", "tool": "mcp__posthog__*", "action": "deny", "scope": "org"}]
+    for tool in ("mcp__posthog__exec", "mcp__posthog__query", "mcp__posthog__a__b"):
+        d = _eval(tmp_path, monkeypatch, denies, tool=tool)
+        assert d.allow is False, tool
+        assert any(f.get("ruleId") == "org-tool-deny" for f in d.findings)
+
+
+def test_server_wide_deny_leaves_other_servers_alone(tmp_path, monkeypatch):
+    denies = [{"id": "f2", "tool": "mcp__posthog__*", "action": "deny", "scope": "org"}]
+    # A lookalike prefix is a different server.
+    for tool in ("mcp__posthog2__exec", "mcp__post__exec", "mcp__github__echo", "Bash"):
+        assert _eval(tmp_path, monkeypatch, denies, tool=tool).allow is True, tool
+
+
+def test_server_wide_deny_catches_gateway_routed_call_at_the_hook(tmp_path, monkeypatch):
+    denies = [{"id": "f3", "tool": "mcp__github__*", "action": "deny", "scope": "org"}]
+    assert _eval(tmp_path, monkeypatch, denies, tool="mcp__prismor__github__create_issue").allow is False
+    # The gateway's own tools are not the github server.
+    assert _eval(tmp_path, monkeypatch, denies, tool="mcp__prismor__status").allow is True
+
+
+def test_server_wide_deny_respects_scope(tmp_path, monkeypatch):
+    denies = [{"id": "f4", "tool": "mcp__posthog__*", "action": "deny", "scope": "agent", "scopeId": "codex"}]
+    assert _eval(tmp_path, monkeypatch, denies, agent_name="codex", tool="mcp__posthog__exec").allow is False
+    assert _eval(tmp_path, monkeypatch, denies, agent_name="claude", tool="mcp__posthog__exec").allow is True
+
+
+def test_server_wide_step_up_asks(tmp_path, monkeypatch):
+    denies = [{"id": "f5", "tool": "mcp__posthog__*", "action": "step_up", "scope": "org"}]
+    d = _eval(tmp_path, monkeypatch, denies, tool="mcp__posthog__exec")
+    assert any("step" in str(f.get("ruleId") or "") or f.get("step_up") for f in d.findings), d.findings
+
+
+def test_server_wide_allow_does_not_lift_a_deny(tmp_path, monkeypatch):
+    """Allows stay exact-match: a server-wide tag may only tighten."""
+    from prismor.runtime.agents import set_tool_policy
+    set_tool_policy(tmp_path, "agent", "mcp__posthog__exec", "deny", agent="codex")
+    allows = [{"id": "f6", "tool": "mcp__posthog__*", "action": "allow", "scope": "org"}]
+    assert _eval(tmp_path, monkeypatch, allows, tool="mcp__posthog__exec").allow is False
+
+
+def test_local_agent_deny_accepts_server_wide_tag(tmp_path, monkeypatch):
+    from prismor.runtime.agents import set_tool_policy
+    set_tool_policy(tmp_path, "agent", "mcp__posthog__*", "deny", agent="codex")
+    assert _eval(tmp_path, monkeypatch, [], tool="mcp__posthog__exec").allow is False
+    assert _eval(tmp_path, monkeypatch, [], tool="mcp__github__echo").allow is True
+
+
+def test_server_wide_tag_never_inventoried(tmp_path, monkeypatch):
+    """Families are permissions, not tools the agent holds."""
+    from prismor.runtime import agents
+    captured = {}
+    monkeypatch.setattr(
+        agents, "record_seen",
+        lambda name, framework, workspace, tools, session_id: captured.update(tools=tools),
+    )
+    from prismor.runtime import runtime
+    runtime.evaluate_tool_call(
+        event={"type": "mcp", "agent_event": "PreToolUse", "metadata": {"tool_name": "mcp__prismor__github__x"}},
+        workspace=tmp_path, agent="claude", agent_name="claude", mode="observe",
+        session_id="s1", persist=False,
+    )
+    assert [t["name"] for t in captured.get("tools", [])] == ["mcp__prismor__github__x"]
+
+
+def test_tag_matches_rules():
+    from prismor.runtime.scoped_agent import tag_matches
+    fam = lambda tool: [tool] + __import__("prismor.runtime.scoped_agent", fromlist=["x"]).mcp_server_tags(tool)
+    assert tag_matches("Bash", ["Bash"])
+    assert not tag_matches("Bash", ["Read"])
+    assert not tag_matches(None, ["Bash"]) and not tag_matches("", ["Bash"])
+    # Plugin-provided server: Claude Code names it plugin_<plugin>_<server>.
+    assert tag_matches("mcp__posthog__*", fam("mcp__plugin_posthog_posthog__exec"))
+    # Connector with spaces/dots in its configured name.
+    assert tag_matches("mcp__claude.ai Gmail__*", fam("mcp__claude_ai_Gmail__send_message"))
+    # Lookalikes are different servers.
+    assert not tag_matches("mcp__posthog__*", fam("mcp__posthog2__exec"))
+    assert not tag_matches("mcp__posthog__*", fam("mcp__xposthog__exec"))
+    assert not tag_matches("mcp__hog__*", fam("mcp__posthog__exec"))
+    # A family entry never matches a non-MCP tool, nor is "mcp____*" anything.
+    assert not tag_matches("mcp__Bash__*", fam("Bash"))
+    assert not tag_matches("mcp____*", fam("mcp__a__b"))
+
+
+def test_server_wide_deny_catches_plugin_and_connector_names(tmp_path, monkeypatch):
+    denies = [{"id": "f7", "tool": "mcp__posthog__*", "action": "deny", "scope": "org"},
+              {"id": "f8", "tool": "mcp__claude.ai Gmail__*", "action": "deny", "scope": "org"}]
+    assert _eval(tmp_path, monkeypatch, denies, tool="mcp__plugin_posthog_posthog__exec").allow is False
+    assert _eval(tmp_path, monkeypatch, denies, tool="mcp__claude_ai_Gmail__send_message").allow is False
+    assert _eval(tmp_path, monkeypatch, denies, tool="mcp__claude_ai_Slack__post").allow is True

@@ -925,3 +925,33 @@ def test_help_and_docs_state_both_mode_defaults():
     docs = (Path(__file__).resolve().parent.parent / "docs" / "mcp-gateway.md").read_text()
     assert "--mode enforce` (default)" not in docs
     assert "Serving\n  defaults to `observe`" in docs
+
+
+def test_server_wide_org_deny_blocks_through_the_real_engine(tmp_path, monkeypatch):
+    """One `mcp__<server>__*` org deny stops every tool of that server at the
+    gateway (real evaluate_tool_call, not a stubbed Decision), and only it."""
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / ".prismor"))
+    from prismor.runtime import agents
+    from prismor.runtime.policy_engine import PolicyEngine
+    agents._CONFIG_CACHE.clear()
+    real_init = PolicyEngine.__init__
+
+    def fake_init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self.tool_denies = [{"id": "x", "tool": "mcp__github__*", "action": "deny", "scope": "org"}]
+
+    monkeypatch.setattr(PolicyEngine, "__init__", fake_init)
+    gh, mail = stub("github"), stub("mail")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [gh, mail])
+    names = [t["name"] for t in list_tools(gateway, sent)]
+    # A tool every call to which would be refused is not advertised at all.
+    assert "github__echo" not in names and "mail__echo" in names
+
+    gateway._handle_tools_call_safe("C1", {"name": "github__echo", "arguments": {}})
+    reply = sent[-1]
+    assert "error" in reply or reply["result"].get("isError") is True
+    assert not any(m == "tools/call" for m, _ in gh.requests)
+
+    gateway._handle_tools_call_safe("C2", {"name": "mail__echo", "arguments": {}})
+    assert sent[-1]["result"].get("isError") is not True
+    assert ("tools/call", {"name": "echo", "arguments": {}}) in mail.requests

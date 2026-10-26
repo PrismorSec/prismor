@@ -9,6 +9,7 @@ The active rule set becomes:  policy.yaml (base) + scoped_agent (session-only)
 from __future__ import annotations
 
 import json
+import re
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -361,22 +362,77 @@ def resolve_skill_name(event: Dict[str, Any]) -> Optional[str]:
     return name.strip()[:_MAX_SKILL_NAME] or None
 
 
-def resolve_tool_tags(event: Dict[str, Any]) -> List[str]:
+def mcp_server_tags(tool: str) -> List[str]:
+    """Server-wide tags an MCP tool call answers to: ``mcp__<server>__*``.
+
+    Lets one deny entry switch off a whole MCP server. A call routed through
+    the Prismor gateway reaches the agent's own hook as
+    ``mcp__prismor__<server>__<tool>``, so it answers to the gateway's tag and
+    the real server's; the gateway itself screens under the real name.
+    """
+    if not tool.startswith("mcp__"):
+        return []
+    parts = tool[len("mcp__"):].split("__")
+    if len(parts) < 2 or not parts[0]:
+        return []
+    tags = [f"mcp__{parts[0]}__*"]
+    if parts[0] == "prismor" and len(parts) >= 3 and parts[1]:
+        tags.append(f"mcp__{parts[1]}__*")
+    return tags
+
+
+def tag_matches(entry: Any, tags: List[str]) -> bool:
+    """Does a deny/ask entry cover a call with these tags?
+
+    Exact membership, plus one widening for server-wide entries
+    (``mcp__<server>__*``): the agent may name the server differently from its
+    config. Claude Code turns ``claude.ai Gmail`` into ``claude_ai_Gmail`` and
+    a plugin's server into ``plugin_<plugin>_<server>``, so the entry also
+    matches a server tag that equals the normalized name or ends in
+    ``_<name>`` - the same rule the dashboard's own Off switch uses
+    (extensions._serves).
+    """
+    if not isinstance(entry, str) or not entry:
+        return False
+    if entry in tags:
+        return True
+    if not (entry.startswith("mcp__") and entry.endswith("__*")):
+        return False
+    want = entry[len("mcp__"):-len("__*")]
+    if not want:
+        return False
+    names = {want, re.sub(r"[^A-Za-z0-9_-]", "_", want), re.sub(r"[^A-Za-z0-9_]", "_", want)}
+    for tag in tags:
+        if tag.startswith("mcp__") and tag.endswith("__*"):
+            server = tag[len("mcp__"):-len("__*")]
+            if any(server == n or server.endswith("_" + n) for n in names):
+                return True
+    return False
+
+
+def resolve_tool_tags(event: Dict[str, Any], families: bool = False) -> List[str]:
     """Tool tags this event may be inventoried or denied under.
 
     Usually just the resolved tool name. A skill call additionally yields the
     qualified ``Skill:<name>`` tag, so an operator can deny one skill without
     denying the whole mechanism. The bare tag stays first: denying ``Skill``
     must keep blocking every skill.
+
+    ``families`` adds the ``mcp__<server>__*`` tags for deny/ask matching. Off
+    by default: they are permissions, not tools, and must never be inventoried
+    as something the agent was seen to hold.
     """
     base = _resolve_tool_name(event)
     if not base:
         return []
+    tags = [base]
     if base == _SKILL_TOOL:
         skill = resolve_skill_name(event)
         if skill:
-            return [base, f"{_SKILL_PREFIX}{skill}"]
-    return [base]
+            tags.append(f"{_SKILL_PREFIX}{skill}")
+    if families:
+        tags += mcp_server_tags(base)
+    return tags
 
 
 # ── Rule synthesis ─────────────────────────────────────────────────────────
