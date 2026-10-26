@@ -568,6 +568,22 @@ def coverage(workspace: Path) -> Dict[str, Dict[str, bool]]:
     return out
 
 
+def prismor_hook_events(agent: str, scope: str, workspace: Path) -> List[str]:
+    """The events this agent's config at ``scope`` routes to Prismor's dispatcher
+    (``PreToolUse``, ``preToolUse``, ...), as the config names them. JSON configs
+    only; plugin-style installs (openclaw, hermes, opencode) register in code, so
+    they report none."""
+    try:
+        data = json.loads(_config_path(agent, scope, workspace).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    # Antigravity names its groups instead: {"prismor": {"PreToolUse": [...]}}.
+    maps = [data["hooks"]] if isinstance(data.get("hooks"), dict) else [v for v in data.values() if isinstance(v, dict)]
+    return sorted({e for m in maps for e, v in m.items() if "hook-dispatch" in json.dumps(v)})
+
+
 def _hook_is_foreign(agent: str, scope: str, workspace: Path) -> bool:
     """True when the hook at ``scope`` runs another Prismor home's dispatcher.
 
