@@ -447,6 +447,29 @@ def main(argv: Optional[List[str]] = None) -> None:
         parser.parse_args(["copilot-studio", "--help"])
         return
 
+    # ── m365-copilot: Microsoft 365 Copilot activity from the audit log ──
+    if args.command == "m365-copilot":
+        from pathlib import Path as _Path
+        from prismor.runtime import m365_audit as _m365
+        if getattr(args, "m365_command", None) != "pull":
+            parser.parse_args(["m365-copilot", "--help"])
+            return
+        ws = _Path(args.workspace) if args.workspace else _Path.cwd()
+        while True:
+            try:
+                counts = _m365.pull(ws, since_hours=args.since_hours, record=not args.dry_run)
+                print(json.dumps(counts) if args.json else
+                      f"[prismor] m365-copilot: {counts['copilot']} Copilot interaction(s), "
+                      f"{counts['flagged']} flagged, from {counts['blobs']} new audit blob(s)")
+            except _m365.AuditError as exc:
+                print(f"[prismor] m365-copilot: {exc}", file=sys.stderr)
+                if args.once:
+                    sys.exit(2)
+            if args.once:
+                return
+            args.since_hours = None  # only the first pass looks back
+            time.sleep(args.interval)
+
     # ── proxy: the LLM lane ──────────────────────────────────────────────
     if args.command == "proxy":
         from pathlib import Path as _Path
@@ -4027,6 +4050,27 @@ def build_parser() -> argparse.ArgumentParser:
     _cs_test.add_argument("--user-messages", choices=("user", "untrusted"), default=None,
                           help="Screen the user's message as a trusted user (default) or as untrusted content")
     _cs_test.add_argument("--json", action="store_true", help="One JSON verdict per line")
+
+    # ── m365-copilot: Microsoft 365 Copilot activity from the audit log ──
+    _m365 = subparsers.add_parser(
+        "m365-copilot",
+        help="Microsoft 365 Copilot: import its audit-log activity into the console (pull)",
+        description=(
+            "Reads CopilotInteraction records from the Office 365 Management Activity API and reports "
+            "each one as an observed event. Visibility only: Microsoft 365 Copilot has no hook to block. "
+            "Needs PRISMOR_M365_TENANT_ID, PRISMOR_M365_CLIENT_ID and PRISMOR_M365_CLIENT_SECRET "
+            "(an Entra app with ActivityFeed.Read)."
+        ),
+    )
+    _m365_sub = _m365.add_subparsers(dest="m365_command")
+    _m365_pull = _m365_sub.add_parser("pull", help="Pull new Copilot activity (loops unless --once)")
+    _m365_pull.add_argument("--once", action="store_true", help="One pass, then exit (for cron)")
+    _m365_pull.add_argument("--interval", type=float, default=300, help="Seconds between passes (default: 300)")
+    _m365_pull.add_argument("--since-hours", type=float, default=None,
+                            help="Look back this far instead of resuming from the cursor (max 7 days)")
+    _m365_pull.add_argument("--workspace", default=None, help="Workspace whose policy (sinks) applies (default: cwd)")
+    _m365_pull.add_argument("--dry-run", action="store_true", help="Count records without reporting them or moving the cursor")
+    _m365_pull.add_argument("--json", action="store_true", help="Print each pass's counts as JSON")
 
     # ── inference-hook: Claude Inference Hooks AI-security server ──────
     def _add_ih_serve_args(p: argparse.ArgumentParser) -> None:

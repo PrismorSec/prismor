@@ -302,3 +302,14 @@ Signing keys are cached for ten minutes.
   subscription in the same tenant.
 - **Preview.** The feature is in preview in Copilot Studio, and the contract
   may change.
+- **Copilot Studio agents only.** Agents built in Microsoft 365 Copilot's
+  Agent Builder, and Microsoft 365 Copilot chat itself, never call the
+  provider. Copy an Agent Builder agent to Copilot Studio to bring it under
+  this check, or import their activity from the audit log
+  ([Microsoft 365 Copilot](m365-copilot.md)).
+
+## Microsoft 365 Copilot
+
+Microsoft 365 Copilot chat and Agent Builder agents never call this provider.
+Prismor can still show their activity in the console, from the Microsoft 365
+audit log, but cannot block it. See [Microsoft 365 Copilot](m365-copilot.md).
