@@ -319,34 +319,56 @@ for everyone, or for one person — from the console **MCP Hub** (per-server
   set locally. A denied tool is blocked before it reaches the server, with the
   usual `isError` reason returned to the model.
 
-## Hosted instances (Enterprise)
+## Hosted endpoints (Team and Enterprise)
 
-Everything above runs the gateway **locally** on your machine — available on
-every plan. Enterprise adds a **hosted** option: from the MCP Hub in the
-console, *Spin up MCP instance* provisions a governed MCP URL on Prismor's
-managed edge:
+Everything above runs the gateway **locally** on your machine, on every plan.
+Team and Enterprise add a **hosted** option: in the console's MCP Hub, *Spin up
+MCP instance* gives you one governed MCP URL for the servers you choose from your
+registry. Paste it into any agent on any machine; there is nothing to install.
 
 ```
-https://mcp.prismor.dev/mcp/<instance-key>
+<your org's endpoint>/mcp/<key>
 ```
 
-Paste that one URL into any agent, on any machine — no local install. The
-servers you registered in the Hub are attached automatically (their secrets
-stay server-side, encrypted at rest and only ever decrypted for the fleet).
-The instance is a service identity, so the full control loop applies: every
-call is policy-evaluated and streamed to your Activity feed, an admin can flip
-it between observe/enforce from the console, and revoking it is an instant kill
-switch. The instance key *is* the credential in the URL — treat it like a
-secret; it's shown only once.
+The console shows the URL once, as a ready-to-run Claude Code command
+(`claude mcp add --transport http prismor <url>`) or as the `.mcp.json` block any
+MCP client reads. The key in the URL *is* the credential: anyone with it can call
+the endpoint's tools, so store it like a secret.
 
-Local gateway vs hosted instance:
+- **Servers.** Remote (HTTPS) servers are called from Prismor's side, and `npx` /
+  `uvx` servers run there too, so nothing runs on the laptop. A server that needs
+  a token keeps it in the registry, encrypted, and the token never reaches the
+  machine using the endpoint. Servers that drive a browser (Playwright,
+  Puppeteer) are marked *local only*: run them in a local gateway.
+- **Governance.** An endpoint runs this same gateway as its own service identity
+  (`gateway: <label>` under Devices): every call is checked against the org's
+  signed policy, every result is screened before the model sees it, and calls
+  stream to Activity and Sessions. An admin switches it between observe and
+  enforce from the console. Endpoints start in enforce.
+- **Per-person keys.** Expand an endpoint to give each person, device or agent
+  their own key on it: their calls are attributed to them, follow their own tool
+  rules, and can be revoked on their own.
+- **Kill switch.** Revoking an endpoint (or a person's key) cuts it off within
+  30 seconds; clients then get `403 invalid or revoked instance key`.
+- **Version.** The Hosted endpoints table shows the Prismor runtime each endpoint
+  runs and flags one that is behind the current release.
 
-| | Local (`prismor mcp-gateway`) | Hosted instance |
+How it runs: each org's endpoints are served by one AWS Lambda function built from
+this repo (`deploy/lambda/Dockerfile.mcp`, `prismor.runtime.lambda_mcp_handler`)
+and released with every runtime version. Each key gets its own warm gateway
+process: the first call after a cold start takes about a second, and the first
+tool list with `npx` / `uvx` servers about ten while their packages download.
+Operators: see `deploy/lambda/README.md`.
+
+Local gateway vs hosted endpoint:
+
+| | Local (`prismor mcp-gateway`) | Hosted endpoint |
 |---|---|---|
-| Plan | Any | Enterprise |
-| Runs on | Your machine | Prismor edge (mcp.prismor.dev) |
-| Setup | CLI / config file | One click, paste a URL |
+| Plan | Any | Team, Enterprise |
+| Runs on | Your machine | Prismor (AWS Lambda, one function per org) |
+| Setup | CLI / config file | One click: paste a URL or a `claude mcp add` command |
 | Secrets | In your local config | Encrypted server-side |
+| Browser servers (Playwright) | Yes | No, local only |
 | Telemetry / policy / kill switch | Yes (enrolled) | Yes (built in) |
 
 ## Notes
