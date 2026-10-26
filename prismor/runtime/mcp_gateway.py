@@ -797,6 +797,12 @@ class Gateway:
             return False
         if b.get("category") == "agent-control":
             return True
+        # A per-person (or per-team) control that names this tool: the org's
+        # subject_controls deny_tools, or an IAM profile's tool allow/deny list.
+        # Those checks read only the tool name ("Tool '<name>' is ..."); an IAM
+        # path or network limit depends on the arguments and stays per call.
+        if b.get("category") == "iam" and "Tool '" in str(b.get("title") or ""):
+            return True
         rule = next((r for r in getattr(decision.engine, "rules", []) if r.id == b.get("ruleId")), None)
         if rule is None or rule.when is None or rule.fields != ["tool_name"]:
             return False
@@ -808,7 +814,7 @@ class Gateway:
     def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
-        hidden: List[str] = []
+        hidden: Dict[str, _Route] = {}
         with self._init_cv:
             # Give upstreams still in their handshake a chance to come up
             # rather than answering with 0 tools (#559). Whatever is still
@@ -844,8 +850,7 @@ class Gateway:
                                          tool=original,
                                          meta_tags=_extract_meta_tags(tool))
                 if self._never_allowed(routes[exposed]):
-                    hidden.append(exposed)
-                    del routes[exposed]
+                    hidden[exposed] = routes.pop(exposed)
                     continue
                 entry = dict(tool)
                 entry["name"] = exposed
@@ -864,7 +869,7 @@ class Gateway:
         from prismor.runtime.principal import current_token
         with self._routes_lock:
             self._routes = routes
-            self._hidden = set(hidden)
+            self._hidden = hidden
             # Which end user this list was filtered for (see _identity_changed).
             self._listed_token = current_token()
         self._reply(req_id, {"tools": tools})
@@ -897,16 +902,16 @@ class Gateway:
         name = str(params.get("name") or "")
         arguments = params.get("arguments")
         with self._routes_lock:
-            route = self._routes.get(name)
-            hidden = name in getattr(self, "_hidden", ())
+            # A tool hidden from this caller's list is still judged and logged
+            # when called by name (an agent probing for denied tools must show
+            # up in the console); the policy that hid it blocks it below.
+            route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
         if route is None and name == STATUS_TOOL:
             lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] or ["all servers are up"]
             self._reply(req_id, {"content": [{"type": "text", "text": "\n".join(lines)}]})
             return
         if route is None:
-            self._reply_error(req_id, -32602,
-                              f"tool {name} is not available to this caller (denied by policy)" if hidden
-                              else f"unknown tool: {name}")
+            self._reply_error(req_id, -32602, f"unknown tool: {name}")
             return
 
         # Keep org-managed policy fresh on the hot path (debounced ~30s;
