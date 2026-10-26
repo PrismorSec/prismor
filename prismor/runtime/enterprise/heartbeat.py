@@ -43,11 +43,12 @@ def device_status_record() -> Dict[str, Any]:
     """What the console needs to answer "is this machine covered?": the
     running version, whether it is a system (every-user) or per-user install,
     and for each agent found on the machine whether a Prismor hook covers it
-    machine-wide. Agent names only; no paths, commands or user data."""
+    machine-wide, and which hook events route to it. Agent and event names
+    only; no paths, commands or user data."""
     import platform
     import uuid
     from prismor.runtime import __version__, system_install
-    from prismor.runtime.hooks import SYSTEM_HOOK_PATHS, coverage, hook_installed
+    from prismor.runtime.hooks import SYSTEM_HOOK_PATHS, coverage, hook_installed, prismor_hook_events
     home = Path.home()
     agents: Dict[str, Any] = {}
     # An agent key is a workload, not a machine. Scanning here reported the
@@ -61,6 +62,9 @@ def device_status_record() -> Dict[str, Any]:
                                            else ("project" if cov.get("project") else None))
             # Project-only hooks guard one repo, so they don't count as covering the machine.
             agents[agent] = {"covered": via in ("system", "global"), "via": via}
+            events = prismor_hook_events(agent, via, home) if via else []
+            if events:
+                agents[agent]["events"] = events
     except Exception:
         pass
     return {

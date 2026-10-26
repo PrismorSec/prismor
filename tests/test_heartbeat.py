@@ -218,6 +218,7 @@ def test_device_status_reports_coverage_by_how_the_agent_is_hooked(monkeypatch):
         "gemini": {"project": False, "global": False, "foreign": False},
     })
     monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: scope == "system" and a == "codex" and False)
+    monkeypatch.setattr(hooks, "prismor_hook_events", lambda a, scope, ws: [])  # not this machine's real configs
     d = heartbeat.device_status_record()["detail"]
     assert d["agents"]["claude"] == {"covered": True, "via": "global"}
     assert d["agents"]["codex"] == {"covered": False, "via": "project"}
@@ -227,6 +228,29 @@ def test_device_status_reports_coverage_by_how_the_agent_is_hooked(monkeypatch):
     d = heartbeat.device_status_record()["detail"]
     assert d["agents"]["gemini"] == {"covered": True, "via": "system"}
     assert d["unguarded"] == []
+
+
+def test_device_status_reports_which_events_prismor_hooks(monkeypatch, tmp_path):
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    cfg = tmp_path / "settings.json"
+    cfg.write_text(json.dumps({"hooks": {
+        "PreToolUse": [{"hooks": [{"command": "python3 ~/.prismor/hook-dispatch.py claude"}]}],
+        "PostToolUse": [{"hooks": [{"command": "python3 ~/.prismor/hook-dispatch.py claude"}]}],
+        "Stop": [{"hooks": [{"command": "say done"}]}],  # someone else's hook
+    }}))
+    monkeypatch.setattr(hooks, "_config_path", lambda a, scope, ws: cfg if a == "claude" else tmp_path / "missing.json")
+    monkeypatch.setattr(hooks, "coverage", lambda _ws: {
+        "claude": {"project": False, "global": True, "foreign": False},
+        "openclaw": {"project": False, "global": True, "foreign": False},  # plugin install, no JSON hooks map
+    })
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: False)
+    d = heartbeat.device_status_record()["detail"]
+    assert d["agents"]["claude"] == {"covered": True, "via": "global", "events": ["PostToolUse", "PreToolUse"]}
+    assert d["agents"]["openclaw"] == {"covered": True, "via": "global"}
+    # Antigravity's named-group shape.
+    cfg.write_text(json.dumps({"prismor": {"PreToolUse": [{"hooks": [{"command": "hook-dispatch.py antigravity"}]}]}}))
+    assert hooks.prismor_hook_events("claude", "global", tmp_path) == ["PreToolUse"]
 
 
 def test_agent_key_identity_reports_no_machine_coverage(monkeypatch):
