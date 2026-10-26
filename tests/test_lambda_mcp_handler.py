@@ -102,10 +102,20 @@ def test_a_key_from_another_org_is_refused(h):
     assert st == 403
 
 
-def test_control_plane_down_fails_closed_for_a_key_never_seen(h):
+def test_control_plane_down_fails_closed_for_a_key_never_seen(h, monkeypatch):
+    monkeypatch.setattr(h, "RESOLVE_RETRY_DELAY", 0)
     h._test_configs[OTHER] = lambda: (0, None)
     st, body = rpc(h, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, key=OTHER)
     assert st == 503 and body == {"error": "control plane unreachable"}
+
+
+def test_a_new_key_survives_one_failed_resolve(h, monkeypatch):
+    """A person's key minted seconds ago is resolved on a cold console function
+    that can miss the deadline once; that used to refuse their first call."""
+    monkeypatch.setattr(h, "RESOLVE_RETRY_DELAY", 0)
+    answers = iter([(0, None), (200, config("instN"))])
+    h._test_configs[OTHER] = lambda: next(answers)
+    assert h.resolve(OTHER)[0] == 200
 
 
 def test_resolve_cache_ttl_and_stale_on_outage(h):

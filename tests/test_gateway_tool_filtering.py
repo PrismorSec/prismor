@@ -61,7 +61,42 @@ def test_tool_list_is_per_caller(ws, monkeypatch, who, visible):
     try:
         assert tools == visible
         r = _call(g, sent, "shop__delete_doc", {"doc": "d"})
-        assert "denied by policy" in r["error"]["message"]
+        assert r["result"]["isError"] and "Blocked by Prismor" in r["result"]["content"][0]["text"]
+    finally:
+        g.close()
+
+
+def test_calling_a_hidden_tool_by_name_is_blocked_and_logged(ws, monkeypatch):
+    """A hidden tool used to be refused before evaluation, so an agent probing
+    for denied tools left no trace in the console."""
+    from prismor.runtime import runtime
+    recorded = []
+    monkeypatch.setattr(runtime, "_dispatch_telemetry", lambda **kw: recorded.append(kw))
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:bob")
+    g, sent, tools = _session(ws)
+    try:
+        assert "shop__delete_doc" not in tools
+        assert recorded == []  # the list probe is not a call
+        assert _call(g, sent, "shop__delete_doc", {"doc": "d"})["result"]["isError"]
+        assert len(recorded) == 1
+    finally:
+        g.close()
+
+
+def test_a_per_person_tool_deny_hides_the_tool_from_that_person_only(ws, monkeypatch):
+    (ws / ".prismor" / "iam.yaml").write_text(yaml.safe_dump(
+        {"agents": {"user:dave": {"allowed_tools": ["*"], "deny_tools": ["mcp__shop__list_orders"]}}}))
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:dave")
+    g, sent, tools = _session(ws)
+    try:
+        assert "shop__list_orders" not in tools and "shop__refund_order" in tools
+        assert _call(g, sent, "shop__list_orders", {})["result"]["isError"]
+    finally:
+        g.close()
+    monkeypatch.setenv("PRISMOR_SUBJECT", "user:erin")
+    g, _, tools = _session(ws)
+    try:
+        assert "shop__list_orders" in tools
     finally:
         g.close()
 

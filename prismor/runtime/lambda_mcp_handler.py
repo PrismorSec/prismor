@@ -46,6 +46,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = os.environ.get("HOSTED_MCP_ROOT", "/tmp/prismor-mcp")  # Lambda's only writable dir.  # nosec B108
 RESOLVE_TTL = float(os.environ.get("HOSTED_MCP_RESOLVE_TTL", "30"))
+RESOLVE_RETRY_DELAY = 1.0  # seconds before the one retry of a failed first resolve
 CALL_MARGIN_MS = 3000  # leave this much of the invocation for flush + snapshot
 BROWSER_SERVERS = ("@playwright/mcp", "playwright-mcp", "puppeteer", "@modelcontextprotocol/server-puppeteer")
 
@@ -91,6 +92,12 @@ def resolve(key: str, now: Optional[float] = None) -> Tuple[int, Optional[Dict[s
     if cached and now - cached[0] < RESOLVE_TTL:
         return 200, cached[1]
     status, cfg = _fetch_config(key)
+    if (status == 0 or status >= 500) and not cached:
+        # A key minted seconds ago is resolved on a cold console function, which
+        # can miss the 10 s deadline once; with nothing cached that refused the
+        # person's first call (503). One retry, then fail closed as before.
+        time.sleep(RESOLVE_RETRY_DELAY)
+        status, cfg = _fetch_config(key)
     if status == 200 and cfg:
         org = os.environ.get("PRISMOR_ORG_ID")
         if org and cfg.get("org_id") != org:

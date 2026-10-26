@@ -1,3 +1,10 @@
+## [Unreleased]
+
+### Fixed
+- **A per-person tool deny now hides the tool from that person's MCP tool list.** The gateway already hid tools denied org-wide or for an agent, but a deny for one user or team (the console's per-person Tool access, or an IAM profile's tool list) only blocked the call, so the agent kept being offered a tool it could never use. Path and network limits still apply per call.
+- **Calling a hidden tool by name is judged and logged.** The gateway refused it before evaluation, so an agent probing for denied tools left no trace in the console. It now goes through the policy that hid it and shows up as a blocked call.
+- **A hosted MCP key's first call no longer fails when the console is slow to answer.** A key nobody had used yet got one 10 s attempt to resolve, and a cold console function could miss it, refusing the person's first call with 503. One retry before failing closed.
+
 ## [1.68.1] — 2026-10-26
 
 ### Added
