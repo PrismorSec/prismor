@@ -1,4 +1,4 @@
-## [Unreleased]
+## [1.68.2] — 2026-10-26
 
 ### Fixed
 - **A per-person tool deny now hides the tool from that person's MCP tool list.** The gateway already hid tools denied org-wide or for an agent, but a deny for one user or team (the console's per-person Tool access, or an IAM profile's tool list) only blocked the call, so the agent kept being offered a tool it could never use. Path and network limits still apply per call.
