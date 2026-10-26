@@ -33,9 +33,37 @@ def test_clean_interaction_is_one_audit_finding():
     assert ctx == {"session_id": "m365-th1", "subject": "user:dana@contoso.com",
                    "agent_name": "Microsoft 365 Copilot (Teams)"}
     meta = event["metadata"]
-    assert meta["web_search"] and meta["resource_count"] == 2 and meta["labelled_resources"] == 1
+    assert meta["web_search_enabled"] and meta["resource_count"] == 2 and meta["labelled_resources"] == 1
     assert meta["resource_types"] == ["Email", "File"]
     assert event["occurred_at"] == "2026-10-23T09:15:00Z"
+
+
+# A real Copilot Chat record (identifiers replaced), as the API returns it.
+REAL = {
+    "AppIdentity": "Copilot.M365Copilot.WebChat", "CreationTime": "2026-10-26T01:31:51",
+    "Id": "e365ce4d-d102-4131-af52-4df5e99dffce", "Operation": "CopilotInteraction",
+    "OrganizationId": "t1", "RecordType": 261, "UserId": "dana@contoso.com", "Workload": "Copilot",
+    "CopilotEventData": {
+        "AISystemPlugin": [{"Id": "BingWebSearch", "Name": "BuiltIn"}], "AccessedResources": [],
+        "AppHost": "Office", "Contexts": [], "ConversationId": "110ec23e-122e-4aaa-b685-72f1ae46124e",
+        "GuardrailDetails": [], "LicenseType": "Starter",
+        "Messages": [{"Id": "1", "JailbreakDetected": False, "isPrompt": True},
+                     {"Id": "2", "JailbreakDetected": False, "isPrompt": False}],
+        "ModelTransparencyDetails": [{"ModelName": "gpt-55-medium", "ModelProviderName": "OpenAI"}],
+        "ThreadId": "19:abc@thread.v2",
+    },
+}
+
+
+def test_real_record_maps():
+    event, ctx, findings = m.to_report(REAL)
+    assert [f["ruleId"] for f in findings] == ["m365-copilot-interaction"]
+    assert ctx == {"session_id": "m365-110ec23e-122e-4aaa-b685-72f1ae46124e",
+                   "subject": "user:dana@contoso.com", "agent_name": "Microsoft 365 Copilot (Office)"}
+    meta = event["metadata"]
+    assert meta["app_identity"] == "Copilot.M365Copilot.WebChat"
+    assert meta["web_search_enabled"] and meta["models"] == ["gpt-55-medium"]
+    assert event["occurred_at"] == "2026-10-26T01:31:51Z"
 
 
 def test_microsoft_detections_become_findings():

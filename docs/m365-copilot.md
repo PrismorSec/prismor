@@ -2,7 +2,7 @@
 
 `prismor m365-copilot pull` brings Microsoft 365 Copilot activity into the
 console: who used Copilot, in which app, through which agent, whether it
-searched the web, and what it read. It covers Copilot chat in Teams, Word,
+had web search on, and what it read. It covers Copilot chat in Teams, Word,
 Outlook, Excel, PowerPoint and the web, and the agents people build in
 Copilot's Agent Builder.
 
@@ -31,9 +31,9 @@ imported):
 |---|---|
 | Agent | `m365-copilot`, named after the Agent Builder agent, or "Microsoft 365 Copilot (Teams)" for plain chat |
 | Subject | The user (`UserId`) |
-| Session | One per Copilot conversation (`ThreadId`) |
-| Tool | The app: Teams, Word, Outlook, BizChat... (`AppHost`) |
-| Metadata | Web search used, plugins, number of items read, how many carried a sensitivity label, item types, models |
+| Session | One per Copilot conversation (`ConversationId`, the id in the Copilot URL) |
+| Tool | The app: Teams, Word, Outlook, Office... (`AppHost`), with the client (`AppIdentity`, e.g. `Copilot.M365Copilot.WebChat`) in metadata |
+| Metadata | Plugins enabled (web search is `BingWebSearch`; enabled, not necessarily used), number of items read, how many carried a sensitivity label, item types, models |
 
 The audit record holds no prompt or response text, so neither does the
 console.

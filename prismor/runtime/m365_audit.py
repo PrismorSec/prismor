@@ -150,7 +150,8 @@ def to_report(rec: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], List
     resources = _dicts(data.get("AccessedResources"))
     messages = _dicts(data.get("Messages"))
     plugins = [str(p.get("Id")) for p in _dicts(data.get("AISystemPlugin")) if p.get("Id")]
-    thread = str(data.get("ThreadId") or rec.get("Id") or time.time_ns())
+    # ConversationId is the id in the Copilot URL; ThreadId is the Teams-style thread.
+    thread = str(data.get("ConversationId") or data.get("ThreadId") or rec.get("Id") or time.time_ns())
 
     event = {
         "type": "prompt",
@@ -160,10 +161,11 @@ def to_report(rec: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any], List
         "occurred_at": rec.get("CreationTime") and f"{str(rec['CreationTime']).rstrip('Z')}Z",
         "metadata": {
             "framework": AGENT_ID, "surface": AGENT_ID, "source": "m365_audit",
-            "tool_name": host, "app_host": host,
+            "tool_name": host, "app_host": host, "app_identity": rec.get("AppIdentity"),
             "agent_id": data.get("AgentId") or rec.get("AgentId"), "agent_name": agent or None,
             "audit_id": rec.get("Id"), "tenant_id": rec.get("OrganizationId"),
-            "plugins": plugins, "web_search": "BingWebSearch" in plugins,
+            # Plugins enabled for the turn, not necessarily used.
+            "plugins": plugins, "web_search_enabled": "BingWebSearch" in plugins,
             "resource_count": len(resources),
             "labelled_resources": sum(1 for r in resources if r.get("SensitivityLabelId")),
             "resource_types": sorted({str(r.get("Type")) for r in resources if r.get("Type")}),
