@@ -46,7 +46,7 @@ PROMPT_INJECTION_PATTERN = re.compile(
     r"|(?<!not\s)(?<!n't\s)(?<!never\s)\bexfiltrat(?:e|es|ing)\s+\S+"
     r"|\b(?:perform|begin|start|carry\s+out|execute)\s+(?:(?:the|an?)\s+)?exfiltration\b"
     r"|(?<!not\s)(?<!n't\s)(?<!never\s)\b(?:print|show)\s+(?:[^\n.!?;]|\.(?=\w)|\n(?![ \t\r]*\n))*"
-    r"(?:secret|token|key|credential|password)(?!s?[ \t]+(?:names|ids|counts?)\b[ \t]*(?:[.!?;]|$))"
+    r"(?:secret|token|key|credential|password)(?=s?\b)(?!s?[-_])(?!s?[ \t]+(?:names|ids|counts?)\b[ \t]*(?:[.!?;]|$))"
     r"|bypass(?:es|ed|ing)?\s+guardrails"
     r"|\b(?:enter|enable|activate|switch\s+to|now\s+in)\s+(?:\w+\s+){0,2}jailbreak\b"
     r"|(?<!not\s)(?<!n't\s)(?<!never\s)\bjailbreak\s+(?:yourself|(?:(?:the|this|that|your|our|a|an)\s+)?"
