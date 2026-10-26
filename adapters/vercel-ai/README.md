@@ -89,6 +89,22 @@ the `subject` option, then the ambient `useSubject()` context, then the
 `PRISMOR_SUBJECT` environment variable. (Passing `subject` per
 `prismorTools()` call still works and takes precedence.)
 
+## Sessions
+
+Each `useSubject()` call is its own session in the console, so one request's
+tool calls are grouped together and never mixed with another user's. To group by
+your own conversation id instead (a chat that spans several requests), wrap the
+turn in `useSession()`:
+
+```typescript
+import { useSession, useSubject } from "@prismor/vercel-ai";
+
+await useSession(`chat:${chatId}`, () =>
+  useSubject(`user:${userId}`, () => generateText({ model, tools, messages })));
+```
+
+Calls made outside both share the toolset's session for the life of the process.
+
 ## LangChain JS / LangGraph JS
 
 The same package guards LangChain JS tools — and therefore LangGraph agents

@@ -164,7 +164,47 @@ export function useSubject<T>(subject: string, fn: () => T): T {
       "Pass prismorTools(tools, { subject }) per request instead.",
     );
   }
-  return storage.run(subject, fn);
+  // A request is a conversation: unless the caller already opened one with useSession(),
+  // its calls get a session of their own instead of the toolset's process-wide one.
+  return storage.run(subject, () => (currentSession() ? fn() : useSession(sessionId(), fn)));
+}
+
+// ── Ambient session context ──────────────────────────────────────────────────
+// Tools are wrapped once at module scope, so the toolset's own session id lives
+// as long as the process: on a server every user's calls landed in one session.
+// useSession() (and useSubject(), which opens one) scopes calls per request.
+
+let _sessionStorage: SubjectStorage | null | undefined;
+
+function sessionStorage(): SubjectStorage | null {
+  if (_sessionStorage !== undefined) return _sessionStorage;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { AsyncLocalStorage } = require("node:async_hooks");
+    _sessionStorage = new AsyncLocalStorage() as SubjectStorage;
+  } catch {
+    _sessionStorage = null;
+  }
+  return _sessionStorage;
+}
+
+function currentSession(): string | undefined {
+  return sessionStorage()?.getStore();
+}
+
+/**
+ * Group every Prismor-guarded tool call inside `fn` into session `id` - one
+ * conversation, one session in the console. Use your own conversation/thread id:
+ *
+ *   await useSession(`chat:${chatId}`, () => generateText({ model, tools, messages }));
+ *
+ * useSubject() opens a fresh session per call when none is active, so most
+ * servers need only that. Without AsyncLocalStorage this just runs `fn`: calls
+ * fall back to the toolset's session (grouping only, never a policy decision).
+ */
+export function useSession<T>(id: string, fn: () => T): T {
+  const storage = sessionStorage();
+  return storage && id ? storage.run(id, fn) : fn();
 }
 
 // ── Subagent context ─────────────────────────────────────────────────────────
@@ -370,13 +410,14 @@ export function prismorTool<
   const original = tool.execute;
 
   const guarded = async (args: Record<string, unknown>, ctx: unknown) => {
-    const decision = await evaluate(toolName, args, resolved, sid, currentSubagent(resolved.agentName));
+    const session = currentSession() ?? sid;
+    const decision = await evaluate(toolName, args, resolved, session, currentSubagent(resolved.agentName));
     logObserveFindings(decision, resolved.mode, toolName);
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
     const callId = String((ctx as { toolCallId?: string } | undefined)?.toolCallId ?? ++_callCounter);
-    return redactResult(await asRunning(resolved.agentName, callId, sid, () => original(args, ctx)), resolved);
+    return redactResult(await asRunning(resolved.agentName, callId, session, () => original(args, ctx)), resolved);
   };
 
   return { ...tool, execute: guarded };
@@ -460,14 +501,15 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
   const original = tool.invoke.bind(tool);
 
   (tool as any).invoke = async (input: any, config?: any) => {
-    const decision = await evaluate(toolName, langChainArgs(input), resolved, sid,
+    const session = currentSession() ?? sid;
+    const decision = await evaluate(toolName, langChainArgs(input), resolved, session,
       langGraphSubagent(config, resolved.agentName));
     logObserveFindings(decision, resolved.mode, toolName);
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
     const callId = String(input?.id ?? config?.toolCall?.id ?? ++_callCounter);
-    return redactResult(await asRunning(resolved.agentName, callId, sid, () => original(input, config)), resolved);
+    return redactResult(await asRunning(resolved.agentName, callId, session, () => original(input, config)), resolved);
   };
   (tool as any).__prismor_guarded__ = true;
   return tool;

@@ -12,7 +12,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { prismorTools, prismorTool, useSubject, PrismorBlocked } = require("../dist/index.js");
+const { prismorTools, prismorTool, useSubject, useSession, PrismorBlocked } = require("../dist/index.js");
 
 function withMockFetch(impl, fn) {
   const original = globalThis.fetch;
@@ -448,4 +448,47 @@ test("a tool listed in handoffs sends handoff_to", async () => {
   });
   assert.equal(requests[0].body.handoff_to, "researcher");
   assert.equal(requests[1].body.handoff_to, undefined);
+});
+
+// ── Sessions: one per request, not one per process ──────────────────────────
+// Tools are wrapped once at module scope, so before useSession() every user's
+// calls on a long-running server shared the toolset's single session.
+
+test("one module-scope toolset, two concurrent requests: each request is its own session", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    const turn = (user) => useSubject(`user:${user}`, async () => {
+      await tools.a.execute({}, {});
+      await new Promise((r) => setTimeout(r, 5));
+      await tools.b.execute({}, {});
+    });
+    await Promise.all([turn("alice"), turn("bob")]);
+  });
+  const byUser = (u) => new Set(requests.filter((r) => r.body.subject === `user:${u}`).map((r) => r.body.session_id));
+  assert.equal(byUser("alice").size, 1, "alice's two calls share one session");
+  assert.equal(byUser("bob").size, 1, "bob's two calls share one session");
+  assert.notDeepEqual([...byUser("alice")], [...byUser("bob")], "alice and bob are different sessions");
+});
+
+test("useSession() groups calls under the caller's own conversation id, across tools", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    await useSession("chat:42", async () => {
+      await useSubject("user:alice", () => tools.a.execute({}, {}));  // an open session is kept
+      await tools.b.execute({}, {});
+    });
+  });
+  assert.deepEqual(requests.map((r) => r.body.session_id), ["chat:42", "chat:42"]);
+});
+
+test("outside any request scope a toolset keeps one session for all its tools", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    await tools.a.execute({}, {});
+    await tools.b.execute({}, {});
+  });
+  assert.equal(new Set(requests.map((r) => r.body.session_id)).size, 1);
 });
