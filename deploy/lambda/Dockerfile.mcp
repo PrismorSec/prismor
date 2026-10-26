@@ -1,0 +1,18 @@
+# Prismor-hosted MCP endpoints on AWS Lambda (one function per org).
+# Build from the repo root:
+#   docker build -f deploy/lambda/Dockerfile.mcp -t prismor-mcp .
+# Same runtime as the eval image (deploy/lambda/Dockerfile), plus what registry
+# servers are launched with: `npx …` (Node) and `uvx …` (uv). Browser servers
+# (Playwright, Puppeteer) are not run here; see lambda_mcp_handler.py.
+FROM public.ecr.aws/lambda/python:3.12
+
+RUN dnf install -y nodejs22 nodejs22-npm git-core \
+ && dnf clean all && rm -rf /var/cache/dnf \
+ && pip install --no-cache-dir uv
+
+COPY . /tmp/src
+RUN pip install --no-cache-dir /tmp/src && rm -rf /tmp/src
+
+# Endpoint keys arrive in the request path; the function itself only needs to
+# know its org and the control plane (PRISMOR_ORG_ID, PRISMOR_WEB_URL).
+CMD ["prismor.runtime.lambda_mcp_handler.handler"]

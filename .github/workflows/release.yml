@@ -141,6 +141,61 @@ jobs:
           provenance: mode=max
           sbom: true
 
+  # Lambda images for Prismor-hosted evaluation and hosted MCP endpoints, pushed
+  # to ECR tagged with the release version so the console provisions functions
+  # from an exact runtime (deploy/lambda). Skipped until AWS is configured:
+  # vars.AWS_LAMBDA_ROLE_ARN (OIDC role with ECR push), vars.AWS_REGION, and
+  # vars.ECR_REGISTRY (<account>.dkr.ecr.<region>.amazonaws.com).
+  lambda-images:
+    needs: release
+    if: vars.AWS_LAMBDA_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the MCP image for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/lambda/Dockerfile.mcp
+          load: true
+          tags: prismor-mcp:smoke
+      # Run it under the Lambda runtime interface emulator the base image ships,
+      # with Lambda's read-only root: health reports this version, and a key the
+      # control plane does not know is refused without starting anything.
+      - name: Smoke test under the Lambda emulator
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          docker run -d --name mcp --read-only --tmpfs /tmp:rw,exec -p 127.0.0.1:9000:8080 \
+            -e PRISMOR_WEB_URL=http://127.0.0.1:9 -e PRISMOR_ORG_ID=smoke prismor-mcp:smoke
+          invoke() {
+            curl -fsS -d "{\"version\":\"2.0\",\"rawPath\":\"$2\",\"requestContext\":{\"http\":{\"method\":\"$1\"}},\"body\":\"{}\"}" \
+              http://127.0.0.1:9000/2015-03-31/functions/function/invocations
+          }
+          for _ in $(seq 20); do invoke GET /health >/dev/null 2>&1 && break; sleep 1; done
+          [ "$(invoke GET /health | jq -r '.body | fromjson | .version')" = "$want" ]
+          [ "$(invoke POST /mcp/prism_agent_unknown | jq -r .statusCode)" = 503 ]
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LAMBDA_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      # Lambda rejects OCI manifests with build attestations, hence no provenance/sbom.
+      - name: Push prismor-eval and prismor-mcp (linux/amd64)
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          for pair in "prismor-eval:deploy/lambda/Dockerfile" "prismor-mcp:deploy/lambda/Dockerfile.mcp"; do
+            repo="${pair%%:*}"; file="${pair#*:}"
+            aws ecr describe-repositories --repository-names "$repo" >/dev/null 2>&1 \
+              || aws ecr create-repository --repository-name "$repo" >/dev/null
+            docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+              -f "$file" -t "${{ vars.ECR_REGISTRY }}/$repo:$v" --push .
+            echo "pushed ${{ vars.ECR_REGISTRY }}/$repo:$v" >> "$GITHUB_STEP_SUMMARY"
+          done
+
   # MDM installers (packaging/mdm), attached to the same GitHub Release. Each
   # signs when its secrets exist and ships unsigned otherwise; see
   # docs/deploy-jamf.md and docs/deploy-intune.md for what to configure.

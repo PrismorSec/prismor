@@ -82,3 +82,91 @@ permission is missing (rerun `provision.sh`).
 directory, so session memory (cross-call checks) lasts as long as a warm instance.
 Spooled telemetry is uploaded before each response returns, because a frozen
 instance can be reclaimed at any time.
+
+---
+
+# Hosted MCP endpoints on Lambda
+
+The same pattern serves hosted MCP endpoints ("Spin up MCP instance" in the
+console's MCP Hub): **one function per org**, `prismor-mcp-<orgId>`, built from
+`deploy/lambda/Dockerfile.mcp` and running `prismor.runtime.lambda_mcp_handler`.
+It replaces the Cloudflare edge in `PrismorSec/prismor-fleet`.
+
+```
+agent ── POST <function URL>/mcp/<key> ──▶ lambda_mcp_handler
+                                             │ resolve key: GET <console>/api/mcp/fleet/resolve
+                                             ▼
+                                  prismor mcp-gateway (one process per key, warm)
+                                             │ policy, result screening, telemetry,
+                                             ▼ signed policy pull, kill switch
+                                  the endpoint's registry servers (remote, npx, uvx)
+```
+
+- **Any key of the org works** on its function: an endpoint key or a person's
+  grant on it. The control plane decides, so revoking a key or an endpoint takes
+  effect within `HOSTED_MCP_RESOLVE_TTL` (30s). A key from another org is refused
+  (`PRISMOR_ORG_ID`), and a key never resolved fails closed if the control plane
+  is down.
+- **Servers** come from the registry. Remote (HTTPS) servers are called from
+  the function; `npx` / `uvx` servers run inside it (Node 22, uv and git are in the
+  image). Browser servers (Playwright, Puppeteer) are skipped: run those in a
+  local `prismor mcp-gateway`.
+- **State**: each key's runtime state (session ledger, policy cache) lives in
+  `/tmp`. With `HOSTED_MCP_STATE_BUCKET` set it is snapshotted to S3 after each
+  request and restored by the next instance, so a session survives cold starts. A
+  workspace `policy.yaml` is never saved or restored: endpoints follow only the
+  org's signed policy.
+
+## Build and release
+
+The release workflow's `lambda-images` job pushes `prismor-eval:<version>` and
+`prismor-mcp:<version>` to ECR on every `v*` tag, after an emulator smoke test,
+once `vars.AWS_LAMBDA_ROLE_ARN`, `vars.AWS_REGION` and `vars.ECR_REGISTRY` are
+set. Point the console at an exact version, never `:latest`:
+
+```
+HOSTED_MCP_IMAGE_URI=<account>.dkr.ecr.<region>.amazonaws.com/prismor-mcp:1.68.0
+```
+
+By hand: `docker buildx build --platform linux/amd64 --provenance=false --sbom=false -f deploy/lambda/Dockerfile.mcp -t "$REPO:$VERSION" --push .`
+
+## Function settings (the console sets these when it provisions)
+
+| | |
+|---|---|
+| Memory / ephemeral storage | 2048 MB / 2048 MB (`npx` installs land in `/tmp`) |
+| Timeout | 300 s (one MCP call; the handler stops waiting 3 s before the deadline) |
+| Function URL | `AuthType: NONE`. The key in the path is the credential |
+| Env | `PRISMOR_WEB_URL`, `PRISMOR_ORG_ID`, optional `HOSTED_MCP_STATE_BUCKET` / `HOSTED_MCP_STATE_PREFIX` |
+| Execution role | `AWSLambdaBasicExecutionRole`, plus `s3:GetObject` / `s3:PutObject` on `<bucket>/mcp-state/*` if state is on |
+
+## Cold starts and concurrency
+
+A cold instance starts the key's gateway on the first request (about 1 s), and
+its `npx` / `uvx` servers on the first `tools/list` (about 10 s while packages
+download). A warm instance reuses all of it (`tools/list` about 0.4 s). MCP clients
+send requests concurrently (Claude Code opens a stream and posts at once), and
+Lambda answers concurrent requests from separate instances, so a busy org can
+pay the cold start more than once. Use provisioned concurrency on that org's
+function if it matters.
+
+## Checking a function
+
+```bash
+curl -s "$URL/health"                                         # {"ok": true, "version": "1.68.0"}
+curl -s -X POST "$URL/mcp/not-a-key" -d '{}'                  # 403 invalid or revoked instance key
+```
+
+## Moving off the Cloudflare edge (mcp.prismor.dev)
+
+Existing endpoint URLs point at `https://mcp.prismor.dev/mcp/<key>` and their
+keys were shown only once, so they can't simply be reissued.
+
+1. Deploy with `HOSTED_MCP_IMAGE_URI` set. New endpoints and grants get
+   `<org function URL>/mcp/<key>`. Old URLs keep working on the Cloudflare edge.
+2. Make old URLs reach Lambda without changing them: in the Cloudflare Worker,
+   resolve the key (`/api/mcp/fleet/resolve` returns `org_id`) and proxy
+   `POST /mcp/<key>` to that org's function URL, instead of starting a container.
+3. When the Worker has served nothing but proxying for a while, point
+   `mcp.prismor.dev` at the proxy only, delete the Durable Object/container
+   deployment, and archive `PrismorSec/prismor-fleet`.
