@@ -138,13 +138,14 @@ def _cd_target(arg: str | None, cur: str, prev: str) -> str:
 
 
 def word_dirs(command: str, cwd: str) -> List[tuple]:
-    """``(word, dir)`` for every word of ``command``: the directory the shell is
-    in when that word runs, following ``cd``/``pushd``/``popd`` (subshells and
-    pipeline stages don't leak). ``dir`` is UNKNOWN after a ``cd`` whose target
-    is a variable or command substitution.
+    """``(word, dir, seg)`` for every word of ``command``: the directory the
+    shell is in when that word runs, following ``cd``/``pushd``/``popd``
+    (subshells and pipeline stages don't leak), and the number of the simple
+    command it belongs to. ``dir`` is UNKNOWN after a ``cd`` whose target is a
+    variable or command substitution.
 
     Unparseable input (unbalanced quotes) falls back to the session cwd for
-    every word, which is the old behaviour.
+    every word, which is the old behaviour, with ``seg`` -1 (no segments).
     """
     import shlex
     try:
@@ -159,15 +160,17 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
             else:
                 tokens.append(t)
     except ValueError:
-        return [(w, cwd) for w in command.split()]
+        return [(w, cwd, -1) for w in command.split()]
 
     out: List[tuple] = []
     cur, prev, stack, dstack = cwd, cwd, [], []
     at_start = True
+    seg = 0
     i = 0
     while i < len(tokens):
         tok = tokens[i]
         if tok in _CMD_SEP:
+            seg += 1
             if tok == "(":
                 stack.append((cur, prev))
             elif tok == ")" and stack:
@@ -175,11 +178,11 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
             at_start = True
             i += 1
             continue
-        out.append((tok, cur))
+        out.append((tok, cur, seg))
         if at_start and tok in ("cd", "pushd", "popd"):
             args, j = [], i + 1
             while j < len(tokens) and tokens[j] not in _CMD_SEP:
-                out.append((tokens[j], cur))
+                out.append((tokens[j], cur, seg))
                 args.append(tokens[j])
                 j += 1
             ends = tokens[j] if j < len(tokens) else ""
@@ -202,9 +205,24 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
 def candidate_paths(command: str, cwd: str) -> List[str]:
     """Every path ``command`` could name, resolved against the directory the
     shell is in at that point. A relative path after an unresolvable ``cd`` is
-    returned as ``?<word>`` so the hook can fail closed instead of guessing."""
+    returned as ``?<word>`` so the hook can fail closed instead of guessing.
+
+    Words of a ``prismor cloak ...`` simple command are skipped: the CLI
+    prints names and byte counts, never values, so the env file it names is
+    not read into context. Only that segment is exempt — a ``2>&1 | grep -v
+    note`` tail passes, a ``| cat .env`` tail does not — and never one
+    carrying `` ` `` or ``$`` (a substitution inside it runs its own reader)."""
+    words = word_dirs(command, cwd)
+    segs: Dict[int, List[str]] = {}
+    for word, _, seg in words:
+        segs.setdefault(seg, []).append(word)
+    cloak = {seg for seg, ws in segs.items()
+             if seg >= 0 and len(ws) >= 2 and os.path.basename(ws[0]) == "prismor"
+             and ws[1] == "cloak" and not any("`" in w or "$" in w for w in ws)}
     seen: List[str] = []
-    for word, d in word_dirs(command, cwd):
+    for word, d, seg in words:
+        if seg in cloak:
+            continue
         for m in _WORD.finditer(word):
             tok = m.group(0)
             path = os.path.expanduser(tok)
