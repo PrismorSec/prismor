@@ -194,7 +194,27 @@ def check_allowed(
     if rule is None and rule_id in _DATA_BOUNDARY_RULES:
         from prismor.runtime.unblock import data_boundary_steps
         return "\n".join(data_boundary_steps({"ruleId": rule_id}, workspace))
-    if rule is None and (rule_id.startswith("tag-rule:") or rule_id == "tool-category-crossover"):
+    if rule is None and rule_id.startswith("tag-rule:"):
+        from prismor.runtime.policy_engine import PolicyEngine
+        from prismor.runtime.tag_rules import compile_tool_tag_rules
+        from prismor.runtime.trifecta import tool_tags_for_agent
+
+        tags = PolicyEngine(workspace=workspace).tool_tags
+        configs = [tags] + [
+            tool_tags_for_agent(tags, agent) for agent in (tags.get("agents") or {})
+        ]
+        if not any(
+            rule_id == f"tag-rule:{r.rule_id}"
+            for config in configs for r in compile_tool_tag_rules(config)
+            if r.source not in ("incompatible", "default")
+        ):
+            return f"No tag rule named '{rule_id}'. List them with: prismor tags rules"
+        if scope != "pattern":
+            return "Tag rules only support a scoped --pattern exception, not --off or --observe."
+        if not confirmed:
+            return "This would allow one case through a tag rule. Re-run with --yes to confirm."
+        return None
+    if rule is None and rule_id == "tool-category-crossover":
         return (
             f"{rule_id} is a tag-sequence rule (settings.tool_tags), not a policy "
             "rule. Manage it with `prismor tags rules` (list / rm <index>) or "

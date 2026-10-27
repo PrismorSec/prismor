@@ -110,6 +110,31 @@ untrusted_content with private_data then external_comms -> block
 customer_pii then external_comms                   # implicit -> block
 ```
 
+### Allow one known-good call
+
+A human can make an exception for a `tag-rule:<id>` from their own terminal:
+
+```bash
+prismor allow tag-rule:<id> --pattern 'curl https://api.example.com/status' --expires 30m --yes
+```
+
+Use the ID from the block message. For tag rules, `--pattern` is the **complete
+literal command**, matched case-sensitively; appended commands or changed arguments
+need their own exception. For a structured tool call, pass its name and full
+arguments as JSON (key order and JSON spacing do not matter):
+
+```bash
+prismor allow tag-rule:<id> --pattern '{"tool":"mcp__mail__send","arguments":{"to":"team@example.com","body":"Approved update"}}' --expires 30m --yes
+```
+
+Use cloaked placeholders, never real credentials, in an exception. The exception
+applies in this workspace until its expiry; omit `--expires` only for a permanent
+exception. Inspect it with `prismor allow --list`, or remove it with
+`prismor allow --undo allow-tag-rule:<id>`. Session tags and provenance stay intact,
+and other matching tag rules and attack rules still apply. `--off` and `--observe`
+are not supported for tag rules. Organization-managed workspaces still require an
+admin exemption. Legacy `tool-category-crossover` rules keep their existing behavior.
+
 ### `with` vs `then`, concretely
 
 Session: `send_email` (critical) → `read_email` (untrusted) → `send_email`.

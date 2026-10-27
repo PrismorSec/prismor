@@ -3019,6 +3019,15 @@ class PolicyEngine:
                 _tt_mode = self.device_mode or str(_tt_cfg.get("mode", "observe")).lower()
                 if _tags:
                     _rules = compile_tool_tag_rules(_tt_cfg)
+                    # Exempt each rule separately before choosing the strongest
+                    # match: another matching rule must still be able to block.
+                    _call_input = _tag_rule_call_text(event)
+                    _rules = [r for r in _rules if (
+                        r.source in ("incompatible", "default")
+                        or not self.allowlist_match(
+                            f"tag-rule:{r.rule_id}", _call_input, whole_call=True,
+                        )
+                    )]
                     _done = _ledger.completes_rules(_tags, _rules, index)
                     if _done is not None and _done.get("action") == "warn":
                         # A warn rule observes but never blocks — even under a
@@ -3849,6 +3858,7 @@ class PolicyEngine:
     def allowlist_match(
         self, rule_id: str, evidence: str,
         rule: Optional["CompiledRule"] = None, shell: bool = False,
+        *, whole_call: bool = False,
     ) -> Optional["AllowlistEntry"]:
         """The allowlist entry suppressing this finding, or None.
 
@@ -3871,6 +3881,14 @@ class PolicyEngine:
             # self-protection finding. Those rules stay pinned; a named allow
             # for one rule still applies.
             if _floor_allowlist_rejected(rule_id, entry, rule):
+                continue
+            if whole_call:
+                # Tag exceptions cover the entire input, case-sensitively.
+                # Neither substring nor individual shell-segment matches grant.
+                if evidence and entry.match == "exact" and re.fullmatch(
+                    _alternation(entry.raw_patterns), evidence,
+                ):
+                    return entry
                 continue
             if rule is None or not shell:
                 if entry.patterns.search(evidence):
@@ -4282,7 +4300,7 @@ _HEREDOC_START_RE = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
 
 def _floor_allowlist_rejected(rule_id: str, entry: "AllowlistEntry", rule: Optional["CompiledRule"]) -> bool:
     """True when this allowlist entry must not suppress a floor finding."""
-    protected = rule_id in _NON_OVERRIDABLE_RULE_IDS
+    protected = rule_id in _NON_OVERRIDABLE_RULE_IDS or rule_id.startswith("tag-rule:")
     if rule is not None and getattr(rule, "category", None) in _CORE_BLOCK_CATEGORIES:
         protected = True
     if not protected:
@@ -4751,6 +4769,25 @@ def _bool_field(event: Dict[str, Any], key: str) -> str:
     if isinstance(value, str):
         return value.strip().lower()
     return "true" if value else "false"
+
+
+def _tag_rule_call_text(event: Dict[str, Any]) -> str:
+    """Complete command or named tool arguments; never tool output or evidence."""
+    if event.get("type") == "shell":
+        return str(event.get("command") or "")
+    meta = event.get("metadata") or {}
+    args = meta.get("kwargs")
+    raw = meta.get("raw") or {}
+    if args is None and isinstance(raw, dict):
+        args = next((raw[k] for k in (
+            "tool_input", "arguments", "input", "toolInput", "toolArgs", "tool_args",
+        ) if k in raw), None)
+    if not isinstance(args, dict) or not meta.get("tool_name"):
+        return ""
+    try:
+        return json.dumps({"tool": meta["tool_name"], "arguments": args}, sort_keys=True)
+    except (TypeError, ValueError, RecursionError):
+        return ""
 
 
 def _extract_mcp_args(event: Dict[str, Any]) -> str:
