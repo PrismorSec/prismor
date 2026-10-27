@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Added
+- **The MCP gateway checks tool definitions before the model reads them.** Every tool a server lists is scanned like a skill (`skill_manifest` rules), and a new `mcp-tool-poisoning` rule catches the published tool-poisoning and shadowing descriptions: instructions to keep something from the user, "otherwise the tool will not work" coercion, overriding other servers' tools, redirecting recipients. Definitions are pinned on first use per server (`~/.prismor/mcp-tool-pins/`, keyed by URL or command), and a later change to the description, schema or annotations (a rug pull) is held for review. In enforce mode a held tool is hidden from `tools/list` and blocked by name with the reason; observe mode only reports. `prismor mcp-gateway tools [server]` shows what is held and `prismor mcp-gateway approve <server> [tool …]` accepts it; `prismor-self-edit` stops an agent approving its own tools. `"pin": false` turns it off per server. Measured against 896 real tool definitions (GitHub MCP server, Docker MCP catalog): no matches. See docs/mcp-gateway.md.
+
 ## [1.68.3] — 2026-10-26
 
 ### Added
