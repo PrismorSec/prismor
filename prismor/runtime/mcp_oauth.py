@@ -344,7 +344,7 @@ def save_record(server_url: str, rec: Dict[str, Any]) -> Path:
     except OSError:
         pass
     rec = dict(rec, resource=canonical_resource(server_url))
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(rec, fh, indent=2)
@@ -425,6 +425,23 @@ def revoke_record(rec: Dict[str, Any]) -> bool:
     return ok
 
 
+def refresh_shared(server_url: str, rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Refresh ``rec`` under a lock on the store. Gateways in other processes
+    (one per agent host) share the record; without the lock two of them spend
+    the same refresh token, and a server that detects reuse revokes the whole
+    sign-in. Whoever comes second finds the new record and uses it."""
+    from prismor.runtime.store import file_lock
+    with file_lock(_store_path(server_url)):
+        disk = load_record(server_url)
+        if disk is None:
+            raise OAuthError("signed out")
+        if disk.get("refresh_token") != rec.get("refresh_token"):
+            return disk
+        disk = refresh_record(disk)
+        save_record(server_url, disk)
+        return disk
+
+
 # ── gateway side ─────────────────────────────────────────────────────────────
 
 def login_hint(name: str) -> str:
@@ -456,8 +473,7 @@ class OAuthSession:
             due = rec.get("refresh_at") or rec.get("expires_at")
             if due and time.time() >= due and rec.get("refresh_token"):
                 try:
-                    rec = refresh_record(rec)
-                    save_record(self.server_url, rec)
+                    rec = refresh_shared(self.server_url, rec)
                 except OAuthError as exc:
                     sys.stderr.write(f"[prismor-gateway] {self.name}: token refresh failed: {exc}\n")
             return "Bearer " + rec["access_token"]
@@ -484,7 +500,7 @@ class OAuthSession:
             if not rec.get("refresh_token"):
                 return False
             try:
-                save_record(self.server_url, refresh_record(rec))
+                refresh_shared(self.server_url, rec)
                 return True
             except OAuthError as exc:
                 sys.stderr.write(f"[prismor-gateway] {self.name}: token refresh failed: {exc}\n")

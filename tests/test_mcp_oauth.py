@@ -41,7 +41,12 @@ class FakeOAuthMCP:
     authorization server at the origin."""
 
     def __init__(self, expires_in=3600, prm_resource=None, dcr=True, issuer=None,
-                 omit_iss=False, iss_supported=False, as_scopes=None, prm_status=200):
+                 omit_iss=False, iss_supported=False, as_scopes=None, prm_status=200,
+                 reuse_detection=False, token_delay=0.0):
+        self.reuse_detection = reuse_detection   # a spent refresh token revokes everything
+        self.token_delay = token_delay
+        self.spent = set()
+        self.n = 0
         self.issuer_override = issuer
         self.omit_iss = omit_iss
         self.iss_supported = iss_supported
@@ -147,6 +152,10 @@ class FakeOAuthMCP:
                             return self._json(400, {"error": "invalid_grant", "error_description": "pkce"})
                         return self._json(200, fake.issue("alice", q.get("scope", "")))
                     if form["grant_type"] == "refresh_token":
+                        time.sleep(fake.token_delay)
+                        if fake.reuse_detection and form.get("refresh_token") in fake.spent:
+                            fake.revoke_all()
+                        fake.spent.add(form.get("refresh_token"))
                         user = fake.refresh.pop(form.get("refresh_token"), None)
                         if user is None:
                             return self._json(400, {"error": "invalid_grant"})
@@ -188,8 +197,8 @@ class FakeOAuthMCP:
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
     def issue(self, user, scope=""):
-        n = len(self.access) + len(self.refresh)
-        at, rt = f"at-{n}-{user}", f"rt-{n}-{user}"
+        self.n += 1
+        at, rt = f"at-{self.n}-{user}", f"rt-{self.n}-{user}"
         self.access[at] = user
         self.granted[at] = scope
         self.refresh[rt] = user
@@ -382,6 +391,31 @@ def test_revoked_refresh_token_falls_back_to_login_hint(home, server):
     server.revoke_all()
     with pytest.raises(UpstreamError, match="login linear"):
         up.request("tools/list", {})
+
+
+def test_gateways_sharing_a_sign_in_refresh_it_once(home):
+    # One gateway per agent host, all due at once. Spending the refresh token
+    # twice would make a reuse-detecting server revoke the sign-in for all.
+    s = FakeOAuthMCP(reuse_detection=True, token_delay=0.2)
+    try:
+        rec = _login(s)
+        rec["refresh_at"] = int(time.time()) - 1
+        mcp_oauth.save_record(s.url, rec)
+        ups = [_upstream(s) for _ in range(4)]
+        go = threading.Barrier(len(ups))
+        out = []
+
+        def call(up):
+            go.wait()
+            out.append(up.request("tools/call", {"name": "whoami", "arguments": {}}))
+
+        threads = [threading.Thread(target=call, args=(u,)) for u in ups]
+        [t.start() for t in threads]
+        [t.join(15) for t in threads]
+        assert len(out) == len(ups)
+        assert [f["grant_type"] for f in s.token_forms].count("refresh_token") == 1
+    finally:
+        s.close()
 
 
 def test_static_authorization_header_disables_oauth(home, server):
