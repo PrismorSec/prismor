@@ -747,8 +747,12 @@ def evaluate_tool_call(
     except Exception as exc:
         sys.stderr.write(f"[prismor] IAM enforcement error: {exc}\n")
 
-    # Cross-call learning correlation on otherwise-clean shell events.
-    if not findings and event.get("type") == "shell":
+    # Provenance notices are informational; staged execution still needs to
+    # inspect the untrusted artifact that produced them.
+    if event.get("type") == "shell" and all(
+        f.get("ruleId") == "cross-agent-flow" and f.get("action") == "log"
+        for f in findings
+    ):
         for fn_name in ("detect_evasion", "detect_staged_execution"):
             try:
                 from prismor.runtime import learning

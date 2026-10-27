@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from prismor.runtime import provenance
 from prismor.runtime.store import get_db_path, initialize_database
 
 
@@ -346,26 +347,14 @@ def detect_evasion(
 
 # ── Staged-execution detection (write/fetch-then-execute correlation) ────────
 #
-# Closes the cross-call bypass where the dangerous action is split across two
-# tool calls so neither matches a single-command rule:
-#   call 1:  curl -o /tmp/x.sh URL   (or  echo … > /tmp/x.sh,  or a Write tool)
-#   call 2:  bash /tmp/x.sh
-# We track files *created* earlier in the same session (downloads, redirects,
-# tee, file_write events) and flag a later command that executes — or exfils via
-# scp/rsync — one of those paths. The single-command chained form
-# (`curl -o x && bash x`) is caught by also scanning the segments of one command.
-#
-# Safety property: created paths come ONLY from in-session events, so a
-# repo-tracked script (`bash ./scripts/build.sh`) that was never written this
-# session is absent from the set and never fires. We never blanket-flag "running
-# a script" — only "running a script this session created".
+# Correlate downloads with later execution, including across tool calls. Local
+# writes only warrant an execution warning when artifact provenance records
+# untrusted content. File transfers retain their separate write-then-exfil check.
 
 # A path token: double-quoted, single-quoted, or a bare run of non-delimiter chars.
 _PATH_TOK = r"""(?:"[^"]+"|'[^']+'|[^\s;&|<>]+)"""
 
 # CREATED-path extractors (scanned against prior events + earlier segments).
-_RE_CURL_OUT = re.compile(r"\bcurl\b[^\n]*?(?:-o|--output)\s+(" + _PATH_TOK + r")")
-_RE_WGET_OUT = re.compile(r"\bwget\b[^\n]*?(?:-O|--output-document=?)\s*(" + _PATH_TOK + r")")
 _RE_REDIRECT = re.compile(r"(?<![0-9&])>>?\s*(" + _PATH_TOK + r")")
 _RE_TEE = re.compile(r"\btee\b\s+(?:-a\s+)?(" + _PATH_TOK + r")")
 
@@ -400,12 +389,10 @@ def _norm_path(tok: str) -> str:
     return os.path.normpath(os.path.expanduser(tok))
 
 
-def _extract_created_paths(command: str) -> List[Tuple[str, str]]:
+def _extract_created_paths(command: str, cwd: Path) -> List[Tuple[str, str]]:
     """Return [(normalized_path, origin)] for files this command creates."""
     out: List[Tuple[str, str]] = []
     for rx, origin in (
-        (_RE_CURL_OUT, "download"),
-        (_RE_WGET_OUT, "download"),
         (_RE_TEE, "tee"),
         (_RE_REDIRECT, "redirect"),
     ):
@@ -413,6 +400,7 @@ def _extract_created_paths(command: str) -> List[Tuple[str, str]]:
             np = _norm_path(m.group(1))
             if np and np not in _NON_FILE_SINKS:
                 out.append((np, origin))
+    out.extend((path, "download") for path in provenance.fetch_targets(command, cwd))
     return out
 
 
@@ -490,11 +478,10 @@ def _build_staged(
         title = "Exfiltration of in-session-generated file (scp/rsync)"
         verb = "exfiltrates"
     else:
-        # Local write-then-execute. Agents write+run helper scripts constantly,
-        # so warn rather than block; operators can promote `staged_execution`
-        # to a block category in policy for stricter enforcement.
+        # Provenance tracks reused untrusted content, including across sessions.
+        # Preserve the warning severity for this signal.
         category, severity, action = "staged_execution", "MEDIUM", "warn"
-        title = "Staged execution: running a file created earlier this session"
+        title = "Staged execution: running a file containing untrusted content"
         verb = "executes"
     finding = {
         "id": f"{session_id}:staged-exec-0" if session_id else "staged-exec-0",
@@ -503,7 +490,7 @@ def _build_staged(
         "title": title,
         "evidence": (
             f"Command '{command[:160]}' {verb} '{exec_path}' "
-            f"(created via {origin} earlier this session)"
+            f"(origin: {origin})"
         ),
         "ruleId": "staged-execution",
         "action": action,
@@ -513,35 +500,50 @@ def _build_staged(
 
 
 def _match_command(
-    command: str, created: Dict[str, str], session_id: str
+    command: str, created: Dict[str, str], session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
-    for ex in _extract_executed_paths(command):
-        hit = _match_against(ex, created)
+    executed = _extract_executed_paths(command)
+    downloads = {path: origin for path, origin in created.items() if origin == "download"}
+    for ex in executed:
+        hit = _match_against(provenance.resolve(ex, cwd), downloads)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
+    artifacts = provenance.load() if executed else {}
+    for ex in executed:
+        path = provenance.resolve(ex, cwd)
+        if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
+            return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
     for ex in _extract_exfil_paths(command):
-        hit = _match_against(ex, created)
+        hit = _match_against(ex, created) or _match_against(provenance.resolve(ex, cwd), created)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
     return None
 
 
 def _scan_intra_command(
-    command: str, session_id: str
+    command: str, session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
     """Catch the single-command chained form: `curl -o x && bash x`."""
     seen: Dict[str, str] = {}
-    for seg in _SHELL_SPLIT.split(command):
+    start = 0
+    # Scan each prefix so pipelines retain their fetch provenance without
+    # letting a later download taint an earlier execution of the same path.
+    boundaries = [(m.start(), m.end()) for m in _SHELL_SPLIT.finditer(command)]
+    for end, next_start in boundaries + [(len(command), len(command))]:
+        seg = command[start:end]
+        start = next_start
+        downloads = {path: origin for path, origin in seen.items() if origin == "download"}
         for ex in _extract_executed_paths(seg):
-            hit = _match_against(ex, seen)
+            hit = _match_against(provenance.resolve(ex, cwd), downloads)
             if hit:
                 return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
         for ex in _extract_exfil_paths(seg):
-            hit = _match_against(ex, seen)
+            hit = _match_against(ex, seen) or _match_against(provenance.resolve(ex, cwd), seen)
             if hit:
                 return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
-        for cp, origin in _extract_created_paths(seg):
-            seen.setdefault(cp, origin)
+        for cp, origin in _extract_created_paths(command[:end], cwd):
+            if origin == "download" or cp not in seen:
+                seen[cp] = origin
     return None
 
 
@@ -582,66 +584,52 @@ def detect_staged_execution(
     event: Dict[str, Any],
     current_findings: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Flag a passing shell command that executes/exfils a file created earlier
-    in the same session (write-then-exec, fetch-then-exec, scp of a staged file).
+    """Block staged downloads; warn on untrusted script content or staged exfil.
 
-    Only runs when the event has no findings (it passed policy checks). Returns
-    at most one HIGH-severity, action=block finding.
+    Informational cross-agent provenance findings do not suppress this check.
     """
-    if current_findings:
+    if any(f.get("ruleId") != "cross-agent-flow" or f.get("action") != "log"
+           for f in current_findings):
         return []
 
     command = event.get("command", "")
     if not command:
         return []
+    cwd = Path((event.get("metadata") or {}).get("cwd") or workspace)
 
-    # ── Intra-command pass (no DB needed) ──
-    intra = _scan_intra_command(command, session_id)
+    intra = _scan_intra_command(command, session_id, cwd)
     if intra is not None:
         finding, record = intra
         _persist_staged(workspace, session_id, [record])
         return [finding]
 
-    # ── Cross-event pass ──
+    created: Dict[str, str] = {}
     db_path = get_db_path(workspace)
-    if not db_path.exists():
-        return []
-
-    conn = sqlite3.connect(db_path)
-    try:
-        initialize_learning_tables(conn)
-        rows = conn.execute(
-            "SELECT id, type, command_text, path_text FROM events "
-            "WHERE session_id = ? ORDER BY id ASC",
-            (session_id,),
-        ).fetchall()
-        # Drop the current event (highest id) — save_session_snapshot already
-        # persisted it, and it would otherwise self-match.
-        if rows:
-            rows = rows[:-1]
-
-        created: Dict[str, str] = {}
-        for _id, etype, cmd_text, path_text in rows:
+    if db_path.exists():
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT type, command_text, path_text FROM events "
+                "WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        # The current event was already persisted by save_session_snapshot.
+        for etype, cmd_text, path_text in rows[:-1]:
             if etype == "file_write" and path_text:
-                np = _norm_path(path_text)
-                if np:
-                    created.setdefault(np, "write")
+                created.setdefault(_norm_path(path_text), "write")
             elif etype == "shell" and cmd_text:
-                for cp, origin in _extract_created_paths(cmd_text):
-                    created.setdefault(cp, origin)
+                for cp, origin in _extract_created_paths(cmd_text, cwd):
+                    if origin == "download" or cp not in created:
+                        created[cp] = origin
 
-        if not created:
-            return []
-
-        result = _match_command(command, created, session_id)
-        if result is None:
-            return []
-
-        finding, record = result
-        _persist_staged_conn(conn, session_id, [record])
-        return [finding]
-    finally:
-        conn.close()
+    result = _match_command(command, created, session_id, cwd)
+    if result is None:
+        return []
+    finding, record = result
+    _persist_staged(workspace, session_id, [record])
+    return [finding]
 
 
 # ── Pattern mining ─────────────────────────────────────────────────────────

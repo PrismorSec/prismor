@@ -37,6 +37,13 @@ structurally similar to one a rule previously blocked, the dispatcher flags it a
 a possible bypass attempt — catching `r''m -rf` style obfuscation of a known-bad
 command.
 
+Staged-execution detection blocks scripts downloaded earlier in the session,
+including downloads saved through redirects or `tee`. It warns when a script's
+artifact provenance records untrusted content, including content copied from a
+tool response or inherited from another session. Ordinary agent-authored helper
+scripts do not trigger this warning. The separate warning for transferring an
+in-session file with `scp` or `rsync` is unchanged.
+
 ---
 
 ## Why a human stays in the loop
