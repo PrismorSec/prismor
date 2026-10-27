@@ -540,6 +540,7 @@ def _synthesize_scoped_rules(
         available_set = set(available_tools)
         rules["allowed_tools"] = [t for t in rules["allowed_tools"] if t in available_set]
         rules["deny_tools"] = [t for t in rules["deny_tools"] if t in available_set]
+        rules["origin"] = "llm"
 
         return _apply_web_invariant(_apply_cloak_invariant(rules, goal), available_tools)
 
@@ -828,6 +829,7 @@ def check_scoped_rules(
                 session_id,
                 f"Tool '{tool_name}' is explicitly denied for this session",
                 event_type,
+                rules,
             )
 
         # "*" in allowed_tools = allow-all-except-denied. The dashboard writes
@@ -858,12 +860,14 @@ def check_scoped_rules(
                         session_id,
                         f"Tool '{tool_name}' is not in scope for this session",
                         event_type,
+                        rules,
                     )
             else:
                 return _scoped_finding(
                     session_id,
                     f"Tool '{tool_name}' is not in scope for this session",
                     event_type,
+                    rules,
                 )
 
     # Path check for file events
@@ -876,6 +880,7 @@ def check_scoped_rules(
                     session_id,
                     f"Path '{path}' is outside the scoped paths for this session",
                     event_type,
+                    rules,
                 )
 
     # Network check. A shell command reaches the network as readily as WebFetch
@@ -888,6 +893,7 @@ def check_scoped_rules(
                 session_id,
                 f"Network access denied by scoped rules (url: {url[:100]})",
                 event_type,
+                rules,
             )
         if event_type == "shell":
             from .egress import extract_destinations
@@ -900,14 +906,16 @@ def check_scoped_rules(
                     session_id,
                     f"Network access denied by scoped rules (host: {where[:100]})",
                     event_type,
+                    rules,
                 )
 
     return None
 
 
-def _scoped_finding(session_id: str, reason: str, event_type: str) -> Dict[str, Any]:
+def _scoped_finding(session_id: str, reason: str, event_type: str,
+                    rules: Dict[str, Any]) -> Dict[str, Any]:
     """Build a finding dict for a scoped rule violation."""
-    return {
+    finding = {
         "id": f"{session_id}:scoped-agent",
         "severity": "HIGH",
         "category": "scoped_agent",
@@ -915,10 +923,23 @@ def _scoped_finding(session_id: str, reason: str, event_type: str) -> Dict[str, 
         "evidence": reason,
         "ruleId": "scoped-agent",
         "action": "block",
-        # Scope denials (IAM / scoped-agent) are explicit operator intent, not
-        # observe-by-default detection — they always enforce.
+        # Scope denials (IAM / scoped-agent) always enforce: they are not
+        # observe-by-default detection.
         "mode": "enforce",
     }
+    if rules.get("operator_edited"):
+        finding["scopeOrigin"] = "operator"
+    elif isinstance(rules.get("inventory"), list):
+        # Synthesised from the prompt (only synthesis records an inventory).
+        # Every gap in it — an LLM omission or a keyword miss — denies the
+        # tool the user asked for as surely as the attack (#257): the rule
+        # sees the capability, never the call. So the person decides: an
+        # inline ask where the agent can ask, fail-closed where it cannot.
+        # Attack policy still blocks outright (block outranks step_up). A
+        # scope a human wrote (scope edit, dashboard, IAM) keeps blocking.
+        finding["action"] = "step_up"
+        finding["scopeOrigin"] = rules.get("origin") or "llm"
+    return finding
 
 
 # ── Display ────────────────────────────────────────────────────────────────

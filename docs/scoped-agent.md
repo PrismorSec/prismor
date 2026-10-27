@@ -24,7 +24,7 @@ flowchart TD
     PROMPT --> SYNTH["synthesize_scoped_rules(goal, available_tools, ws)<br/>→ allowed_tools: [Read, Edit, Bash]<br/>→ path scope: auth/**<br/>→ network: denied"]
     SYNTH -->|"saved for this session id"| LATER["later in the same session:<br/>agent issues WebFetch('https://evil.com')"]
     LATER --> CHECK["check_scoped_rules(event)"]
-    CHECK -->|"not in allowed_tools"| BLOCK["BLOCK"]
+    CHECK -->|"not in allowed_tools"| ASK["ASK the person (step_up)"]
 ```
 
 On each prompt of a session, Prismor derives a rule set from what that prompt
@@ -35,6 +35,27 @@ when the session ends — they never accumulate into your permanent policy.
 This synthesis happens automatically inside the hook dispatcher; you don't run a
 command to create scoped rules. The `prismor scope` commands are for
 **inspecting and adjusting** them.
+
+### A scope miss asks; it does not block
+
+A synthesised scope is a guess about what the task needs, and the rule only
+sees the tool, never the call. When the guess leaves out a tool the prompt
+plainly needs (a research prompt without `WebFetch`), denying it refuses the
+user's own request as surely as an injected one (#257). So a call outside a
+synthesised scope is a `step_up`, not a `block`:
+
+- Claude, Qwen, Copilot, Antigravity and Cursor (on events that can ask) show
+  the person an inline approval prompt with the reason.
+- Surfaces that cannot ask (Codex, Windsurf, a Claude subagent, ...) fail
+  closed: the call is refused, as before.
+- Attack policy is unaffected: a matching `block` rule outranks the scope's
+  `step_up`, so the call is refused without asking.
+- A scope a human wrote (`prismor scope edit`, the dashboard, an
+  [IAM](iam.md) profile) still blocks: that is a decision, not a guess.
+
+Each scope finding carries `scopeOrigin` (`llm`, `static`, or `operator`),
+sent as `scope_origin` in telemetry, so scope findings can be counted apart
+from attack policy. A `step_up` is not counted as a block on the dashboard.
 
 ---
 
