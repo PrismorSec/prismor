@@ -789,6 +789,7 @@ class Gateway:
             self.agent_name = str(client_info["name"])
         self._client_protocol = str(
             params.get("protocolVersion") or PROTOCOL_VERSION_FALLBACK)
+        self._init_params = params
         # Upstreams are initialized concurrently, off the serve loop: a slow
         # one (cold `npx -y`) must neither delay the client's handshake nor be
         # declared dead after REQUEST_TIMEOUT. tools/list waits for them; one
@@ -824,6 +825,22 @@ class Gateway:
             # Routes from that list stay valid, so they are not cleared.
             self._send({"jsonrpc": "2.0",
                         "method": "notifications/tools/list_changed", "params": {}})
+
+    def _retry_signed_in(self, announce: bool) -> None:
+        """Bring up an OAuth server that failed for want of a sign-in once the
+        user has run `login`, without restarting the gateway."""
+        for up in self.upstreams:
+            if (up.spec.name not in self._failed or getattr(up, "oauth", None) is None
+                    or up.oauth.authorization() is None):
+                continue
+            try:
+                up.initialize(getattr(self, "_init_params", {}), timeout=REQUEST_TIMEOUT)
+            except Exception:
+                continue
+            self._failed.pop(up.spec.name, None)
+            if announce:
+                self._send({"jsonrpc": "2.0",
+                            "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/list ───────────────────────────────────────────────────────
 
@@ -899,6 +916,7 @@ class Gateway:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
         hidden: Dict[str, _Route] = {}
+        self._retry_signed_in(announce=False)
         with self._init_cv:
             # Give upstreams still in their handshake a chance to come up
             # rather than answering with 0 tools (#559). Whatever is still
@@ -990,12 +1008,17 @@ class Gateway:
             # when called by name (an agent probing for denied tools must show
             # up in the console); the policy that hid it blocks it below.
             route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
+        if route is None and self._failed:
+            self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
             lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] or ["all servers are up"]
             self._reply(req_id, {"content": [{"type": "text", "text": "\n".join(lines)}]})
             return
         if route is None:
-            self._reply_error(req_id, -32602, f"unknown tool: {name}")
+            # A tool of a server that is down: say why rather than "unknown".
+            down = next((f"{n}: {e}" for n, e in self._failed.items()
+                         if self.namespace != "none" and name.startswith(f"{n}__")), None)
+            self._reply_error(req_id, -32602, down or f"unknown tool: {name}")
             return
 
         # Keep org-managed policy fresh on the hot path (debounced ~30s;
@@ -1788,8 +1811,14 @@ def _run_auth(action: str, args) -> int:
         raise GatewayConfigError(f"no remote server named {target!r} in the gateway config (remote servers: {names})")
     spec = match[0]
     if action == "logout":
-        gone = mcp_oauth.delete_record(spec.url)
-        print(f"Signed out of {spec.name}." if gone else f"{spec.name} was not signed in.")
+        rec = mcp_oauth.load_record(spec.url)
+        if rec is None:
+            print(f"{spec.name} was not signed in.")
+            return 0
+        revoked = mcp_oauth.revoke_record(rec)
+        mcp_oauth.delete_record(spec.url)
+        print(f"Signed out of {spec.name}." + ("" if revoked else
+              " The server could not be asked to revoke the token; it stays valid there until it expires."))
         return 0
     if not spec.uses_oauth:
         raise GatewayConfigError(

@@ -141,7 +141,7 @@ as themselves instead of through a shared token pasted into `headers`:
 ```bash
 prismor mcp-gateway login linear   # opens the browser; tokens stored for you
 prismor mcp-gateway auth           # sign-in status of every remote server
-prismor mcp-gateway logout linear  # forget the tokens
+prismor mcp-gateway logout linear  # revoke the tokens at the server and forget them
 ```
 
 `login` follows the MCP authorization spec: it reads the server's protected
@@ -154,8 +154,11 @@ tokens must be `https` (plain `http` only on loopback).
 Tokens are written to `~/.prismor/mcp-oauth/` (`0600`), keyed by the server's
 URL rather than its name in the config, so a renamed entry or a name pointed at
 another host never receives a token minted for a different server. A running
-gateway picks up a new sign-in on its next call, refreshes a token before it
-expires, and on a `401` refreshes once and retries. When it cannot (never signed
+gateway reads that store on every call: it picks up a new sign-in (a server that
+failed to start for want of one comes up on the next tool list), stops sending
+the token after `logout`, refreshes a token before it expires, and on a `401`
+refreshes once and retries. `logout` also revokes the tokens at the server
+(RFC 7009) when it offers a revocation endpoint. When it cannot (never signed
 in, refresh revoked), the call fails with a message telling the model to ask the
 user to run `prismor mcp-gateway login <server>`.
 

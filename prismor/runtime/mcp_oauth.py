@@ -268,8 +268,9 @@ def discover(server_url: str, challenge: Optional[Dict[str, str]] = None) -> Dic
         if not asm.get(key):
             raise OAuthError(f"authorization server {issuer} has no {key}")
         _require_secure(str(asm[key]), key)
-    if asm.get("registration_endpoint"):
-        _require_secure(str(asm["registration_endpoint"]), "registration_endpoint")
+    for key in ("registration_endpoint", "revocation_endpoint"):
+        if asm.get(key):
+            _require_secure(str(asm[key]), key)
     methods = asm.get("code_challenge_methods_supported")
     if isinstance(methods, list) and methods and "S256" not in methods:
         raise OAuthError(f"authorization server {issuer} does not support PKCE S256")
@@ -290,6 +291,7 @@ def discover(server_url: str, challenge: Optional[Dict[str, str]] = None) -> Dic
         "authorization_endpoint": str(asm["authorization_endpoint"]),
         "token_endpoint": str(asm["token_endpoint"]),
         "registration_endpoint": str(asm.get("registration_endpoint") or ""),
+        "revocation_endpoint": str(asm.get("revocation_endpoint") or ""),
         "scopes": scopes,
     }
 
@@ -403,6 +405,26 @@ def refresh_record(rec: Dict[str, Any]) -> Dict[str, Any]:
     return _apply_token_response(rec, tok)
 
 
+def revoke_record(rec: Dict[str, Any]) -> bool:
+    """RFC 7009: ask the server to drop the tokens, so a copy held elsewhere
+    stops working too. Best effort; False when it could not be confirmed."""
+    url = rec.get("revocation_endpoint")
+    if not url:
+        return False
+    ok = True
+    for kind in ("refresh_token", "access_token"):
+        if not rec.get(kind):
+            continue
+        form = {"token": rec[kind], "token_type_hint": kind}
+        try:
+            _http_json(_require_secure(url, "revocation_endpoint"), form=form,
+                       headers=_client_auth(rec, form))
+        except OAuthError as exc:
+            # RFC 7009 answers 200 with an empty body, which is not JSON.
+            ok = ok and exc.status == 0 and "did not return JSON" in str(exc)
+    return ok
+
+
 # ── gateway side ─────────────────────────────────────────────────────────────
 
 def login_hint(name: str) -> str:
@@ -417,14 +439,12 @@ class OAuthSession:
         self.name = name
         self.server_url = server_url
         self._lock = threading.Lock()
-        self._rec: Optional[Dict[str, Any]] = None
 
     def _record(self) -> Optional[Dict[str, Any]]:
-        # Re-read when nothing is cached so a `login` run while the gateway is
-        # up takes effect on the next call, without a restart.
-        if self._rec is None:
-            self._rec = load_record(self.server_url)
-        return self._rec
+        # The store is the only copy: a `login` run while the gateway is up
+        # takes effect on the next call, and a `logout` stops it, instead of a
+        # token cached here being used (and refreshed back to disk) afterwards.
+        return load_record(self.server_url)
 
     def authorization(self) -> Optional[str]:
         """The ``Authorization`` header value to send, refreshing a token that
@@ -436,7 +456,7 @@ class OAuthSession:
             due = rec.get("refresh_at") or rec.get("expires_at")
             if due and time.time() >= due and rec.get("refresh_token"):
                 try:
-                    self._rec = rec = refresh_record(rec)
+                    rec = refresh_record(rec)
                     save_record(self.server_url, rec)
                 except OAuthError as exc:
                     sys.stderr.write(f"[prismor-gateway] {self.name}: token refresh failed: {exc}\n")
@@ -446,32 +466,28 @@ class OAuthSession:
         """A 403 ``insufficient_scope``: remember what the server asked for so
         the next ``login`` requests it on top of what was already granted."""
         with self._lock:
-            rec = load_record(self.server_url)
+            rec = self._record()
             if rec is not None and scope:
                 rec["step_up_scope"] = union_scopes(rec.get("step_up_scope"), scope)
                 save_record(self.server_url, rec)
-                self._rec = rec
 
     def unauthorized(self, sent: Optional[str]) -> bool:
         """The server rejected ``sent``. Returns True when a different token is
         now available (refreshed, or a newer sign-in on disk) and the request
         should be retried once."""
         with self._lock:
-            disk = load_record(self.server_url)
-            if disk is not None and sent != "Bearer " + disk.get("access_token", ""):
-                self._rec = disk
+            rec = self._record()
+            if rec is None:
+                return False
+            if sent != "Bearer " + rec.get("access_token", ""):
                 return True
-            rec = disk or self._rec
-            if rec is None or not rec.get("refresh_token"):
-                self._rec = None
+            if not rec.get("refresh_token"):
                 return False
             try:
-                self._rec = refresh_record(rec)
-                save_record(self.server_url, self._rec)
+                save_record(self.server_url, refresh_record(rec))
                 return True
             except OAuthError as exc:
                 sys.stderr.write(f"[prismor-gateway] {self.name}: token refresh failed: {exc}\n")
-                self._rec = None
                 return False
 
 
@@ -642,6 +658,8 @@ def login(name: str, server_url: str, *, headers: Optional[Dict[str, str]] = Non
     }
     if client.get("client_secret"):
         rec["client_secret"] = client["client_secret"]
+    if meta.get("revocation_endpoint"):
+        rec["revocation_endpoint"] = meta["revocation_endpoint"]
     if client.get("token_endpoint_auth_method"):
         rec["token_endpoint_auth_method"] = client["token_endpoint_auth_method"]
     if client.get("registered"):

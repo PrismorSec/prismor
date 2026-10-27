@@ -95,6 +95,7 @@ class FakeOAuthMCP:
                             "code_challenge_methods_supported": ["S256"]}
                     if fake.dcr:
                         meta["registration_endpoint"] = fake.base + "/register"
+                    meta["revocation_endpoint"] = fake.base + "/revoke"
                     if fake.iss_supported:
                         meta["authorization_response_iss_parameter_supported"] = True
                     if fake.as_scopes:
@@ -123,6 +124,14 @@ class FakeOAuthMCP:
                     cid = "client-" + str(len(fake.clients))
                     fake.clients[cid] = reg
                     return self._json(201, {"client_id": cid, **reg})
+                if u.path == "/revoke":
+                    tok = dict(urllib.parse.parse_qsl(self._body())).get("token")
+                    fake.access.pop(tok, None)
+                    fake.refresh.pop(tok, None)
+                    self.send_response(200)   # RFC 7009: empty body
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 if u.path == "/token":
                     form = dict(urllib.parse.parse_qsl(self._body()))
                     fake.token_forms.append(form)
@@ -384,22 +393,65 @@ def test_static_authorization_header_disables_oauth(home, server):
     assert _spec_from_entry("x", {"url": server.url, "oauth": {"client_id": "c"}}).oauth == {"client_id": "c"}
 
 
-def test_gateway_status_tool_carries_the_hint(home, server, tmp_path, monkeypatch):
+def _gateway(server, tmp_path, monkeypatch):
     gw = Gateway([UpstreamSpec(name="linear", url=server.url, transport="http")],
                  workspace=tmp_path, mode="enforce")
     sent = []
     monkeypatch.setattr(gw, "_send", sent.append)
-    gw._dispatch({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                             "clientInfo": {"name": "t", "version": "0"}}})
-    gw._dispatch({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-    deadline = time.time() + 10
-    while time.time() < deadline and not any(m.get("id") == 2 for m in sent):
-        time.sleep(0.05)
-    listed = next(m for m in sent if m.get("id") == 2)["result"]["tools"]
+
+    def ask(req_id, method, params=None):
+        gw._dispatch({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params or {}})
+        deadline = time.time() + 10
+        while time.time() < deadline and not any(m.get("id") == req_id for m in sent):
+            time.sleep(0.05)
+        return next(m for m in sent if m.get("id") == req_id)
+
+    ask(1, "initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                          "clientInfo": {"name": "t", "version": "0"}})
+    return gw, ask
+
+
+def test_gateway_status_tool_carries_the_hint(home, server, tmp_path, monkeypatch):
+    gw, ask = _gateway(server, tmp_path, monkeypatch)
+    listed = ask(2, "tools/list")["result"]["tools"]
     status = [t for t in listed if t["name"] == "prismor_gateway_status"]
     assert status and "prismor mcp-gateway login linear" in status[0]["description"]
     gw.close()
+
+
+def test_gateway_started_before_login_comes_up_after_it(home, server, tmp_path, monkeypatch):
+    gw, ask = _gateway(server, tmp_path, monkeypatch)
+    ask(2, "tools/list")
+    # A call to the down server's tool says why, not "unknown tool".
+    err = ask(3, "tools/call", {"name": "linear__whoami", "arguments": {}})["error"]["message"]
+    assert "prismor mcp-gateway login linear" in err
+    _login(server)
+    names = [t["name"] for t in ask(4, "tools/list")["result"]["tools"]]
+    assert "linear__whoami" in names and "prismor_gateway_status" not in names
+    gw.close()
+
+
+def test_logout_stops_a_running_gateway(home):
+    s = FakeOAuthMCP(expires_in=2)            # refresh comes due after ~1s
+    try:
+        _login(s)
+        up = _upstream(s)
+        _init(up)                             # the gateway has used the token
+        mcp_oauth.delete_record(s.url)        # `prismor mcp-gateway logout`
+        time.sleep(1.2)
+        with pytest.raises(UpstreamError, match="login linear"):
+            up.request("tools/list", {})
+        # Its refresh must not write the record back.
+        assert mcp_oauth.load_record(s.url) is None
+    finally:
+        s.close()
+
+
+def test_logout_revokes_the_tokens_at_the_server(home, server):
+    rec = _login(server)
+    assert rec["revocation_endpoint"] == server.base + "/revoke"
+    assert mcp_oauth.revoke_record(rec)
+    assert not server.access and not server.refresh
 
 
 # ── behaviour aligned with the MCP SDK clients ───────────────────────────────
