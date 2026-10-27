@@ -131,6 +131,60 @@ block. Hosted endpoints use this for the tools you select per endpoint in the
 console, and for **New tools start off**, where `allow` is the tools you have
 reviewed, so a tool the server adds later stays off until you turn it on.
 
+## Signing in to OAuth servers
+
+Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API
+key: they answer with `401` and expect the client to sign the user in with
+OAuth. The gateway does that sign-in itself, so each person reaches the server
+as themselves instead of through a shared token pasted into `headers`:
+
+```bash
+prismor mcp-gateway login linear   # opens the browser; tokens stored for you
+prismor mcp-gateway auth           # sign-in status of every remote server
+prismor mcp-gateway logout linear  # revoke the tokens at the server and forget them
+```
+
+`login` follows the MCP authorization spec: it reads the server's protected
+resource metadata (RFC 9728) to find its authorization server, registers
+Prismor as a client (RFC 7591) or uses a `client_id` you give it, and runs the
+authorization-code flow with PKCE and a loopback redirect, asking for a token
+bound to that one server (RFC 8707 `resource`). Endpoints that receive codes or
+tokens must be `https` (plain `http` only on loopback).
+
+Tokens are written to `~/.prismor/mcp-oauth/` (`0600`), keyed by the server's
+URL rather than its name in the config, so a renamed entry or a name pointed at
+another host never receives a token minted for a different server. A running
+gateway reads that store on every call: it picks up a new sign-in (a server that
+failed to start for want of one comes up on the next tool list), stops sending
+the token after `logout`, refreshes a token before it expires, and on a `401`
+refreshes once and retries. `logout` also revokes the tokens at the server
+(RFC 7009) when it offers a revocation endpoint. When it cannot (never signed
+in, refresh revoked), the call fails with a message telling the model to ask the
+user to run `prismor mcp-gateway login <server>`.
+
+OAuth is used only for remote servers whose entry sends no `Authorization`
+header of its own. Per entry:
+
+```json
+{
+  "mcpServers": {
+    "linear": {"type": "http", "url": "https://mcp.linear.app/mcp"},
+    "internal": {"type": "http", "url": "https://mcp.corp.example/mcp",
+                 "oauth": {"client_id": "prismor-gw", "scopes": ["tools.read"]}},
+    "legacy": {"type": "http", "url": "https://legacy.example/mcp", "oauth": false}
+  }
+}
+```
+
+Use `"oauth": {"client_id": …}` (and `client_secret` if the client is
+confidential) when the authorization server does not allow dynamic
+registration; `false` turns sign-in off. On a machine without a browser, pass
+`--no-browser` to print the URL, and `--callback-port` to fix the loopback port
+so you can forward it over SSH.
+
+Sign-in is for the local gateway. Hosted endpoints run without a person at a
+browser and still use the token stored with the server in the registry.
+
 ## Modes and flags
 
 ```bash

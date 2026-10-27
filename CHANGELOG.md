@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Added
+- **The MCP gateway signs you in to OAuth MCP servers.** `prismor mcp-gateway login <server>` runs the MCP authorization flow (protected resource metadata, dynamic client registration or a configured `client_id`, PKCE, `resource`-bound tokens) and stores the tokens per person in `~/.prismor/mcp-oauth/` (0600, keyed by server URL). The gateway sends them, refreshes before expiry and once on a 401, and when sign-in is missing or revoked tells the model to ask for `prismor mcp-gateway login <server>`. `auth` shows sign-in status, `logout` revokes the tokens at the server and stops a running gateway from using them; `"oauth": false` or an `Authorization` header in the entry keeps the old behaviour. Servers like Linear, Stripe and Neon no longer need a shared API key. See docs/mcp-gateway.md.
+
 ## [1.68.3] — 2026-10-26
 
 ### Added
