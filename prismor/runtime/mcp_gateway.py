@@ -92,6 +92,16 @@ class UpstreamSpec:
     #: endpoints use it for their tool selection and for "new tools start off".
     allow_tools: Optional[List[str]] = None
     deny_tools: List[str] = field(default_factory=list)
+    #: OAuth sign-in for a remote server (see runtime/mcp_oauth.py), from the
+    #: entry's ``"oauth"`` value: a dict (``client_id``, ``client_secret``,
+    #: ``scopes`` for a pre-registered client), or False to turn it off. Used
+    #: only when the entry sends no Authorization header of its own.
+    oauth: Any = None
+
+    @property
+    def uses_oauth(self) -> bool:
+        return (self.remote and self.oauth is not False
+                and not any(k.lower() == "authorization" for k in self.headers))
 
     def excludes(self, tool: str) -> bool:
         if any(fnmatch.fnmatchcase(tool, p) for p in self.deny_tools):
@@ -155,9 +165,12 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         if not re.match(r"https?://", meta["url"], re.I):
             raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
+        oauth = cfg.get("oauth")
         return UpstreamSpec(name=name, url=meta["url"],
                             transport=meta["transport"] or "http",
-                            headers=dict(headers or {}), **_tool_selection(cfg))
+                            headers=dict(headers or {}),
+                            oauth=oauth if oauth is False or isinstance(oauth, dict) else None,
+                            **_tool_selection(cfg))
     command = cfg.get("command")
     if isinstance(command, str):
         argv = [command] + [str(a) for a in cfg.get("args") or []]
@@ -375,6 +388,13 @@ class _PendingReply:
         return self._msg
 
 
+class _Unauthorized(Exception):
+    def __init__(self, code: int, reason: Any):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+        self.reason = reason
+
+
 class UpstreamHttp(Upstream):
     """Streamable-HTTP upstream via stdlib urllib.
 
@@ -392,17 +412,40 @@ class UpstreamHttp(Upstream):
         self._session_id: Optional[str] = None
         self._counter = 0
         self._lock = threading.Lock()
+        self.oauth = None
+        if spec.uses_oauth:
+            from prismor.runtime.mcp_oauth import OAuthSession
+            self.oauth = OAuthSession(spec.name, spec.url)
 
     def _post(self, body: Dict[str, Any], timeout: float,
               want_reply: bool) -> Optional[Dict[str, Any]]:
-        import urllib.request
-        import urllib.error
         # Before the socket, not after. `initialize` and `tools/list` dial the
         # server before any tool call exists to screen, so a URL that policy
         # forbids would otherwise be reached during discovery — the tool
         # surface is not the only thing that talks to the network.
         if self.guard is not None:
             self.guard(self.spec)
+        auth = self.oauth.authorization() if self.oauth is not None else None
+        try:
+            return self._send_once(body, timeout, want_reply, auth)
+        except _Unauthorized as exc:
+            # A token the server no longer takes: refresh (or pick up a newer
+            # sign-in) and retry once. Without one, the model is told which
+            # command the human has to run instead of a bare "HTTP 401".
+            if self.oauth is None:
+                raise UpstreamError(f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
+            from prismor.runtime.mcp_oauth import login_hint
+            if auth is None or not self.oauth.unauthorized(auth):
+                raise UpstreamError(login_hint(self.spec.name))
+            try:
+                return self._send_once(body, timeout, want_reply, self.oauth.authorization())
+            except _Unauthorized:
+                raise UpstreamError(login_hint(self.spec.name))
+
+    def _send_once(self, body: Dict[str, Any], timeout: float, want_reply: bool,
+                   auth: Optional[str]) -> Optional[Dict[str, Any]]:
+        import urllib.request
+        import urllib.error
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -411,6 +454,8 @@ class UpstreamHttp(Upstream):
             "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
         headers.update(self.spec.headers)
+        if auth:
+            headers["Authorization"] = auth
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         req = urllib.request.Request(
@@ -431,6 +476,17 @@ class UpstreamHttp(Upstream):
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise _Unauthorized(exc.code, exc.reason)
+            if exc.code == 403 and self.oauth is not None:
+                from prismor.runtime.mcp_oauth import parse_www_authenticate
+                challenge = parse_www_authenticate(exc.headers.get("WWW-Authenticate") or "")
+                if challenge.get("error") == "insufficient_scope":
+                    self.oauth.insufficient_scope(challenge.get("scope") or "")
+                    raise UpstreamError(
+                        f"MCP server '{self.spec.name}' needs more access than was granted"
+                        f"{' (' + challenge['scope'] + ')' if challenge.get('scope') else ''}. "
+                        f"Ask the user to run `prismor mcp-gateway login {self.spec.name}` again, then retry.")
             raise UpstreamError(
                 f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -1702,6 +1758,63 @@ def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
     return head + "\n" + "\n".join(lines)
 
 
+def _auth_specs(args) -> List[UpstreamSpec]:
+    if getattr(args, "upstream", None) and args.upstream.strip().startswith(("http://", "https://")):
+        return [UpstreamSpec(name="upstream", url=args.upstream.strip(), transport="http")]
+    specs = [parse_inline_server(v) for v in getattr(args, "server", None) or []]
+    if specs:
+        return specs
+    config = getattr(args, "config", None)
+    return load_gateway_config(Path(config).expanduser() if config else DEFAULT_GATEWAY_CONFIG)
+
+
+def _run_auth(action: str, args) -> int:
+    """``prismor mcp-gateway login|logout <server>`` and ``auth``."""
+    from prismor.runtime import mcp_oauth
+    specs = [s for s in _auth_specs(args) if s.remote]
+    if action == "auth":
+        if not specs:
+            print("No remote MCP servers in the gateway config.")
+        for s in specs:
+            state = mcp_oauth.status(s.url) if s.uses_oauth else "uses its own Authorization header"
+            print(f"  {s.name:<20} {state}")
+        return 0
+    target = getattr(args, "target", None)
+    if not target and len(specs) == 1:
+        target = specs[0].name
+    match = [s for s in specs if s.name == target]
+    if not match:
+        names = ", ".join(s.name for s in specs) or "none"
+        raise GatewayConfigError(f"no remote server named {target!r} in the gateway config (remote servers: {names})")
+    spec = match[0]
+    if action == "logout":
+        gone = mcp_oauth.delete_record(spec.url)
+        print(f"Signed out of {spec.name}." if gone else f"{spec.name} was not signed in.")
+        return 0
+    if not spec.uses_oauth:
+        raise GatewayConfigError(
+            f"'{spec.name}' sends its own Authorization header or has \"oauth\": false; "
+            "remove that to sign in with OAuth")
+    no_browser = bool(getattr(args, "no_browser", False))
+
+    def _show(url: str) -> None:
+        verb = "Open this URL to sign in" if no_browser else "Opening your browser. If it does not open, visit"
+        print(f"{verb} to {spec.name}:\n\n  {url}\n", flush=True)
+
+    try:
+        rec = mcp_oauth.login(spec.name, spec.url, headers=spec.headers,
+                              oauth_cfg=spec.oauth if isinstance(spec.oauth, dict) else None,
+                              open_browser=not no_browser,
+                              port=int(getattr(args, "callback_port", 0) or 0),
+                              on_authorize_url=_show)
+    except mcp_oauth.OAuthError as exc:
+        sys.stderr.write(f"[prismor] sign-in to {spec.name} failed: {exc}\n")
+        return 1
+    print(f"Signed in to {spec.name} via {rec['issuer']}. "
+          "A running gateway picks this up on its next call.")
+    return 0
+
+
 def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
@@ -1718,6 +1831,8 @@ def run_gateway(args, workspace: Path) -> int:
     if action == "uninstall":
         print(uninstall_gateway(workspace))
         return 0
+    if action in ("login", "logout", "auth"):
+        return _run_auth(action, args)
 
     specs: List[UpstreamSpec] = []
     if getattr(args, "upstream", None):
