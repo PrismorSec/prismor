@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import List, NamedTuple, Tuple
+from typing import List, NamedTuple, Optional, Pattern, Tuple
 
 # Commands whose quoted argument is executed, not printed. A match inside one of
 # these payloads is code and must never be downgraded.
@@ -278,7 +278,8 @@ def _blank(text: str, spans) -> str:
 # .toml - CI workflows and package.json scripts DO get executed.
 _TEXT_FILE_EXTS = frozenset({".md", ".markdown", ".txt", ".log", ".rst", ".adoc", ".csv", ".tsv"})
 _TEXT_DEVICES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"})
-_REDIRECT_RE = re.compile(r"\d*(?:&>>?|>>?\|?)\s*(&\d+|[^\s;&|<>]+)")
+# `&\s*\d+`: the dequoted spelling of `2>&1` is `2 >& 1`.
+_REDIRECT_RE = re.compile(r"\d*(?:&>>?|>>?\|?)\s*(&\s*\d+|&-|[^\s;&|<>]+)")
 
 
 def _redirects_to_text(segment: str, command: str) -> bool:
@@ -298,6 +299,18 @@ def _redirects_to_text(segment: str, command: str) -> bool:
             return False
         if command.count(name) != 1:
             return False
+    return True
+
+
+def _is_separator(bare: str, k: int) -> bool:
+    """``bare[k]`` ends a pipeline segment. The ``&`` of a redirect (``2>&1``,
+    ``&>file``, ``>&2``) does not: splitting there cut ``echo "..." 2>&1`` into
+    a redirect with no target, which read as live."""
+    ch = bare[k]
+    if ch not in _SEPARATORS:
+        return False
+    if ch == "&" and ((k > 0 and bare[k - 1] in "<>") or bare[k + 1:k + 2] == ">"):
+        return False
     return True
 
 
@@ -380,11 +393,11 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
             continue
         seg_start = 0
         for k in range(start):
-            if bare[k] in _SEPARATORS:
+            if _is_separator(bare, k):
                 seg_start = k + 1
         seg_end = len(command)
         for k in range(start, len(command)):
-            if bare[k] in _SEPARATORS:
+            if _is_separator(bare, k):
                 seg_end = k
                 break
         segment = bare[seg_start:seg_end]
@@ -398,6 +411,9 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
             return len(tokens) > 1 and tokens[1] in _GH_TEXT_SUBCOMMANDS
         if argv0 == "git":
             return len(tokens) > 1 and tokens[1] in _GIT_MESSAGE_SUBCOMMANDS
+        if argv0 in ("prismor", "immunity"):
+            # `prismor check "<cmd>"` evaluates the text; it never runs it.
+            return len(tokens) > 1 and tokens[1] in ("check", "semantic-check")
         return argv0 in _INERT_SINKS
     return False
 
@@ -480,7 +496,16 @@ def _reaches_host_policy(command: str) -> bool:
 
 
 def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
-    """True when the match lies inside the payload of a context-switching command.
+    """True when the match runs in another execution context; see
+    :func:`remote_payload_span`."""
+    return remote_payload_span(command, match_start, match_end) is not None
+
+
+def remote_payload_span(command: str, match_start: int, match_end: int) -> Optional[Tuple[int, int, str]]:
+    """``(start, end, text)`` of the remote payload holding the match -- the
+    quoted argument of a context-switching command, or a heredoc fed to
+    ``ssh`` as the remote shell's stdin -- else None. ``text`` is what the
+    remote shell receives (quotes removed).
 
     Answers "will the LOCAL shell run this?", not "is this dangerous?". Used
     only for rules whose jurisdiction is this machine -- Prismor's own policy,
@@ -504,12 +529,15 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
         local too (issue #607).
     """
     if match_start < 0 or match_end > len(command):
-        return False
+        return None
     if _reaches_host_policy(command):
-        return False
+        return None
+    stdin_payload = _remote_heredoc_payload(command, match_start, match_end)
+    if stdin_payload is not None:
+        return stdin_payload
     spans = quoted_spans(command)
     if not spans:
-        return False
+        return None
     bare = _outside_quotes(command, spans)
 
     for start, end, _is_payload, is_closed in spans:
@@ -539,7 +567,7 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
                     is_sub = True
                     break
             if is_sub:
-                return False
+                return None
 
         # A newline separates commands as surely as `;` does.
         seg_start = 0
@@ -548,13 +576,187 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
                 seg_start = k + 1
         prefix = bare[seg_start:start]
         if any(opener in prefix for opener in _LOCAL_EVAL_OPENERS):
-            return False
+            return None
         tokens = prefix.split()
         if not tokens or tokens[0].rsplit("/", 1)[-1] not in _REMOTE_CONTEXTS:
-            return False
+            return None
         try:
             words = shlex.split(command[seg_start:end + 1])
         except ValueError:
+            return None
+        if not (words and _is_remote_argument(words)):
+            return None
+        return start + 1, end, _unquote(command[start:end + 1])
+    return None
+
+
+def _unquote(word: str) -> str:
+    """The text the receiving shell sees for one closed quoted word."""
+    if word[:1] == chr(39):
+        return word[1:-1]
+    # Inside double quotes, backslash only escapes $ ` " \ and newline.
+    return re.sub(r'\\([$`"\\\n])', r"\1", word[1:-1])
+
+
+def _remote_heredoc_payload(command: str, match_start: int, match_end: int) -> Optional[Tuple[int, int, str]]:
+    """``ssh host [bash -s] <<EOF ... EOF``: the body is the remote shell's
+    stdin, so it runs over there. Only when ssh runs no remote command or a
+    stdin-reading shell; anything else (``ssh host 'cat > f' <<EOF``) is data
+    for a remote program and left to the quoted-argument path."""
+    for h in heredocs(command):
+        if not (h.body_start <= match_start and match_end <= h.body_end):
+            continue
+        if h.expands and any(
+            match_start < h.body_start + b and match_end > h.body_start + a
+            for a, b in command_substitution_spans(command[h.body_start:h.body_end])
+        ):
+            return None  # `$(...)` in an unquoted body runs locally first
+        segment = command[:h.start].rsplit("\n", 1)[-1]
+        for sep in _SEPARATORS:
+            segment = segment.split(sep)[-1]
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return None
+        if not words or words[0].rsplit("/", 1)[-1] != "ssh":
+            return None
+        cmd_at = _ssh_command_start(words, 0)
+        if cmd_at < 0:
+            return None
+        try:
+            # ssh joins its command words and the remote shell re-splits them,
+            # so `'bash -s'` is two words over there.
+            remote = shlex.split(" ".join(words[cmd_at:]))
+        except ValueError:
+            return None
+        while remote and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remote[0]):
+            remote = remote[1:]  # `OLD=x bash -s`: env for the remote shell
+        if remote and not (
+            remote[0].rsplit("/", 1)[-1] in ("bash", "sh", "zsh", "dash", "ksh")
+            and all(w.startswith("-") for w in remote[1:])
+        ):
+            return None
+        return h.body_start, h.body_end, command[h.body_start:h.body_end]
+    return None
+
+
+def is_inert_remote_match(command: str, match_start: int, match_end: int,
+                          pattern: Pattern[str], _depth: int = 0) -> bool:
+    """True when the match sits in a remote payload and, judged as the
+    command the REMOTE shell runs, every match of ``pattern`` there is inert
+    text -- a banner the remote shell echoes, say.
+
+    Unlike :func:`is_remote_payload` this holds for every rule, because it
+    never treats remoteness itself as harmless: a destructive command in the
+    payload is just as live over there, so it still blocks (issue #344)."""
+    if _depth > 3:
+        return False
+    span = remote_payload_span(command, match_start, match_end)
+    if span is None:
+        return False
+    inner = span[2]
+    matches = list(pattern.finditer(inner))
+    if not matches:
+        return False  # the match spans the quoting itself; cannot attribute it
+    return all(
+        is_inert_match(inner, m.start(), m.end())
+        or is_inert_script_literal(inner, m.start(), m.end())
+        or is_inert_remote_match(inner, m.start(), m.end(), pattern, _depth + 1)
+        for m in matches
+    )
+
+
+# Python that can start a process or run generated code. A shell-syntax match
+# inside a string literal is only text when nothing in the script could hand
+# that string to a shell (or to exec, which could).
+_PY_EXEC = re.compile(
+    r"\b(?:subprocess|os\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile)"
+    r"|pty\s*\.\s*spawn|commands\s*\.|exec\s*\(|eval\s*\(|compile\s*\(|__import__|importlib"
+    r"|ctypes|pexpect|paramiko|fabric|invoke|plumbum|sh\s*\.|asyncio\s*\.\s*create_subprocess\w*"
+    # Indirection that reaches the above without naming it.
+    r"|getattr\s*\(|globals\s*\(|locals\s*\(|vars\s*\(|builtins|runpy|multiprocessing"
+    r"|concurrent|pickle|marshal|shelve|code\s*\.\s*interact|InteractiveConsole|webbrowser)"
+)
+_PYTHON_BIN = re.compile(r"^python[0-9.]*$")
+# Shells and runners that would execute what the script prints.
+_STDOUT_EXECUTORS = frozenset({
+    "bash", "sh", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
+    "eval", "exec", "source", "xargs", "ssh", "sudo", "doas",
+})
+
+
+def _python_string_spans(source: str) -> Optional[List[Tuple[int, int]]]:
+    """Character spans of every string literal (f-strings whole). None when
+    the source does not tokenize -- callers must then keep the match live."""
+    import io
+    import tokenize
+    line_starts = [0]
+    for line in source.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    def at(pos: Tuple[int, int]) -> int:
+        return line_starts[pos[0] - 1] + pos[1]
+
+    spans: List[Tuple[int, int]] = []
+    fstring_start: List[int] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            name = tokenize.tok_name.get(tok.type, "")
+            if name == "STRING":
+                spans.append((at(tok.start), at(tok.end)))
+            elif name == "FSTRING_START":
+                fstring_start.append(at(tok.start))
+            elif name == "FSTRING_END" and fstring_start:
+                spans.append((fstring_start.pop(), at(tok.end)))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    return spans
+
+
+def is_inert_script_literal(command: str, match_start: int, match_end: int) -> bool:
+    """True when the match lies in a string literal of a Python heredoc
+    script (``python3 - <<'EOF'``) that cannot execute strings.
+
+    Agents edit files this way all day, and a ``s.replace(old, new)`` carries
+    shell text as data. A shell-syntax rule matching that literal is reading
+    Python source, not a command. Conservative: the script must contain no
+    process/exec primitive (:data:`_PY_EXEC`), its output must not feed a
+    shell, the match must sit wholly inside one literal, and in an unquoted
+    body no ``$(...)`` may overlap the match. Callers apply this only to rules
+    whose patterns describe shell syntax -- a path rule still fires on
+    ``open('~/.ssh/id_rsa')``, which Python really does read.
+    """
+    for h in heredocs(command):
+        if not (h.body_start <= match_start and match_end <= h.body_end):
+            continue
+        segment = command[:h.start].rsplit("\n", 1)[-1]
+        for sep in _SEPARATORS:
+            segment = segment.split(sep)[-1]
+        tokens = segment.split()
+        while tokens and "=" in tokens[0] and not tokens[0].startswith("="):
+            tokens = tokens[1:]  # leading VAR=value assignments
+        if not tokens or not _PYTHON_BIN.match(tokens[0].rsplit("/", 1)[-1]):
             return False
-        return bool(words) and _is_remote_argument(words)
+        # Whatever the script prints must not be run: no pipe on the opener
+        # line, and no executor anywhere outside heredoc bodies.
+        if "|" in command[h.start:h.body_start].replace("||", ""):
+            return False
+        outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
+        for word in re.split(r"[\s;&|()]+", outside):
+            if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
+                return False
+        body = command[h.body_start:h.body_end]
+        if _PY_EXEC.search(body):
+            return False
+        # Patterns anchored on a trailing delimiter consume the whitespace
+        # after the closing quote; that is no more code than the quote is.
+        while match_end > match_start and command[match_end - 1].isspace():
+            match_end -= 1
+        rel_start, rel_end = match_start - h.body_start, match_end - h.body_start
+        if h.expands and any(rel_start < b and rel_end > a for a, b in command_substitution_spans(body)):
+            return False
+        literals = _python_string_spans(body)
+        if not literals:
+            return False
+        return any(a <= rel_start and rel_end <= b for a, b in literals)
     return False

@@ -132,7 +132,94 @@ _LOCAL_JURISDICTION_RULE_IDS = frozenset({
     "prismor-self-edit",
     "agent-config-tampering",
     "agent-config-tampering-path",
+    "audit-trail-tampering",
 })
+
+
+def _local_jurisdiction(rule_id: str) -> bool:
+    # A mode's `commands.deny`/`ask` lists decide what may run on THIS host
+    # (modes.yaml: "this mode decides whether a command may run"). `sudo` or
+    # `pip install` inside an ssh payload runs on a box with its own policy.
+    return rule_id in _LOCAL_JURISDICTION_RULE_IDS or (
+        rule_id.startswith("mode-") and rule_id.endswith("-commands")
+    )
+
+
+# Rules whose patterns describe SHELL syntax (a command word and its flags,
+# pipes, redirects) rather than a path or an API. Inside a Python heredoc
+# script that cannot execute strings, such a match is Python source text --
+# `s.replace("rm -rf build", ...)` -- not a command. Path- and API-shaped rules
+# (vault/secret paths, /etc/sudoers, urllib fetches) stay out: Python really
+# does open those. See shell_context.is_inert_script_literal.
+_SHELL_SYNTAX_RULE_IDS = frozenset({
+    "destructive-command",
+    "dos-resource-exhaustion",
+    "remote-execution",
+    "rce-canary",
+    "git-remote-hijack",
+    "pkg-install-from-url",
+    "secret-exfiltration",
+    "credential-aggregation",
+    "credential-staging",
+    "agent-config-tampering",
+    "prismor-self-edit",
+})
+
+
+_CONFIG_GUARD_RULE_IDS = frozenset({"agent-config-tampering", "agent-config-tampering-path"})
+_GUARDED_CONFIG_PATH = re.compile(
+    r"[^\s;&|<>\"'=]*\.(?:prismor(?:-warden)?/policy\.yaml|claude/settings(?:\.local)?\.json)"
+)
+_SHELL_ASSIGNMENT = re.compile(
+    r"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|]*)"
+)
+_TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/tmp/", "/var/folders/", "/private/var/folders/")
+
+
+def _throwaway_config_path(path: str, assignments: Dict[str, str], workspace: Optional[Path]) -> bool:
+    """True when a guarded config file (a Prismor policy, Claude settings)
+    sits in a scratch rig under a temp dir -- a test install being set up --
+    rather than one that governs this agent: not under the workspace, this
+    PRISMOR_HOME or $HOME. Only on positive evidence: any variable the same
+    command does not assign keeps the path unresolved, and so guarded."""
+    def expand(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        return assignments.get(name, m.group(0))
+
+    for _ in range(3):  # `S=/tmp/x; W=$S/ws` -- one level of indirection each pass
+        path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", expand, path)
+    if "$" in path or "`" in path or not path.startswith("/"):
+        return False
+    real = os.path.normpath(path)
+    if not any(real.startswith(root) for root in _TEMP_ROOTS):
+        return False
+    from prismor.runtime.store import prismor_home
+    from prismor.runtime.paths import is_within
+    for governing in (workspace, prismor_home(), Path.home()):
+        if governing is not None and is_within(real, governing):
+            return False
+    return True
+
+
+def _throwaway_config_match(command: str, match_text: str, workspace: Optional[Path]) -> bool:
+    paths = _GUARDED_CONFIG_PATH.findall(match_text)
+    if not paths:
+        return False
+    assignments: Dict[str, str] = {}
+    reassigned: Set[str] = set()
+    for k, v in _SHELL_ASSIGNMENT.findall(command):
+        if k in assignments:
+            reassigned.add(k)  # which value a use sees depends on order; stay guarded
+        assignments[k] = v[1:-1] if v[:1] in "\"'" else v
+    for k in reassigned:
+        del assignments[k]
+    return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
+
+
+def _shell_syntax_rule(rule_id: str) -> bool:
+    return rule_id in _SHELL_SYNTAX_RULE_IDS or (
+        rule_id.startswith("mode-") and rule_id.endswith("-commands")
+    )
 
 # Canonical field for each event type when 'fields' is not specified in the rule.
 # Fields that hold one statement or one value per line. See CompiledRule.flags.
@@ -2060,9 +2147,39 @@ class PolicyEngine:
                         command_substitution_spans,
                         heredocs,
                         is_inert_match,
+                        is_inert_remote_match,
+                        is_inert_script_literal,
                         is_remote_payload,
                         quoted_spans,
                     )
+
+                    def _is_match_inert(text, m):
+                        if is_inert_match(text, m.start(), m.end()):
+                            return True
+                        if _shell_syntax_rule(rule.id) and is_inert_script_literal(
+                            text, m.start(), m.end()
+                        ):
+                            return True
+                        # A self-protection rule guards THIS install. When the
+                        # match sits inside an ssh/docker/kubectl payload it
+                        # describes another machine's Prismor, which this policy
+                        # does not govern and whose remediation ("run it
+                        # yourself") cannot help. Report it, do not block it.
+                        # Scoped to these rules on purpose: a remote `rm -rf /`
+                        # still destroys a real machine (issue #344).
+                        if _local_jurisdiction(rule.id) and is_remote_payload(
+                            text, m.start(), m.end()
+                        ):
+                            return True
+                        if rule.id in _CONFIG_GUARD_RULE_IDS and _throwaway_config_match(
+                            text, text[m.start():m.end()], self.workspace
+                        ):
+                            return True
+                        # Any rule: inert text INSIDE a remote payload (a banner
+                        # the remote shell echoes) is inert here too.
+                        return is_inert_remote_match(
+                            text, m.start(), m.end(), rule.patterns
+                        )
                     # Rules match against a normalized command so command
                     # substitutions expose their executable payload
                     # (``echo "$(rm -rf /)"`` -> ``echo " rm -rf / "``).
@@ -2103,20 +2220,7 @@ class PolicyEngine:
                             )
                             _m = rule.patterns.search(_context_text)
                     if _m is not None:
-                        context_inert = is_inert_match(
-                            _context_text, _m.start(), _m.end()
-                        )
-                        # A self-protection rule guards THIS install. When the
-                        # match sits inside an ssh/docker/kubectl payload it
-                        # describes another machine's Prismor, which this policy
-                        # does not govern and whose remediation ("run it
-                        # yourself") cannot help. Report it, do not block it.
-                        # Scoped to these rules on purpose: a remote `rm -rf /`
-                        # still destroys a real machine (issue #344).
-                        if not context_inert and rule.id in _LOCAL_JURISDICTION_RULE_IDS:
-                            context_inert = is_remote_payload(
-                                _context_text, _m.start(), _m.end()
-                            )
+                        context_inert = _is_match_inert(_context_text, _m)
                     # Context is judged on the first raw match. In a multi-line
                     # command (e.g. an inert heredoc body next to a real command)
                     # or a compound command separated by semicolons on one line
@@ -2127,16 +2231,6 @@ class PolicyEngine:
                     # command (`echo 'chmod 777'; r''m -rf /`) cannot hide
                     # behind an inert first match.
                     if context_inert:
-                        def _is_match_inert(text, m):
-                            if is_inert_match(text, m.start(), m.end()):
-                                return True
-                            if (
-                                rule.id in _LOCAL_JURISDICTION_RULE_IDS
-                                and is_remote_payload(text, m.start(), m.end())
-                            ):
-                                return True
-                            return False
-
                         _texts = [_context_text, _dequote_shell(_context_text)]
                         context_inert = all(
                             _is_match_inert(text, m)
@@ -2146,6 +2240,9 @@ class PolicyEngine:
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False
+            elif event_type == "file_write" and rule.id in _CONFIG_GUARD_RULE_IDS:
+                _wpath = str(event.get("path") or "")
+                context_inert = _throwaway_config_path(_wpath, {}, self.workspace)
 
             finding_id = f"{rule.id}-{index}"
             prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2850,7 +2947,11 @@ class PolicyEngine:
 
                 _tags = classify_tool_tags(
                     event, event_type,
-                    {f.get("category") for f in findings},
+                    # A finding judged inert (the match is text: a commit
+                    # message, a Python string, an echoed banner) says the call
+                    # does NOT perform that action, so it cannot make the call
+                    # critical either.
+                    {f.get("category") for f in findings if not f.get("contextInert")},
                     _tt_cfg,
                     extra_tags=_extra,
                 )
