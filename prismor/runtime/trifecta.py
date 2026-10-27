@@ -77,6 +77,13 @@ TOOL_TAG_DEFAULTS = [
     ("mcp__*__*create*", "glob", [CRITICAL]),
 ]
 
+# The `*create*` / `*delete*` globs above mean "creates or deletes something
+# other people see". Opening a browser tab, a terminal session or an unsent
+# draft is local UI state; tagging `tabs_create_mcp` critical made every tab
+# opened after a page read complete the trifecta (replay of 293 real sessions,
+# where users had hand-tagged it `browser_ui` to get their work done).
+_LOCAL_SURFACE = re.compile(r"__(?:[a-z_]*_)?(?:tabs?|windows?|sessions?|drafts?|panes?|screenshots?)(?:_|$)")
+
 # Default incompatible set when the policy declares none (the red/blue rule).
 # Kept for the legacy `incompatible:` surface; DEFAULT_RULES is what a policy
 # that declares nothing actually gets.
@@ -406,6 +413,8 @@ def _classify_base(
     if tt.get("defaults_enabled", True):
         for matcher, match_type, deftags in TOOL_TAG_DEFAULTS:
             if _matches(tool_name, matcher, match_type):
+                if CRITICAL in deftags and match_type == "glob" and _LOCAL_SURFACE.search(tool_name):
+                    deftags = [t for t in deftags if t != CRITICAL]
                 tags |= set(deftags)
         if tags:
             return tags

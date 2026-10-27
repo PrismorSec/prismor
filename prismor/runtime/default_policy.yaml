@@ -566,7 +566,10 @@ rules:
       # line (`python3 -c "print(1)" && grep subprocess x.py`) is not the code
       # being run.
       - 'python[23]?\s+-c\s+(?:"[^"]*|''[^'']*)(?:\bexec\s*\(|\beval\s*\(|os\.(?:system|popen|exec|spawn)|\bsubprocess\b|__import__|socket\.)'
-      - 'perl\s+-e\s+.*(?:socket|exec)'
+      # Not `perl -e 'alarm N; exec @ARGV' cmd ...`: that is the stock macOS
+      # stand-in for `timeout` (no coreutils), and its exec runs the argv the
+      # same command line already shows, which the other rules judge.
+      - 'perl\s+-e\s+(?!["'']alarm\b[^"''\n]*;\s*exec\s+@ARGV\s*["''])[^\n]*(?:socket|exec)'
       - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
       - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
       - 'echo\s+.*\|\s*crontab'
@@ -686,7 +689,9 @@ rules:
       # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
       - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
       # eval of remotely-fetched content: eval "$(curl ...)"
-      - '\beval\b[^\n]*\b(curl|wget)\b'
+      # The builtin is a word followed by whitespace: `eval-server`,
+      # `eval.log` and `run-eval` are names that merely contain it.
+      - '(?<![\w.\-/])eval\s+[^\n]*\b(curl|wget)\b'
       # PowerShell: iwr ... | iex, and iex (irm ...) / iex (New-Object Net.WebClient).DownloadString(...).
       # curl and wget are aliases of Invoke-WebRequest there.
       - '\b(?:iwr|irm|curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b[^|;\n]*\|\s*(?:iex|Invoke-Expression)\b'
@@ -1027,9 +1032,15 @@ rules:
     fields: [command]
     patterns:
       - '\b(tar|zip|7z|gzip)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
-      - '\b(cp|mv|rsync)\b[^\n;&|]*\s-[a-zA-Z]*[rRa][^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
-      - '\b(cp|mv|rsync)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude)\b[^\n;&|]*/tmp'
-      - '\b(cp|mv|rsync|scp)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/(?:\.claude/\.credentials\.json|\.aws/credentials|\.ssh/id_[a-z0-9]+(?!\.pub))\b'
+      # `(?<!-i )` / `(?<!-i=)`: a key passed as ssh's identity file
+      # (`rsync -e "ssh -i ~/.ssh/k.pem"`, `scp -i ...`) authenticates the
+      # transfer; it is not one of the files being copied.
+      - '\b(cp|mv|rsync)\b[^\n;&|]*\s-[a-zA-Z]*[rRa][^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
+      # `.claude` here is the directory or its credential file, not any file
+      # under it: copying a screenshot out of ~/.claude/projects/.../tool-results
+      # to /tmp is not credential aggregation.
+      - '\b(cp|mv|rsync)\b[^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?=/?\.credentials|/?[\s"'';&|]|/?$))\b[^\n;&|]*/tmp'
+      - '\b(cp|mv|rsync|scp)\b[^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/(?:\.claude/\.credentials\.json|\.aws/credentials|\.ssh/id_[a-z0-9]+(?!\.pub))\b'
     action: block
 
   # ── HIGH: Credential staging (encode to file without network) ─────
@@ -1299,7 +1310,12 @@ rules:
       # the line is a GET, and every GET on these routes is read-only, so an
       # agent may read its own sessions; anything else that reaches the
       # routes (a write flag, `$FLAGS`, an interpreter, nc) is still blocked.
-      - '(?:^|[;&|\n])(?![ \t]*(?:curl|wget)\b(?![^\n]*(?:\s(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next))|[$`])))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals)'
+      # Judged on the curl's own segment, and only an unquoted word that IS a
+      # variable or substitution counts: a quoted `-H "Bearer $T"` or a
+      # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
+      # put the `$` on the line, not in the request (replay: 92 such GETs).
+      # A flag counts quoted or not (`"-XPOST"` is still a method).
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals)'
       # The same URL built by joining the path in the interpreter.
       - '/api/["'']\s*\+\s*["''](?:policy|tool-policy)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a
@@ -1345,13 +1361,20 @@ rules:
     title: Blocks tampering with the signed audit trail and its signing key
     event_types: [shell, file_write]
     fields: [command, path]
-    # Any mention of these paths in a command is blocked — there is no
-    # legitimate agent operation on them (prismor's own writes don't go
-    # through hook dispatch).
+    # The signing key: any mention is blocked. Reading it is enough to forge
+    # receipts, and prismor's own writes don't go through hook dispatch.
+    #
+    # The trail and the chain: a WRITE is blocked -- a redirect into the path,
+    # or a mutating verb or interpreter earlier in the same command segment.
+    # Reading them (`tail trail.jsonl`, `ls ~/.prismor/audit`, `wc -l <`) is
+    # how a human or agent checks what was recorded; blocking every mention
+    # stopped 35 such reads in a replay of 293 real sessions and none that
+    # wrote. The bare-path pattern covers a Write tool's `path` field.
     patterns:
-      - '\.prismor/audit\b'
       - 'receipt_signing_key\.pem\b'
-      - 'telemetry_chain\.json\b'
+      - '>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.prismor/audit\b|telemetry_chain\.json\b)'
+      - '\b(?:rm|mv|cp|tee|truncate|shred|dd|ln|touch|chmod|chown|install|rsync|unlink|python[0-9.]*|node|perl|ruby|sed[ \t]+(?:-[a-zA-Z]*[ \t]+)*-i|sed[ \t]+--in-place)\b[^\n;&|]*(?:\.prismor/audit\b|telemetry_chain\.json\b)'
+      - '^[^\s;&|<>]*(?:\.prismor/audit\b|telemetry_chain\.json\b)[^\s;&|<>]*$'
     action: block
 
   # ── HIGH: Agent instruction-file tampering ────────────────────────
@@ -1717,7 +1740,10 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))'
+      # Nor a remote that is a literal path on this machine (a bare repo in a
+      # test rig): nothing leaves the box. Variables are not resolved here, so
+      # `$U/x.git` still fires -- $U could hold a URL.
+      - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))(?!(?:\s+-\S+)*\s+[\w.-]+\s+["'']?(?:/|\.\.?/|~/|file://)[^\s;&|"'']*["'']?[ \t]*(?:$|[;&|\n]))'
       # A force push that names a protected branch. --force-with-lease and
       # --force-if-includes still rewrite that branch history, so they count
       # here; agents reach for the lease form on their own. -f and a +refspec
