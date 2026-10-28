@@ -76,7 +76,7 @@ xapp-[0-9]-[A-Z0-9]+-[0-9]+-[a-f0-9]{40,}
 hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}
 SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}
 xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}
-key-[0-9a-f]{32}
+# Legacy Mailgun `key-<32 hex>` omitted: unanchored, it fires on cache-key-<md5>.
 [0-9a-f]{32}-us[0-9]{1,2}
 SK[0-9a-f]{32}
 [0-9]{8,10}:AA[A-Za-z0-9_-]{33}

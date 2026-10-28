@@ -57,7 +57,6 @@ SAMPLES = {
     "slack-app": "xapp-1-A" + f(_UP, 10) + "-" + f("0123456789", 13) + "-" + f(_HEX, 64),
     "slack-webhook": "hooks.slack.com/services/T" + f(_UP, 8) + "/B" + f(_UP, 8) + "/" + f(_ALNUM, 24),
     "sendgrid": "SG." + f(_ALNUM, 22) + "." + f(_ALNUM, 43),
-    "mailgun": "key-" + f(_HEX, 32),
     "mailchimp": f(_HEX, 32) + "-us12",
     "twilio": "SK" + f(_HEX, 32),
     "telegram": "123456789:AA" + f(_ALNUM, 33),
@@ -75,6 +74,7 @@ NOT_SECRETS = [
     "see https://hooks.slack.com/ for docs",
     "npm_config_registry",
     "git commit " + f(_HEX, 40),
+    "cache-key-" + f(_HEX, 32),  # md5 cache keys are not Mailgun keys
 ]
 
 
