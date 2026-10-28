@@ -93,7 +93,7 @@ def test_sync_screens_every_message_and_keeps_its_cursor(tmp_path):
     assert cgl.load_state("ws-1") == {"last_end_time": "T1", "last_file_id": "f1"}
 
 
-def test_download_redirect_does_not_carry_the_compliance_key():
+def test_download_redirect_drops_the_compliance_key_but_keeps_the_user_agent():
     got = {}
 
     class H(http.server.BaseHTTPRequestHandler):
@@ -104,6 +104,7 @@ def test_download_redirect_does_not_carry_the_compliance_key():
                 self.end_headers()
                 return
             got["auth"] = self.headers.get("Authorization")
+            got["ua"] = self.headers.get("User-Agent")
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'{"ok":1}\n')
@@ -118,6 +119,7 @@ def test_download_redirect_does_not_carry_the_compliance_key():
     finally:
         srv.shutdown()
     assert body == b'{"ok":1}\n' and got["auth"] is None
+    assert got["ua"] == cgl._ua()
 
 
 def test_missing_key_says_which_variable(monkeypatch, capsys):
