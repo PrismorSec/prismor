@@ -131,6 +131,60 @@ block. Hosted endpoints use this for the tools you select per endpoint in the
 console, and for **New tools start off**, where `allow` is the tools you have
 reviewed, so a tool the server adds later stays off until you turn it on.
 
+## Signing in to OAuth servers
+
+Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API
+key: they answer with `401` and expect the client to sign the user in with
+OAuth. The gateway does that sign-in itself, so each person reaches the server
+as themselves instead of through a shared token pasted into `headers`:
+
+```bash
+prismor mcp-gateway login linear   # opens the browser; tokens stored for you
+prismor mcp-gateway auth           # sign-in status of every remote server
+prismor mcp-gateway logout linear  # revoke the tokens at the server and forget them
+```
+
+`login` follows the MCP authorization spec: it reads the server's protected
+resource metadata (RFC 9728) to find its authorization server, registers
+Prismor as a client (RFC 7591) or uses a `client_id` you give it, and runs the
+authorization-code flow with PKCE and a loopback redirect, asking for a token
+bound to that one server (RFC 8707 `resource`). Endpoints that receive codes or
+tokens must be `https` (plain `http` only on loopback).
+
+Tokens are written to `~/.prismor/mcp-oauth/` (`0600`), keyed by the server's
+URL rather than its name in the config, so a renamed entry or a name pointed at
+another host never receives a token minted for a different server. A running
+gateway reads that store on every call: it picks up a new sign-in (a server that
+failed to start for want of one comes up on the next tool list), stops sending
+the token after `logout`, refreshes a token before it expires, and on a `401`
+refreshes once and retries. `logout` also revokes the tokens at the server
+(RFC 7009) when it offers a revocation endpoint. When it cannot (never signed
+in, refresh revoked), the call fails with a message telling the model to ask the
+user to run `prismor mcp-gateway login <server>`.
+
+OAuth is used only for remote servers whose entry sends no `Authorization`
+header of its own. Per entry:
+
+```json
+{
+  "mcpServers": {
+    "linear": {"type": "http", "url": "https://mcp.linear.app/mcp"},
+    "internal": {"type": "http", "url": "https://mcp.corp.example/mcp",
+                 "oauth": {"client_id": "prismor-gw", "scopes": ["tools.read"]}},
+    "legacy": {"type": "http", "url": "https://legacy.example/mcp", "oauth": false}
+  }
+}
+```
+
+Use `"oauth": {"client_id": …}` (and `client_secret` if the client is
+confidential) when the authorization server does not allow dynamic
+registration; `false` turns sign-in off. On a machine without a browser, pass
+`--no-browser` to print the URL, and `--callback-port` to fix the loopback port
+so you can forward it over SSH.
+
+Sign-in is for the local gateway. Hosted endpoints run without a person at a
+browser and still use the token stored with the server in the registry.
+
 ## Modes and flags
 
 ```bash
@@ -320,6 +374,58 @@ downstream server name** — so existing matchers work unchanged: trifecta tag
 defaults (`mcp__*__send_email`), org tool denies, tool-tag rules pushed from
 the control plane, and the console's tool inventory. One gateway process is
 one Prismor session; the trifecta ledger spans your whole agent session.
+
+## Tool definitions are checked before the model reads them
+
+A tool's description and input schema are instructions the model follows, and
+the server can change them at any time. Two published attacks use exactly that:
+**tool poisoning** (a description that tells the model to read
+`~/.ssh/id_rsa` and pass it in an extra `sidenote` argument, and not to mention
+it) and the **rug pull** (a tool you have been using for weeks quietly changes
+its description or adds a parameter). The gateway checks every definition at
+`tools/list`, before it reaches the model:
+
+- **Scanned like a skill.** The name, title, description and every parameter's
+  name and description run through the `skill_manifest` rules, including
+  `mcp-tool-poisoning`: hiding things from the user, coercion ("otherwise the
+  tool will not work"), overriding other servers' tools, redirecting
+  recipients, plus the existing secret-read, exfil-endpoint and prompt-override
+  rules. Each distinct definition is scanned once per gateway process.
+- **Pinned on first use.** The first time a server lists a tool, a hash of its
+  definition is stored in `~/.prismor/mcp-tool-pins/` (`0600`), keyed by the
+  server's URL or command, not its name in the config. A later change to the
+  description, schema or annotations is held until someone reviews it. A tool
+  that changes back to the pinned version is released again.
+
+In enforce mode a held tool is left out of `tools/list`, and calling it by name
+is blocked (and logged) with the reason. The poisoned text itself is never
+echoed back to the model. Observe mode lists it and writes
+`would hide in enforce mode` to stderr. New tools from a server you already
+use are scanned and pinned like the first ones.
+
+Review and accept from a terminal:
+
+```bash
+prismor mcp-gateway tools            # every server: pinned count, and what is held and why
+prismor mcp-gateway tools github     # one server, with each held definition as a diff against the pinned one
+prismor mcp-gateway approve github create_issue@3f9c1a2b7d4e   # accept exactly that version
+prismor mcp-gateway approve github   # accept everything held for github
+```
+
+`tools` prints each held definition with a short hash, as a diff against the pinned version (or in full, for a tool never pinned), so a change outside the description is visible too. Approving `name@hash`
+accepts only that version: if the server changed the tool again after you read
+it, nothing is approved and you are asked to review the current one (a server
+cannot show you a harmless version and swap in another before you approve).
+
+An approved definition is not re-scanned while it stays the same. Approving is
+a human's decision: an agent running `prismor mcp-gateway approve` or writing
+to the pin files is blocked by `prismor-self-edit`. Set `"pin": false` on a
+server entry to turn both checks off for it (for a server you develop yourself,
+whose tools change all the time).
+
+Hosted endpoints run the same checks, but their pins live in the endpoint's
+temporary storage and start over after a cold start, so there drift is only
+caught while an instance stays warm. The scan applies regardless.
 
 ## Server-declared tags (`_meta`)
 

@@ -92,6 +92,24 @@ class UpstreamSpec:
     #: endpoints use it for their tool selection and for "new tools start off".
     allow_tools: Optional[List[str]] = None
     deny_tools: List[str] = field(default_factory=list)
+    #: Scan and pin this server's tool definitions (runtime/mcp_tool_pins.py).
+    #: ``"pin": false`` on the entry turns it off.
+    pin: bool = True
+
+    @property
+    def identity(self) -> str:
+        from prismor.runtime.mcp_tool_pins import server_identity
+        return server_identity(self.url, self.command)
+    #: OAuth sign-in for a remote server (see runtime/mcp_oauth.py), from the
+    #: entry's ``"oauth"`` value: a dict (``client_id``, ``client_secret``,
+    #: ``scopes`` for a pre-registered client), or False to turn it off. Used
+    #: only when the entry sends no Authorization header of its own.
+    oauth: Any = None
+
+    @property
+    def uses_oauth(self) -> bool:
+        return (self.remote and self.oauth is not False
+                and not any(k.lower() == "authorization" for k in self.headers))
 
     def excludes(self, tool: str) -> bool:
         if any(fnmatch.fnmatchcase(tool, p) for p in self.deny_tools):
@@ -155,9 +173,12 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         if not re.match(r"https?://", meta["url"], re.I):
             raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
+        oauth = cfg.get("oauth")
         return UpstreamSpec(name=name, url=meta["url"],
                             transport=meta["transport"] or "http",
-                            headers=dict(headers or {}), **_tool_selection(cfg))
+                            headers=dict(headers or {}), pin=cfg.get("pin") is not False,
+                            oauth=oauth if oauth is False or isinstance(oauth, dict) else None,
+                            **_tool_selection(cfg))
     command = cfg.get("command")
     if isinstance(command, str):
         argv = [command] + [str(a) for a in cfg.get("args") or []]
@@ -168,7 +189,7 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
     return UpstreamSpec(name=name, command=argv, transport="stdio",
                         env={str(k): str(v) for k, v in (env or {}).items()},
-                        **_tool_selection(cfg))
+                        pin=cfg.get("pin") is not False, **_tool_selection(cfg))
 
 
 def parse_inline_server(value: str) -> UpstreamSpec:
@@ -375,6 +396,13 @@ class _PendingReply:
         return self._msg
 
 
+class _Unauthorized(Exception):
+    def __init__(self, code: int, reason: Any):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+        self.reason = reason
+
+
 class UpstreamHttp(Upstream):
     """Streamable-HTTP upstream via stdlib urllib.
 
@@ -392,17 +420,40 @@ class UpstreamHttp(Upstream):
         self._session_id: Optional[str] = None
         self._counter = 0
         self._lock = threading.Lock()
+        self.oauth = None
+        if spec.uses_oauth:
+            from prismor.runtime.mcp_oauth import OAuthSession
+            self.oauth = OAuthSession(spec.name, spec.url)
 
     def _post(self, body: Dict[str, Any], timeout: float,
               want_reply: bool) -> Optional[Dict[str, Any]]:
-        import urllib.request
-        import urllib.error
         # Before the socket, not after. `initialize` and `tools/list` dial the
         # server before any tool call exists to screen, so a URL that policy
         # forbids would otherwise be reached during discovery — the tool
         # surface is not the only thing that talks to the network.
         if self.guard is not None:
             self.guard(self.spec)
+        auth = self.oauth.authorization() if self.oauth is not None else None
+        try:
+            return self._send_once(body, timeout, want_reply, auth)
+        except _Unauthorized as exc:
+            # A token the server no longer takes: refresh (or pick up a newer
+            # sign-in) and retry once. Without one, the model is told which
+            # command the human has to run instead of a bare "HTTP 401".
+            if self.oauth is None:
+                raise UpstreamError(f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
+            from prismor.runtime.mcp_oauth import login_hint
+            if auth is None or not self.oauth.unauthorized(auth):
+                raise UpstreamError(login_hint(self.spec.name))
+            try:
+                return self._send_once(body, timeout, want_reply, self.oauth.authorization())
+            except _Unauthorized:
+                raise UpstreamError(login_hint(self.spec.name))
+
+    def _send_once(self, body: Dict[str, Any], timeout: float, want_reply: bool,
+                   auth: Optional[str]) -> Optional[Dict[str, Any]]:
+        import urllib.request
+        import urllib.error
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -411,6 +462,8 @@ class UpstreamHttp(Upstream):
             "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
         headers.update(self.spec.headers)
+        if auth:
+            headers["Authorization"] = auth
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         req = urllib.request.Request(
@@ -431,6 +484,17 @@ class UpstreamHttp(Upstream):
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                raise _Unauthorized(exc.code, exc.reason)
+            if exc.code == 403 and self.oauth is not None:
+                from prismor.runtime.mcp_oauth import parse_www_authenticate
+                challenge = parse_www_authenticate(exc.headers.get("WWW-Authenticate") or "")
+                if challenge.get("error") == "insufficient_scope":
+                    self.oauth.insufficient_scope(challenge.get("scope") or "")
+                    raise UpstreamError(
+                        f"MCP server '{self.spec.name}' needs more access than was granted"
+                        f"{' (' + challenge['scope'] + ')' if challenge.get('scope') else ''}. "
+                        f"Ask the user to run `prismor mcp-gateway login {self.spec.name}` again, then retry.")
             raise UpstreamError(
                 f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
@@ -648,6 +712,12 @@ class Gateway:
         # as a status tool so "no tools" is never the whole story.
         self._failed: Dict[str, str] = {}
         self._init_cv = threading.Condition()
+        #: definition hash -> blocking finding (or None): each distinct
+        #: definition is scanned once per process, not on every tools/list.
+        self._definition_scans: Dict[str, Optional[Dict[str, Any]]] = {}
+        #: exposed tool name -> why its definition is held back (poisoned, or
+        #: changed since it was pinned). Hidden in enforce; refused by name.
+        self._quarantined: Dict[str, Dict[str, Any]] = {}
 
     # ── serve loop ───────────────────────────────────────────────────────
 
@@ -733,6 +803,7 @@ class Gateway:
             self.agent_name = str(client_info["name"])
         self._client_protocol = str(
             params.get("protocolVersion") or PROTOCOL_VERSION_FALLBACK)
+        self._init_params = params
         # Upstreams are initialized concurrently, off the serve loop: a slow
         # one (cold `npx -y`) must neither delay the client's handshake nor be
         # declared dead after REQUEST_TIMEOUT. tools/list waits for them; one
@@ -768,6 +839,22 @@ class Gateway:
             # Routes from that list stay valid, so they are not cleared.
             self._send({"jsonrpc": "2.0",
                         "method": "notifications/tools/list_changed", "params": {}})
+
+    def _retry_signed_in(self, announce: bool) -> None:
+        """Bring up an OAuth server that failed for want of a sign-in once the
+        user has run `login`, without restarting the gateway."""
+        for up in self.upstreams:
+            if (up.spec.name not in self._failed or getattr(up, "oauth", None) is None
+                    or up.oauth.authorization() is None):
+                continue
+            try:
+                up.initialize(getattr(self, "_init_params", {}), timeout=REQUEST_TIMEOUT)
+            except Exception:
+                continue
+            self._failed.pop(up.spec.name, None)
+            if announce:
+                self._send({"jsonrpc": "2.0",
+                            "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/list ───────────────────────────────────────────────────────
 
@@ -843,6 +930,8 @@ class Gateway:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
         hidden: Dict[str, _Route] = {}
+        quarantined: Dict[str, Dict[str, Any]] = {}
+        self._retry_signed_in(announce=False)
         with self._init_cv:
             # Give upstreams still in their handshake a chance to come up
             # rather than answering with 0 tools (#559). Whatever is still
@@ -880,6 +969,14 @@ class Gateway:
                 if self._never_allowed(routes[exposed]):
                     hidden[exposed] = routes.pop(exposed)
                     continue
+                problem = self._definition_problem(routes[exposed], tool)
+                if problem is not None:
+                    quarantined[exposed] = problem
+                    if self.mode == "enforce" and not self._passthrough(routes[exposed]):
+                        hidden[exposed] = routes.pop(exposed)
+                        continue
+                    sys.stderr.write(f"[prismor] observe ({exposed}): would hide in enforce mode - "
+                                     f"[{problem.get('severity')}] {problem.get('title')}\n")
                 entry = dict(tool)
                 entry["name"] = exposed
                 if self.namespace != "none" and not up.spec.local:
@@ -891,13 +988,18 @@ class Gateway:
             tools.append({"name": STATUS_TOOL, "inputSchema": {"type": "object", "properties": {}},
                           "description": f"Prismor gateway: {len(self._failed)} MCP server(s) are down "
                                          f"and their tools are missing. {down}"[:1000]})
-        if hidden:
-            sys.stderr.write(f"[prismor-gateway] hiding {len(hidden)} tool(s) this caller can never use: "
-                             f"{', '.join(sorted(hidden))}\n")
+        denied = sorted(set(hidden) - set(quarantined))
+        if denied:
+            sys.stderr.write(f"[prismor-gateway] hiding {len(denied)} tool(s) this caller can never use: "
+                             f"{', '.join(denied)}\n")
         from prismor.runtime.principal import current_token
+        if quarantined:
+            sys.stderr.write(f"[prismor-gateway] {len(quarantined)} tool definition(s) need review: "
+                             f"{', '.join(sorted(quarantined))} (prismor mcp-gateway tools)\n")
         with self._routes_lock:
             self._routes = routes
             self._hidden = hidden
+            self._quarantined = quarantined
             # Which end user this list was filtered for (see _identity_changed).
             self._listed_token = current_token()
         self._reply(req_id, {"tools": tools})
@@ -934,12 +1036,27 @@ class Gateway:
             # when called by name (an agent probing for denied tools must show
             # up in the console); the policy that hid it blocks it below.
             route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
+        if route is None and self._failed:
+            self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
             lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] or ["all servers are up"]
             self._reply(req_id, {"content": [{"type": "text", "text": "\n".join(lines)}]})
             return
         if route is None:
-            self._reply_error(req_id, -32602, f"unknown tool: {name}")
+            # A tool of a server that is down: say why rather than "unknown".
+            down = next((f"{n}: {e}" for n, e in self._failed.items()
+                         if self.namespace != "none" and name.startswith(f"{n}__")), None)
+            self._reply_error(req_id, -32602, down or f"unknown tool: {name}")
+            return
+        with self._routes_lock:
+            held = self._quarantined.get(name)
+        if held is not None and self.mode == "enforce" and not self._passthrough(route):
+            # Judged and logged as a blocked call (an agent calling a tool it
+            # was never shown is worth seeing in the console), then refused
+            # with the definition's own reason rather than a generic deny.
+            self._evaluate(self._build_call_event(route, arguments),
+                           deny_tools=[f"mcp__{route.server}__{route.tool}"])
+            self._reply(req_id, _blocked_result("Blocked by Prismor", held))
             return
 
         # Keep org-managed policy fresh on the hot path (debounced ~30s;
@@ -1214,6 +1331,84 @@ class Gateway:
         if refusal:
             raise UpstreamError(refusal)
 
+    def _definition_problem(self, route: "_Route", tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Why this tool's definition must not reach the model, or None.
+
+        Two checks, both before the model ever reads the description:
+
+        - the definition is scanned like a skill (``skill_manifest`` rules,
+          including ``mcp-tool-poisoning``): hidden instructions, concealment
+          from the user, shadowing of other servers' tools, secret reads;
+        - it is compared with the definition pinned the first time this
+          server listed it, so a tool that changes after it was trusted (a
+          "rug pull") is held until a human approves the new version.
+
+        A definition a human approved (``prismor mcp-gateway approve``) is not
+        re-scanned while it stays the same.
+        """
+        spec = route.upstream.spec
+        if spec.local or not spec.pin:
+            return None
+        from prismor.runtime import mcp_tool_pins as pins
+        digest = pins.definition_hash(tool)
+        identity = spec.identity
+        try:
+            if pins.is_reviewed(identity, route.tool, digest):
+                return None
+            finding = self._scan_definition(route, tool, digest)
+            state = pins.check(identity, spec.name, tool,
+                               flagged=(finding or {}).get("ruleId") or ("flagged" if finding else ""))
+        except OSError as exc:
+            sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); scanning only\n")
+            return self._definition_scans.get(digest)
+        if finding is not None:
+            return finding
+        if state == "changed":
+            return {
+                "ruleId": "mcp-tool-definition-changed", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' on MCP server '{spec.name}' changed its description or "
+                         "schema since it was first used, and the change has not been reviewed",
+                "remediation": f"Ask the user to review it with `prismor mcp-gateway tools {spec.name}`, "
+                               "which shows the new version and the command to approve it.",
+            }
+        return None
+
+    def _scan_definition(self, route: "_Route", tool: Dict[str, Any], digest: str) -> Optional[Dict[str, Any]]:
+        if digest in self._definition_scans:
+            return self._definition_scans[digest]
+        from prismor.runtime.mcp_tool_pins import definition_text
+        from prismor.runtime.runtime import evaluate_tool_call
+        text = definition_text(tool)
+        event = {**self._event_base(route, "PreToolUse"), "type": "skill_manifest",
+                 "content": text, "prompt": text, "path": f"mcp:{route.server}/{route.tool}"}
+        finding = None
+        try:
+            with self._eval_lock:
+                # A probe first (no telemetry): every clean definition of every
+                # server would otherwise show up as an event on each start.
+                decision = evaluate_tool_call(
+                    event=event, workspace=self.workspace, agent=GATEWAY_AGENT, mode="enforce",
+                    session_id="", agent_name=self.agent_name, persist=False, record=False,
+                    register_agent=False, flush_at_exit=False)
+            from prismor.runtime.contract import strongest
+            finding = strongest([f for f in decision.findings
+                                 if f.get("action") == "block" and not f.get("contextInert")
+                                 and f.get("category") in _DEFINITION_CATEGORIES])
+            if finding is not None:
+                # Flagged: record it once, so the console sees which server
+                # shipped a poisoned definition.
+                self._evaluate(event)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor-gateway] tool definition scan failed for {route.tool}: {exc}\n")
+        if finding is not None:
+            finding = dict(finding)
+            finding.pop("evidence", None)   # the evidence is the poisoned text itself
+            finding["remediation"] = (
+                f"The tool's description was withheld from the model. Ask the user to review it with "
+                f"`prismor mcp-gateway tools {route.server}`; approve only if it is legitimate.")
+        self._definition_scans[digest] = finding
+        return finding
+
     def _selection_denies(self, route: "_Route") -> List[str]:
         """The route's tool tag when the server entry's tool selection leaves it out."""
         spec = route.upstream.spec
@@ -1355,6 +1550,13 @@ class Gateway:
                 # client-allocated and unambiguous).
                 self._send({"jsonrpc": "2.0", "method": method, "params": params})
         return _handler
+
+
+#: Finding categories that keep a tool DEFINITION from the model: the skill
+#: rules (hidden instructions, exfil endpoints, secret reads, mcp-tool-poisoning)
+#: and plain prompt injection.
+_DEFINITION_CATEGORIES = frozenset({"skill_risk", "prompt_injection", "prompt_injection_semantic",
+                                    "secret_access", "secret_exfiltration"})
 
 
 #: Result-side finding categories the gateway withholds a response over. A
@@ -1702,6 +1904,112 @@ def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
     return head + "\n" + "\n".join(lines)
 
 
+def _run_pins(action: str, args) -> int:
+    """``prismor mcp-gateway tools [server]`` and ``approve <server> [tool…]``."""
+    from prismor.runtime import mcp_tool_pins as pins
+    config = getattr(args, "config", None)
+    specs = [s for s in load_gateway_config(Path(config).expanduser() if config else DEFAULT_GATEWAY_CONFIG)
+             if not s.local]
+    target = getattr(args, "target", None)
+    if target:
+        specs = [s for s in specs if s.name == target]
+        if not specs:
+            raise GatewayConfigError(f"no server named {target!r} in the gateway config")
+    if action == "approve":
+        if not target:
+            raise GatewayConfigError("approve needs a server name: prismor mcp-gateway approve <server> [tool ...]")
+        names = list(getattr(args, "tool_names", None) or [])
+        out = pins.approve(specs[0].identity, names or None)
+        if out["approved"]:
+            print(f"Approved {len(out['approved'])} tool definition(s) on {target}: "
+                  f"{', '.join(out['approved'])}. A running gateway lists them on its next tools/list.")
+        if out["stale"]:
+            print(f"Not approved, changed again since you reviewed it: {', '.join(out['stale'])}. "
+                  f"Run `prismor mcp-gateway tools {target}` and review the current version.")
+        if out["missing"] or not (out["approved"] or out["stale"]):
+            print(f"Nothing pending for: {', '.join(out['missing']) if out['missing'] else target}")
+        return 1 if out["stale"] else 0
+    for spec in specs:
+        data = pins.load(spec.identity)
+        if not spec.pin:
+            print(f"{spec.name}: pinning off (\"pin\": false)")
+            continue
+        print(f"{spec.name}: {len(data['tools'])} pinned, {len(data['pending'])} need review")
+        for name, entry in sorted(data["pending"].items()):
+            why = [] if name not in data["tools"] else ["changed since it was pinned"]
+            if entry.get("reason") != "changed":
+                why.append(f"flagged by {entry.get('reason')}")
+            short = entry["hash"][:pins.SHORT_HASH]
+            print(f"  ! {name}@{short}: {', '.join(why) or 'new'} (seen {entry.get('seen_at')})")
+            for line in pins.review_lines(data, name):
+                print(f"      | {line}")
+            print(f"    approve this exact version: prismor mcp-gateway approve {spec.name} {name}@{short}")
+    return 0
+
+
+def _auth_specs(args) -> List[UpstreamSpec]:
+    if getattr(args, "upstream", None) and args.upstream.strip().startswith(("http://", "https://")):
+        return [UpstreamSpec(name="upstream", url=args.upstream.strip(), transport="http")]
+    specs = [parse_inline_server(v) for v in getattr(args, "server", None) or []]
+    if specs:
+        return specs
+    config = getattr(args, "config", None)
+    return load_gateway_config(Path(config).expanduser() if config else DEFAULT_GATEWAY_CONFIG)
+
+
+def _run_auth(action: str, args) -> int:
+    """``prismor mcp-gateway login|logout <server>`` and ``auth``."""
+    from prismor.runtime import mcp_oauth
+    specs = [s for s in _auth_specs(args) if s.remote]
+    if action == "auth":
+        if not specs:
+            print("No remote MCP servers in the gateway config.")
+        for s in specs:
+            state = mcp_oauth.status(s.url) if s.uses_oauth else "uses its own Authorization header"
+            print(f"  {s.name:<20} {state}")
+        return 0
+    target = getattr(args, "target", None)
+    if not target and len(specs) == 1:
+        target = specs[0].name
+    match = [s for s in specs if s.name == target]
+    if not match:
+        names = ", ".join(s.name for s in specs) or "none"
+        raise GatewayConfigError(f"no remote server named {target!r} in the gateway config (remote servers: {names})")
+    spec = match[0]
+    if action == "logout":
+        rec = mcp_oauth.load_record(spec.url)
+        if rec is None:
+            print(f"{spec.name} was not signed in.")
+            return 0
+        revoked = mcp_oauth.revoke_record(rec)
+        mcp_oauth.delete_record(spec.url)
+        print(f"Signed out of {spec.name}." + ("" if revoked else
+              " The server could not be asked to revoke the token; it stays valid there until it expires."))
+        return 0
+    if not spec.uses_oauth:
+        raise GatewayConfigError(
+            f"'{spec.name}' sends its own Authorization header or has \"oauth\": false; "
+            "remove that to sign in with OAuth")
+    no_browser = bool(getattr(args, "no_browser", False))
+
+    def _show(url: str) -> None:
+        verb = "Open this URL to sign in" if no_browser else "Opening your browser. If it does not open, visit"
+        print(f"{verb} to {spec.name}:\n\n  {url}\n", flush=True)
+
+    try:
+        rec = mcp_oauth.login(spec.name, spec.url, headers=spec.headers,
+                              oauth_cfg=spec.oauth if isinstance(spec.oauth, dict) else None,
+                              open_browser=not no_browser,
+                              port=int(getattr(args, "callback_port", 0) or 0),
+                              on_authorize_url=_show)
+    except mcp_oauth.OAuthError as exc:
+        sys.stderr.write(f"[prismor] sign-in to {spec.name} failed: {exc}\n")
+        return 1
+    print(f"Signed in to {spec.name} via {rec['issuer']}. "
+          "A running gateway picks this up on its next call.")
+    return 0
+
+
 def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
@@ -1718,6 +2026,10 @@ def run_gateway(args, workspace: Path) -> int:
     if action == "uninstall":
         print(uninstall_gateway(workspace))
         return 0
+    if action in ("tools", "approve"):
+        return _run_pins(action, args)
+    if action in ("login", "logout", "auth"):
+        return _run_auth(action, args)
 
     specs: List[UpstreamSpec] = []
     if getattr(args, "upstream", None):
