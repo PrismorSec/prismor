@@ -332,6 +332,11 @@ def build_record(
         record["dest_trust"] = finding.get("destTrust")
     if finding.get("redactionApplied"):
         record["redaction_applied"] = True
+    # Session-scope finding (scoped_agent.py): who drew the scope it hit.
+    # llm / static are synthesis misses, operator a human's deny. Kept apart
+    # from attack policy so a block-rate metric can leave them out (#257).
+    if finding.get("scopeOrigin"):
+        record["scope_origin"] = str(finding.get("scopeOrigin"))[:20]
     _prov = finding.get("provenance")
     if isinstance(_prov, dict) and _prov.get("kind"):
         record["provenance_kind"] = str(_prov.get("kind"))

@@ -424,7 +424,7 @@ This does **not** affect policy rules set to `mode: enforce` in `.prismor/policy
 
 ### 3. Clear a session's scoped-agent rules
 
-[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`** — a tool in `deny_tools` is hardcoded to `action: block` / `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it blocks even when hooks are installed with `--mode observe`. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
+[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`** — a scope finding is hardcoded to `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it applies even when hooks are installed with `--mode observe`. A call outside a *synthesized* scope is `action: step_up` (the agent asks you inline; surfaces that cannot ask refuse it); a scope you edited by hand blocks. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
 
 ```bash
 prismor scope list                    # find the session ID
