@@ -173,7 +173,7 @@ _GUARDED_CONFIG_PATH = re.compile(
 _SHELL_ASSIGNMENT = re.compile(
     r"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|]*)"
 )
-_TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/tmp/", "/var/folders/", "/private/var/folders/")
+_TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/tmp/", "/var/folders/", "/private/var/folders/")  # prefixes matched against paths, nothing is created  # nosec B108
 
 
 def _throwaway_config_path(path: str, assignments: Dict[str, str], workspace: Optional[Path]) -> bool:
