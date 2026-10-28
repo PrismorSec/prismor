@@ -4480,16 +4480,24 @@ def build_parser() -> argparse.ArgumentParser:
         "`prismor mcp-gateway` and move your existing mcpServers block into the gateway config "
         "(or run `prismor mcp-gateway install` to do that automatically).",
     )
-    gw_parser.add_argument("action", nargs="?", choices=["serve", "install", "uninstall", "tools", "approve"],
+    gw_parser.add_argument("action", nargs="?",
+                           choices=["serve", "install", "uninstall", "login", "logout", "auth", "tools", "approve"],
                            default="serve",
                            help="serve (default) | install: move this workspace's .mcp.json servers "
                            "behind the gateway | uninstall: restore the .mcp.json backup | "
+                           "login <server>: sign in to an OAuth MCP server in the browser | "
+                           "logout <server>: forget its tokens | auth: sign-in status of every remote server | "
                            "tools [server]: tool definitions held for review (poisoned, or changed since "
                            "first use) | approve <server> [tool ...]: accept the reviewed definitions")
     gw_parser.add_argument("target", nargs="?", default=None,
-                           help="With tools/approve: the server name from the gateway config")
+                           help="With login/logout/tools/approve: the server name from the gateway config")
     gw_parser.add_argument("tool_names", nargs="*", default=[],
                            help="With approve: the tools to approve (default: every pending one)")
+    gw_parser.add_argument("--no-browser", dest="no_browser", action="store_true",
+                           help="With login: print the sign-in URL instead of opening a browser")
+    gw_parser.add_argument("--callback-port", dest="callback_port", type=int, default=0,
+                           help="With login: fixed loopback port for the OAuth redirect "
+                           "(default: any free port; set one when forwarding it over SSH)")
     gw_parser.add_argument("--all", action="store_true",
                            help="With install: migrate every MCP config on this machine "
                                 "(Claude Desktop, Cursor, VS Code, …), not just this "
