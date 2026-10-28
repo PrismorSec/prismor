@@ -62,7 +62,8 @@ def _get(url: str, headers: Dict[str, str], timeout: float = 60) -> bytes:
             loc = urllib.parse.urljoin(url, exc.headers["Location"])
             if urllib.parse.urlsplit(loc).scheme not in ("https", "http"):
                 raise ApiError(f"refusing to follow a redirect to {loc.split('?')[0]}")
-            with urllib.request.urlopen(urllib.request.Request(loc), timeout=timeout) as resp:  # nosec B310 - scheme checked above
+            req = urllib.request.Request(loc, headers={"User-Agent": _ua()})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec B310 - scheme checked above
                 return resp.read()
         body = exc.read()[:300].decode("utf-8", "replace")
         raise ApiError(f"HTTP {exc.code} from {url.split('?')[0]}: {body}") from None
