@@ -191,7 +191,7 @@ def test_e2e_use_subject_token(ws):
         assert _call(ws).allow is True
 
 
-@pytest.mark.parametrize("surface", [None, "eval-server", "hook", "mirror"])
+@pytest.mark.parametrize("surface", [None, "null", "eval-server", "hook", "mirror"])
 @pytest.mark.parametrize("with_token", [False, True], ids=["missing-token", "valid-token"])
 def test_raw_http_event_requires_end_user_identity(ws, monkeypatch, surface, with_token):
     from prismor.runtime import principal
@@ -202,7 +202,9 @@ def test_raw_http_event_requires_end_user_identity(ws, monkeypatch, surface, wit
     monkeypatch.delenv("PRISMOR_IDENTITY_TOKEN", raising=False)
     monkeypatch.delenv("PRISMOR_IDENTITY_TOKEN_FILE", raising=False)
     event = {"type": "shell", "command": "echo hello"}
-    if surface is not None:
+    if surface == "null":
+        event["metadata"] = None  # contract allows it; must not crash the handler
+    elif surface is not None:
         event["metadata"] = {"surface": surface}
 
     handler = object.__new__(EvalHandler)
