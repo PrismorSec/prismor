@@ -127,6 +127,17 @@ def _well_known(base: str, suffix: str) -> List[str]:
 
 # ── http ─────────────────────────────────────────────────────────────────────
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **k):  # surface the 3xx instead of following it
+        return None
+
+
+# For requests that carry credentials. urllib's default handler re-sends every
+# header (Authorization, Mcp-Session-Id, API keys) to wherever a 301/302/303
+# points, and the gateway's egress guard never sees that destination.
+no_redirect = urllib.request.build_opener(_NoRedirect)
+
+
 def _http_json(url: str, *, data: Optional[Dict[str, Any]] = None,
                form: Optional[Dict[str, str]] = None,
                headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -142,8 +153,10 @@ def _http_json(url: str, *, data: Optional[Dict[str, Any]] = None,
         hdrs["Content-Type"] = "application/x-www-form-urlencoded"
     req = urllib.request.Request(url, data=body, headers=hdrs,
                                  method="POST" if body is not None else "GET")
+    # Metadata GETs carry nothing secret and may legitimately redirect.
+    opener = no_redirect if body is not None else urllib.request.build_opener()
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:  # scheme checked by callers  # nosec B310
+        with opener.open(req, timeout=HTTP_TIMEOUT) as resp:  # scheme checked by callers  # nosec B310
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -152,6 +165,8 @@ def _http_json(url: str, *, data: Optional[Dict[str, Any]] = None,
             detail = str(err.get("error_description") or err.get("error") or "")
         except Exception:
             pass
+        if 300 <= exc.code < 400:
+            detail = "redirects are not followed"
         raise OAuthError(f"{url} returned HTTP {exc.code}{': ' + detail if detail else ''}", exc.code)
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise OAuthError(f"{url} unreachable: {exc}")
@@ -525,7 +540,7 @@ def _probe_challenge(server_url: str, headers: Dict[str, str]) -> Dict[str, str]
                                   "clientInfo": {"name": "prismor-gateway", "version": "0"}}})
     req = urllib.request.Request(server_url, data=body.encode(), headers=hdrs, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT):  # http(s) enforced by the gateway config  # nosec B310
+        with no_redirect.open(req, timeout=HTTP_TIMEOUT):  # http(s) enforced by the gateway config  # nosec B310
             return {}
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
