@@ -12,6 +12,7 @@ These tests pin what changes when an org configures an IdP:
 
 import json
 import time
+from unittest.mock import Mock
 
 import pytest
 import yaml
@@ -161,11 +162,11 @@ def ws(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _call(ws, subject=None, token=None, amount=900):
+def _call(ws, subject=None, token=None, amount=900, surface="eval-server"):
     from prismor.runtime.runtime import evaluate_tool_call
     event = {"type": "shell", "agent_event": "PreToolUse", "command": str(amount),
              "metadata": {"tool_name": "refund_order", "kwargs": {"amount": amount},
-                          "surface": "eval-server"}}
+                          "surface": surface}}
     return evaluate_tool_call(event=event, workspace=ws, agent="sdk", persist=False,
                               register_agent=False, flush_at_exit=False,
                               subject=subject, identity_token=token)
@@ -188,6 +189,46 @@ def test_e2e_use_subject_token(ws):
     identity_token.set_server_config(CFG)
     with use_subject(token=tok()):
         assert _call(ws).allow is True
+
+
+@pytest.mark.parametrize("surface", [None, "null", "eval-server", "hook", "mirror"])
+@pytest.mark.parametrize("with_token", [False, True], ids=["missing-token", "valid-token"])
+def test_raw_http_event_requires_end_user_identity(ws, monkeypatch, surface, with_token):
+    from prismor.runtime import principal
+    from prismor.runtime.eval_server import EvalHandler
+
+    identity_token.set_server_config(CFG)
+    monkeypatch.setattr(principal, "_from_device", lambda: DEVICE)
+    monkeypatch.delenv("PRISMOR_IDENTITY_TOKEN", raising=False)
+    monkeypatch.delenv("PRISMOR_IDENTITY_TOKEN_FILE", raising=False)
+    event = {"type": "shell", "command": "echo hello"}
+    if surface == "null":
+        event["metadata"] = None  # contract allows it; must not crash the handler
+    elif surface is not None:
+        event["metadata"] = {"surface": surface}
+
+    handler = object.__new__(EvalHandler)
+    handler.workspace = ws
+    handler.headers = {"X-Prismor-Identity": tok()} if with_token else {}
+    handler._send_json = Mock()
+    with use_subject():
+        handler._evaluate_raw_event({}, event)
+
+    handler._send_json.assert_called_once()
+    out = handler._send_json.call_args.args[0]
+    assert out["allow"] is with_token
+    if with_token:
+        assert out["subject"]["user_id"] == "carol"
+        assert out["subject"]["source"] == "jwt"
+        assert out["subject"]["verified"] is True
+    else:
+        assert out["rule_id"] == "identity-unverified"
+
+
+@pytest.mark.parametrize("surface", ["hook", "mirror"])
+def test_e2e_device_identity_still_allows_local_surfaces(ws, surface):
+    identity_token.set_server_config(CFG)
+    assert _call(ws, subject=DEVICE, amount=10, surface=surface).allow is True
 
 
 def test_identity_from_project_layer_is_ignored(ws, capsys):

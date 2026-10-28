@@ -376,7 +376,8 @@ class EvalHandler(BaseHTTPRequestHandler):
         event.setdefault("session_id", session_id)
         event.setdefault("agent", agent)
         event.setdefault("agent_event", "PreToolUse")
-        event.setdefault("metadata", {}).setdefault("surface", "eval-server")
+        # HTTP callers cannot claim a trusted hook/mirror identity exemption.
+        event["metadata"] = {**(event.get("metadata") or {}), "surface": "eval-server"}
         try:
             decision = evaluate_tool_call(
                 event=event,
