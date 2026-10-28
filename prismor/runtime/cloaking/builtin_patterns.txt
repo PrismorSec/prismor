@@ -14,7 +14,78 @@
 #
 # Order matters: longest / most-specific first, so a partial match does not
 # fire for the wrong pattern.
+#
+# The vendor section below is curated from the public rule sets of gitleaks
+# (MIT), trufflehog (AGPL; formats only, no code copied) and each vendor's
+# published key format. Only prefix-anchored formats are taken; generic
+# keyword/entropy rules are left out because they flag ordinary config. POSIX
+# ERE only: no \d, \w, \b or lookarounds.
 
+# --- AI / LLM providers ---
+sk-ant-[a-z0-9]{3,10}-[A-Za-z0-9_-]{40,}
+sk-or-v1-[a-f0-9]{64}
+sk-(proj|svcacct|admin)-[A-Za-z0-9_-]{40,}
+sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}
+sk_[a-f0-9]{48}
+gsk_[A-Za-z0-9]{52}
+pplx-[A-Za-z0-9]{40,}
+xai-[A-Za-z0-9]{70,}
+r8_[A-Za-z0-9]{37}
+hf_[A-Za-z]{34}
+tvly-[A-Za-z0-9]{32,}
+nx_[0-9a-f]{48}
+
+# --- Payments / commerce ---
+sk_prod_[0-9a-zA-Z]{16,}
+rk_test_[0-9a-zA-Z]{16,}
+rk_prod_[0-9a-zA-Z]{16,}
+whsec_[0-9a-zA-Z]{32,}
+shp(at|ca|pa|ss)_[a-fA-F0-9]{32}
+
+# --- Source control / CI / registries ---
+ghr_[0-9a-zA-Z]{36}
+gl(dt|ft|rt|oas|agent|cbt|soat|imt|ffct)-[0-9a-zA-Z_-]{20,}
+glptt-[0-9a-f]{40}
+npm_[A-Za-z0-9]{36}
+pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}
+rubygems_[a-f0-9]{48}
+dckr_pat_[A-Za-z0-9_-]{27,}
+
+# --- Cloud / infra / data platforms ---
+dop_v1_[a-f0-9]{64}
+doo_v1_[a-f0-9]{64}
+HRKU-AA[0-9a-zA-Z_-]{58}
+dp\.pt\.[A-Za-z0-9]{43}
+pul-[a-f0-9]{40}
+tskey-[a-z]+-[A-Za-z0-9]+-[A-Za-z0-9]{20,}
+fo1_[A-Za-z0-9_-]{40,}
+nfp_[A-Za-z0-9]{30,}
+napi_[a-z0-9]{50,}
+sbp_[a-f0-9]{40}
+pscale_(tkn|pw|oauth)_[A-Za-z0-9_.-]{32,}
+dapi[a-f0-9]{32}
+sntryu_[a-f0-9]{64}
+AGE-SECRET-KEY-1[QPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{58}
+
+# --- Google OAuth ---
+GOCSPX-[A-Za-z0-9_-]{28}
+ya29\.[A-Za-z0-9_-]{50,}
+
+# --- SaaS / messaging ---
+xapp-[0-9]-[A-Z0-9]+-[0-9]+-[a-f0-9]{40,}
+hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{20,}
+SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}
+xkeysib-[a-f0-9]{64}-[A-Za-z0-9]{16}
+# Legacy Mailgun `key-<32 hex>` omitted: unanchored, it fires on cache-key-<md5>.
+[0-9a-f]{32}-us[0-9]{1,2}
+SK[0-9a-f]{32}
+[0-9]{8,10}:AA[A-Za-z0-9_-]{33}
+lin_api_[A-Za-z0-9]{40}
+ntn_[0-9]{11}[A-Za-z0-9]{35}
+PMAK-[a-f0-9]{24}-[a-f0-9]{34}
+ATATT3[A-Za-z0-9_=-]{100,}
+
+# --- Core (original set) ---
 sk_live_[0-9a-zA-Z]{16,}
 sk_test_[0-9a-zA-Z]{16,}
 rk_live_[0-9a-zA-Z]{16,}
