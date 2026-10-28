@@ -455,3 +455,5 @@ Found a vulnerability? Report it privately as described in [SECURITY.md](./SECUR
 ---
 
 - [Prismor.dev](https://prismor.dev)
+
+![Prismor CLI Feature Demo](assets/prismor-demo.gif)
