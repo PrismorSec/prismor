@@ -970,6 +970,35 @@ rules:
       - 'forget\s+(everything|all|your)\s+(previous|prior|instructions)'
     action: block
 
+  # ── HIGH: Tool poisoning in an MCP tool definition or skill ─────────
+  # A tool's description is read by the model as instructions, so a server
+  # can hide orders in it that the user never sees (Invariant Labs' "tool
+  # poisoning" and "shadowing" attacks): keep this from the user, hide data in
+  # an extra argument, change how *other* servers' tools behave. The MCP
+  # gateway scans every tool definition as a skill_manifest event before
+  # listing it. Measured against 896 real tool definitions (GitHub's MCP
+  # server and the Docker MCP catalog): no matches.
+  - id: mcp-tool-poisoning
+    severity: HIGH
+    category: skill_risk
+    title: Tool or skill definition hides instructions from the user or overrides other tools
+    event_types: [skill_manifest]
+    fields: [combined_text]
+    patterns:
+      # Concealment: an honest tool has nothing to keep from the user.
+      - '\b(?:do\s+not|don[''\u2019]t|never|without)\s+(?:ever\s+)?(?:tell(?:ing)?|mention(?:ing)?|inform(?:ing)?|notify(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|alert(?:ing)?)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?the\s+user\b'
+      - '\b(?:hide|conceal|keep)\s+(?:this|it|that)\s+(?:secret\s+)?from\s+the\s+user\b'
+      - '\bthe\s+user\s+(?:must|should|need)\s+(?:not|never)\s+(?:to\s+)?(?:know|see|be\s+told|find\s+out|notice)\b'
+      # Coercion that ties an unrelated action to the tool working at all.
+      - '\botherwise\s+(?:the|this)\s+tool\s+(?:will\s+not|won[''\u2019]t|cannot|can[''\u2019]t|will\s+fail\s+to)\s+work\b'
+      # Shadowing: a definition that rewrites how other tools or servers behave.
+      - '\bwhen(?:ever)?\s+this\s+tool\s+is\s+(?:available|present|loaded|installed|enabled|connected)\b'
+      - '\b(?:all|any|every)\s+other\s+(?:mcp\s+)?(?:tools?|servers?)\b[^.\n]{0,60}\b(?:must|should|has\s+to|have\s+to|needs?\s+to)\b'
+      - '\b(?:change|replace|redirect|switch)\s+the\s+(?:recipient|destination|to\s+address|phone\s+number|account)\s+to\b'
+      - '\b(?:instead\s+of|rather\s+than)\s+(?:to\s+)?the\s+(?:real|actual|intended|original|specified)\s+(?:recipient|address|user|destination|account)\b'
+      - '\b(?:send|forward|redirect|bcc|cc)\s+(?:all|every|each|any)\s+(?:\w+\s+){0,2}(?:emails?|messages?|mail|payments?|transfers?)\s+to\s+\S+@'
+    action: block
+
   # ── MEDIUM: Skill encodes behavior bias or covert steering ──────────
   # Scoped to skill_manifest only — these patterns are FP-prone in general
   # agent I/O but have no legitimate use in a skill definition.
@@ -1287,6 +1316,15 @@ rules:
       # Safety-floor rules a human turned off with that password (floor_off.py).
       - '\bfloor-off\.json\b'
       - '(^|/)floor-off\.json$'
+      # Approving a held MCP tool definition is the human's review of it; an
+      # agent approving (or rewriting the pins of) the tool that is steering it
+      # would make the review meaningless. Writes to the pin store go through
+      # the same file rule as the other Prismor state below.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+mcp-gateway[ \t]+approve\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+mcp-gateway[ \t]+approve\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+mcp-gateway[ \t]+approve\b'
+      - '(^|/)mcp-tool-pins/[^/\s]+\.json$'
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)mcp-tool-pins/'
       # One-shot approvals (approvals_local.py): writing an approved record
       # into this file is approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
