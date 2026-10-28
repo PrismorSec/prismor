@@ -983,11 +983,20 @@ class Gateway:
                     desc = str(tool.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
-        if self._failed:
-            down = "; ".join(f"{n}: {e}" for n, e in sorted(self._failed.items()))
+        # Held definitions are hidden in enforce; without a status entry a
+        # legitimately updated tool would just vanish and nobody would know
+        # to run `prismor mcp-gateway tools`.
+        held = sorted(n for n in quarantined if n in hidden)
+        if self._failed or held:
+            parts = []
+            if self._failed:
+                down = "; ".join(f"{n}: {e}" for n, e in sorted(self._failed.items()))
+                parts.append(f"{len(self._failed)} MCP server(s) are down and their tools are missing. {down}")
+            if held:
+                parts.append(f"{len(held)} tool(s) hidden until a human reviews their changed or flagged "
+                             f"definition (`prismor mcp-gateway tools`): {', '.join(held)}")
             tools.append({"name": STATUS_TOOL, "inputSchema": {"type": "object", "properties": {}},
-                          "description": f"Prismor gateway: {len(self._failed)} MCP server(s) are down "
-                                         f"and their tools are missing. {down}"[:1000]})
+                          "description": f"Prismor gateway: {' '.join(parts)}"[:1000]})
         denied = sorted(set(hidden) - set(quarantined))
         if denied:
             sys.stderr.write(f"[prismor-gateway] hiding {len(denied)} tool(s) this caller can never use: "
@@ -1039,7 +1048,11 @@ class Gateway:
         if route is None and self._failed:
             self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
-            lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] or ["all servers are up"]
+            with self._routes_lock:
+                held = sorted(n for n in self._quarantined if n in getattr(self, "_hidden", {}))
+            lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] + [
+                f"{n}: definition held for review, run `prismor mcp-gateway tools`" for n in held
+            ] or ["all servers are up"]
             self._reply(req_id, {"content": [{"type": "text", "text": "\n".join(lines)}]})
             return
         if route is None:
