@@ -4608,7 +4608,8 @@ def build_parser() -> argparse.ArgumentParser:
     allow_parser.add_argument(
         "--pattern",
         help="Allow only what matches this literal/regex. Defaults to the text "
-             "of the most recent block for this rule",
+             "of the most recent block for this rule. Tag rules require a complete "
+             "literal command or JSON tool/arguments object",
     )
     allow_parser.add_argument(
         "--expires", metavar="DURATION",
@@ -6910,6 +6911,19 @@ def _allow_cmd(args, workspace: Path) -> int:
         return 0
 
     pattern = args.pattern
+    if rule_id.startswith("tag-rule:"):
+        if not pattern:
+            print("Tag-rule exceptions require --pattern with the complete command or call arguments.")
+            return 2
+        try:
+            call = json.loads(pattern)
+        except (ValueError, TypeError):
+            call = None
+        if isinstance(call, dict) and set(call) == {"tool", "arguments"}:
+            pattern = json.dumps(call, sort_keys=True)
+        # A human approves literal input, not a regex inferred from tag-history
+        # evidence. Shell metacharacters must not widen the exception.
+        pattern = re.escape(pattern)
     if not pattern:
         # Fill in from the block that just happened, so the user does not have
         # to retype the command that failed.
@@ -6936,7 +6950,10 @@ def _allow_cmd(args, workspace: Path) -> int:
     window = f" until {entry['expires']}" if entry.get("expires") else ""
     print(f"Added {entry['id']}{window} — {rule_id} will not block what matches:")
     print(f"  {pattern}")
-    print("\nCheck it:   prismor check '<your command>'")
+    if rule_id.startswith("tag-rule:"):
+        print("\nRetry the approved call in the same session. Other policy rules still apply.")
+    else:
+        print("\nCheck it:   prismor check '<your command>'")
     print(f"Undo it:    prismor allow --undo {entry['id']}")
     return 0
 

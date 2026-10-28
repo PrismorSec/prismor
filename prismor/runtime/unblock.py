@@ -336,18 +336,14 @@ def _subsystem_steps(
         ]
 
     if rule_id.startswith("tag-rule:"):
-        # A tag-rule expression, not a policy rule: `prismor allow` cannot
-        # name it (it said "No rule named ..." and left people stuck).
         return [
-            "This is a tag-sequence rule (settings.tool_tags.rules), not a policy "
-            "rule, so `prismor allow` cannot relax it.",
+            "This is a tag-sequence rule (settings.tool_tags.rules). A human can "
+            "allow one complete command or call without clearing the session's tags.",
             "1. See the rules and why tools carry each tag: prismor tags rules  /  prismor tags list",
-            "2. Untag the tool that should not count. Where `prismor tags list` shows its "
-            "TIER as explicit: prismor tags rm <tool> <tag>. Where it shows inference: set "
-            "`settings.tool_tags.inference_enabled: false` so plain reads and commands are "
-            "not tagged by event type.",
-            "3. Or drop the rule: prismor tags rules rm <index>",
-            "Tags accumulate for the whole session, so start a fresh session afterwards.",
+            f"2. In your own terminal: prismor allow {rule_id} "
+            "--pattern '<complete literal command or call>' --expires 30m --yes",
+            "Other rules still apply. See docs/tool-tags.md for structured call arguments.",
+            f"3. Remove the exception: prismor allow --undo allow-{rule_id}",
         ]
 
     if rule_id == "tool-category-crossover":
@@ -432,6 +428,12 @@ def unblock_steps(
 
     if rule_id in _SELF_PROTECTION_RULE_IDS:
         return _self_protection_steps(rule_id, workspace)
+
+    if rule_id.startswith("tag-rule:") and org_managed:
+        return [
+            "This workspace is org-managed. Ask an admin for a scoped exception: "
+            'prismor exempt request --reason "<why>"',
+        ]
 
     steps = _subsystem_steps(rule_id, finding, workspace, session_id, enrolled)
     if steps is None:
