@@ -270,6 +270,26 @@ def test_block_preferred_over_warn(tmp_path):
     assert done["action"] == "block"
 
 
+def test_warn_rule_fires_once_per_new_source(tmp_path):
+    # #593: one fetch used to make every later critical call warn again.
+    warn = compile_rule("a then b -> warn")
+    block = compile_rule("a then b -> block")
+    led = _led(tmp_path)
+    led.record({"a"}, 0, "t0")
+    done = led.completes_rules({"b"}, [warn], 1)
+    led.record({"b"}, 1, "t1", fired=[done["rule_id"]])
+    assert led.completes_rules({"b"}, [warn], 1) is not None  # re-check of the firing call
+    assert led.completes_rules({"b"}, [warn], 2) is None
+    # A blocked call never runs, so a block rule keeps firing (see completes()).
+    assert led.completes_rules({"b"}, [block], 2) is not None
+    led.record({"a"}, 2, "t2")  # a new source
+    assert led.completes_rules({"b"}, [warn], 3) is not None
+    # A full hist can't show a newer source, so the rule keeps reporting.
+    led.hist["a"] = list(range(TagLedger._HIST_CAP))
+    led.fired[done["rule_id"]] = 300
+    assert led.completes_rules({"b"}, [warn], 301) is not None
+
+
 def test_hist_persists_across_instances(tmp_path):
     sid = "s-" + uuid.uuid4().hex
     led = TagLedger(tmp_path, sid)
@@ -532,6 +552,23 @@ def test_e2e_warn_rule_never_blocks(tmp_path):
     d = _call(ws, sid, "mcp__Gmail__send_email", "network")
     assert d.allow is True  # warn logs but never blocks, even in enforce
     assert any(f.get("category") == "lethal_trifecta" for f in d.findings)
+
+
+def test_e2e_warn_rule_reports_each_source_once(tmp_path):
+    # #593: after one read, every later send completed the warn sequence again.
+    rules = ["untrusted_content then critical_action -> warn"]
+    ws = _ws(tmp_path, "enforce", rules=rules, incompatible=[])
+    sid = "s-" + uuid.uuid4().hex
+
+    def warns(tool, etype):
+        return any(f.get("category") == "lethal_trifecta"
+                   for f in _call(ws, sid, tool, etype).findings)
+
+    assert not warns("mcp__Gmail__read_email", "tool_result")
+    assert warns("mcp__Gmail__send_email", "network")
+    assert not warns("mcp__Gmail__send_email", "network")
+    assert not warns("mcp__Gmail__read_email", "tool_result")  # a new source...
+    assert warns("mcp__Gmail__send_email", "network")  # ...is reported
 
 
 def test_e2e_rules_and_legacy_incompatible_merge(tmp_path):

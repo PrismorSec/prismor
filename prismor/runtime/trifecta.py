@@ -29,7 +29,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 # Default tag vocabulary (the red/blue pair, in PDF language).
 UNTRUSTED = "untrusted_content"
@@ -718,6 +718,8 @@ class TagLedger:
         # tag -> sorted [indexes] of every recorded occurrence (capped). Needed
         # for ordered ("then") rules; ``seen`` alone only knows first occurrence.
         self.hist: Dict[str, List[int]] = {}
+        # warn rule id -> index of the last call it fired on.
+        self.fired: Dict[str, int] = {}
         self._load()
 
     def _load(self) -> None:
@@ -735,6 +737,9 @@ class TagLedger:
                     for t, v in h.items()
                     if isinstance(v, (list, tuple))
                 }
+            f = data.get("fired")
+            if isinstance(f, dict):
+                self.fired = {r: i for r, i in f.items() if isinstance(i, int)}
         except Exception:
             pass
         # Pre-hist ledger files: synthesize history from first-seen so ordered
@@ -749,7 +754,9 @@ class TagLedger:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(
-                json.dumps({"seen": self.seen, "hist": self.hist}, indent=2),
+                json.dumps(
+                    {"seen": self.seen, "hist": self.hist, "fired": self.fired}, indent=2
+                ),
                 encoding="utf-8",
             )
         except Exception:
@@ -818,8 +825,21 @@ class TagLedger:
             final = steps[-1]
             if not (final & new_tags):
                 continue
-            # Walk the non-final steps as an ordered subsequence over hist.
-            cursor = -1
+            # Walk the non-final steps as an ordered subsequence over hist. A
+            # warn rule walks from the last call it fired on, so it reports a
+            # sequence once per new occurrence of its earlier steps rather than
+            # on every later call. Block and redact rules always walk from the
+            # start: a blocked call never runs, so firing once would let a retry
+            # through (see completes()). A tag whose hist is full can't show a
+            # newer occurrence, so it never suppresses.
+            last = None
+            if getattr(rule, "action", "") == "warn":
+                last = self.fired.get(getattr(rule, "rule_id", ""))
+            if last is None or last >= current_index or any(
+                len(self.hist.get(t, ())) >= self._HIST_CAP for s in steps for t in s
+            ):
+                last = -1
+            cursor = last
             ok = True
             for step in steps[:-1]:
                 step_pos = cursor
@@ -879,7 +899,9 @@ class TagLedger:
                 return idx
         return None
 
-    def _apply(self, new_tags: Set[str], index: int, tool: str) -> None:
+    def _apply(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
         """Mutate the in-memory view only. The persistence seam for subclasses
         that must not touch the real ledger files (see ``tags_cli._ReplayLedger``)."""
         import bisect
@@ -891,14 +913,21 @@ class TagLedger:
             indexes = self.hist.setdefault(tag, [])
             if index not in indexes and len(indexes) < self._HIST_CAP:
                 bisect.insort(indexes, index)
+        for rule_id in fired:
+            self.fired[rule_id] = max(index, self.fired.get(rule_id, index))
 
-    def record(self, new_tags: Set[str], index: int, tool: str) -> None:
-        """Record ``new_tags`` for this session, in memory and on disk."""
+    def record(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
+        """Record ``new_tags`` for this session, in memory and on disk, along
+        with the ids of the warn rules this call ``fired``."""
         if not new_tags:
             return
-        self._commit(new_tags, index, tool)
+        self._commit(new_tags, index, tool, fired)
 
-    def _commit(self, new_tags: Set[str], index: int, tool: str) -> None:
+    def _commit(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
         """Persist ``new_tags`` to the session's ledger file.
 
         The read-modify-write happens inside an exclusive lock and lands
@@ -931,6 +960,13 @@ class TagLedger:
                     hist[tag] = indexes
                 state["seen"] = seen
                 state["hist"] = hist
+                last_fired = state.get("fired")
+                if not isinstance(last_fired, dict):
+                    last_fired = {}
+                for rule_id in fired:
+                    prev = last_fired.get(rule_id)
+                    last_fired[rule_id] = max(index, prev) if isinstance(prev, int) else index
+                state["fired"] = last_fired
                 # Keep the in-memory view consistent with what was committed, so
                 # a caller that records then re-checks sees the merged truth.
                 s = state.get("seen")
@@ -947,6 +983,9 @@ class TagLedger:
                         if isinstance(indexes, (list, tuple)):
                             merged = set(self.hist.get(tag, ())) | {int(i) for i in indexes}
                             self.hist[tag] = sorted(merged)[: self._HIST_CAP]
+                for rule_id, idx in last_fired.items():
+                    if isinstance(idx, int):
+                        self.fired[rule_id] = max(idx, self.fired.get(rule_id, idx))
         except Exception:
             # Never break the tool call being screened over a ledger write.
             pass
