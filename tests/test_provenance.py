@@ -79,6 +79,29 @@ def _fetch(ws, sid, agent="claude"):
 
 # ── the cross-agent chain ────────────────────────────────────────────────────
 
+@pytest.mark.parametrize("same_session", [True, False])
+def test_staged_execution_warns_only_for_untrusted_script_content(tmp_path, same_session):
+    ws = _workspace(tmp_path)
+    writer = "writer-" + uuid.uuid4().hex
+    reader = writer if same_session else "reader-" + uuid.uuid4().hex
+    script = ws / "shared" / "helper.py"
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, writer, "WebFetch", "network", url="https://example.com/helper",
+          response=body)
+    _call(ws, writer, "Write", "file_write", path=str(script), content=body)
+    script.write_text(body)
+    assert "untrusted_content" in lookup(str(script))["tags"]
+    decision = _call(ws, reader, "Bash", "shell", command=f"python3 {script}")
+    assert any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+    # Reading a page does not taint unrelated scripts the agent writes itself.
+    clean = ws / "helper.py"
+    _call(ws, writer, "Write", "file_write", path=str(clean), content="print(42)")
+    clean.write_text("print(42)")
+    decision = _call(ws, reader, "Bash", "shell", command=f"python3 {clean}")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
 def test_untrusted_content_crosses_the_session_boundary(tmp_path):
     ws = _workspace(tmp_path)
     note = ws / "shared" / "handoff.md"
