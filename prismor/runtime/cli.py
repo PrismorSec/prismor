@@ -4481,14 +4481,18 @@ def build_parser() -> argparse.ArgumentParser:
         "(or run `prismor mcp-gateway install` to do that automatically).",
     )
     gw_parser.add_argument("action", nargs="?",
-                           choices=["serve", "install", "uninstall", "login", "logout", "auth"],
+                           choices=["serve", "install", "uninstall", "login", "logout", "auth", "tools", "approve"],
                            default="serve",
                            help="serve (default) | install: move this workspace's .mcp.json servers "
                            "behind the gateway | uninstall: restore the .mcp.json backup | "
                            "login <server>: sign in to an OAuth MCP server in the browser | "
-                           "logout <server>: forget its tokens | auth: sign-in status of every remote server")
+                           "logout <server>: forget its tokens | auth: sign-in status of every remote server | "
+                           "tools [server]: tool definitions held for review (poisoned, or changed since "
+                           "first use) | approve <server> [tool ...]: accept the reviewed definitions")
     gw_parser.add_argument("target", nargs="?", default=None,
-                           help="With login/logout: the server name from the gateway config")
+                           help="With login/logout/tools/approve: the server name from the gateway config")
+    gw_parser.add_argument("tool_names", nargs="*", default=[],
+                           help="With approve: the tools to approve (default: every pending one)")
     gw_parser.add_argument("--no-browser", dest="no_browser", action="store_true",
                            help="With login: print the sign-in URL instead of opening a browser")
     gw_parser.add_argument("--callback-port", dest="callback_port", type=int, default=0,

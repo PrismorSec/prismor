@@ -375,6 +375,58 @@ defaults (`mcp__*__send_email`), org tool denies, tool-tag rules pushed from
 the control plane, and the console's tool inventory. One gateway process is
 one Prismor session; the trifecta ledger spans your whole agent session.
 
+## Tool definitions are checked before the model reads them
+
+A tool's description and input schema are instructions the model follows, and
+the server can change them at any time. Two published attacks use exactly that:
+**tool poisoning** (a description that tells the model to read
+`~/.ssh/id_rsa` and pass it in an extra `sidenote` argument, and not to mention
+it) and the **rug pull** (a tool you have been using for weeks quietly changes
+its description or adds a parameter). The gateway checks every definition at
+`tools/list`, before it reaches the model:
+
+- **Scanned like a skill.** The name, title, description and every parameter's
+  name and description run through the `skill_manifest` rules, including
+  `mcp-tool-poisoning`: hiding things from the user, coercion ("otherwise the
+  tool will not work"), overriding other servers' tools, redirecting
+  recipients, plus the existing secret-read, exfil-endpoint and prompt-override
+  rules. Each distinct definition is scanned once per gateway process.
+- **Pinned on first use.** The first time a server lists a tool, a hash of its
+  definition is stored in `~/.prismor/mcp-tool-pins/` (`0600`), keyed by the
+  server's URL or command, not its name in the config. A later change to the
+  description, schema or annotations is held until someone reviews it. A tool
+  that changes back to the pinned version is released again.
+
+In enforce mode a held tool is left out of `tools/list`, and calling it by name
+is blocked (and logged) with the reason. The poisoned text itself is never
+echoed back to the model. Observe mode lists it and writes
+`would hide in enforce mode` to stderr. New tools from a server you already
+use are scanned and pinned like the first ones.
+
+Review and accept from a terminal:
+
+```bash
+prismor mcp-gateway tools            # every server: pinned count, and what is held and why
+prismor mcp-gateway tools github     # one server, with each held definition as a diff against the pinned one
+prismor mcp-gateway approve github create_issue@3f9c1a2b7d4e   # accept exactly that version
+prismor mcp-gateway approve github   # accept everything held for github
+```
+
+`tools` prints each held definition with a short hash, as a diff against the pinned version (or in full, for a tool never pinned), so a change outside the description is visible too. Approving `name@hash`
+accepts only that version: if the server changed the tool again after you read
+it, nothing is approved and you are asked to review the current one (a server
+cannot show you a harmless version and swap in another before you approve).
+
+An approved definition is not re-scanned while it stays the same. Approving is
+a human's decision: an agent running `prismor mcp-gateway approve` or writing
+to the pin files is blocked by `prismor-self-edit`. Set `"pin": false` on a
+server entry to turn both checks off for it (for a server you develop yourself,
+whose tools change all the time).
+
+Hosted endpoints run the same checks, but their pins live in the endpoint's
+temporary storage and start over after a cold start, so there drift is only
+caught while an instance stays warm. The scan applies regardless.
+
 ## Server-declared tags (`_meta`)
 
 At `tools/list` time the gateway reads tags a server self-declares on each
