@@ -25,6 +25,7 @@ from prismor.runtime.mcp_gateway import (  # noqa: E402
     UpstreamSpec,
     make_upstream,
 )
+from prismor.runtime.mcp_oauth import no_redirect  # noqa: E402
 from prismor.runtime.runtime import Decision  # noqa: E402
 
 
@@ -47,7 +48,7 @@ def no_socket(monkeypatch):
         opened.append(args[0] if args else None)
         raise AssertionError("gateway opened a socket before policy allowed it")
 
-    monkeypatch.setattr("urllib.request.urlopen", _boom)
+    monkeypatch.setattr(no_redirect, "open", _boom)
     return opened
 
 
@@ -90,7 +91,7 @@ def test_allowed_upstream_connects(monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr("urllib.request.urlopen",
+    monkeypatch.setattr(no_redirect, "open",
                         lambda req, timeout=None: calls.append(req.full_url) or _Resp())
     up = UpstreamHttp(REMOTE, None, lambda spec: None)
 
@@ -186,7 +187,7 @@ def test_allowed_upstream_is_evaluated_once_then_left_alone(tmp_path, monkeypatc
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _Resp())
+    monkeypatch.setattr(no_redirect, "open", lambda req, timeout=None: _Resp())
     monkeypatch.setattr("prismor.runtime.runtime.evaluate_tool_call",
                         lambda **k: calls.append(k) or Decision(allow=True))
     gateway = _gateway(tmp_path, monkeypatch)
@@ -211,7 +212,7 @@ def test_observe_mode_does_not_block(tmp_path, monkeypatch):
         def __exit__(self, *a):
             return False
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=None: _Resp())
+    monkeypatch.setattr(no_redirect, "open", lambda req, timeout=None: _Resp())
     # observe-mode decisions carry findings but no `blocking`
     monkeypatch.setattr("prismor.runtime.runtime.evaluate_tool_call",
                         lambda **k: Decision(allow=True))
@@ -239,3 +240,76 @@ def test_egress_policy_denies_a_gateway_url_aimed_at_imds(monkeypatch):
     assert findings[0]["action"] == "block"
     assert pol.verdict(Destination("mcp.evil.test", scheme="https"))[0] == "deny"
     egress_mod._resolve_cache.clear()
+
+
+# ── redirects (#778) ─────────────────────────────────────────────────────────
+
+def _redirect_pair(code):
+    """An upstream that answers every POST with ``code`` to a second server,
+    which records what it receives."""
+    import http.server
+    import threading
+
+    seen = []
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(dict(self.headers))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"jsonrpc":"2.0","id":"gw-1","result":{}}')
+        do_POST = do_GET
+
+        def log_message(self, *a):
+            pass
+
+    target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+    class Origin(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(code)
+            self.send_header("Location", f"http://127.0.0.1:{target.server_port}/next?sig=x")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    origin = http.server.HTTPServer(("127.0.0.1", 0), Origin)
+    for srv in (target, origin):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return origin, target, seen
+
+
+@pytest.mark.parametrize("code", [301, 302, 303, 307, 308])
+def test_redirect_is_not_followed_and_credentials_stay_put(code):
+    origin, target, seen = _redirect_pair(code)
+    spec = UpstreamSpec(name="up", url=f"http://127.0.0.1:{origin.server_port}/mcp",
+                        transport="http", headers={"Authorization": "Bearer t0ken"})
+    guarded = []
+    try:
+        up = UpstreamHttp(spec, None, lambda s: guarded.append(s.url))
+        with pytest.raises(UpstreamError) as err:
+            up.request("initialize", {})
+    finally:
+        origin.shutdown()
+        target.shutdown()
+    assert seen == []                       # the redirect target was never contacted
+    assert guarded == [spec.url]
+    msg = str(err.value)
+    assert f"HTTP {code}" in msg and f"127.0.0.1:{target.server_port}/next" in msg
+    assert "sig=x" not in msg               # a signed query string stays out of the error
+
+
+def test_oauth_token_request_does_not_follow_a_redirect():
+    from prismor.runtime import mcp_oauth
+
+    origin, target, seen = _redirect_pair(302)
+    try:
+        with pytest.raises(mcp_oauth.OAuthError, match="redirects are not followed"):
+            mcp_oauth._http_json(f"http://127.0.0.1:{origin.server_port}/token",
+                                 form={"grant_type": "refresh_token"},
+                                 headers={"Authorization": "Basic c2VjcmV0"})
+    finally:
+        origin.shutdown()
+        target.shutdown()
+    assert seen == []
