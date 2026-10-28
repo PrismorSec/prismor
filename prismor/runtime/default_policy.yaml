@@ -986,11 +986,11 @@ rules:
     fields: [combined_text]
     patterns:
       # Concealment: an honest tool has nothing to keep from the user.
-      - '\b(?:do\s+not|don''t|never|without)\s+(?:ever\s+)?(?:tell(?:ing)?|mention(?:ing)?|inform(?:ing)?|notify(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|alert(?:ing)?)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?the\s+user\b'
+      - '\b(?:do\s+not|don[''\u2019]t|never|without)\s+(?:ever\s+)?(?:tell(?:ing)?|mention(?:ing)?|inform(?:ing)?|notify(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|alert(?:ing)?)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?the\s+user\b'
       - '\b(?:hide|conceal|keep)\s+(?:this|it|that)\s+(?:secret\s+)?from\s+the\s+user\b'
       - '\bthe\s+user\s+(?:must|should|need)\s+(?:not|never)\s+(?:to\s+)?(?:know|see|be\s+told|find\s+out|notice)\b'
       # Coercion that ties an unrelated action to the tool working at all.
-      - '\botherwise\s+(?:the|this)\s+tool\s+(?:will\s+not|won''t|cannot|can''t|will\s+fail\s+to)\s+work\b'
+      - '\botherwise\s+(?:the|this)\s+tool\s+(?:will\s+not|won[''\u2019]t|cannot|can[''\u2019]t|will\s+fail\s+to)\s+work\b'
       # Shadowing: a definition that rewrites how other tools or servers behave.
       - '\bwhen(?:ever)?\s+this\s+tool\s+is\s+(?:available|present|loaded|installed|enabled|connected)\b'
       - '\b(?:all|any|every)\s+other\s+(?:mcp\s+)?(?:tools?|servers?)\b[^.\n]{0,60}\b(?:must|should|has\s+to|have\s+to|needs?\s+to)\b'

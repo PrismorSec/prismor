@@ -407,12 +407,12 @@ Review and accept from a terminal:
 
 ```bash
 prismor mcp-gateway tools            # every server: pinned count, and what is held and why
-prismor mcp-gateway tools github     # one server, with the held description
+prismor mcp-gateway tools github     # one server, with each held definition as a diff against the pinned one
 prismor mcp-gateway approve github create_issue@3f9c1a2b7d4e   # accept exactly that version
 prismor mcp-gateway approve github   # accept everything held for github
 ```
 
-`tools` prints each held definition with a short hash. Approving `name@hash`
+`tools` prints each held definition with a short hash, as a diff against the pinned version (or in full, for a tool never pinned), so a change outside the description is visible too. Approving `name@hash`
 accepts only that version: if the server changed the tool again after you read
 it, nothing is approved and you are asked to review the current one (a server
 cannot show you a harmless version and swap in another before you approve).

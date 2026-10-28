@@ -21,6 +21,7 @@ its pins and pointing a name at a different server does not inherit them.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -32,14 +33,27 @@ from typing import Any, Dict, List, Optional
 #: The fields of a tool definition the model reads. ``name`` is the key, and
 #: ``_meta`` is server bookkeeping that may change without changing behaviour.
 _DEFINITION_FIELDS = ("title", "description", "inputSchema", "outputSchema", "annotations")
-PREVIEW_CHARS = 600
-
 _lock = threading.Lock()
 
 
+def _locked(identity: str):
+    """This process's threads and every other gateway process: one gateway
+    per agent host shares the store, and an `approve` from the terminal must
+    not be overwritten by a gateway saving what it read before it."""
+    from contextlib import ExitStack
+    from prismor.runtime.store import file_lock
+    stack = ExitStack()
+    stack.enter_context(_lock)
+    stack.enter_context(file_lock(_path(identity)))
+    return stack
+
+
+def definition_body(tool: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: tool.get(k) for k in _DEFINITION_FIELDS if tool.get(k) is not None}
+
+
 def definition_hash(tool: Dict[str, Any]) -> str:
-    body = {k: tool.get(k) for k in _DEFINITION_FIELDS if tool.get(k) is not None}
-    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    raw = json.dumps(definition_body(tool), sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -128,7 +142,7 @@ def check(identity: str, server: str, tool: Dict[str, Any], *, flagged: str = ""
     """
     name = str(tool.get("name") or "")
     digest = definition_hash(tool)
-    with _lock:
+    with _locked(identity):
         data = load(identity)
         data["server"] = server
         pin = data["tools"].get(name)
@@ -137,7 +151,8 @@ def check(identity: str, server: str, tool: Dict[str, Any], *, flagged: str = ""
                 _save(data)   # changed back to what was approved
             return "same"
         if pin is None and not flagged:
-            data["tools"][name] = {"hash": digest, "pinned_at": _now()}
+            data["tools"][name] = {"hash": digest, "pinned_at": _now(),
+                                   "definition": definition_body(tool)}
             data["pending"].pop(name, None)
             _save(data)
             return "new"
@@ -145,13 +160,27 @@ def check(identity: str, server: str, tool: Dict[str, Any], *, flagged: str = ""
         if pending.get("hash") != digest or pending.get("reason") != (flagged or "changed"):
             data["pending"][name] = {
                 "hash": digest, "seen_at": _now(), "reason": flagged or "changed",
-                "description": str(tool.get("description") or "")[:PREVIEW_CHARS],
+                "definition": definition_body(tool),
             }
             _save(data)
         return "changed" if pin is not None else "flagged"
 
 
 SHORT_HASH = 12
+
+
+def review_lines(data: Dict[str, Any], name: str) -> List[str]:
+    """What a human must read before approving ``name``: the whole held
+    definition, or a diff against the pinned one when there is one. Never just
+    the description, since a rug pull can change only a parameter's text, a
+    default or an enum, and the reviewer would approve a change they never saw."""
+    def dump(body: Any) -> List[str]:
+        return json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False, default=str).splitlines()
+    new = dump((data["pending"].get(name) or {}).get("definition"))
+    old = (data["tools"].get(name) or {}).get("definition")
+    if old is None:
+        return new
+    return [ln for ln in difflib.unified_diff(dump(old), new, "pinned", "held", lineterm="", n=2)][2:]
 
 
 def approve(identity: str, tools: Optional[List[str]] = None) -> Dict[str, List[str]]:
@@ -163,7 +192,7 @@ def approve(identity: str, tools: Optional[List[str]] = None) -> Dict[str, List[
     approving text nobody reviewed.
     """
     out: Dict[str, List[str]] = {"approved": [], "stale": [], "missing": []}
-    with _lock:
+    with _locked(identity):
         data = load(identity)
         wanted = tools or list(data["pending"])
         for item in wanted:
@@ -176,7 +205,8 @@ def approve(identity: str, tools: Optional[List[str]] = None) -> Dict[str, List[
                 out["stale"].append(name)
                 continue
             data["pending"].pop(name)
-            data["tools"][name] = {"hash": entry["hash"], "pinned_at": _now(), "reviewed": True}
+            data["tools"][name] = {"hash": entry["hash"], "pinned_at": _now(), "reviewed": True,
+                                   "definition": entry.get("definition")}
             out["approved"].append(name)
         if out["approved"]:
             _save(data)

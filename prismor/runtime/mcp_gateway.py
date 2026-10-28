@@ -1941,7 +1941,7 @@ def _run_pins(action: str, args) -> int:
                 why.append(f"flagged by {entry.get('reason')}")
             short = entry["hash"][:pins.SHORT_HASH]
             print(f"  ! {name}@{short}: {', '.join(why) or 'new'} (seen {entry.get('seen_at')})")
-            for line in (entry.get("description") or "(no description)").splitlines()[:12]:
+            for line in pins.review_lines(data, name):
                 print(f"      | {line}")
             print(f"    approve this exact version: prismor mcp-gateway approve {spec.name} {name}@{short}")
     return 0
