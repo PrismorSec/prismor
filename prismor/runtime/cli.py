@@ -6273,7 +6273,7 @@ def _print_status_overview(workspace: Path) -> None:
     ws_display = str(workspace).replace(home, "~")
 
     print()
-    print(f"  {_color('PRISMOR', _BOLD)}  status")
+    print(f"  {_color('PRISMOR', _BOLD)}  status  {_color('v' + __version__, _DIM)}")
     print(f"  {_color('─' * 50, _DIM)}")
     print()
     print(f"  {_color('Workspace:', _GREEN)}   {ws_display}")
