@@ -323,7 +323,7 @@ def _print_usage(query: str = "") -> None:
             return
         print(f"  Commands matching '{query}':")
     else:
-        print(f"  {b('prismor')} — runtime security for AI coding agents")
+        print(f"  {b('prismor')} {d('v' + __version__)} — runtime security for AI coding agents")
         print()
         print(f"  Usage: {b('prismor')} <command> [options]")
         print(f"  New here? Run {b('prismor setup')}, then {b('prismor status')}.")
