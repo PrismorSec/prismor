@@ -2973,11 +2973,21 @@ def main(argv: Optional[List[str]] = None) -> None:
             if not agent_name_arg:
                 sys.stderr.write("error: agent name required for 'agents show'\n")
                 raise SystemExit(1)
-            ctl = _resolve_agent_ctl(agent_name_arg, workspace)
+            # Same org merge as `list`: without it an org observe pin printed as
+            # the local mode while the runtime enforced nothing (#256).
+            _remote_ctl = None
+            try:
+                from prismor.runtime.enterprise import remote_policy as _rp
+                _pol = _rp.verify_and_load()
+                _remote_ctl = ((_pol or {}).get("settings") or {}).get("agent_controls")
+            except Exception:
+                _remote_ctl = None
+            ctl = _resolve_agent_ctl(agent_name_arg, workspace, remote_controls=_remote_ctl)
+            _origin = "org" if ctl.org_mode else "local" if ctl.mode else "hook/device"
             print(f"\n  name:        {ctl.name}")
             print(f"  framework:   {ctl.framework or '(unknown)'}")
             print(f"  enabled:     {'yes' if ctl.enabled else _color('NO (paused)', _RED)}")
-            print(f"  mode:        {ctl.mode or '(global)'}")
+            print(f"  mode:        {ctl.mode or '(global)'}  ({_origin})")
             print(f"  iam_profile: {ctl.iam_profile or '(none)'}")
             print(f"  last_seen:   {ctl.last_seen or '(never)'}")
             print()

@@ -181,3 +181,39 @@ def test_global_tool_deny_blocks_unregistered_agent(tmp_path):
     )
     assert d.allow is False
     assert any(f.get("ruleId") == "agent-tool-deny" for f in d.findings)
+
+
+def test_org_observe_pin_suppression_is_visible(tmp_path, monkeypatch, capsys):
+    """#256: an org per-agent observe pin outranks --mode enforce. The block is
+    still dropped, but stderr and the audit verdict must say it was suppressed
+    instead of looking like an ordinary warn."""
+    from prismor.runtime import runtime
+    from prismor.runtime.enterprise.audit_trail import _verdict
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    real_init = PolicyEngine.__init__
+
+    def fake_init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self.workspace_managed = True
+        self.agent_controls = {"checkout-bot": {"mode": "observe"}}
+
+    monkeypatch.setattr(PolicyEngine, "__init__", fake_init)
+    event = {"type": "shell", "agent_event": "PreToolUse", "command": "rm -rf ~/",
+             "metadata": {"tool_name": "Bash"}}
+
+    blocked = runtime.evaluate_tool_call(
+        event=dict(event), workspace=tmp_path, agent="openai-agents", agent_name="other-bot",
+        mode="enforce", session_id="s3", persist=False,
+    )
+    assert blocked.allow is False  # sanity: this command blocks without the pin
+    capsys.readouterr()
+
+    d = runtime.evaluate_tool_call(
+        event=dict(event), workspace=tmp_path, agent="openai-agents", agent_name="checkout-bot",
+        mode="enforce", session_id="s4", persist=False,
+    )
+    assert d.allow is True
+    assert any("checkout-bot" in (f.get("suppressedBy") or "") for f in d.findings)
+    assert "suppressed by org per-agent control 'checkout-bot'" in capsys.readouterr().err
+    assert _verdict(d.findings, d.blocking) == "suppressed"

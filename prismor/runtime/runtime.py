@@ -862,11 +862,21 @@ def evaluate_tool_call(
             # Re-scan rather than just dropping: should_block() returns the FIRST
             # enforce-rated finding, which may be an ordinary detection sitting
             # ahead of an authoritative one that observe mode must not suppress.
+            _would_block = blocking
             blocking = should_block(
                 [f for f in findings
                  if f.get("category") == "agent-control" or f.get("authoritative")],
                 event,
             )
+            # An org per-agent observe pin silently outranks --mode enforce and
+            # device_mode, so say so (#256): stderr, and the audit verdict reads
+            # "suppressed" instead of an ordinary "warned".
+            if blocking is None and _org_chose_observe:
+                _would_block["suppressedBy"] = f"org agent control: {_agent_name} mode=observe"
+                sys.stderr.write(
+                    f"[prismor] would block ({_would_block.get('ruleId') or _would_block.get('category')}); "
+                    f"suppressed by org per-agent control '{_agent_name}' mode=observe\n"
+                )
 
     # The finding that actually blocks reports as enforced. The legacy bridge
     # blocks by category while the finding still carries the rule's observe

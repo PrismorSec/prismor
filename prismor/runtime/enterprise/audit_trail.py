@@ -233,6 +233,8 @@ def _verdict(findings: List[Dict[str, Any]], blocking: Optional[Dict[str, Any]])
     if blocking is not None:
         action = str(blocking.get("action") or "").lower()
         return "step_up" if action == "step_up" else "blocked"
+    if any(f.get("suppressedBy") for f in findings):
+        return "suppressed"
     return "warned" if findings else "allowed"
 
 
@@ -297,6 +299,7 @@ def append_action_record(
         "extension_id": ((meta.get("extension") or {}).get("id") if isinstance(meta, dict) else None),
         # Decision.
         "verdict": _verdict(findings, blocking),
+        "suppressed_by": next((f["suppressedBy"] for f in findings if f.get("suppressedBy")), None),
         "mode": mode,
         "eval_ms": eval_ms,
         "rules": sorted(
