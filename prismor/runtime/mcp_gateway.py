@@ -1057,7 +1057,7 @@ class Gateway:
         src += " " + " ".join(c.source for n, c in named.items() if n in src)
         return "args" not in src and "resource" not in src
 
-    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
+    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any], reply: bool = True) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
         hidden: Dict[str, _Route] = {}
@@ -1155,7 +1155,8 @@ class Gateway:
             self._quarantined = quarantined
             # Which end user this list was filtered for (see _identity_changed).
             self._listed_token = current_token()
-        self._reply(req_id, {"tools": tools})
+        if reply:
+            self._reply(req_id, {"tools": tools})
 
     def _identity_changed(self) -> None:
         """Tell the host to re-list when the end user's token has changed since
@@ -1189,6 +1190,15 @@ class Gateway:
             # when called by name (an agent probing for denied tools must show
             # up in the console); the policy that hid it blocks it below.
             route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
+            unlisted = not self._routes and not getattr(self, "_hidden", None)
+        if route is None and unlisted and name != STATUS_TOOL:
+            # Routes are built by tools/list. A call that comes first (a new
+            # hosted session, a client reusing a tool name it remembers)
+            # builds them once instead of answering "unknown tool" for a tool
+            # that exists.
+            self._handle_tools_list(None, {}, reply=False)
+            with self._routes_lock:
+                route = self._routes.get(name) or self._hidden.get(name)
         if route is None and self._failed:
             self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
@@ -1207,7 +1217,7 @@ class Gateway:
             return
         limit = route.upstream.spec.max_body_bytes
         if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
-            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's arguments")))
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
             return
         with self._routes_lock:
             held = self._quarantined.get(name)
