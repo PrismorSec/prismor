@@ -568,8 +568,13 @@ Local gateway vs hosted endpoint:
 
 - The gateway config may contain tokens in `env` blocks; `install` writes it
   with `0600` permissions and Prismor never logs config values.
-- Aggregation is tools-only: resources/prompts from downstream servers are
-  not advertised in v1.
+- Resources and prompts are aggregated too. Resource URIs pass through
+  unchanged (the first server to list a URI serves it); prompts are named
+  `<server>__<prompt>` like tools. `resources/read` and `prompts/get` are judged
+  as `mcp__<server>__read_resource` (the URI in its arguments) and
+  `mcp__<server>__prompt__<name>`, so a server-wide deny covers them, and what
+  they return is masked and scanned like a tool result: a poisoned resource is
+  withheld. Mirrored built-ins serve tools only.
 - Upstreams are started concurrently and may take up to 10 minutes to answer
   `initialize` (a cold `npx -y` install). `tools/list` waits up to 30s for
   servers still in their handshake; one that is still starting after that is

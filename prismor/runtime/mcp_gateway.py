@@ -48,7 +48,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
 
@@ -817,6 +817,12 @@ class Gateway:
             for s in specs
         ]
         self._routes: Dict[str, _Route] = {}
+        #: resources/read and prompts/get routing, built by their list calls:
+        #: resource URI -> upstream, client prompt name -> (upstream, name),
+        #: and (uriTemplate prefix, upstream) for templated resources.
+        self._resource_routes: Dict[str, Upstream] = {}
+        self._prompt_routes: Dict[str, Tuple[Upstream, str]] = {}
+        self._template_routes: List[Tuple[str, Upstream]] = []
         self._routes_lock = threading.Lock()
         self._stdout_lock = threading.Lock()
         self._eval_lock = threading.Lock()
@@ -898,11 +904,13 @@ class Gateway:
             # Claude Code issues concurrent tool calls; handle off-loop so one
             # slow upstream doesn't head-of-line-block the others.
             self._executor.submit(self._with_inbound, inbound, self._handle_tools_call_safe, req_id, params)
+        elif method in ("resources/list", "resources/templates/list", "prompts/list"):
+            self._handle_catalog_list(req_id, method)
+        elif method in ("resources/read", "prompts/get"):
+            self._executor.submit(self._with_inbound, inbound, self._handle_fetch_safe, req_id, method, params)
         elif method == "ping":
             self._reply(req_id, {})
         else:
-            # Tools-only aggregation: resources/prompts are never advertised in
-            # the initialize capabilities, so a compliant client won't ask.
             self._reply_error(req_id, -32601, f"method not supported by prismor-gateway: {method}")
 
     @staticmethod
@@ -946,7 +954,12 @@ class Gateway:
                              name=f"mcp-init-{up.spec.name}", daemon=True).start()
         self._reply(req_id, {
             "protocolVersion": self._client_protocol,
-            "capabilities": {"tools": {"listChanged": True}},
+            # Resources and prompts are always advertised: upstreams are still
+            # starting here, so whether any has them isn't known yet, and an
+            # empty list is a valid answer.
+            "capabilities": {"tools": {"listChanged": True},
+                             "resources": {"listChanged": True},
+                             "prompts": {"listChanged": True}},
             "serverInfo": {"name": "prismor-gateway",
                            "version": _gateway_version()},
         })
@@ -1351,6 +1364,157 @@ class Gateway:
                 include_evidence=False))
             return
 
+        self._reply(req_id, result)
+
+    # ── resources and prompts ────────────────────────────────────────────
+
+    def _catalog_upstreams(self) -> List[Upstream]:
+        """Upstreams that can serve resources/prompts: up, and not mirrors."""
+        with self._init_cv:
+            self._init_cv.wait_for(lambda: not (self._starting - self._late), timeout=REQUEST_TIMEOUT)
+            starting = set(self._starting)
+        return [up for up in self.upstreams
+                if not up.spec.local and up.spec.name not in starting and up.spec.name not in self._failed]
+
+    def _handle_catalog_list(self, req_id: Any, method: str) -> None:
+        key = {"resources/list": "resources", "resources/templates/list": "resourceTemplates",
+               "prompts/list": "prompts"}[method]
+        items: List[Dict[str, Any]] = []
+        resources: Dict[str, Upstream] = {}
+        prompts: Dict[str, Tuple[Upstream, str]] = {}
+        templates: List[Tuple[str, Upstream]] = []
+        for up in self._catalog_upstreams():
+            cursor = None
+            for _ in range(20):  # ponytail: page cap, a catalog past 20 pages is truncated
+                try:
+                    page = up.request(method, {"cursor": cursor} if cursor else {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError:
+                    break  # most servers have no resources or prompts (-32601)
+                for entry in page.get(key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry = dict(entry)
+                    if self.namespace != "none" and isinstance(entry.get("description"), str):
+                        entry["description"] = f"[{up.spec.name}] {entry['description']}"
+                    if key == "resources" and isinstance(entry.get("uri"), str):
+                        resources.setdefault(entry["uri"], up)  # URIs are global: first server wins
+                    elif key == "resourceTemplates" and isinstance(entry.get("uriTemplate"), str):
+                        templates.append((entry["uriTemplate"].split("{", 1)[0], up))
+                    elif key == "prompts" and isinstance(entry.get("name"), str):
+                        exposed = self._client_tool_name(up.spec.name, entry["name"])
+                        prompts[exposed] = (up, entry["name"])
+                        entry["name"] = exposed
+                    else:
+                        continue
+                    items.append(entry)
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+        with self._routes_lock:
+            if key == "resources":
+                self._resource_routes = resources
+            elif key == "resourceTemplates":
+                self._template_routes = templates
+            else:
+                self._prompt_routes = prompts
+        if req_id is not None:
+            self._reply(req_id, {key: items})
+
+    def _fetch_route(self, method: str, params: Dict[str, Any]) -> Optional[Tuple[_Route, Dict[str, Any]]]:
+        """The route and upstream params for resources/read or prompts/get."""
+        def lookup() -> Optional[Tuple[_Route, Dict[str, Any]]]:
+            with self._routes_lock:
+                if method == "prompts/get":
+                    hit = self._prompt_routes.get(str(params.get("name") or ""))
+                    if hit is None:
+                        return None
+                    up, name = hit
+                    # Policy sees `mcp__<server>__prompt__<name>`: denyable apart from a tool of the same name.
+                    return (_Route(upstream=up, server=up.spec.name, tool=f"prompt__{name}"),
+                            {"name": name, "arguments": params.get("arguments") or {}})
+                uri = str(params.get("uri") or "")
+                up = self._resource_routes.get(uri) or next(
+                    (u for prefix, u in self._template_routes if prefix and uri.startswith(prefix)), None)
+                if up is None:
+                    return None
+                return _Route(upstream=up, server=up.spec.name, tool="read_resource"), {"uri": uri}
+        found = lookup()
+        if found is None:
+            # As with tools: a client may fetch without listing first.
+            if method == "prompts/get":
+                self._handle_catalog_list(None, "prompts/list")
+            else:
+                self._handle_catalog_list(None, "resources/list")
+                self._handle_catalog_list(None, "resources/templates/list")
+            found = lookup()
+        return found
+
+    def _handle_fetch_safe(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        try:
+            self._handle_fetch(req_id, method, params)
+        except UpstreamError as exc:
+            self._reply_error(req_id, exc.code or -32603, str(exc))
+        except Exception as exc:  # never kill the serve loop from a worker
+            self._reply_error(req_id, -32603, f"prismor-gateway internal error: {exc}")
+
+    def _handle_fetch(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        """resources/read and prompts/get, judged like a tool call.
+
+        Both put server-written text in front of the model, so the result is
+        masked and scanned exactly as a tool result is. Pre-call, policy sees
+        `mcp__<server>__read_resource` (the URI in its arguments) or
+        `mcp__<server>__prompt__<name>`, so server-wide denies cover them.
+        """
+        found = self._fetch_route(method, params)
+        if found is None:
+            what = "prompt" if method == "prompts/get" else "resource"
+            self._reply_error(req_id, -32602, f"unknown {what}: {params.get('name') or params.get('uri')}")
+            return
+        route, upstream_params = found
+        arguments = upstream_params.get("arguments", {"uri": upstream_params.get("uri")})
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
+            return
+        try:
+            from prismor.runtime.enterprise import remote_policy as _remote
+            _remote.check_and_refresh()
+        except Exception:
+            pass
+        passthrough = self._passthrough(route)
+        name = f"{route.server}__{route.tool}"
+        # ponytail: a block here is final; step-up approval and pii_redact
+        # rewrites are tools/call only. Add them when a resource rule needs one.
+        decision = self._evaluate(self._build_call_event(route, arguments))
+        if decision is not None and decision.blocking is not None:
+            if passthrough:
+                self._note_passthrough(name, decision.blocking, passthrough)
+            else:
+                text = _blocked_result("Blocked by Prismor", decision.blocking,
+                                       unblock=self._unblock_text(decision.blocking, route))
+                self._reply_error(req_id, -32001, text["content"][0]["text"])
+                return
+
+        result = route.upstream.request(method, upstream_params,
+                                        timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
+        # Mask and scan the text the model will read, as for tool results.
+        slots = _fetched_text_slots(method, result)
+        shaped = {"content": [{"type": "text", "text": s["text"]} for s in slots]}
+        shaped = self._redact_result(shaped, data_boundary=not passthrough)
+        for slot, block in zip(slots, shaped["content"]):
+            slot["text"] = block["text"]
+        decision = self._evaluate(self._build_result_event(route, shaped, arguments))
+        withhold = None
+        if decision is not None and not passthrough:
+            withhold = decision.blocking
+            if withhold is None and self.mode == "enforce":
+                withhold = _result_withhold_finding(decision.findings)
+        if withhold is not None:
+            text = _blocked_result("[Prismor] response withheld", withhold,
+                                   unblock=self._unblock_text(withhold, route, arguments=arguments),
+                                   include_evidence=False)
+            self._reply_error(req_id, -32001, text["content"][0]["text"])
+            return
         self._reply(req_id, result)
 
     # ── pause / pass-through ─────────────────────────────────────────────
@@ -1793,6 +1957,19 @@ def _heuristic_semantic_warn(finding: Dict[str, Any]) -> bool:
     return (finding.get("category") == "prompt_injection_semantic"
             and not finding.get("judged")
             and finding.get("action") != "block")
+
+
+def _fetched_text_slots(method: str, result: Any) -> List[Dict[str, Any]]:
+    """The dicts holding model-bound text in a resources/read or prompts/get
+    result, so their `text` can be masked in place. Blobs and embedded
+    resources inside prompt messages are left as they are."""
+    if not isinstance(result, dict):
+        return []
+    if method == "resources/read":
+        items = result.get("contents") or []
+    else:
+        items = [m.get("content") for m in result.get("messages") or [] if isinstance(m, dict)]
+    return [i for i in items if isinstance(i, dict) and isinstance(i.get("text"), str)]
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],

@@ -244,3 +244,13 @@ def test_restore_drops_a_policy_and_anything_outside_the_keys_tree(h, tmp_path):
     assert Path(p["workspace"], ".prismor", "trifecta.json").exists()
     assert not Path(p["workspace"], ".prismor", "policy.yaml").exists()
     assert not evil.exists()
+
+
+def test_resources_and_prompts_reach_a_hosted_endpoint(h):
+    catalog = str(Path(__file__).parent / "fixtures" / "catalog_mcp_server.py")
+    h._test_configs[KEY] = config("inst1", servers={"cat": {"command": sys.executable, "args": [catalog]}})
+    init(h)
+    st, res = rpc(h, {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {"uri": "docs://readme"}})
+    assert st == 200 and res["result"]["contents"][0]["text"] == "Hello from the readme"
+    st, res = rpc(h, {"jsonrpc": "2.0", "id": 3, "method": "prompts/list"})
+    assert [p["name"] for p in res["result"]["prompts"]] == ["cat__greet"]
