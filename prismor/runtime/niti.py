@@ -208,7 +208,12 @@ def serve(revision: str = REVISION, port: int = 8765, enforce: bool = False, dev
 
     import signal
     signal.signal(signal.SIGTERM, signal.default_int_handler)   # `kill` unhooks too, not just Ctrl-C
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as exc:
+        sys.stderr.write(f"niti: port {port} is taken ({exc.strerror}). Another `prismor niti serve`? "
+                         f"Stop it (see pid in {_config_path()}) or pass --port.\n")
+        return 1
     cfg = _config_path()
     cfg.write_text(json.dumps({"url": f"http://127.0.0.1:{port}", "mode": "enforce" if enforce else "observe",
                                "model": revision, "pid": os.getpid()}))
