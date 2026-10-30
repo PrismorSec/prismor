@@ -550,6 +550,16 @@ def evaluate_tool_call(
     except Exception as exc:
         sys.stderr.write(f"[prismor] extension install check error: {exc}\n")
 
+    # Niti, when `prismor niti serve` is running: a learned allow/ask/deny on the
+    # call in the context of the session so far.
+    try:
+        from prismor.runtime.niti import niti_finding
+        _niti = niti_finding(event, agent, session_id)
+        if _niti:
+            findings.append(_niti)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] niti judge error: {exc}\n")
+
     # A finding raised while the session runs under an extension nobody has
     # reviewed says so: it is usually the first thing a responder needs.
     if findings:

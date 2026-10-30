@@ -887,6 +887,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "approvals":
         raise SystemExit(_approvals_cmd(args))
 
+    if args.command == "niti":
+        from prismor.runtime.niti import serve as _niti_serve
+        raise SystemExit(_niti_serve(args.model, args.port, args.enforce, args.device, args.budget))
+
     if args.command in ("pause", "pause-hard"):
         from prismor.runtime import pause as _pause
         refused = _pause_refusal(args.command, workspace)
@@ -4850,6 +4854,16 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Run recognized dispatchers with synthetic allow/block events in disposable state")
 
     subparsers.add_parser("logout", help="Un-enroll this machine (remove device identity + cached remote policy)")
+
+    niti_p = subparsers.add_parser("niti", help="Run the Niti tool-call judge locally; every hooked call is judged while it runs")
+    niti_p.add_argument("action", choices=["serve"])
+    niti_p.add_argument("--model", default="student-ettin32m-8k",
+                        help="prismor/niti-lite branch or a local model dir (default: student-ettin32m-8k)")
+    niti_p.add_argument("--port", type=int, default=8765)
+    niti_p.add_argument("--enforce", action="store_true", help="Niti deny findings block (default: observe, report only)")
+    niti_p.add_argument("--device", default="auto", help="auto, mps, cuda or cpu")
+    niti_p.add_argument("--budget", default="niti-lite-8k", choices=["niti-lite", "niti-lite-8k"],
+                        help="History budget passed to the model's canon.fit (niti-lite = ~1k tokens)")
 
     pause_p = subparsers.add_parser("pause", help="Pause local ENFORCEMENT for 24h (observe mode stays on); use pause-hard to pause indefinitely")
     pause_p.add_argument("--for", dest="duration", metavar="DURATION",
