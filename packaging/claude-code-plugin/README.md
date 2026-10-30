@@ -45,5 +45,6 @@ The plugin does not read credentials from your environment, store personal data 
 - Source and documentation: https://github.com/PrismorSec/prismor
 - Website: https://prismor.dev
 - Security policy: https://github.com/PrismorSec/prismor/blob/main/SECURITY.md
+- Privacy: https://prismor.dev/privacy
 
 Licensed under Apache 2.0.

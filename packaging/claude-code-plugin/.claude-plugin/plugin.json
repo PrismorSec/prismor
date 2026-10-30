@@ -9,7 +9,17 @@
     "url": "https://prismor.dev"
   },
   "homepage": "https://prismor.dev",
+  "privacyPolicyUrl": "https://prismor.dev/privacy",
   "repository": "https://github.com/PrismorSec/prismor",
   "license": "Apache-2.0",
-  "keywords": ["security", "runtime-security", "guardrails", "audit", "secrets", "supply-chain", "mcp", "policy"]
+  "keywords": [
+    "security",
+    "runtime-security",
+    "guardrails",
+    "audit",
+    "secrets",
+    "supply-chain",
+    "mcp",
+    "policy"
+  ]
 }
