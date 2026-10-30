@@ -34,7 +34,8 @@ def _row(i: Integration) -> str:
     badge = _STATUS_BADGE.get(i.status, i.status)
     surface = i.surface
     blocking = "—" if i.blocking == "none" else f"`{i.blocking}`"
-    return f"| {i.name} | {i.kind} | {surface} | {badge} | {blocking} |"
+    event_types = ", ".join(f"`{t}`" for t in i.event_types) or "—"
+    return f"| {i.name} | {i.kind} | {surface} | {badge} | {blocking} | {event_types} |"
 
 
 def render_matrix() -> str:
@@ -50,14 +51,14 @@ def render_matrix() -> str:
         "",
         "**Coding agents**",
         "",
-        "| Agent | Kind | Surface | Status | Blocking |",
-        "|---|---|---|---|---|",
+        "| Agent | Kind | Surface | Status | Blocking | Event types |",
+        "|---|---|---|---|---|---|",
         *[_row(i) for i in coding],
         "",
         "**Production frameworks**",
         "",
-        "| Framework | Kind | Surface | Status | Blocking |",
-        "|---|---|---|---|---|",
+        "| Framework | Kind | Surface | Status | Blocking | Event types |",
+        "|---|---|---|---|---|---|",
         *[_row(i) for i in frameworks],
     ]
 
@@ -66,8 +67,8 @@ def render_matrix() -> str:
             "",
             "**Multiplexers**",
             "",
-            "| Tool | Kind | Surface | Status | Blocking |",
-            "|---|---|---|---|---|",
+            "| Tool | Kind | Surface | Status | Blocking | Event types |",
+            "|---|---|---|---|---|---|",
             *[_row(i) for i in multiplexers],
         ]
 
@@ -76,7 +77,9 @@ def render_matrix() -> str:
         "Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. "
         "Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · "
         "`mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails) · "
-        "`pass-through` (spawns other agents; no interception surface of its own).",
+        "`pass-through` (spawns other agents; no interception surface of its own). "
+        "Event types: what the adapter produces from what the agent actually sends; "
+        "a rule on any other type never fires for that agent (— = not declared).",
         "",
         _END,
     ]
