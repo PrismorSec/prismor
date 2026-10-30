@@ -707,6 +707,40 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
         pass
 
 
+def _recloak_learning_rows_once(connection: sqlite3.Connection, db_path: Path) -> None:
+    """Re-cloak raw secrets that older versions wrote into the learning tables.
+
+    Before #808 the evasion and staged-execution detectors stored the decloaked
+    PostToolUse command verbatim.
+    """
+    marker = db_path.parent / "migrations" / "runtime-state" / "recloak-learning-rows-v1.json"
+    if marker.exists():
+        return
+    columns = {
+        "evasion_attempts": ("blocked_command", "evading_command"),
+        "staged_executions": ("created_path", "created_evidence", "executing_command"),
+    }
+    try:
+        if _load_secret_map():
+            for table, cols in columns.items():
+                try:
+                    rows = connection.execute(f"SELECT id, {', '.join(cols)} FROM {table}").fetchall()  # identifiers are constants  # nosec B608
+                except sqlite3.OperationalError:
+                    continue  # table not created yet
+                for row_id, *values in rows:
+                    scrubbed = _recloak_event(list(values))
+                    if scrubbed != values:
+                        connection.execute(
+                            f"UPDATE {table} SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",  # nosec B608
+                            (*scrubbed, row_id),
+                        )
+            connection.commit()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def initialize_database(workspace: Path) -> Path:
     ensure_data_dirs(workspace)
     db_path = get_db_path(workspace)
@@ -813,6 +847,7 @@ def initialize_database(workspace: Path) -> Path:
         _migrate_schema(connection)
         _dedupe_runtime_events_once(connection, db_path)
         _canonicalize_workspace_paths_once(connection, db_path)
+        _recloak_learning_rows_once(connection, db_path)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);

@@ -753,11 +753,16 @@ def evaluate_tool_call(
         f.get("ruleId") == "cross-agent-flow" and f.get("action") == "log"
         for f in findings
     ):
+        # A PostToolUse event carries the decloaked command. Re-cloak it so the
+        # detectors compare it against the stored (placeholder) form of the same
+        # call, and never write a raw secret into their tables (#808).
+        from prismor.runtime.store import _recloak_event
+        detector_event = _recloak_event(event)
         for fn_name in ("detect_evasion", "detect_staged_execution"):
             try:
                 from prismor.runtime import learning
                 detector = getattr(learning, fn_name)
-                extra = detector(workspace, session_id, event, findings)
+                extra = detector(workspace, session_id, detector_event, findings)
                 if extra:
                     findings.extend(extra)
             except Exception as exc:
