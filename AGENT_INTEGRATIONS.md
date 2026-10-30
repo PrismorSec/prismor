@@ -584,11 +584,20 @@ in a **real PTY pane**, not a sandboxed or proxied environment. It also ships a 
 (`herdr` agents can spawn panes and coordinate with each other) and a community plugin
 marketplace.
 
-- **No dedicated adapter needed.** Herdr doesn't call tools itself and doesn't sit between
-  an agent and its config files — it just launches the agent binary in a pane. An agent
-  already integrated above (Claude Code, Codex, Cursor, etc.) keeps reading its own
-  `~/.claude/settings.json` / `~/.codex/hooks.json` / etc. and firing Prismor's existing
-  hooks identically whether it's run directly or inside a Herdr pane.
+- **No dedicated adapter needed.** Herdr doesn't call tools itself or proxy them — it just
+  launches the agent binary in a pane. An agent already integrated above (Claude Code,
+  Codex, Cursor, etc.) keeps reading its own `~/.claude/settings.json` /
+  `~/.codex/hooks.json` / etc. and firing Prismor's existing hooks identically whether it's
+  run directly or inside a Herdr pane.
+- **Herdr writes its own hook into agent configs (since ~0.8).** `herdr integration install
+  <agent>` (19 agents in 0.9.5; `herdr integration status` lists them) drops a
+  `herdr-agent-state.sh` script and appends one `SessionStart` entry to that agent's hook
+  config — e.g. `~/.claude/hooks/herdr-agent-state.sh` + `~/.claude/settings.json`, or
+  `~/.codex/herdr-agent-state.sh` + `~/.codex/hooks.json`. `herdr update` tells users to run
+  it, and Herdr's agent detection (`herdr agent list`) depends on it. The script exits unless
+  `HERDR_ENV=1`, only acts on `SessionStart`, and sends `session_id` + `transcript_path` to
+  Herdr's local unix socket (`pane.report_agent_session`) — no tool payloads, no network. It
+  coexists with Prismor's hooks; see the 0.9.5 re-test below.
 
 **Verified live** (Herdr `0.7.5`, `prismor` `1.32.1`, 2026-07-30): installed Claude Code
 enforcement hooks (`prismor install-hooks --agent claude --mode enforce`) in a scratch git
@@ -634,6 +643,38 @@ API.
   a `coding-agent` or `framework`. `scripts/gen_integration_matrix.py` gained a third
   generated table ("Multiplexers") to render it; run `scripts/verify_registry.sh` after
   editing `registry.yaml` to confirm the schema and generated doc stay in sync.
+
+**Re-verified live** (Herdr `0.9.5`, `prismor` `1.68.4`, Claude Code `2.1.314`, 2026-10-30):
+upgraded Herdr with `herdr update`, started a headless `herdr server`, created a workspace in
+a scratch git repo, launched Claude Code in the pane with `herdr pane run <pane> claude`, and
+drove it with `send-text` / `send-keys`. Global Prismor hooks (observe mode) and global
+cloaking were already installed.
+
+- **Hook dispatch:** still fires from inside the pane. The pane's Bash `PreToolUse` was
+  recorded in `~/.prismor/audit/trail.jsonl` under the pane's session id, with the Niti judge
+  and rule evaluation running as they do outside Herdr.
+- **Cloaking:** the agent ran `echo @@SECRET:DEMO_API_KEY@@`; its reply showed only the
+  placeholder.
+- **`herdr integration install` vs Prismor hooks:** ran `herdr integration install claude`
+  and `... codex` against a throwaway `HOME` seeded with copies of real configs. The only
+  change was one appended `SessionStart` entry per agent (codex's `hooks.json` was also
+  re-serialized with keys reordered). Every Prismor `PreToolUse` / `PostToolUse` /
+  `UserPromptSubmit` / `PermissionRequest` / `SubagentStop` entry survived; `config.toml`
+  was unchanged.
+- **Gap — `agent-config-tampering` doesn't see it:** `prismor check "herdr integration install
+  claude"` returns `PASS` even though that command rewrites `~/.claude/settings.json`. The
+  rule matches config paths in the command string, so a tool that writes hook config itself
+  is invisible to it. Benign for Herdr's current hook, but any third-party installer gets
+  the same pass.
+- **Gap — masked prefix in the pane:** when a placeholder is typed into the prompt, the
+  `UserPromptSubmit` rewrite renders it as `sk-d…[prismor:masked]`, so the first four
+  characters of the real value land in the PTY Herdr owns and in `herdr pane read`. Same
+  behavior outside Herdr; Herdr widens who can read the pane.
+- **Gap — `prismor discover` doesn't list Herdr** even with the binary on `PATH` and
+  `~/.config/herdr/` present, because the registry entry is `sweep-only`.
+- **Herdr quirk — Kiro shell integration:** `herdr agent start <name> --kind claude --pane
+  <id>` fails with `agent_pane_busy` when Kiro CLI's shell integration has renamed the pane's
+  shell to `zsh (kiro-cli-term)`. Use `herdr pane run <id> claude` instead.
 
 ---
 
