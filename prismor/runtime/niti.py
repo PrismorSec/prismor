@@ -205,6 +205,8 @@ def serve(revision: str = REVISION, port: int = 8765, enforce: bool = False, dev
         def log_message(self, *_):
             pass
 
+    import signal
+    signal.signal(signal.SIGTERM, signal.default_int_handler)   # `kill` unhooks too, not just Ctrl-C
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     cfg = _config_path()
     cfg.write_text(json.dumps({"url": f"http://127.0.0.1:{port}", "mode": "enforce" if enforce else "observe",
