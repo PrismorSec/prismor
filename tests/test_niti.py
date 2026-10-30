@@ -34,7 +34,7 @@ def test_no_server_no_finding(tmp_path, monkeypatch):
     assert niti.niti_finding(_event(tmp_path), "claude", "s1") is None
 
 
-@pytest.mark.parametrize("verdict,action", [("deny", "block"), ("ask", "warn"), ("allow", None)])
+@pytest.mark.parametrize("verdict,action", [("deny", "block"), ("ask", "step_up"), ("allow", None)])
 def test_verdict_to_finding(tmp_path, monkeypatch, verdict, action):
     class H(BaseHTTPRequestHandler):
         def do_POST(self):

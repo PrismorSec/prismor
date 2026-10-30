@@ -5,7 +5,8 @@ student) and answers on 127.0.0.1. While it runs it writes niti.json in the
 Prismor home; the hook path reads that file and, for each pre-tool call, sends
 the call plus the session history from the agent's transcript. No file, no
 server, or no answer within the timeout: the call goes on with no Niti finding.
-Niti's deny is a block finding, its ask a warning; both carry the server's mode
+Niti's deny is a block finding, its ask a step-up (the agent's own approval
+prompt where it has one); both carry the server's mode
 (observe unless started with --enforce), so policy semantics decide the rest.
 """
 from __future__ import annotations
@@ -137,7 +138,7 @@ def niti_finding(event: Dict[str, Any], agent: str, session_id: str) -> Optional
     digest = hashlib.sha256(json.dumps(state["tool_call"], sort_keys=True).encode()).hexdigest()[:12]
     return {
         "id": f"{session_id}:niti:{digest}", "severity": "HIGH" if deny else "MEDIUM",
-        "category": "niti_judge", "ruleId": f"niti-{v['verdict']}", "action": "block" if deny else "warn",
+        "category": "niti_judge", "ruleId": f"niti-{v['verdict']}", "action": "block" if deny else "step_up",
         "title": f"Niti judge: {v['verdict']} {tool} (P(deny) {v['p_deny']:.2f}, P(ask) {v['p_ask']:.2f})",
         "evidence": (f"{v['model']} on {v['state_tokens']} tokens, {len(state['recent_context'])} history "
                      f"items kept {v['kept_context']}, {v['ms']} ms"),
