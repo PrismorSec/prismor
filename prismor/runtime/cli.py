@@ -887,6 +887,10 @@ def main(argv: Optional[List[str]] = None) -> None:
     if args.command == "approvals":
         raise SystemExit(_approvals_cmd(args))
 
+    if args.command == "judge":
+        from prismor.runtime.local_judge import serve as _judge_serve
+        raise SystemExit(_judge_serve(args.model, args.port, args.enforce, args.device, args.budget))
+
     if args.command in ("pause", "pause-hard"):
         from prismor.runtime import pause as _pause
         refused = _pause_refusal(args.command, workspace)
@@ -4850,6 +4854,16 @@ def build_parser() -> argparse.ArgumentParser:
                                help="Run recognized dispatchers with synthetic allow/block events in disposable state")
 
     subparsers.add_parser("logout", help="Un-enroll this machine (remove device identity + cached remote policy)")
+
+    judge_p = subparsers.add_parser("judge", help="Run the prismor-lite tool-call judge locally; every hooked call is judged while it runs")
+    judge_p.add_argument("action", choices=["serve"])
+    judge_p.add_argument("--model", default="student-ettin32m-8k",
+                        help="prismor/prismor-lite branch or a local model dir (default: student-ettin32m-8k)")
+    judge_p.add_argument("--port", type=int, default=8765)
+    judge_p.add_argument("--enforce", action="store_true", help="prismor-lite deny findings block (default: observe, report only)")
+    judge_p.add_argument("--device", default="auto", help="auto, mps, cuda or cpu")
+    judge_p.add_argument("--budget", default="prismor-lite-8k", choices=["prismor-lite", "prismor-lite-8k"],
+                        help="History budget passed to the model's canon.fit (prismor-lite = ~1k tokens)")
 
     pause_p = subparsers.add_parser("pause", help="Pause local ENFORCEMENT for 24h (observe mode stays on); use pause-hard to pause indefinitely")
     pause_p.add_argument("--for", dest="duration", metavar="DURATION",

@@ -550,6 +550,18 @@ def evaluate_tool_call(
     except Exception as exc:
         sys.stderr.write(f"[prismor] extension install check error: {exc}\n")
 
+    # prismor-lite, when `prismor judge serve` is running: a learned allow/ask/deny on the
+    # call in the context of the session so far. Only the hook process that
+    # records the call asks (a global + project install fire twice), and that
+    # one's block stops the call like any other finding.
+    try:
+        from prismor.runtime.local_judge import judge_finding
+        _judge = judge_finding(event, agent, session_id) if record else None
+        if _judge:
+            findings.append(_judge)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] prismor-lite judge error: {exc}\n")
+
     # A finding raised while the session runs under an extension nobody has
     # reviewed says so: it is usually the first thing a responder needs.
     if findings:
