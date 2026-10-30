@@ -371,7 +371,23 @@ def build_record(
         if detail:
             record["detail"] = detail
 
+    # An MCP server whose gateway entry sets logPayloads: its call arguments
+    # and result ship (scrubbed, capped) even in redacted mode. The admin chose
+    # this per server, and the record says it is not redacted.
+    _payload = event.get("log_payloads")
+    if isinstance(_payload, dict):
+        detail = record.setdefault("detail", {})
+        for key in ("arguments", "result"):
+            val = _payload.get(key)
+            if isinstance(val, str) and val:
+                detail[key] = scrub(val[:LOG_PAYLOAD_MAX], scrubbers)
+        record["redacted"] = False
+
     return record
+
+
+#: Characters of a logPayloads argument or result kept per record.
+LOG_PAYLOAD_MAX = 4096
 
 
 def _tool_name(event: Dict[str, Any], extra: Dict[str, Any]) -> Optional[str]:

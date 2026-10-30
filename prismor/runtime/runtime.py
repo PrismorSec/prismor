@@ -1030,12 +1030,14 @@ def _dispatch_telemetry(
         # session trail is the whole trail. Redacted orgs keep the old
         # findings-only behaviour (they already get per-session call counts
         # from the heartbeat).
-        try:
-            from prismor.runtime.enterprise import remote_policy as _rp
-            if not _rp.current_full_capture():
+        # A gateway server with logPayloads ships every call, like full capture.
+        if not event.get("log_payloads"):
+            try:
+                from prismor.runtime.enterprise import remote_policy as _rp
+                if not _rp.current_full_capture():
+                    return
+            except Exception:
                 return
-        except Exception:
-            return
         findings = [{
             "action": "allow",
             "severity": "info",
