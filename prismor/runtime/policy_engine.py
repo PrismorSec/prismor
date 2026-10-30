@@ -1223,12 +1223,13 @@ class AllowlistEntry:
 # Output of a bare `prismor <status subcommand>` is text Prismor itself wrote
 # (scope/status/doctor explain policy, so they read like "every tool allowed ...
 # re-enable by ..." and the judge scored that as a security bypass). Only these
-# subcommands: `sessions`, `agents transcript` and friends replay untrusted
-# session content and must stay judged. No shell metacharacters, so nothing
-# else's output can ride along in the same call.
+# subcommands, cloak help and the names-only cloak list are exempt. `sessions`
+# and `agents transcript` replay untrusted content and must stay judged.
+# No shell metacharacters, so nothing else's output can ride along in the call.
 _PRISMOR_STATUS_CMD = re.compile(
-    r"^\s*(?:\S*/)?(?:prismor|immunity-agent)"
-    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*|\s+--?(?:version|help))?\s*$"
+    r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
+    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
+    r"|\s+cloak\s+(?:list|--help|-h)|\s+--?(?:version|help))?\s*$"
 )
 
 

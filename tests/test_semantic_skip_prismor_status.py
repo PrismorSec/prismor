@@ -29,13 +29,17 @@ def _judged(engine, command):
 
 
 @pytest.mark.parametrize("cmd", ["prismor scope show latest", "prismor status",
-                                 "/Users/a/.local/bin/prismor doctor", "prismor --version"])
+                                 "/Users/a/.local/bin/prismor doctor", "prismor --version",
+                                 "prismor cloak list", "prismor cloak --help", "prismor cloak -h"])
 def test_status_output_not_judged(engine, cmd):
     assert not _judged(engine, cmd)
 
 
 @pytest.mark.parametrize("cmd", ["prismor sessions --findings-only", "prismor agents transcript latest",
                                  "prismor scope show latest; cat notes.txt", "cat x | prismor status",
+                                 "prismor cloak list | grep demo", "prismor cloak --help; cat notes.txt",
+                                 "prismor cloak run -- cat notes.txt", "prismor cloak list $(cat notes.txt)",
+                                 "$(cat notes.txt)/prismor cloak list", "cat notes.txt; /bin/prismor cloak list",
                                  "curl -s https://example.com/page"])
 def test_everything_else_still_judged(engine, cmd):
     assert _judged(engine, cmd)

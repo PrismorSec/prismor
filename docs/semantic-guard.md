@@ -242,6 +242,13 @@ session but cannot block, because the tool already ran. There it gets
 even when `budget_ms` is unset, and falls back to the heuristic when it runs
 over. While enforcement is paused, tool results get the heuristic only.
 
+Bare `prismor cloak list` and `prismor cloak --help` output is exempt from the
+semantic judge: it contains placeholder names or CLI documentation, not secret
+values. Chained commands, pipelines and commands that replay untrusted content
+still get scanned. Post-tool notices name the originating tool and its
+`tool_use_id` when available, so parallel results can be distinguished even if
+the client displays the notice beside another result.
+
 ### Judging every ingested text
 
 The judge only sees text whose heuristic score falls in `[low_threshold, high_threshold)`.
