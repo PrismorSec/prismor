@@ -168,6 +168,29 @@ reviewed, so a tool the server adds later stays off until you turn it on.
 - `timeout` is how many seconds a tool call to this server may take (default
   300).
 
+Five more keys on a server entry:
+
+- `forwardHeaders: ["X-Request-Id"]` copies those headers from the caller's
+  request to a remote server, on hosted endpoints (a local gateway has no
+  caller headers). `Authorization`, `Cookie`, `Host`, `Content-Length` and
+  `Mcp-Session-Id` are never forwarded, and the entry's own `headers` win over
+  a caller's value.
+- `logPayloads: true` keeps each call's arguments and result in the activity
+  log, even when the organization keeps telemetry redacted. Both are masked
+  first (cloaked secrets and data-boundary values), capped at 4 KB, and the
+  record is marked as not redacted.
+- `maxBodyBytes: 1048576` refuses a call whose arguments are bigger than this,
+  and fails a call whose reply is, with an error naming the limit.
+- `sigv4: {"service": "lambda", "region": "us-east-1"}` signs every request to
+  a remote server with AWS SigV4, using `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from the environment or the
+  entry's `env`. Without credentials the request is refused, never sent
+  unsigned. OAuth sign-in is off for such a server.
+- `managedSession: false` stops the gateway keeping the server's
+  `Mcp-Session-Id`, for servers that reject sessions. By default it keeps the
+  session and, when the server says it expired (HTTP 404), opens a new one and
+  retries once.
+
 ## Signing in to OAuth servers
 
 Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API

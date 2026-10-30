@@ -106,6 +106,20 @@ class UpstreamSpec:
     tools_ttl: float = 0.0
     #: Seconds a tools/call may take (``"timeout": 60``); None = CALL_TIMEOUT.
     call_timeout: Optional[float] = None
+    #: Inbound client headers copied to an http(s) upstream (hosted endpoints;
+    #: the stdio gateway has none). Never NEVER_FORWARD; the entry's own
+    #: ``headers`` win over a client-sent value.
+    forward_headers: List[str] = field(default_factory=list)
+    #: Ship this server's call arguments and result text (after redaction) in
+    #: telemetry even when the org keeps telemetry redacted.
+    log_payloads: bool = False
+    #: Refuse a call whose JSON arguments, or an upstream reply, exceeds this.
+    max_body_bytes: Optional[int] = None
+    #: {"service", "region"}: sign every http(s) request with AWS SigV4.
+    sigv4: Optional[Dict[str, str]] = None
+    #: Keep the upstream's Mcp-Session-Id and re-initialize once if it expires
+    #: (HTTP 404). False never stores or sends one.
+    managed_session: bool = True
 
     @property
     def identity(self) -> str:
@@ -119,7 +133,7 @@ class UpstreamSpec:
 
     @property
     def uses_oauth(self) -> bool:
-        return (self.remote and self.oauth is not False
+        return (self.remote and self.oauth is not False and not self.sigv4
                 and not any(k.lower() == "authorization" for k in self.headers))
 
     def excludes(self, tool: str) -> bool:
@@ -176,6 +190,26 @@ def _tool_selection(cfg: Dict[str, Any]) -> Dict[str, Any]:
         "overrides": {str(k): v for k, v in overrides.items() if isinstance(v, dict)},
         "tools_ttl": float(ttl) if num(ttl) else 0.0,
         "call_timeout": float(timeout) if num(timeout) else None,
+        **_server_options(cfg, num),
+    }
+
+
+#: Never copied from a client request, whatever forwardHeaders says.
+NEVER_FORWARD = frozenset({"authorization", "cookie", "host", "content-length", "mcp-session-id"})
+
+
+def _server_options(cfg: Dict[str, Any], num: Callable[[Any], bool]) -> Dict[str, Any]:
+    fwd = cfg.get("forwardHeaders")
+    sig = cfg.get("sigv4")
+    body = cfg.get("maxBodyBytes")
+    return {
+        "forward_headers": [str(h) for h in fwd if isinstance(h, str) and h.lower() not in NEVER_FORWARD]
+        if isinstance(fwd, list) else [],
+        "log_payloads": cfg.get("logPayloads") is True,
+        "max_body_bytes": int(body) if num(body) else None,
+        "sigv4": {"service": str(sig["service"]), "region": str(sig["region"])}
+        if isinstance(sig, dict) and sig.get("service") and sig.get("region") else None,
+        "managed_session": cfg.get("managedSession") is not False,
     }
 
 
@@ -191,7 +225,8 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
             raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
         oauth = cfg.get("oauth")
-        return UpstreamSpec(name=name, url=meta["url"],
+        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}  # SigV4 credentials
+        return UpstreamSpec(name=name, url=meta["url"], env={str(k): str(v) for k, v in env.items()},
                             transport=meta["transport"] or "http",
                             headers=dict(headers or {}), pin=cfg.get("pin") is not False,
                             oauth=oauth if oauth is False or isinstance(oauth, dict) else None,
@@ -307,6 +342,11 @@ class UpstreamStdio(Upstream):
                 continue
             msg_id = msg.get("id")
             if msg_id is not None and ("result" in msg or "error" in msg):
+                limit = self.spec.max_body_bytes
+                if limit and len(line.encode("utf-8")) > limit:
+                    # Answer the waiting call with the limit, not the payload.
+                    msg = {"jsonrpc": "2.0", "id": msg_id,
+                           "error": {"code": -32603, "message": str(_too_big(self.spec, "the reply"))}}
                 pending = self._pending.pop(str(msg_id), None)
                 if pending is not None:
                     pending.resolve(msg)
@@ -420,6 +460,20 @@ class _Unauthorized(Exception):
         self.reason = reason
 
 
+class _SessionExpired(Exception):
+    """HTTP 404 to a request that carried a session id (streamable-HTTP spec)."""
+
+
+#: The inbound client request's headers for the message being handled, set
+#: per thread by Gateway._dispatch (hosted endpoints pass them in
+#: ``_inboundHeaders``). Read by UpstreamHttp for ``forwardHeaders``.
+_inbound = threading.local()
+
+
+def _too_big(spec: UpstreamSpec, what: str) -> UpstreamError:
+    return UpstreamError(f"MCP server '{spec.name}': {what} is larger than its {spec.max_body_bytes}-byte limit (maxBodyBytes)")
+
+
 class UpstreamHttp(Upstream):
     """Streamable-HTTP upstream via stdlib urllib.
 
@@ -435,6 +489,7 @@ class UpstreamHttp(Upstream):
                  guard: Optional[Callable[[UpstreamSpec], None]] = None):
         super().__init__(spec, on_notification, guard)
         self._session_id: Optional[str] = None
+        self._init_params: Optional[Dict[str, Any]] = None  # to re-open an expired session
         self._counter = 0
         self._lock = threading.Lock()
         self.oauth = None
@@ -452,7 +507,20 @@ class UpstreamHttp(Upstream):
             self.guard(self.spec)
         auth = self.oauth.authorization() if self.oauth is not None else None
         try:
-            return self._send_once(body, timeout, want_reply, auth)
+            try:
+                return self._send_once(body, timeout, want_reply, auth)
+            except _SessionExpired:
+                # The server dropped our session: open a new one, then retry
+                # this message once. initialize itself never gets here (it is
+                # sent without a session id).
+                self._session_id = None
+                if self._init_params is None:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session")
+                self.initialize(self._init_params, timeout=REQUEST_TIMEOUT)
+                try:
+                    return self._send_once(body, timeout, want_reply, auth)
+                except _SessionExpired:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session again right after a new one was opened")
         except _Unauthorized as exc:
             # A token the server no longer takes: refresh (or pick up a newer
             # sign-in) and retry once. Without one, the model is told which
@@ -478,29 +546,42 @@ class UpstreamHttp(Upstream):
             # common CDNs/WAFs (Cloudflare returns 403) — identify honestly.
             "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
-        headers.update(self.spec.headers)
+        if self.spec.forward_headers:
+            inbound = {k.lower(): v for k, v in (getattr(_inbound, "headers", None) or {}).items()}
+            for name in self.spec.forward_headers:
+                if name.lower() not in NEVER_FORWARD and name.lower() in inbound:
+                    headers[name] = str(inbound[name.lower()])
+        headers.update(self.spec.headers)  # the entry's own headers win
         if auth:
             headers["Authorization"] = auth
-        if self._session_id:
+        sent_session = self.spec.managed_session and self._session_id
+        if sent_session:
             headers["Mcp-Session-Id"] = self._session_id
-        req = urllib.request.Request(
-            self.spec.url, data=json.dumps(body).encode("utf-8"),
-            headers=headers, method="POST")
+        data = json.dumps(body).encode("utf-8")
+        if self.spec.sigv4:
+            headers.update(self._sigv4(data))
+        req = urllib.request.Request(self.spec.url, data=data, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
                 sid = resp.headers.get("Mcp-Session-Id")
-                if sid:
+                if sid and self.spec.managed_session:
                     self._session_id = sid
                 if not want_reply:
                     return None
                 ctype = (resp.headers.get("Content-Type") or "").lower()
-                raw = resp.read().decode("utf-8", errors="replace")
+                limit = self.spec.max_body_bytes
+                raw_bytes = resp.read(limit + 1) if limit else resp.read()
+                if limit and len(raw_bytes) > limit:
+                    raise _too_big(self.spec, "the reply")
+                raw = raw_bytes.decode("utf-8", errors="replace")
                 if "text/event-stream" in ctype:
                     return self._parse_sse(raw, str(body.get("id")))
                 if not raw.strip():
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
+            if exc.code == 404 and sent_session:
+                raise _SessionExpired()
             if exc.code == 401:
                 raise _Unauthorized(exc.code, exc.reason)
             if exc.code == 403 and self.oauth is not None:
@@ -516,6 +597,28 @@ class UpstreamHttp(Upstream):
                 f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise UpstreamError(f"MCP server '{self.spec.name}' unreachable: {exc}")
+
+    def _sigv4(self, payload: bytes) -> Dict[str, str]:
+        """SigV4 headers for one POST, from the environment overlaid with the
+        entry's env. Missing credentials refuse the request: never unsigned."""
+        from urllib.parse import urlsplit
+        from prismor.runtime.proxy import sigv4_headers
+        env = {**os.environ, **self.spec.env}
+        key, secret = env.get("AWS_ACCESS_KEY_ID"), env.get("AWS_SECRET_ACCESS_KEY")
+        if not key or not secret:
+            raise UpstreamError(
+                f"MCP server '{self.spec.name}' signs with AWS SigV4 but AWS_ACCESS_KEY_ID / "
+                "AWS_SECRET_ACCESS_KEY are not set (environment or the server's env)")
+        u = urlsplit(self.spec.url)
+        return sigv4_headers(
+            access_key=key, secret_key=secret, session_token=env.get("AWS_SESSION_TOKEN") or "",
+            region=self.spec.sigv4["region"], service=self.spec.sigv4["service"], method="POST",
+            canonical_uri=u.path or "/", query=u.query, payload=payload, host=u.netloc)
+
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        self._init_params = client_params
+        return super().initialize(client_params, timeout=timeout)
 
     def _parse_sse(self, raw: str, want_id: str) -> Optional[Dict[str, Any]]:
         reply: Optional[Dict[str, Any]] = None
@@ -784,6 +887,9 @@ class Gateway:
             self._handle_notification(method, msg.get("params") or {})
             return
         params = msg.get("params") or {}
+        # The hosted handler attaches the HTTP request's headers (forwardHeaders).
+        inbound = msg.get("_inboundHeaders") if isinstance(msg.get("_inboundHeaders"), dict) else None
+        _inbound.headers = inbound
         if method == "initialize":
             self._handle_initialize(req_id, params)
         elif method == "tools/list":
@@ -791,13 +897,21 @@ class Gateway:
         elif method == "tools/call":
             # Claude Code issues concurrent tool calls; handle off-loop so one
             # slow upstream doesn't head-of-line-block the others.
-            self._executor.submit(self._handle_tools_call_safe, req_id, params)
+            self._executor.submit(self._with_inbound, inbound, self._handle_tools_call_safe, req_id, params)
         elif method == "ping":
             self._reply(req_id, {})
         else:
             # Tools-only aggregation: resources/prompts are never advertised in
             # the initialize capabilities, so a compliant client won't ask.
             self._reply_error(req_id, -32601, f"method not supported by prismor-gateway: {method}")
+
+    @staticmethod
+    def _with_inbound(inbound: Optional[Dict[str, Any]], fn: Callable[..., None], *args: Any) -> None:
+        _inbound.headers = inbound  # worker threads are pooled: always reset
+        try:
+            fn(*args)
+        finally:
+            _inbound.headers = None
 
     def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         if method == "notifications/initialized":
@@ -1090,6 +1204,10 @@ class Gateway:
             down = next((f"{n}: {e}" for n, e in self._failed.items()
                          if self.namespace != "none" and name.startswith(f"{n}__")), None)
             self._reply_error(req_id, -32602, down or f"unknown tool: {name}")
+            return
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's arguments")))
             return
         with self._routes_lock:
             held = self._quarantined.get(name)
@@ -1525,6 +1643,12 @@ class Gateway:
 
     def _build_call_event(self, route: _Route, arguments: Any) -> Dict[str, Any]:
         base = self._event_base(route, "PreToolUse")
+        if route.upstream.spec.log_payloads:
+            # The logged copy only, masked like results are (cloak secrets and
+            # data-boundary values); the upstream still gets the real arguments.
+            from prismor.runtime.redaction import redact_text
+            logged, _ = redact_text(json.dumps(arguments, default=str), workspace=self.workspace)
+            base["log_payloads"] = {"arguments": logged}
         # The structured arguments, for `when:` rules (`args.amount`). Without
         # this every args.* path is missing and an attribute rule fires on
         # every call through the gateway.
@@ -1577,6 +1701,9 @@ class Gateway:
         spec = route.upstream.spec
         if spec.remote:
             event["url"] = spec.url
+        if spec.log_payloads:
+            # The result as the model sees it: built after _redact_result.
+            event["log_payloads"] = {"result": event["response"]}
         return event
 
     # ── upstream notifications ───────────────────────────────────────────

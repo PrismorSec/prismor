@@ -382,7 +382,11 @@ def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
                  else 300_000)
     timeout = max(1.0, (remaining - CALL_MARGIN_MS) / 1000.0)
     gw = gateway_for(key, cfg)
-    replies = [r for r in (gw.send(m, timeout) for m in batch) if r is not None]
+    # The caller's headers, for servers with forwardHeaders. Always overwritten,
+    # so a client can't supply its own _inboundHeaders in the message body.
+    from prismor.runtime.mcp_gateway import NEVER_FORWARD
+    inbound = {str(k): str(v) for k, v in (event.get("headers") or {}).items() if str(k).lower() not in NEVER_FORWARD}
+    replies = [r for r in (gw.send({**m, "_inboundHeaders": inbound}, timeout) for m in batch) if r is not None]
 
     flush_telemetry(key)
     save_state(key, cfg)
