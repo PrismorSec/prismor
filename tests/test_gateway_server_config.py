@@ -115,3 +115,20 @@ def test_call_uses_the_server_timeout(ws, entry, expected):
         assert ("tools/call", expected) in seen
     finally:
         g.close()
+
+
+def test_call_before_any_list_finds_the_tool(ws):
+    # A hosted session (or a client that remembers tool names) may call
+    # without listing first: the gateway builds its routes instead of
+    # answering "unknown tool" - renamed and denied tools included.
+    g, sent = _session(ws)
+    try:
+        g._handle_tools_call_safe(3, {"name": "shop__orders", "arguments": {}})
+        assert "error" not in sent[-1] and not sent[-1]["result"].get("isError")
+        g._handle_tools_call_safe(4, {"name": "shop__remove", "arguments": {"doc": "d"}})
+        assert "Blocked by Prismor" in sent[-1]["result"]["content"][0]["text"]
+        g._handle_tools_call_safe(5, {"name": "shop__nope", "arguments": {}})
+        assert "unknown tool" in sent[-1]["error"]["message"]
+        assert all(m.get("id") != 2 for m in sent)  # no stray tools/list reply
+    finally:
+        g.close()
