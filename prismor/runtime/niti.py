@@ -189,9 +189,10 @@ def serve(revision: str = REVISION, port: int = 8765, enforce: bool = False, dev
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 res, code = judge(body["state"]), 200
-                sys.stderr.write(f"niti {res['verdict']:5s} {body['state']['tool_call']['tool']:12s} "
-                                 f"deny {res['p_deny']:.2f} ask {res['p_ask']:.2f} "
-                                 f"{res['state_tokens']} tok {res['ms']} ms\n")
+                call = body["state"]["tool_call"]
+                what = " ".join(json.dumps(call["input"], ensure_ascii=False).split())[:90]
+                sys.stderr.write(f"niti {res['verdict']:5s} deny {res['p_deny']:.2f} ask {res['p_ask']:.2f} "
+                                 f"{res['state_tokens']:5d} tok {res['ms']:5d} ms  {call['tool']} {what}\n")
             except Exception as exc:
                 res, code = {"error": repr(exc)}, 400
             data = json.dumps(res).encode()

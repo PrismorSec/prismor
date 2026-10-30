@@ -551,10 +551,12 @@ def evaluate_tool_call(
         sys.stderr.write(f"[prismor] extension install check error: {exc}\n")
 
     # Niti, when `prismor niti serve` is running: a learned allow/ask/deny on the
-    # call in the context of the session so far.
+    # call in the context of the session so far. Only the hook process that
+    # records the call asks (a global + project install fire twice), and that
+    # one's block stops the call like any other finding.
     try:
         from prismor.runtime.niti import niti_finding
-        _niti = niti_finding(event, agent, session_id)
+        _niti = niti_finding(event, agent, session_id) if record else None
         if _niti:
             findings.append(_niti)
     except Exception as exc:
