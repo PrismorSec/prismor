@@ -1,0 +1,25 @@
+{
+  "name": "prismor",
+  "displayName": "Prismor",
+  "version": "1.69.1",
+  "description": "Runtime security for Claude Code: sends every prompt and tool call to your local Prismor install, which checks it against your policy, records it in a local audit trail, and can block risky actions.",
+  "author": {
+    "name": "Prismor",
+    "email": "arnav@prismor.dev",
+    "url": "https://prismor.dev"
+  },
+  "homepage": "https://prismor.dev",
+  "privacyPolicyUrl": "https://prismor.dev/privacy",
+  "repository": "https://github.com/PrismorSec/prismor",
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "runtime-security",
+    "guardrails",
+    "audit",
+    "secrets",
+    "supply-chain",
+    "mcp",
+    "policy"
+  ]
+}
