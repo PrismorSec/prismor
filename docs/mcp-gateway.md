@@ -131,6 +131,43 @@ block. Hosted endpoints use this for the tools you select per endpoint in the
 console, and for **New tools start off**, where `allow` is the tools you have
 reviewed, so a tool the server adds later stays off until you turn it on.
 
+### Renaming tools, caching the tool list, and timeouts
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "timeout": 60,
+      "tools": {
+        "cacheTtl": 300,
+        "overrides": {
+          "search_code": {
+            "name": "find_code",
+            "description": "Search code in the acme org only.",
+            "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+- `tools.overrides` changes what the agent sees for a tool: its `name`,
+  `description` or `inputSchema`. Use it to give an agent a description you have
+  reviewed instead of whatever the server sends, or a narrower schema. It only
+  changes the display. Policy rules, `allow`/`deny`, definition pinning and the
+  console all keep the server's own name and definition, so renaming a tool
+  does not get it past a rule that denies it, and a changed upstream definition
+  is still caught. The new name is still namespaced (`github__find_code`).
+- `tools.cacheTtl` reuses the server's tool list for that many seconds instead
+  of asking it on every `tools/list`. The cache is dropped as soon as the
+  server announces its tools changed. Leave it out to ask every time.
+- `timeout` is how many seconds a tool call to this server may take (default
+  300).
+
 ## Signing in to OAuth servers
 
 Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API

@@ -42,6 +42,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -95,6 +96,16 @@ class UpstreamSpec:
     #: Scan and pin this server's tool definitions (runtime/mcp_tool_pins.py).
     #: ``"pin": false`` on the entry turns it off.
     pin: bool = True
+    #: What agents see instead of the upstream's own metadata, from
+    #: ``"tools": {"overrides": {"<tool>": {"name", "description", "inputSchema"}}}``.
+    #: Display only: policy, tool selection, pinning and telemetry keep the
+    #: upstream's name and definition, so a rename can't dodge a deny rule.
+    overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    #: Seconds to reuse this server's tools/list (``"tools": {"cacheTtl": 300}``).
+    #: 0 asks the upstream on every list. Cleared when it announces list_changed.
+    tools_ttl: float = 0.0
+    #: Seconds a tools/call may take (``"timeout": 60``); None = CALL_TIMEOUT.
+    call_timeout: Optional[float] = None
 
     @property
     def identity(self) -> str:
@@ -156,9 +167,15 @@ def _tool_selection(cfg: Dict[str, Any]) -> Dict[str, Any]:
     sel = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
     allow = sel.get("allow")
     deny = sel.get("deny")
+    overrides = sel.get("overrides") if isinstance(sel.get("overrides"), dict) else {}
+    ttl, timeout = sel.get("cacheTtl"), cfg.get("timeout")
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0  # noqa: E731
     return {
         "allow_tools": [str(t) for t in allow] if isinstance(allow, list) else None,
         "deny_tools": [str(t) for t in deny] if isinstance(deny, list) else [],
+        "overrides": {str(k): v for k, v in overrides.items() if isinstance(v, dict)},
+        "tools_ttl": float(ttl) if num(ttl) else 0.0,
+        "call_timeout": float(timeout) if num(timeout) else None,
     }
 
 
@@ -950,19 +967,26 @@ class Gateway:
                     f"[prismor-gateway] upstream '{up.spec.name}' is still starting; "
                     "its tools will be announced via tools/list_changed\n")
                 continue
-            try:
-                result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
-            except UpstreamError as exc:
-                sys.stderr.write(
-                    f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
-                self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
-                continue
+            cached = getattr(up, "tools_cache", None)
+            if up.spec.tools_ttl and cached and time.monotonic() - cached[0] < up.spec.tools_ttl:
+                result = cached[1]
+            else:
+                try:
+                    result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError as exc:
+                    sys.stderr.write(
+                        f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
+                    self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
+                    continue
+                if up.spec.tools_ttl:
+                    up.tools_cache = (time.monotonic(), result)
             for tool in result.get("tools") or []:
                 if not isinstance(tool, dict) or not tool.get("name"):
                     continue
                 original = str(tool["name"])
-                exposed = self._client_tool_name(up.spec.name, original,
-                                                 local=up.spec.local)
+                override = up.spec.overrides.get(original) or {}
+                exposed = self._client_tool_name(
+                    up.spec.name, str(override.get("name") or original), local=up.spec.local)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
                                          meta_tags=_extract_meta_tags(tool))
@@ -977,10 +1001,16 @@ class Gateway:
                         continue
                     sys.stderr.write(f"[prismor] observe ({exposed}): would hide in enforce mode - "
                                      f"[{problem.get('severity')}] {problem.get('title')}\n")
+                # Pinning above judged the upstream's own definition; the
+                # override only changes what the agent is shown.
                 entry = dict(tool)
+                if isinstance(override.get("description"), str):
+                    entry["description"] = override["description"]
+                if isinstance(override.get("inputSchema"), dict):
+                    entry["inputSchema"] = override["inputSchema"]
                 entry["name"] = exposed
                 if self.namespace != "none" and not up.spec.local:
-                    desc = str(tool.get("description") or "")
+                    desc = str(entry.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
         # Held definitions are hidden in enforce; without a status entry a
@@ -1139,7 +1169,7 @@ class Gateway:
 
         result = route.upstream.request(
             "tools/call", {"name": route.tool, "arguments": arguments},
-            timeout=CALL_TIMEOUT)
+            timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
 
         # The gateway holds the response, so its output can be *repaired*
         # rather than only refused: strip credential material before the model
@@ -1557,6 +1587,9 @@ class Gateway:
                 # Route map is rebuilt on the client's next tools/list.
                 with self._routes_lock:
                     self._routes = {}
+                for up in self.upstreams:
+                    if up.spec.name == server:
+                        up.tools_cache = None
                 self._send({"jsonrpc": "2.0", "method": method, "params": params})
             elif method.startswith("notifications/"):
                 # progress / logging — pass through untouched (tokens are
