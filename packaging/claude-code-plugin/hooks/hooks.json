@@ -1,0 +1,11 @@
+{
+  "hooks": {
+    "SessionStart": [{"matcher": "startup|resume|clear|compact", "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "PreToolUse": [{"matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "PostToolUse": [{"matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "PostToolUseFailure": [{"matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*", "hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}]
+  }
+}
