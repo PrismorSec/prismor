@@ -325,10 +325,20 @@ def _subsystem_steps(
 
     if rule_id == "scoped-agent":
         sid = session_id or "<session-id>"
+        if finding.get("scopeOrigin") == "operator":
+            # `prismor scope edit` or a dashboard edit set operator_edited, and
+            # the prompt hook stops merging into such a scope: a new prompt
+            # will not widen it, and nothing here was synthesized.
+            lead = ("This is a session scope that was edited by hand (prismor scope edit "
+                    "or the dashboard) — it is not a policy rule and it dies with the "
+                    "session. Auto-widening is off for it, so a new prompt will not "
+                    "widen it.")
+        else:
+            lead = ("This is a session scope Prismor synthesized from your prompts so far — "
+                    "it is not a policy rule and it dies with the session. Asking for the "
+                    "task in a new prompt usually widens it automatically.")
         return [
-            "This is a session scope Prismor synthesized from your prompts so far — "
-            "it is not a policy rule and it dies with the session. Asking for the "
-            "task in a new prompt usually widens it automatically.",
+            lead,
             f"1. See the scope: prismor scope show {sid}",
             f"2. Widen it by hand: prismor scope edit {sid}",
             f"3. Or drop it for this session entirely: prismor scope clear {sid}",

@@ -169,3 +169,6 @@ def test_operator_edited_scope_still_denies(home, ws, llm_scope):
                                  "tool_input": {"url": WEBFETCH["url"], "prompt": "summarise"}})
     assert _decision(r) == "deny", (r.returncode, r.stdout, r.stderr)
     assert "scoped agent" in r.stderr + r.stdout
+    # The unblock hint does not claim Prismor synthesized a scope a human edited.
+    assert "edited by hand" in r.stderr + r.stdout
+    assert "synthesized from your prompts" not in r.stderr + r.stdout
