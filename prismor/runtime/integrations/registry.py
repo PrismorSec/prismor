@@ -46,6 +46,7 @@ class Integration:
     status: str
     blocking: str
     events: List[str] = field(default_factory=list)
+    event_types: List[str] = field(default_factory=list)
     config_paths: Dict[str, str] = field(default_factory=dict)
     normalizer: Optional[str] = None
     sweep_dir: Optional[str] = None
@@ -63,6 +64,7 @@ class Integration:
             status=str(raw.get("status", "")),
             blocking=str(raw.get("blocking", "none")),
             events=list(raw.get("events") or []),
+            event_types=list(raw.get("event_types") or []),
             config_paths=dict(raw.get("config_paths") or {}),
             normalizer=raw.get("normalizer"),
             sweep_dir=raw.get("sweep_dir"),

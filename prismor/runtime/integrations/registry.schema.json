@@ -80,6 +80,25 @@
             "type": "string"
           }
         },
+        "event_types": {
+          "type": "array",
+          "description": "Canonical event types this agent's adapter produces from the payloads the agent actually sends. A rule keyed on any other type never fires for this agent.",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "shell",
+              "file_read",
+              "file_write",
+              "network",
+              "prompt",
+              "tool_result",
+              "memory",
+              "skill_manifest",
+              "subagent_spawn",
+              "ui_action"
+            ]
+          }
+        },
         "config_paths": {
           "type": "object",
           "additionalProperties": {
