@@ -518,6 +518,8 @@ Everything above runs the gateway **locally** on your machine, on every plan.
 Team and Enterprise add a **hosted** option: in the console's MCP Hub, *Spin up
 MCP instance* gives you one governed MCP URL for the servers you choose from your
 registry. Paste it into any agent on any machine; there is nothing to install.
+For a step-by-step walkthrough of the console side, from adding a server to
+an agent calling it, see [MCP Hub](mcp-hub.md).
 
 ```
 <your org's endpoint>/mcp/<key>
