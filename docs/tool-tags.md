@@ -82,7 +82,8 @@ rule    :=  TAG ( then|with TAG )*  [ -> block|warn ]
   session is enough.
 - **`then`** — ordered sequence: the left step must occur *before* the right.
 - **`-> block`** (default) or **`-> warn`** — warn logs the finding but never
-  blocks, even in enforce mode.
+  blocks, even in enforce mode. It reports a sequence once, and again only
+  after its earlier steps recur (a new fetch, for the default rule).
 - The call completing the **final step** is the one blocked/warned.
 - `not`, `or`, `within`, `count` are reserved for future use.
 
@@ -389,7 +390,10 @@ tags → flip to `enforce`. An enforce block is terminal and non-overridable
 - Any number of same-tag calls is always allowed; only *completing* a
   forbidden combination fires.
 - A session that has entered the forbidden state stays restricted — every
-  later call carrying a final-step tag keeps firing.
+  later call carrying a final-step tag keeps firing a `block` or `redact`
+  rule. A `warn` rule fires again only once its earlier steps recur after the
+  call it last fired on, so one fetch does not turn every later action into
+  another warning.
 - A blocked call never executes, so its tags do not enter the session ledger
   (one denied call can't "use up" the rule).
 - `warn` rules log a `lethal_trifecta` finding but never block — even under a

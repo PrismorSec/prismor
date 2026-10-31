@@ -3100,7 +3100,11 @@ class PolicyEngine:
                     # already covered and let every later same-tagged call
                     # through (the one-denied-call-poisons-the-ledger bypass).
                     if not (_done is not None and _tt_mode == "enforce"):
-                        _ledger.record(_tags, index, _tt_tool)
+                        # A warn rule is noted with the call it fired on, so it
+                        # reports again only once its earlier steps recur.
+                        _warned = _done is not None and _done.get("action") == "warn"
+                        _ledger.record(_tags, index, _tt_tool,
+                                       fired=[_done["rule_id"]] if _warned else ())
 
                 # Stamp what this session is carrying onto everything it writes,
                 # so the next agent to read it inherits the same state. The

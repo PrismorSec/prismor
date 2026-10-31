@@ -129,6 +129,18 @@ def test_test_extra_rule_what_if(tmp_path, capsys):
     assert "WOULD WARN" in out
 
 
+def test_test_replay_warns_once_per_source_like_the_hook(tmp_path, capsys):
+    tt = {"enabled": True, "mode": "observe",
+          "tags": {"mcp__a__read": ["src_a"], "mcp__b__write": ["dst_b"]},
+          "rules": ["src_a then dst_b -> warn"], "incompatible": []}
+    ws = _ws(tmp_path, tt)
+    sid = "warn-" + uuid.uuid4().hex[:8]
+    read, write = ("mcp__a__read", "tool_result"), ("mcp__b__write", "network")
+    _seed_session(ws, sid, [read, write, write, read, write])
+    tags_cli.tags_test(ws, session=sid)
+    assert "2 hit(s)" in capsys.readouterr().out
+
+
 def test_test_invalid_extra_rule_exits(tmp_path, capsys):
     ws = _ws(tmp_path, TT)
     with pytest.raises(SystemExit) as ei:
