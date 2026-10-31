@@ -746,5 +746,5 @@ agents:
     blocking: none
     normalizer: null
     sweep_dir: "~/.config/herdr/"
-    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged, so there is no Herdr-specific interception surface. Verified live 2026-07-30 against herdr 0.7.5 + prismor 1.32.1 — hook dispatch and cloaking decloak/scrub both confirmed working identically inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
+    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged. Herdr does not intercept tool calls, but since ~0.8 `herdr integration install <agent>` adds its own SessionStart hook (herdr-agent-state.sh) to the agent's hook config (e.g. ~/.claude/settings.json, ~/.codex/hooks.json) for pane/session detection; the merge is additive and leaves Prismor's entries intact. Verified live 2026-07-30 (herdr 0.7.5 + prismor 1.32.1) and 2026-10-30 (herdr 0.9.5 + prismor 1.68.4) — hook dispatch and cloaking decloak/scrub confirmed working inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
     sources: ["https://herdr.dev/"]
