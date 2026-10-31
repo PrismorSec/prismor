@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.PrismorSec/prismor",
+  "title": "Prismor MCP Gateway",
+  "description": "Gateway that policy-checks every MCP tool call and scans results for prompt injection.",
+  "repository": {
+    "url": "https://github.com/PrismorSec/prismor",
+    "source": "github"
+  },
+  "websiteUrl": "https://prismor.dev",
+  "version": "1.69.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "prismor",
+      "version": "1.69.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp-gateway"
+        }
+      ]
+    }
+  ]
+}
