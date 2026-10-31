@@ -334,7 +334,11 @@ prismor approvals deny 4c3e28
 ```
 
 The approval covers the same agent making the same tool call with the same
-input in the same workspace. The first call it lets through spends it, and it
+input in the same session and working directory, even when global and project
+hooks select different policy workspaces. If the hook omits a session ID or an
+absolute working directory, approvals remain scoped to its policy workspace.
+The first call it lets through spends it; another hook screening that same call
+can reuse it, including when the first hook held the call open. The approval
 lapses after 30 minutes if nothing uses it. `approve` tells you whether the
 agent is still waiting (it carries on by itself) or you have to go back and tell
 it to retry. Set `PRISMOR_APPROVAL_WAIT=30` to make Claude Code and Codex hold

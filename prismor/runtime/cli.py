@@ -2290,7 +2290,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         and not _si.is_system_managed()):
                     from prismor.runtime import approvals_local as _appr
                     _afp = _appr.fingerprint(args.agent, workspace, payload, event)
-                    _granted = _appr.consume(_afp, str(payload.get("tool_use_id") or payload.get("toolUseId") or ""))
+                    _call_id = str(payload.get("tool_use_id") or payload.get("toolUseId") or "")
+                    _granted = _appr.consume(_afp, _call_id)
                     if _granted is None:
                         _wait = _appr.wait_seconds(args.agent)
                         _what = str(event.get("command") or event.get("path") or event.get("url")
@@ -2304,7 +2305,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                                          f"{blocking.get('title')} - prismor approvals approve {_approval_req['id']}")
                             sys.stderr.write(
                                 f"[prismor] waiting {_wait}s for approval: prismor approvals approve {_approval_req['id']}\n")
-                            if _appr.wait(_approval_req["id"], _wait):
+                            if _appr.wait(_approval_req["id"], _wait, _call_id):
                                 _granted = _approval_req
                                 _approval_req = None
                     if _granted is not None:
