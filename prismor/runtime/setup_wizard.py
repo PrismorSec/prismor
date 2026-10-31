@@ -1062,6 +1062,11 @@ def _prompt_unlock_password() -> bool:
         from prismor.runtime import unlock as _unlock
     except Exception:
         return False
+    if _unlock.is_configured():
+        # A password is already set; changing it needs the old one, which lives
+        # in `prismor unlock --set-password`, not the first-run wizard.
+        print(_w("  Unlock password already set — change it with: prismor unlock --set-password", DIM))
+        return True
     print()
     print(_w("  Set your Prismor unlock password", BOLD))
     print(_w("  This is what you type to let the agent edit policy for a few", DIM))
