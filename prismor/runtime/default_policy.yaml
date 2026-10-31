@@ -1286,6 +1286,14 @@ rules:
       # The same CLI reached as a module or a script path.
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      # The window machinery reached by importing it rather than the CLI:
+      # `python -c "from prismor.runtime.unlock import open_window; open_window(...)"`.
+      # The CLI verifies a password and demands a terminal before it opens a
+      # window or sets the credential; these functions trust their caller, so
+      # importing them straight is a self-edit that skips the gate. Matches the
+      # module path (dotted or `import unlock`) together with a sink call.
+      - '\bprismor\.runtime(\.unlock\b|[ \t]+import[ \t]+unlock\b)[^\n]*\b(open_window|set_password|close_window|clear_password|_grant_key|_mac)\b'
+      - '\b(__import__|import_module)\([ \t]*[''"]prismor\.runtime\.unlock'
       # ...or wrapped in a shell, which is how the anchors above would
       # otherwise be stepped around: `bash -c "prismor allow ..."`.
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'

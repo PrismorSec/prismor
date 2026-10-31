@@ -6790,31 +6790,33 @@ def _unlock_cmd(args, workspace: Path) -> int:
 
     if getattr(args, "set_password", False):
         system = bool(getattr(args, "system_password", False))
-        if _unlock.is_configured():
-            current = getpass.getpass("Current Prismor unlock password: ")
-            ok, msg = _unlock.verify(current)
-            if not ok:
-                print(msg)
-                return 1
-        if system:
-            print("Unlock will ask for your operating system account password.")
-            probe = getpass.getpass("Confirm your system password: ")
-            if not _unlock._verify_system_password(probe):
-                print("That password did not verify against your system account. Nothing changed.")
-                return 1
-            _unlock.set_password("", system=True)
-        else:
-            print("This password lets the agent edit Prismor's policy for a few minutes at a time.")
-            print("Use something other than your login password.")
-            first = getpass.getpass("New Prismor unlock password: ")
-            if len(first) < 8:
-                print("Too short — use at least 8 characters. Nothing changed.")
-                return 1
-            second = getpass.getpass("Repeat it: ")
-            if first != second:
-                print("Those did not match. Nothing changed.")
-                return 1
-            _unlock.set_password(first)
+        # Changing an existing credential is proven by the old password, which
+        # set_password() re-checks — the function refuses otherwise, so an agent
+        # that reaches it some other way can't silently replace the credential.
+        current = getpass.getpass("Current Prismor unlock password: ") if _unlock.is_configured() else None
+        try:
+            if system:
+                print("Unlock will ask for your operating system account password.")
+                probe = getpass.getpass("Confirm your system password: ")
+                if not _unlock._verify_system_password(probe):
+                    print("That password did not verify against your system account. Nothing changed.")
+                    return 1
+                _unlock.set_password("", current=current, system=True)
+            else:
+                print("This password lets the agent edit Prismor's policy for a few minutes at a time.")
+                print("Use something other than your login password.")
+                first = getpass.getpass("New Prismor unlock password: ")
+                if len(first) < 8:
+                    print("Too short — use at least 8 characters. Nothing changed.")
+                    return 1
+                second = getpass.getpass("Repeat it: ")
+                if first != second:
+                    print("Those did not match. Nothing changed.")
+                    return 1
+                _unlock.set_password(first, current=current)
+        except PermissionError as exc:
+            print(str(exc))
+            return 1
         print(f"Set. Open a window with: prismor unlock  (default {_unlock.DEFAULT_WINDOW_SECONDS // 60}m)")
         return 0
 
