@@ -217,3 +217,74 @@ def test_org_observe_pin_suppression_is_visible(tmp_path, monkeypatch, capsys):
     assert any("checkout-bot" in (f.get("suppressedBy") or "") for f in d.findings)
     assert "suppressed by org per-agent control 'checkout-bot'" in capsys.readouterr().err
     assert _verdict(d.findings, d.blocking) == "suppressed"
+
+
+# ── "*": controls for every agent name ─────────────────────────────────────
+# The console sends a "*" entry only to an agent key bound to one agent, so an
+# agent that renames itself (its adapter's name= is client-chosen) still gets
+# that agent's controls.
+
+def test_wildcard_kill_switch_reaches_a_renamed_agent(tmp_path):
+    ctl = agents.resolve_agent_control("renamed-bot", tmp_path, remote_controls={"*": {"enabled": False}})
+    assert ctl.enabled is False and ctl.disabled_by == "org"
+
+
+def test_wildcard_only_tightens_the_named_entry(tmp_path):
+    remote = {
+        "bot": {"enabled": True, "mode": "observe", "deny_tools": ["Write"], "ask_tools": ["Bash"], "iam_profile": "named"},
+        "*": {"enabled": False, "mode": "enforce", "deny_tools": ["Bash"], "ask_tools": ["WebFetch"], "iam_profile": "wild"},
+    }
+    ctl = agents.resolve_agent_control("bot", tmp_path, remote_controls=remote)
+    assert ctl.enabled is False
+    assert ctl.mode == "enforce"
+    assert set(ctl.deny_tools) >= {"Write", "Bash"}
+    # Bash is denied by "*", so it is no longer merely asked.
+    assert "Bash" not in ctl.ask_tools and "WebFetch" in ctl.ask_tools
+    assert ctl.iam_profile == "named"
+
+
+def test_wildcard_cannot_loosen(tmp_path):
+    # A permissive "*" leaves a named kill switch and enforce mode in place.
+    remote = {"bot": {"enabled": False, "mode": "enforce"}, "*": {"enabled": True, "mode": "observe"}}
+    ctl = agents.resolve_agent_control("bot", tmp_path, remote_controls=remote)
+    assert ctl.enabled is False and ctl.mode == "enforce"
+
+
+def test_wildcard_iam_profile_applies_when_the_name_has_none(tmp_path):
+    ctl = agents.resolve_agent_control("other", tmp_path, remote_controls={"*": {"iam_profile": "readonly"}})
+    assert ctl.iam_profile == "readonly"
+
+
+def test_without_wildcard_named_entries_behave_as_before(tmp_path):
+    ctl = agents.resolve_agent_control("bot", tmp_path, remote_controls={"bot": {"mode": "observe"}})
+    assert ctl.mode == "observe" and ctl.enabled is True
+    assert agents.resolve_agent_control("other", tmp_path, remote_controls={"bot": {"enabled": False}}).enabled is True
+
+
+def test_wildcard_is_not_listed_as_an_agent(tmp_path):
+    names = [c.name for c in agents.list_agents(tmp_path, remote_controls={"*": {"enabled": False}, "bot": {}})]
+    assert names == ["bot"]
+
+
+def test_wildcard_kill_switch_blocks_a_renamed_agent_end_to_end(tmp_path, monkeypatch):
+    """Through evaluate_tool_call: a bound key's policy carries "*" disabled, and
+    the agent calls itself something the org never named."""
+    from prismor.runtime import runtime
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    real_init = PolicyEngine.__init__
+
+    def fake_init(self, *a, **kw):
+        real_init(self, *a, **kw)
+        self.workspace_managed = True
+        self.agent_controls = {"checkout-bot": {"enabled": False}, "*": {"enabled": False}}
+
+    monkeypatch.setattr(PolicyEngine, "__init__", fake_init)
+
+    d = runtime.evaluate_tool_call(
+        event={"type": "shell", "agent_event": "PreToolUse", "command": "echo hello", "metadata": {"tool_name": "Bash"}},
+        workspace=tmp_path, agent="openai-agents", agent_name="totally-not-checkout-bot",
+        mode="observe", session_id="s3", persist=False,
+    )
+    assert d.allow is False
+    assert any(f.get("ruleId") == "agent-disabled" for f in d.findings)
