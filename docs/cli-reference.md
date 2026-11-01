@@ -71,7 +71,7 @@ prismor
 │   └─ learn                  Mine session history for new rules
 │
 ├─ Secrets
-│   ├─ cloak <action>         install · add · list · remove · status · run · pattern
+│   ├─ cloak <action>         install · add · list · sync · remove · status · run · pattern
 │   ├─ sweep                  Find & vault leaked secrets on disk
 │   └─ canary <action>        Plant & manage honeytoken tripwires
 │
@@ -521,7 +521,9 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor cloak install` | `--scope`, `--no-userprompt-guard`, `--no-secret-guard`, `--no-read-guard`, `--no-env-guard`, `--sweep-on-stop` | Install cloaking hooks so real secrets stay out of model context. `--no-read-guard` skips the hook that denies reading files containing a registered secret; `--no-env-guard` skips the one that denies reading `.env`-style files not yet imported with `prismor cloak add --env-file`. |
 | `prismor cloak add <name>` | `--from-file` | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. |
 | `prismor cloak add --env-file .env` | — | Import every `KEY=VALUE` entry from a dotenv file as `@@SECRET:KEY@@`. |
-| `prismor cloak list` | — | List registered placeholder names (never values). |
+| `prismor cloak add <name> --from-ref <ref>` | — | Fetch the value from 1Password (`op://…`), Okta Privileged Access (`okta-pam://…`) or AWS AgentCore Identity (`agentcore://…`) and vault it; only the reference is kept. Blocked for agents. See [Sweep and Cloak](sweep-and-cloak.md#from-a-secret-manager). |
+| `prismor cloak list` | — | List registered placeholder names (never values), with the source of any added with `--from-ref`. |
+| `prismor cloak sync [name…]` | — | Fetch `--from-ref` secrets again after a rotation. A source that can't be reached keeps its last value; exits 1 if any failed. |
 | `prismor cloak remove <name>` | — | Delete a registered secret. |
 | `prismor cloak status` | `--scope` | Show whether cloaking hooks are installed + secret count. |
 | `prismor cloak run -- <command>` | — | Run a command with `@@SECRET:name@@` placeholders resolved locally and stdout/stderr scrubbed. Use this for Codex, whose hooks are block-only. |

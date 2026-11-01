@@ -3257,6 +3257,19 @@ def main(argv: Optional[List[str]] = None) -> None:
                 sys.stderr.write("error: cloak add requires either NAME or --env-file\n")
                 raise SystemExit(1)
             name = args.name
+            if args.ref:
+                from prismor.runtime.cloaking.sources import SourceError, add_from_ref
+                if args.value_file:
+                    sys.stderr.write("error: --from-ref cannot be combined with --from-file\n")
+                    raise SystemExit(1)
+                try:
+                    path = add_from_ref(name, args.ref)
+                except (SourceError, ValueError) as exc:
+                    sys.stderr.write(f"error: {exc}\n")
+                    raise SystemExit(1)
+                print(f"Registered @@SECRET:{name}@@ from {args.ref.split('://')[0]} at {path}")
+                print(f"  `prismor cloak sync {name}` fetches it again after a rotation.")
+                return
             if args.value_file:
                 value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
             else:
@@ -3281,18 +3294,36 @@ def main(argv: Optional[List[str]] = None) -> None:
             if not secrets:
                 print(f"No secrets registered at {secrets_dir()}")
                 return
+            from prismor.runtime.cloaking.sources import load_sources
+            sources = load_sources()
             print(f"Registered secrets at {secrets_dir()}:")
             print()
             for entry in secrets:
                 ts = datetime.fromtimestamp(entry["modified"]).strftime("%Y-%m-%d %H:%M")
                 tag = _color("[auto]", _DIM) + " " if entry["auto"] else ""
+                src = sources.get(entry["name"], {}).get("ref")
                 print(f"  {tag}@@SECRET:{entry['name']}@@"
-                      f"  ({entry['bytes']} bytes, updated {ts})")
+                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})")
             print()
+            return
+
+        if sub == "sync":
+            from prismor.runtime.cloaking.sources import sync as sync_sources
+            results = sync_sources(args.names or None)
+            if not results:
+                print("No secrets were added with --from-ref.")
+                return
+            for r in results:
+                line = f"  @@SECRET:{r['name']}@@  {r['status']}"
+                print(line + (f": {r['error']}" if r.get("error") else ""))
+            if any(r["status"] in ("error", "unknown") for r in results):
+                raise SystemExit(1)
             return
 
         if sub == "remove":
             removed = remove_secret(args.name)
+            from prismor.runtime.cloaking.sources import forget
+            forget(args.name)
             if removed:
                 print(f"Removed @@SECRET:{args.name}@@")
             else:
@@ -4948,8 +4979,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="Read value from this file (otherwise read from stdin / hidden prompt)")
     t_add.add_argument("--env-file", dest="env_file",
                        help="Import every KEY=VALUE entry from this dotenv file as @@SECRET:KEY@@")
+    t_add.add_argument("--from-ref", dest="ref", metavar="REF",
+                       help="Fetch the value from a secret manager: op://vault/item/field (1Password), "
+                            "okta-pam://team/resource_group/project/secret_id[#field] (Okta Privileged Access), "
+                            "agentcore://region/workload/provider (AWS AgentCore Identity). "
+                            "Only the reference is kept; `prismor cloak sync` fetches it again")
 
     cloak_sub.add_parser("list", help="List registered placeholder names (never values)")
+    t_sync = cloak_sub.add_parser("sync", help="Fetch secrets added with --from-ref again (after a rotation)")
+    t_sync.add_argument("names", nargs="*", help="Only these placeholder names (default: all)")
 
     t_remove = cloak_sub.add_parser("remove", help="Delete a registered secret")
     t_remove.add_argument("name", help="Placeholder name to remove")
