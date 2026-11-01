@@ -125,9 +125,30 @@ def _raw_off() -> None:
         pass
 
 
+# Whether we are on the alternate screen. `ESC[?1049l` also restores the
+# cursor saved by `ESC[?1049h`, so writing it a second time (the atexit
+# cleanup after _do_install already left) jumps the cursor back to where the
+# wizard started and the shell prompt lands on top of the install summary.
+_alt_active = False
+
+
+def _enter_alt() -> None:
+    global _alt_active
+    sys.stdout.write(ALT_ON + HIDE)
+    _alt_active = bool(ALT_ON)
+
+
+def _leave_alt() -> None:
+    global _alt_active
+    if _alt_active:
+        sys.stdout.write(ALT_OFF)
+        _alt_active = False
+
+
 def _cleanup() -> None:
     _raw_off()
-    sys.stdout.write(ALT_OFF + SHOW)
+    _leave_alt()
+    sys.stdout.write(SHOW)
     sys.stdout.flush()
 
 
@@ -1481,7 +1502,7 @@ def _write_selection_policy(target: Path, selected: List[str], scope: str) -> No
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
     _STEP_FAILURES.clear()
     if not _PLAIN:
-        sys.stdout.write(ALT_OFF)
+        _leave_alt()
         sys.stdout.write("\033[H\033[J" + HIDE)
     sys.stdout.flush()
     print(_w("  Installing Prismor...\n", BOLD, CYAN))
@@ -1993,7 +2014,7 @@ def run_wizard(target: Path) -> None:
     Four steps in observe mode. Enforce adds a governance-mode choice, and —
     only if that choice is "custom" — the rule-by-rule picker on top of it.
     """
-    sys.stdout.write(ALT_ON + HIDE)
+    _enter_alt()
     sys.stdout.flush()
     _raw_on()
 
