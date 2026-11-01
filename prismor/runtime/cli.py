@@ -178,6 +178,15 @@ def _cursor_deny_text(user_message: str, agent_message: str) -> str:
     return user_message + "\n"
 
 
+def _spool_status_line(pending: int, failures: int, verified: Dict[str, Any]) -> str:
+    """What `enroll-status` says about spooled telemetry. Events sit in the
+    spool between batch uploads too, so "unreachable" is only claimed when an
+    upload actually failed or verification could not reach the control plane."""
+    if failures or "unreachable" in str(verified.get("error", "")):
+        return f"{pending} event(s) spooled for upload (control plane unreachable, retrying)"
+    return f"{pending} event(s) queued for the next upload"
+
+
 def _offer_post_enroll_install(workspace: Path) -> None:
     """After a successful enroll, offer to guard the WHOLE MACHINE — not just the
     current project. Enrollment means the device is managed, so the hooks go in
@@ -796,7 +805,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.enterprise import telemetry_spool as _spool
             pending = _spool.pending_count()
             if pending:
-                print(f"  telemetry:  {pending} event(s) spooled for upload (control plane unreachable)")
+                print(f"  telemetry:  {_spool_status_line(pending, _spool.upload_failures(), verified)}")
         except Exception:
             pass
         # Hook coverage — an enrolled device with an unguarded agent is trivially

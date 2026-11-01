@@ -247,6 +247,14 @@ def note_upload_failure(now: float) -> None:
         pass
 
 
+def upload_failures() -> int:
+    """Consecutive failed uploads since the last success (0 when none). Never raises."""
+    try:
+        return int(_read_json(backoff_path()).get("failures") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def clear_backoff() -> None:
     try:
         backoff_path().unlink()
