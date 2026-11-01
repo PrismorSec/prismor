@@ -687,26 +687,41 @@ def _mirror_only_agents() -> list:
 _MIRROR_ONLY = _mirror_only_agents()
 
 
+# Agents whose project-scope plugin is written to disk but does not load until
+# a step outside setup: OpenClaw reads plugins from its own workspace
+# (~/.openclaw/workspace), not the project, and Hermes loads project plugins
+# only with HERMES_ENABLE_PROJECT_PLUGINS=1. Pre-selecting them because their
+# binary is on PATH failed the whole setup for an agent nobody asked for, so
+# they are shown as detected but left for the user to opt in.
+_NEEDS_ACTIVATION = frozenset({"openclaw", "hermes"})
+
+
+def _default_agents(detected: dict) -> List[str]:
+    """Detected agents setup installs into without being asked."""
+    return [n for n, ok in detected.items() if ok and n not in _NEEDS_ACTIVATION]
+
+
 def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
     detected = _detect_agents(target)
+    preselect = set(_default_agents(detected))
     agents = [
-        {"name": "claude",   "label": "Claude Code", "on": detected.get("claude", False)},
-        {"name": "cursor",   "label": "Cursor",      "on": detected.get("cursor", False)},
-        {"name": "windsurf", "label": "Windsurf",    "on": detected.get("windsurf", False)},
-        {"name": "openclaw", "label": "OpenClaw",    "on": detected.get("openclaw", False)},
-        {"name": "hermes",   "label": "Hermes",      "on": detected.get("hermes", False)},
+        {"name": "claude",   "label": "Claude Code", "on": "claude" in preselect},
+        {"name": "cursor",   "label": "Cursor",      "on": "cursor" in preselect},
+        {"name": "windsurf", "label": "Windsurf",    "on": "windsurf" in preselect},
+        {"name": "openclaw", "label": "OpenClaw",    "on": "openclaw" in preselect},
+        {"name": "hermes",   "label": "Hermes",      "on": "hermes" in preselect},
         {"name": "codex",    "label": "Codex + ChatGPT app" if _chatgpt_app() else "Codex",
-         "on": detected.get("codex", False)},
-        {"name": "grok",     "label": "Grok Build",  "on": detected.get("grok", False)},
-        {"name": "kiro",     "label": "Kiro CLI",    "on": detected.get("kiro", False)},
-        {"name": "crush",     "label": "Crush",       "on": detected.get("crush", False)},
-        {"name": "openhands", "label": "OpenHands",   "on": detected.get("openhands", False)},
-        {"name": "qwen",      "label": "Qwen Code",   "on": detected.get("qwen", False)},
-        {"name": "continue",  "label": "Continue CLI", "on": detected.get("continue", False)},
-        {"name": "goose",     "label": "Goose",       "on": detected.get("goose", False)},
-        {"name": "antigravity", "label": "Antigravity", "on": detected.get("antigravity", False)},
-        {"name": "copilot",   "label": "GitHub Copilot", "on": detected.get("copilot", False)},
-        {"name": "gemini",    "label": "Gemini CLI",  "on": detected.get("gemini", False)},
+         "on": "codex" in preselect},
+        {"name": "grok",     "label": "Grok Build",  "on": "grok" in preselect},
+        {"name": "kiro",     "label": "Kiro CLI",    "on": "kiro" in preselect},
+        {"name": "crush",     "label": "Crush",       "on": "crush" in preselect},
+        {"name": "openhands", "label": "OpenHands",   "on": "openhands" in preselect},
+        {"name": "qwen",      "label": "Qwen Code",   "on": "qwen" in preselect},
+        {"name": "continue",  "label": "Continue CLI", "on": "continue" in preselect},
+        {"name": "goose",     "label": "Goose",       "on": "goose" in preselect},
+        {"name": "antigravity", "label": "Antigravity", "on": "antigravity" in preselect},
+        {"name": "copilot",   "label": "GitHub Copilot", "on": "copilot" in preselect},
+        {"name": "gemini",    "label": "Gemini CLI",  "on": "gemini" in preselect},
     ]
     if not any(a["on"] for a in agents):
         agents[0]["on"] = True
@@ -766,6 +781,9 @@ def _step_agents(target: Path, step: int = 2, total: int = 4) -> list:
         elif sel_gov.get("recommended") == "none":
             lines.append(f"  {_w('No interception surface: no hooks, and its built-in tools', DIM)}")
             lines.append(f"  {_w('cannot be switched off, so an MCP mirror would be bypassable.', DIM)}")
+        elif agents[sel]["name"] in _NEEDS_ACTIVATION and detected.get(agents[sel]["name"]):
+            lines.append(f"  {_w('Not pre-selected: at project scope its plugin only loads after a step', DIM)}")
+            lines.append(f"  {_w('outside setup (or choose global scope). prismor doctor shows what is missing.', DIM)}")
         elif _can_mirror(agents[sel]["name"], sel_gov):
             if agents[sel].get("mirror"):
                 lines.append(f"  {_w('Its built-ins will be served through Prismor over MCP', YEL)} "
@@ -1736,11 +1754,25 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     # else succeeded. Say so and exit non-zero (scripts and CI check this).
     hook_failures = [(l, m) for l, m in _STEP_FAILURES if l.startswith("Installing") and "hooks" in l]
     if hook_failures:
+        labels = {l for l, _ in hook_failures}
+        failed = [a for a in agents if f"Installing {a} hooks" in labels]
+        protected = [a for a in agents if a not in failed]
         print()
-        print(f"  {_w('Prismor setup did not finish: these agents are NOT protected.', RED)}")
+        if failed and protected:
+            # Partial: say plainly which agents ARE screened, so one agent's
+            # failure does not read as "nothing was installed".
+            print(f"  {_w('Prismor setup finished only partly.', YEL)}")
+            print(f"    {_w('Protected:', GRN)}     {', '.join(protected)}")
+            print(f"    {_w('NOT protected:', RED)} {', '.join(failed)}")
+        else:
+            print(f"  {_w('Prismor setup did not finish: these agents are NOT protected.', RED)}")
         for label, msg in hook_failures:
             print(f"    ✗ {label}: {msg}")
-        print(f"  {_w('Fix the error above (often a directory you cannot write to), then run setup again.', DIM)}")
+        if any(m.startswith("written but not active") for _, m in hook_failures):
+            print(f"  {_w('A plugin that is written but not active needs the step named above, or', DIM)}")
+            print(f"  {_w('--scope global; or rerun setup without that agent.', DIM)}")
+        else:
+            print(f"  {_w('Fix the error above (often a directory you cannot write to), then run setup again.', DIM)}")
         print(f"  {_w('Check what is installed with: prismor doctor', DIM)}")
         print()
         raise SystemExit(1)
@@ -1871,8 +1903,7 @@ def run_non_interactive(
         if unknown:
             print(f"[prismor] Unknown rule id(s) ignored: {', '.join(sorted(unknown))}")
     if agents is None:
-        det = _detect_agents(target)
-        agents = [n for n, ok in det.items() if ok] or ["claude"]
+        agents = _default_agents(_detect_agents(target)) or ["claude"]
     cloak_tag = ", cloak=yes" if cloak else ""
     scope_tag = f", scope={scope}" if scope != "project" else ""
     print(f"[prismor] Non-interactive setup  (mode={mode}, agents={','.join(agents)}{cloak_tag}{scope_tag})")
