@@ -292,6 +292,25 @@ _EVENT_SOURCE: Dict[str, str] = {
 }
 
 
+# Semantic-guard findings are titled by what the judge found, not all as
+# "prompt injection": a subagent brief that reads and reports .env is
+# credential exfiltration. The prismor-web dashboard maps older titles the same way.
+_SEMANTIC_LABELS = {
+    "credential_exfiltration": "Credential exfiltration",
+    "security_bypass": "Security bypass",
+    "privilege_escalation": "Privilege escalation",
+    "social_engineering": "Social engineering",
+    "jailbreak": "Jailbreak attempt",
+    "in_content_injection": "Prompt injection in content",
+}
+
+
+def _semantic_title(sem_cat: Any, score: float, subagent: bool) -> str:
+    label = _SEMANTIC_LABELS.get(str(sem_cat), "Prompt injection")
+    where = "in subagent prompt" if subagent else "detected"
+    return f"{label} {where} (semantic guard, score {score:.2f})"
+
+
 def is_subagent_prompt(event: Dict[str, Any]) -> bool:
     """A returned subagent message on a prompt hook, never a human exemption.
 
@@ -3276,7 +3295,7 @@ class PolicyEngine:
             "id": prefixed_id,
             "severity": severity,
             "category": category,
-            "title": f"Semantic prompt-injection detected ({sem_cat}, score {score:.2f})",
+            "title": _semantic_title(sem_cat, score, is_subagent_prompt(event)),
             "evidence": _truncate(evidence),
             "eventIndex": index,
             "ruleId": rule_id,
