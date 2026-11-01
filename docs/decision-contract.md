@@ -126,6 +126,12 @@ surface is being asked to *do*:
 a caller that clears `blocking` (the hook path does this when a deferred check
 adjudicates ALLOW) cannot leave a stale verdict behind.
 
+When several rules independently deny a call, the reason includes
+`Also blocked by: <rule ids>.` The winning rule and verdict stay the same.
+`additional_blocking_rules` carries the distinct additional rule IDs (omitted
+from JSON when empty). Observe-only and inert findings, and rules requesting
+approval or rewriting, are not listed as additional blocks.
+
 ### Two rules every surface follows
 
 **Fail closed.** A surface that cannot honor its verdict refuses. If a policy

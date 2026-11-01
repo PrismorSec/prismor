@@ -157,6 +157,15 @@ class Decision:
     # asked for, so the contract stays additive.
     explain: Optional[Dict[str, Any]] = None
 
+    # Distinct rules that independently deny this call, beyond the winning rule.
+    additional_blocking_rules: List[str] = field(default_factory=list)
+
+    @property
+    def additional_block_reason(self) -> str:
+        if self.verdict != BLOCK or not self.additional_blocking_rules:
+            return ""
+        return "Also blocked by: " + ", ".join(self.additional_blocking_rules) + "."
+
     @property
     def verdict(self) -> str:
         """``allow`` | ``block`` | ``step_up`` | ``defer`` | ``modify``.
@@ -188,6 +197,8 @@ class Decision:
             "reason": self.reason,
             "findings": self.findings,
             "blocking": self.blocking,
+            **({"additional_blocking_rules": self.additional_blocking_rules}
+               if self.additional_blocking_rules else {}),
             "subject": self.subject.as_dict() if self.subject else None,
             **({"explain": self.explain} if self.explain is not None else {}),
         }

@@ -120,3 +120,43 @@ def test_first_run_greeting_does_not_preface_a_server(tmp_path, monkeypatch, cap
     monkeypatch.setattr("sys.orig_argv", ["python", "/bin/prismor", "status"], raising=False)
     _post_install.maybe_show()
     assert "prismor setup" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("event_type,mode,legacy,expected", [
+    ("shell", "enforce", False, ["second"]),
+    ("file_read", "enforce", False, []),
+    ("shell", "observe", False, []),
+    ("shell", "enforce", True, ["second"]),
+])
+def test_reason_lists_only_independent_blockers(tmp_path, monkeypatch, event_type, mode, legacy, expected):
+    from prismor.runtime import runtime
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    def finding(rule):
+        return dict(ruleId=rule, title=rule, severity="HIGH", category="test",
+                    mode="enforce", action="block")
+
+    first = finding("first")
+    first.update(category="iam", authoritative=True)
+    findings = [first, finding("second"), finding("second"),
+                dict(finding("observed"), mode="observe"),
+                dict(finding("approval"), action="step_up"),
+                dict(finding("rewrite"), action="modify"),
+                dict(finding("inert"), contextInert=True)]
+    if legacy:
+        monkeypatch.setattr(PolicyEngine, "is_legacy_policy", property(lambda self: True))
+        for f in findings:
+            f["mode"] = "observe"
+        for f in findings[:3]:
+            f["category"] = "secret_access"
+    monkeypatch.setattr(PolicyEngine, "evaluate", lambda *a, **kw: findings.copy())
+    decision = runtime.evaluate_tool_call(
+        event={"type": event_type, "agent_event": "PreToolUse", "command": "echo hi"},
+        workspace=tmp_path, agent="claude", mode=mode, record=False,
+        persist=False, register_agent=False,
+    )
+    assert decision.verdict == "block"
+    assert decision.rule_id == "first"
+    assert decision.additional_blocking_rules == expected
+    assert ("Also blocked by: second." in decision.reason) == bool(expected)
+    assert decision.as_dict()["reason"] == decision.reason

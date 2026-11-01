@@ -143,4 +143,5 @@ def evaluate_remote(
         reason=data.get("reason"),
         subject=subject,
         explain=data.get("explain"),
+        additional_blocking_rules=list(data.get("additional_blocking_rules") or []),
     )
