@@ -8,9 +8,9 @@ event that produced it into a cloud telemetry record.
 Two modes:
 
 * **redacted** (default): only enum/metadata fields leave — severity, category,
-  rule id, event type, agent, verdict, a static rule title, and a *hash* of the
-  matched evidence. No raw commands, file paths, URLs, prompts, file contents,
-  or secrets are emitted. This is the default posture and the only mode an org
+  rule id, event type, agent, verdict, a static rule title, the workspace's
+  folder name, and a *hash* of the matched evidence. No raw commands, file
+  paths, URLs, prompts, file contents, or secrets are emitted. This is the default posture and the only mode an org
   gets unless an admin explicitly opts in. The rule *pattern* that fired
   (``matched_pattern``) is also forwarded in redacted mode: it is static policy
   configuration (the org's own rule text), never captured user data. Caveat:
@@ -200,6 +200,28 @@ def _title_has_leak(title: Any) -> bool:
                 or _UNIXPATH_RE.search(title) or _HOST_RE.search(title))
 
 
+def _workspace_label(workspace: Any) -> Optional[str]:
+    """What redacted capture says about the workspace: its folder name
+    (``acme-app``), never the path to it. The home dir itself is ``~``, since
+    its name is the user's login."""
+    import os
+    from pathlib import PurePath
+
+    if not workspace:
+        return None
+    text = str(workspace).rstrip("/\\")
+    if not text:
+        return None
+    try:
+        if os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(os.path.expanduser("~"))):
+            return "~"
+    except (OSError, ValueError):
+        pass
+    # Both separators, whichever OS produced the path.
+    name = PurePath(text.replace("\\", "/")).name
+    return name or None
+
+
 def build_record(
     finding: Dict[str, Any],
     event: Dict[str, Any],
@@ -270,7 +292,9 @@ def build_record(
         # org policy). Only managed/company repos report, so the repo identifier
         # is org-owned context, not the developer's private data.
         "repo": extra.get("repo"),
-        "workspace_path": extra.get("workspace"),
+        # The full path names the user's home and directory layout, so redacted
+        # capture sends only the folder name (see _workspace_label).
+        "workspace_path": extra.get("workspace") if full_capture else _workspace_label(extra.get("workspace")),
         "policy_scope": extra.get("policy_scope") or "org",
         # Which layer decided this finding's mode: builtin | local | project |
         # org | device | repo_exemption (PolicyEngine.decision_layer). A static
@@ -464,6 +488,9 @@ def assert_redacted(record: Dict[str, Any]) -> None:
             raise AssertionError(
                 "redacted telemetry matched_pattern equals the hashed evidence"
             )
+    wp = record.get("workspace_path")
+    if isinstance(wp, str) and ("/" in wp or "\\" in wp):
+        raise AssertionError("redacted telemetry workspace_path must be a folder name, not a path")
     # The title is the one free-text field that survives into a redacted record;
     # guard that it carries no path / host / URL / secret leak. (repo is allowed —
     # it's org-owned managed-repo context, not the developer's private data.)
