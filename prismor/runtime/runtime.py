@@ -1027,7 +1027,7 @@ def _dispatch_refusals(
         if not refusals:
             return
         seen_file = prismor_home() / "cache" / f"refusals-{re.sub(r'[^A-Za-z0-9_-]', '', session_id)}.txt"
-        seen = set(seen_file.read_text().split()) if seen_file.exists() else set()
+        seen = set(seen_file.read_text(encoding="utf-8").split()) if seen_file.exists() else set()
         fresh = [r for r in refusals if r["uuid"] and r["uuid"] not in seen]
         if not fresh:
             return
