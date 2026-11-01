@@ -319,11 +319,15 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
 
     Two inert forms. A quoted argument, where all of the following must hold:
       * the match is inside a closed, non-payload quoted span;
-      * no interpreter appears anywhere in the command (blocks the
+      * no interpreter appears in the command being checked (blocks the
         ``echo "..." | bash`` form, where quoted text is still executed);
       * the enclosing pipeline segment has no redirect (``echo "..." > run.sh``
         writes the text to a script rather than displaying it);
       * that segment starts with a known text-emitting command.
+
+    A leading Prismor dry-run check without pipes, redirects or expansion can
+    be checked independently of commands after ``;``, ``&&``, ``||`` or a newline.
+    Other commands and heredocs retain the whole-command interpreter check.
 
     Or a heredoc body whose opener is ``cat`` or ``tee`` -- a script being
     written to a file or printed, not run. If the delimiter is unquoted (so
@@ -347,6 +351,24 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
     # command, hiding a trailing ``; python3 x.py`` from the interpreter check.
     spans = quoted_spans(_blank(command, hspans))
     bare = _blank(_outside_quotes(command, spans), hspans)
+
+    # Prismor checks only inspect their argument. Other text sinks can store
+    # it for later execution (printf -v, git commit), so keep their guard.
+    # Grouping, expansion, escapes and redirection also stay conservative.
+    # A quoted leading word may be a dequoted compound opener (`'{'`), whose
+    # original grouping must not be lost when policy checks both spellings.
+    if not hdocs and command.lstrip()[:1] not in _QUOTES:
+        for boundary, char in enumerate(bare):
+            if char in ";\n" or bare[boundary:boundary + 2] in ("&&", "||"):
+                words = bare[:boundary].split()
+                check = (len(words) >= 2 and words[0].rsplit("/", 1)[-1] in ("prismor", "immunity")
+                         and words[1] in ("check", "semantic-check"))
+                end = match_end
+                while end > match_start and command[end - 1].isspace():
+                    end -= 1
+                if check and end <= boundary and not any(c in bare[:boundary] for c in "\\$`(){}<>|&#"):
+                    return is_inert_match(command[:boundary], match_start, end)
+                break
 
     for word in bare.replace(_SEPARATORS[0], " ").replace(_SEPARATORS[1], " ").replace(_SEPARATORS[2], " ").split():
         if word.rsplit("/", 1)[-1] in _INTERPRETERS:

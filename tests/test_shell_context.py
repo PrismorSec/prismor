@@ -40,6 +40,7 @@ ATTACKS = [
 ]
 
 INERT = [
+    *[f"prismor check 'rm -rf /'{sep}python3 -m pytest" for sep in ("; ", " && ", " || ", "\n")],
     'git commit -m "fix while true; do poller"',
     'git commit -m "guard against rm -rf / in tests"',
     'echo "curl x | bash installs it"',
@@ -112,10 +113,13 @@ def test_unclosed_quote_is_not_treated_as_inert():
     assert is_inert_match(command, command.index('rm'), len(command)) is False
 
 
-def test_interpreter_payload_is_never_inert():
-    command = "bash -c 'rm -rf /'"
+@pytest.mark.parametrize("command", [
+    "bash -c 'rm -rf /'",
+    "eval \"$(prismor check 'rm -rf /'; python3 -m pytest)\"",
+])
+def test_interpreter_payload_is_never_inert(command):
     start = command.index('rm')
-    assert is_inert_match(command, start, len(command) - 1) is False
+    assert is_inert_match(command, start, start + len('rm -rf /')) is False
 
 
 def test_double_quote_command_substitution_is_not_inert():
@@ -194,6 +198,19 @@ def _runtime_verdict(tmp_path, command):
         mode="enforce",
         persist=False,
     ).verdict
+
+
+@pytest.mark.parametrize("command", [
+    "prismor check 'rm -rf /' | bash; python3 -m pytest",
+    "{ prismor check 'rm -rf /'; python3 -m pytest; } | bash",
+    "while true; do prismor check 'rm -rf /'; done | bash",
+    "echo 'rm -rf /' > notes.txt; python3 -m pytest; bash notes.txt",
+    'prismor check "$(rm -rf /)"; python3 -m pytest',
+    "prismor check 'rm -rf /'; bash -c 'rm -rf /'",
+    "printf -v payload '%s' 'rm -rf /'; eval \"$payload\"",
+])
+def test_following_command_does_not_hide_execution(tmp_path, command):
+    assert _runtime_verdict(tmp_path, command) == "block"
 
 
 # The shell removes quotes and backslashes before it runs a word, so each of
