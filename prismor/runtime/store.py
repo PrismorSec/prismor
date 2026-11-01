@@ -414,20 +414,19 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
     project_dir = workspace / ".prismor"
     legacy_dir = workspace / _LEGACY_DATA_DIR
     previous_central_dir = _workspace_state_dir(workspace)
-    source_paths = [
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-        project_dir / "sessions",
-        legacy_dir / "sessions",
-        previous_central_dir / "sessions",
-        project_dir / "scoped",
-        legacy_dir / "scoped",
-        previous_central_dir / "scoped",
-        project_dir / "taint",
-        legacy_dir / "taint",
-        previous_central_dir / "taint",
+    roots = [project_dir, legacy_dir, previous_central_dir]
+    try:
+        # A workspace at $HOME has .prismor == Prismor home: that is the live
+        # store, not a legacy source. Its sessions/ changes every call, so the
+        # marker never verified and every hook re-merged the legacy DBs.
+        if project_dir.resolve() == data_dir.resolve():
+            roots.remove(project_dir)
+    except OSError:
+        pass
+    src_dbs = [
+        root / (_LEGACY_DB_NAME if root == legacy_dir else "prismor.db") for root in roots
     ]
+    source_paths = src_dbs + [root / child for child in ("sessions", "scoped", "taint") for root in roots]
 
     marker_dir = data_dir / "migrations" / "runtime-state"
     marker = marker_dir / f"{_workspace_state_id(workspace)}.json"
@@ -451,17 +450,12 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
         except (OSError, ValueError, TypeError):
             pass
 
-    for src_db in (
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-    ):
+    for src_db in src_dbs:
         _merge_sqlite_db_once(src_db, data_dir / "prismor.db")
 
     for child in ("sessions", "scoped", "taint"):
-        _copy_tree_contents_once(project_dir / child, data_dir / child)
-        _copy_tree_contents_once(legacy_dir / child, data_dir / child)
-        _copy_tree_contents_once(previous_central_dir / child, data_dir / child)
+        for root in roots:
+            _copy_tree_contents_once(root / child, data_dir / child)
 
     try:
         marker_dir.mkdir(parents=True, exist_ok=True)
