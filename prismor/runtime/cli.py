@@ -1147,6 +1147,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # log-only — keyed on the effective verdict, so a CI gate reflects what
         # this policy does rather than what its rules would like to do.
         if any(_blocks(f) for f in findings):
+            _report_agent_precheck(engine, findings, workspace, args.type, args.value)
             raise SystemExit(2)
         if any(_effective_verdict(f) == "WARN" for f in findings):
             raise SystemExit(1)
@@ -5408,6 +5409,46 @@ def _pause_note() -> str:
 
 def _blocks(finding: Dict[str, Any]) -> bool:
     return _effective_verdict(finding) == "BLOCK"
+
+
+# Which agent's shell `prismor check` runs in, from the marker it sets.
+_AGENT_BY_ENV = (("CLAUDECODE", "claude"), ("CODEX_THREAD_ID", "codex"), ("CODEX_SANDBOX", "codex"),
+                 ("CURSOR_AGENT", "cursor"), ("GEMINI_CLI", "gemini"))
+
+
+def _report_agent_precheck(engine: "PolicyEngine", findings: List[Dict[str, Any]],
+                           workspace: Path, check_type: str, value: str) -> None:
+    """Tell the org about an agent that asked `prismor check` and got BLOCK.
+
+    The workspace instructions have agents pre-check risky commands; one that
+    gets BLOCK stops there, so the hook never sees the command and the org
+    never sees the attempt. Report it through the normal telemetry path, as an
+    observed "would block" (nothing ran), redacted like any other record.
+    Agent shells only: a human or CI running check is not an attempt.
+    Best-effort; never changes the exit code."""
+    from prismor.runtime.agent_env import running_under_agent
+    if not running_under_agent() or not getattr(engine, "outputs", None):
+        return
+    try:
+        from prismor.runtime.principal import resolve_subject
+        from prismor.runtime.runtime import _dispatch_telemetry
+        etype, field = {"read": ("file_read", "path"), "write": ("file_write", "path"),
+                        "text": ("text", "text")}.get(check_type, ("shell", "command"))
+        agent = next((a for k, a in _AGENT_BY_ENV if os.environ.get(k)), "unknown")
+        blocking = [{**f, "mode": "observe", "precheck": True,
+                     "title": f"Agent pre-check would block: {f.get('title') or f.get('ruleId')}"}
+                    for f in findings if _blocks(f)]
+        _dispatch_telemetry(
+            engine=engine, findings=blocking,
+            event={"type": etype, field: value, "agent_event": "PreCheck",
+                   "metadata": {"tool_name": "prismor check"}},
+            # The device's mode: BLOCK means the policy enforces this rule.
+            # The record's verdict stays "observed" via the findings above.
+            workspace=workspace, agent=agent, mode="enforce", session_id=None,
+            subject=resolve_subject(),
+        )
+    except Exception:
+        pass
 
 
 def _print_findings(
