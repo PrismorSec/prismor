@@ -65,6 +65,9 @@ rules:
 
 def _payload(agent: str, command: str) -> dict:
     """Build a pre-action shell payload in the shape each agent's hook sends."""
+    if agent == "antigravity":
+        return {"toolCall": {"name": "run_command", "args": {"CommandLine": command}},
+                "conversationId": "r4-test-session"}
     if agent == "copilot":
         return {
             "hookEventName": "PreToolUse",
@@ -122,6 +125,22 @@ class R4Decisions(unittest.TestCase):
     def test_deny_exits_2(self):
         proc = _dispatch("claude", "echo R4_DENY_MARKER", self.ws, self.home)
         self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_multiple_blockers_reach_text_and_json_hooks(self):
+        policy = self.ws / ".prismor" / "policy.yaml"
+        second = _POLICY[_POLICY.index("  - id: r4-deny"):].replace("id: r4-deny", "id: r4-deny-second")
+        policy.write_text(_POLICY + second)
+        for agent in ("claude", "copilot", "antigravity"):
+            with self.subTest(agent=agent):
+                proc = _dispatch(agent, "echo R4_DENY_MARKER", self.ws, self.home)
+                if agent == "claude":
+                    self.assertEqual(proc.returncode, 2, proc.stderr)
+                    reason = proc.stderr
+                else:
+                    out = self._stdout_json(proc)
+                    self.assertEqual(out.get("permissionDecision", out.get("decision")), "deny")
+                    reason = out.get("permissionDecisionReason", out.get("reason"))
+                self.assertIn("Also blocked by: r4-deny-second.", reason)
 
     def test_step_up_claude_emits_ask(self):
         proc = _dispatch("claude", "echo R4_STEPUP_MARKER", self.ws, self.home)

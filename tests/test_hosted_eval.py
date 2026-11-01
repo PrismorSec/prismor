@@ -51,11 +51,20 @@ def _call(client_ws, command, mode="enforce", sid="s1"):
                               agent_name="support-bot", mode=mode, session_id=sid)
 
 
-def test_remote_allow_and_deny(hosted):
+@pytest.mark.parametrize("multiple", [False, True])
+def test_remote_allow_and_deny(hosted, multiple):
     server_ws, client_ws = hosted
+    if multiple:
+        (server_ws / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({
+            "version": "1.0", "rules": [_RULE, dict(_RULE, id="second-deny")],
+        }))
     assert _call(client_ws, "echo hi").allow is True
     denied = _call(client_ws, "run danger now")
     assert denied.allow is False and denied.rule_id == "no-danger"
+    assert denied.additional_blocking_rules == (["second-deny"] if multiple else [])
+    if multiple:
+        assert denied.additional_block_reason == "Also blocked by: second-deny."
+        assert denied.additional_block_reason in denied.reason
     # Recorded once, on the server, under the caller's session. Client and
     # server share PRISMOR_HOME here, so a client-side write would make it 4.
     assert len(read_session_events(server_ws, "s1")) == 2

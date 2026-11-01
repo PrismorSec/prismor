@@ -2358,6 +2358,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
 
+            additional_blocks = decision.additional_block_reason
+            if additional_blocks:
+                reason += f"\n{additional_blocks}"
+
             # Narrowest-first unblock steps, so a false positive costs one
             # allowlist entry rather than an uninstall.
             unblock_text = ""
@@ -2541,6 +2545,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # Antigravity reads {"decision": "deny", "reason"} from stdout
                     # and shows the reason to the model (verified live, 2.19.1).
                     _ag_reason = _block_header(blocking)
+                    if additional_blocks:
+                        _ag_reason += additional_blocks + "\n"
                     if blocking.get("remediation"):
                         _ag_reason += f"Recommended fix: {blocking['remediation']}\n"
                     if unblock_text:
@@ -2551,6 +2557,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
                     sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
                     sys.stderr.write(_block_header(blocking))
+                    if additional_blocks:
+                        sys.stderr.write(additional_blocks + "\n")
                     if unblock_text:
                         sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(2)
@@ -2574,6 +2582,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                             }
                         }) + "\n")
                     sys.stderr.write(_block_header(blocking))
+                    if additional_blocks:
+                        sys.stderr.write(additional_blocks + "\n")
                     if blocking.get("evidence"):
                         sys.stderr.write(f"{blocking['evidence']}\n")
                     if blocking.get("remediation"):

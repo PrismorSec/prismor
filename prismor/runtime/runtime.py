@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from prismor.runtime import perf
-from prismor.runtime.contract import CONTRACT_VERSION, Decision
+from prismor.runtime.contract import CONTRACT_VERSION, Decision, verdict_of
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
 from prismor.runtime.principal import Subject, current_token, is_verified, resolve_subject
@@ -829,7 +829,8 @@ def evaluate_tool_call(
             pass
 
     perf.lap("telemetry")
-    blocking = should_block(findings, event)
+    block_candidates = findings
+    blocking = should_block(block_candidates, event)
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
 
@@ -846,9 +847,7 @@ def evaluate_tool_call(
     # the local machine may not opt out of (today: settings.egress in enforce
     # mode, where a local observe downgrade would otherwise let a developer
     # step outside the fleet's egress boundary).
-    if (blocking is not None and mode == "observe"
-            and blocking.get("category") != "agent-control"
-            and not blocking.get("authoritative")):
+    if blocking is not None and mode == "observe":
         _org_chose_observe = bool(
             _control is not None and getattr(_control, "org_mode", None) == "observe"
         )
@@ -859,15 +858,13 @@ def evaluate_tool_call(
         except Exception:
             _enrolled = False
         if _org_chose_observe or not _enrolled:
-            # Re-scan rather than just dropping: should_block() returns the FIRST
-            # enforce-rated finding, which may be an ordinary detection sitting
-            # ahead of an authoritative one that observe mode must not suppress.
+            # Keep the eligible set for both the verdict and its explanation.
+            # Ordinary detections must not hide an authoritative finding, or be
+            # described as additional blockers when observe mode suppresses them.
             _would_block = blocking
-            blocking = should_block(
-                [f for f in findings
-                 if f.get("category") == "agent-control" or f.get("authoritative")],
-                event,
-            )
+            block_candidates = [f for f in findings
+                                if f.get("category") == "agent-control" or f.get("authoritative")]
+            blocking = should_block(block_candidates, event)
             # An org per-agent observe pin silently outranks --mode enforce and
             # device_mode, so say so (#256): stderr, and the audit verdict reads
             # "suppressed" instead of an ordinary "warned".
@@ -973,7 +970,7 @@ def evaluate_tool_call(
         _warn_observe_adapter(str(meta["framework"]), findings)
     if blocking is not None:
         _delegations.release(event, _scope)  # a refused launch uses no number
-    return Decision(
+    decision = Decision(
         allow=blocking is None,
         findings=findings,
         blocking=blocking,
@@ -982,6 +979,21 @@ def evaluate_tool_call(
         engine=engine,
         explain=_explain,
     )
+    if decision.verdict == "block":
+        seen = {decision.rule_id}
+        for finding in block_candidates:
+            rule_id = finding.get("ruleId")
+            if not rule_id or rule_id in seen:
+                continue
+            candidate = should_block([finding], event)
+            if candidate is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
+                candidate = legacy_should_block([finding], event, engine.block_categories)
+            if verdict_of(candidate) == "block":
+                seen.add(rule_id)
+                decision.additional_blocking_rules.append(rule_id)
+        if decision.additional_block_reason:
+            decision.reason += "\n" + decision.additional_block_reason
+    return decision
 
 
 def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") -> None:
