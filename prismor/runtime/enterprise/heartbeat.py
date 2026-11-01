@@ -39,12 +39,16 @@ FLUSH_INTERVAL = 60.0
 STATUS_INTERVAL = 3600.0
 
 
-def device_status_record() -> Dict[str, Any]:
+def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
     """What the console needs to answer "is this machine covered?": the
     running version, whether it is a system (every-user) or per-user install,
     and for each agent found on the machine whether a Prismor hook covers it
     machine-wide, and which hook events route to it. Agent and event names
-    only; no paths, commands or user data."""
+    only; no paths, commands or user data.
+
+    ``workspace`` is the repo this report is sent from. A project-scope hook
+    there is reported as ``via: project`` (one repo, not the machine) instead
+    of as no hook at all, which is what a project-only setup looked like."""
     import platform
     import uuid
     from prismor.runtime import __version__, system_install
@@ -65,8 +69,16 @@ def device_status_record() -> Dict[str, Any]:
             events = prismor_hook_events(agent, via, home) if via else []
             if events:
                 agents[agent]["events"] = events
+        if scan and workspace is not None and Path(workspace).resolve() != home.resolve():
+            for agent, cov in coverage(Path(workspace)).items():
+                if cov.get("project") and (agents.get(agent) or {}).get("via") is None:
+                    agents[agent] = {"covered": False, "via": "project"}
+                    events = prismor_hook_events(agent, "project", Path(workspace))
+                    if events:
+                        agents[agent]["events"] = events
     except Exception:
         pass
+    mode = _hook_mode(agents, workspace or home) if scan else None
     return {
         "schema": "prismor.runtime.telemetry.v1",
         "event_id": "evt_" + uuid.uuid4().hex,
@@ -81,8 +93,58 @@ def device_status_record() -> Dict[str, Any]:
             "platform": platform.system().lower(),
             **({"agents": agents,
                 "unguarded": sorted(a for a, v in agents.items() if not v["covered"])} if scan else {}),
+            # observe | enforce | mixed: what the hooks above were installed
+            # with, so the console has a mode before the first finding arrives.
+            **({"mode": mode} if mode else {}),
         },
     }
+
+
+def _hook_mode(agents: Dict[str, Any], workspace: Path) -> Optional[str]:
+    """The --mode the reported hooks run with, across the agents in ``agents``
+    at the scope each one is reported via. None when none says."""
+    try:
+        from prismor.runtime.hooks import hook_health
+        seen = {(c["agent"], c["scope"]): c.get("mode") for c in hook_health(workspace)
+                if c.get("configured")}
+    except Exception:
+        return None
+    modes = {seen.get((a, v.get("via"))) for a, v in agents.items() if v.get("via") in ("global", "project")}
+    modes &= {"observe", "enforce"}
+    if not modes:
+        return None
+    return modes.pop() if len(modes) == 1 else "mixed"
+
+
+def status_record_once(workspace: Optional[Path] = None, force: bool = False) -> Optional[Dict[str, Any]]:
+    """A device_status record if this device has not sent one yet (or
+    ``force``), marking it sent so the hourly heartbeat carries on from here.
+    None otherwise. Never raises.
+
+    The console's Coverage and Mode come from this record, and it otherwise
+    waited for the first heartbeat flush: a device that had just enrolled, or
+    whose first upload was a blocked call, showed "coverage not reported"."""
+    if not _identity.load_identity():
+        return None
+    path = _counter_path()
+    try:
+        from prismor.runtime.store import file_lock
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with file_lock(path):
+            data = _load(path) if path.exists() else {"v": 2, "counters": {}}
+            if not force and float(data.get("last_status") or 0) > 0:
+                return None
+            data["last_status"] = time.time()
+            data.setdefault("last_flush", time.time())
+            data["v"] = 2
+            path.write_text(json.dumps(data), encoding="utf-8")
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass
+        return device_status_record(workspace)
+    except Exception:
+        return None
 
 # Bound the counter file + flush fan-out. A single device running >64 distinct
 # agent instances is not a real topology (instances spread across a fleet of
@@ -163,7 +225,8 @@ def record_call(
         pass
 
 
-def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float = 6.0) -> bool:
+def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float = 6.0,
+                workspace: Optional[Path] = None) -> bool:
     """Upload the accumulated counts as one agent_activity record *per agent
     instance*, at most once per FLUSH_INTERVAL. Returns True if a flush was
     attempted. Never raises.
@@ -227,7 +290,7 @@ def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float
 
     if send_status:
         try:
-            records.append(device_status_record())
+            records.append(device_status_record(workspace))
         except Exception:
             pass  # status is bookkeeping; never let it cost the heartbeat
     # Always call through, even with no counts of our own: upload_telemetry

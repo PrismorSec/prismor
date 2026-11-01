@@ -505,6 +505,21 @@ def _dispatch_prismor(
     if not records:
         return
 
+    # A device that has never reported coverage sends it with its first
+    # upload (immediately if that is a block, else on the next flush): the
+    # console otherwise showed a device whose first record was a block as
+    # "coverage not reported". Added after the redaction check on purpose --
+    # device_status is not a finding record.
+    first_status = None
+    try:
+        from prismor.runtime.enterprise.heartbeat import status_record_once
+        _ws = extra.get("workspace")
+        first_status = status_record_once(Path(_ws) if _ws else None)
+    except Exception:
+        first_status = None
+    if first_status:
+        records.insert(0, first_status)
+
     # SECURITY: the prismor sink carries the device-key bearer credential
     # (see upload_telemetry's Authorization header). A local policy.yaml could
     # otherwise set `url:` and redirect that credential to an attacker endpoint,

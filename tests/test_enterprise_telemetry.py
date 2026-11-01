@@ -207,7 +207,8 @@ def test_prismor_sink_uploads_redacted(tmp_path, monkeypatch):
     assert captured["headers"]["authorization"] == "Bearer prism_dev_abc"
     assert captured["body"]["org_id"] == "org_1"
     assert captured["body"]["device_id"] == "dev_1"
-    ev = captured["body"]["events"][0]
+    # The first upload also carries the device_status coverage report.
+    ev = next(e for e in captured["body"]["events"] if e.get("type") != "device_status")
     assert ev["redacted"] is True
     assert ev["device_id"] == "dev_1"
     # The uploaded payload must not contain the raw command or secret.

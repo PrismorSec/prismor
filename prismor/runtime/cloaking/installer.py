@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from prismor.runtime.cloaking.secrets_store import secrets_dir
+from prismor.runtime.cloaking.secrets_store import pinned_secrets_dir, secrets_dir
 
 # Hook scripts shipped under prismor/runtime/cloaking/hooks/
 _HOOKS_SUBDIR = Path(__file__).resolve().parent / "hooks"
@@ -195,8 +195,10 @@ def install(
         and ``secretsDir``.
     """
     # Ensure the secrets directory exists with correct permissions before
-    # the first hook fires.
-    sdir = secrets_dir()
+    # the first hook fires. It is the one the hooks will resolve: the pinned
+    # override, else the default under this HOME.
+    pinned = pinned_secrets_dir()
+    sdir = pinned or Path.home() / ".prismor" / "secrets"
     sdir.mkdir(parents=True, exist_ok=True)
     try:
         sdir.chmod(0o700)
@@ -271,12 +273,20 @@ def install(
         )
         installed.append("Stop (sweep)")
 
-    # Also seed the secrets-dir env var so the scripts pick up overrides
-    # set through ``prismor cloak`` rather than the default location.
+    # Pin the secrets dir only when it was chosen on purpose (see
+    # pinned_secrets_dir); otherwise the hooks resolve it from HOME when they
+    # run, and a pin left by an earlier install is dropped.
     env = dict(config.get("env", {}))
-    env["PRISMOR_SECRETS_DIR"] = str(sdir)
+    if pinned is not None:
+        env["PRISMOR_SECRETS_DIR"] = str(pinned)
+    else:
+        env.pop("PRISMOR_SECRETS_DIR", None)
 
-    new_config = {**config, "hooks": hooks, "env": env}
+    new_config = {**config, "hooks": hooks}
+    if env:
+        new_config["env"] = env
+    else:
+        new_config.pop("env", None)
     _write_json(path, new_config)
 
     if scope == "project":

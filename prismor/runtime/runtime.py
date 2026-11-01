@@ -810,7 +810,7 @@ def evaluate_tool_call(
                 agent_name=_agent_name if _agent_name != agent else "",
                 session_id=session_id,
             )
-            heartbeat.maybe_flush()
+            heartbeat.maybe_flush(workspace=workspace)
             if flush_at_exit:
                 heartbeat.flush_at_exit()
         except Exception:

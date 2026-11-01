@@ -1245,10 +1245,13 @@ class AllowlistEntry:
 # subcommands, cloak help and the names-only cloak list are exempt. `sessions`
 # and `agents transcript` replay untrusted content and must stay judged.
 # No shell metacharacters, so nothing else's output can ride along in the call.
+# The one tail allowed is `2>&1` and a `head`/`tail` with only a line count:
+# with no file argument they print nothing but what Prismor wrote.
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
-    r"|\s+cloak\s+(?:list|--help|-h)|\s+--?(?:version|help))?\s*$"
+    r"|\s+cloak\s+(?:list|--help|-h)|\s+(?:--?(?:version|help)|-h))?"
+    r"(?:\s+2>&1)?(?:\s*\|\s*(?:head|tail)(?:\s+-(?:n\s*)?\d+)?)?\s*$"
 )
 
 

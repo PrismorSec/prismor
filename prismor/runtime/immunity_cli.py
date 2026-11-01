@@ -79,8 +79,15 @@ def _update_notice() -> None:
     this adds no network latency to most invocations. Never called for
     `hook-dispatch`, which fires on every tool call and cannot afford stderr
     noise or a network hit on that path. Suppressable with
-    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI."""
+    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI.
+
+    Not shown inside an agent's shell: the agent cannot act on it and relays
+    it into answers about something else. The human still sees it in their
+    own terminal."""
     if os.environ.get("PRISMOR_NO_UPDATE_CHECK"):
+        return
+    from prismor.runtime.agent_env import running_under_agent
+    if running_under_agent():
         return
     try:
         from prismor.runtime.version_check import latest_known_version

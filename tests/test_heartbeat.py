@@ -196,7 +196,7 @@ def test_device_status_rides_the_first_flush_then_hourly(monkeypatch):
     _enroll()
     sent = []
     monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
-    monkeypatch.setattr(heartbeat, "device_status_record", lambda: {"type": "device_status"})
+    monkeypatch.setattr(heartbeat, "device_status_record", lambda *_: {"type": "device_status"})
     t0 = time.time()
     heartbeat.record_call(agent="claude", session_id="s1")
     heartbeat.maybe_flush(now=t0 + heartbeat.FLUSH_INTERVAL + 1)
@@ -253,6 +253,44 @@ def test_device_status_reports_which_events_prismor_hooks(monkeypatch, tmp_path)
     assert hooks.prismor_hook_events("claude", "global", tmp_path) == ["PreToolUse"]
 
 
+def test_device_status_reports_a_project_scope_install_in_the_reporting_repo(monkeypatch, tmp_path):
+    # Demo finding #14: right after `prismor setup` (project scope) + enroll the
+    # console showed the device's coverage as not reported / no hook, because
+    # only the home dir was scanned.
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    repo = tmp_path / "acme-app"
+    repo.mkdir()
+    monkeypatch.setattr(hooks, "coverage", lambda ws: {
+        "claude": {"project": ws == repo, "global": False, "foreign": False},
+        "cursor": {"project": False, "global": False, "foreign": False},
+    })
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: False)
+    monkeypatch.setattr(hooks, "prismor_hook_events",
+                        lambda a, scope, ws: ["PreToolUse"] if scope == "project" and ws == repo else [])
+    d = heartbeat.device_status_record()["detail"]
+    assert d["agents"]["claude"] == {"covered": False, "via": None}
+    d = heartbeat.device_status_record(repo)["detail"]
+    assert d["agents"]["claude"] == {"covered": False, "via": "project", "events": ["PreToolUse"]}
+    assert d["agents"]["cursor"] == {"covered": False, "via": None}
+    # Still one repo, not the machine.
+    assert d["unguarded"] == ["claude", "cursor"]
+    # Agent names and event names only: the repo path never rides along.
+    assert str(repo) not in json.dumps(heartbeat.device_status_record(repo))
+
+
+def test_flush_passes_the_workspace_to_device_status(monkeypatch, tmp_path):
+    from prismor.runtime.enterprise import heartbeat
+    _enroll()
+    seen = []
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: None)
+    monkeypatch.setattr(heartbeat, "device_status_record",
+                        lambda ws=None: seen.append(ws) or {"type": "device_status"})
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1, workspace=tmp_path)
+    assert seen == [tmp_path]
+
+
 def test_agent_key_identity_reports_no_machine_coverage(monkeypatch):
     # An agent key is a workload. The Cowork plugin, run by the desktop app on a
     # laptop, scanned the laptop and reported it a second time under its key.
@@ -263,3 +301,39 @@ def test_agent_key_identity_reports_no_machine_coverage(monkeypatch):
     d = heartbeat.device_status_record()["detail"]
     assert "agents" not in d and "unguarded" not in d
     assert d["prismor_version"]
+
+
+def test_device_status_reports_the_hook_mode(monkeypatch, tmp_path):
+    # The console's Mode column stayed blank until the first finding (#14).
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    monkeypatch.setattr(hooks, "coverage", lambda ws: {
+        "claude": {"project": False, "global": True, "foreign": False},
+        "codex": {"project": False, "global": True, "foreign": False},
+    })
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: False)
+    monkeypatch.setattr(hooks, "prismor_hook_events", lambda a, scope, ws: [])
+    rows = [{"agent": "claude", "scope": "global", "configured": True, "mode": "enforce"},
+            {"agent": "codex", "scope": "global", "configured": True, "mode": "enforce"}]
+    monkeypatch.setattr(hooks, "hook_health", lambda ws, **kw: rows)
+    assert heartbeat.device_status_record()["detail"]["mode"] == "enforce"
+    rows[1]["mode"] = "observe"
+    assert heartbeat.device_status_record()["detail"]["mode"] == "mixed"
+    monkeypatch.setattr(hooks, "hook_health", lambda ws, **kw: [])
+    assert "mode" not in heartbeat.device_status_record()["detail"]
+
+
+def test_status_record_once_sends_once_and_keeps_the_hourly_cadence(monkeypatch):
+    from prismor.runtime.enterprise import heartbeat
+    assert heartbeat.status_record_once() is None  # not enrolled
+    _enroll()
+    monkeypatch.setattr(heartbeat, "device_status_record", lambda ws=None: {"type": "device_status"})
+    assert heartbeat.status_record_once() == {"type": "device_status"}
+    assert heartbeat.status_record_once() is None
+    assert heartbeat.status_record_once(force=True) == {"type": "device_status"}  # enroll re-sends
+    # The heartbeat does not send another within the hour.
+    sent = []
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1)
+    assert [r["type"] for r in sent].count("device_status") == 0
