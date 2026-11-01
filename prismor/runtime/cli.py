@@ -15,7 +15,7 @@ Commands:
   sessions      List stored sessions
   session       Show a specific session
   install-hooks Install IDE hooks for real-time monitoring
-  uninstall-hooks Remove IDE hooks
+  uninstall-hooks Uninstall IDE hooks
   hook-dispatch Internal: called by IDE hooks (not for direct use)
   dashboard     Open the Prismor web dashboard (local server + browser)
   query SQL     Read-only SQL over the local session store (redacted output)
@@ -4531,7 +4531,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── uninstall-hooks ────────────────────────────────────────────────
     uninstall_parser = subparsers.add_parser(
         "uninstall-hooks",
-        help="Remove IDE hooks",
+        help="Uninstall IDE hooks",
         description="Remove Prismor runtime-monitor hooks for an agent. For --agent claude "
         "(or all), this also removes cloaking hooks installed by `prismor cloak install` — "
         "secrets are no longer protected at the tool boundary until you re-run "
