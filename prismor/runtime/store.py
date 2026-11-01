@@ -4719,6 +4719,51 @@ def _attach_hook_runs(events: List[Dict[str, Any]], transcript: str) -> None:
             ev["hookRuns"] = sorted(by_call[ev["toolUseId"]], key=lambda r: (_TOOL_HOOK_EVENTS.index(r["event"]), r["ts"]))
 
 
+def transcript_refusals(transcript: str) -> List[Dict[str, str]]:
+    """The prompts the model provider's safety classifier refused, oldest
+    first: the refusal record's uuid and time, the classifier's category, and
+    the refused prompt's text. The agent ran nothing for them, and the person
+    usually edits and resends, so unmarked they read as near-identical empty
+    turns. Claude Code logs each as a system record naming the refused message."""
+    texts: Dict[str, str] = {}
+    found: List[Dict[str, str]] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"type":"user"' not in line and "model_refusal_fallback" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("subtype") == "model_refusal_fallback" and rec.get("refusedUserMessageUuid"):
+                    tag = re.search(r"Details: `\[([^\]]+)\]`", str(rec.get("content") or ""))
+                    found.append({"uuid": str(rec.get("uuid") or ""), "ts": str(rec.get("timestamp") or ""),
+                                  "category": tag[1] if tag else "policy",
+                                  "refused": str(rec["refusedUserMessageUuid"])})
+                elif rec.get("type") == "user" and isinstance((rec.get("message") or {}).get("content"), str):
+                    texts[str(rec.get("uuid"))] = rec["message"]["content"].strip()
+    except OSError:
+        return []
+    for r in found:
+        r["prompt"] = texts.get(r.pop("refused"), "")
+    return found
+
+
+def _attach_refusals(events: List[Dict[str, Any]], transcript: str) -> None:
+    """Mark each prompt row the safety classifier refused with its category."""
+    if not transcript:
+        return
+    by_text = {r["prompt"]: r["category"] for r in transcript_refusals(transcript) if r["prompt"]}
+    for ev in events:
+        artifacts = ev.get("artifacts") or {}
+        text = str(artifacts.get("user_message") or artifacts.get("prompt") or "").strip()
+        if ev.get("type") == "prompt" and text in by_text:
+            artifacts["refused"] = by_text[text]
+
+
 def _attach_task_durations(
     events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
 ) -> None:
@@ -5009,6 +5054,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
             _attach_task_durations(recent_events, tool_calls)
             _attach_hook_runs(recent_events, transcript)
+            _attach_refusals(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
             _slim_old_trail(recent_events)
             # Dedupe on the raw timestamp: recent_blocked carries it, while an

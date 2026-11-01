@@ -1350,6 +1350,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tree-turn-label { font-weight: 600; color:var(--gray-800); }
   .tree-turn-sub { color:var(--gray-500); font-weight:400; margin-left:8px; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tree-row.refused .tree-turn-sub { color:var(--red); }
   .tree-count { margin-left:auto; flex:none; font-size: 11px; font-weight:600; color:var(--gray-500);
     background:var(--gray-100); border-radius:8px; padding:1px 7px; min-width:20px; text-align:center; }
   .tree-row.turn .tree-count { color:var(--gray-700); }
@@ -6554,6 +6555,12 @@ function groupTrail(trail){
       return;  // already represented by the turn it opened
     }
     if (isTurnStart && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
+    // The provider's classifier refused it, so nothing ran, and the retry
+    // usually differs only at the end: show the end, not the shared start.
+    if (isTurnStart && (ev.artifacts||{}).refused){
+      cur.refused = true;
+      cur.sub = 'refused by safety classifier ('+ev.artifacts.refused+') \u00b7 \u2026'+text.slice(-70);
+    }
     const note = taskNote(ev);
     const sid = subagentOf(ev) || (note && subs[note.id] ? note.id : '');
     // Async subagents keep working (and report back) after later prompts;
@@ -6671,6 +6678,7 @@ function renderSessionFlow(trail){
     const kids = document.createElement('div'); kids.className='tree-children';
     const head = treeRowEl({cls:'turn', caret:true, label:turn.label, sub:turn.sub, count:turn.count,
       onToggle:(e)=>{ kids.classList.toggle('hidden'); e.currentTarget.classList.toggle('collapsed'); }});
+    if (turn.refused) head.classList.add('refused');
     box.appendChild(head); box.appendChild(kids);
     const subLanes = [...turn.lanes.keys()].filter(l=>l.startsWith('sub:'));
     // Read order: what was asked, what the subagents did, then the main

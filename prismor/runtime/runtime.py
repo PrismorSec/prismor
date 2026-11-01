@@ -914,6 +914,9 @@ def evaluate_tool_call(
             eval_ms=_eval_ms,
             session_seq=_session_seq,
         )
+        if event.get("agent_event") == "UserPromptSubmit":
+            _dispatch_refusals(engine=engine, event=event, workspace=workspace, agent=agent,
+                               session_id=session_id, subject=subject)
 
     # Tamper-evident signed audit trail: one chained + signed record per
     # evaluated call — every verdict, not just findings — so the local trail
@@ -1004,6 +1007,43 @@ def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") 
         title = f.get("title", "policy violation")
         severity = f.get("severity", "high")
         sys.stderr.write(f"[prismor] observe{label}: would block in enforce mode - [{severity}] {title}\n")
+
+
+def _dispatch_refusals(
+    *, engine: PolicyEngine, event: Dict[str, Any], workspace: Path, agent: str,
+    session_id: str, subject: Subject,
+) -> None:
+    """Ship a ``model_refusal`` row for each prompt the model's safety
+    classifier refused. No hook fires for a refusal, so the next prompt is the
+    first chance to see it in the transcript; the row carries the refusal's own
+    time, which files it under the refused turn in the console. Category only,
+    never the prompt. Best-effort."""
+    transcript = ((event.get("metadata") or {}).get("raw") or {}).get("transcript_path")
+    if not transcript or not session_id:
+        return
+    try:
+        from prismor.runtime.store import prismor_home, transcript_refusals
+        refusals = transcript_refusals(str(transcript))
+        if not refusals:
+            return
+        seen_file = prismor_home() / "cache" / f"refusals-{re.sub(r'[^A-Za-z0-9_-]', '', session_id)}.txt"
+        seen = set(seen_file.read_text().split()) if seen_file.exists() else set()
+        fresh = [r for r in refusals if r["uuid"] and r["uuid"] not in seen]
+        if not fresh:
+            return
+        seen_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(seen_file, "a", encoding="utf-8") as fh:
+            fh.writelines(r["uuid"] + "\n" for r in fresh)
+    except Exception:
+        return
+    for r in fresh:
+        _dispatch_telemetry(
+            engine=engine,
+            findings=[{"action": "allow", "severity": "info", "category": r["category"],
+                       "ruleId": "model-refusal", "title": "Prompt refused by the model's safety classifier"}],
+            event={"type": "model_refusal", "agent_event": "ModelRefusal", "ts": r["ts"], "occurred_at": r["ts"]},
+            workspace=workspace, agent=agent, mode="observe", session_id=session_id, subject=subject,
+        )
 
 
 def _dispatch_telemetry(
