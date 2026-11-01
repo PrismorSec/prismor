@@ -150,12 +150,13 @@ checks do not validate every matcher, optional event or client-specific schema.
 `prismor doctor --self-test` additionally runs recognized generated dispatcher
 scripts through their configured interpreter, with a temporary home and workspace
 and no inherited Prismor settings or credentials. It verifies imports and synthetic
-Claude-protocol allow/block responses, with a timeout on each subprocess. The
-synthetic commands are evaluated, never executed. Modified dispatcher scripts,
-custom launchers, portable wrappers, and plugins are skipped with a warning.
-This verifies the shared dispatcher, not each client's protocol or the current
-workspace policy. Client loading, trust, and actual invocation still require a
-live client check. Disposable state is not an OS sandbox.
+allow/block responses for the configured agent: Claude, Codex, Copilot or Qwen.
+It checks the agent's expected exit code and, where required, its JSON denial
+shape. Each subprocess has a timeout. The synthetic commands are evaluated,
+never executed. Other agents, modified dispatcher scripts, custom launchers,
+portable wrappers, and plugins are skipped with a warning.
+This verifies dispatcher responses, not the current workspace policy. Client
+loading, trust, and actual invocation still require a live client check. Disposable state is not an OS sandbox.
 The probe uses Python's isolated mode (`-I`); dependencies available only through
 user-site packages or `PYTHONPATH` are excluded and can fail the import probe.
 
