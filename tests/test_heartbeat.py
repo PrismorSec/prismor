@@ -301,3 +301,39 @@ def test_agent_key_identity_reports_no_machine_coverage(monkeypatch):
     d = heartbeat.device_status_record()["detail"]
     assert "agents" not in d and "unguarded" not in d
     assert d["prismor_version"]
+
+
+def test_device_status_reports_the_hook_mode(monkeypatch, tmp_path):
+    # The console's Mode column stayed blank until the first finding (#14).
+    from prismor.runtime.enterprise import heartbeat
+    from prismor.runtime import hooks
+    monkeypatch.setattr(hooks, "coverage", lambda ws: {
+        "claude": {"project": False, "global": True, "foreign": False},
+        "codex": {"project": False, "global": True, "foreign": False},
+    })
+    monkeypatch.setattr(hooks, "hook_installed", lambda a, scope, ws: False)
+    monkeypatch.setattr(hooks, "prismor_hook_events", lambda a, scope, ws: [])
+    rows = [{"agent": "claude", "scope": "global", "configured": True, "mode": "enforce"},
+            {"agent": "codex", "scope": "global", "configured": True, "mode": "enforce"}]
+    monkeypatch.setattr(hooks, "hook_health", lambda ws, **kw: rows)
+    assert heartbeat.device_status_record()["detail"]["mode"] == "enforce"
+    rows[1]["mode"] = "observe"
+    assert heartbeat.device_status_record()["detail"]["mode"] == "mixed"
+    monkeypatch.setattr(hooks, "hook_health", lambda ws, **kw: [])
+    assert "mode" not in heartbeat.device_status_record()["detail"]
+
+
+def test_status_record_once_sends_once_and_keeps_the_hourly_cadence(monkeypatch):
+    from prismor.runtime.enterprise import heartbeat
+    assert heartbeat.status_record_once() is None  # not enrolled
+    _enroll()
+    monkeypatch.setattr(heartbeat, "device_status_record", lambda ws=None: {"type": "device_status"})
+    assert heartbeat.status_record_once() == {"type": "device_status"}
+    assert heartbeat.status_record_once() is None
+    assert heartbeat.status_record_once(force=True) == {"type": "device_status"}  # enroll re-sends
+    # The heartbeat does not send another within the hour.
+    sent = []
+    monkeypatch.setattr("prismor.runtime.sinks.upload_telemetry", lambda recs, **kw: sent.extend(recs))
+    heartbeat.record_call(agent="claude", session_id="s1")
+    heartbeat.maybe_flush(now=time.time() + heartbeat.FLUSH_INTERVAL + 1)
+    assert [r["type"] for r in sent].count("device_status") == 0

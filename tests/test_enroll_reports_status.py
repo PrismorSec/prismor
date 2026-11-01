@@ -17,6 +17,7 @@ def test_enroll_uploads_device_status_for_the_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr("prismor.runtime.discover.send_report", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_offer_post_enroll_install", lambda w: None)
     seen = []
+    monkeypatch.setattr(identity, "load_identity", lambda: {"device_id": "d1"})
     monkeypatch.setattr(heartbeat, "device_status_record",
                         lambda w=None: seen.append(w) or {"type": "device_status"})
     sent = []

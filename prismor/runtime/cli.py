@@ -705,9 +705,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         # for the first hourly heartbeat, and the console showed a device it had
         # just enrolled as "coverage not reported".
         try:
-            from prismor.runtime.enterprise.heartbeat import device_status_record
+            from prismor.runtime.enterprise.heartbeat import status_record_once
             from prismor.runtime.sinks import upload_telemetry
-            upload_telemetry([device_status_record(workspace)], timeout=6.0)
+            _status = status_record_once(workspace, force=True)
+            if _status:
+                upload_telemetry([_status], timeout=6.0)
         except Exception:
             pass
         return
