@@ -1822,13 +1822,7 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-# Env vars agent CLIs set on the shells they spawn. ponytail: a known-names
-# list, not a general detector; add an agent here when it sets its own marker.
-_AGENT_ENV = ("AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI")
-
-
-def running_under_agent() -> bool:
-    return any(os.environ.get(k) for k in _AGENT_ENV)
+from prismor.runtime.agent_env import _AGENT_ENV, running_under_agent  # noqa: E402,F401  (re-exported)
 
 
 def print_agent_questions(target: Path) -> None:
