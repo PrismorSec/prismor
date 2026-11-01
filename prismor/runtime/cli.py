@@ -701,6 +701,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             _offer_post_enroll_install(workspace)
         except Exception:
             pass
+        # Report hook coverage now, after any install above. Otherwise it waits
+        # for the first hourly heartbeat, and the console showed a device it had
+        # just enrolled as "coverage not reported".
+        try:
+            from prismor.runtime.enterprise.heartbeat import device_status_record
+            from prismor.runtime.sinks import upload_telemetry
+            upload_telemetry([device_status_record(workspace)], timeout=6.0)
+        except Exception:
+            pass
         return
 
     if args.command == "system-sync":

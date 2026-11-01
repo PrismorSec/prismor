@@ -39,12 +39,16 @@ FLUSH_INTERVAL = 60.0
 STATUS_INTERVAL = 3600.0
 
 
-def device_status_record() -> Dict[str, Any]:
+def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
     """What the console needs to answer "is this machine covered?": the
     running version, whether it is a system (every-user) or per-user install,
     and for each agent found on the machine whether a Prismor hook covers it
     machine-wide, and which hook events route to it. Agent and event names
-    only; no paths, commands or user data."""
+    only; no paths, commands or user data.
+
+    ``workspace`` is the repo this report is sent from. A project-scope hook
+    there is reported as ``via: project`` (one repo, not the machine) instead
+    of as no hook at all, which is what a project-only setup looked like."""
     import platform
     import uuid
     from prismor.runtime import __version__, system_install
@@ -65,6 +69,13 @@ def device_status_record() -> Dict[str, Any]:
             events = prismor_hook_events(agent, via, home) if via else []
             if events:
                 agents[agent]["events"] = events
+        if scan and workspace is not None and Path(workspace).resolve() != home.resolve():
+            for agent, cov in coverage(Path(workspace)).items():
+                if cov.get("project") and (agents.get(agent) or {}).get("via") is None:
+                    agents[agent] = {"covered": False, "via": "project"}
+                    events = prismor_hook_events(agent, "project", Path(workspace))
+                    if events:
+                        agents[agent]["events"] = events
     except Exception:
         pass
     return {
@@ -163,7 +174,8 @@ def record_call(
         pass
 
 
-def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float = 6.0) -> bool:
+def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float = 6.0,
+                workspace: Optional[Path] = None) -> bool:
     """Upload the accumulated counts as one agent_activity record *per agent
     instance*, at most once per FLUSH_INTERVAL. Returns True if a flush was
     attempted. Never raises.
@@ -227,7 +239,7 @@ def maybe_flush(now: Optional[float] = None, force: bool = False, timeout: float
 
     if send_status:
         try:
-            records.append(device_status_record())
+            records.append(device_status_record(workspace))
         except Exception:
             pass  # status is bookkeeping; never let it cost the heartbeat
     # Always call through, even with no counts of our own: upload_telemetry
