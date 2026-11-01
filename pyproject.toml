@@ -214,6 +214,7 @@ packages = [
 "docs/live-telemetry.md" = "prismor/runtime/data/docs/live-telemetry.md"
 "docs/llm-proxy.md" = "prismor/runtime/data/docs/llm-proxy.md"
 "docs/mcp-gateway.md" = "prismor/runtime/data/docs/mcp-gateway.md"
+"docs/mcp-hub.md" = "prismor/runtime/data/docs/mcp-hub.md"
 "docs/memory-integrity.md" = "prismor/runtime/data/docs/memory-integrity.md"
 "docs/modes.md" = "prismor/runtime/data/docs/modes.md"
 "docs/n8n.md" = "prismor/runtime/data/docs/n8n.md"
