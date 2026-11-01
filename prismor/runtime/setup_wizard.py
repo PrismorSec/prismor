@@ -1315,6 +1315,40 @@ _AGENT_CONTEXT_BLOCK = (
 
 _AGENTS_MD_AGENTS = {"codex", "openclaw", "hermes", "copilot"}
 
+# Claude Code permission rules for the read-only commands the Security block
+# tells the agent to run, so a manual-approval session does not open on a
+# prompt for `prismor status`. Exact commands only: a prefix rule would also
+# approve arguments nobody looked at. Nothing here writes, unblocks or reveals
+# a secret value (`cloak list` prints names only).
+_READONLY_ALLOW_RULES = (
+    "Bash(prismor status)",
+    "Bash(prismor status --all)",
+    "Bash(prismor cloak list)",
+    "Bash(prismor query --schema)",
+)
+
+
+def _allow_readonly_commands(settings: Path) -> str:
+    """Add ``_READONLY_ALLOW_RULES`` to a Claude Code settings.json, keeping
+    whatever else is there. Leaves a file it cannot parse untouched."""
+    try:
+        data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+    except (ValueError, OSError):
+        return "skipped (settings.json is not valid JSON)"
+    if not isinstance(data, dict):
+        return "skipped (settings.json is not an object)"
+    perms = data.setdefault("permissions", {})
+    allow = perms.setdefault("allow", []) if isinstance(perms, dict) else None
+    if not isinstance(allow, list):
+        return "skipped (unexpected permissions shape)"
+    added = [r for r in _READONLY_ALLOW_RULES if r not in allow]
+    if not added:
+        return "already allowed"
+    allow.extend(added)
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    return "prismor status, cloak list, query --schema"
+
 
 def _upsert_security_block(path: Path) -> str:
     """Write or refresh Prismor's Security block in an agent context file.
@@ -1667,6 +1701,10 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             except Exception as e:
                 return False, str(e)[:200]
         _spinner_run(f"Installing {agent} hooks", _install_hook)
+    if "claude" in agents:
+        settings = (Path.home() if scope == "global" else target) / ".claude" / "settings.json"
+        _spinner_run("Allowing read-only prismor commands",
+                     lambda: (True, _allow_readonly_commands(settings)))
     if "codex" in agents:
         # Codex runs nothing until the human trusts the hooks; installed is not screened.
         from prismor.runtime.cli import codex_trust_line
