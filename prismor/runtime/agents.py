@@ -193,6 +193,28 @@ def inherit_control(child: AgentControl, parent: AgentControl) -> AgentControl:
 _DEFAULT = AgentControl(name="")  # sentinel — used for agents not in the registry
 
 
+#: ``settings.agent_controls`` key whose controls apply to every agent name.
+WILDCARD = "*"
+
+
+def _merge_wildcard(named: Any, wild: Any) -> Dict[str, Any]:
+    """The named org entry tightened by the ``"*"`` entry: disabled if either
+    is, enforce over observe, deny/ask lists unioned, the named iam_profile
+    first."""
+    named = named if isinstance(named, dict) else {}
+    if not isinstance(wild, dict) or not wild:
+        return named
+    modes = {named.get("mode"), wild.get("mode")}
+    return {
+        **wild, **named,
+        "enabled": bool(named.get("enabled", True)) and bool(wild.get("enabled", True)),
+        "mode": "enforce" if "enforce" in modes else "observe" if "observe" in modes else None,
+        "iam_profile": named.get("iam_profile") or wild.get("iam_profile"),
+        "deny_tools": list(dict.fromkeys([*(named.get("deny_tools") or ()), *(wild.get("deny_tools") or ())])),
+        "ask_tools": list(dict.fromkeys([*(named.get("ask_tools") or ()), *(wild.get("ask_tools") or ())])),
+    }
+
+
 def resolve_agent_control(
     name: str,
     workspace: Optional[Path] = None,
@@ -212,6 +234,11 @@ def resolve_agent_control(
       defined in the local/project iam.yaml (remote selects among locally
       defined profiles; it doesn't ship definitions).
 
+    A ``"*"`` entry in ``remote_controls`` applies to every name, merged
+    tighten-only with the named entry. The console sends one only for an agent
+    key bound to a single agent, so an agent that renames itself still gets its
+    controls (kill switch included).
+
     Returns a permissive default (enabled=True, mode=None, iam_profile=None)
     when the agent is in neither registry, so unregistered agents are
     unaffected by the control layer.
@@ -220,8 +247,7 @@ def resolve_agent_control(
         return AgentControl(name=name)
     config = load_agents_config(workspace)
     entry = config.get("agents", {}).get(name) or {}
-    remote = (remote_controls or {}).get(name)
-    remote = remote if isinstance(remote, dict) else {}
+    remote = _merge_wildcard((remote_controls or {}).get(name), (remote_controls or {}).get(WILDCARD))
     _global_deny = tuple(config.get("global_deny_tools") or ())
     _global_ask = tuple(config.get("global_ask_tools") or ())
     if not entry and not remote:
@@ -278,7 +304,7 @@ def list_agents(
     config = load_agents_config(workspace)
     names = set(config.get("agents", {}).keys())
     if isinstance(remote_controls, dict):
-        names.update(remote_controls.keys())
+        names.update(k for k in remote_controls if k != WILDCARD)
     return [resolve_agent_control(name, workspace, remote_controls) for name in sorted(names)]
 
 
