@@ -90,3 +90,26 @@ def test_all_failed_keeps_the_not_finished_message(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert "did not finish" in out and "partly" not in out
 
+
+class TestPostEnrollPrompt:
+    def _offer(self, tmp_path, monkeypatch, answer):
+        from prismor.runtime import cli
+        from prismor.runtime import system_install
+        calls = []
+        prompts = []
+        monkeypatch.setattr(system_install, "is_system_managed", lambda: False)
+        monkeypatch.setattr(wizard, "_detect_agents", lambda t: {"claude": True, "cursor": False})
+        monkeypatch.setattr(wizard, "run_non_interactive", lambda *a, **kw: calls.append(kw))
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True, raising=False)
+        monkeypatch.setattr("builtins.input", lambda p: (prompts.append(p), answer)[1])
+        cli._offer_post_enroll_install(tmp_path)
+        return calls, prompts
+
+    def test_enter_does_not_install_machine_wide(self, tmp_path, monkeypatch):
+        calls, prompts = self._offer(tmp_path, monkeypatch, "")
+        assert calls == []
+        assert "[y/N]" in prompts[0]
+
+    def test_explicit_yes_installs_globally(self, tmp_path, monkeypatch):
+        calls, _ = self._offer(tmp_path, monkeypatch, "y")
+        assert calls and calls[0]["scope"] == "global" and calls[0]["agents"] == ["claude"]

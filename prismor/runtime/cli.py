@@ -198,6 +198,8 @@ def _offer_post_enroll_install(workspace: Path) -> None:
         from prismor.runtime.setup_wizard import _detect_agents, run_non_interactive
     except Exception:
         return
+    # Every detected agent, OpenClaw and Hermes included: their plugins need an
+    # extra step only at project scope, and this install is global.
     det = _detect_agents(workspace)
     agents = [n for n, ok in det.items() if ok]
     if not agents:
@@ -207,14 +209,16 @@ def _offer_post_enroll_install(workspace: Path) -> None:
     if not sys.stdin.isatty():
         print(f"\nNext, guard {label} across every project:  prismor setup --scope global")
         return
+    # Defaults to No: Enter must not turn a workspace-scoped setup into a
+    # machine-wide one. Widening the scope is an explicit "y".
     try:
         resp = input(
-            f"\nGuard this machine — install Prismor into {label} for ALL projects? [Y/n] "
+            f"\nGuard this machine — install Prismor into {label} for ALL projects? [y/N] "
         ).strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\nSkipped. Guard the machine later with:  prismor setup --scope global")
         return
-    if resp in ("", "y", "yes"):
+    if resp in ("y", "yes"):
         # Global scope so every workspace on this machine is screened — an
         # enrolled device shouldn't have unguarded directories.
         run_non_interactive(workspace, mode="observe", agents=agents, scope="global")
