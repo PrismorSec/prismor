@@ -1250,7 +1250,7 @@ class AllowlistEntry:
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
-    r"|\s+cloak\s+(?:list|--help|-h)|\s+(?:--?(?:version|help)|-h))?"
+    r"|\s+cloak\s+(?:list|--help|-h)|\s+query\s+--schema|\s+(?:--?(?:version|help)|-h))?"
     r"(?:\s+2>&1)?(?:\s*\|\s*(?:head|tail)(?:\s+-(?:n\s*)?\d+)?)?\s*$"
 )
 

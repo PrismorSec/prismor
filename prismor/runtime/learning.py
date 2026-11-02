@@ -210,6 +210,16 @@ def _is_stateful_rule(rule_id: str) -> bool:
     )
 
 
+def _was_block(enrichment_json: Optional[str]) -> bool:
+    if not enrichment_json:
+        return True  # older rows say nothing either way; keep detecting
+    try:
+        meta = json.loads(enrichment_json) or {}
+    except (ValueError, TypeError):
+        return True
+    return meta.get("action") == "block" and meta.get("mode") != "observe"
+
+
 def _blocking_rule_id(finding_id: str, enrichment_json: Optional[str]) -> str:
     """The rule behind a stored finding: ``enrichment_json.ruleId``, else the
     finding id with its session prefix stripped (older rows)."""
@@ -288,6 +298,14 @@ def detect_evasion(
             # by rewording it. Session-state rules (staged-execution, tag
             # rules, ...) fire on what happened before, not on the shape.
             if _is_stateful_rule(_blocking_rule_id(finding_id, enrichment_json)):
+                continue
+            # Only a call that was actually stopped can be evaded. A warning
+            # (observe mode, a warn rule) or a flag on a command's OUTPUT left
+            # nothing to get around, and seeding from those made `prismor query`
+            # an "evasion" of a `prismor status` whose output had been flagged.
+            # A real block is always re-saved with action=block, mode=enforce;
+            # a block-rule that only observed keeps mode=observe.
+            if not _was_block(enrichment_json):
                 continue
             blocked_cmd = ordered_cmds[event_index]
             if not blocked_cmd:

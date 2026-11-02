@@ -1463,6 +1463,19 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .na-btn { font-size: 12px; font-weight:600; padding:5px 10px; border-radius:6px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700); cursor:pointer; transition:all .12s; }
   .na-btn.deny:hover { background:#fef2f2; border-color:#fecaca; color:#b91c1c; }
   .na-btn.allow:hover { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
+  .na-btn.ask:hover { background:#fffbeb; border-color:#fde68a; color:#b45309; }
+  .na-drop { position:relative; }
+  .na-menu { position:absolute; top:calc(100% + 4px); left:0; z-index:20; min-width:170px; background:var(--surface, #fff); border:1px solid var(--gray-200); border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.08); padding:4px; }
+  .na-menu[hidden] { display:none; }
+  .na-menu-item { display:block; width:100%; text-align:left; font-size:12px; padding:6px 8px; border:0; border-radius:6px; background:transparent; color:var(--gray-700); cursor:pointer; }
+  .na-menu-item:hover:not([disabled]) { background:var(--gray-100); }
+  .na-menu-item[disabled] { color:var(--gray-400); cursor:not-allowed; }
+  .na-sub { color:var(--gray-400); font-family:var(--font-mono); font-size:11px; }
+  .na-exact { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--gray-600); margin:2px 0 4px; }
+  .na-existing { margin:4px 0 8px; display:flex; flex-direction:column; gap:4px; }
+  .na-existing-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--gray-600); }
+  .na-pill { font-size:11px; font-weight:600; border-radius:999px; padding:1px 8px; background:var(--gray-100); }
+  .na-pill.allow { color:#15803d; } .na-pill.ask { color:#b45309; } .na-pill.deny { color:#b91c1c; }
   .na-status { font-size: 12px; margin:6px 0 4px; min-height:14px; }
   .na-hint { font-size: 11px; color:var(--gray-400); line-height:1.5; }
   .theme-toggle {
@@ -6779,6 +6792,7 @@ function renderNodePanel(ev){
     '</div>';
   panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
   panel.insertAdjacentHTML('beforeend', nodeActionsHtml(ev));
+  renderNaExisting(naTarget(ev));
 }
 
 // What the event actually carried. The log has held this all along -- the
@@ -6852,58 +6866,98 @@ function artifactsHtml(ev){
   return '<div class="artifacts"><h4>Artefacts'+phases+'</h4>'+rows.join('')+'</div>';
 }
 
+// Allow / Ask / Deny for the selected call, each at a scope picked from its
+// menu. A call a rule flagged is decided on that rule (by default for this
+// exact call only); any other call on its tool tag. Stored by /api/decisions
+// (decisions.py) and applied on the next call, in observe mode too.
+const NA_TOOL_RULES = /^(agent-tool-deny|agent-tool-step-up|org-tool-deny|org-tool-step-up|scoped-agent|tool-decision)/;
+const NA_SCOPES = [['session','This session'],['agent','This agent'],['workspace','This workspace'],['device','This device']];
+const NA_ACTIONS = [['allow','Allow'],['ask','Ask'],['deny','Deny']];
+
+function naTarget(ev){
+  const ruleId = String((ev.policy||{}).ruleId||'').replace(/^[0-9a-f-]{20,}:/,'');
+  const a = ev.artifacts || {};
+  const call = String(a.command || a.file_path || a.path || a.url || ev.action || '');
+  if (ruleId && flowVerdict(ev)!=='allow' && !NA_TOOL_RULES.test(ruleId)) return {target:'rule', ruleId, call};
+  // Only the agent's own tool name matches at runtime; ev.type ("shell") never would.
+  return {target:'tool', tool: ev.toolTag || '', call};
+}
+
 function nodeActionsHtml(ev){
-  const tool = safe(ev.toolTag || ev.type || 'tool');
-  const scopes = [['session','This session'],['agent','This agent'],['global','Across agents']];
-  const btns = (action)=> scopes.map(sc=>'<button class="na-btn '+action+'" onclick="applyNodePolicy(\''+action+'\',\''+sc[0]+'\')">'+sc[1]+'</button>').join('');
+  const t = naTarget(ev);
+  if (t.target==='tool' && !t.tool) return '';
+  const what = t.target==='rule'
+    ? 'rule <span class="na-tool">'+safe(t.ruleId)+'</span>'
+    : 'tool <span class="na-tool">'+safe(t.tool)+'</span>';
+  const st = _sessionViewState || {};
+  const menu = (action)=> '<div class="na-menu" id="naMenu-'+action+'" hidden>'+NA_SCOPES.map(sc=>{
+    const off = sc[0]==='agent' && !st.agent;
+    return '<button class="na-menu-item"'+(off?' disabled title="No agent recorded for this session"':'')+
+      ' onclick="applyNodeDecision(\''+action+'\',\''+sc[0]+'\')">'+sc[1]+
+      (sc[0]==='agent' && st.agent ? ' <span class="na-sub">'+safe(st.agent)+'</span>' : '')+'</button>';
+  }).join('')+'</div>';
   return '<div class="node-actions">'+
-    '<h4>Apply a rule for <span class="na-tool">'+tool+'</span></h4>'+
-    '<div class="na-row"><span class="na-label na-deny">Block</span>'+btns('deny')+'</div>'+
-    '<div class="na-row"><span class="na-label na-allow">Allow</span>'+btns('allow')+'</div>'+
+    '<h4>Decide this '+what+'</h4>'+
+    '<div class="na-row">'+NA_ACTIONS.map(a=>'<div class="na-drop">'+
+      '<button class="na-btn '+a[0]+'" onclick="toggleNaMenu(\''+a[0]+'\')" aria-haspopup="menu">'+a[1]+' \u25be</button>'+menu(a[0])+'</div>').join('')+'</div>'+
+    (t.target==='rule' && t.call ? '<label class="na-exact"><input type="checkbox" id="naExact" checked> Only this exact call</label>' : '')+
     '<div class="na-status" id="naStatus"></div>'+
-    '<div class="na-hint">Block adds this tool tag to a deny list; Allow lifts a deny. Session denials are reversible via \u201cClear scope\u201d. Agent and across-agents rules apply to future calls immediately, even in observe mode.</div>'+
+    '<div id="naExisting"></div>'+
+    '<div class="na-hint">Allow lets it run, Ask holds it for your approval, Deny blocks it, in observe mode too. '+
+      (t.target==='rule' ? 'Safety-floor rules can only be relaxed for one exact call.' : 'Applies to every call of this tool.')+'</div>'+
   '</div>';
 }
 
-async function applyNodePolicy(action, scope){
+function toggleNaMenu(action){
+  document.querySelectorAll('.na-menu').forEach(m=>{ m.hidden = m.id!=='naMenu-'+action || !m.hidden; });
+}
+document.addEventListener('click', e=>{
+  if (!e.target.closest('.na-drop')) document.querySelectorAll('.na-menu').forEach(m=>{ m.hidden = true; });
+});
+
+async function applyNodeDecision(action, scope){
   const ev = _flowSelEvent; if(!ev) return;
-  const tool = ev.toolTag || ev.type; if(!tool) return;
+  toggleNaMenu('');
+  const t = naTarget(ev);
   const st = _sessionViewState || {};
   const ws = st.workspace || '';
   const statusEl = document.getElementById('naStatus');
   const setStatus = (m,err)=>{ if(statusEl){ statusEl.textContent=m; statusEl.style.color=err?'#b91c1c':'var(--gray-500)'; } };
-  const where = {session:'this session', agent:'this agent'+(st.agent?' ('+st.agent+')':''), global:'all agents'}[scope];
-  if (scope==='agent' && !st.agent){ setStatus('\u2717 No agent recorded for this session.', true); return; }
-  if (scope!=='session' && !(await askConfirm((action==='deny'?'Block':'Allow')+' \u201c'+tool+'\u201d for '+where+'?\n\nThis affects future tool calls across sessions.'))) return;
+  const exact = t.target==='rule' && document.getElementById('naExact')?.checked;
+  const name = t.target==='rule' ? t.ruleId : t.tool;
+  const where = {session:'this session', agent:'agent '+(st.agent||''), workspace:'this workspace', device:'every workspace on this device'}[scope];
+  const verb = {allow:'Allow', ask:'Ask before', deny:'Deny'}[action];
+  if (scope!=='session' && !(await askConfirm(verb+' \u201c'+name+'\u201d'+(exact?' for this exact call':'')+' in '+where+'?'))) return;
+  const body = {target:t.target, action, scope, workspace:ws,
+    scopeId: scope==='session' ? st.sessionId : scope==='agent' ? st.agent : ''};
+  if (t.target==='rule'){ body.ruleId = t.ruleId; if (exact) body.pattern = t.call; }
+  else body.tool = t.tool;
   setStatus('Applying\u2026');
   try {
-    if (scope==='session'){
-      const sc = (st.data && st.data.scoped) ? JSON.parse(JSON.stringify(st.data.scoped)) : {};
-      let deny = Array.isArray(sc.deny_tools) ? sc.deny_tools.slice() : [];
-      let allow = Array.isArray(sc.allowed_tools) ? sc.allowed_tools.slice() : [];
-      if (action==='deny'){
-        if(!deny.includes(tool)) deny.push(tool);
-        if(allow.length===0) allow=['*'];
-        else if(!allow.includes('*')) allow=allow.filter(t=>t!==tool);
-      } else {
-        deny = deny.filter(t=>t!==tool);
-        if(allow.length && !allow.includes('*') && !allow.includes(tool)) allow.push(tool);
-      }
-      await apiFetch('/api/sessions/'+encodeURIComponent(st.sessionId)+'/control', {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({action:'update', workspace:ws, deny_tools:deny, allowed_tools:allow,
-          deny_network:!!sc.deny_network, allowed_paths: sc.allowed_paths || ['**']}),
-      });
-    } else {
-      const body = {scope:scope, action:action, tool:tool, workspace:ws};
-      if (scope==='agent') body.agent = st.agent;
-      await apiFetch('/api/tool-policy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    }
-    const verb = action==='deny' ? 'Blocked' : 'Allowed';
-    setStatus('\u2713 '+verb+' '+tool+' for '+where+'.');
-    toast('\u2713 '+verb+' '+tool+' for '+where);
-    setTimeout(()=>{ if(_sessionViewState && _sessionViewState.sessionId===st.sessionId) openSessionView(st.sessionId, ws); }, 650);
+    await apiFetch('/api/decisions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    setStatus('\u2713 '+verb+' '+name+' in '+where+'.');
+    toast('\u2713 '+verb+' '+name+' in '+where);
+    renderNaExisting(t);
   } catch(e){ setStatus('\u2717 '+e.message, true); }
+}
+
+// The decisions already standing for this rule or tool, each revocable.
+async function renderNaExisting(t){
+  const box = document.getElementById('naExisting'); if(!box) return;
+  let list = [];
+  try { list = (await apiFetch('/api/decisions')).decisions || []; } catch(_){ return; }
+  const mine = list.filter(d => t.target==='rule' ? d.ruleId===t.ruleId : d.tool===t.tool);
+  box.innerHTML = mine.length ? '<div class="na-existing">'+mine.map(d=>
+    '<div class="na-existing-row"><span class="na-pill '+safeAttr(d.action)+'">'+safe(d.action)+'</span>'+
+    '<span>'+safe(d.scope)+(d.scopeId?' '+safe(String(d.scopeId).slice(0,12)):'')+(d.pattern?' \u00b7 exact call':'')+'</span>'+
+    '<button class="link" onclick="revokeNaDecision(\''+safeJsArg(d.id)+'\')">Remove</button></div>').join('')+'</div>' : '';
+}
+
+async function revokeNaDecision(id){
+  try {
+    await apiFetch('/api/decisions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({remove:id})});
+    if (_flowSelEvent) renderNaExisting(naTarget(_flowSelEvent));
+  } catch(e){ toast('\u2717 '+e.message); }
 }
 
 

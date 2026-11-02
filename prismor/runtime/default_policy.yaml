@@ -570,8 +570,10 @@ rules:
       # stand-in for `timeout` (no coreutils), and its exec runs the argv the
       # same command line already shows, which the other rules judge.
       - 'perl\s+-e\s+(?!["'']alarm\b[^"''\n]*;\s*exec\s+@ARGV\s*["''])[^\n]*(?:socket|exec)'
-      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
-      - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
+      # A method call `re.exec(c)` is RegExp.prototype.exec, a regex loop, not
+      # a process: only a bare exec( (a destructured child_process import) runs one.
+      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|(?<![.\w])exec\s*\()'
+      - 'ruby\s+-e\b[^\n]*((?<![.\w])system\s*\(|(?<![.\w])exec\s*\(|IO\.popen|Open3)'
       - 'echo\s+.*\|\s*crontab'
       - '\*\s+\*\s+\*\s+\*\s+\*.*crontab'
       - '\b(ncat|socat)\b.*(?:exec|listen|EXEC)'
@@ -1338,8 +1340,8 @@ rules:
       # approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
       # Other Prismor state an agent has no legitimate reason to rewrite.
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources)\.json'
-      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources)\.json$'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
+      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'
@@ -1359,9 +1361,9 @@ rules:
       # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
       # put the `$` on the line, not in the request (replay: 92 such GETs).
       # A flag counts quoted or not (`"-XPOST"` is still a method).
-      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals)'
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions)'
       # The same URL built by joining the path in the interpreter.
-      - '/api/["'']\s*\+\s*["''](?:policy|tool-policy)\b'
+      - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'

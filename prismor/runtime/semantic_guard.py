@@ -126,7 +126,9 @@ _sig(r"(pre.?approved|already\s+cleared|cleared\s+by)\s+.{0,40}(team|admin|secur
 # "false positive" alone matched every bug report, commit and PR about the
 # guard. The framing is an attack only when it is used to get a check skipped.
 _sig(r"(false\s+positive.{0,80}\b(ignore|skip|bypass|disable|pause|turn\s+off)\b|ignore\s+(the\s+)?security\s+warning)", 0.65, "prismor_bypass_framing")
-_sig(r"(delete|remove|disable)\s+.{0,40}(policy\.yaml|settings\.json|hook)", 0.80, "policy_deletion")
+# `hook` as a word: Prismor's own status line "Remove one: prismor
+# uninstall-hooks --agent ..." names a CLI subcommand, not a request.
+_sig(r"(delete|remove|disable)\s+.{0,40}(policy\.yaml|settings\.json|(?<![-\w])hooks?\b)", 0.80, "policy_deletion")
 _sig(r"proceed\s+.{0,30}(ignore|without).{0,30}(warning|check|security)", 0.65, "proceed_ignoring_security")
 
 # Nested file injection markers

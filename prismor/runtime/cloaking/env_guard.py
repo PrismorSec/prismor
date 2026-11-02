@@ -112,7 +112,11 @@ def local_text(command: str) -> str:
     for m in _WORD.finditer(command):
         if is_remote_payload(command, m.start(), m.end()):
             out[m.start():m.end()] = " " * (m.end() - m.start())
-    return "".join(out)
+    # A heredoc body that nothing executes (`cat > notes.md <<EOF`) is text
+    # being written, not a file being read. Kept when any part of the command
+    # could run it (`python3 - <<EOF` opening the file reads it for real).
+    from prismor.runtime.egress import _network_text
+    return _network_text("".join(out))[0]
 
 
 def local_text_main() -> None:
@@ -202,6 +206,48 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
     return out
 
 
+_GREPPERS = {"grep", "egrep", "fgrep", "rg", "ag", "ack"}
+# Flags of the grep family that take the next word as their value.
+_GREP_VALUE_FLAGS = {"-A", "-B", "-C", "-m", "-g", "-t", "-T", "--glob", "--include",
+                     "--exclude", "--type", "--max-count", "--context"}
+
+
+def _grep_pattern_words(segs: Dict[int, List[str]]) -> set:
+    """``(seg, word)`` for the search pattern of each grep-family command.
+
+    `grep -rn '<pattern>' src/` searches src/ for that text; it does not open a
+    file named like the pattern. A pattern given with -e/--regexp is that
+    flag's value, and -f/--file names a real file, so it is never skipped.
+    """
+    out = set()
+    for seg, ws in segs.items():
+        if seg < 0 or not ws:
+            continue
+        name = os.path.basename(ws[0])
+        args = ws[1:]
+        if name == "git":
+            if not args or args[0] != "grep":
+                continue
+            args = args[1:]
+        elif name not in _GREPPERS:
+            continue
+        i = 0
+        while i < len(args):
+            a = args[i]
+            if a in ("-e", "--regexp"):
+                if i + 1 < len(args):
+                    out.add((seg, args[i + 1]))
+                break
+            if a in ("-f", "--file"):
+                break
+            if a.startswith("-"):
+                i += 2 if a in _GREP_VALUE_FLAGS else 1
+                continue
+            out.add((seg, a))
+            break
+    return out
+
+
 def candidate_paths(command: str, cwd: str) -> List[str]:
     """Every path ``command`` could name, resolved against the directory the
     shell is in at that point. A relative path after an unresolvable ``cd`` is
@@ -219,9 +265,10 @@ def candidate_paths(command: str, cwd: str) -> List[str]:
     cloak = {seg for seg, ws in segs.items()
              if seg >= 0 and len(ws) >= 2 and os.path.basename(ws[0]) == "prismor"
              and ws[1] == "cloak" and not any("`" in w or "$" in w for w in ws)}
+    patterns = _grep_pattern_words(segs)
     seen: List[str] = []
     for word, d, seg in words:
-        if seg in cloak:
+        if seg in cloak or (seg, word) in patterns:
             continue
         for m in _WORD.finditer(word):
             tok = m.group(0)

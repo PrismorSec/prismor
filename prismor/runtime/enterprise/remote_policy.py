@@ -390,6 +390,8 @@ def _current_rule_exemptions_sig() -> str:
         lines = sorted(
             f"{e.get('id')}:{e.get('ruleId') or ''}:{e.get('scope') or ''}:"
             f"{e.get('scopeId') or ''}:{e.get('action') or 'allow'}:{e.get('expires') or ''}"
+            # Appended only when set, so signatures of older entries are unchanged.
+            + (f":{e['pattern']}" if e.get("pattern") else "")
             for e in exemptions if isinstance(e, dict) and e.get("id")
         )
         if not lines:
