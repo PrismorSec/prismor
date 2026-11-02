@@ -712,7 +712,18 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
             return None
         try:
             import yaml
-            parsed = yaml.safe_load(payload.decode("utf-8"))
+
+            # The server writes ISO times unquoted (device_pause.at). Stock
+            # safe_load turns them into datetimes, which pause.py can't parse
+            # and the *Sig helpers can't json.dumps, so an org pause was
+            # silently ignored and re-pulled forever. Keep the exact string.
+            class _Loader(yaml.SafeLoader):
+                pass
+
+            _Loader.add_constructor(
+                "tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node)
+            )
+            parsed = yaml.load(payload.decode("utf-8"), Loader=_Loader)
         except Exception:
             return None
         if not isinstance(parsed, dict):
