@@ -188,10 +188,11 @@ def redact_mcp_result(
 ) -> Tuple[Any, bool]:
     """Redact the text blocks of an MCP ``tools/call`` result.
 
-    Only ``content[].text`` and ``structuredContent`` are touched: other block
-    kinds (images, resource links) are returned untouched rather than guessed
-    at, and a result that is not shaped like an MCP result passes through
-    unchanged.
+    Only ``content[].text``, the ``text`` of an embedded resource
+    (``content[].resource.text``) and ``structuredContent`` are touched: other
+    block kinds (images, resource links) are returned untouched rather than
+    guessed at, and a result that is not shaped like an MCP result passes
+    through unchanged.
 
     ``structuredContent`` matters as much as ``content``. Servers built on the
     MCP SDK's output schemas return the same payload twice, and a client that
@@ -210,14 +211,22 @@ def redact_mcp_result(
     changed = False
     out: List[Any] = []
     for block in content:
-        if not (isinstance(block, dict) and isinstance(block.get("text"), str)):
-            out.append(block)
-            continue
-        text, hit = redact_text(
-            block["text"], workspace=workspace, data_boundary=data_boundary)
-        if hit:
-            changed = True
-            block = {**block, "text": text}
+        if isinstance(block, dict):
+            if isinstance(block.get("text"), str):
+                text, hit = redact_text(
+                    block["text"], workspace=workspace, data_boundary=data_boundary)
+                if hit:
+                    changed = True
+                    block = {**block, "text": text}
+            # An embedded resource (``type: "resource"``) keeps its text one
+            # level down, under ``resource.text``.
+            res = block.get("resource")
+            if isinstance(res, dict) and isinstance(res.get("text"), str):
+                text, hit = redact_text(
+                    res["text"], workspace=workspace, data_boundary=data_boundary)
+                if hit:
+                    changed = True
+                    block = {**block, "resource": {**res, "text": text}}
         out.append(block)
 
     structured_out = structured
