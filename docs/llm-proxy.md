@@ -140,10 +140,6 @@ there is that the deployed bundle is your own agent code plus its requirements
 `before_tool_callback` governs it from the inside. Governance by inclusion, not
 interception.
 
-`examples/gemini-proxy-demo/demo.py` runs the whole path offline -- a stub
-Gemini upstream in the real wire format, the proxy in enforce, and a client that
-talks to it as the SDK would. No API key, no network, no `google-genai` install.
-
 ![A proposed Gemini functionCall denied, buffered and streamed](llm-proxy/gemini.png)
 
 The same run as an animation: [gemini.gif](llm-proxy/gemini.gif).
