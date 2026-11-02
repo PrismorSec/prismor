@@ -13,6 +13,9 @@
 #   status      shipped | roadmap | sweep-only
 #   config_paths   {project, user, system} config locations (where applicable)
 #   events      lifecycle events hooked
+#   event_types canonical event types the adapter produces from what the agent
+#               actually sends; rules on other types never fire for this agent
+#               (pinned by tests/test_integration_event_coverage.py)
 #   blocking    exit-2 | json-permission | throw | proxy-deny | none
 #   normalizer  prismor/runtime/hooks.py function (coding agents) or adapter module (frameworks)
 #   sweep_dir   config dir scanned by `immunity sweep` (optional)
@@ -31,6 +34,7 @@ agents:
     status: shipped
     config_paths: { project: ".claude/settings.json", user: "~/.claude/settings.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd]
+    event_types: [prompt, memory, subagent_spawn, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_claude
     sweep_dir: "~/.claude/"
@@ -48,6 +52,7 @@ agents:
     status: shipped
     config_paths: { project: ".cursor/hooks.json" }
     events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit]
+    event_types: [prompt, memory, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_cursor
     sweep_dir: "~/.config/Cursor/"
@@ -65,6 +70,7 @@ agents:
     status: shipped
     config_paths: { project: ".windsurf/hooks.json", user: "~/.codeium/windsurf/hooks.json" }
     events: [pre_user_prompt, pre_read_code, post_read_code, pre_write_code, post_write_code, pre_run_command, post_run_command, pre_mcp_tool_use, post_mcp_tool_use, post_cascade_response]
+    event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: json-permission
     normalizer: _normalize_windsurf
     sweep_dir: "~/.codeium/"
@@ -77,6 +83,7 @@ agents:
     status: shipped
     config_paths: { project: ".openclaw/extensions/prismor/", user: "~/.openclaw/extensions/prismor/" }
     events: [before_tool_call, after_tool_call, message_received]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: return-block
     normalizer: _normalize_openclaw
     sweep_dir: "~/.openclaw/"
@@ -90,6 +97,7 @@ agents:
     status: shipped
     config_paths: { project: ".hermes/plugins/prismor/", user: "~/.hermes/plugins/prismor/" }
     events: [pre_tool_call, post_tool_call, pre_llm_call]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: return-block
     normalizer: _normalize_hermes
     sweep_dir: "~/.hermes/"
@@ -103,6 +111,7 @@ agents:
     status: shipped
     config_paths: { project: ".codex/hooks.json", user: "~/.codex/hooks.json" }
     events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop]
+    event_types: [prompt, shell]
     blocking: exit-2
     normalizer: _normalize_codex
     sweep_dir: "~/.codex/"
@@ -122,6 +131,7 @@ agents:
     status: shipped
     config_paths: { project: ".github/hooks/prismor.json", user: "~/.copilot/hooks/prismor.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_copilot
     sources: ["https://docs.github.com/en/copilot/reference/hooks-configuration"]
@@ -136,6 +146,7 @@ agents:
     status: shipped
     config_paths: { project: ".grok/hooks/prismor.json", user: "~/.grok/hooks/prismor.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_grok
     sweep_dir: "~/.grok/"
@@ -154,6 +165,7 @@ agents:
     status: shipped
     config_paths: { project: ".kiro/agents/kiro_default.json", user: "~/.kiro/agents/kiro_default.json" }
     events: [userPromptSubmit, preToolUse, postToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_kiro
     sweep_dir: "~/.kiro/"
@@ -172,6 +184,7 @@ agents:
     status: shipped
     config_paths: { project: "crush.json", user: "~/.config/crush/crush.json" }
     events: [PreToolUse]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_crush
     sweep_dir: "~/.config/crush/"
@@ -189,6 +202,7 @@ agents:
     status: shipped
     config_paths: { project: ".openhands/hooks.json" }
     events: [PreToolUse, UserPromptSubmit]
+    event_types: [prompt, shell, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_openhands
     sweep_dir: "~/.openhands/"
@@ -205,6 +219,7 @@ agents:
     status: shipped
     config_paths: { project: ".qwen/settings.json", user: "~/.qwen/settings.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_qwen
     sweep_dir: "~/.qwen/"
@@ -223,6 +238,7 @@ agents:
     status: shipped
     config_paths: { project: ".continue/settings.json", user: "~/.continue/settings.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network]
     blocking: exit-2
     normalizer: _normalize_continue
     sweep_dir: "~/.continue/"
@@ -236,6 +252,7 @@ agents:
     status: shipped
     config_paths: { project: ".agents/plugins/prismor/hooks/hooks.json", user: "~/.agents/plugins/prismor/hooks/hooks.json" }
     events: [PreToolUse, UserPromptSubmit]
+    event_types: [prompt, shell, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_goose
     sweep_dir: "~/.config/goose/"
@@ -255,6 +272,7 @@ agents:
     status: shipped
     config_paths: { project: ".gemini/settings.json", user: "~/.gemini/settings.json", system: "/etc/gemini-cli/settings.json" }
     events: [BeforeTool, AfterTool, SessionStart]
+    event_types: [memory, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_gemini
     notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeAgent, AfterAgent, BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
@@ -272,6 +290,7 @@ agents:
     status: shipped
     config_paths: { project: ".opencode/plugins/", user: "~/.config/opencode/plugins/" }
     events: ["tool.execute.before", "tool.execute.after"]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: throw
     normalizer: _normalize_opencode
     sources: ["https://opencode.ai/docs/plugins/", "https://github.com/sst/opencode/blob/dev/packages/plugin/src/index.ts"]
@@ -406,6 +425,7 @@ agents:
     status: shipped
     config_paths: { project: ".agents/hooks.json", user: "~/.gemini/config/hooks.json" }
     events: [PreToolUse]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_antigravity
     sweep_dir: "~/.antigravity/"

@@ -19,70 +19,70 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 
 **Coding agents**
 
-| Agent | Kind | Surface | Status | Blocking |
-|---|---|---|---|---|
-| Claude Code | coding-agent | hook-config | ✅ | `exit-2` |
-| Cursor | coding-agent | hook-config | ✅ | `json-permission` |
-| Windsurf (Codeium Cascade) | coding-agent | hook-config | ✅ | `json-permission` |
-| OpenClaw | coding-agent | sdk | ✅ | `return-block` |
-| Hermes Agent (Nous Research) | coding-agent | sdk | ✅ | `return-block` |
-| Codex (OpenAI) | coding-agent | hook-config | ✅ | `exit-2` |
-| GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` |
-| Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` |
-| Kiro CLI (AWS) | coding-agent | hook-config | ✅ | `exit-2` |
-| Crush (Charmbracelet) | coding-agent | hook-config | ✅ | `exit-2` |
-| OpenHands | coding-agent | hook-config | ✅ | `exit-2` |
-| Qwen Code (Alibaba) | coding-agent | hook-config | ✅ | `json-permission` |
-| Continue CLI | coding-agent | hook-config | ✅ | `exit-2` |
-| Goose (Agentic AI Foundation) | coding-agent | hook-config | ✅ | `exit-2` |
-| Gemini CLI (Google) | coding-agent | hook-config | ✅ | `exit-2` |
-| OpenCode | coding-agent | sdk | ✅ | `throw` |
-| Factory Droid | coding-agent | hook-config | 🟡 | `json-permission` |
-| Pi Coding Agent | coding-agent | hook-config | 🟡 | `exit-2` |
-| Amazon Q Developer CLI (AWS) | coding-agent | hook-config | 🟡 | `exit-2` |
-| Amp (Sourcegraph spinoff) | coding-agent | sdk | 🟡 | `throw` |
-| Auggie CLI (Augment Code) | coding-agent | hook-config | 🟡 | `exit-2` |
-| Kimi Code (Moonshot AI) | coding-agent | hook-config | 🟡 | `exit-2` |
-| Devin CLI (Cognition AI) | coding-agent | hook-config | 🟡 | `exit-2` |
-| Google Antigravity | coding-agent | hook-config | ✅ | `json-permission` |
-| Aider | coding-agent | rules-only | — | — |
-| Trae / Trae CN (ByteDance) | coding-agent | rules-only | — | — |
-| Warp (Agent Mode) | coding-agent | rules-only | — | — |
-| Kilocode | coding-agent | rules-only | — | — |
+| Agent | Kind | Surface | Status | Blocking | Event types |
+|---|---|---|---|---|---|
+| Claude Code | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `memory`, `subagent_spawn`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Cursor | coding-agent | hook-config | ✅ | `json-permission` | `prompt`, `memory`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Windsurf (Codeium Cascade) | coding-agent | hook-config | ✅ | `json-permission` | `prompt`, `shell`, `file_read`, `file_write`, `tool_result` |
+| OpenClaw | coding-agent | sdk | ✅ | `return-block` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Hermes Agent (Nous Research) | coding-agent | sdk | ✅ | `return-block` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Codex (OpenAI) | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell` |
+| GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Kiro CLI (AWS) | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Crush (Charmbracelet) | coding-agent | hook-config | ✅ | `exit-2` | `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| OpenHands | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell`, `file_write`, `tool_result` |
+| Qwen Code (Alibaba) | coding-agent | hook-config | ✅ | `json-permission` | `prompt`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Continue CLI | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell`, `file_read`, `file_write`, `network` |
+| Goose (Agentic AI Foundation) | coding-agent | hook-config | ✅ | `exit-2` | `prompt`, `shell`, `file_write`, `tool_result` |
+| Gemini CLI (Google) | coding-agent | hook-config | ✅ | `exit-2` | `memory`, `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| OpenCode | coding-agent | sdk | ✅ | `throw` | `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Factory Droid | coding-agent | hook-config | 🟡 | `json-permission` | — |
+| Pi Coding Agent | coding-agent | hook-config | 🟡 | `exit-2` | — |
+| Amazon Q Developer CLI (AWS) | coding-agent | hook-config | 🟡 | `exit-2` | — |
+| Amp (Sourcegraph spinoff) | coding-agent | sdk | 🟡 | `throw` | — |
+| Auggie CLI (Augment Code) | coding-agent | hook-config | 🟡 | `exit-2` | — |
+| Kimi Code (Moonshot AI) | coding-agent | hook-config | 🟡 | `exit-2` | — |
+| Devin CLI (Cognition AI) | coding-agent | hook-config | 🟡 | `exit-2` | — |
+| Google Antigravity | coding-agent | hook-config | ✅ | `json-permission` | `shell`, `file_read`, `file_write`, `network`, `tool_result` |
+| Aider | coding-agent | rules-only | — | — | — |
+| Trae / Trae CN (ByteDance) | coding-agent | rules-only | — | — | — |
+| Warp (Agent Mode) | coding-agent | rules-only | — | — | — |
+| Kilocode | coding-agent | rules-only | — | — | — |
 
 **Production frameworks**
 
-| Framework | Kind | Surface | Status | Blocking |
-|---|---|---|---|---|
-| OpenAI Agents SDK | framework | sdk | ✅ | `throw` |
-| CrewAI | framework | sdk | ✅ | `throw` |
-| LangChain / LangGraph | framework | sdk | ✅ | `throw` |
-| browser-use | framework | sdk | ✅ | `throw` |
-| Pydantic AI | framework | sdk | ✅ | `throw` |
-| AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` |
-| Agno | framework | sdk | ✅ | `throw` |
-| Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` |
-| Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` |
-| Microsoft Agent Framework | framework | sdk | ✅ | `throw` |
-| LlamaIndex | framework | sdk | ✅ | `return-block` |
-| Hugging Face smolagents | framework | sdk | ✅ | `return-block` |
-| AG2 | framework | sdk | ✅ | `return-block` |
-| Mastra (TypeScript) | framework | sdk | ✅ | `throw` |
-| BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` |
-| Claude Code Agent SDK | framework | sdk | ✅ | `json-permission` |
-| Vercel AI SDK | framework | http | ✅ | `throw` |
-| HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` |
-| MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` |
-| Claude Inference Hooks (claude.ai · Claude Code · Cowork) | framework | http | ✅ | `proxy-deny` |
-| ElevenLabs Agents (voice) | framework | http | ✅ | `proxy-deny` |
+| Framework | Kind | Surface | Status | Blocking | Event types |
+|---|---|---|---|---|---|
+| OpenAI Agents SDK | framework | sdk | ✅ | `throw` | — |
+| CrewAI | framework | sdk | ✅ | `throw` | — |
+| LangChain / LangGraph | framework | sdk | ✅ | `throw` | — |
+| browser-use | framework | sdk | ✅ | `throw` | — |
+| Pydantic AI | framework | sdk | ✅ | `throw` | — |
+| AutoGen (Microsoft) — Core runtime | framework | sdk | ✅ | `throw` | — |
+| Agno | framework | sdk | ✅ | `throw` | — |
+| Semantic Kernel (Microsoft) | framework | sdk | ✅ | `throw` | — |
+| Google Agent Development Kit (ADK) | framework | sdk | ✅ | `throw` | — |
+| Microsoft Agent Framework | framework | sdk | ✅ | `throw` | — |
+| LlamaIndex | framework | sdk | ✅ | `return-block` | — |
+| Hugging Face smolagents | framework | sdk | ✅ | `return-block` | — |
+| AG2 | framework | sdk | ✅ | `return-block` | — |
+| Mastra (TypeScript) | framework | sdk | ✅ | `throw` | — |
+| BeeAI Framework (IBM Research / Linux Foundation) | framework | sdk | ✅ | `throw` | — |
+| Claude Code Agent SDK | framework | sdk | ✅ | `json-permission` | — |
+| Vercel AI SDK | framework | http | ✅ | `throw` | — |
+| HTTP Eval-Server (any language) | framework | http | ✅ | `client-side` | — |
+| MCP Gateway (any MCP-speaking agent) | framework | mcp | ✅ | `proxy-deny` | — |
+| Claude Inference Hooks (claude.ai · Claude Code · Cowork) | framework | http | ✅ | `proxy-deny` | — |
+| ElevenLabs Agents (voice) | framework | http | ✅ | `proxy-deny` | — |
 
 **Multiplexers**
 
-| Tool | Kind | Surface | Status | Blocking |
-|---|---|---|---|---|
-| Herdr | multiplexer | pass-through | — | — |
+| Tool | Kind | Surface | Status | Blocking | Event types |
+|---|---|---|---|---|---|
+| Herdr | multiplexer | pass-through | — | — | — |
 
-Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails) · `pass-through` (spawns other agents; no interception surface of its own).
+Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces: `hook-config` (config-file hooks) · `sdk` (in-process adapter) · `mcp` (proxy) · `http` (eval-server sidecar) · `rules-only` (static guardrails) · `pass-through` (spawns other agents; no interception surface of its own). Event types: what the adapter produces from what the agent actually sends; a rule on any other type never fires for that agent (— = not declared).
 
 <!-- END GENERATED: coverage-matrix -->
 
