@@ -31,6 +31,46 @@ _READER_UTILS = frozenset({
 })
 
 
+# The two shapes decloak.sh rewrites a Bash command into (see `wrapped=` there).
+# A quoted word from `printf %q` is backslash escapes or a $'...' string.
+_Q = r"(?:\$'(?:\\.|[^'\\])*'|(?:\\.|[^\s\\])+)"
+_DECLOAK_TAIL_RE = re.compile(
+    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r" " + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
+_DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)
+_DECLOAK_RESOLVE_RE = re.compile(
+    r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _Q + r"decloak-exec\.sh\Z",
+    re.DOTALL)
+
+
+def unwrap_decloak(command: str) -> str:
+    """The command the agent asked for, if ``command`` is decloak.sh's rewrite of it.
+
+    The rewritten form names the vault directory and Prismor's own scripts,
+    so rules judging it flagged Prismor's plumbing (the vault guard fired on
+    every cloaked Bash call recorded after it ran). Anything that is not
+    exactly that wrapper comes back unchanged, and the inner command is still
+    judged in full, so spelling out a fake wrapper hides nothing.
+    """
+    import codecs
+    tail = _DECLOAK_TAIL_RE.search(command or "")
+    if not tail:
+        return command
+    runner = command[:tail.start()]
+    group = _DECLOAK_GROUP_RE.match(runner)
+    if group:
+        return group.group(1)
+    resolve = _DECLOAK_RESOLVE_RE.match(runner)
+    if not resolve:
+        return command
+    word = resolve.group(1)
+    try:
+        if word.startswith("$'"):
+            return codecs.escape_decode(word[2:-1].encode("utf-8"))[0].decode("utf-8")
+        return shlex.split(word)[0]
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return command
+
+
 def placeholder_names(text: str) -> List[str]:
     """Return unique placeholder names in encounter order."""
     seen = set()
