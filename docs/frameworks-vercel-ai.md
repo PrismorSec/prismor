@@ -314,8 +314,6 @@ adapter. Validated on a Linux host with real OpenAI function calls:
 | **Java 21** | `java.net.http.HttpClient` | ~25 |
 | **Rust** | `ureq` (sync) | ~25 |
 
-See `examples/multilang/` for the full runnable examples for each language.
-
 ## Eval-server API reference
 
 ### `POST /v1/evaluate`
