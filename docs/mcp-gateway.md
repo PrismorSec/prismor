@@ -548,12 +548,11 @@ the endpoint's tools, so store it like a secret.
 - **Version.** The Hosted endpoints table shows the Prismor runtime each endpoint
   runs and flags one that is behind the current release.
 
-How it runs: each org's endpoints are served by one AWS Lambda function built from
-this repo (`deploy/lambda/Dockerfile.mcp`, `prismor.runtime.lambda_mcp_handler`)
-and released with every runtime version. Each key gets its own warm gateway
-process: the first call after a cold start takes about a second, and the first
-tool list with `npx` / `uvx` servers about ten while their packages download.
-Operators: see `deploy/lambda/README.md`.
+How it runs: each org's endpoints are served by one AWS Lambda function running
+`prismor.runtime.lambda_mcp_handler` at a released runtime version. Each key
+gets its own warm gateway process: the first call after a cold start takes about
+a second, and the first tool list with `npx` / `uvx` servers about ten while
+their packages download.
 
 Local gateway vs hosted endpoint:
 
