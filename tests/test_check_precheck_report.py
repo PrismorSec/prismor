@@ -8,7 +8,8 @@ import pytest
 from prismor.runtime import cli
 from prismor.runtime.enterprise import telemetry
 
-_AGENT_VARS = ("AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI")
+_AGENT_VARS = ("AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI",
+               "CLAUDE_CODE_SESSION_ID")
 _CMD = "dangerous --thing /home/alice/secret-project"
 
 
@@ -45,6 +46,15 @@ def test_agent_precheck_block_is_reported_as_would_block(tmp_path, monkeypatch, 
     assert rec["rule_id"] == "destructive-command"
     # Redacted as usual: the command and its path never leave.
     assert "secret-project" not in str(rec) and "alice" not in str(rec)
+
+
+def test_precheck_is_filed_under_the_agents_session(tmp_path, monkeypatch, captured):
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "e670022e-043b-4196-b9c1-da6857ce3951")
+    cli._report_agent_precheck(_engine(), [_finding()], tmp_path, "command", _CMD)
+    (findings, extra, raw_event), = captured
+    rec = telemetry.build_record(findings[0], raw_event, extra=extra)
+    assert rec["session_id"] == "e670022e-043b-4196-b9c1-da6857ce3951"
 
 
 def test_human_or_ci_check_is_not_reported(tmp_path, captured):

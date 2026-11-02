@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+## [1.71.7] — 2026-11-02
+
+### Added
+- **The session trail shows an agent's `prismor check` dry runs.** An agent that pre-checked a command and stopped on its BLOCK used to leave only an allowed Bash row, with no hint why nothing ran next. The row now carries a "pre-check · would block" chip, and its panel names the checked command, the rule, and why it matched. Nothing was blocked, so the row's verdict is unchanged. (#835)
+
+### Fixed
+- **An agent's pre-check report is filed under its session.** Since 1.71.5 a BLOCK from an agent's `prismor check` reached the org with no session id, so no session in the console showed it. It now carries the id the agent exports to its shell (`CLAUDE_CODE_SESSION_ID`, Codex's `CODEX_THREAD_ID`). (#836)
+
 ## [1.71.6] — 2026-11-02
 
 ### Fixed
