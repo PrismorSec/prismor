@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+## [1.71.6] — 2026-11-02
+
+### Fixed
+- **Hosted MCP endpoints report their runtime version.** `/health` on a Lambda endpoint returned `"unknown"` because the handler imported the version from the `prismor` namespace package, which only resolves in a source checkout. The console uses it to flag endpoints that are behind the current release. (#834)
+
 ## [1.71.5] — 2026-11-02
 
 ### Added
