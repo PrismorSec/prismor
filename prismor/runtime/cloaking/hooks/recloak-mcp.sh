@@ -35,7 +35,11 @@ scrubbed="$(printf '%s' "$response" | SECRETS_DIR="$SECRETS_DIR" perl -0777 -pe 
     for my $f (glob("\Q$ENV{SECRETS_DIR}\E/*")) {
       next unless -f $f && open(my $fh, "<", $f);
       local $/; my $real = <$fh>; $real =~ s/\n+\z//;
-      next unless length $real;
+      # Mirrors is_scrubbable_secret() in ../runtime.py: a short single-case
+      # word ("ses", "false") is config, and masking it mangled every
+      # "session" and boolean in browser/MCP output.
+      my $n = length $real;
+      next unless $n >= 16 || ($n >= 8 && ($real =~ /[[:digit:]]|[^[:alnum:]]/ || ($real =~ /[[:lower:]]/ && $real =~ /[[:upper:]]/)));
       (my $name = $f) =~ s{.*/}{};
       push @s, [$real, "\@\@SECRET:$name\@\@"];
     }

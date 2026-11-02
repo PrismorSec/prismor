@@ -40,6 +40,14 @@ from prismor.runtime.store import (
 __all__ = ["CONTRACT_VERSION", "Decision", "evaluate_tool_call", "log_observe_findings"]
 
 
+def _call_text(event: Dict[str, Any]) -> str:
+    """The one string an exact-call decision is matched against."""
+    for key in ("command", "path", "url"):
+        if event.get(key):
+            return " ".join(str(event[key]).split())
+    return ""
+
+
 def _apply_rule_exemptions(
     findings: List[Dict[str, Any]],
     rule_exemptions: Optional[List[Dict[str, Any]]],
@@ -48,16 +56,21 @@ def _apply_rule_exemptions(
     subject: Optional[Subject],
     verified_users_only: bool = False,
     surface: str = "",
+    event: Optional[Dict[str, Any]] = None,
+    agent_names: tuple = (),
 ) -> List[Dict[str, Any]]:
-    """Relax or downgrade findings per admin-granted, signed rule exemptions.
+    """Apply rule decisions: org-signed exemptions and local dashboard ones.
 
-    Each exemption is ``{ruleId, scope (user|device|session), scopeId, action
-    (allow|flag), expires?}``, matched at eval time against the current context.
-    ``allow`` drops the matched finding (the call proceeds, nothing recorded);
-    ``flag`` downgrades it to observe (reported as a warning, but non-blocking).
+    Each entry is ``{ruleId, scope (org|user|device|agent|session), scopeId,
+    action (allow|flag|ask|deny), pattern?, expires?}``, matched at eval time
+    against the current context. ``allow`` drops the matched finding, ``flag``
+    downgrades it to observe, ``ask`` turns it into a human-approval request
+    (step_up) and ``deny`` makes it block whatever the mode.
 
-    Core protections are never exemptable: a floor rule id / core block category
-    (and the agent kill-switch) is left untouched regardless of any exemption.
+    ``pattern`` limits the entry to one exact call (the command, path or URL,
+    whitespace-normalised). Only such an exact-call entry may relax a
+    safety-floor rule; the self-protection rules and the agent kill-switch are
+    never relaxed, and ``deny`` can apply to anything.
 
     ``verified_users_only`` (set when the org verifies identity): a ``user``
     exemption then needs a verified subject, so ``subject: "user:alice"`` sent
@@ -65,7 +78,9 @@ def _apply_rule_exemptions(
     """
     if not rule_exemptions:
         return findings
-    from prismor.runtime.policy_engine import _NON_OVERRIDABLE_RULE_IDS, _CORE_BLOCK_CATEGORIES
+    from prismor.runtime.policy_engine import (
+        _NON_OVERRIDABLE_RULE_IDS, _CORE_BLOCK_CATEGORIES, is_self_protection_rule,
+    )
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     user_id = subject.user_id if subject else None
@@ -76,6 +91,7 @@ def _apply_rule_exemptions(
         device_id = ident.get("device_id") if ident else None
     except Exception:
         device_id = None
+    call = _call_text(event or {})
 
     def _matches(ex: Dict[str, Any], rule_id: str) -> bool:
         if str(ex.get("ruleId") or "") != rule_id:
@@ -83,13 +99,20 @@ def _apply_rule_exemptions(
         exp = ex.get("expires")
         if exp and str(exp) < now_iso:
             return False
+        pattern = ex.get("pattern")
+        if pattern and " ".join(str(pattern).split()) != call:
+            return False
         scope, scope_id = ex.get("scope"), ex.get("scopeId")
+        if scope == "org":
+            return True
         if scope == "user":
             if verified_users_only and not is_verified(subject, surface):
                 return False
             return bool(user_id) and scope_id == user_id
         if scope == "device":
             return bool(device_id) and scope_id == device_id
+        if scope == "agent":
+            return bool(scope_id) and scope_id in agent_names
         if scope == "session":
             return bool(session_id) and scope_id == session_id
         return False
@@ -97,20 +120,23 @@ def _apply_rule_exemptions(
     out: List[Dict[str, Any]] = []
     for f in findings:
         rule_id = str(f.get("ruleId") or "")
-        category = f.get("category")
-        # Floor + admin kill-switch are never relaxable.
-        if (rule_id in _NON_OVERRIDABLE_RULE_IDS
-                or category in _CORE_BLOCK_CATEGORIES
-                or category == "agent-control"):
-            out.append(f)
-            continue
         match = next((ex for ex in rule_exemptions if isinstance(ex, dict) and _matches(ex, rule_id)), None)
-        if match is None:
+        action = str((match or {}).get("action") or "allow")
+        layer = "local" if (match or {}).get("local") else "org"
+        floor = rule_id in _NON_OVERRIDABLE_RULE_IDS or f.get("category") in _CORE_BLOCK_CATEGORIES
+        pinned = (is_self_protection_rule(rule_id) or f.get("category") == "agent-control"
+                  or (floor and not (match or {}).get("pattern")))
+        if match is None or (pinned and action != "deny"):
             out.append(f)
-        elif str(match.get("action") or "allow") == "flag":
+        elif action == "deny":
+            out.append({**f, "mode": "enforce", "action": "block", "authoritative": True,
+                        "decidedBy": f"{layer} {match.get('scope')} deny", "policyLayer": layer})
+        elif action == "ask":
+            out.append({**f, "mode": "enforce", "action": "step_up", "category": "agent-control",
+                        "decidedBy": f"{layer} {match.get('scope')} ask", "policyLayer": layer})
+        elif action == "flag":
             # Keep the finding (auditable warning), but strip its ability to block.
-            downgraded = {**f, "mode": "observe", "exempted": "flag", "policyLayer": "org"}
-            out.append(downgraded)
+            out.append({**f, "mode": "observe", "exempted": "flag", "policyLayer": layer})
         # action == "allow": drop the finding entirely.
     return out
 
@@ -373,6 +399,18 @@ def evaluate_tool_call(
     engine = PolicyEngine(workspace=workspace)
     if taint_store is not None:
         engine.taint_override = taint_store
+    # Allow / ask / deny decisions made on this machine's dashboard ride the
+    # same matchers as the org's signed rule_exemptions and tool_denies.
+    try:
+        from prismor.runtime import decisions as _decisions
+        _local_rules, _local_tools = _decisions.for_runtime(
+            workspace, managed=bool(getattr(engine, "workspace_managed", False)))
+        if _local_rules:
+            engine.rule_exemptions = list(engine.rule_exemptions or []) + _local_rules
+        if _local_tools:
+            engine.tool_denies = list(engine.tool_denies or []) + _local_tools
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] local decisions error: {exc}\n")
     perf.lap("policy_load")
 
     # Verified end-user identity. Off unless the signed org policy (or the
@@ -665,7 +703,8 @@ def evaluate_tool_call(
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
-                        _label = "org" if _scope == "org" else f"org {_scope}"
+                        _layer = "local" if _d.get("local") else "org"
+                        _label = _layer if _scope == "org" else f"{_layer} {_scope}"
                         if _d.get("action") == "step_up":
                             findings.append(make_agent_tool_step_up_finding(
                                 _agent_name, _otn, session_id,
@@ -788,6 +827,8 @@ def evaluate_tool_call(
             session_id=session_id, subject=subject,
             verified_users_only=bool(_identity_cfg),
             surface=str(meta.get("surface") or ""),
+            event=event,
+            agent_names=tuple(n for n in (_agent_name, _parent_agent) if n),
         )
     except Exception as exc:
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")

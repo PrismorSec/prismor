@@ -70,3 +70,21 @@ def test_reworded_exfil_after_pattern_block_is_still_evasion(tmp_path):
     ):
         found = _detect(tmp_path, variant)
         assert [f["ruleId"] for f in found] == ["evasion-detection"], variant
+
+
+def test_warning_or_output_flag_does_not_seed_evasion(tmp_path):
+    # An observe-mode finding stopped nothing, so a similar next command is not evading it.
+    initialize_database(tmp_path)
+    conn = sqlite3.connect(get_db_path(tmp_path))
+    conn.execute(
+        "INSERT INTO events (session_id, ts, type, agent_event, command_text, path_text, "
+        "url_text, content_text, raw_json) VALUES (?,?,?,?,?,?,?,?,?)",
+        ("s1", "2026-11-01T00:00:00Z", "shell", "PostToolUse", "prismor status", "", "", "", "{}"))
+    conn.execute(
+        "INSERT INTO findings (finding_id, session_id, event_index, severity, category, title, "
+        "enrichment_json) VALUES (?,?,?,?,?,?,?)",
+        ("s1:semantic-guard-0", "s1", 0, "HIGH", "security_bypass", "flag",
+         json.dumps({"ruleId": "semantic-guard", "action": "block", "mode": "observe"})))
+    conn.commit()
+    conn.close()
+    assert _detect(tmp_path, "prismor query --schema") == []
