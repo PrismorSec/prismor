@@ -991,6 +991,7 @@ def _write_judge_setting(target: Path, provider: str, model: str) -> None:
     d = target / ".prismor"
     d.mkdir(exist_ok=True)
     path = d / "policy.yaml"
+    from prismor.runtime.store import write_policy_file
     if provider == "heuristic":
         # Written, not left unset: unset means "use whichever provider key is in
         # the environment", which is not what "no LLM" promised.
@@ -1010,7 +1011,7 @@ def _write_judge_setting(target: Path, provider: str, model: str) -> None:
             if sg.get("mode") == "heuristic":
                 sg.pop("mode")
             sg["provider"], sg["model"] = provider, model
-        path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+        write_policy_file(path, yaml.safe_dump(raw, sort_keys=False), source="setup.judge")
         return
     lines = txt.splitlines(keepends=True)
     for i, ln in enumerate(lines):
@@ -1019,7 +1020,7 @@ def _write_judge_setting(target: Path, provider: str, model: str) -> None:
             break
     else:
         lines.append(("" if txt.endswith("\n") else "\n") + "settings:\n" + block)
-    path.write_text("".join(lines), encoding="utf-8")
+    write_policy_file(path, "".join(lines), source="setup.judge")
 
 
 # ── Step 4: Install Scope ────────────────────────────────────────────────────
@@ -1543,12 +1544,13 @@ def _write_selection_policy(target: Path, selected: List[str], scope: str) -> No
     text = _render_selection_policy(selected)
     d = target / ".prismor"
     d.mkdir(exist_ok=True)
-    (d / "policy.yaml").write_text(text, encoding="utf-8")
+    from prismor.runtime.store import write_policy_file
+    write_policy_file(d / "policy.yaml", text, source="setup.selection")
     if scope == "global":
         from prismor.runtime.store import prismor_home
         user_policy = prismor_home() / "policy.yaml"
         user_policy.parent.mkdir(parents=True, exist_ok=True)
-        user_policy.write_text(text, encoding="utf-8")
+        write_policy_file(user_policy, text, source="setup.selection")
 
 
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
@@ -1651,7 +1653,8 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             txt = 'version: "1.0"\nrules:\n'
             for rid in disabled:
                 txt += f"  - id: {rid}\n    enabled: false\n"
-            (d / "policy.yaml").write_text(txt, encoding="utf-8")
+            from prismor.runtime.store import write_policy_file
+            write_policy_file(d / "policy.yaml", txt, source="setup")
             return True, f"{len(disabled)} disabled"
         _spinner_run("Writing policy overrides", _write_policy)
 

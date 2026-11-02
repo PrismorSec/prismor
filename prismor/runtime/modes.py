@@ -456,7 +456,8 @@ def apply_mode(
         notes.append(f"previous policy backed up to {backup}")
 
     policy_path.parent.mkdir(parents=True, exist_ok=True)
-    policy_path.write_text(compile_mode(mode, observe=observe), encoding="utf-8")
+    from prismor.runtime.store import write_policy_file
+    write_policy_file(policy_path, compile_mode(mode, observe=observe), source="mode.apply")
 
     # Tool axis lives in agents.yaml, not the policy — set_tool_policy owns the
     # deny/ask/allow tri-state and keeps the two lists disjoint for us.

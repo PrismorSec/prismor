@@ -346,6 +346,39 @@ def append_approval_record(
     return _append(record)
 
 
+def append_policy_record(
+    *, path: Path, source: str, before_hash: Optional[str], after_hash: str,
+) -> Dict[str, Any]:
+    """Record a local policy write without retaining either policy body.
+
+    The actor is the writing process's OS account, not a claimed hook subject
+    or an authenticated console administrator.
+    """
+    actor: Dict[str, Any] = {"source": "local_process"}
+    if hasattr(os, "geteuid"):
+        import pwd
+        actor["uid"] = os.geteuid()
+        try:
+            actor["user"] = pwd.getpwuid(actor["uid"]).pw_name
+        except KeyError:
+            pass
+    else:
+        import getpass
+        actor["user"] = getpass.getuser()
+    return _append({
+        "record_type": "policy_change",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "device_id": _device_id(),
+        "prismor_version": _prismor_version(),
+        "actor": actor,
+        "source": source,
+        "path": str(path.resolve()),
+        "operation": "created" if before_hash is None else "updated",
+        "before_hash": before_hash,
+        "after_hash": after_hash,
+    })
+
+
 def append_extension_record(
     *,
     event: str,

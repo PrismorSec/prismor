@@ -113,9 +113,31 @@ narrow that gap in practice:
 The next step is a signer service that holds the key outside the agent's
 reach, in a container or under a separate uid. That's planned, not built.
 
+## Local policy changes
+
+Local policy saves from the dashboard and `policy init`, `policy edit`,
+`allow` (including undo), `egress`, `mode apply`, `setup`, and `learn --apply`
+append `record_type: "policy_change"` to the same signed trail. Records contain
+the timestamp, writing process's OS account, source command, absolute file path,
+and SHA-256 hashes of the file before and after the save. A missing previous
+file has `before_hash: null`. Identical saves and failed writes add no record.
+Policy bodies, diffs, passwords and tokens are not recorded.
+
+`prismor trail show` lists these changes; `prismor trail verify` checks them
+alongside action records. The OS account identifies the local process, not a
+verified human behind a dashboard request or an agent. On Windows the account
+name comes from the process environment. Direct file edits, remote policy
+downloads, and changes to separate files such as `agents.yaml` are outside this
+history. Hashes identify file versions; they cannot reconstruct old contents.
+
+`PRISMOR_AUDIT_TRAIL=0` disables these records too. As with extension records,
+local policy auditing is best-effort, including under `PRISMOR_AUDIT_STRICT=1`:
+an audit failure prints a warning after the save and does not roll the policy
+back or report that the policy write failed.
+
 ## Policy change history (console)
 
-This page covers the device-side trail of agent tool calls. Changes admins make to policies are recorded in the console:
+Changes admins make to org policies are recorded separately in the console:
 
 - **History** (the button next to Duplicate / Discard on a policy): every saved version, who saved it, when, from where (console, CLI, API, an approved request, a restore), the reason given, and a line diff against the previous version. Any version can be restored.
 - **Why**: the publish dialog asks "Why this change?"; the answer becomes that version's History summary and is stored on the `policy.update` audit entry. Egress edits made in the egress editor record what changed (for example `egress mode: disabled → enforce`), and an approved `prismor egress request` records the host and the requester's reason.

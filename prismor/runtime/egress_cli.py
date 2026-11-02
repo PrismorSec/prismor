@@ -70,7 +70,8 @@ def _save_policy_file(workspace: Path, data: Dict[str, Any]) -> None:
     path = _policy_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     data.setdefault("version", "1.0")
-    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    from prismor.runtime.store import write_policy_file
+    write_policy_file(path, yaml.safe_dump(data, sort_keys=False), source="egress")
 
 
 def _egress_block(data: Dict[str, Any]) -> Dict[str, Any]:

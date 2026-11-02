@@ -127,7 +127,8 @@ def _save(path: Path, header: List[str], data: Dict[str, Any]) -> None:
     # rather than four lines to say one rule id.
     body = yaml.safe_dump(data, sort_keys=False, default_flow_style=None, width=100)
     text = ("\n".join(header) + "\n" if header else "") + body
-    path.write_text(text, encoding="utf-8")
+    from prismor.runtime.store import write_policy_file
+    write_policy_file(path, text, source="allow")
 
 
 # ── guards ───────────────────────────────────────────────────────────────────

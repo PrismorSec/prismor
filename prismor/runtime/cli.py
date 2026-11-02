@@ -3824,7 +3824,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             rules_list = policy.setdefault("rules", [])
             rules_list.append(rule)
             policy_path.parent.mkdir(parents=True, exist_ok=True)
-            policy_path.write_text(yaml.dump(policy, default_flow_style=False, sort_keys=False), encoding="utf-8")
+            from prismor.runtime.store import write_policy_file
+            write_policy_file(policy_path, yaml.dump(policy, default_flow_style=False, sort_keys=False), source="learn.apply")
             print(_color("Accepted", _GREEN) + f" candidate rule '{rule['id']}' → .prismor/policy.yaml")
             return
 
@@ -5951,6 +5952,12 @@ def _run_trail(args) -> None:
             except ValueError:
                 print("  <unparseable line>")
                 continue
+            if r.get("record_type") == "policy_change":
+                actor = r.get("actor") or {}
+                who = actor.get("user") or actor.get("uid", "unknown")
+                print(f"  [{str(r.get('seq', '?')):>5}] {str(r.get('ts', ''))[:19]} "
+                      f"policy {r.get('operation')} by {who} via {r.get('source')}: {r.get('path')}")
+                continue
             verdict = str(r.get("verdict") or r.get("status") or "?")
             glyph = {"allowed": "·", "warned": "⚠", "blocked": "✗",
                      "step_up": "?", "approved": "✓", "denied": "✗"}.get(verdict, "·")
@@ -6617,7 +6624,8 @@ settings:
   #   network: none
   #   image: python:3.12-slim
 '''
-    target.write_text(starter, encoding="utf-8")
+    from prismor.runtime.store import write_policy_file
+    write_policy_file(target, starter, source="policy.init")
     print(f"Created {target}")
     print(f"Edit this file to customize detection rules and allowlists for your project.")
 
@@ -7329,6 +7337,8 @@ def _policy_edit(workspace: Path) -> None:
     _restore()
     sys.stdout.write("\033[H\033[J")
 
+    from prismor.runtime.store import write_policy_file
+
     # Write policy
     disabled = [r["id"] for r in all_rules if not r["on"]]
     policy_dir = workspace / ".prismor"
@@ -7340,14 +7350,14 @@ def _policy_edit(workspace: Path) -> None:
         for rid in disabled:
             lines.append(f"  - id: {rid}\n    enabled: false\n")
         lines.append("\nallowlists: []\n")
-        policy_file.write_text("".join(lines), encoding="utf-8")
+        write_policy_file(policy_file, "".join(lines), source="policy.edit")
         n_on = sum(1 for r in all_rules if r["on"])
         print(f"  {_color('✓', _GREEN)} Saved to {policy_file}")
         print(f"  {n_on}/{len(all_rules)} rules enabled, {len(disabled)} disabled")
     else:
         # All enabled — remove override file if it exists (use defaults)
         if policy_file.exists():
-            policy_file.write_text('version: "1.0"\n\nrules: []\n\nallowlists: []\n', encoding="utf-8")
+            write_policy_file(policy_file, 'version: "1.0"\n\nrules: []\n\nallowlists: []\n', source="policy.edit")
         print(f"  {_color('✓', _GREEN)} All rules enabled (using defaults)")
 
     print(f"\n  Run {_color('prismor policy show', _CYAN)} to verify.")

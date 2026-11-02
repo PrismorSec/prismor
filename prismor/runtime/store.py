@@ -3960,6 +3960,37 @@ def is_policy_editable(workspace: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
+def write_policy_file(path: Path, content: str, *, source: str) -> None:
+    """Write a local policy and audit changed bytes through the existing trail.
+
+    Callers retain their validation and authorization checks. The lock keeps
+    cooperating writers' before/after hashes and audit order consistent.
+    Audit failure is reported separately: the policy has already been saved.
+    """
+    from prismor.runtime.enterprise import audit_trail
+
+    with file_lock(path):
+        try:
+            before = path.read_bytes()
+        except FileNotFoundError:
+            before = None
+        path.write_text(content, encoding="utf-8")
+        if not audit_trail.enabled():
+            return
+        try:
+            after = path.read_bytes()
+            if before != after:
+                audit_trail.append_policy_record(
+                    path=path, source=source,
+                    before_hash=hashlib.sha256(before).hexdigest() if before is not None else None,
+                    after_hash=hashlib.sha256(after).hexdigest(),
+                )
+        except Exception:
+            import sys
+            # Exception text may contain policy values; never echo it here.
+            sys.stderr.write("[prismor] policy saved, but its audit record could not be written\n")
+
+
 def write_policy_layer(scope: str, content: str, workspace: Optional[Path] = None) -> Dict[str, Any]:
     """Write a policy layer.  Returns {ok, path?, error?}"""
     if scope == "enterprise":
@@ -3980,7 +4011,7 @@ def write_policy_layer(scope: str, content: str, workspace: Optional[Path] = Non
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        write_policy_file(path, content, source="dashboard")
         return {"ok": True, "path": str(path)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

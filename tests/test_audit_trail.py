@@ -101,6 +101,114 @@ def _rewrite_line(trail, seq, mutate):
     return hit
 
 
+# ── local policy changes ────────────────────────────────────────────────────
+
+def test_policy_saves_record_versions_without_contents(trail, tmp_path, monkeypatch, capsys):
+    import hashlib
+    import os
+    from argparse import Namespace
+    from prismor.runtime.cli import _run_trail
+    from prismor.runtime.store import write_policy_layer
+
+    workspace = tmp_path / "repo"
+    path = workspace / ".prismor" / "policy.yaml"
+    before = 'version: "1.0"\n# synthetic-private-policy-value\n'
+    after = before + 'settings: {default_mode: observe}\n'
+    monkeypatch.setenv("USER", "not-the-writer")
+    assert write_policy_layer("project", before, workspace)["ok"]
+    original_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    for content in (after, after):
+        assert write_policy_layer("project", content, workspace)["ok"]
+    lines = trail.trail_path().read_text()
+    records = [json.loads(line) for line in lines.splitlines()]
+    assert len(records) == 2
+    created, updated = records
+    assert created["record_type"] == "policy_change"
+    assert created["operation"] == "created" and created["before_hash"] is None
+    assert updated["operation"] == "updated"
+    assert updated["before_hash"] == created["after_hash"] == original_hash
+    assert updated["after_hash"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert updated["path"] == str(path.resolve()) and updated["source"] == "dashboard"
+    assert updated["ts"] and updated["actor"]["source"] == "local_process"
+    if hasattr(os, "geteuid"):
+        assert updated["actor"]["uid"] == os.geteuid()
+        assert updated["actor"].get("user") != "not-the-writer"
+    assert "synthetic-private-policy-value" not in lines
+    assert "default_mode" not in lines
+    report = trail.verify_trail()
+    assert report["ok"]
+    if _HAVE_CRYPTO:
+        assert report["signed"] == 2
+    _run_trail(Namespace(trail_command="show", last=10))
+    assert "policy updated" in capsys.readouterr().out
+
+
+def test_rejected_and_failed_policy_writes_leave_no_record(trail, tmp_path, monkeypatch):
+    from prismor.runtime import store
+
+    monkeypatch.setattr(store, "is_policy_editable", lambda ws: {
+        "editable": False, "error": "org managed", "reason": "org_managed",
+    })
+    assert not store.write_policy_layer("project", "rules: []", tmp_path)["ok"]
+    assert not trail.trail_path().exists()
+    monkeypatch.setattr(store, "is_policy_editable", lambda ws: {"editable": True})
+    path = tmp_path / ".prismor" / "policy.yaml"
+    path.parent.mkdir()
+    path.write_text("original")
+    write_text = Path.write_text
+
+    def fail_write(target, *args, **kwargs):
+        if target == path:
+            raise PermissionError("policy is read-only")
+        return write_text(target, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    assert not store.write_policy_layer("project", "rules: []", tmp_path)["ok"]
+    assert path.read_text() == "original"
+    assert not trail.trail_path().exists()
+
+
+def test_policy_audit_failure_reports_saved_state(trail, tmp_path, monkeypatch, capsys):
+    from prismor.runtime.store import write_policy_layer
+
+    def fail(**kwargs):
+        raise OSError("synthetic-secret-in-error")
+
+    monkeypatch.setattr(trail, "append_policy_record", fail)
+    monkeypatch.setenv("PRISMOR_AUDIT_STRICT", "1")
+    assert write_policy_layer("project", "rules: []", tmp_path)["ok"]
+    assert (tmp_path / ".prismor" / "policy.yaml").read_text() == "rules: []"
+    err = capsys.readouterr().err
+    assert "policy saved, but its audit record could not be written" in err
+    assert "synthetic-secret-in-error" not in err
+
+
+def test_policy_audit_can_be_disabled(trail, monkeypatch):
+    from prismor.runtime.store import write_policy_layer
+
+    monkeypatch.setenv("PRISMOR_AUDIT_TRAIL", "0")
+    assert write_policy_layer("global", "rules: []")["ok"]
+    assert not trail.trail_path().exists()
+
+
+def test_cli_policy_writers_share_the_trail(trail, tmp_path):
+    from prismor.runtime import allow, cli, egress_cli, setup_wizard
+    from prismor.runtime.modes import apply_mode
+
+    cli._policy_init(tmp_path)
+    allow.add_allowlist(tmp_path, "risky-write", "Dockerfile")
+    egress_cli._save_policy_file(tmp_path, {"settings": {"egress": {"enabled": True}}})
+    apply_mode(tmp_path, "dev-safe", force=True, observe=True)
+    setup_wizard._write_selection_policy(tmp_path, ["risky-write"], "global")
+    records = [json.loads(line) for line in trail.trail_path().read_text().splitlines()]
+    assert [r["source"] for r in records] == [
+        "policy.init", "allow", "egress", "mode.apply", "setup.selection", "setup.selection",
+    ]
+    assert records[-1]["path"] == str(tmp_path / "policy.yaml")
+    assert all(r["before_hash"] == prev["after_hash"] for prev, r in zip(records[:4], records[1:5]))
+    assert trail.verify_trail()["ok"]
+
+
 # ── chain mechanics ─────────────────────────────────────────────────────────
 
 def test_append_links_and_persists(trail):
