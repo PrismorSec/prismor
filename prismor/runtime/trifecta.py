@@ -830,13 +830,16 @@ class TagLedger:
             # sequence once per new occurrence of its earlier steps rather than
             # on every later call. Block and redact rules always walk from the
             # start: a blocked call never runs, so firing once would let a retry
-            # through (see completes()). A tag whose hist is full can't show a
-            # newer occurrence, so it never suppresses.
+            # through (see completes()). A tag that must recur but whose hist is
+            # full can't show a newer occurrence, so it never suppresses. This
+            # call's own final-step tags aren't looked up, so a long session full
+            # of critical calls keeps suppressing.
             last = None
             if getattr(rule, "action", "") == "warn":
                 last = self.fired.get(getattr(rule, "rule_id", ""))
+            recur = set().union(*steps[:-1]) | (final - new_tags)
             if last is None or last >= current_index or any(
-                len(self.hist.get(t, ())) >= self._HIST_CAP for s in steps for t in s
+                len(self.hist.get(t, ())) >= self._HIST_CAP for t in recur
             ):
                 last = -1
             cursor = last

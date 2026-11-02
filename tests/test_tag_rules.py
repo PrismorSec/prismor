@@ -290,6 +290,19 @@ def test_warn_rule_fires_once_per_new_source(tmp_path):
     assert led.completes_rules({"b"}, [warn], 301) is not None
 
 
+def test_warn_rule_stays_quiet_once_final_tag_hist_is_full(tmp_path):
+    # A long session fills the final tag's hist; that must not undo suppression.
+    warn = compile_rule("a then b -> warn")
+    led = _led(tmp_path)
+    led.record({"a"}, 0, "t0")
+    fires = 0
+    for i in range(1, TagLedger._HIST_CAP + 50):
+        done = led.completes_rules({"b"}, [warn], i)
+        fires += done is not None
+        led.record({"b"}, i, "t", fired=[done["rule_id"]] if done else ())
+    assert fires == 1
+
+
 def test_hist_persists_across_instances(tmp_path):
     sid = "s-" + uuid.uuid4().hex
     led = TagLedger(tmp_path, sid)
