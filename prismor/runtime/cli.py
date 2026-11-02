@@ -5416,6 +5416,8 @@ def _blocks(finding: Dict[str, Any]) -> bool:
 # Which agent's shell `prismor check` runs in, from the marker it sets.
 _AGENT_BY_ENV = (("CLAUDECODE", "claude"), ("CODEX_THREAD_ID", "codex"), ("CODEX_SANDBOX", "codex"),
                  ("CURSOR_AGENT", "cursor"), ("GEMINI_CLI", "gemini"))
+# The session id those agents export to their shells (Codex's thread is its session).
+_SESSION_BY_ENV = ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")
 
 
 def _report_agent_precheck(engine: "PolicyEngine", findings: List[Dict[str, Any]],
@@ -5446,7 +5448,10 @@ def _report_agent_precheck(engine: "PolicyEngine", findings: List[Dict[str, Any]
                    "metadata": {"tool_name": "prismor check"}},
             # The device's mode: BLOCK means the policy enforces this rule.
             # The record's verdict stays "observed" via the findings above.
-            workspace=workspace, agent=agent, mode="enforce", session_id=None,
+            # The agent's own session, so the console files the record under
+            # it; without one it reached the org but no session showed it.
+            workspace=workspace, agent=agent, mode="enforce",
+            session_id=next((os.environ[k] for k in _SESSION_BY_ENV if os.environ.get(k)), None),
             subject=resolve_subject(),
         )
     except Exception:
