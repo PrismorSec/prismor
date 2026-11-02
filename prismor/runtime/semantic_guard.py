@@ -156,7 +156,10 @@ _sig(r"(remember\s+(this\s+)?(forever|permanently|always)|always\s+(trust|obey|f
 # Bulk PII / dataset exfiltration framing — whole-dataset extraction of
 # personal data, often disguised as a codegen or summarization task. Scored
 # in the warn band (not block): legitimate reporting tooling phrases similarly.
-_sig(r"(output|export|dump|list|generate|include|compile|extract)\s+.{0,40}(all|every|each|the\s+full|complete)\s+.{0,30}(employee|customer|user|client|personnel|staff|member|patient)\w*\s+.{0,20}(record|email|salary|salaries|address|phone|ssn|data|details?|info\w*|pii)", 0.55, "bulk_pii_exfil")
+# The verb must be in command position (line/sentence start, or after
+# please/now/must/to): a risk register or policy page DESCRIBING the threat
+# ("a contractor could export all customer data") is not asking for it.
+_sig(r"(?:^|[\n.!?:;]\s*|\b(?:please|now|must|to)\s+)(output|export|dump|list|generate|include|compile|extract)\s+.{0,40}(all|every|each|the\s+full|complete)\s+.{0,30}(employee|customer|user|client|personnel|staff|member|patient)\w*\s+.{0,20}(record|email|salary|salaries|address|phone|ssn|data|details?|info\w*|pii)", 0.55, "bulk_pii_exfil")
 
 
 def _heuristic_analyze(text: str) -> SemanticRisk:
