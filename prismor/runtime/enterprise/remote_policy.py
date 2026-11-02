@@ -334,7 +334,15 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_cs_sig is not None
         and str(latest_cs_sig) != str(_settings_block_sig("copilot_studio"))
     )
-    if (version_changed or profile_changed or capture_changed or guardrails_changed
+    # Extensions an org admin reviewed in the console (settings.extension_reviews),
+    # served without a version bump; a review should reach the device's next
+    # session rather than wait for some other change.
+    latest_ext_reviews_sig = body.get("extensionReviewsSig")
+    ext_reviews_changed = (
+        latest_ext_reviews_sig is not None
+        and str(latest_ext_reviews_sig) != str(_settings_block_sig("extension_reviews"))
+    )
+    if (version_changed or profile_changed or capture_changed or guardrails_changed or ext_reviews_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
