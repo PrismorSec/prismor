@@ -4752,6 +4752,41 @@ def transcript_refusals(transcript: str) -> List[Dict[str, str]]:
     return found
 
 
+_PRECHECK_CALL = re.compile(r"""\b(?:prismor|immunity)\s+check\s+(?:-\S+\s+)*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))""")
+_PRECHECK_FINDING = re.compile(
+    r"^\[(\w+)\] (.+?)  \((\w+)\)\n(?:  suppressed by .*\n)?  rule: (\S+)  evidence: (.*)$", re.M)
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _attach_prechecks(events: List[Dict[str, Any]]) -> None:
+    """Surface `prismor check "<cmd>"` dry runs an agent made from a shell call.
+
+    The agent asks what policy would do and then decides on its own, so the
+    verdict that stopped it lived only in the command's output: the trail
+    showed an allowed `ls; prismor check ...` row and no hint of why nothing
+    ran next. Nothing was blocked, so this never changes the row's verdict.
+    """
+    for ev in events:
+        arts = ev.get("artifacts") or {}
+        command = str(arts.get("command") or "")
+        if ev.get("type") != "shell" or "check" not in command:
+            continue
+        checked = [next(g for g in m.groups() if g is not None) for m in _PRECHECK_CALL.finditer(command)]
+        if not checked:
+            continue
+        out = _ANSI.sub("", "\n".join(str(arts.get(f) or "") for f in ("response", "stdout", "stderr")))
+        findings = [{"severity": s, "title": t, "verdict": v.lower(), "rule": r, "evidence": e.strip()}
+                    for s, t, v, r, e in _PRECHECK_FINDING.findall(out)]
+        verdicts = {f["verdict"] for f in findings}
+        ev["precheck"] = {
+            "checked": checked,
+            "findings": findings,
+            # Same order as the CLI's exit code: block beats warn beats a clean pass.
+            "verdict": "block" if "block" in verdicts else "warn" if findings else
+                       ("pass" if "PASS" in out else "unknown"),
+        }
+
+
 def _attach_refusals(events: List[Dict[str, Any]], transcript: str) -> None:
     """Mark each prompt row the safety classifier refused with its category."""
     if not transcript:
@@ -5056,6 +5091,7 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             _attach_hook_runs(recent_events, transcript)
             _attach_refusals(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
+            _attach_prechecks(recent_events)
             _slim_old_trail(recent_events)
             # Dedupe on the raw timestamp: recent_blocked carries it, while an
             # event's "ts" is relative ("1m ago"), so the two never matched and

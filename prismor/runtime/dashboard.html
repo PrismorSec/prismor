@@ -1379,6 +1379,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background:var(--gray-100); color:var(--gray-600); font-variant-numeric:tabular-nums; }
   .hook-chip.slow { background:rgba(217,119,6,.14); color:#d97706; }
   .hook-chip.fail { background:rgba(220,38,38,.12); color:#dc2626; }
+  .hook-chip.pre-block { background:rgba(220,38,38,.08); color:#dc2626; border:1px dashed rgba(220,38,38,.45); }
+  .hook-chip.pre-warn { background:rgba(217,119,6,.10); color:#d97706; border:1px dashed rgba(217,119,6,.45); }
   .hook-runs { margin-top:4px; }
   .hook-phase { font-size: 11px; font-weight: 600; color:var(--gray-500); margin:8px 0 3px; text-transform:uppercase; letter-spacing: .06em; }
   .hook-run { font-size: 12px; margin-bottom:5px; }
@@ -6612,7 +6614,7 @@ function treeLeafEl(ev, idx){
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
-    extCauseChip(ev.extension)+hookChip(ev)+
+    extCauseChip(ev.extension)+precheckChip(ev)+hookChip(ev)+
     '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
@@ -6790,6 +6792,7 @@ function renderNodePanel(ev){
             '<a class="link" style="margin-left:14px" onclick="openDoc(\'faq.md\',\'Why was my command blocked?\')">Why was this flagged?</a></div>':'')+
         '</div>':'')+
     '</div>';
+  panel.querySelector('.drawer-event-card').insertAdjacentHTML('beforeend', precheckHtml(ev));
   panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
   panel.insertAdjacentHTML('beforeend', nodeActionsHtml(ev));
   renderNaExisting(naTarget(ev));
@@ -7294,6 +7297,33 @@ function hookChip(ev){
   return '<span class="hook-chip' + (fail ? ' fail' : wait >= HOOK_SLOW_MS ? ' slow' : '') + '" title="' +
     safeAttr(runs.map(r => r.event + ' ' + hookLabel(r.command) + ' ' + fmtDur(r.ms)).join('\n')) + '">' +
     runs.length + ' hook' + (runs.length === 1 ? '' : 's') + ' · ' + fmtDur(wait) + '</span>';
+}
+// `prismor check "<cmd>"` the agent ran itself: a dry run, so the call stays
+// allowed, but its verdict is usually why the agent stopped right after.
+const PRECHECK_LABEL = {block:'would block', warn:'would warn', pass:'would allow', unknown:'ran'};
+function precheckChip(ev){
+  const p = ev.precheck; if (!p) return '';
+  const rules = [...new Set(p.findings.map(f => f.rule))];
+  return '<span class="hook-chip' + (p.verdict === 'block' ? ' pre-block' : p.verdict === 'warn' ? ' pre-warn' : '') +
+    '" title="' + safeAttr('Dry run via prismor check; nothing was blocked' + (rules.length ? '\nrule: ' + rules.join(', ') : '')) +
+    '">pre-check \u00b7 ' + PRECHECK_LABEL[p.verdict] + '</span>';
+}
+function precheckHtml(ev){
+  const p = ev.precheck; if (!p) return '';
+  const cls = {block:'', warn:'warned', pass:'allowed', unknown:'allowed'}[p.verdict];
+  return '<div class="drawer-policy-card ' + cls + '">' +
+    '<div class="drawer-rule-row"><span class="drawer-rule-label">Pre-check</span>' +
+      '<div style="font-size: 12px;color:var(--gray-700);line-height:1.5">The agent asked Prismor what policy would do with this command, without running it. ' +
+      'Verdict: <b>' + PRECHECK_LABEL[p.verdict] + '</b>.</div></div>' +
+    '<div class="drawer-rule-row stack"><span class="drawer-rule-label">Checked</span>' +
+      p.checked.map(c => '<div class="drawer-code">' + safe(c) + '</div>').join('') + '</div>' +
+    p.findings.map(f =>
+      '<div class="drawer-rule-row stack"><span class="drawer-rule-label">' + safe(f.rule) + ' \u00b7 ' + safe(f.verdict) + '</span>' +
+        '<div style="font-size: 12px;color:var(--gray-700);line-height:1.4"><span class="sev-badge ' + sevClass(f.severity.toLowerCase()) + '">' + safe(f.severity.toLowerCase()) + '</span> ' + safe(f.title) + '</div>' +
+        '<div class="drawer-code">' + safe(f.evidence) + '</div></div>').join('') +
+    '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">What happened</span>' +
+      '<div style="font-size: 12px;color:var(--gray-600);line-height:1.5">Nothing was blocked here. If the agent then skipped the command, it chose to on this verdict.</div></div>' +
+  '</div>';
 }
 function hookRunsHtml(ev){
   const runs = ev.hookRuns || [];
