@@ -216,6 +216,36 @@ def _throwaway_config_match(command: str, match_text: str, workspace: Optional[P
     return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
 
 
+_IPV4 = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+_SSH_FAMILY = frozenset({"ssh", "scp", "sftp", "rsync"})
+
+
+def _ssh_config_hosts() -> Set[str]:
+    """Host/HostName values from the user's ~/.ssh/config."""
+    try:
+        text = (Path.home() / ".ssh" / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    hosts: Set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[0].lower() in ("host", "hostname"):
+            hosts.update(parts[1:])
+    return hosts
+
+
+def _configured_ssh_ip_match(match_text: str) -> bool:
+    """raw-ip-outbound on `ssh ubuntu@<ip>` where <ip> is already a host in
+    ~/.ssh/config: the same box `ssh <alias>` reaches, which the rule never
+    sees. Every IP in the match must be configured, so `ssh <own-ip> 'curl
+    <other-ip>'` stays guarded."""
+    words = match_text.split(None, 1)
+    if not words or os.path.basename(words[0]) not in _SSH_FAMILY:
+        return False
+    ips = set(_IPV4.findall(match_text))
+    return bool(ips) and ips <= _ssh_config_hosts()
+
+
 def _shell_syntax_rule(rule_id: str) -> bool:
     return rule_id in _SHELL_SYNTAX_RULE_IDS or (
         rule_id.startswith("mode-") and rule_id.endswith("-commands")
@@ -2198,6 +2228,10 @@ class PolicyEngine:
                             text, text[m.start():m.end()], self.workspace
                         ):
                             return True
+                        if rule.id == "raw-ip-outbound" and _configured_ssh_ip_match(
+                            text[m.start():m.end()]
+                        ):
+                            return True
                         # Any rule: inert text INSIDE a remote payload (a banner
                         # the remote shell echoes) is inert here too.
                         return is_inert_remote_match(
@@ -2957,6 +2991,12 @@ class PolicyEngine:
                                     f"Cross-agent read: {_tt_agent} is acting on "
                                     f"'{Path(_rp).name}', written by "
                                     f"{_wr.get('agent', '?')}"
+                                    # Same agent, earlier session: taint carries
+                                    # across sessions, but "cross-agent" misleads.
+                                    if _wr.get("agent") != _tt_agent else
+                                    f"Cross-session read: {_tt_agent} is acting on "
+                                    f"'{Path(_rp).name}', written by its session "
+                                    f"{str(_wr.get('session', '?'))[:8]}"
                                 ),
                                 "evidence": (
                                     f"chain: {_prov_chain}; "
