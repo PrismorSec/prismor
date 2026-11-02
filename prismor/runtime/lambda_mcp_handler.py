@@ -51,7 +51,7 @@ CALL_MARGIN_MS = 3000  # leave this much of the invocation for flush + snapshot
 BROWSER_SERVERS = ("@playwright/mcp", "playwright-mcp", "puppeteer", "@modelcontextprotocol/server-puppeteer")
 
 try:
-    from prismor import __version__ as VERSION
+    from prismor.runtime import __version__ as VERSION
 except Exception:  # pragma: no cover - version lookup must never break the handler
     VERSION = "unknown"
 
