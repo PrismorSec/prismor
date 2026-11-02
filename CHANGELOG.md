@@ -1,5 +1,28 @@
 ## [Unreleased]
 
+## [1.71.5] — 2026-11-02
+
+### Added
+- **Extensions an org admin reviewed in the console are accepted on the device.** The signed org policy carries `settings.extension_reviews` (kind, name, sha256); in an org-managed workspace a matching extension is recorded locally (`approved_by: org`) as if `prismor extensions approve` had run there, and a later edit changes the hash and comes back as changed. (#827)
+- **The dashboard decides Allow / Ask / Deny** and marks prompts the model's safety classifier refused, so near-identical retried turns no longer look like empty sessions. (#828)
+- **`prismor check` reports an agent's BLOCK to the org.** When an agent's pre-check comes back BLOCK the hook never sees the command; the blocking findings now go through normal telemetry (redacted as usual). Human and CI runs are not reported. (#825)
+- **Setup pre-approves the read-only `prismor` commands CLAUDE.md asks for** (`status`, `status --all`, `cloak list`, `query --schema`) so a manual-approval session does not open on a permission prompt. (#825)
+
+### Changed
+- **The machine-wide install prompt defaults to No** (`[y/N]`), so a bare Enter no longer widens a workspace setup to every project. (#825)
+- **Setup no longer pre-selects OpenClaw or Hermes** (their plugins need an extra step at project scope) and lists which agents are protected when an install is partial. (#825)
+- **Redacted telemetry carries the workspace folder name, not its path.** `workspace_path` is `acme-app`, or `~` for the home directory; full capture keeps the path. (#825)
+- **Semantic-guard findings are titled by the judged category** (for example "Credential exfiltration in subagent prompt") instead of always "Semantic prompt-injection detected".
+- **Lambda deploy files and `examples/` moved out of the public repo.** The handlers (`lambda_handler`, `lambda_mcp_handler`) stay in the wheel. (#832, #833)
+
+### Fixed
+- **Fewer false positives.** `node -e` / `ruby -e` no longer trip `rce-canary` on `.exec(` / `.system(` method calls; `prismor query --schema`, `--help` and `| head` are exempt from the post-tool judge; URLs in heredoc bodies, commit messages and `gh` text are not egress destinations; the evasion detector seeds only from enforced blocks; `bulk_pii_exfil` needs a request, not a description; the decloak wrapper and ssh to configured IPs no longer fill the findings store. (#825, #828, #829, #831)
+- **A `warn` tag rule fires once per new untrusted source** instead of on every critical call after a session's first fetch, and keeps that suppression past 256 critical calls. Block and redact rules still fire on every completing call.
+- **Setup no longer pins `PRISMOR_SECRETS_DIR` from an agent's shell** into another install's hooks; an override set from a human shell is still pinned. (#825)
+- **Setup leaves the alternate screen once**, so the shell prompt no longer lands on the install summary. (#825)
+- **`prismor enroll-status` says "unreachable" only after a failed upload**, and a device enrolled after a project-scope setup reports its coverage at enroll. (#825)
+- **The update notice is not printed inside an agent's shell.** (#825)
+
 ## [1.71.0] — 2026-11-01
 
 ### Added
