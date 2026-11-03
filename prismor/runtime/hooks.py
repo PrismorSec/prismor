@@ -877,8 +877,9 @@ def _attach_tool_result(event: Dict[str, Any], payload: Dict[str, Any]) -> None:
             return
 
 
-def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -> Dict[str, Any]:
-    session_id = (
+def payload_session_id(agent: str, payload: Dict[str, Any], workspace: Path) -> str:
+    """The session a hook payload belongs to, under each agent's own key."""
+    return str(
         payload.get("session_id")
         or payload.get("sessionId")
         or payload.get("trajectory_id")
@@ -891,6 +892,10 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         or payload.get("conversation_id")
         or _ephemeral_session_id(agent, workspace)
     )
+
+
+def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -> Dict[str, Any]:
+    session_id = payload_session_id(agent, payload, workspace)
 
     if agent == "claude":
         event = _normalize_claude(payload, session_id, workspace)
@@ -1414,9 +1419,14 @@ def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_wor
         hooks.get("SessionEnd", []),
         {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
     )
-    # Skip "Stop" hook — the payload contains the full assistant response which
-    # exceeds OS argument limits (E2BIG) on long conversations. Stop fires after
-    # all actions are complete so it has no security enforcement value.
+    # Stop / StopFailure: the turn's reply (last_assistant_message) or its API
+    # error, recorded for the session view (replies.py). The payload arrives on
+    # stdin, so a long reply is fine. Recorded only; never blocks or answers.
+    for event_name in ("Stop", "StopFailure"):
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+        )
     env = dict(config.get("env", {}))
     if pin_workspace:
         env["PRISMOR_WORKSPACE"] = str(workspace)
@@ -1487,6 +1497,9 @@ _CURSOR_EVENTS = (
     "afterMCPExecution",
     "beforeReadFile",
     "afterFileEdit",
+    # The turn's reply and reasoning, recorded for the session view.
+    "afterAgentResponse",
+    "afterAgentThought",
 )
 
 # Event names older Prismor releases registered. Cursor never had them, so those
@@ -2081,7 +2094,9 @@ def _merge_copilot(config: Dict[str, Any], command: str) -> Dict[str, Any]:
         hooks["UserPromptSubmitted"] = [e for e in hooks["UserPromptSubmitted"] if e.get("command") != command]
         if not hooks["UserPromptSubmitted"]:
             del hooks["UserPromptSubmitted"]
-    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmit"]:
+    # Stop carries transcript_path (the session's events.jsonl), where replies.py
+    # reads the turn's reply; no Copilot hook carries the reply itself.
+    for event_name in ["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"]:
         hooks[event_name] = _merge_simple_command_entries(hooks.get(event_name, []), command)
     return {**config, "version": config.get("version", 1), "hooks": hooks}
 
@@ -2101,11 +2116,13 @@ def _merge_codex(config: Dict[str, Any], command: str) -> Dict[str, Any]:
             },
         )
     # SubagentStop (Codex 0.16x): records the subagent's name and final message
-    # and tells the person what Prismor did inside it. Informational; never blocks.
-    hooks["SubagentStop"] = _merge_claude_entries(
-        hooks.get("SubagentStop", []),
-        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
-    )
+    # and tells the person what Prismor did inside it. Stop records the main
+    # agent's reply (last_assistant_message). Informational; never blocks.
+    for event_name in ("SubagentStop", "Stop"):
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+        )
     return {**config, "hooks": hooks}
 
 
@@ -3868,11 +3885,13 @@ def _strip_gemini(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], 
 def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     """Inject Prismor hooks into a Gemini CLI settings.json config.
 
-    Hooks three event types:
+    Hooks these event types:
       BeforeTool   -- pre-action; exit-2 blocks the tool call.
       AfterTool    -- post-action; recorded for session audit.
       SessionStart -- scans project-memory files (GEMINI.md / AGENTS.md) on
                       session open, same as the Claude Code SessionStart hook.
+      BeforeAgent  -- the person's prompt.
+      AfterAgent   -- the turn's reply, recorded only.
 
     Matcher covers all built-in Gemini CLI tools plus MCP tools
     (mcp__<server>__<tool> namespace).
@@ -3899,6 +3918,14 @@ def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:
             "hooks": [{"type": "command", "name": "prismor", "command": command}],
         },
     )
+    # BeforeAgent is the person's prompt (screened like UserPromptSubmit);
+    # AfterAgent carries the turn's reply (prompt_response), recorded only:
+    # exit 2 there would make Gemini retry the turn.
+    for event_name in ("BeforeAgent", "AfterAgent"):
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {"matcher": "*", "hooks": [{"type": "command", "name": "prismor", "command": command}]},
+        )
     return {**config, "hooks": hooks}
 
 
@@ -3953,7 +3980,8 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
         base["metadata"]["memory_digests"] = memory["digests"]
         return {**base, "type": "memory", "content": strip_prismor_managed(memory["content"])}
 
-    if hook_event in {"BeforeAgent", "AfterAgent"}:
+    # AfterAgent (the reply) is recorded by replies.py before normalization.
+    if hook_event == "BeforeAgent":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
 
     if tool_name == "run_shell_command":

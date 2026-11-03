@@ -99,7 +99,7 @@ Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces
 ### Claude Code (Anthropic)
 
 - **Config:** `.claude/settings.json` (project) or `~/.claude/settings.json` (user).
-- **Events hooked:** `UserPromptSubmit` (matcher `*`); `PreToolUse`, `PostToolUse` and `PostToolUseFailure` with matcher `Task|Agent|Skill|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*` (`_CLAUDE_TOOL_MATCHER` — `Task`/`Agent` cover subagent spawns, `mcp__.*` every MCP tool); `SessionStart` (matcher `startup|resume|clear|compact`) to scan project-memory files. `Stop` is deliberately not hooked.
+- **Events hooked:** `UserPromptSubmit` (matcher `*`); `PreToolUse`, `PostToolUse` and `PostToolUseFailure` with matcher `Task|Agent|Skill|Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*` (`_CLAUDE_TOOL_MATCHER` — `Task`/`Agent` cover subagent spawns, `mcp__.*` every MCP tool); `SessionStart` (matcher `startup|resume|clear|compact`) to scan project-memory files; `Stop` and `StopFailure` record the turn's reply (`last_assistant_message`) and this turn's thinking from the transcript, observe-only (`replies.py`).
 - **Blocking:** exit 2 from hook → block; stderr → rejection reason.
 - **Sweep target:** `~/.claude/`.
 - **Cloaking:** `prismor/runtime/cloaking/` installs `PreToolUse:Bash` + `PostToolUse:mcp__.*` + `UserPromptSubmit` hooks for `@@SECRET:<name>@@` substitution and scrub-on-output.
@@ -108,7 +108,7 @@ Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces
 ### Cursor
 
 - **Config:** `.cursor/hooks.json` (schema-validated).
-- **Events hooked:** `sessionStart`, `beforeSubmitPrompt`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `beforeReadFile`, `afterFileEdit` ([Cursor hooks](https://cursor.com/docs/agent/hooks)). `preToolUse` is not registered: it fires for the same shell/MCP/read calls as the dedicated events, so each call would be screened twice. Reinstalling removes the `beforeShellCommand`/`afterShellCommand`/`beforeFileWrite`/`afterFileWrite` entries older releases wrote (Cursor has no such events, so they never fired).
+- **Events hooked:** `sessionStart`, `beforeSubmitPrompt`, `beforeShellExecution`, `afterShellExecution`, `beforeMCPExecution`, `afterMCPExecution`, `beforeReadFile`, `afterFileEdit`, plus `afterAgentResponse`/`afterAgentThought` to record the reply and reasoning ([Cursor hooks](https://cursor.com/docs/agent/hooks)). `preToolUse` is not registered: it fires for the same shell/MCP/read calls as the dedicated events, so each call would be screened twice. Reinstalling removes the `beforeShellCommand`/`afterShellCommand`/`beforeFileWrite`/`afterFileWrite` entries older releases wrote (Cursor has no such events, so they never fired).
 - **Blocking:** on a deny, exit 2 with a plain-text reason on stdout. On exit 2 Cursor does not parse stdout as JSON; it denies and shows the trimmed stdout verbatim (checked against the cursor-agent `2026.10.01` hook executor). Step-up is `{"permission": "ask"}` on `beforeShellExecution` / `beforeMCPExecution`; on `beforeReadFile` and `beforeSubmitPrompt`, which have no "ask", it fails closed to deny. `after*` and `sessionStart` are reported, never blocked.
 - **Sweep target:** `~/.config/Cursor/`.
 - **Code:** `prismor/runtime/hooks.py` `_merge_cursor()`, `_normalize_cursor()`.
@@ -116,7 +116,7 @@ Legend: ✅ shipped · 🟡 roadmap · — sweep-only / not applicable. Surfaces
 ### Windsurf (Codeium Cascade)
 
 - **Config:** `.windsurf/hooks.json` (project) or `~/.codeium/windsurf/hooks.json` (user).
-- **Events hooked:** `pre_user_prompt`, `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `pre_mcp_tool_use`, `post_mcp_tool_use`, `post_cascade_response`.
+- **Events hooked:** `pre_user_prompt`, `pre_read_code`, `post_read_code`, `pre_write_code`, `post_write_code`, `pre_run_command`, `post_run_command`, `pre_mcp_tool_use`, `post_mcp_tool_use`, `post_cascade_response` (the turn's reply, `tool_info.response`, recorded observe-only).
 - **Sweep target:** `~/.codeium/`.
 - **Code:** `prismor/runtime/hooks.py` `_merge_windsurf()`, `_normalize_windsurf()`.
 
@@ -150,7 +150,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### GitHub Copilot CLI
 
 - **Config:** `~/.copilot/hooks/prismor.json` (user) or `.github/hooks/prismor.json` (project). Copilot loads only `*.json` files in those directories.
-- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`. With PascalCase event names Copilot sends Claude-shaped payloads.
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `Stop`. With PascalCase event names Copilot sends Claude-shaped payloads. No hook carries the reply: `Stop` gives `transcript_path` (the session's `events.jsonl`), and the reply, reasoning and model are read from its last turn (verified live, CLI 1.0.90). camelCase `agentStop` names no event, so it is not used.
 - **Blocking:** hook emits `{"permissionDecision": "deny", "permissionDecisionReason": "..."}` on stdout. Exit-2 convention is not used — Copilot reads the JSON response instead.
 - **Static layer:** `--allow-tool` / `--deny-tool` / `--allow-all-tools` CLI flags apply before the hook fires (deny beats allow). Useful as defense-in-depth.
 - **Payload note:** arguments arrive in `tool_input` (PascalCase events) or `toolArgs` (camelCase events), as an object or as raw `apply_patch` text. File tools use Copilot's keys: `{path}`, `{path, file_text}`, `{path, old_str, new_str}`. Captured live on Copilot CLI 1.0.88; see `tests/test_copilot_normalizer.py`.
@@ -168,7 +168,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### Codex (OpenAI)
 
 - **Config:** `~/.codex/hooks.json` (user) or `<repo>/.codex/hooks.json` (project). MCP/skill scan also reads `~/.codex/config.toml` and `<repo>/.codex/config.toml` — both `hooks.json` and inline `[[hooks.PreToolUse]]`-style TOML hook declarations work identically.
-- **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`.
+- **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `SubagentStop`, `Stop` (the turn's reply, plus any readable reasoning summary from the rollout).
 - **Matchers installed:** `Bash|apply_patch|mcp__.*`. Verified against a real `codex exec` session: `Bash` is the actual tool name Codex reports to `PreToolUse`/`PostToolUse`.
 - **Blocking:** exit 2 from hook → block; stderr → rejection reason. Verified end to end — a policy-blocked command (`rm package-lock.json`, matched by the `lockfile-deletion` rule) was actually denied by Codex's tool router before execution, with the file left untouched.
 - **Sweep target:** `~/.codex/`.
@@ -252,7 +252,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### Gemini CLI (Google)
 
 - **Config:** `.gemini/settings.json` (project) or `~/.gemini/settings.json` (user). Gemini also layers `/etc/gemini-cli/settings.json` (system), which Prismor does not write. Same nested Claude-shape `hooks.<Event>[].matcher` + `.hooks[]` entries, each `{type: "command", name: "prismor", command}`.
-- **Events hooked:** `BeforeTool`, `AfterTool` with matcher `run_shell_command|read_file|read_many_files|write_file|replace|replace_in_file|web_fetch|google_web_search|web_search|mcp__.*` (gemini-cli 0.63 names its edit tool `replace` and web search `google_web_search`; the older names are kept); `SessionStart` (matcher `*`) to scan `GEMINI.md` / `AGENTS.md`. Gemini's other events (`BeforeAgent`, `AfterAgent`, `BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionEnd`, `Notification`, `PreCompress`) are not hooked.
+- **Events hooked:** `BeforeTool`, `AfterTool` with matcher `run_shell_command|read_file|read_many_files|write_file|replace|replace_in_file|web_fetch|google_web_search|web_search|mcp__.*` (gemini-cli 0.63 names its edit tool `replace` and web search `google_web_search`; the older names are kept); `SessionStart` (matcher `*`) to scan `GEMINI.md` / `AGENTS.md`; `BeforeAgent` (the prompt) and `AfterAgent` (the reply, `prompt_response`, recorded only: exit 2 there makes Gemini retry). Gemini's other events (`BeforeModel`, `BeforeToolSelection`, `AfterModel`, `SessionEnd`, `Notification`, `PreCompress`) are not hooked.
 - **Payload:** JSON on stdin with `session_id`, `transcript_path`, `cwd`, `hook_event_name`, `timestamp`, `tool_name`, `tool_input`.
 - **Blocking:** exit 2 from `BeforeTool` blocks the call; stderr is the rejection reason.
 - **Verified live (2026-10, gemini-cli 0.63.0):** hooks fire for `SessionStart`, `BeforeTool` and `AfterTool`. A lockfile deletion and a secret read were blocked. The post-tool injection notice and the `GEMINI.md` memory-poisoning notice reached the model. Built from the [hooks reference](https://geminicli.com/docs/hooks/reference/).

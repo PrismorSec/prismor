@@ -1304,6 +1304,7 @@ _EVENT_LANES = {
     "network": "network",
     "tool_result": "tools",
     "mcp_call": "mcp",
+    "assistant_response": "assistant",
 }
 
 
@@ -1338,10 +1339,14 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
     meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     out: Dict[str, Any] = {}
 
-    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query"):
+    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query",
+                "reasoning"):
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)
+    # A reply's `response` is what the model said, not what a tool returned.
+    if raw.get("type") == "assistant_response" and "response" in out:
+        out["reply"] = out.pop("response")
 
     for key in ("mcp_server", "mcp_tool"):
         if raw.get(key):

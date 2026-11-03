@@ -182,7 +182,7 @@ class TestCursorInstallMigration(unittest.TestCase):
 
     _REAL = ["sessionStart", "beforeSubmitPrompt", "beforeShellExecution",
              "afterShellExecution", "beforeMCPExecution", "afterMCPExecution",
-             "beforeReadFile", "afterFileEdit"]
+             "beforeReadFile", "afterFileEdit", "afterAgentResponse", "afterAgentThought"]
     _LEGACY = ["beforeShellCommand", "afterShellCommand", "beforeFileWrite", "afterFileWrite"]
 
     def setUp(self):

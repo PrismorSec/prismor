@@ -41,7 +41,7 @@ SCHEMA = "prismor.runtime.telemetry.v1"
 _SENSITIVE_FINDING_FIELDS = ("evidence", "matched", "snippet", "context")
 _SENSITIVE_EVENT_FIELDS = (
     "command", "stdout", "stderr", "path", "url", "content",
-    "prompt", "response", "outbound_payload",
+    "prompt", "response", "outbound_payload", "reasoning",
 )
 
 _REDACTED = "[REDACTED]"

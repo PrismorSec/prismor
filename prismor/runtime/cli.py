@@ -1818,6 +1818,22 @@ def main(argv: Optional[List[str]] = None) -> None:
                 pass
             return
 
+        # The model's reply for the turn (Claude/Codex Stop, Cursor
+        # afterAgentResponse, Gemini AfterAgent, ...): recorded in observe mode
+        # for the session view and never answered. Any decision or exit 2 here
+        # tells the agent to keep going instead of ending its turn.
+        from prismor.runtime import replies as _replies
+        if _replies.is_reply(args.agent, payload):
+            try:
+                from prismor.runtime.hooks import payload_session_id
+                _sid = payload_session_id(args.agent, payload, workspace)
+                evaluate_tool_call(event=_replies.reply_event(args.agent, payload, _sid),
+                                   workspace=workspace, agent=args.agent, mode="observe",
+                                   session_id=_sid, flush_at_exit=False)
+            except Exception:
+                pass
+            return
+
         # A subagent finished: queue a line telling the person what Prismor did
         # inside it. Its blocks and warnings went to the subagent; a background
         # subagent's work never shows in the main chat. The line is shown by the
