@@ -723,7 +723,8 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
             _Loader.add_constructor(
                 "tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node)
             )
-            parsed = yaml.load(payload.decode("utf-8"), Loader=_Loader)
+            # SafeLoader subclass; the timestamp tag stays a string so pause.py can parse it.
+            parsed = yaml.load(payload.decode("utf-8"), Loader=_Loader)  # nosec B506
         except Exception:
             return None
         if not isinstance(parsed, dict):
