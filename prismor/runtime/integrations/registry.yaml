@@ -30,7 +30,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".claude/settings.json", user: "~/.claude/settings.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd, Stop, StopFailure]
     blocking: exit-2
     normalizer: _normalize_claude
     sweep_dir: "~/.claude/"
@@ -47,7 +47,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".cursor/hooks.json" }
-    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit]
+    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit, afterAgentResponse, afterAgentThought]
     blocking: json-permission
     normalizer: _normalize_cursor
     sweep_dir: "~/.config/Cursor/"
@@ -102,7 +102,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".codex/hooks.json", user: "~/.codex/hooks.json" }
-    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop]
+    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop, Stop]
     blocking: exit-2
     normalizer: _normalize_codex
     sweep_dir: "~/.codex/"
@@ -121,7 +121,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".github/hooks/prismor.json", user: "~/.copilot/hooks/prismor.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, Stop]
     blocking: json-permission
     normalizer: _normalize_copilot
     sources: ["https://docs.github.com/en/copilot/reference/hooks-configuration"]
@@ -318,7 +318,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".gemini/settings.json", user: "~/.gemini/settings.json", system: "/etc/gemini-cli/settings.json" }
-    events: [BeforeTool, AfterTool, SessionStart]
+    events: [BeforeTool, AfterTool, SessionStart, BeforeAgent, AfterAgent]
     blocking: exit-2
     normalizer: _normalize_gemini
     notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeAgent, AfterAgent, BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
