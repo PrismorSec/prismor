@@ -217,7 +217,8 @@ def mcp_on_home(ctx: ScanContext, home: Home, *, source: str = SURFACE,
         return
     for cfg in configs:
         path = Path(cfg["path"])
-        if path.suffix.lower() == ".xml":
+        # discover_configs also lists skill manifests, which are not MCP configs.
+        if path.suffix.lower() == ".xml" or path.name == "SKILL.md":
             continue
         agent = str(cfg.get("agent") or "unknown")
         try:

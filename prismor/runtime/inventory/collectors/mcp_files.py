@@ -152,10 +152,14 @@ def read_mcp_file(path: Path) -> List[Dict[str, Any]]:
     if path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("too_large")
     text = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix.lower() == ".xml":
+    suffix = path.suffix.lower()
+    if suffix == ".xml":
         servers = parse_jetbrains_mcp_xml(text)
     else:
-        data = json.loads(text)
+        # Codex keeps [mcp_servers.*] in config.toml; opencode writes JSONC.
+        # TOMLDecodeError is a ValueError, so the caller's diagnostic still fires.
+        from prismor.runtime.scanner import loads_jsonc, tomllib
+        data = tomllib.loads(text) if suffix == ".toml" else loads_jsonc(text) if suffix == ".jsonc" else json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("not_object")
         servers = servers_from_mapping(data)

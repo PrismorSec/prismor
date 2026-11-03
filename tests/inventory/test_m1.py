@@ -389,3 +389,13 @@ def test_inventory_sink_ref_reuses_policy_output(tmp_path, monkeypatch, capsys):
     got = inventory_cli._resolve_refs([{"ref": "shared", "path": "b.jsonl"}, {"ref": "missing"}], tmp_path)
     assert got == [{"type": "file", "name": "shared", "path": "b.jsonl"}]
     assert "'missing' matches no settings.outputs name" in capsys.readouterr().err
+
+
+def test_read_mcp_file_parses_codex_toml_and_jsonc(tmp_path):
+    from prismor.runtime.inventory.collectors.mcp_files import read_mcp_file
+    toml = tmp_path / "config.toml"
+    toml.write_text('model = "o3"\n\n[mcp_servers.docs]\ncommand = "uvx"\nargs = ["mcp-server-git"]\n', encoding="utf-8")
+    assert [(s["name"], s["command"]) for s in read_mcp_file(toml)] == [("docs", ["uvx", "mcp-server-git"])]
+    jsonc = tmp_path / "opencode.jsonc"
+    jsonc.write_text('{\n  // comment\n  "mcpServers": {"web": {"url": "https://example.com/mcp"}}\n}\n', encoding="utf-8")
+    assert [s["url"] for s in read_mcp_file(jsonc)] == ["https://example.com/mcp"]
