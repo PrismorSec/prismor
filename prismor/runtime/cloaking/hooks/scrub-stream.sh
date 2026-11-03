@@ -59,13 +59,20 @@ _prismor_scrubbable() {
 data="$(cat; printf x)"
 data="${data%x}"
 
+# decloak.sh passes the session id so each scrub can be counted against it.
+# shellcheck source=_ledger.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh" 2>/dev/null \
+  || prismor_cloak_event() { :; }
+
 shopt -s nullglob
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
   name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   _prismor_scrubbable "$real" || continue
+  [[ "$data" == *"$real"* ]] || continue
   data="${data//"$real"/@@SECRET:${name}@@}"
+  prismor_cloak_event output redacted "${PRISMOR_CLOAK_SESSION:-}" "$name" "" Bash
 done
 
 printf '%s' "$data"

@@ -961,6 +961,8 @@ def evaluate_tool_call(
         if event.get("agent_event") == "UserPromptSubmit":
             _dispatch_refusals(engine=engine, event=event, workspace=workspace, agent=agent,
                                session_id=session_id, subject=subject)
+        _dispatch_cloak_ledger(engine=engine, workspace=workspace, agent=agent,
+                               session_id=session_id, subject=subject)
 
     # Tamper-evident signed audit trail: one chained + signed record per
     # evaluated call — every verdict, not just findings — so the local trail
@@ -1087,6 +1089,34 @@ def _dispatch_refusals(
                        "ruleId": "model-refusal", "title": "Prompt refused by the model's safety classifier"}],
             event={"type": "model_refusal", "agent_event": "ModelRefusal", "ts": r["ts"], "occurred_at": r["ts"]},
             workspace=workspace, agent=agent, mode="observe", session_id=session_id, subject=subject,
+        )
+
+
+def _dispatch_cloak_ledger(
+    *, engine: PolicyEngine, workspace: Path, agent: str, session_id: str, subject: Subject,
+) -> None:
+    """Ship what the bash cloak hooks caught since the last call
+    (cloaking/ledger.py). Each line is filed under the session the hook saw
+    and the time it happened; the vault name and pattern only, never a
+    value. Best-effort, and a stat() when nothing is pending."""
+    if not getattr(engine, "outputs", None):
+        return
+    try:
+        from prismor.runtime.cloaking import ledger as _ledger
+        records = _ledger.drain()
+    except Exception:
+        return
+    for rec in records:
+        finding = _ledger.to_finding(rec)
+        _dispatch_telemetry(
+            engine=engine,
+            findings=[finding],
+            event={"type": "cloak", "agent_event": "Cloak", "occurred_at": rec.get("ts"),
+                   "metadata": {"tool_name": finding.get("toolName") or "cloak"}},
+            workspace=workspace, agent=agent,
+            mode="enforce" if rec.get("action") == "blocked" else "observe",
+            session_id=str(rec.get("session_id") or "") or session_id,
+            subject=subject,
         )
 
 

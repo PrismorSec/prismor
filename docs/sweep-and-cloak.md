@@ -132,6 +132,29 @@ never sees vault contents. The vault is not encrypted at rest — the protection
 against a *direct read* is the runtime monitor and file permissions, not the
 cloaking hooks alone.
 
+### What the console sees
+
+Every catch is counted. Each cloak hook appends one line to
+`~/.prismor/cloak_events.jsonl`. On its next tool call, the Prismor hook drains
+that file and sends each line to your configured sinks as a finding. On an
+enrolled device the finding lands in the console's Secrets page.
+
+| Rule id | When |
+|---|---|
+| `cloak-prompt` | a secret pasted in a prompt was vaulted and the prompt sanitized |
+| `cloak-prompt-file` | a prompt `@`-mentioned a file holding a registered secret (blocked) |
+| `cloak-tool-input` | a raw secret in a command, file write or MCP arg was vaulted (denied) |
+| `cloak-read` | a Read of a file holding a registered secret was blocked |
+| `cloak-output` / `cloak-mcp-output` | a registered value was scrubbed from command or MCP output |
+| `cloak-command` | a `@@SECRET:name@@` placeholder was resolved at execution |
+
+A line carries the vault **name** (`auto_<hash>` or the name you registered),
+the pattern that matched, the session id and the tool. It never carries the
+value. Redactions arrive with `redaction_applied: true` and
+`data_classes: ["secret"]`. PII findings (`pii-ner`) carry their entity types in
+`data_classes`, and are marked redacted when `settings.pii` is `redact` +
+`enforce`.
+
 ---
 
 ## Sweep

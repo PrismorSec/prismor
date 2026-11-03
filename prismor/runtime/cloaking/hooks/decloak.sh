@@ -68,6 +68,16 @@ if [[ -n "$placeholders" ]]; then
   done <<< "$placeholders"
 fi
 
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty' | tr -cd 'A-Za-z0-9._-')"
+if [[ -n "$placeholders" ]]; then
+  # shellcheck source=_ledger.sh
+  source "$_HOOK_DIR/_ledger.sh"
+  while IFS= read -r placeholder; do
+    name="${placeholder#@@SECRET:}"
+    prismor_cloak_event command used "$session_id" "${name%@@}" "" Bash
+  done <<< "$placeholders"
+fi
+
 # ── 2. Decide whether to wrap the command for output scrubbing ──────────────
 # Scrub whenever there is at least one registered secret to protect, OR a
 # placeholder substitution injected a real value into the command. If the
@@ -105,7 +115,7 @@ $cmd
 
 }"
 fi
-wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
+wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_SESSION=$(printf '%q' "$session_id") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
 
 new_input="$(printf '%s' "$input" | jq --arg c "$wrapped" '.tool_input | .command = $c')"
 jq -n --argjson ni "$new_input" \
