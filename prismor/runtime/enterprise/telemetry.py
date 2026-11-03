@@ -349,13 +349,27 @@ def build_record(
     # induced by external documentation. All are static labels/enums — no
     # captured values — so they survive redaction. The destination host and
     # the doc URL are free text and only ship under full capture.
-    if finding.get("dataClasses"):
-        record["data_classes"] = [str(c) for c in finding.get("dataClasses") or []]
+    # A pii-ner finding names its classes as `entities` (PERSON, US_SSN, ...);
+    # they are the same kind of static label, so they ride in data_classes too.
+    _classes = finding.get("dataClasses") or finding.get("entities")
+    if _classes:
+        record["data_classes"] = [str(c) for c in _classes][:20]
         record["data_subject"] = finding.get("dataSubject")
     if finding.get("destTrust"):
         record["dest_trust"] = finding.get("destTrust")
-    if finding.get("redactionApplied"):
+    # An enforced transform (pii_ner_redact, cloak, memory_redact) rewrote the
+    # call before it ran: that is a redaction even without the explicit flag.
+    if finding.get("redactionApplied") or (
+        finding.get("transform") and str(finding.get("mode", "")).lower() == "enforce"
+    ):
         record["redaction_applied"] = True
+    # Cloak ledger (cloaking/ledger.py): the vault NAME of the secret that was
+    # caught or used (auto_<hash> or the name the user registered) and what was
+    # done. A label the user already sees as @@SECRET:name@@, never the value.
+    if finding.get("secretName"):
+        record["secret_name"] = str(finding["secretName"])[:128]
+    if finding.get("cloakAction"):
+        record["cloak_action"] = str(finding["cloakAction"])[:20]
     # Session-scope finding (scoped_agent.py): who drew the scope it hit.
     # llm / static are synthesis misses, operator a human's deny. Kept apart
     # from attack policy so a block-rate metric can leave them out (#257).

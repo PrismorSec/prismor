@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+### Added
+- **Cloak catches reach the console.** The cloak hooks are bash and sent no telemetry, so a secret pasted into a prompt, vaulted from a tool call, blocked on a Read or scrubbed from output was invisible to the console. Each hook now appends one line (vault name, matched pattern, session, tool; never the value) to `~/.prismor/cloak_events.jsonl`, and the Prismor hook drains it on its next call into `cloak-*` findings with `secret_name`, `cloak_action`, `redaction_applied` and `data_classes: ["secret"]`. `pii-ner` findings now carry their entity types in `data_classes`, and any enforced transform (`pii_ner_redact`, `cloak`, `memory_redact`) is reported as a redaction. See docs/sweep-and-cloak.md.
+
 ### Changed
 - **The install script prints its own summary, not pip/pipx/apt's.** Their output goes to a log file (its path is shown, and its tail is printed on failure); the terminal gets one line per step with a spinner, a PRISMOR wordmark, and numbered next steps (`export PATH` only when `prismor` is not on PATH yet, then `setup`, `status`, `dashboard`). The layout follows the terminal width, so nothing runs past the edge from 36 columns up; logs, CI and `NO_COLOR` get plain lines with no escape codes.
 

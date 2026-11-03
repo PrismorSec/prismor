@@ -26,6 +26,8 @@ set -uo pipefail
 
 # shellcheck source=_patterns.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_patterns.sh"
+# shellcheck source=_ledger.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
 
 SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
@@ -36,6 +38,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 [[ -n "$tool_name" ]] || exit 0
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
 
 # Pick the text to scan. For Bash we scan only the command; for file-writing
 # and MCP tools we scan the entire input object so we cover content,
@@ -89,6 +92,7 @@ while IFS= read -r real_value; do
     printf '%s' "$real_value" > "$secret_file"
     chmod 600 "$secret_file" 2>/dev/null || true
   fi
+  prismor_cloak_event tool_input redacted "$session_id" "$placeholder_name" "$(prismor_pattern_for "$real_value")" "$tool_name"
   reported+="  • @@SECRET:${placeholder_name}@@"$'\n'
   new_count=$((new_count + 1))
 done <<< "$matches"

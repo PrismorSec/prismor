@@ -49,6 +49,16 @@ scrubbed="$(printf '%s' "$response" | SECRETS_DIR="$SECRETS_DIR" perl -0777 -pe 
 
 # Only mutate if something actually changed — avoids noisy empty mutations.
 if [[ "$scrubbed" != "$response" ]]; then
+  # shellcheck source=_ledger.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
+  session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
+  # One event per secret whose placeholder now appears in the scrubbed output
+  # but not in the original (names only; the value never leaves perl).
+  while IFS= read -r ph; do
+    [[ -n "$ph" && "$response" != *"$ph"* ]] || continue
+    name="${ph#@@SECRET:}"
+    prismor_cloak_event mcp_output redacted "$session_id" "${name%@@}" "" "$tool_name"
+  done < <(printf '%s' "$scrubbed" | grep -oE '@@SECRET:[a-zA-Z0-9_-]+@@' | sort -u)
   # stdin, not --arg: a multi-MB response overflows ARG_MAX and jq never runs.
   printf '%s' "$scrubbed" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PostToolUse",updatedMCPToolOutput:.}}'
