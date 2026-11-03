@@ -44,8 +44,8 @@ blocking.
 
 A client works as-is if it lets you set **both** the base URL and an extra
 request header. One that takes only a base URL and a single key can't send the
-agent key alongside the provider key; for those, run the proxy yourself with
-[virtual keys](./llm-proxy.md#virtual-keys).
+agent key alongside the provider key; for those, store the provider key with
+Prismor ([below](#prismor-held-provider-keys)).
 
 | Client | Base URL | Extra header | Hosted proxy |
 | --- | --- | --- | --- |
@@ -57,10 +57,34 @@ agent key alongside the provider key; for those, run the proxy yourself with
 | Vercel AI SDK | `createOpenAI({ baseURL })` | `headers` | Should work; not yet run against the hosted proxy |
 | LangChain | `base_url` | `default_headers` | Should work; not yet run against the hosted proxy |
 | ElevenLabs Custom LLM | Server URL | Request headers | Should work; `prismor elevenlabs connect` targets the self-run proxy today |
-| n8n, Capy, and other base-URL-plus-key settings | yes | no | Self-run proxy with [virtual keys](./llm-proxy.md#virtual-keys) |
+| n8n, Capy, and other base-URL-plus-key settings | yes | no | With a [Prismor-held provider key](#prismor-held-provider-keys). Verified with an OpenAI client sending only the agent key |
 
 "Should work" means the client documents both settings, but nobody has run it
 against `proxy.prismor.dev` yet.
+
+## Prismor-held provider keys
+
+For a client that takes only a base URL and one key, an admin stores the
+provider key with Prismor. The client then sends the **agent key as its API
+key**, and the hosted proxy swaps in the stored provider key on the way
+upstream. The app never holds a provider key, and revoking the agent key cuts
+it off.
+
+In the console: **Devices → the key icon on the agent key → Provider key**.
+Pick Anthropic, OpenAI or Gemini and paste the key. It is encrypted at rest,
+shown afterwards only by its last four characters, and released only to the
+hosted proxy, never to a caller holding the agent key. Replace or remove it on
+the same card; a change reaches the proxy within 60 seconds.
+
+```bash
+# n8n → Credentials → OpenAI account
+#   Base URL: https://proxy.prismor.dev/v1
+#   API Key:  <agent key>
+```
+
+The proxy recognizes the agent key wherever a client puts its API key:
+`Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, or Gemini's `?key=`.
+Sent this way with no provider key stored, a request gets a `401` that says so.
 
 ## Limits
 
