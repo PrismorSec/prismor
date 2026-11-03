@@ -10,7 +10,36 @@ permissions:
   id-token: write   # OIDC token for PyPI trusted publishing
 
 jobs:
+  # A tag can point at any commit, so the publish below must not trust it.
+  # Only release a commit that is on main and already passed the checks
+  # branch protection requires there.
+  ci-gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: Tagged commit is on main and green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          status=$(gh api "repos/$REPO/compare/main...$SHA" --jq .status)
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::$SHA is not on main (compare status: $status)"; exit 1
+          fi
+          for check in oss-safe lint-and-sast security; do
+            result=$(gh api "repos/$REPO/commits/$SHA/check-runs?check_name=$check" \
+              --jq '[.check_runs[] | select(.status == "completed")] | sort_by(.completed_at) | last | .conclusion')
+            if [ "$result" != "success" ]; then
+              echo "::error::required check '$check' is '${result:-missing}' on $SHA"; exit 1
+            fi
+            echo "$check: success"
+          done
+
   release:
+    needs: ci-gate
     runs-on: ubuntu-latest
     environment: pypi
 
