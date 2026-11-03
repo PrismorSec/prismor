@@ -5,6 +5,9 @@ enforcement surface that does not need the agent's cooperation: every other one
 requires something to be hooked, wired, or imported, and this one requires only
 that requests to the model pass through a URL you control.
 
+To skip running it yourself, use the one Prismor hosts at
+`https://proxy.prismor.dev`: see [Hosted proxy](./hosted-proxy.md).
+
 ```bash
 prismor proxy --mode enforce
 
