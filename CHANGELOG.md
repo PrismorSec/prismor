@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+### Changed
+- **The install script prints its own summary, not pip/pipx/apt's.** Their output goes to a log file (its path is shown, and its tail is printed on failure); the terminal gets one line per step with a spinner, a PRISMOR wordmark, and numbered next steps (`export PATH` only when `prismor` is not on PATH yet, then `setup`, `status`, `dashboard`). The layout follows the terminal width, so nothing runs past the edge from 36 columns up; logs, CI and `NO_COLOR` get plain lines with no escape codes.
+
+### Fixed
+- **The install script's pipx fallback works on a fresh machine.** It ran `apt-get install pipx` with no `apt-get update`, which fails where the package lists are empty, and its sudo prompt is now asked before the spinner rather than behind it. A re-run upgrades (`pipx install --force`, `pip install --upgrade`) instead of stopping at "already installed".
+
 ## [1.72.0] — 2026-11-03
 
 ### Added
