@@ -58,6 +58,8 @@ from typing import Any, Dict, Optional
 
 from prismor.runtime.principal import resolve_subject
 from prismor.runtime.runtime import evaluate_tool_call
+from prismor.runtime.ratelimit import Scope as RateScope
+from prismor.runtime import remote_eval
 
 #: Canonical value field per event type — imported rather than restated, so an
 #: SDK adapter posting here produces the same event a hook would.
@@ -180,10 +182,9 @@ class EvalHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
+    @remote_eval.serving_this_thread()
     def do_POST(self) -> None:  # noqa: N802
         from prismor.runtime import authzen as _az
-        from prismor.runtime import remote_eval
-        remote_eval.serving_this_thread()  # this request is the evaluator: never forward
         from prismor.runtime import copilot_studio as _cs
         route = self.path.split("?", 1)[0]  # Copilot Studio appends ?api-version=
         if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0], self.workspace):
@@ -304,6 +305,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 subject=subject,
                 identity_token=self._identity_token(),
                 explain=bool(body.get("explain")),
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -328,6 +330,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 session_id=call["session_id"] or f"authzen-{os.getpid()}",
                 subject=resolve_subject(call["subject"]),
                 identity_token=self._identity_token(), explain=call["explain"],
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             ).as_dict()
 
         if not isinstance(body, dict):
@@ -398,6 +401,7 @@ class EvalHandler(BaseHTTPRequestHandler):
                 subject=resolve_subject(subject_str),
                 identity_token=self._identity_token(),
                 explain=bool(body.get("explain")),
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from prismor.runtime import perf
+from prismor.runtime import ratelimit
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
@@ -142,6 +143,20 @@ def _apply_rule_exemptions(
 
 
 _OBSERVE_WARNED: set = set()
+
+
+def _load_local_decisions(engine: PolicyEngine, workspace: Path) -> None:
+    """Attach dashboard decisions belonging to this policy's workspace."""
+    try:
+        from prismor.runtime import decisions
+        rules, tools = decisions.for_runtime(
+            workspace, managed=bool(getattr(engine, "workspace_managed", False)))
+        if rules:
+            engine.rule_exemptions = list(engine.rule_exemptions or []) + rules
+        if tools:
+            engine.tool_denies = list(engine.tool_denies or []) + tools
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] local decisions error: {exc}\n")
 
 
 def _warn_observe_adapter(framework: str, findings: List[Dict[str, Any]]) -> None:
@@ -264,6 +279,8 @@ def evaluate_tool_call(
     explain: bool = False,
     session_seq: Optional[int] = None,
     deny_tools: Sequence[str] = (),
+    rate_accounting: bool = True,
+    rate_scope: Optional[ratelimit.Scope] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -289,6 +306,10 @@ def evaluate_tool_call(
         session_seq: zero-based position of this event in its session when the
             caller handles persistence. Defaults to the last index in the
             loaded history (or zero for a standalone pre-check).
+        rate_accounting: False only for host-owned probes or historical replay.
+            Independent of persist/record: live proxies do their own recording.
+        rate_scope: host-owned quota workspace/agent and optional hook call id.
+            HTTP callers cannot select these through event/body fields.
         taint_store: optional session-taint store to use instead of the on-disk
             per-session file. Callers with no local box (the hosted
             inference-hook channel) pass one ``InMemoryTaintStore`` shared
@@ -363,10 +384,11 @@ def evaluate_tool_call(
     perf.lap()
     if not record:
         persist = False
+    events = [event]
     if persist:
-        append_session_event(workspace, session_id, event)
-        events = read_session_events(workspace, session_id)
         try:
+            append_session_event(workspace, session_id, event)
+            events = read_session_events(workspace, session_id) or [event]
             from prismor.runtime.cli import analyze_session_incremental  # lazy: avoid import cycle
             analysis = analyze_session_incremental(
                 events, repo_root=repo_root, workspace=workspace, session_id=session_id
@@ -382,10 +404,8 @@ def evaluate_tool_call(
                 analysis=analysis,
                 append_only=True,
             )
-        except Exception as exc:  # best-effort; never block on analysis failure
-            sys.stderr.write(f"[prismor] analysis error: {exc}\n")
-    else:
-        events = [event]
+        except Exception as exc:  # recording must never bypass enforcement
+            sys.stderr.write(f"[prismor] session recording/analysis error: {exc}\n")
     perf.lap("session_analysis")
 
     # Keep the org policy fresh for every caller, not just hook-dispatch: an SDK
@@ -404,16 +424,7 @@ def evaluate_tool_call(
         engine.taint_override = taint_store
     # Allow / ask / deny decisions made on this machine's dashboard ride the
     # same matchers as the org's signed rule_exemptions and tool_denies.
-    try:
-        from prismor.runtime import decisions as _decisions
-        _local_rules, _local_tools = _decisions.for_runtime(
-            workspace, managed=bool(getattr(engine, "workspace_managed", False)))
-        if _local_rules:
-            engine.rule_exemptions = list(engine.rule_exemptions or []) + _local_rules
-        if _local_tools:
-            engine.tool_denies = list(engine.tool_denies or []) + _local_tools
-    except Exception as exc:
-        sys.stderr.write(f"[prismor] local decisions error: {exc}\n")
+    _load_local_decisions(engine, workspace)
     perf.lap("policy_load")
 
     # Verified end-user identity. Off unless the signed org policy (or the
@@ -499,6 +510,83 @@ def evaluate_tool_call(
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
                                trace=_trace)
+    _host_rate_findings: List[Dict[str, Any]] = []
+    _host_rate_report = None
+    # Stateful admission is performed ONCE, outside evaluate(): session replay,
+    # memory scans and additional patch paths must never reserve extra slots.
+    from prismor.runtime.hooks import _is_pre_action
+    if (rate_accounting and (
+            (rate_scope is not None and rate_scope.authoritative)
+            or (_is_pre_action(str(event.get("agent_event") or ""))
+                and event.get("agent_event") != "PreCheck"
+                and event.get("type") not in {"prompt", "memory", "skill_manifest", "rate_limit"}))):
+        _rate_scope = rate_scope or ratelimit.Scope(workspace, _agent_name)
+        _rate_engine = (engine if _rate_scope.workspace.resolve() == workspace.resolve()
+                        else PolicyEngine(workspace=_rate_scope.workspace))
+        if _rate_engine is not engine:
+            _load_local_decisions(_rate_engine, _rate_scope.workspace)
+        if _rate_engine.rate_limit is not None or _rate_engine.rate_limit_error:
+            _rate_subject = subject
+            _rate_error = _rate_engine.rate_limit_error
+            _rate_identity_findings = []
+            if _rate_scope.authoritative:
+                from prismor.runtime import identity_token as _rate_idt
+                _rate_cfg = _rate_idt.effective_config(_rate_engine.identity)
+                if _rate_cfg != _identity_cfg:
+                    # A caller-selected workspace may have a different issuer
+                    # (or no identity policy). It cannot prove quota identity
+                    # on behalf of the host's policy authority.
+                    _rate_subject = Subject()
+                    if _rate_cfg:
+                        try:
+                            _rate_subject, _, _rate_identity_finding = _rate_idt.apply(
+                                _rate_subject, identity_token or current_token(), _rate_cfg,
+                                surface=str(meta.get("surface") or ""), session_id=session_id)
+                        except Exception:
+                            _rate_error = "Quota identity verification unavailable"
+                            _, _, _rate_identity_finding = _rate_idt.apply(
+                                Subject(), None, _rate_cfg, surface="eval-server", session_id=session_id)
+                        if _rate_identity_finding:
+                            _rate_identity_findings.append(_rate_identity_finding)
+            _rate_identity = ratelimit.identity_key(
+                _rate_subject, _rate_scope.agent, str(meta.get("surface") or ""))
+            if _rate_error:
+                _rate = {"count": 0, "limit": 0, "used": 0, "remaining": 0,
+                         "retry_after": 0, "identity": _rate_identity,
+                         "error": _rate_error}
+            else:
+                _rate = ratelimit.admit(_rate_scope.workspace, _rate_identity,
+                                        _rate_engine.rate_limit, call_id=_rate_scope.call_id)
+            _rate_event = {"type": "rate_limit", "agent_event": "PreToolUse",
+                           "content": json.dumps(_rate, sort_keys=True)}
+            _rate_findings = _rate_identity_findings + _rate_engine.evaluate(
+                _rate_event, _session_seq, session_id=session_id, subject=_rate_subject,
+                rate_context=_rate, trace=_trace)
+            for _f in _rate_findings:
+                _f["rateLimit"] = _rate
+                _f["policyLayer"] = _rate_engine.rate_limit_source
+                _f["remediation"] = (
+                    "Inspect `prismor rate status`; wait for capacity or ask the operator to review the policy."
+                    if _rate["error"] is None else
+                    "Restore access to the rate-limit store/configuration, then retry; inspect `prismor rate status`.")
+                if _rate_scope.authoritative or _rate_engine.rate_limit_source in {"remote", "exemption"}:
+                    _f["authoritative"] = True
+            if _rate_scope.authoritative:
+                # Only the quota owner's decisions may relax its findings.
+                # Request-selected workspace, agent/session labels and asserted
+                # usernames cannot select exemptions from a different policy.
+                _host_rate_findings = _rate_findings
+                _host_rate_report = (_rate_engine, _rate_scope, _rate_event, _rate_subject)
+                try:
+                    _host_rate_findings = _apply_rule_exemptions(
+                        _rate_findings, _rate_engine.rule_exemptions,
+                        session_id="", subject=_rate_subject, verified_users_only=True,
+                        surface=str(meta.get("surface") or ""), event=event,
+                        agent_names=(_rate_scope.agent,))
+                except Exception as exc:
+                    sys.stderr.write(f"[prismor] quota-owner exemption error: {exc}\n")
+            else:
+                findings.extend(_rate_findings)
     # A multi-file patch is one event with one `path`; every other file it
     # touches gets the path rules too. Content is dropped so the content rules,
     # already run above, do not fire twice.
@@ -836,12 +924,19 @@ def evaluate_tool_call(
     except Exception as exc:
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
 
+    findings.extend(_host_rate_findings)
+
     _eval_ms = int((time.perf_counter() - _guard_t0) * 1000)
     perf.lap("scoped_iam_learning")
 
-    if persist and findings:
+    # Long-lived surfaces persist their events themselves (persist=False).
+    # Stateful rate decisions cannot be reconstructed from that history, so
+    # preserve them as runtime findings before a proxy rebuilds its snapshot.
+    _to_persist = findings if persist else (
+        [f for f in findings if "rateLimit" in f] if record else [])
+    if _to_persist:
         try:
-            persist_runtime_findings(workspace, session_id, findings, _session_seq)
+            persist_runtime_findings(workspace, session_id, _to_persist, _session_seq)
         except Exception as exc:
             sys.stderr.write(f"[prismor] finding persistence error: {exc}\n")
 
@@ -874,6 +969,11 @@ def evaluate_tool_call(
 
     perf.lap("telemetry")
     blocking = should_block(findings, event)
+    _rate_blocking = should_block([f for f in findings if "rateLimit" in f],
+                                 {"agent_event": "PreToolUse"})
+    if _rate_blocking is not None:
+        from prismor.runtime.contract import strongest
+        blocking = strongest([f for f in (blocking, _rate_blocking) if f is not None])
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
 
@@ -958,6 +1058,22 @@ def evaluate_tool_call(
             eval_ms=_eval_ms,
             session_seq=_session_seq,
         )
+        if _host_rate_report and _host_rate_findings:
+            _owner, _owner_scope, _summary_event, _owner_subject = _host_rate_report
+            # Selecting a different action workspace cannot silence the
+            # quota owner's alerts. Send only quota metadata there, never the
+            # other workspace's command/arguments, and do not duplicate sinks
+            # that already received the normal action record above.
+            _owner_outputs = [out for out in _owner.outputs if out not in engine.outputs]
+            _owner_sid = f"rate-limit-{_host_rate_findings[0]['rateLimit']['identity']}"
+            _owner_findings = [dict(f, id=f"{_owner_sid}:{f.get('ruleId')}:{_session_seq}")
+                               for f in _host_rate_findings]
+            _dispatch_telemetry(
+                engine=_owner, findings=_owner_findings, event=_summary_event,
+                workspace=_owner_scope.workspace, agent=_owner_scope.agent,
+                mode="enforce" if blocking is not None else mode,
+                session_id=_owner_sid, subject=_owner_subject, eval_ms=_eval_ms,
+                session_seq=_session_seq, outputs=_owner_outputs)
         if event.get("agent_event") == "UserPromptSubmit":
             _dispatch_refusals(engine=engine, event=event, workspace=workspace, agent=agent,
                                session_id=session_id, subject=subject)
@@ -1133,10 +1249,12 @@ def _dispatch_telemetry(
     subject: Subject,
     eval_ms: Optional[int] = None,
     session_seq: Optional[int] = None,
+    outputs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Forward findings to configured sinks before the blocking decision so a
     SIEM sees every event, including blocked ones. Best-effort."""
-    if not getattr(engine, "outputs", None):
+    outputs = getattr(engine, "outputs", None) if outputs is None else outputs
+    if not outputs:
         return
     if not findings:
         # Full session capture: under the org's full_capture opt-in every
@@ -1176,7 +1294,7 @@ def _dispatch_telemetry(
                 repo = None
         sink_dispatch(
             findings,
-            engine.outputs,
+            outputs,
             extra={
                 "session_id": session_id,
                 "agent": agent,

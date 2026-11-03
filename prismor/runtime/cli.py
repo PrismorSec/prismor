@@ -9,6 +9,7 @@ Commands:
   audit --fix   Auto-remediate fixable issues
   audit judge   LLM judge reviews a sample of ALLOWED tool calls after the fact
   status        One-shot health check for this workspace (--all for every workspace)
+  rate status   Read per-identity rolling-minute usage and retry timing (--json)
   doctor        Health-check every runtime subsystem (hooks, policy, signature, enrollment, sink, chain); --json for scripts
   analyze       Analyze a JSONL session file
   analyze-history Replay on-disk agent transcripts through the live policy engine
@@ -1547,6 +1548,36 @@ def main(argv: Optional[List[str]] = None) -> None:
         _print_surfaces(workspace)
         return
 
+    if args.command == "rate":
+        from prismor.runtime import ratelimit
+        if args.rate_command != "status":
+            parser.parse_args(["rate", "--help"])
+            return
+        engine = PolicyEngine(workspace=workspace)
+        report = ratelimit.status(workspace, engine.rate_limit)
+        report["workspace"] = str(workspace.resolve())
+        report["policy_layer"] = engine.rate_limit_source
+        report["modes"] = {r.id: engine._resolve_mode(r) if r.enabled else "disabled" for r in engine.rules
+                           if r.id in {"rate-limit-exceeded", "rate-limit-unavailable"}}
+        if engine.rate_limit_error:
+            report["error"] = engine.rate_limit_error
+        if args.json:
+            emit(report, as_json=True)
+        elif not report["configured"] and not report["error"]:
+            print("Rate limiting: not configured")
+        else:
+            print(f"Rate limiting: {report.get('limit', 'unavailable')} admissions / 60 seconds")
+            print(f"  Workspace: {report['workspace']}")
+            print(f"  Modes: {json.dumps(report['modes'], sort_keys=True)}")
+            if report["error"]:
+                print(f"  Accounting unavailable: {report['error']}")
+            for entry in report["identities"]:
+                print(f"  {entry['identity'][:12]}: {entry['used']} used, "
+                      f"{entry['remaining']} remaining; retry in {entry['retry_after']:.2f}s")
+            if not report["identities"]:
+                print("  No admissions in the current window")
+        return
+
     if args.command == "status":
         if getattr(args, "perf", None):
             from prismor.runtime.store import get_hook_perf
@@ -2047,6 +2078,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # resolved inside (PRISMOR_SUBJECT / device identity) — single-user installs
         # are unchanged.
         _hook_claimed = _claim_hook_call(payload, args.agent)
+        from prismor.runtime import ratelimit
         decision = evaluate_tool_call(
             event=event,
             workspace=workspace,
@@ -2060,6 +2092,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             # records it - otherwise every finding, event and telemetry row
             # appeared twice.
             record=_hook_claimed,
+            rate_scope=ratelimit.Scope(
+                workspace, args.agent,
+                ratelimit.hook_call_id(payload, args.agent, normalized["sessionId"])),
         )
         _perf.lap("decision")
         _current_engine = decision.engine
@@ -4423,6 +4458,12 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("--encoded", help="Base64url-encoded command string (used by hooks)")
     sandbox_run.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --")
     sandbox_run.add_argument("--command-string", help=argparse.SUPPRESS)
+
+    rate_parser = subparsers.add_parser("rate", help="Inspect per-identity rolling-minute quotas")
+    rate_subs = rate_parser.add_subparsers(dest="rate_command")
+    rate_status = rate_subs.add_parser("status", help="Read current rate-limit usage without consuming quota")
+    rate_status.add_argument("--workspace", help="Workspace path")
+    rate_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── status ─────────────────────────────────────────────────────────
     status_parser = subparsers.add_parser(

@@ -132,3 +132,12 @@ def test_lambda_allow_deny_and_auth(lam):
 def test_lambda_refuses_without_key(lam, monkeypatch):
     monkeypatch.setattr(EvalHandler, "api_key", None)
     assert lam.handler(_fn_url("/v1/evaluate", {"tool_name": "x", "arguments": {}}, key=None))["statusCode"] == 503
+
+
+def test_request_local_evaluation_does_not_leak_into_client_calls(lam, monkeypatch):
+    monkeypatch.setattr(remote_eval._thread, "serving", False, raising=False)
+    # Even an early authentication rejection must end the request-local guard.
+    assert lam.handler(_fn_url("/v1/evaluate", {"tool_name": "x", "arguments": {}}, key="wrong"))["statusCode"] == 401
+    monkeypatch.setattr(remote_eval, "SERVING", False)
+    monkeypatch.setenv("PRISMOR_EVAL_URL", "https://example.test")
+    assert remote_eval.remote_url() == "https://example.test"

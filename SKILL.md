@@ -313,6 +313,12 @@ stop secret masking on the [mirror](#7-enforcement-surfaces) or the proxy.
 
 ## 5. When blocked
 
+For `rate-limit-exceeded`, run `prismor rate status` and wait for capacity.
+For `rate-limit-unavailable`, ask the operator to restore the accounting store
+or fix the configuration. Checks and replay consume no quota. Do not change
+identity/session/workspace or edit policy to bypass a limit. Configuration:
+[`docs/prismor-runtime.md`](./docs/prismor-runtime.md#per-identity-rate-limits).
+
 Prismor blocking is a signal, not a problem to route around. The recovery
 sequence is:
 

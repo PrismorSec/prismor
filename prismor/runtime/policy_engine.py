@@ -257,6 +257,7 @@ def _shell_syntax_rule(rule_id: str) -> bool:
 _LINE_FIELDS = frozenset({"command", "path", "url"})
 
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
+    "rate_limit": ["content"],
     "shell": ["command"],
     "file_read": ["path"],
     "file_write": ["path"],
@@ -723,7 +724,7 @@ class RuleCondition:
         return hits >= need
 
 
-_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent"})
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent", "rate"})
 _WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
 
 
@@ -744,7 +745,7 @@ class AttrCondition:
         when: "subagent.type == 'general-purpose' and tool.name == 'WebFetch'"
 
     Names are dotted paths rooted at ``principal``, ``resource``, ``args``,
-    ``tool`` or ``subagent``; ``args['x-y']`` reaches keys that are not identifiers. Only
+    ``tool``, ``subagent`` or the internal ``rate`` context; ``args['x-y']`` reaches keys that are not identifiers. Only
     and/or/not, comparisons (== != < <= > >= in, not in), literals, lists and
     ``has(path)`` are accepted — same no-``eval`` whitelist as RuleCondition.
 
@@ -873,7 +874,7 @@ _RESERVED_NAMES = _WHEN_ROOTS | {"true", "false", "null", "True", "False", "None
 
 def compile_named_conditions(raw: Any) -> Tuple[Dict[str, AttrCondition], List[str]]:
     """settings.conditions → ({name: AttrCondition}, errors). Each body may read
-    the five attribute roots; names cannot refer to other names (no cycles)."""
+    the attribute roots; names cannot refer to other names (no cycles)."""
     out: Dict[str, AttrCondition] = {}
     errors: List[str] = []
     if raw is None:
@@ -923,7 +924,8 @@ def _int(value: Any) -> int:
         return 0
 
 
-def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, Any]:
+def _when_context(event: Dict[str, Any], subject: Optional[Any],
+                  rate_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The attribute namespaces a ``when:`` expression can read."""
     meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
     args = meta.get("kwargs")
@@ -959,6 +961,8 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
     except (TypeError, ValueError):
         depth = max(len(chain), 1) if sub_id else 0
     return {
+        # Only the live runtime supplies this context, never event metadata.
+        "rate": rate_context or {"count": 0, "limit": 0, "error": None},
         "principal": principal,
         "resource": resource,
         "args": args,
@@ -1321,6 +1325,9 @@ class PolicyEngine:
         # True when project_policy_error is set and the last valid copy of the
         # file is enforced in its place (see _load_last_good).
         self.project_policy_fallback: bool = False
+        self.rate_limit: Optional[Dict[str, int]] = None
+        self.rate_limit_source: str = "default"
+        self.rate_limit_error: Optional[str] = None
         self.outputs: List[Dict[str, Any]] = []
         self.semantic_guard_config: Dict[str, Any] = {}
         self.sandbox_config: Dict[str, Any] = {}
@@ -1483,6 +1490,15 @@ class PolicyEngine:
         replace non-core rules. Settings are merged key-by-key, so a later layer
         wins (remote is applied after project = org-admin authoritative).
         """
+        _layer_settings = override_raw.get("settings") or {}
+        if "rate_limit" in _layer_settings:
+            from prismor.runtime.ratelimit import validate_settings
+            _rate_errors = validate_settings(_layer_settings["rate_limit"])
+            if _rate_errors:
+                # Reject the whole invalid layer before it can weaken the
+                # previous rate rules while leaving their settings behind.
+                self.rate_limit_error = "; ".join(_rate_errors)
+                return
         for rule in override_raw.get("rules", []) or []:
             rule_id = rule.get("id", "")
             default = rules_by_id.get(rule_id)
@@ -1611,6 +1627,9 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        if "rate_limit" in override_settings:
+            self.rate_limit_source = source
+            self.rate_limit_error = None
         if "default_mode" in override_settings or "mode" in override_settings:
             self._default_mode_source = source
         # semantic_guard is a nested stanza with its own defaults (enabled,
@@ -1704,6 +1723,13 @@ class PolicyEngine:
                 override_raw = _load_yaml(layer_path)
                 if override_raw is not None and not isinstance(override_raw, dict):
                     raise ValueError("the top level must be a mapping (version:, rules:, settings:)")
+                _rate_settings = (override_raw or {}).get("settings") or {}
+                if "rate_limit" in _rate_settings:
+                    from prismor.runtime.ratelimit import validate_settings
+                    _rate_errors = validate_settings(_rate_settings["rate_limit"])
+                    if _rate_errors:
+                        self.rate_limit_error = "; ".join(_rate_errors)
+                        raise ValueError(self.rate_limit_error)
             except Exception as exc:  # malformed YAML or shape: fall back, say so
                 override_raw = None
                 detail = " ".join(str(exc).split())[:240]
@@ -1770,6 +1796,7 @@ class PolicyEngine:
 
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
+        self.rate_limit = settings.get("rate_limit")
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
         # org-managed workspaces (the remote overlay is only merged there); the
@@ -1980,6 +2007,7 @@ class PolicyEngine:
         subject: Optional[Any] = None,
         include_suppressed: bool = False,
         trace: Optional[List[Dict[str, Any]]] = None,
+        rate_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -2161,7 +2189,7 @@ class PolicyEngine:
             when_holds: Optional[bool] = None
             if rule.when is not None:
                 if when_ctx is None:
-                    when_ctx = _when_context(event, subject)
+                    when_ctx = _when_context(event, subject, rate_context)
                 when_holds = rule.when.evaluate(when_ctx)
             if trace is not None:
                 # Every rule whose patterns matched, including the ones a
@@ -5231,6 +5259,10 @@ def validate_policy(path: Path) -> List[str]:
     if "rules" not in raw:
         errors.append("Missing required field: rules")
         return errors
+
+    if "rate_limit" in (raw.get("settings") or {}):
+        from prismor.runtime.ratelimit import validate_settings
+        errors.extend(validate_settings(raw["settings"]["rate_limit"]))
 
     named, cond_errors = compile_named_conditions((raw.get("settings") or {}).get("conditions"))
     errors.extend(cond_errors)

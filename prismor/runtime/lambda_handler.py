@@ -79,6 +79,7 @@ def _warm() -> float:
                    "session_id": "warmup", "metadata": {"tool_name": "warmup"}},
             workspace=WORKSPACE, agent="warmup", session_id="warmup",
             record=False, persist=False, register_agent=False, flush_at_exit=False,
+            rate_accounting=False,
         )
     except Exception as exc:  # never fail the cold start
         print(f"[prismor] warmup failed: {exc}")
