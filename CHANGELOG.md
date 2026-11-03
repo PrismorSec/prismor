@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 ### Added
-- **Optional Presidio PII detection.** `settings.pii` runs Microsoft Presidio (presidio-analyzer and presidio-anonymizer) over prompts, tool arguments and tool results, and records a `pii-ner` finding in the same audit trail as other detections. It is off by default and not imported until enabled, so a coding-agent hook stays on the regex path. Install with `pip install "prismor[pii]"` and `python -m spacy download en_core_web_sm` (the small English model). A missing install falls back to the regex detector. Entity list, score threshold, language, `action` (`observe` / `redact` / `block`), `mode`, and mask style are set in the policy file. Findings store a mask, not the value. See docs/pii.md.
+- **Optional Presidio PII detection.** `settings.pii` runs Microsoft Presidio (presidio-analyzer and presidio-anonymizer) over prompts, tool arguments and tool results, and records a `pii-ner` finding in the same audit trail as other detections. It is off by default and not imported until enabled, so a coding-agent hook stays on the regex path. Install with `pip install "prismor[pii]"` and `python -m spacy download en_core_web_sm` (the small English model). A missing install falls back to the regex detector. Entity list, score threshold, language, `action` (`observe` / `redact` / `block`), `mode`, and mask style are set in the policy file. Findings store a fixed-width mask, not the value or its length. Long text is scanned in full in `max_chars` windows, every `redact_text` caller (gateway argument logs, judge text, ACP proxy) applies the same masking, and `allow_list` drops values the model mistakes for people or places. See docs/pii.md.
 
 ## [1.71.7] — 2026-11-02
 

@@ -138,6 +138,11 @@
             "fields": {
               "type": "array",
               "items": {"type": "string"}
+            },
+            "allow_list": {
+              "type": "array",
+              "description": "Values never reported or masked, matched case-insensitively (product names the model tags as PERSON or LOCATION).",
+              "items": {"type": "string"}
             }
           }
         },

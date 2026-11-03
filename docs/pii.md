@@ -101,7 +101,16 @@ settings:
     max_chars: 4000
     entities: [PERSON, EMAIL_ADDRESS, PHONE_NUMBER, UK_NHS]
     fields: [prompt, response, content, stdout, stderr, command, mcp_args, outbound_payload, typed_text]
+    allow_list: []             # values never reported, case-insensitive
 ```
+
+The spaCy models tag ordinary developer words as people or places. On coding
+text, `en_core_web_sm` flagged "Django", "Claude", "Jira", "git commit" and
+"lorem". Every spaCy hit scores 0.85, so `score_threshold` cannot separate
+them; `en_core_web_lg` was not meaningfully better (3 of 8 developer
+sentences flagged instead of 4). List the names your team uses in
+`allow_list`, or keep `PERSON` and `LOCATION` for business-text surfaces such
+as Copilot Studio.
 
 A project file that sets only `enabled: true` keeps the defaults above. The
 stanza merges like `semantic_guard`.
@@ -118,9 +127,9 @@ stanza merges like `semantic_guard`.
 `hash` is not a secret. A short identifier (SSN, NHS number, phone) can be
 guessed from it. Use `mask` or `replace` for those.
 
-`max_chars` bounds how much of each field is scanned (default 4000, maximum
-50000). A longer field sets `piiTruncated` on the finding. Hits past the cut
-are not detected.
+`max_chars` is the size of each detector call (default 4000, maximum 50000).
+A longer field is scanned in overlapping windows of that size, so the whole
+field is checked and masked; cost grows with the length of the text.
 
 `backend: regex` never imports Presidio. Use it where you want the structured
 entities without a model. `PERSON`, `LOCATION` and `MEDICAL_LICENSE` stay
@@ -185,8 +194,8 @@ here). Two consequences follow from how hooks work:
   surfaces (Copilot Studio goes through the eval-server) unless you have
   measured the hook overhead and accepted it.
 
-`max_chars` is the other bound. A multi-kilobyte tool result is scanned only
-up to that cap.
+Cost grows with text length: a multi-kilobyte tool result is scanned in full,
+`max_chars` at a time.
 
 ## Copilot Studio and other surfaces
 

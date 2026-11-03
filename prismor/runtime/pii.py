@@ -104,6 +104,8 @@ _SYNTHETIC_IBAN = frozenset({
 
 RULE_ID = "pii-ner"
 _MAX_EVIDENCE_ENTITIES = 8
+# Longer than any name or identifier, so one cut at a window edge is whole in the next.
+_CHUNK_OVERLAP = 200
 
 
 class PiiNotes(list):
@@ -139,7 +141,6 @@ class PiiResult:
     requested_backend: str = "presidio"
     fallback_reason: str = ""
     unsupported: Tuple[str, ...] = ()
-    truncated: bool = False
     latency_ms: float = 0.0
 
 
@@ -158,6 +159,9 @@ class PiiSettings:
     model: str = "en_core_web_sm"
     max_chars: int = 4000
     fields: Tuple[str, ...] = DEFAULT_FIELDS
+    # Values never reported or masked (case-insensitive), e.g. product names
+    # spaCy tags as PERSON or LOCATION: "Django", "Jira", "Claude".
+    allow_list: Tuple[str, ...] = ()
     errors: Tuple[str, ...] = field(default_factory=tuple)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -173,6 +177,7 @@ class PiiSettings:
             "model": self.model,
             "max_chars": self.max_chars,
             "fields": list(self.fields),
+            "allow_list": list(self.allow_list),
         }
 
     @classmethod
@@ -261,6 +266,11 @@ class PiiSettings:
         else:
             parsed_fields = tuple(f.strip() for f in fields)
 
+        allow = raw.get("allow_list") or []
+        if not isinstance(allow, (list, tuple)) or not all(isinstance(v, str) for v in allow):
+            errors.append("settings.pii.allow_list must be a list of strings")
+            allow = []
+
         return cls(
             enabled=bool(enabled),
             backend=backend,
@@ -273,6 +283,7 @@ class PiiSettings:
             model=model,
             max_chars=max_chars_i,
             fields=parsed_fields,
+            allow_list=tuple(v.strip() for v in allow if v.strip()),
             errors=tuple(errors),
         )
 
@@ -592,36 +603,37 @@ def detect(text: str, settings: PiiSettings) -> PiiResult:
     if not settings.enabled or not isinstance(text, str) or not text.strip():
         return PiiResult(requested_backend=requested, backend="off")
 
-    truncated = False
-    scanned = text
-    if len(text) > settings.max_chars:
-        scanned = text[: settings.max_chars]
-        truncated = True
-
     started = time.perf_counter()
     unsupported = tuple(e for e in settings.entities if e not in REGEX_ENTITIES)
     fallback = ""
-    if requested == "presidio":
-        hits, err = _detect_presidio(scanned, settings)
-        if err:
-            fallback = err
-            _warn_once(f"{err}; using the regex detector")
-            hits = _detect_regex(scanned, settings)
-            backend = "regex"
-        else:
-            backend = "presidio"
-            unsupported = ()
-    else:
-        hits = _detect_regex(scanned, settings)
-        backend = "regex"
+    backend = "presidio" if requested == "presidio" else "regex"
+    hits: List[PiiHit] = []
+    allowed = {v.lower() for v in settings.allow_list}
+    # The whole text is scanned, max_chars at a time: skipping the tail would
+    # leave PII unmasked under redact+enforce. Windows overlap so a value cut
+    # at one boundary is whole in the next; resolve_overlaps keeps the full span.
+    step = settings.max_chars - min(_CHUNK_OVERLAP, settings.max_chars // 4)
+    for offset in range(0, len(text), step):
+        chunk = text[offset:offset + settings.max_chars]
+        if backend == "presidio":
+            found, err = _detect_presidio(chunk, settings)
+            if err:
+                fallback = err
+                _warn_once(f"{err}; using the regex detector")
+                backend = "regex"
+        if backend == "regex":
+            found = _detect_regex(chunk, settings)
+        hits.extend(PiiHit(h.entity, h.score, h.start + offset, h.end + offset, h.value)
+                    for h in found if h.value.strip().lower() not in allowed)
+        if offset + settings.max_chars >= len(text):
+            break
 
     return PiiResult(
-        hits=tuple(hits),
+        hits=tuple(resolve_overlaps(hits)),
         backend=backend,
         requested_backend=requested,
         fallback_reason=fallback,
         unsupported=unsupported if backend == "regex" else (),
-        truncated=truncated,
         latency_ms=(time.perf_counter() - started) * 1000,
     )
 
@@ -629,14 +641,9 @@ def detect(text: str, settings: PiiSettings) -> PiiResult:
 # ── redaction ────────────────────────────────────────────────────────────────
 
 def public_mask(value: str) -> str:
-    """A sample safe to store. Hides the domain of an email and all but the ends
-    of a long token. Short values are bullets only."""
-    text = str(value)
-    if "@" in text:
-        return "•••@••••"
-    if len(text) < 6:
-        return "•" * max(len(text), 3)
-    return text[0] + ("•" * (len(text) - 2)) + text[-1]
+    """A sample safe to store. Fixed width: the first and last letter plus the
+    length of a short name or ID is enough to narrow down who it is."""
+    return "••••"
 
 
 def _local_token(value: str, entity: str, style: str) -> str:
@@ -791,7 +798,6 @@ def finding_from_hits(
     backend: str = "presidio",
     fallback_reason: str = "",
     unsupported: Sequence[str] = (),
-    truncated: bool = False,
     latency_ms: float = 0.0,
     subject: Optional[Dict[str, Any]] = None,
     suppressed_by: Optional[Dict[str, Any]] = None,
@@ -846,8 +852,6 @@ def finding_from_hits(
         finding["piiFallback"] = fallback_reason
     if unsupported and backend == "regex":
         finding["piiUnsupported"] = list(unsupported)
-    if truncated:
-        finding["piiTruncated"] = True
     if suppressed_by is not None:
         finding["suppressedBy"] = suppressed_by
     return finding
@@ -888,13 +892,11 @@ def screen_event(
     backend = "presidio" if settings.backend == "presidio" else "regex"
     fallback = ""
     unsupported: Tuple[str, ...] = ()
-    truncated = False
     latency = 0.0
     for chunk in chunks:
         result = detect(chunk, settings)
         hits.extend(result.hits)
         latency += result.latency_ms
-        truncated = truncated or result.truncated
         if result.backend == "regex":
             backend = "regex"
         if result.fallback_reason:
@@ -926,7 +928,6 @@ def screen_event(
         backend=backend,
         fallback_reason=fallback,
         unsupported=unsupported,
-        truncated=truncated,
         latency_ms=latency,
         subject=subject,
         suppressed_by=suppressed,

@@ -10,8 +10,8 @@ re-implemented once per surface.
 Two passes, cheapest first: the cloak store is an exact-value substring swap,
 the data-boundary classifier is pattern work over the same text. A third pass
 runs only when ``settings.pii`` is enabled with ``action: redact`` and
-``mode: enforce``, and the caller passed the engine it already built. That
-pass is the optional Presidio detector; it is not imported otherwise.
+``mode: enforce``. That pass is the optional Presidio detector; it is not
+imported otherwise.
 
 Best-effort by contract
 -----------------------
@@ -31,11 +31,38 @@ test, not by sharing code.
 from __future__ import annotations
 
 import re
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
 _URL_PASSWORD = re.compile(r"(\b[a-zA-Z][a-zA-Z0-9+.\-]*://[^\s:/@]+:)([^\s@/]+)(@)")
+
+#: How long one policy engine serves callers that did not pass their own. A
+#: body is masked string by string and an engine costs two ``git config``
+#: subprocesses; a few seconds keeps policy edits prompt.
+_ENGINE_TTL = 5.0
+_ENGINES: Dict[str, Tuple[Any, float]] = {}
+_ENGINES_LOCK = threading.Lock()
+
+
+def policy_engine(workspace: Optional[Path] = None) -> Any:
+    """A recently built ``PolicyEngine`` for ``workspace``, or None if it fails."""
+    key = str(workspace or "")
+    now = time.monotonic()
+    with _ENGINES_LOCK:
+        cached = _ENGINES.get(key)
+    if cached and now - cached[1] < _ENGINE_TTL:
+        return cached[0]
+    try:
+        from prismor.runtime.policy_engine import PolicyEngine
+        engine = PolicyEngine(workspace=Path(workspace) if workspace else None)
+    except Exception:
+        return None  # data_boundary.redact_payload builds its own; masking must not fail open
+    with _ENGINES_LOCK:
+        _ENGINES[key] = (engine, now)
+    return engine
 
 
 def redact_text(
@@ -54,15 +81,15 @@ def redact_text(
     still not have raw secret values pushed into its context.
 
     ``engine`` is the ``PolicyEngine`` the caller already built for this call
-    (every ``Decision`` carries one). Without it the classifier builds a fresh
-    engine per string — 6.6 ms of rule construction on a 2-core box, which on
-    a result-side path is paid once per tool call for nothing. Reusing the
-    decision's engine took a 96-byte result from 9.5 ms to 0.17 ms, and is
-    exactly as fresh as the decision that allowed the call.
+    (every ``Decision`` carries one). Without it the workspace's engine comes
+    from a short-lived cache, so every caller (gateway logs, judge text, ACP)
+    gets the same data-boundary and PII masking as the decision path.
     """
     if not isinstance(text, str) or not text:
         return text, False
     original = text
+    if engine is None and data_boundary:
+        engine = policy_engine(workspace)
 
     try:
         from prismor.runtime.cloaking.runtime import scrub_text

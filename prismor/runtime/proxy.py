@@ -921,31 +921,11 @@ class Screen:
         try:
             from prismor.runtime.redaction import redact_text
             out, _ = redact_text(text, workspace=self.workspace,
-                                 data_boundary=self.mode == "enforce",
-                                 engine=self._redact_engine())
+                                 data_boundary=self.mode == "enforce")
             return out
         except Exception:
             return text
 
-    #: How long one policy engine serves ``redact``. A request body is masked
-    #: string by string, and a coding agent's body holds thousands of strings
-    #: (system prompt, tool schemas, history). A fresh engine per string cost
-    #: two ``git config`` subprocesses each: ~100s of overhead on a one-word
-    #: Claude Code prompt. A few seconds keeps policy edits prompt.
-    _ENGINE_TTL = 5.0
-
-    def _redact_engine(self) -> Any:
-        cached = getattr(self, "_engine_cache", None)
-        now = time.monotonic()
-        if cached and now - cached[1] < self._ENGINE_TTL:
-            return cached[0]
-        try:
-            from prismor.runtime.policy_engine import PolicyEngine
-            engine = PolicyEngine(workspace=self.workspace)
-        except Exception:
-            return None  # redact_text builds its own; masking must not fail open
-        self._engine_cache = (engine, now)
-        return engine
 
 
 # ── cloud-provider credentials ───────────────────────────────────────────────

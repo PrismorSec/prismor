@@ -245,22 +245,28 @@ allowlists:
         self.assertEqual(engine.pii.model, "en_core_web_sm")
         self.assertIn("UK_NHS", engine.pii.entities)
 
-    def test_truncation_flag(self):
+    def test_text_past_max_chars_is_still_scanned(self):
         path = Path(self.tmp.name) / "policy.yaml"
         path.write_text(
-            _OVERLAY.format(action="observe", mode="observe", style="mask")
+            _OVERLAY.format(action="redact", mode="enforce", style="replace")
             + "    max_chars: 200\n"
         )
         engine = PolicyEngine(policy_path=path)
-        text = "ssn 578-12-4456 " + ("x" * 400)
+        # One SSN past the first window, one straddling a window edge.
+        # Unkeyed values, so only the PII pass (not the data boundary) masks them.
+        text = ("x " * 300) + "record 578-12-4456 " + ("y" * 175) + " 578-12-4457 tail"
         finding = next(
             f for f in engine.evaluate(
                 {"type": "prompt", "prompt": text, "agent_event": "prompt"}, 0,
             )
             if f.get("ruleId") == "pii-ner"
         )
-        self.assertTrue(finding["piiTruncated"])
-        self.assertNotIn("578-12-4456", finding["evidence"])
+        self.assertNotIn("piiTruncated", finding)
+        out, changed = redact_text(text, engine=engine)
+        self.assertTrue(changed)
+        self.assertNotIn("578-12-4456", out)
+        self.assertNotIn("578-12-4457", out)
+        self.assertEqual(out.count("<US_SSN>"), 2)
 
     def test_script_lines_are_not_scanned(self):
         engine = _engine(self.tmp.name)
@@ -275,7 +281,8 @@ allowlists:
 
 class PiiMaskTests(unittest.TestCase):
     def test_public_mask_hides_the_value(self):
-        self.assertEqual(public_mask("ada.lovelace@nhs.net"), "•••@••••")
+        self.assertEqual(public_mask("ada.lovelace@nhs.net"), "••••")
+        self.assertEqual(public_mask("Ada Lovelace"), public_mask("Bo"))
         self.assertNotIn("lovelace", public_mask("Ada Lovelace").lower())
         self.assertNotIn("578", public_mask("578-12-4456"))
 
@@ -332,6 +339,13 @@ class PiiPresidioDoubleTests(unittest.TestCase):
         self.assertEqual(first.hits[0].value, "Ada Lovelace")
         self.assertEqual(len(second.hits), 1)
         self.assertEqual(first.backend, "presidio")
+
+    def test_allow_list_drops_matching_values(self):
+        settings = self._settings()
+        settings.allow_list = ("ada lovelace",)
+        self.assertEqual(detect("Patient Ada Lovelace", settings).hits, ())
+        self.assertEqual(PiiSettings.from_mapping({"allow_list": [3]}).errors[0],
+                         "settings.pii.allow_list must be a list of strings")
 
     def test_entity_filter(self):
         settings = self._settings(entities=["EMAIL_ADDRESS"])
@@ -412,6 +426,33 @@ class PiiTransformTests(unittest.TestCase):
         self.assertNotIn("578-12-4456", command)
         self.assertIn("<US_SSN>", command)
         self.assertNotIn("578-12-4456", out["systemMessage"])
+
+    def test_redact_text_without_engine_uses_workspace_policy(self):
+        # Gateway argument logs, judge text and ACP call redact_text with only
+        # a workspace; they must mask PII the same as the decision path.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(reset_for_tests)
+        home = Path(tmp.name) / "home"
+        ws = Path(tmp.name) / "ws"
+        home.mkdir()
+        (ws / ".prismor").mkdir(parents=True)
+        (ws / ".prismor" / "policy.yaml").write_text(
+            _OVERLAY.format(action="redact", mode="enforce", style="replace")
+        )
+        with patch.dict(os.environ, {"PRISMOR_HOME": str(home)}):
+            out, changed = redact_text("record 578-12-4456", workspace=ws)
+        self.assertTrue(changed)
+        self.assertIn("<US_SSN>", out)
+
+
+class PiiUnblockTests(unittest.TestCase):
+    def test_unblock_points_at_allow_list_not_masked_evidence(self):
+        from prismor.runtime.unblock import _rule_override_steps
+        steps = _rule_override_steps(
+            "pii-ner", {"evidence": "PERSON •••• (0.85)"}, Path("/ws"))
+        self.assertIn("settings.pii.allow_list", steps[0])
+        self.assertNotIn("••••", "\n".join(steps))
 
 
 class PiiRealPresidioTests(unittest.TestCase):

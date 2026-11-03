@@ -385,6 +385,7 @@ settings:
       - mcp_args
       - outbound_payload
       - typed_text
+    allow_list: []           # values never reported, e.g. [Django, Jira, Claude]
 
   # Data boundary — what an outbound call SENDS, screened against where it is
   # going. Complements `egress` (which only decides whether a host may be
