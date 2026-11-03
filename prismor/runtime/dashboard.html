@@ -2763,6 +2763,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <symbol id="kl-network" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12ZM2 12H22M12 2C14.6667 5 16 8.5 16 12C16 15.5 14.6667 19 12 22C9.33333 19 8 15.5 8 12C8 8.5 9.33333 5 12 2Z"/></symbol>
   <symbol id="kl-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12H5.01M12 12H12.01M19 12H19.01"/></symbol>
   <symbol id="kl-prompt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 3 C20.6569 3 22 4.3431 22 6 C22 7.6569 20.6569 9 19 9 C17.3431 9 16 7.6569 16 6 C16 4.3431 17.3431 3 19 3 ZM12.668 3.0179 C12.4456 3.006 12.2228 3 12 3 C6.4772 3 2 6.5817 2 11 C2 12.9769 2.915 14.8839 4.5686 16.353 L5 21 L9.5808 18.7624 C10.3721 18.9202 11.1845 19 12 19 C16.8496 19 21.0003 16.2162 21.8466 12.3961" fill="none"/></symbol>
+  <symbol id="kl-assistant" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5"/></symbol>
   <symbol id="kl-shell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5L10.5571 10.6204C10.7899 10.8199 10.7899 11.1801 10.5571 11.3796L4 17M20 19H13"/></symbol>
   <symbol id="kl-task" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2M22 12c0 5.5228-4.4772 10-10 10S2 17.5228 2 12 6.4772 2 12 2s10 4.4772 10 10Z"/></symbol>
   <symbol id="kl-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.682 8.8536L20.2678 7.2678C20.4553 7.0802 20.7097 6.9749 20.9749 6.9749C21.4902 6.9749 21.9211 7.3664 21.9703 7.8794C21.9901 8.0857 22 8.2928 22 8.5C22 12.0899 19.0899 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 4.9101 11.9101 2 15.5 2C15.7072 2 15.9143 2.0099 16.1206 2.0297C16.6336 2.0789 17.0251 2.5098 17.0251 3.0251C17.0251 3.2903 16.9198 3.5447 16.7322 3.7322L15.1464 5.318C14.6776 5.7869 14.4142 6.4227 14.4142 7.0858C14.4142 8.4665 15.5335 9.5858 16.9142 9.5858C17.5773 9.5858 18.2131 9.3224 18.682 8.8536ZM15.3955 14.9992C15.3688 14.9987 15.342 14.9985 15.3152 14.9985C13.9891 14.9985 12.7173 15.5253 11.7797 16.463L7.1213 21.1213C6.5587 21.6839 5.7956 22 5 22C3.3431 22 2 20.6569 2 19C2 18.2044 2.3161 17.4413 2.8787 16.8787L7.537 12.2203C8.4747 11.2827 9.0015 10.0109 9.0015 8.6848C9.0015 8.658 9.0013 8.6312 9.0008 8.6045"/></symbol>
@@ -6475,9 +6476,10 @@ async function sessViewAction(action){
 // index, so clicking one still selects it in the detail panel.
 const LANE_LABEL = {
   prompt:'Prompts', tools:'Tool calls', files:'Files', shell:'Shell',
-  network:'Network', context:'Context', mcp:'MCP', task:'Background tasks', other:'Other',
+  network:'Network', context:'Context', mcp:'MCP', task:'Background tasks', assistant:'Replies', other:'Other',
 };
-const LANE_ORDER = ['prompt','context','task','tools','shell','files','network','mcp','other'];
+// The reply closes a turn, so it sits after what the agent did.
+const LANE_ORDER = ['prompt','context','task','tools','shell','files','network','mcp','assistant','other'];
 
 // A task notification is the harness handing the same turn back to the agent
 // when out-of-band work finishes -- a backgrounded command, a Monitor, a
@@ -6505,7 +6507,7 @@ function eventSummary(ev){
   // For a prompt, the person's own message beats the flattened blob: a chat
   // API resends the whole conversation every round trip, so the blob grows by
   // the previous answer each time and the recognisable part is buried.
-  const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.content
+  const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.reply || a.reasoning || a.content
     || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
   // Agents prefix nearly every command with `cd <repo> &&`; in a row 90 chars
   // wide that prefix is all a reader sees. The panel still shows it in full.
@@ -6625,7 +6627,7 @@ function treeLeafEl(ev, idx){
   const text = eventSummary(ev);
   btn.innerHTML =
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
-    '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
+    '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : ev.type === 'assistant_response' ? 'reply' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
     extCauseChip(ev.extension)+precheckChip(ev)+hookChip(ev)+
     '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
@@ -6818,7 +6820,8 @@ function renderNodePanel(ev){
 const ARTIFACT_FIELDS = [
   // What the person said comes first; the system prompt the workflow wraps
   // around it, and the flattened blob policy actually read, come after.
-  ['user_message','User message'], ['description','Description'], ['command','Command'], ['path','Path'], ['url','URL'],
+  ['user_message','User message'], ['reply','Reply'], ['reasoning','Reasoning'],
+  ['description','Description'], ['command','Command'], ['path','Path'], ['url','URL'],
   ['response','Tool output'], ['stdout','stdout'], ['stderr','stderr'],
   ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
   ['system','System prompt'], ['prompt','Full prompt evaluated'],
