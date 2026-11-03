@@ -92,7 +92,7 @@ def connect(name: str, env_file: Optional[str], base_env: str, key_env: str,
         _fail("This device was removed from its org. Re-link it with: prismor enroll <token>")
 
     path = Path(env_file) if env_file else None
-    text = path.read_text() if path and path.exists() else ""
+    text = path.read_text(encoding="utf-8") if path and path.exists() else ""
     # The app's file only: a key in this shell may not be the app's.
     env = read_env(text) if path else dict(os.environ)
     endpoint = endpoint or env.get(base_env) or None
@@ -135,10 +135,10 @@ def connect(name: str, env_file: Optional[str], base_env: str, key_env: str,
     if path:
         if text:
             backup = path.with_name(path.name + ".before-prismor")
-            backup.write_text(text)
+            backup.write_text(text, encoding="utf-8")
             os.chmod(backup, 0o600)
             print(f"Saved the previous file as {backup} (it still contains the old key).")
-        path.write_text(set_env(text, new))
+        path.write_text(set_env(text, new), encoding="utf-8")
         os.chmod(path, 0o600)
         print(f"Updated {path}: {base_env}={new[base_env]}, {key_env}=prism_agent_…{key[-4:]}")
     else:
