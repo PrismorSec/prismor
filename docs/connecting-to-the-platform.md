@@ -84,7 +84,7 @@ rebuild.
 
 A deployed agent — a container, a serverless worker — has no machine to
 enroll. Instead an org admin mints an **agent key** in the dashboard
-(Connections → “SDK & deployed agents”, or Devices → Service identities) and
+(Connections → “SDK & deployed agents”, or Devices → Agent keys) and
 wires it into the deployment:
 
 ```

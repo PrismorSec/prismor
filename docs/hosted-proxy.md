@@ -7,7 +7,7 @@ it. Nothing is installed next to the workload.
 
 ## Set it up
 
-In the console: **Agents → Connect an agent → Any app (hosted proxy)**. Name the
+In the console: **Agents → Connect an agent → Hosted proxy**. Name the
 agent, pick a policy (or keep the org policy), and mint the key. The console
 shows a snippet per provider with the key filled in, and **Test connection**
 sends a harmless prompt and a destructive command through the proxy with the
@@ -70,7 +70,7 @@ key**, and the hosted proxy swaps in the stored provider key on the way
 upstream. The app never holds a provider key, and revoking the agent key cuts
 it off.
 
-In the console: **Devices → the key icon on the agent key → Provider key**.
+In the console: **Devices → Agent keys → Provider key** on the agent's row.
 Pick Anthropic, OpenAI or Gemini and paste the key. It is encrypted at rest,
 shown afterwards only by its last four characters, and released only to the
 hosted proxy, never to a caller holding the agent key. Replace or remove it on
