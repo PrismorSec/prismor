@@ -30,6 +30,10 @@ _Generated from `prismor/runtime/integrations/registry.yaml` — do not edit by 
 | GitHub Copilot CLI | coding-agent | hook-config | ✅ | `json-permission` |
 | Grok Build (xAI) | coding-agent | hook-config | ✅ | `exit-2` |
 | Kiro CLI (AWS) | coding-agent | hook-config | ✅ | `exit-2` |
+| JetBrains AI Assistant | coding-agent | rules-only | — | — |
+| Junie | coding-agent | rules-only | — | — |
+| GitHub Copilot for JetBrains | coding-agent | rules-only | — | — |
+| Roo Code | coding-agent | rules-only | — | — |
 | Crush (Charmbracelet) | coding-agent | hook-config | ✅ | `exit-2` |
 | OpenHands | coding-agent | hook-config | ✅ | `exit-2` |
 | Qwen Code (Alibaba) | coding-agent | hook-config | ✅ | `json-permission` |

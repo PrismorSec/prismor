@@ -2531,6 +2531,7 @@ def install_background_sinks(maxsize: int = 10000) -> "queue.Queue[Any]":
         heartbeat.maybe_flush = maybe_flush
     except Exception:
         pass
+    sinks.run_sink_hook("start_background")
     return pending
 
 

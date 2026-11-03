@@ -607,6 +607,11 @@ servers, and provider credentials — and flags whatever runs outside Prismor's
 coverage. Read-only and host-local. Narrow with `agents`, `mcp`, or `keys`; add
 `--fail-on-shadow` in CI.
 
+`prismor discover endpoint` (and `jetbrains`, `extensions`, `wsl`,
+`inventory`) writes the unified `prismor.inventory.v1`
+record. It does not change the legacy `agents` / `mcp` / `keys` output.
+Fixture demo and the schema: [`docs/shadow-discovery.md`](./docs/shadow-discovery.md).
+
 ---
 
 ## 8. Instruction-file and skill integrity

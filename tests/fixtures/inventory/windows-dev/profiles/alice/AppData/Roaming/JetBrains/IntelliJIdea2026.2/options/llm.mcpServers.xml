@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<application>
+  <component name="McpApplicationServerCommands">
+    <McpServerCommand>
+      <option name="enabled" value="true" />
+      <option name="name" value="github" />
+      <option name="programPath" value="npx" />
+      <option name="arguments" value="-y @modelcontextprotocol/server-github" />
+      <envs>
+        <env name="GITHUB_TOKEN" value="ghp_CANARYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" />
+      </envs>
+    </McpServerCommand>
+  </component>
+</application>
