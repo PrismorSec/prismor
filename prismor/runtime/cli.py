@@ -1026,6 +1026,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  org claims: {', '.join(pats)}")
         return
 
+    if args.command == "hosted-proxy":
+        from prismor.runtime import hosted_proxy_cli
+        hosted_proxy_cli.connect(args.name, args.env_file, args.base_env, args.key_env,
+                                 args.endpoint, args.provider)
+        return
+
     # ── exempt: request an admin exemption for THIS repo ───────────────
     if args.command == "exempt":
         from prismor.runtime.enterprise import identity as _identity, workspace_scope as _scope
@@ -4967,6 +4973,16 @@ def build_parser() -> argparse.ArgumentParser:
     exempt_p = subparsers.add_parser("exempt", help="Request an admin exemption (rule relaxation) for this repo")
     exempt_p.add_argument("action", nargs="?", choices=["request"], default="request", help="request an exemption")
     exempt_p.add_argument("--reason", help="Why this repo needs the exemption (required)")
+
+    hp = subparsers.add_parser("hosted-proxy", help="Put an app behind the Prismor-hosted proxy (no install next to it)")
+    hp_sub = hp.add_subparsers(dest="hp_cmd", required=True)
+    hp_c = hp_sub.add_parser("connect", help="Create an agent key, store the app's provider key, rewrite its env file")
+    hp_c.add_argument("name", help='Agent name, e.g. "support-bot"')
+    hp_c.add_argument("--env-file", help="The app's env file: read the provider key from it, rewrite it in place (e.g. .env)")
+    hp_c.add_argument("--base-env", default="OPENAI_BASE_URL", help="Variable the app reads its base URL from (default OPENAI_BASE_URL)")
+    hp_c.add_argument("--key-env", default="OPENAI_API_KEY", help="Variable the app reads its API key from (default OPENAI_API_KEY)")
+    hp_c.add_argument("--endpoint", help="Endpoint the app calls now, if --base-env is not set (any OpenAI-compatible URL)")
+    hp_c.add_argument("--provider", choices=["openai", "anthropic", "gemini"], help="Provider when there is no endpoint (default openai)")
 
     # ── sweep ──────────────────────────────────────────────────────────
     sweep_parser = subparsers.add_parser("sweep", help="Scan AI tool configs for leaked secrets, redact with encrypted vault")

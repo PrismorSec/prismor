@@ -58,6 +58,7 @@ Prismor ([below](#prismor-held-provider-keys)).
 | LangChain | `base_url` | `default_headers` | Should work; not yet run against the hosted proxy |
 | ElevenLabs Custom LLM | Server URL | Request headers | Should work; `prismor elevenlabs connect` targets the self-run proxy today |
 | n8n, Capy, and other base-URL-plus-key settings | yes | no | With a [Prismor-held provider key](#prismor-held-provider-keys). Verified with an OpenAI client sending only the agent key |
+| An OpenAI-compatible gateway, router or self-hosted server | yes | depends | With a [custom endpoint](#other-openai-compatible-endpoints). Blocks verified buffered and streamed through OpenRouter |
 
 "Should work" means the client documents both settings, but nobody has run it
 against `proxy.prismor.dev` yet.
@@ -85,6 +86,47 @@ the same card; a change reaches the proxy within 60 seconds.
 The proxy recognizes the agent key wherever a client puts its API key:
 `Authorization: Bearer`, `x-api-key`, `x-goog-api-key`, or Gemini's `?key=`.
 Sent this way with no provider key stored, a request gets a `401` that says so.
+
+## Other OpenAI-compatible endpoints
+
+An app that calls an LLM gateway or router, or a self-hosted OpenAI-compatible
+server, keeps calling it through the hosted proxy: store the endpoint and its
+key on the agent key, and the proxy sends that key's traffic there instead of
+to OpenAI.
+
+In the console: **Agents → Connect an agent → Hosted proxy → Other endpoint**.
+Enter the endpoint the app calls now, its key, and the names of the two
+environment variables the app reads. The console prints the two lines to put
+in the app's env file, under the app's own names:
+
+```bash
+# was OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_BASE_URL=https://proxy.prismor.dev/v1
+OPENROUTER_API_KEY=<agent key>
+```
+
+The endpoint must be https on a public hostname. An existing agent key gets the
+same option under **Devices → Agent keys → Provider key → Other endpoint**.
+
+## Set it up from an agent
+
+A coding agent can do all of the above from a terminal on an org admin's
+enrolled machine:
+
+```bash
+prismor hosted-proxy connect support-bot --env-file .env \
+  --base-env OPENROUTER_BASE_URL --key-env OPENROUTER_API_KEY
+```
+
+It reads the endpoint and key from the app's env file, creates the agent key,
+stores the endpoint and key with Prismor, and rewrites those two lines in place.
+The previous file is saved next to it as `.env.before-prismor`. The agent never
+reads or prints the provider key. Leave out `--base-env` for an app on OpenAI
+itself (`--provider anthropic` or `gemini` for those); the defaults are
+`OPENAI_BASE_URL` and `OPENAI_API_KEY`.
+
+It needs a machine enrolled with `prismor enroll` whose owner is an org admin,
+the same role the console asks for. An agent key can't create other keys.
 
 ## Limits
 
