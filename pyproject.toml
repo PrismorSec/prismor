@@ -231,6 +231,7 @@ packages = [
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/pause-and-login.md" = "prismor/runtime/data/docs/pause-and-login.md"
 "docs/pii.md" = "prismor/runtime/data/docs/pii.md"
+"docs/shadow-discovery.md" = "prismor/runtime/data/docs/shadow-discovery.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
 "docs/prompt-guardrails.md" = "prismor/runtime/data/docs/prompt-guardrails.md"

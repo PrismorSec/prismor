@@ -1,7 +1,18 @@
 ## [Unreleased]
 
+## [1.72.0] — 2026-11-03
+
 ### Added
 - **Optional Presidio PII detection.** `settings.pii` runs Microsoft Presidio (presidio-analyzer and presidio-anonymizer) over prompts, tool arguments and tool results, and records a `pii-ner` finding in the same audit trail as other detections. It is off by default and not imported until enabled, so a coding-agent hook stays on the regex path. Install with `pip install "prismor[pii]"` and `python -m spacy download en_core_web_sm` (the small English model). A missing install falls back to the regex detector. Entity list, score threshold, language, `action` (`observe` / `redact` / `block`), `mode`, and mask style are set in the policy file. Findings store a fixed-width mask, not the value or its length. Long text is scanned in full in `max_chars` windows, every `redact_text` caller (gateway argument logs, judge text, ACP proxy) applies the same masking, and `allow_list` drops values the model mistakes for people or places. See docs/pii.md.
+- **Endpoint shadow-agent inventory.** `prismor discover endpoint --all-users` lists every local profile's agents, MCP configs, JetBrains IDEs and AI plugins, VS Code-family extensions and WSL homes as one `prismor.inventory.v1` record per line, with a risk score each. `discover jetbrains`, `discover extensions`, `discover wsl` and `discover inventory` cover one surface each. Output goes to a table, NDJSON, a file or a sink plugin; secrets are names only and usernames are salted hashes. The existing `discover agents|mcp|keys` reports are unchanged. See docs/shadow-discovery.md. (#841)
+
+### Changed
+- **Dashboard look.** White page, outline state buttons, a sun/moon theme toggle, and no arrow glyphs on buttons. (#839)
+
+### Fixed
+- **An org pause was ignored on the device.** The signed policy carries `device_pause.at` unquoted, YAML parsed it as a datetime, and the runtime dropped the pause while the console showed the device as paused. Timestamps now stay strings. (#838)
+- **Embedded MCP resources skipped redaction.** A tool that returned a file as a `resource` block kept its text one level down, where cloak and data-boundary masking never looked. That text is masked now. (#837)
+- **`discover endpoint` reported skills and Codex's MCP servers as broken JSON.** Skill manifests are skipped and `config.toml` / JSONC MCP configs are parsed; on a real laptop 120 of 151 rows had been diagnostics. (#843)
 
 ## [1.71.7] — 2026-11-02
 
