@@ -1331,11 +1331,20 @@ class Gateway:
         # either, so a paused gateway must not start pushing raw secret values
         # into the model's context. Data-boundary redaction IS policy, so it
         # goes with the rest of enforcement.
-        result = self._redact_result(result, data_boundary=not passthrough)
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        result = self._redact_result(
+            result, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
 
         # Post-call: the response is untrusted content — scan before the model
         # ever sees it (prompt injection, poisoned tool output, secrets).
-        decision = self._evaluate(self._build_result_event(route, result, arguments))
+        # NER already ran inside redaction when it is in redact+enforce; do
+        # not pay for the model a second time on the masked text.
+        _result_event = self._build_result_event(route, result, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
         if decision is not None:
             from prismor.runtime.runtime import log_observe_findings
             log_observe_findings(decision, tool_name=name,
@@ -1500,10 +1509,17 @@ class Gateway:
         # Mask and scan the text the model will read, as for tool results.
         slots = _fetched_text_slots(method, result)
         shaped = {"content": [{"type": "text", "text": s["text"]} for s in slots]}
-        shaped = self._redact_result(shaped, data_boundary=not passthrough)
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        shaped = self._redact_result(
+            shaped, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
         for slot, block in zip(slots, shaped["content"]):
             slot["text"] = block["text"]
-        decision = self._evaluate(self._build_result_event(route, shaped, arguments))
+        _result_event = self._build_result_event(route, shaped, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
         withhold = None
         if decision is not None and not passthrough:
             withhold = decision.blocking
@@ -1591,7 +1607,14 @@ class Gateway:
                 "(takes effect on the next session)")
         return "\n\n".join(lines)
 
-    def _redact_result(self, result: Any, *, data_boundary: bool = True) -> Any:
+    def _redact_result(
+        self,
+        result: Any,
+        *,
+        data_boundary: bool = True,
+        engine: Any = None,
+        pii_notes: Optional[List[Any]] = None,
+    ) -> Any:
         """Mask cloak secrets and data-boundary values in a mirrored tool's output.
 
         The masking itself is shared with every other surface that can see tool
@@ -1600,7 +1623,8 @@ class Gateway:
         """
         from prismor.runtime.redaction import redact_mcp_result
         out, changed = redact_mcp_result(
-            result, workspace=self.workspace, data_boundary=data_boundary)
+            result, workspace=self.workspace, data_boundary=data_boundary,
+            engine=engine, pii_notes=pii_notes)
         if changed:
             sys.stderr.write(
                 "[prismor-gateway] redacted sensitive values from tool output\n")
@@ -1915,6 +1939,50 @@ _WITHHOLD_CATEGORIES = frozenset({"prompt_injection", "prompt_injection_semantic
                                   "data_boundary", "pii"})
 
 
+def _pii_notes_for(engine: Any):
+    """A note list only when NER redaction will run. The default path allocates nothing."""
+    pii = getattr(engine, "pii", None) if engine is not None else None
+    if (
+        pii is None
+        or not getattr(pii, "enabled", False)
+        or getattr(pii, "action", "") != "redact"
+        or getattr(pii, "mode", "") != "enforce"
+    ):
+        return None
+    from prismor.runtime.pii import PiiNotes
+    return PiiNotes()
+
+
+def _merge_pii_notes(decision: Any, notes: List[Any], engine: Any, session_id: str) -> None:
+    """Record PII that result redaction already removed, so the audit row exists.
+
+    Redaction runs before the post-call scan, and the scan is what the model
+    will see. A name that was just masked would otherwise leave no finding.
+    The note list holds spans in memory; the finding stores a mask.
+    """
+    if not notes or decision is None or engine is None:
+        return
+    findings = getattr(decision, "findings", None)
+    if not isinstance(findings, list):
+        return
+    if any(f.get("ruleId") == "pii-ner" for f in findings if isinstance(f, dict)):
+        return
+    from prismor.runtime.pii import finding_from_hits
+    index = 0
+    for existing in findings:
+        if isinstance(existing, dict) and existing.get("eventIndex") is not None:
+            index = existing["eventIndex"]
+            break
+    finding = finding_from_hits(
+        notes, index=index, session_id=session_id or "",
+        settings=engine.pii,
+        backend=getattr(notes, "backend", "") or engine.pii.backend,
+        fallback_reason=getattr(notes, "fallback", ""),
+    )
+    if finding:
+        findings.append(finding)
+
+
 def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """Strongest finding that justifies withholding a tool RESULT.
 
@@ -1948,7 +2016,14 @@ def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[st
     return strongest([
         f for f in (findings or [])
         if not f.get("contextInert")
-        and f.get("category") in _WITHHOLD_CATEGORIES
+        and (
+            f.get("category") in _WITHHOLD_CATEGORIES
+            or (
+                f.get("ruleId") == "pii-ner"
+                and f.get("action") == "block"
+                and str(f.get("mode") or "").lower() == "enforce"
+            )
+        )
         and not _heuristic_semantic_warn(f)
     ])
 

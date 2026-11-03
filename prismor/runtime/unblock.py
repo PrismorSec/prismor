@@ -45,9 +45,17 @@ def _policy_path(workspace: Optional[Path]) -> str:
     return str((workspace / ".prismor" / "policy.yaml")) if workspace else ".prismor/policy.yaml"
 
 
+def _evidence_pattern(rule_id: str, finding: Dict[str, Any]) -> Optional[str]:
+    # pii-ner evidence is masked (bullets) while its allowlist is matched
+    # against the raw text, so a pattern built from it could never match.
+    if rule_id == "pii-ner":
+        return None
+    return literal_pattern(finding.get("evidence") or "")
+
+
 def _allowlist_yaml(rule_id: str, finding: Dict[str, Any]) -> List[str]:
     """YAML for an allowlist entry suppressing this rule for this evidence only."""
-    pattern = literal_pattern(finding.get("evidence") or "")
+    pattern = _evidence_pattern(rule_id, finding)
     if pattern is None:
         pattern = "<regex matching only the case you want to allow>"
     # Column 0 for the top-level key: these lines are meant to be pasted
@@ -76,7 +84,7 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
     an unblock path is that the narrow one should be the easy one.
     """
     path = _policy_path(workspace)
-    pattern = literal_pattern(finding.get("evidence") or "")
+    pattern = _evidence_pattern(rule_id, finding)
     steps: List[str] = []
     if pattern:
         steps.append(
@@ -85,6 +93,11 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
         )
         steps.append(
             "   (add --expires 30m to make it temporary)"
+        )
+    elif rule_id == "pii-ner":
+        steps.append(
+            f"1. Stop flagging one value (a product or team name):  add it to "
+            f"settings.pii.allow_list in {path}"
         )
     else:
         steps.append(

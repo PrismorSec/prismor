@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 from prismor.runtime import perf as _perf
 from prismor.runtime.egress import EgressPolicy
 from prismor.runtime.data_boundary import DataBoundaryPolicy
+from prismor.runtime.pii import PiiSettings, screen_event as _screen_pii
 
 try:
     import yaml
@@ -1323,6 +1324,9 @@ class PolicyEngine:
         self.outputs: List[Dict[str, Any]] = []
         self.semantic_guard_config: Dict[str, Any] = {}
         self.sandbox_config: Dict[str, Any] = {}
+        # Off until settings.pii.enabled. The object exists so a caller can
+        # read it before _load finishes; evaluate() does not scan while disabled.
+        self.pii: PiiSettings = PiiSettings()
         self._semantic_guard = None  # lazy-instantiated on first uncertain event
         # Optional caller-supplied taint store, used instead of the per-session
         # file. Set by stateless callers that reconstruct taint by replay
@@ -1616,6 +1620,13 @@ class PolicyEngine:
             override_settings["semantic_guard"] = {
                 **(settings.get("semantic_guard") or {}),
                 **override_settings["semantic_guard"],
+            }
+        # Same shape as semantic_guard: a project that sets `enabled: true`
+        # keeps the default entity list, threshold and model.
+        if isinstance(override_settings.get("pii"), dict):
+            override_settings["pii"] = {
+                **(settings.get("pii") or {}),
+                **override_settings["pii"],
             }
         # Named conditions merge per name: an org layer redefining `is_finance`
         # wins over the project's, but does not erase the project's other names
@@ -1920,6 +1931,10 @@ class PolicyEngine:
         sg = settings.get("semantic_guard") or {}
         if isinstance(sg, dict):
             self.semantic_guard_config = sg
+
+        self.pii = PiiSettings.from_mapping(settings.get("pii"))
+        for _pii_err in self.pii.errors:
+            sys.stderr.write(f"[prismor] pii policy: {_pii_err}\n")
 
         sandbox = settings.get("sandbox") or {}
         if isinstance(sandbox, dict):
@@ -2741,6 +2756,34 @@ class PolicyEngine:
                         })
                 except Exception:
                     pass
+
+        # ── NER / Presidio PII (opt-in) ────────────────────────────────────
+        # Off unless settings.pii.enabled. The import of presidio happens
+        # inside the detector, and only on this branch, so a default hook
+        # never loads the model. Script lines and the SessionStart skills
+        # audit are skipped: one spaCy pass per line would dominate the call.
+        if (
+            self.pii.enabled
+            and not event.get("_script_line")
+            and not event.get("_bulk_scan")
+        ):
+            try:
+                with _perf.stage("pii"):
+                    findings.extend(_screen_pii(
+                        event,
+                        field_values,
+                        index,
+                        session_id,
+                        settings=self.pii,
+                        allowlist_match=lambda text: self.allowlist_match(
+                            "pii-ner", text,
+                        ),
+                        include_suppressed=include_suppressed,
+                        subject=subject_dict,
+                    ))
+            except Exception as exc:
+                _perf.RULES.setdefault("pii-ner", [0, 0, 0.0, 0])[3] += 1
+                sys.stderr.write(f"[prismor] pii evaluation error: {exc}\n")
 
         # ── Hybrid semantic prompt-injection layer (opt-in) ────────────────
         # Catches paraphrased, social-engineered, and in-content injection
@@ -5285,6 +5328,12 @@ def validate_policy(path: Path) -> List[str]:
     # for the fleet block AND each per-agent overlay under `agents:`. A broken
     # rule hidden in an overlay is exactly as broken as one in the fleet block,
     # and considerably harder to notice.
+    pii_raw = (raw.get("settings") or {}).get("pii")
+    if pii_raw is not None:
+        from prismor.runtime.pii import validate_pii_settings
+        for _pii_err in validate_pii_settings(pii_raw):
+            errors.append(_pii_err)
+
     tt = ((raw.get("settings") or {}).get("tool_tags") or {})
     if isinstance(tt, dict):
         from prismor.runtime.tag_rules import ParseError as _TagParseError, compile_rule as _compile_tag_rule
@@ -5358,6 +5407,7 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
             "supply_chain_install_check": engine.supply_chain_install_check,
             "supply_chain_transitive_scan": engine.supply_chain_transitive_scan,
             "semantic_guard": engine.semantic_guard_config,
+            "pii": engine.pii.as_dict(),
             "sandbox": engine.sandbox_config,
             "tool_tags": engine.tool_tags,
         },

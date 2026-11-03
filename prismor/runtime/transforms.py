@@ -27,7 +27,7 @@ authors immediately.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 # A transform maps (payload, workspace, mode) -> Claude hookSpecificOutput dict
 # with an ``updatedInput`` key, or None if it cannot apply.
@@ -207,5 +207,69 @@ def _pii_redact_transform(*, payload, workspace, mode):
         "systemMessage": (
             f"Prismor redacted {', '.join(kinds)} from this outbound call "
             f"(policy: data_boundary). {n} value(s) replaced with [REDACTED:*]."
+        ),
+    }
+
+
+def _rewrite_strings(value: Any, settings: Any) -> Tuple[Any, int]:
+    """Mask PII in every string of a tool-input tree. Returns ``(value, count)``."""
+    from prismor.runtime.pii import anonymize, detect
+
+    count = 0
+
+    def _one(text: str) -> str:
+        nonlocal count
+        found = detect(text, settings)
+        if not found.hits:
+            return text
+        updated = anonymize(text, found.hits, settings.mask_style)
+        if updated != text:
+            count += len(found.hits)
+        return updated
+
+    def _walk(node: Any) -> Any:
+        if isinstance(node, str):
+            return _one(node)
+        if isinstance(node, dict):
+            return {k: _walk(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [_walk(v) for v in node]
+        return node
+
+    return _walk(value), count
+
+
+@register("pii_ner_redact")
+def _pii_ner_redact_transform(*, payload, workspace, mode):
+    """Mask NER/Presidio hits in a tool's input before the call runs.
+
+    Applies when ``settings.pii.action`` is ``redact`` and ``mode`` is
+    ``enforce``. Entity types are named in the system message; the values
+    are not. Declines (``None`` → deny) when nothing was masked, so a call
+    is never passed through un-cleaned after a redact verdict.
+    """
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    try:
+        settings = PolicyEngine(workspace=Path(workspace)).pii
+    except Exception:
+        return None
+    if not settings.enabled or settings.action != "redact" or settings.mode != "enforce":
+        return None
+    rewritten, count = _rewrite_strings(tool_input, settings)
+    if not count or rewritten == tool_input:
+        return None
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": rewritten,
+        },
+        "systemMessage": (
+            f"Prismor redacted {count} PII value(s) from this call "
+            "(policy: settings.pii, style: "
+            f"{settings.mask_style})."
         ),
     }

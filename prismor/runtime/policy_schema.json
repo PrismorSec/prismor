@@ -87,6 +87,64 @@
           "type": "object",
           "description": "Shadow-agent inventory (prismor discover endpoint). Secret values are never stored here; sink credentials stay in the environment or Cloak.",
           "additionalProperties": true
+      },
+        "pii": {
+          "type": "object",
+          "description": "Optional Presidio NER PII detection. Off by default; requires the prismor[pii] extra. Findings store masked evidence only.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Scan prompts, tool arguments and tool results. False by default so the hook path does not load Presidio."
+            },
+            "backend": {
+              "type": "string",
+              "enum": ["presidio", "regex"],
+              "description": "presidio uses the NER engine when installed and falls back to regex otherwise. regex never imports Presidio."
+            },
+            "entities": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Presidio entity types to detect, for example PERSON, EMAIL_ADDRESS, UK_NHS."
+            },
+            "score_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "language": {"type": "string"},
+            "model": {
+              "type": "string",
+              "description": "spaCy model name. Default en_core_web_sm."
+            },
+            "action": {
+              "type": "string",
+              "enum": ["observe", "redact", "block"]
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["observe", "enforce"],
+              "description": "observe records the finding. enforce lets redact and block act."
+            },
+            "mask_style": {
+              "type": "string",
+              "enum": ["mask", "replace", "hash", "redact"]
+            },
+            "max_chars": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 50000
+            },
+            "fields": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "allow_list": {
+              "type": "array",
+              "description": "Values never reported or masked, matched case-insensitively (product names the model tags as PERSON or LOCATION).",
+              "items": {"type": "string"}
+            }
+          }
         },
         "sandbox": {
           "type": "object",

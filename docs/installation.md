@@ -43,6 +43,18 @@ pip install prismor
 prismor setup          # interactive onboarding wizard
 ```
 
+PII detection with Microsoft Presidio is a separate extra and stays off until
+you enable it in policy. It does not change the default hook path.
+
+```bash
+pip install "prismor[pii]"
+python -m spacy download en_core_web_sm
+```
+
+See [PII detection](pii.md).
+
+
+
 `prismor setup` lets you pick enforcement mode, choose which rules block (enforce mode starts with nothing selected and the safety floor marked *recommended*), select agents, optionally enable secret cloaking, and optionally set an unlock password for the agent self-edit window. Pass `--non-interactive` to skip the TUI (`--recommended` or `--enforce-rules id1,id2` picks the blocking set). See [Choosing what blocks](cli-reference.md#choosing-what-blocks).
 
 **Installing through an agent.** When a coding agent (Claude Code, Codex, Cursor, Gemini CLI) runs a bare `prismor setup`, there is no terminal for the wizard, so setup installs nothing and prints the wizard's questions with the exact flags for each answer. The agent asks you, then runs the `--non-interactive` command. Scripts outside an agent, such as a cloud start hook, still install with defaults, and any explicit flag skips the questions.

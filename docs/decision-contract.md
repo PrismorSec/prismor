@@ -166,7 +166,9 @@ the file with the credential masked.
 
 Surfaces that see tool output share one implementation,
 [`prismor/runtime/redaction.py`](../prismor/runtime/redaction.py): cloak
-secrets first (an exact-value swap), then data-boundary classification.
+secrets first (an exact-value swap), then data-boundary classification. When
+`settings.pii` is enabled with `action: redact` and `mode: enforce`, a third
+pass masks Presidio hits. It is not imported otherwise. See [PII detection](pii.md).
 
 Redaction is best-effort by contract — it never raises and never fails a call
 closed. Pre-call policy has already had its say and the result scan still gets a

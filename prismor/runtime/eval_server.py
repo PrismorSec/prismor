@@ -215,11 +215,20 @@ class EvalHandler(BaseHTTPRequestHandler):
             # Result-side masking for adapters that cannot import Python (the
             # TypeScript one): the same redact_tool_result the in-process
             # adapters run on a tool's return value before the model sees it.
+            # One engine for the request so the optional PII pass sees policy
+            # and the data-boundary pass does not rebuild it per string.
             from prismor.runtime.redaction import redact_payload_values
             ws_str = body.get("workspace")
+            ws = Path(ws_str) if ws_str else self.workspace
+            engine = None
+            try:
+                from prismor.runtime.policy_engine import PolicyEngine
+                engine = PolicyEngine(workspace=ws)
+            except Exception:
+                engine = None
             try:
                 result, changed = redact_payload_values(
-                    body.get("result"), workspace=Path(ws_str) if ws_str else self.workspace)
+                    body.get("result"), workspace=ws, engine=engine)
             except Exception as exc:
                 self._send_json({"error": f"redaction error: {exc}"}, 500)
                 return
