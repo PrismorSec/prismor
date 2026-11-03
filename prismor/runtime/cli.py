@@ -6238,6 +6238,8 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
                     layers.append(f"{label}: off")
                 else:
                     layers.append(f"{label}: {cfg.get('mode') or 'on'}")
+            from prismor.runtime.pii import PiiSettings as _PiiSettings, status_line as _pii_status
+            layers.append(_pii_status(getattr(engine, "pii", None) or _PiiSettings()))
             layers.append(
                 "supply chain: on" if engine.supply_chain_install_check else "supply chain: off")
             n_off = sum(1 for entry in layers if entry.endswith(": off"))

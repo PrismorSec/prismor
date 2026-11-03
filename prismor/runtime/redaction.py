@@ -8,7 +8,10 @@ capability is the whole argument for the mirror, and it should not be
 re-implemented once per surface.
 
 Two passes, cheapest first: the cloak store is an exact-value substring swap,
-the data-boundary classifier is pattern work over the same text.
+the data-boundary classifier is pattern work over the same text. A third pass
+runs only when ``settings.pii`` is enabled with ``action: redact`` and
+``mode: enforce``, and the caller passed the engine it already built. That
+pass is the optional Presidio detector; it is not imported otherwise.
 
 Best-effort by contract
 -----------------------
@@ -41,6 +44,7 @@ def redact_text(
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
     engine: Any = None,
+    pii_notes: Optional[List[Any]] = None,
 ) -> Tuple[str, bool]:
     """Mask cloak secrets and classified data-boundary values in ``text``.
 
@@ -95,6 +99,36 @@ def redact_text(
         except Exception:
             pass
 
+    # Opt-in NER pass. A disabled stanza (the default) is one attribute
+    # check and does not import Presidio. Pause suspends it with the rest
+    # of policy: callers pass data_boundary=False while cloak masking stays.
+    pii = getattr(engine, "pii", None) if engine is not None else None
+    if (
+        data_boundary
+        and pii is not None
+        and getattr(pii, "enabled", False)
+        and getattr(pii, "action", "") == "redact"
+        and getattr(pii, "mode", "") == "enforce"
+    ):
+        try:
+            from prismor.runtime.pii import anonymize, detect
+            found = detect(text, pii)
+            if pii_notes is not None and hasattr(pii_notes, "scanned"):
+                pii_notes.scanned = True
+            if found.hits:
+                updated = anonymize(text, found.hits, pii.mask_style)
+                if updated != text:
+                    if pii_notes is not None:
+                        pii_notes.extend(found.hits)
+                        if hasattr(pii_notes, "backend"):
+                            if found.backend == "regex" or not pii_notes.backend:
+                                pii_notes.backend = found.backend
+                            if found.fallback_reason:
+                                pii_notes.fallback = found.fallback_reason
+                    text = updated
+        except Exception:
+            pass
+
     return text, text != original
 
 
@@ -111,6 +145,7 @@ def redact_payload_values(
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
     engine: Any = None,
+    pii_notes: Optional[List[Any]] = None,
 ) -> Tuple[Any, bool]:
     """``redact_text`` over every string leaf of a dict/list/str payload.
 
@@ -128,7 +163,8 @@ def redact_payload_values(
         nonlocal changed
         if isinstance(x, str):
             out, hit = redact_text(x, workspace=workspace,
-                                   data_boundary=data_boundary, engine=engine)
+                                   data_boundary=data_boundary, engine=engine,
+                                   pii_notes=pii_notes)
             changed = changed or hit
             return out
         if depth >= _MAX_DEPTH:
@@ -162,6 +198,7 @@ def redact_tool_result(
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
     engine: Any = None,
+    pii_notes: Optional[List[Any]] = None,
 ) -> Any:
     """Result-side redaction for an in-process SDK adapter. Never raises.
 
@@ -174,7 +211,7 @@ def redact_tool_result(
     try:
         redacted, _ = redact_payload_values(
             result, workspace=workspace, data_boundary=data_boundary,
-            engine=engine)
+            engine=engine, pii_notes=pii_notes)
         return redacted
     except Exception:
         return result
@@ -185,6 +222,8 @@ def redact_mcp_result(
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
+    engine: Any = None,
+    pii_notes: Optional[List[Any]] = None,
 ) -> Tuple[Any, bool]:
     """Redact the text blocks of an MCP ``tools/call`` result.
 
@@ -214,7 +253,8 @@ def redact_mcp_result(
         if isinstance(block, dict):
             if isinstance(block.get("text"), str):
                 text, hit = redact_text(
-                    block["text"], workspace=workspace, data_boundary=data_boundary)
+                    block["text"], workspace=workspace, data_boundary=data_boundary,
+                    engine=engine, pii_notes=pii_notes)
                 if hit:
                     changed = True
                     block = {**block, "text": text}
@@ -223,7 +263,8 @@ def redact_mcp_result(
             res = block.get("resource")
             if isinstance(res, dict) and isinstance(res.get("text"), str):
                 text, hit = redact_text(
-                    res["text"], workspace=workspace, data_boundary=data_boundary)
+                    res["text"], workspace=workspace, data_boundary=data_boundary,
+                    engine=engine, pii_notes=pii_notes)
                 if hit:
                     changed = True
                     block = {**block, "resource": {**res, "text": text}}
@@ -232,7 +273,8 @@ def redact_mcp_result(
     structured_out = structured
     if structured is not None:
         structured_out, hit = _redact_tree(
-            structured, workspace=workspace, data_boundary=data_boundary)
+            structured, workspace=workspace, data_boundary=data_boundary,
+            engine=engine, pii_notes=pii_notes)
         changed = changed or hit
 
     if not changed:
@@ -250,18 +292,23 @@ def _redact_tree(
     *,
     workspace: Optional[Path] = None,
     data_boundary: bool = True,
+    engine: Any = None,
+    pii_notes: Optional[List[Any]] = None,
 ) -> Tuple[Any, bool]:
     """Redact every string in a JSON tree. Keys are left alone — a credential
     lives in a value, and rewriting keys would break the schema the client is
     parsing against."""
     if isinstance(node, str):
-        return redact_text(node, workspace=workspace, data_boundary=data_boundary)
+        return redact_text(
+            node, workspace=workspace, data_boundary=data_boundary,
+            engine=engine, pii_notes=pii_notes)
     if isinstance(node, dict):
         out: Dict[str, Any] = {}
         changed = False
         for key, value in node.items():
             out[key], hit = _redact_tree(
-                value, workspace=workspace, data_boundary=data_boundary)
+                value, workspace=workspace, data_boundary=data_boundary,
+                engine=engine, pii_notes=pii_notes)
             changed = changed or hit
         return (out, True) if changed else (node, False)
     if isinstance(node, list):
@@ -269,7 +316,8 @@ def _redact_tree(
         changed = False
         for value in node:
             item, hit = _redact_tree(
-                value, workspace=workspace, data_boundary=data_boundary)
+                value, workspace=workspace, data_boundary=data_boundary,
+                engine=engine, pii_notes=pii_notes)
             items.append(item)
             changed = changed or hit
         return (items, True) if changed else (node, False)

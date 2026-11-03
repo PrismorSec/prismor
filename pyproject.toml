@@ -48,6 +48,14 @@ identity = ["PyJWT[crypto]>=2.8"]
 # LLM layer of the semantic prompt-injection guard on hosts without the Claude
 # Code CLI: routes to any provider via litellm. `pip install "prismor[semantic]"`.
 semantic = ["litellm>=1.40"]
+# NER PII detection (Microsoft Presidio). Off until settings.pii.enabled.
+# The spaCy model is a separate download: python -m spacy download en_core_web_sm
+# `pip install "prismor[pii]"`. Python 3.9+ (Presidio does not publish 3.8 wheels).
+pii = [
+    "presidio-analyzer>=2.2.354; python_version >= '3.9'",
+    "presidio-anonymizer>=2.2.354; python_version >= '3.9'",
+    "spacy>=3.7,<4; python_version >= '3.9'",
+]
 # Framework adapters ship inside this package (prismor.<framework>);
 # the extras just pull the framework itself so `pip install "prismor[langchain]"`
 # is a one-liner. See adapters/ for the sources and docs/frameworks-*.
@@ -222,6 +230,7 @@ packages = [
 "docs/observability.md" = "prismor/runtime/data/docs/observability.md"
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/pause-and-login.md" = "prismor/runtime/data/docs/pause-and-login.md"
+"docs/pii.md" = "prismor/runtime/data/docs/pii.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
 "docs/prompt-guardrails.md" = "prismor/runtime/data/docs/prompt-guardrails.md"

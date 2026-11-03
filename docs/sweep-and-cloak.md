@@ -159,6 +159,7 @@ the cloak pattern list before reaching for `--purge`.
 ## See also
 
 - [`prismor/runtime/cloaking/README.md`](../prismor/runtime/cloaking/README.md) — full implementation details
+- [PII detection](pii.md) — optional Presidio pass for names and other personal data Cloak does not vault
 - [Prismor](prismor-runtime.md) — the enforce-mode monitor that closes the vault-read gap
 - [Canary](canary.md) — honeytokens for detecting recon attempts
 - [CLI Reference](cli-reference.md) — all commands at a glance

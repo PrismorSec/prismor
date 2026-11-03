@@ -136,6 +136,20 @@ The hybrid mode (default) uses a local Claude Code CLI subagent for intent disam
 
 See [docs/semantic-guard.md](semantic-guard.md) for the full setup guide, configuration reference, and agent-specific instructions.
 
+## PII detection (Presidio)
+
+The `pii-exposure` rule matches formatted SSNs, card numbers and US phone numbers. Names, places and NHS numbers need a different detector. `settings.pii` is that detector: Microsoft Presidio, off unless you enable it, installed with `pip install "prismor[pii]"`. A missing install falls back to the regex detector. Findings use the `pii_exposure` category and never store the raw value.
+
+```yaml
+# .prismor/policy.yaml
+settings:
+  pii:
+    enabled: true
+    action: observe
+```
+
+See [PII detection](pii.md) for entities, redact/block, mask styles and the latency cost. The default hook path does not load the model.
+
 ## Session Logs
 
 Prismor logs every agent tool interaction, not just findings. This gives you a full audit trail of what your agent did, not just what it was blocked from doing.

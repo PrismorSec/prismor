@@ -337,6 +337,55 @@ settings:
       - stderr
       - command
 
+  # ── NER PII (Microsoft Presidio) — optional, off by default ─────────────
+  # Names, locations and NHS numbers that the regex `pii-exposure` rule and
+  # the data-boundary classifier do not see. Nothing here runs until
+  # `enabled: true`, and Presidio is not imported until then, so a default
+  # hook stays on the regex budget (~1 ms). The analyzer is cached for the
+  # life of the process: the eval-server, MCP gateway and LLM proxy pay the
+  # spaCy load once; a coding-agent hook is a new process per call and pays
+  # it every time. Install with `pip install "prismor[pii]"` and
+  # `python -m spacy download en_core_web_sm`. A missing install falls back
+  # to the regex detector (no names or locations) and says so once on stderr.
+  #
+  # `action` is what a hit should do. `mode` is whether that action is live,
+  # same as every other rule: observe records a finding and leaves the call
+  # alone; enforce lets redact rewrite the text and block refuse the call.
+  # Evidence stored for the finding is masked. The raw value is not logged.
+  #
+  # See docs/pii.md.
+  pii:
+    enabled: false
+    backend: presidio       # presidio | regex. regex is the no-dependency fallback
+    language: en
+    model: en_core_web_sm    # small spaCy model. en_core_web_lg is not the default
+    score_threshold: 0.5     # drop hits below this. IP_ADDRESS regex scores 0.6
+    action: observe          # observe | redact | block
+    mode: observe            # observe | enforce. redact/block act only in enforce
+    mask_style: mask         # mask (•) | replace (<ENTITY>) | hash | redact ([REDACTED])
+    max_chars: 4000          # scan at most this many characters of each field
+    entities:
+      - PERSON               # spaCy NER; regex fallback cannot do these three
+      - LOCATION
+      - MEDICAL_LICENSE
+      - EMAIL_ADDRESS
+      - PHONE_NUMBER
+      - CREDIT_CARD
+      - IBAN_CODE
+      - US_SSN
+      - UK_NHS
+      - IP_ADDRESS
+    fields:
+      - prompt
+      - response
+      - content
+      - stdout
+      - stderr
+      - command
+      - mcp_args
+      - outbound_payload
+      - typed_text
+
   # Data boundary — what an outbound call SENDS, screened against where it is
   # going. Complements `egress` (which only decides whether a host may be
   # contacted at all). Built for the doc-following agent: a SKILL.md or setup
