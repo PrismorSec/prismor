@@ -104,9 +104,35 @@ def execute(args, workspace: Path) -> int:
     return exit_code(rows, fail_on=getattr(args, "fail_on", None), strict=bool(getattr(args, "strict", False)))
 
 
+def _resolve_refs(sinks: List[Any], workspace: Path) -> List[Any]:
+    """Expand ``{ref: <name>}`` to the policy's ``settings.outputs`` entry of that name.
+
+    Keys next to ``ref`` override the output's, so one connection serves both
+    events and inventory without repeating its endpoint and credentials.
+    """
+    if not any(isinstance(item, dict) and item.get("ref") for item in sinks):
+        return sinks
+    from prismor.runtime.policy_engine import PolicyEngine
+    outputs = {
+        str(item["name"]): item
+        for item in (PolicyEngine(workspace=workspace).outputs or [])
+        if isinstance(item, dict) and item.get("name")
+    }
+    resolved = []
+    for item in sinks:
+        ref = item.get("ref") if isinstance(item, dict) else None
+        if not ref:
+            resolved.append(item)
+        elif str(ref) in outputs:
+            resolved.append({**outputs[str(ref)], **{k: v for k, v in item.items() if k != "ref"}})
+        else:
+            sys.stderr.write(f"[prismor] inventory sink ref {ref!r} matches no settings.outputs name\n")
+    return resolved
+
+
 def _emit(rows, sink_names, settings, *, report: bool, workspace: Path) -> None:
     from prismor.runtime.sinks import dispatch_inventory
-    configured = list(settings.get("sinks") or [])
+    configured = _resolve_refs(list(settings.get("sinks") or []), workspace)
     chosen = []
     if sink_names:
         by_name = {str(item.get("name") or item.get("type")): item for item in configured if isinstance(item, dict)}

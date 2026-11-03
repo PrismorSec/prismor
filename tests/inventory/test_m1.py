@@ -377,3 +377,15 @@ def test_sink_plugin_gets_events_and_lifecycle_hooks(monkeypatch):
     # A plugin without a hook is skipped, and a failing hook never raises.
     monkeypatch.setattr(sinks, "_SINK_PLUGINS", {"bad": SimpleNamespace(exit_flush=lambda o: 1 / 0)})
     assert sinks.run_sink_hook("exit_flush") == []
+
+
+def test_inventory_sink_ref_reuses_policy_output(tmp_path, monkeypatch, capsys):
+    from prismor.runtime import inventory_cli
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(
+        "settings:\n  outputs:\n    - type: file\n      name: shared\n      path: a.jsonl\n",
+        encoding="utf-8",
+    )
+    got = inventory_cli._resolve_refs([{"ref": "shared", "path": "b.jsonl"}, {"ref": "missing"}], tmp_path)
+    assert got == [{"type": "file", "name": "shared", "path": "b.jsonl"}]
+    assert "'missing' matches no settings.outputs name" in capsys.readouterr().err

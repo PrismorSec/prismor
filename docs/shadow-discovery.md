@@ -41,6 +41,14 @@ Results land in `<system directory>/inventory/last.ndjson`
 `/Library/Application Support/Prismor/inventory` on macOS,
 `/etc/prismor/inventory` on Linux). Intune passes `-Discover`.
 Sinks are listed in `inventory.yaml`; their secrets stay in the environment.
+An inventory sink can point at a policy output instead of repeating it, so
+events and inventory share one connection. Keys next to `ref` override the
+output's; `--sink` takes the output's name:
+
+```yaml
+sinks:
+  - ref: contoso-sentinel   # a settings.outputs name in policy.yaml
+```
 
 See [Deploy with Intune](deploy-intune.md).
 
