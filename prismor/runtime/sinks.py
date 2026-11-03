@@ -692,6 +692,48 @@ _DISPATCHERS = {
     "otel": _dispatch_otel,
 }
 
+#: Entry-point group for sinks shipped outside this package. The entry point
+#: name is the sink ``type``; the target is a module with any of
+#: ``dispatch_events(cfg, events)``, ``dispatch_inventory(cfg, rows)`` and the
+#: lifecycle hooks ``start_background``, ``exit_flush``, ``system_sync`` and
+#: ``doctor`` (each takes the policy ``outputs`` or None). Events and rows are
+#: built by this module, so a plugin only sees what the builtin sinks see.
+SINK_PLUGIN_GROUP = "prismor.sinks"
+_SINK_PLUGINS: Optional[Dict[str, Any]] = None
+
+
+def sink_plugins() -> Dict[str, Any]:
+    """Installed sink plugins by type. A plugin that fails to import is skipped."""
+    global _SINK_PLUGINS
+    if _SINK_PLUGINS is None:
+        found: Dict[str, Any] = {}
+        try:
+            from importlib.metadata import entry_points
+            eps = list(entry_points(group=SINK_PLUGIN_GROUP))
+        except Exception:
+            eps = []
+        for ep in eps:
+            try:
+                found[ep.name.lower()] = ep.load()
+            except Exception:
+                continue
+        _SINK_PLUGINS = found
+    return _SINK_PLUGINS
+
+
+def run_sink_hook(name: str, outputs: Optional[List[Dict[str, Any]]] = None) -> List[Any]:
+    """Call lifecycle hook ``name`` on every plugin. Never raises; returns results."""
+    results: List[Any] = []
+    for kind, plugin in sink_plugins().items():
+        fn = getattr(plugin, name, None)
+        if fn is None:
+            continue
+        try:
+            results.append(fn(outputs))
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] sink {kind!r} {name} failed: {exc.__class__.__name__}\n")
+    return results
+
 
 def dispatch(
     findings: List[Dict[str, Any]],
@@ -722,8 +764,10 @@ def dispatch(
         except Exception as exc:
             sys.stderr.write(f"[prismor] sink 'prismor' failed: {exc}\n")
 
+    events: List[Dict[str, Any]] = []
     for finding in findings:
         event = _build_event(finding, extra=extra)
+        events.append(event)
         for sink_cfg in generic_sinks:
             sink = _expand_env(sink_cfg)
             kind = str(sink.get("type", "")).lower()
@@ -734,3 +778,98 @@ def dispatch(
                 disp(sink, event)
             except Exception as exc:
                 sys.stderr.write(f"[prismor] sink {kind!r} failed: {exc}\n")
+    for sink_cfg in generic_sinks:
+        kind = str((sink_cfg or {}).get("type", "")).lower()
+        if kind in _DISPATCHERS:
+            continue
+        plugin_fn = getattr(sink_plugins().get(kind), "dispatch_events", None)
+        if plugin_fn is None:
+            continue
+        try:
+            plugin_fn(_expand_env(sink_cfg), events)
+        except Exception as exc:
+            # The message may carry a token or URL; the class name cannot.
+            sys.stderr.write(f"[prismor] sink {kind!r} failed: {exc.__class__.__name__}\n")
+
+
+# ── inventory sinks ──────────────────────────────────────────────────────────
+
+def _scrub_obj(value: Any) -> Any:
+    """Scrub every string in an inventory payload. Fails closed per string."""
+    if isinstance(value, str):
+        return _scrub_for_sink(value)
+    if isinstance(value, dict):
+        return {str(k): _scrub_obj(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_obj(v) for v in value]
+    return value
+
+
+def _dispatch_splunk_inventory(cfg: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """HEC event is the inventory record, not an OCSF finding."""
+    import urllib.request
+    url = cfg.get("url")
+    token = cfg.get("token")
+    if not url or not token:
+        return
+    envelope = {
+        "event": record,
+        "sourcetype": cfg.get("sourcetype", "prismor:inventory"),
+    }
+    if cfg.get("index"):
+        envelope["index"] = cfg["index"]
+    data = json.dumps(envelope).encode("utf-8")
+    headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # operator-configured URL  # nosec B310
+        resp.read(16)
+
+
+def dispatch_inventory(records: List[Dict[str, Any]], sinks: List[Dict[str, Any]]) -> None:
+    """Send inventory records to ``settings.outputs`` sinks. Best-effort.
+
+    Rows are scrubbed here, before any sink (builtin or plugin) sees them.
+    """
+    if not records or not sinks:
+        return
+    rows = [_scrub_obj(record) for record in records]
+    for sink_cfg in sinks:
+        sink = _expand_env(sink_cfg)
+        kind = str(sink.get("type", "")).lower()
+        try:
+            if kind == "file":
+                for row in rows:
+                    _dispatch_file(sink, row)
+            elif kind == "webhook":
+                _dispatch_webhook(sink, rows)
+            elif kind == "syslog":
+                for row in rows:
+                    _dispatch_syslog(sink, row)
+            elif kind == "splunk":
+                for row in rows:
+                    _dispatch_splunk_inventory(sink, row)
+            elif kind == "datadog":
+                for row in rows:
+                    _dispatch_datadog(sink, {
+                        "severity": str((row.get("risk") or {}).get("level") or "LOW").upper(),
+                        "title": f"{row.get('kind')}:{row.get('name')}",
+                        "evidence": row.get("entity_key") or "",
+                        "category": "inventory",
+                    })
+            elif kind == "otel":
+                for row in rows:
+                    _dispatch_otel(sink, {
+                        "severity": str((row.get("risk") or {}).get("level") or "LOW").upper(),
+                        "title": f"{row.get('kind')}:{row.get('name')}",
+                        "evidence": row.get("entity_key") or "",
+                        "hostname": (row.get("location") or {}).get("hostname"),
+                    })
+            else:
+                plugin_fn = getattr(sink_plugins().get(kind), "dispatch_inventory", None)
+                if plugin_fn is None:
+                    sys.stderr.write(f"[prismor] inventory sink {kind!r} is not installed\n")
+                else:
+                    plugin_fn(sink, rows)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] inventory sink {kind!r} failed: {exc.__class__.__name__}\n")

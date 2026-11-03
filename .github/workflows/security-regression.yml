@@ -83,3 +83,19 @@ jobs:
           # The runner appends `exit $LASTEXITCODE` to every pwsh step, so the
           # blocked check's own exit 2 would fail the step it just satisfied.
           exit 0
+
+  inventory:
+    name: Inventory (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install --quiet pytest pyyaml jsonschema
+      - name: Inventory suite
+        run: python -m pytest tests/inventory -q -p no:randomly

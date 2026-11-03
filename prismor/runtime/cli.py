@@ -4322,8 +4322,11 @@ def build_parser() -> argparse.ArgumentParser:
                     "outside Prismor's coverage. Host-local and read-only.",
     )
     discover_parser.add_argument(
-        "section", nargs="?", choices=["all", "agents", "mcp", "keys"], default="all",
-        help="Limit the report to one inventory (default: all)")
+        "section", nargs="?", default="all",
+        help="Legacy inventories (all/agents/mcp/keys) or an inventory surface "
+             "(endpoint, jetbrains, extensions, wsl, inventory, or one an installed "
+             "plugin adds)",
+    )
     discover_parser.add_argument("--workspace", help="Workspace path")
     discover_parser.add_argument("--json", action="store_true", help="Machine-readable report")
     discover_parser.add_argument(
@@ -4348,6 +4351,17 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument(
         "--fix-mode", choices=["observe", "enforce"], default="observe",
         help="Mode to install newly hooked agents in (default: observe)")
+    discover_parser.add_argument(
+        "--format", choices=["table", "json", "ndjson"], default=None,
+        help="Inventory output format (default: table on a TTY, otherwise ndjson)")
+    discover_parser.add_argument("--out", help="Write inventory output to FILE")
+    discover_parser.add_argument("--sink", help="Comma-separated inventory sink names from settings")
+    discover_parser.add_argument(
+        "--fail-on", choices=["none", "low", "medium", "high", "critical"], default=None,
+        help="Exit 1 when any inventory record is at or above this risk level")
+    discover_parser.add_argument("--dry-run", action="store_true", help="Print the calls and paths without executing them")
+    discover_parser.add_argument("--strict", action="store_true", help="Exit 4 when a collector returns a diagnostic")
+    discover_parser.add_argument("--all-users", action="store_true", help="Scan every local profile (SYSTEM/root)")
 
     aibom_parser = subparsers.add_parser(
         "aibom",
@@ -5988,6 +6002,10 @@ def _run_discover(args, workspace: Path, repo_root: Path) -> None:
     from prismor.runtime import discover_cli
 
     section = getattr(args, "section", "all") or "all"
+    if section not in {"all", "agents", "mcp", "keys"}:
+        from prismor.runtime import inventory_cli
+        raise SystemExit(inventory_cli.execute(args, workspace))
+
     as_json = getattr(args, "json", False)
     scan_files = not getattr(args, "no_file_scan", False)
 
@@ -6175,6 +6193,10 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add("fail", "policy", f"project policy is invalid, {_kept}: {_perr}")
         else:
             add("ok", "policy", f"{n_rules} rules loaded (default mode: {mode})")
+        from prismor.runtime.sinks import run_sink_hook
+        for _lines in run_sink_hook("doctor", list(getattr(engine, "outputs", []) or [])):
+            for _state, _check, _msg in _lines or []:
+                add(_state, _check, _msg)
     except Exception as exc:
         engine = None
         add("fail", "policy", f"policy failed to load: {exc}")

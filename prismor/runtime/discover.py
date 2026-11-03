@@ -235,7 +235,8 @@ def discover_agents(workspace: Path) -> List[AgentRecord]:
 # ── MCP inventory ────────────────────────────────────────────────────────────
 
 
-def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
+def _extra_mcp_configs(workspace: Path, home: Optional[Path] = None, *,
+                       system: Optional[str] = None) -> List[Dict[str, Any]]:
     """MCP config locations ``scanner.discover_configs`` does not cover.
 
     scanner walks the six agents Prismor hooks into; MCP servers also get
@@ -243,9 +244,16 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
     all, which is precisely where unmanaged servers accumulate. Kept here
     rather than added to ``scanner._AGENT_DISCOVERERS`` so `prismor scan`
     behaviour is unchanged.
+
+    ``home`` defaults to ``Path.home()`` and, on Windows, ``%APPDATA%``. Pass
+    ``home`` to read another profile: per-user AppData is derived from that
+    home and never from the process environment (a SYSTEM scan must not report
+    the service account's roaming profile as the user's). ``system`` overrides
+    ``platform.system()`` so a fixture shaped like Windows can be read on Linux.
     """
-    home = Path.home()
-    system = platform.system()
+    explicit_home = home is not None
+    home = Path(home) if explicit_home else Path.home()
+    system = system or platform.system()
     candidates: List[Tuple[str, Path]] = []
 
     # Claude Desktop
@@ -256,11 +264,23 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
         )
         vscode_user = home / "Library" / "Application Support" / "Code" / "User"
     elif system == "Windows":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
+        if explicit_home:
+            appdata_path: Optional[Path] = home / "AppData" / "Roaming"
+            localappdata: Optional[Path] = home / "AppData" / "Local"
+        else:
+            appdata = os.environ.get("APPDATA")
+            local = os.environ.get("LOCALAPPDATA")
+            appdata_path = Path(appdata) if appdata else None
+            localappdata = Path(local) if local else None
+        if appdata_path:
             candidates.append(
-                ("claude-desktop", Path(appdata) / "Claude" / "claude_desktop_config.json"))
-        vscode_user = Path(appdata) / "Code" / "User" if appdata else None
+                ("claude-desktop", appdata_path / "Claude" / "claude_desktop_config.json"))
+        vscode_user = appdata_path / "Code" / "User" if appdata_path else None
+        if localappdata:
+            candidates.append((
+                "copilot-jetbrains",
+                localappdata / "github-copilot" / "intellij" / "mcp.json",
+            ))
     else:
         candidates.append(
             ("claude-desktop", home / ".config" / "Claude" / "claude_desktop_config.json"))
@@ -281,6 +301,31 @@ def _extra_mcp_configs(workspace: Path) -> List[Dict[str, Any]]:
     candidates.append(("gemini", home / ".gemini" / "settings.json"))
     candidates.append(("gemini", workspace / ".gemini" / "settings.json"))
     candidates.append(("continue", home / ".continue" / "config.json"))
+    # Further clients. A path that does not exist is dropped below, so hosts
+    # without these tools keep the same inventory they had before.
+    candidates.append(("kiro", home / ".kiro" / "settings" / "mcp.json"))
+    candidates.append(("copilot", home / ".copilot" / "mcp-config.json"))
+    candidates.append(("windsurf", home / ".codeium" / "windsurf" / "mcp_config.json"))
+    candidates.append(("antigravity", home / ".gemini" / "antigravity" / "mcp_config.json"))
+    candidates.append(("amazon-q", home / ".aws" / "amazonq" / "mcp.json"))
+    candidates.append(("junie", home / ".junie" / "mcp" / "mcp.json"))
+    candidates.append(("junie", workspace / ".junie" / "mcp" / "mcp.json"))
+    if system != "Windows":
+        if explicit_home:
+            config_home = home / ".config"
+        else:
+            xdg = os.environ.get("XDG_CONFIG_HOME")
+            config_home = Path(xdg) if xdg else home / ".config"
+        candidates.append((
+            "copilot-jetbrains",
+            config_home / "github-copilot" / "intellij" / "mcp.json",
+        ))
+    if vscode_user:
+        for folder in ("rooveterinaryinc.roo-cline", "RooVeterinaryInc.roo-cline"):
+            candidates.append((
+                "roo",
+                vscode_user / "globalStorage" / folder / "settings" / "mcp_settings.json",
+            ))
 
     seen: Set[str] = set()
     out: List[Dict[str, Any]] = []
@@ -368,7 +413,7 @@ def _is_gateway_entry(command: Sequence[str], url: str) -> bool:
     return "prismor" in url.lower() and "gateway" in url.lower()
 
 
-def discover_mcp(workspace: Path) -> List[McpRecord]:
+def discover_mcp(workspace: Path, home: Optional[Path] = None) -> List[McpRecord]:
     """Inventory every MCP server declared anywhere on this machine.
 
     A server is governed when it is routed through `prismor mcp-gateway`. The
@@ -387,8 +432,9 @@ def discover_mcp(workspace: Path) -> List[McpRecord]:
     except Exception:
         return []
 
-    configs = list(scanner.discover_configs(workspace=workspace))
-    configs.extend(_extra_mcp_configs(workspace))
+    # Another user's profile must not pick up the caller's scanner paths.
+    configs = [] if home is not None else list(scanner.discover_configs(workspace=workspace))
+    configs.extend(_extra_mcp_configs(workspace, home=home))
 
     gateway = _gateway_servers()
     records: List[McpRecord] = []
@@ -606,6 +652,16 @@ def _mask_words(value: str) -> str:
                     for word in value.split(" "))
 
 
+def _query_key_is_secret(key: str) -> bool:
+    """Query keys whose value is a credential even when the value is short.
+
+    ``code`` is matched exactly so ``encode`` and ``unicode`` are left alone.
+    """
+    if _SECRETISH_KEY.search(key):
+        return True
+    return key.lower() in {"code", "jwt", "assertion", "id_token", "access_token", "refresh_token"}
+
+
 def redact_url(url: str) -> str:
     """Strip credentials from a URL without losing which host it points at.
 
@@ -642,7 +698,7 @@ def redact_url(url: str) -> str:
         pairs = []
         for pair in query.split("&"):
             key, sep, value = pair.partition("=")
-            if sep and (_SECRETISH_KEY.search(key) or _looks_like_token(value)):
+            if sep and (_query_key_is_secret(key) or _looks_like_token(value)):
                 value = _MASK
             pairs.append(f"{key}{sep}{value}")
         query = "&".join(pairs)
@@ -822,6 +878,7 @@ def discover_credentials(workspace: Path, *, scan_files: bool = True) -> List[Cr
 
     if scan_files:
         records.extend(_scan_config_credentials(workspace, cloak))
+        records.extend(_scan_rc_credentials(Path.home(), cloak))
 
     records.sort(key=lambda r: (r.managed, r.provider, r.location))
     return records
@@ -905,6 +962,34 @@ def _scan_config_credentials(workspace: Path, cloak: Set[str]) -> List[Credentia
                     managed=_dotenv_is_vaulted(path, cloak),
                 )
             )
+    return records
+
+
+def _scan_rc_credentials(home: Path, cloak: Set[str]) -> List[CredentialRecord]:
+    """Provider keys exported from shell rc files. The value is never stored."""
+    export_name = re.compile(r"(?m)^[ \t]*export[ \t]+([A-Za-z_][A-Za-z0-9_]*)=")
+    records: List[CredentialRecord] = []
+    for filename in (".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"):
+        path = home / filename
+        try:
+            if not path.is_file() or path.stat().st_size > 512 * 1024:
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        seen: Set[str] = set()
+        for match in export_name.finditer(text):
+            var = match.group(1)
+            for provider, pattern in _ENV_KEY_PATTERNS:
+                if not pattern.match(var) or provider in seen:
+                    continue
+                seen.add(provider)
+                records.append(CredentialRecord(
+                    provider=provider,
+                    location_kind="rc-file",
+                    location="~/" + filename,
+                    managed=False,
+                ))
     return records
 
 
@@ -1093,11 +1178,18 @@ def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
     # "31 ungoverned, 24 fixable in one command" is a number to act on.
     summary["fixable"] = sum(
         1 for f in findings if not f.get("managed") and f.get("fixable"))
-    return {
+    payload: Dict[str, Any] = {
         "findings": findings,
         "summary": summary,
         "cli_version": _version,
     }
+    # Optional. Absent on a legacy report, so existing consumers keep the same
+    # object. A version skew should cost a missing column, not a rejected report.
+    inventory = report.get("inventory")
+    if inventory:
+        payload["inventory"] = inventory
+        payload["inventory_schema"] = "prismor.inventory.v1"
+    return payload
 
 
 def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:

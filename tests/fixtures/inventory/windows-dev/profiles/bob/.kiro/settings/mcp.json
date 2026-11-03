@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bob-git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git"
+      ]
+    }
+  }
+}

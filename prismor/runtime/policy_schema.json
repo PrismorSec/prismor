@@ -83,6 +83,11 @@
           "description": "Settings for the optional LLM-assisted semantic prompt-injection layer.",
           "additionalProperties": true
         },
+        "inventory": {
+          "type": "object",
+          "description": "Shadow-agent inventory (prismor discover endpoint). Secret values are never stored here; sink credentials stay in the environment or Cloak.",
+          "additionalProperties": true
+        },
         "sandbox": {
           "type": "object",
           "description": "Docker-backed shell sandbox settings for constraining allowed Bash commands.",

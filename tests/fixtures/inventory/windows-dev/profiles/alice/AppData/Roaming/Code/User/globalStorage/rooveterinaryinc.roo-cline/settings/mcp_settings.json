@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "roo": {
+      "command": "node",
+      "args": [
+        "server.js"
+      ],
+      "alwaysAllow": [
+        "*"
+      ]
+    }
+  }
+}
