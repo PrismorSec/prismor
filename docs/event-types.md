@@ -70,10 +70,18 @@ On the console, open an agent's Tool access panel. Each tool shows
 **Judged as** with the type its latest call got:
 
 - **(as reported)** is what the runtime decided.
-- **Amber** means an admin corrected it. **"was X"** shows the original type.
+- **Amber** means an admin corrected it. **"was X"** shows the type the runtime
+  decided.
 - **Rose** means Unclassified.
-- An org-wide correction shows as **"X (org-wide)"** and is read-only on the
-  agent page.
+- A correction set at a broader scope shows as the blank option, e.g.
+  **"Network (org-wide)"** on an agent page or **"File read (this agent)"** on a
+  session page. Picking a type overrides it for this agent or session only.
+
+When any tool is Unclassified, the top of the panel says how many, and
+**Show only these** filters the list to them.
+
+The policy editor lists corrections under **Type corrections**, separately from
+blocked and force-allowed tools.
 
 Picking a type ships a signed `classify` entry in `settings.tool_denies`.
 Before policy runs, the runtime retypes that tool's calls:
@@ -86,8 +94,8 @@ Before policy runs, the runtime retypes that tool's calls:
 - The event records `metadata.type_override` (`from`, `to`, `tool`, `scope`) for
   the audit trail.
 
-A device, agent or session correction beats an org-wide one.
-Choosing "(as reported)" removes this scope's correction. Runtimes older than
+The narrowest scope wins: session, then agent, then device, then org.
+Choosing the blank option removes this scope's correction. Runtimes older than
 the release that added `classify` ignore the entry.
 
 The same entry over the API:
