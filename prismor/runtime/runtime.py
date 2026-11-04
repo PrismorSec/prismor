@@ -287,6 +287,94 @@ def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
     event.pop("command", None)
 
 
+# Types an admin may reclassify a tool into from the console.
+_OVERRIDE_TYPES = ("shell", "file_read", "file_write", "network", "tool_result", "subagent_spawn")
+# Where an unmapped hook payload keeps the tool's arguments, per agent.
+_ARG_KEYS = ("tool_input", "toolInput", "toolArgs", "tool_args", "arguments", "args", "input", "params")
+
+
+def _call_args(event: Dict[str, Any]) -> Dict[str, Any]:
+    """The tool's own argument dict, from an SDK adapter or an unmapped hook payload."""
+    meta = event.get("metadata") or {}
+    if meta.get("framework"):
+        return _adapter_kwargs(meta)
+    try:
+        payload = json.loads(event.get("response") or "")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if event.get("mcp_server"):
+        return payload  # an MCP pre-call carries the arguments themselves
+    if isinstance(payload.get("toolCall"), dict):
+        payload = payload["toolCall"]  # Antigravity
+    for key in _ARG_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _apply_tool_type_override(event: Dict[str, Any], entries: Any, agent_name: str,
+                              parent: Optional[str], session_id: str) -> None:
+    """Re-type a call an admin reclassified from the console.
+
+    Entries are ``settings.tool_denies`` items with ``action: "classify"`` and a
+    ``type`` (they ride the same signed list and sync, and a runtime that does
+    not know the action skips them), matched by tool tag and scope like a deny. The
+    new type's field is filled from the call's arguments by argument name; every
+    original value also stays in ``content`` so the text rules lose nothing. The
+    change is recorded in ``metadata.type_override`` for the audit trail.
+    """
+    if not isinstance(entries, list) or not entries:
+        return
+    from prismor.runtime.contract import TYPE_FIELD
+    from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
+    tags = resolve_tool_tags(event, families=True)
+    if not tags:
+        return
+    hit = None
+    for e in entries:
+        if not isinstance(e, dict) or e.get("type") not in _OVERRIDE_TYPES or not tag_matches(e.get("tool"), tags):
+            continue
+        scope, sid = e.get("scope") or "org", e.get("scopeId")
+        if scope in ("org", "device") or (scope == "agent" and sid in (agent_name, parent)) \
+                or (scope == "session" and sid == session_id):
+            hit = e
+            if scope != "org":  # the narrowest matching scope wins
+                break
+    old = event.get("type")
+    if hit is None or hit["type"] == old:
+        return
+    new = hit["type"]
+    kw = {str(k).lower(): v for k, v in _call_args(event).items()}
+    pick = lambda keys: [x for k in keys for x in _flat(kw.get(k))]  # noqa: E731
+    text = "\n".join(str(event.get(f)) for f in ("command", "path", "url", "prompt", "response", "content")
+                     if event.get(f))
+    if new == "shell":
+        event["command"] = "\n".join(pick(_CMD_ARGS)) or " ".join(x for v in kw.values() for x in _flat(v)) or text
+    elif new == "network":
+        urls = pick(_URL_ARGS) or _URL_VALUE.findall(text)
+        event["url"] = "\n".join(urls)
+        event["outbound_payload"] = json.dumps(kw, default=str) if kw else text
+    elif new in ("file_read", "file_write"):
+        event["path"] = (pick(_PATH_ARGS) or [event.get("path") or ""])[0]
+    elif new == "subagent_spawn":
+        event["prompt"] = "\n".join(pick(_SPAWN_ARGS)) or text
+    else:
+        event[TYPE_FIELD[new]] = json.dumps(kw, default=str) if kw else text
+    body = pick(_CONTENT_ARGS)
+    event["content"] = "\n".join(body + ([text] if text else []))
+    event["type"] = new
+    event.setdefault("metadata", {})["type_override"] = {
+        "from": old, "to": new, "tool": hit.get("tool"), "scope": hit.get("scope") or "org"}
+
+
 def _parent_agent_of(event: Dict[str, Any], agent_name: str) -> Optional[str]:
     """The agent a subagent call runs under, when it differs from ``agent_name``.
 
@@ -476,6 +564,15 @@ def evaluate_tool_call(
         sys.stderr.write(f"[prismor] local decisions error: {exc}\n")
     perf.lap("policy_load")
 
+    # An admin's "classify as" from the console, before any rule sees the call.
+    try:
+        _apply_tool_type_override(
+            event, [d for d in (getattr(engine, "tool_denies", None) or [])
+                    if isinstance(d, dict) and d.get("action") == "classify"],
+            _agent_name, _parent_agent, session_id)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] tool-type override error: {exc}\n")
+
     # Verified end-user identity. Off unless the signed org policy (or the
     # eval-server's flags) configure an issuer; then the subject comes from the
     # verified token, and `require` blocks calls that have none.
@@ -526,7 +623,9 @@ def evaluate_tool_call(
             # "Skill:<name>" tag, so the console can inventory which skills this
             # agent actually reaches for — not just that it uses skills at all.
             for _tag in resolve_tool_tags(event):
-                _capabilities.append({"name": _tag, "source": "observed"})
+                # The type policy judged it as, so the console shows each
+                # tool's classification and an admin can correct it.
+                _capabilities.append({"name": _tag, "source": "observed", "type": str(event.get("type") or "")})
             for _tool in meta.get("available_tools") or []:
                 _capabilities.append({"name": str(_tool), "source": "declared"})
             _scoped = load_scoped_rules(workspace, session_id) if session_id else None
