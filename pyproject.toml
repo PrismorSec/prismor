@@ -189,6 +189,7 @@ packages = [
 "docs/docker.md" = "prismor/runtime/data/docs/docker.md"
 "docs/elevenlabs.md" = "prismor/runtime/data/docs/elevenlabs.md"
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
+"docs/event-types.md" = "prismor/runtime/data/docs/event-types.md"
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/faq.md" = "prismor/runtime/data/docs/faq.md"
 "docs/frameworks-agent-framework.md" = "prismor/runtime/data/docs/frameworks-agent-framework.md"
