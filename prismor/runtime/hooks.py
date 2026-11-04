@@ -1364,7 +1364,7 @@ def _strip_powershell_wrapper(command: str) -> str:
 # `Skill` is how Claude loads a skill. Without it a skill invocation never
 # reaches the hook: per-skill denies cannot fire, and nothing records which
 # third-party instructions a session was running under.
-_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*"
+_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*"
 
 
 def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_workspace: bool = True) -> Dict[str, Any]:
@@ -2136,7 +2136,8 @@ def _merge_grok(config: Dict[str, Any], command: str) -> Dict[str, Any]:
         hooks[event_name] = _merge_claude_entries(
             hooks.get(event_name, []),
             {
-                "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+                # Grok's MCP calls carry the qualified `server__tool` name.
+                "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+",
                 "hooks": [{"type": "command", "command": command}],
             },
         )
@@ -2441,8 +2442,8 @@ def _unmapped_tool_event(base: Dict[str, Any], payload: Dict[str, Any]) -> Dict[
     the untrusted-content rules; dropping it would be strictly worse. But a
     tool that lands here is evaluated against the handful of ``tool_result``
     rules rather than the ``shell`` / ``file_write`` / ``network`` rules its
-    actual behaviour warrants — for example Claude Code's ``NotebookEdit``,
-    which writes a file but reaches policy as an opaque JSON blob. That is a
+    actual behaviour warrants — for example a write tool that reaches policy
+    as an opaque JSON blob. That is a
     coverage hole, not coverage.
 
     Tagging the event makes the hole countable (``prismor tags list`` renders
@@ -2672,11 +2673,17 @@ def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -
         }
     if tool_name in {"WebFetch", "WebSearch"}:
         return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", ""), "response": payload.get("response", "")}
+    # MCP calls go through grok's use_tool dispatcher but reach hooks under the
+    # qualified `server__tool` name (no mcp__ prefix); built-ins never contain "__".
+    mcp_name = tool_name
+    if "__" in tool_name and not tool_name.startswith("mcp__"):
+        mcp_name = f"mcp__{tool_name}"
     mcp_event = _classify_mcp_event(
         base=base,
-        tool_name=tool_name,
+        tool_name=mcp_name,
         tool_input=tool_input,
-        response=payload.get("toolResponse", payload.get("response")),
+        response=next((payload[k] for k in ("toolResult", "tool_response", "toolResponse", "response")
+                       if payload.get(k) is not None), None),
         is_post=(hook_event == "PostToolUse"),
         workspace=workspace,
     )
@@ -2757,7 +2764,8 @@ def _normalize_crush(payload: Dict[str, Any], session_id: str) -> Dict[str, Any]
     if tool_name == "bash":
         return {**base, "type": "shell", "command": tool_input.get("command", "")}
     if tool_name == "view":
-        return {**base, "type": "file_read", "path": tool_input.get("path", "")}
+        # crush's view tool takes file_path (internal/agent/tools/view.go).
+        return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
     if tool_name in {"write", "edit", "multiedit"}:
         return {
             **base,
@@ -2789,11 +2797,16 @@ def _normalize_openhands(payload: Dict[str, Any], session_id: str) -> Dict[str, 
     if tool_name == "terminal":
         return {**base, "type": "shell", "command": tool_input.get("command", "")}
     if tool_name == "file_editor":
+        # One tool, many subcommands: view reads; create/str_replace/insert write
+        # (create's body is file_text).
+        if tool_input.get("command") == "view":
+            return {**base, "type": "file_read", "path": tool_input.get("path", "")}
         return {
             **base,
             "type": "file_write",
             "path": tool_input.get("path", ""),
-            "content": tool_input.get("content") or tool_input.get("new_str", ""),
+            "content": (tool_input.get("file_text") or tool_input.get("content")
+                        or tool_input.get("new_str", "")),
         }
     if tool_name in {"web_fetch", "web_search"}:
         return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
@@ -3514,8 +3527,12 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
             "description": tool_input.get("description", ""),
             "prompt": tool_input.get("prompt", ""),
         }
-    if tool_name == "Bash":
+    if tool_name in {"Bash", "PowerShell"}:
+        # PowerShell is Claude Code's shell tool on Windows; same {command} input.
         return {**base, "type": "shell", "command": tool_input.get("command", ""), "description": tool_input.get("description", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr", "")}
+    if tool_name == "NotebookEdit":
+        return {**base, "type": "file_write", "path": tool_input.get("notebook_path", ""),
+                "content": tool_input.get("new_source", "")}
     if tool_name == "Read":
         return {**base, "type": "file_read", "path": tool_input.get("file_path") or tool_input.get("path", "")}
     if tool_name in {"Grep", "Glob"}:
@@ -3560,23 +3577,27 @@ def _normalize_windsurf(payload: Dict[str, Any], session_id: str, workspace: Pat
         "agent_event": hook_event,
         "metadata": {"execution_id": payload.get("execution_id"), "raw": payload},
     }
+    # Windsurf's documented keys are user_prompt, command_line and mcp_*
+    # (docs.windsurf.com cascade/hooks); the short names are older shapes.
     if hook_event == "pre_user_prompt":
-        return {**base, "type": "prompt", "prompt": tool_info.get("prompt", "")}
+        return {**base, "type": "prompt", "prompt": tool_info.get("user_prompt") or tool_info.get("prompt", "")}
     if "run_command" in hook_event:
-        return {**base, "type": "shell", "command": tool_info.get("command", ""), "stdout": tool_info.get("stdout", ""), "stderr": tool_info.get("stderr", "")}
+        return {**base, "type": "shell", "command": tool_info.get("command_line") or tool_info.get("command", ""), "stdout": tool_info.get("stdout", ""), "stderr": tool_info.get("stderr", "")}
     if "read_code" in hook_event:
         return {**base, "type": "file_read", "path": tool_info.get("file_path", "")}
     if "write_code" in hook_event:
         return {**base, "type": "file_write", "path": tool_info.get("file_path", ""), "content": _join_edits(tool_info.get("edits", []))}
     if "mcp_tool_use" in hook_event:
-        server = str(tool_info.get("server") or tool_info.get("server_name") or "")
-        tool = str(tool_info.get("tool") or tool_info.get("tool_name") or tool_info.get("name") or "")
+        server = str(tool_info.get("mcp_server_name") or tool_info.get("server") or tool_info.get("server_name") or "")
+        tool = str(tool_info.get("mcp_tool_name") or tool_info.get("tool") or tool_info.get("tool_name") or tool_info.get("name") or "")
         synthetic = f"mcp__{server}__{tool}" if server else f"mcp__{tool}__{tool}"
         mcp_event = _classify_mcp_event(
             base=base,
             tool_name=synthetic,
-            tool_input=tool_info.get("arguments") or tool_info.get("args") or tool_info.get("input") or {},
-            response=tool_info.get("result") or tool_info.get("response") or tool_info.get("output"),
+            tool_input=(tool_info.get("mcp_tool_arguments") or tool_info.get("arguments")
+                        or tool_info.get("args") or tool_info.get("input") or {}),
+            response=(tool_info.get("mcp_result") or tool_info.get("result")
+                      or tool_info.get("response") or tool_info.get("output")),
             is_post=hook_event.startswith("post"),
             workspace=workspace,
         )
@@ -3893,8 +3914,8 @@ def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:
       BeforeAgent  -- the person's prompt.
       AfterAgent   -- the turn's reply, recorded only.
 
-    Matcher covers all built-in Gemini CLI tools plus MCP tools
-    (mcp__<server>__<tool> namespace).
+    Matcher covers all built-in Gemini CLI tools plus MCP tools, which Gemini
+    names mcp_<server>_<tool> (``mcp_.*`` also covers the mcp__ form).
     """
     hooks = dict(config.get("hooks", {}))
     # BeforeTool is the only blocking event: exit-2 from the hook stops
@@ -3904,7 +3925,7 @@ def _merge_gemini(config: Dict[str, Any], command: str) -> Dict[str, Any]:
         hooks[event_name] = _merge_claude_entries(
             hooks.get(event_name, []),
             {
-                "matcher": "run_shell_command|read_file|read_many_files|write_file|replace|replace_in_file|web_fetch|google_web_search|web_search|mcp__.*",
+                "matcher": "run_shell_command|read_file|read_many_files|write_file|replace|replace_in_file|web_fetch|google_web_search|web_search|mcp_.*",
                 "hooks": [{"type": "command", "name": "prismor", "command": command}],
             },
         )
@@ -4037,10 +4058,16 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
         }
 
     if tool_name == "web_fetch":
+        # web_fetch takes one `prompt` holding up to 20 URLs (docs/tools/
+        # web-fetch.md); `url` is kept for older builds.
+        prompt = str(tool_input.get("prompt") or "")
+        urls = [str(tool_input["url"])] if tool_input.get("url") else []
+        urls += [u for u in re.findall(r'https?://[^\s)\'"<>\]`]+', prompt) if u not in urls]
         return {
             **base,
             "type": "network",
-            "url": tool_input.get("url", ""),
+            "url": "\n".join(urls),
+            "query": prompt,
             "response": payload.get("response", ""),
         }
 
@@ -4053,15 +4080,28 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
             "url": tool_input.get("query", ""),
         }
 
+    # Gemini names MCP tools mcp_<server>_<tool> (single underscores, so the
+    # split is ambiguous); mcp_context carries the real server and tool names.
+    mcp_ctx = payload.get("mcp_context") if isinstance(payload.get("mcp_context"), dict) else {}
+    mcp_name = tool_name
+    if mcp_ctx.get("server_name") and mcp_ctx.get("tool_name"):
+        mcp_name = f"mcp__{mcp_ctx['server_name']}__{mcp_ctx['tool_name']}"
     mcp_event = _classify_mcp_event(
         base=base,
-        tool_name=tool_name,
+        tool_name=mcp_name,
         tool_input=tool_input,
         response=payload.get("tool_response", payload.get("response")),
         is_post=(hook_event == "AfterTool"),
         workspace=workspace,
     )
     if mcp_event is not None:
+        inline_url = str(mcp_ctx.get("url") or "")
+        if inline_url and hook_event != "AfterTool" and mcp_event.get("type") != "network":
+            # A remote server not in any config Prismor reads: egress-screen it.
+            mcp_event = {**base, "type": "network", "url": inline_url,
+                         "outbound_payload": mcp_event.get("response", ""),
+                         "mcp_server": mcp_event.get("mcp_server"),
+                         "mcp_tool": mcp_event.get("mcp_tool")}
         return mcp_event
 
     return _unmapped_tool_event(base, payload)
