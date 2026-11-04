@@ -37,7 +37,9 @@ GET /api/admin/tool-capabilities?orgId=<org>&agentId=<agent>&sessionId=<session>
 
 Each result identifies internal versus MCP tools, the MCP server name,
 discovery sources, sessions, and whether signed policy currently allows or
-denies delivery.
+denies delivery. It also carries the event type the tool's latest call was
+judged as (`eventType`) and any admin correction (`classifiedAs`). See
+[docs/event-types.md](event-types.md).
 
 Grant and revoke use the existing policy endpoint:
 

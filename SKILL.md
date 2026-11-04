@@ -600,6 +600,22 @@ prismor tags lint               # validate rule expressions
 MCP tools self-declare tags via `_meta`; Prismor auto-tags the rest. Deep dive:
 [`docs/tool-tags.md`](./docs/tool-tags.md).
 
+### Event types
+
+Before any rule runs, each tool call is mapped to one event type (`shell`,
+`file_read`, `file_write`, `network`, `subagent_spawn`, or `tool_result`).
+Rules are written per type, which is why one policy covers every agent. A call
+Prismor can't place is `tool_result`, shown on the console as **Unclassified**.
+It still gets tool access by name, the prompt-injection/PII content rules, tag
+rules and the judge. It gets none of the shell/file/network rules. An admin can
+correct a tool's type with **Judged as** on the agent's Tool access panel.
+
+```bash
+prismor policy export | jq -r '.rules[] | select(.event_types|index("tool_result")) | .id'  # rules a type gets
+```
+
+Deep dive: [`docs/event-types.md`](./docs/event-types.md).
+
 ### Shadow-AI discovery
 
 `prismor discover` inventories the AI surface on the host — coding agents, MCP
@@ -728,6 +744,7 @@ and `prismor docs <page>` (e.g. `prismor docs llm-proxy`) prints one.
 - [`docs/architecture.md`](./docs/architecture.md): where Prismor screens, and the one place it decides
 - [`docs/decision-contract.md`](./docs/decision-contract.md): the verdict contract every surface speaks, and the eval-server
 - [`docs/policy-layers-and-exemptions.md`](./docs/policy-layers-and-exemptions.md): org/project/repo precedence, the non-overridable floor, time-boxed exemptions
+- [`docs/event-types.md`](./docs/event-types.md): the event type every tool call is mapped to, which rules each type gets, and what "Unclassified" leaves uncovered
 - [`docs/tool-access-precedence.md`](./docs/tool-access-precedence.md): which layer wins when dashboard, local config, and session scope disagree
 - [`docs/prompt-guardrails.md`](./docs/prompt-guardrails.md): operator-written rules delivered into the agent's context, per agent and per session
 
