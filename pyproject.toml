@@ -214,6 +214,7 @@ packages = [
 "docs/governance-surfaces.md" = "prismor/runtime/data/docs/governance-surfaces.md"
 "docs/hermes.md" = "prismor/runtime/data/docs/hermes.md"
 "docs/hosted-evaluation.md" = "prismor/runtime/data/docs/hosted-evaluation.md"
+"docs/hosted-proxy.md" = "prismor/runtime/data/docs/hosted-proxy.md"
 "docs/iam.md" = "prismor/runtime/data/docs/iam.md"
 "docs/identity-verification.md" = "prismor/runtime/data/docs/identity-verification.md"
 "docs/inference-hook.md" = "prismor/runtime/data/docs/inference-hook.md"
