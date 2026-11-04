@@ -1550,15 +1550,15 @@ class TestUnmappedToolSignal(unittest.TestCase):
         )["event"]
 
     def test_unmapped_tool_is_flagged(self):
-        # NotebookEdit writes a file but has no branch in _normalize_claude.
+        # Monitor has no branch in _normalize_claude.
         event = self._event("claude", {
             "hook_event_name": "PreToolUse",
             "session_id": "c-1",
-            "tool_name": "NotebookEdit",
-            "tool_input": {"notebook_path": "/w/a.ipynb", "new_source": "x = 1"},
+            "tool_name": "Monitor",
+            "tool_input": {"command": "tail -f log"},
         })
         self.assertEqual(event["type"], "tool_result")
-        self.assertEqual(event["metadata"]["unmapped_tool"], "NotebookEdit")
+        self.assertEqual(event["metadata"]["unmapped_tool"], "Monitor")
 
     def test_mapped_tool_is_not_flagged(self):
         event = self._event("claude", {

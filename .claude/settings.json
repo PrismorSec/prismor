@@ -13,7 +13,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+        "matcher": "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -24,7 +24,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+        "matcher": "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -35,7 +35,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Task|Agent|Skill|Bash|Read|Grep|Glob|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*",
+        "matcher": "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*",
         "hooks": [
           {
             "type": "command",
