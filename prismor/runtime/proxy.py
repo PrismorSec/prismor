@@ -1825,6 +1825,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
+        # A2A: the calling agent (the key's `agent`, else this proxy's agent
+        # name) and the agent it calls (the upstream), for agent_connections.
+        self._a2a_from = (str(self._key_meta.get("agent") or "")
+                          or (self.screen.agent_name if self.screen is not None else "")) if a2a else ""
+        self._a2a_to = (upstream_override or provider) if a2a else ""
         self._spoken: Any = (self.headers.get("x-prismor-refusal") or "").strip().lower() == "spoken"
         if self._spoken:
             self._spoken = spoken_text(self.headers.get("x-prismor-refusal-text") or "") or True
@@ -2021,6 +2026,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
+        if provider == "a2a" and self._a2a_from:
+            event["metadata"].update(handoff_to=self._a2a_to, from_agent=self._a2a_from,
+                                     a2a_url=str((self.config.upstreams.get(self._a2a_to) or {}).get("base_url") or ""))
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -2059,6 +2067,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             query = "&".join(p for p in query.split("&") if not p.startswith("key="))
         headers = self._upstream_headers(spec, raw_body, host=base.netloc or base.hostname or "",
                                          path=path, query=query)
+        if provider == "a2a" and getattr(self, "_a2a_from", ""):
+            # Lets the receiving agent's guard check who is calling.
+            from prismor.runtime.agent_connections import HEADER, sign_caller
+            token = sign_caller(self._a2a_from, upstream_name, act=subject)
+            if token:
+                headers[HEADER] = token
         for attempt in (1, 2):
             conn, reused = UPSTREAM_POOL.get(scheme, base.hostname, base.port)
             try:

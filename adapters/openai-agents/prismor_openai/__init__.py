@@ -351,6 +351,7 @@ def _guard_function_tool(
         _inner = getattr(tool, "_agent_instance", None)  # Agent.as_tool(): the input is a handoff
         if _inner is not None and isinstance(getattr(_inner, "name", None), str):
             event["metadata"]["handoff_to"] = _inner.name
+            event["metadata"]["from_agent"] = getattr(getattr(ctx, "agent", None), "name", None) or _agent_name or agent
         decision = evaluate_tool_call(
             event=event,
             workspace=ws,
