@@ -140,6 +140,13 @@ def test_message_is_stamped_on_the_event(tmp_path):
 
 # -- receiver side -------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _fresh_replay_cache():
+    ac._seen.clear()
+    yield
+    ac._seen.clear()
+
+
 def _pair():
     from cryptography.hazmat.primitives import serialization
     key = crypto.Ed25519PrivateKey.generate()
@@ -301,12 +308,127 @@ def test_asgi_guard_lets_agent_card_discovery_through():
     async def send(msg):
         pass
 
-    asyncio.run(guarded({"type": "http", "path": "/.well-known/agent-card.json", "headers": []}, None, send))
+    asyncio.run(guarded({"type": "http", "method": "GET", "path": "/.well-known/agent-card.json", "headers": []}, None, send))
+    asyncio.run(guarded({"type": "http", "method": "GET", "root_path": "/a2a",
+                         "path": "/a2a/.well-known/agent-card.json", "headers": []}, None, send))  # mounted
+    asyncio.run(guarded({"type": "http", "method": "POST", "path": "/.well-known/agent-card.json", "headers": []}, None, send))
+    asyncio.run(guarded({"type": "http", "method": "GET", "root_path": "/a2a",
+                         "path": "/a2a/x/.well-known/y", "headers": []}, None, send))
     asyncio.run(guarded({"type": "http", "path": "/", "headers": []}, None, send))
-    assert reached == ["/.well-known/agent-card.json"]
+    assert reached == ["/.well-known/agent-card.json", "/a2a/.well-known/agent-card.json"]
 
 
 def test_engine_has_connections_even_when_load_bails(monkeypatch):
     from prismor.runtime import policy_engine as pe
     monkeypatch.setattr(pe, "_load_yaml", lambda *a, **k: None)
     assert pe.PolicyEngine(workspace=None).agent_connections.enabled is False
+
+
+# -- second review ----------------------------------------------------------------
+
+def _pol(agents, allow=(), mode="enforce"):
+    return ac.ConnectionPolicy.from_settings({"agent_connections": {"mode": mode, "agents": agents, "allow": list(allow)}})
+
+
+def test_explicit_name_beats_another_agents_bare_alias():
+    # agt_a's "crewai:deploy" must not take "deploy" from agt_b, whatever the order.
+    pol = _pol({"agt_a": {"name": "planner", "aliases": ["crewai:deploy"]}, "agt_b": {"name": "deploy"}})
+    assert pol.resolve("deploy") == "agt_b"
+    msg = ac.agent_message({"metadata": {"from_agent": "planner", "handoff_to": "deploy"}}, pol)
+    assert msg and pol.decide(msg["from"], msg["to"]) == "deny"
+
+
+def test_shared_name_is_checked_not_dropped_as_self():
+    pol = _pol({"agt_a": {"name": "worker"}, "agt_b": {"name": "deploy", "aliases": ["worker-2", "Worker"]}})
+    assert pol.ambiguous("worker")
+    assert ac.agent_message({"metadata": {"from_agent": "agt_b", "handoff_to": "worker"}}, pol)
+    # the same name on both sides is still the same agent
+    assert ac.agent_message({"metadata": {"from_agent": "worker", "handoff_to": "Worker"}}, pol) is None
+
+
+def test_empty_alias_never_matches_an_unnamed_sender():
+    pol = _pol({"agt_a": {"name": "deploy", "aliases": ["-", "/"]}})
+    assert pol.resolve("") == ""
+
+
+def test_transfer_to_agent_without_a_target_arg_is_an_openai_handoff(tmp_path):
+    ws = _ws(tmp_path, agents={**POLICY["agents"], "agt_agent": {"name": "agent"}})
+    d = _eval(ws, "research-crawler", tool="transfer_to_agent")  # handoff to an agent named "agent"
+    assert not d.allow and _rule(d)[0]["toAgent"] == "agent"
+
+
+@pytest.mark.parametrize("cmd", [
+    "timeout 30 claude -p hi", "sudo -u bob claude -p hi", "nice -n 5 codex exec hi", "c\\laude -p hi",
+    "'claude' -p hi", "{ claude -p hi; }", "bash <<EOF\nclaude -p hi\nEOF\n", 'echo "$(claude -p hi)"',
+    "npm exec -- @anthropic-ai/claude-code -p x", "env -S 'claude -p hi'", "claude \\\n -p hi",
+    "echo hi # x\nclaude -p hi", "ls | xargs -n 1 claude -p",
+])
+def test_cli_agent_behind_more_wrappers_is_caught(cmd):
+    assert ac._cli_agent(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "git commit -m 'run `claude -p` here'",
+    "git commit -m \"$(cat <<'EOF'\nfix: use `claude -p`\nclaude -p hi\nEOF\n)\"",
+    "cat <<EOF > notes.md\nclaude -p hi\nEOF", "command -v claude", "claude --version",
+])
+def test_cli_agent_in_commit_messages_and_heredocs_is_data(cmd):
+    assert ac._cli_agent(cmd) is None, cmd
+
+
+def test_cli_parse_is_linear():
+    import time
+    for blob in ("claude " * 30000, "sudo -x " * 20000 + "claude -p", "a=b " * 30000 + "claude -p"):
+        t = time.monotonic()
+        ac._cli_agent(blob)
+        assert time.monotonic() - t < 2, len(blob)
+
+
+def test_receiver_rejects_a_header_for_several_audiences():
+    import time
+    key, pub = _pair()
+    pol = _policy({"agt_planner": pub})
+    now = int(time.time())
+    base = {"sub": "planner", "iat": now, "exp": now + 60}
+    for i, aud in enumerate((["deploy-bot", "billing-assistant"], [])):
+        ok, reason = ac.check_inbound(pol, _tok(key, **base, aud=aud, jti=f"m{i}"), "deploy-bot")
+        assert not ok and "another agent" in reason, aud
+
+
+def test_receiver_treats_garbage_headers_as_invalid():
+    key, pub = _pair()
+    pol = _policy({"agt_planner": pub})
+    h = ac._b64(b'["EdDSA"]')
+    for tok in (f"{h}.{h}.x", "a.b", "\u00ff\u00fe.x.y"):
+        ok, reason = ac.check_inbound(pol, tok, "deploy-bot")
+        assert not ok and reason, tok
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    guarded = ac.asgi_guard(app, agent="deploy-bot", policy=pol)
+    asyncio.run(guarded({"type": "http", "path": "/", "headers": [(ac.HEADER.encode(), b"\xff\xfe.\x80")]}, None, send))
+    assert sent[0]["status"] == 403
+
+
+def test_asgi_guard_fails_closed_when_no_policy_ever_loads(monkeypatch):
+    from prismor.runtime import policy_engine as pe
+
+    def boom(*a, **k):
+        raise RuntimeError("bad policy")
+    monkeypatch.setattr(pe, "PolicyEngine", boom)
+    sent = []
+
+    async def app(scope, receive, send):
+        sent.append("reached")
+
+    async def send(msg):
+        sent.append(msg)
+
+    asyncio.run(ac.asgi_guard(app, agent="deploy-bot")({"type": "http", "path": "/", "headers": []}, None, send))
+    assert sent[0]["status"] == 503

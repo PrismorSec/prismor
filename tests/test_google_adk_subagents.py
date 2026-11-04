@@ -108,3 +108,12 @@ def test_plugin_guards_agent_tool_without_plugins(tmp_path):
     with _spy([]):
         asyncio.run(plugin.before_tool_callback(tool=tool2, tool_args={}, tool_context=ctx))
     assert tool2.agent.before_tool_callback is None  # the plugin reaches it; no double screening
+
+
+def test_transfer_to_agent_is_sent_by_the_calling_agent(tmp_path):
+    seen = []
+    with _spy(seen):
+        before = adk.make_before_tool_callback(workspace=tmp_path, mode="enforce", name="adk-plugin")
+        transfer = SimpleNamespace(name="transfer_to_agent")
+        before(transfer, {"agent_name": "Billing"}, _ctx(_agent("Triage"), "e-1", "c1"))
+    assert (seen[0]["from_agent"], seen[0]["handoff_to"]) == ("Triage", "Billing")
