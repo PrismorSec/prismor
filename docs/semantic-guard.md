@@ -240,7 +240,11 @@ On a tool's **result** (PostToolUse) the judge's verdict reports and taints the
 session but cannot block, because the tool already ran. There it gets
 `post_tool_budget_ms` (default `1500`, or `PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS`)
 even when `budget_ms` is unset, and falls back to the heuristic when it runs
-over. While enforcement is paused, tool results get the heuristic only.
+over. A CLI judge (`claude`, `codex`) needs up to 20s, so under any budget below
+`20000` it is not started at all and the heuristic decides (`[LLM skipped]` in
+the reason): CLI judges cover events before a tool runs, not tool results. The
+eval-server and hosted evaluation set a 4s budget by default, so behind them a
+CLI judge never runs; use `api`, `prismor` or `typesafe` there. While enforcement is paused, tool results get the heuristic only.
 
 Bare `prismor cloak list` and `prismor cloak --help` output is exempt from the
 semantic judge: it contains placeholder names or CLI documentation, not secret

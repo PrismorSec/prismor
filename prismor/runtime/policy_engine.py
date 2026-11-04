@@ -4842,6 +4842,20 @@ def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     is made on time from the heuristic path and the degradation is recorded.
     """
     import threading
+    from prismor.runtime.semantic_guard import _heuristic_analyze
+    from prismor.runtime.semantic_guard_v2 import CLI_TIMEOUT
+    # A CLI judge spawns a process that answers in 5-20s. Under a shorter budget
+    # it was abandoned every time: in a hook the process exited first and left
+    # the child running orphaned with its verdict thrown away, and in a server
+    # the late verdict landed in the cache, so the same text warned once and
+    # blocked the next time. The heuristic decided anyway; skip the spawn.
+    # ponytail: also skips a cached CLI verdict; pass a no-spawn flag if that matters.
+    if getattr(guard, "mode", "") == "hybrid_local_llm" and budget_s < CLI_TIMEOUT:
+        _perf.degraded("semantic_judge:cli_over_budget")
+        risk = _heuristic_analyze(text)
+        risk.reason = (f"[LLM skipped] a CLI judge cannot answer within {int(budget_s * 1000)}ms "
+                       f"(needs budget_ms >= {int(CLI_TIMEOUT * 1000)}); " + risk.reason)
+        return risk
     box: List[Any] = []
     # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
     # process exits right after, and a CLI judge's own timeout reaps its child.
@@ -4857,7 +4871,6 @@ def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     t.join(budget_s)
     if box:
         return box[0]
-    from prismor.runtime.semantic_guard import _heuristic_analyze
     if t.is_alive():
         _perf.degraded("semantic_judge:budget")
         prefix = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; "

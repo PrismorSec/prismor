@@ -5298,7 +5298,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["heuristic", "claude", "codex", "typesafe", "api", "prismor"],
         default=None,
         help="Which model judges text in the semantic layer: heuristic (no LLM), claude (Claude Code "
-             "CLI) or codex (Codex CLI) for uncertain events only, typesafe ($TYPESAFE_API_KEY), api "
+             "CLI) or codex (Codex CLI) for uncertain events before a tool runs, typesafe ($TYPESAFE_API_KEY), api "
              "(OpenAI/Gemini/Anthropic key, or any litellm model), prismor (hosted judge on this "
              "device's enrollment). Unset: nothing is written, and the hooks use an API judge when "
              "a provider key is in the environment, else heuristics "

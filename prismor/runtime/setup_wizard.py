@@ -872,8 +872,8 @@ def _step_cloak(current: bool = True, step: int = 3, total: int = 4) -> bool:
 _JUDGE_OPTS = [
     # (provider, label, default model, description)
     ("heuristic", "Heuristics only",  "",                          "no LLM; regex + structural rules decide"),
-    ("claude",  "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s, uncertain events only"),
-    ("codex",   "Codex CLI",        "",                          "your ChatGPT login, no API key; ~8s, uncertain events only"),
+    ("claude",  "Claude Code CLI",  "claude-haiku-4-5-20251001", "your Claude login, no API key; ~20s, uncertain events before a tool runs"),
+    ("codex",   "Codex CLI",        "",                          "your ChatGPT login, no API key; ~8s, uncertain events before a tool runs"),
     ("typesafe", "TypeSafe API",    "jev-latest",                "$TYPESAFE_API_KEY; ~0.2s, judges every text"),
     ("api",     "API key",          "",                          "OpenAI / Gemini / Anthropic key; ~1-3s, judges every text"),
     ("prismor", "Prismor API",     "",                          "1,000 free verdicts/month; no key or CLI; ~2s, judges every text"),
