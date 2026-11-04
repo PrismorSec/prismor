@@ -449,8 +449,11 @@ def _register_remote(
             continue
         if source not in {"observed", "scoped", "declared"}:
             source = "observed"
-        process_key = (framework, remote_name, session_id, tool)
-        disk_key = f"tool|{framework}|{remote_name}|{session_id[:80]}|{tool}"
+        kind = str(raw.get("type") or "")[:32] if isinstance(raw, dict) else ""
+        # The type is part of the key: a reclassified tool reports its new type
+        # at once instead of after the debounce window.
+        process_key = (framework, remote_name, session_id, tool, kind)
+        disk_key = f"tool|{framework}|{remote_name}|{session_id[:80]}|{tool}|{kind}"
         if process_key in _TOOLS_SEEN_THIS_PROCESS:
             continue
         if now - float(data.get(disk_key, 0) or 0) < _REGISTER_DEBOUNCE_SECONDS:
@@ -458,7 +461,7 @@ def _register_remote(
             continue
         _TOOLS_SEEN_THIS_PROCESS.add(process_key)
         data[disk_key] = now
-        normalized_tools.append({"name": tool, "source": source})
+        normalized_tools.append({"name": tool, "source": source, **({"type": kind} if kind else {})})
     if not agent_due and not normalized_tools:
         return
     # Keep the debounce file bounded: drop entries older than a day.
