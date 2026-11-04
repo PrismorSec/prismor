@@ -192,39 +192,99 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 _NO_PROJECT_AGENTS = frozenset({"prismor-proxy", "mcp-gateway"})
 
 
-_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
-_READ_TOOL = re.compile(r"read|open|cat|load|view|get_?file", re.I)
-_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file", re.I)
+_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file", "file_name", "notebook_path")
+_CMD_ARGS = ("command", "cmd", "commands", "script", "code")
+_URL_ARGS = ("url", "urls", "uri", "href", "endpoint")
+_CONTENT_ARGS = ("content", "contents", "file_text", "new_str", "new_source", "text", "data", "body")
+# upload/download first: "load" in them used to make both a file read.
+_UPLOAD_TOOL = re.compile(r"upload|attach", re.I)
+_READ_TOOL = re.compile(r"read|open|cat|(?<!up)(?<!down)load|view|get_?file", re.I)
+_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file|replace", re.I)
+# Handing work to another agent: OpenAI Agents handoffs (transfer_to_<agent>)
+# and CrewAI's delegation tools, sanitized or not.
+_SPAWN_TOOL = re.compile(r"^(transfer_to_|delegate[ _]work|ask[ _]question)", re.I)
+_SPAWN_ARGS = ("task", "question", "message", "prompt", "input", "context", "reason")
+_URL_VALUE = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.I)
 
 
-def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
-    """Treat an SDK tool that only takes a file path as the file access it is.
-
-    Adapters default every tool to ``shell``, so ``read_file(path=".env")``
-    arrived as a "shell command" consisting of a bare path and none of the
-    file-read secret rules could see it (#542). Only adapter events (they carry
-    ``metadata.framework``) with a single path argument and a read/write-named
-    tool are re-typed; anything with a command argument stays shell.
-    """
-    meta = event.get("metadata") or {}
-    if event.get("type") != "shell" or not meta.get("framework"):
-        return
+def _adapter_kwargs(meta: Dict[str, Any]) -> Dict[str, Any]:
     kwargs = meta.get("kwargs") or meta.get("args") or {}
-    if set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
+    if isinstance(kwargs, dict) and set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
         try:  # OpenAI Agents SDK FunctionTools hand over one JSON string
             kwargs = json.loads(kwargs["input"])
         except ValueError:
-            return
-    if not isinstance(kwargs, dict):
+            return {}
+    return kwargs if isinstance(kwargs, dict) else {}
+
+
+def _flat(value: Any) -> List[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _flat(v)]
+    return [value if isinstance(value, str) else json.dumps(value, default=str)]
+
+
+def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
+    """Type an SDK adapter's tool call from its tool name and argument names.
+
+    Adapters hand over one fixed type (``shell`` by default) and every argument
+    value joined into that type's field, so ``read_file(path=".env")`` was a
+    "shell command" (#542), ``fetch(url=…)`` never met an egress rule, and an
+    adapter that asked for ``file_write`` got ``path`` = "path content". Only
+    adapter events (``metadata.framework``) are touched, from their structured
+    ``kwargs``; a command argument keeps a call shell. Every value still reaches
+    the text rules: the ones not placed in a typed field go to ``content``.
+    """
+    meta = event.get("metadata") or {}
+    if not meta.get("framework") or event.get("type") not in ("shell", "file_read", "file_write", "network"):
         return
-    paths = [v for k, v in kwargs.items() if k.lower() in _PATH_ARGS and isinstance(v, str) and v]
-    if len(paths) != 1 or any(k.lower() in ("command", "cmd", "script") for k in kwargs):
-        return
+    kw = {str(k).lower(): v for k, v in _adapter_kwargs(meta).items()}
     name = str(meta.get("tool_name") or "")
-    kind = "file_read" if _READ_TOOL.search(name) else "file_write" if _WRITE_TOOL.search(name) else ""
-    if kind:
-        event["type"] = kind
+    if event["type"] == "shell" and _SPAWN_TOOL.match(name):
+        # The brief is instruction text that will drive another agent, screened
+        # like a Claude Agent/Task charter.
+        brief = [s for k in _SPAWN_ARGS for s in _flat(kw.get(k))] or [s for v in kw.values() for s in _flat(v)]
+        event.update(type="subagent_spawn", prompt="\n".join(brief), description=name,
+                      subagent_type=str(kw.get("coworker") or re.sub(r"^transfer_to_", "", name, flags=re.I)))
+        event.pop("command", None)
+        return
+    if not kw or any(kw.get(k) not in (None, "", []) for k in _CMD_ARGS):
+        return
+    pick = lambda keys: [s for k in keys for s in _flat(kw.get(k))]  # noqa: E731
+    paths, urls = pick(_PATH_ARGS), pick(_URL_ARGS)
+    body = pick(_CONTENT_ARGS)
+    kind = event["type"]
+    if kind == "shell":
+        if len(paths) == 1:
+            # An upload sends a local file somewhere: the risk is what it reads.
+            kind = ("file_read" if _UPLOAD_TOOL.search(name)
+                    else "file_write" if body or _WRITE_TOOL.search(name)
+                    else "file_read" if _READ_TOOL.search(name) else "")
+        elif urls and not paths:
+            kind = "network"
+        if not kind:
+            return
+    placed = {*_PATH_ARGS, *_URL_ARGS, *_CONTENT_ARGS}
+    rest = [s for k, v in kw.items() if k not in placed for s in _flat(v)]
+    if kind == "network":
+        found = urls or [u for s in rest for u in _URL_VALUE.findall(s)]
+        if not found:
+            return
+        # Any URL-looking value counts as a destination: an agent can put one
+        # in a parameter no rule expects (new_tab=, referer=).
+        extra = [u for s in rest for u in _URL_VALUE.findall(s) if u not in found]
+        event["url"] = "\n".join(found + extra)
+        if rest:
+            event["outbound_payload"] = " ".join(rest)
+    else:
+        if len(paths) != 1:
+            return
         event["path"] = paths[0]
+        if kind == "file_write" or rest:
+            event["content"] = "\n".join(body + rest)
+    event["type"] = kind
+    event.pop("command", None)
 
 
 def _parent_agent_of(event: Dict[str, Any], agent_name: str) -> Optional[str]:

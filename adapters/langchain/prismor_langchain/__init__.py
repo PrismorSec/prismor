@@ -255,8 +255,55 @@ def prismor_guard_tool(
             return _redact(await original_coro(*args, **kwargs))
         tool.coroutine = guarded_coro
 
-    tool.__prismor_guarded__ = True
+    # A BaseTool subclass (ShellTool, the file-management and Requests tools)
+    # has no func/coroutine: its body is _run/_arun, which BaseTool.run calls.
+    # Guard those on the instance so the call still goes through policy.
+    wrapped = callable(original_func) or callable(original_coro)
+    if not wrapped:
+        for attr, is_async in (("_run", False), ("_arun", True)):
+            impl = getattr(tool, attr, None)
+            if not callable(impl):
+                continue
+            object.__setattr__(tool, attr, _guard_impl(impl, is_async, _decide, _redact))
+            wrapped = True
+    if wrapped:
+        object.__setattr__(tool, "__prismor_guarded__", True)
     return tool
+
+
+# LangChain's own plumbing, passed to _run/_arun alongside the tool's arguments.
+_LC_PLUMBING = ("run_manager", "config", "callbacks")
+
+
+def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callable) -> Callable:
+    def _split(kwargs: dict) -> tuple:
+        extra = {k: kwargs.pop(k) for k in _LC_PLUMBING if k in kwargs}
+        return kwargs, extra
+
+    if not is_async:
+        @functools.wraps(impl)
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            kwargs, extra = _split(kwargs)
+            denial = decide(args, kwargs)
+            if isinstance(denial, _RunWith):
+                return redact(impl(*denial.args, **denial.kwargs, **extra))
+            if denial is not None:
+                return denial
+            return redact(impl(*args, **kwargs, **extra))
+        return guarded
+
+    @functools.wraps(impl)
+    async def guarded_async(*args: Any, **kwargs: Any) -> Any:
+        import asyncio
+
+        kwargs, extra = _split(kwargs)
+        denial = await asyncio.to_thread(decide, args, kwargs)
+        if isinstance(denial, _RunWith):
+            return redact(await impl(*denial.args, **denial.kwargs, **extra))
+        if denial is not None:
+            return denial
+        return redact(await impl(*args, **kwargs, **extra))
+    return guarded_async
 
 
 def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
@@ -338,8 +385,12 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
         # LangGraph stamps the graph path onto callback metadata; a call inside
         # an agent subgraph is that framework's subagent (see _subagent_from_metadata).
         sub_id, sub_type = _subagent_from_metadata(kwargs.get("metadata"))
+        # `inputs` is the structured argument dict (langchain-core >= 0.2.x);
+        # input_str is its str(), kept for older versions.
+        inputs = kwargs.get("inputs")
         decision = _evaluate(
-            tool_name=name, args=(input_str,), kwargs={}, subject=self._subject,
+            tool_name=name, args=() if isinstance(inputs, dict) else (input_str,),
+            kwargs=dict(inputs) if isinstance(inputs, dict) else {}, subject=self._subject,
             ws=self._ws, agent=self._agent, mode=self._mode, sid=self._sid,
             event_type=self._event_type, subagent_id=sub_id, subagent_type=sub_type,
         )

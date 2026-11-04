@@ -437,6 +437,9 @@ def guard_agent(
             continue
         seen_agents.add(id(current))
         pending.extend(_subagents_of(current))
+        _guard_runtime_surfaces(current, dict(
+            subject=subject, workspace=workspace, agent=agent, name=name, mode=mode,
+            session_id=session_id, approvals=approvals))
         for tool in getattr(current, "tools", None) or []:
             if _is_function_tool(tool):
                 _guard_function_tool(
@@ -482,3 +485,168 @@ def guard_agent(
         except Exception:
             pass
     return agent_obj
+
+
+# ── Surfaces that are not FunctionTools ─────────────────────────────────────
+# MCP server tools are listed per run (Agent.get_all_tools), local shell and
+# apply_patch run through host callbacks, and a handoff is its own call: none
+# of them is in agent.tools as a FunctionTool, so each is guarded at the one
+# callback the SDK always goes through.
+
+
+async def _judge(event: dict, tool_name: str, o: dict) -> Optional[str]:
+    """Evaluate ``event``; the denial text to hand back, or None to run it."""
+    ws = Path(o["workspace"]) if o.get("workspace") else Path.cwd()
+    sid = o.get("session_id") or f"openai-agents-{os.getpid()}"
+    event.update(session_id=sid, agent=o["agent"])
+    decision = evaluate_tool_call(
+        event=event, workspace=ws, agent=o["agent"], agent_name=o.get("name", ""),
+        mode=o["mode"], session_id=sid, subject=resolve_subject(o.get("subject")))
+    log_observe_findings(decision, mode=o["mode"], tool_name=tool_name)
+    if decision.allow:
+        return None
+    if o.get("approvals", True):
+        try:
+            from prismor.runtime.enterprise import approvals as _approvals
+            outcome = await _approvals.await_step_up_async(
+                decision, event=event, agent=o["agent"], session_id=sid,
+                tool=tool_name, agent_name=o.get("name", ""))
+            # ponytail: "approve redacted" has no args to rewrite on these
+            # callbacks, so it stays a denial rather than running unredacted.
+            if outcome and not getattr(outcome, "redacted", False):
+                return None
+        except Exception:
+            pass
+    return f"⛔ Prismor blocked this tool call: {decision.reason or 'policy violation'}"
+
+
+def _event(tool_name: str, kwargs: dict, **fields: Any) -> dict:
+    event = build_event(tool_name=tool_name, payload="", event_type="shell",
+                        session_id="", agent="", kwargs=kwargs)
+    event.pop("command", None)
+    event.update(fields)
+    return event
+
+
+async def _maybe_await(value: Any) -> Any:
+    import inspect
+    return await value if inspect.isawaitable(value) else value
+
+
+def _guard_mcp_server(server: Any, o: dict) -> None:
+    original = server.call_tool
+    srv = str(getattr(server, "name", None) or "mcp")
+    params = getattr(server, "params", None)
+    url = str(params.get("url") or "") if isinstance(params, dict) else ""
+
+    @functools.wraps(original)
+    async def call_tool(tool_name: str, arguments: Optional[dict] = None, *a: Any, **kw: Any) -> Any:
+        args_text = json.dumps(arguments or {}, default=str)
+        fields = {"mcp_server": srv, "mcp_tool": tool_name}
+        # A remote server is outbound traffic (egress + what leaves); a local
+        # one is screened like any other MCP call's arguments.
+        fields.update({"type": "network", "url": url, "outbound_payload": args_text} if url
+                      else {"type": "tool_result", "response": args_text})
+        name = f"mcp__{srv}__{tool_name}"
+        denial = await _judge(_event(name, {}, **fields), name, o)
+        if denial is None:
+            return await original(tool_name, arguments, *a, **kw)
+        try:
+            from mcp.types import CallToolResult, TextContent
+            return CallToolResult(content=[TextContent(type="text", text=denial)], isError=True)
+        except Exception:
+            raise PrismorBlocked(denial)
+
+    server.call_tool = call_tool
+
+
+def _guard_executor(tool: Any, o: dict, commands_of: Callable[[Any], List[str]]) -> None:
+    original = tool.executor
+    name = str(getattr(tool, "name", "shell"))
+
+    @functools.wraps(original)
+    async def executor(request: Any) -> Any:
+        command = "\n".join(commands_of(getattr(request, "data", None)))
+        denial = await _judge(_event(name, {"command": command}, type="shell", command=command), name, o)
+        return denial if denial is not None else await _maybe_await(original(request))
+
+    tool.executor = executor
+
+
+def _shell_commands(data: Any) -> List[str]:
+    action = getattr(data, "action", None)
+    cmds = getattr(action, "commands", None) or getattr(action, "command", None) or []
+    if isinstance(cmds, str):
+        return [cmds]
+    # LocalShellCall.action.command is one argv list; ShellActionRequest.commands is many lines.
+    return [" ".join(cmds)] if getattr(action, "command", None) is not None else [str(c) for c in cmds]
+
+
+class _GuardedEditor:
+    """apply_patch's host editor, with each operation judged as the file write it is."""
+
+    def __init__(self, editor: Any, o: dict) -> None:
+        self._editor, self._o = editor, o
+
+    def __getattr__(self, attr: str) -> Any:
+        impl = getattr(self._editor, attr)
+        if attr not in ("create_file", "update_file", "delete_file"):
+            return impl
+
+        async def op(operation: Any) -> Any:
+            path, diff = str(getattr(operation, "path", "")), str(getattr(operation, "diff", None) or "")
+            denial = await _judge(_event("apply_patch", {"path": path, "content": diff},
+                                         type="file_write", path=path, content=diff), "apply_patch", self._o)
+            return denial if denial is not None else await _maybe_await(impl(operation))
+        return op
+
+
+def _guard_handoff(h: Any, o: dict) -> None:
+    original = h.on_invoke_handoff
+    name = str(getattr(h, "tool_name", None) or "transfer_to_agent")
+
+    @functools.wraps(original)
+    async def on_invoke_handoff(ctx: Any, input_json: str = "") -> Any:
+        try:
+            kwargs = json.loads(input_json) if input_json else {}
+        except ValueError:
+            kwargs = {"input": input_json}
+        # The runtime types transfer_to_* as a subagent_spawn with the brief as its prompt.
+        denial = await _judge(_event(name, kwargs if isinstance(kwargs, dict) else {"input": kwargs},
+                                     type="shell"), name, o)
+        if denial is not None:
+            raise PrismorBlocked(denial)  # the SDK has no "refused" handoff result
+        return await original(ctx, input_json)
+
+    h.on_invoke_handoff = on_invoke_handoff
+
+
+def _guard_runtime_surfaces(agent_obj: Any, o: dict) -> None:
+    for server in getattr(agent_obj, "mcp_servers", None) or []:
+        if not getattr(server, "__prismor_guarded__", False) and callable(getattr(server, "call_tool", None)):
+            _guard_mcp_server(server, o)
+            server.__prismor_guarded__ = True
+    for tool in getattr(agent_obj, "tools", None) or []:
+        if getattr(tool, "__prismor_guarded__", False):
+            continue
+        kind = type(tool).__name__
+        if kind in ("LocalShellTool", "ShellTool") and callable(getattr(tool, "executor", None)):
+            _guard_executor(tool, o, _shell_commands)
+        elif kind == "ApplyPatchTool" and getattr(tool, "editor", None) is not None:
+            tool.editor = _GuardedEditor(tool.editor, o)
+        else:
+            # ponytail: ComputerTool (GUI actions) and hosted tools (HostedMCPTool,
+            # hosted ShellTool) execute where no host callback runs; not guarded.
+            continue
+        tool.__prismor_guarded__ = True
+    handoffs = getattr(agent_obj, "handoffs", None)
+    for i, h in enumerate(handoffs or []):
+        if not callable(getattr(h, "on_invoke_handoff", None)):
+            try:  # a bare Agent in handoffs: build the Handoff the SDK would
+                from agents import handoff as _make_handoff
+                h = handoffs[i] = _make_handoff(h)
+            except Exception:
+                continue
+        if not getattr(h, "__prismor_guarded__", False):
+            _guard_handoff(h, o)
+            h.__prismor_guarded__ = True

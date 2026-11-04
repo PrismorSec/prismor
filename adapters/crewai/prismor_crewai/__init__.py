@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextvars
 import functools
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -54,6 +55,9 @@ def _current_subagent() -> tuple:
         return None, None
     role, sub_id = stack[-1]
     return sub_id, role
+
+# Tools whose guarded call is in progress on this context (see guarded()).
+_IN_TOOL: contextvars.ContextVar[frozenset] = contextvars.ContextVar("prismor_crewai_in_tool", default=frozenset())
 
 _TYPE_FIELD = {
     "shell": "command",
@@ -194,12 +198,21 @@ def prismor_guard_tool(
         # attribute shadows the bound method for this tool object only.
         @functools.wraps(impl)
         def guarded(*args: Any, __impl=impl, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
-            if isinstance(denial, _RunWith):
-                return _redact(__impl(*denial.args, **denial.kwargs))
-            if denial is not None:
-                return denial
-            return _redact(__impl(*args, **kwargs))
+            # BaseTool.run calls _run, and Tool._run calls func: the call is
+            # judged once, at the outermost guarded layer.
+            active = _IN_TOOL.get()
+            if id(tool) in active:
+                return __impl(*args, **kwargs)
+            token = _IN_TOOL.set(active | {id(tool)})
+            try:
+                denial = _decide(args, kwargs)
+                if isinstance(denial, _RunWith):
+                    return _redact(__impl(*denial.args, **denial.kwargs))
+                if denial is not None:
+                    return denial
+                return _redact(__impl(*args, **kwargs))
+            finally:
+                _IN_TOOL.reset(token)
 
         try:
             setattr(tool, attr, guarded)
@@ -296,4 +309,44 @@ def guard_crew(crew: Any, **kwargs: Any) -> Any:
         if getattr(manager, "tools", None):
             guard_tools(manager.tools, **kwargs)
         _track_working(manager, delegated=False)
+    _guard_runtime_tools(crew, kwargs)
     return crew
+
+
+class _RuntimeCall:
+    """A tool CrewAI hands an agent at run time, judged through the same guard."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def func(self, **_: Any) -> None:
+        return None
+
+
+def _guard_runtime_tools(crew: Any, options: dict) -> None:
+    """Judge this crew's tool calls that no wrapper sees.
+
+    CrewAI adds the delegation tools ("Delegate work to coworker", "Ask question
+    to coworker") and a Task's own tools when the task runs, so guard_crew never
+    gets to wrap them. CrewAI's before-tool-call hook sees every call with its
+    argument dict; returning False aborts the call.
+    """
+    try:
+        from crewai.hooks import register_before_tool_call_hook
+    except Exception:  # CrewAI before the hooks API
+        return
+    # CrewAI hands hooks a sanitized name ("Delegate work" -> "delegate_work").
+    norm = lambda n: re.sub(r"\W+", "_", str(n).strip().lower())  # noqa: E731
+    wrapped = {norm(getattr(t, "name", "")) for a in (getattr(crew, "agents", None) or [])
+               for t in (getattr(a, "tools", None) or [])}
+    opts = {k: v for k, v in options.items() if k != "goal"}
+    opts.setdefault("raise_on_block", False)
+
+    def before(ctx: Any) -> Any:
+        if getattr(ctx, "crew", None) is not crew or norm(ctx.tool_name) in wrapped:
+            return None
+        call = prismor_guard_tool(_RuntimeCall(str(ctx.tool_name)), **opts)
+        tool_input = ctx.tool_input if isinstance(ctx.tool_input, dict) else {"input": ctx.tool_input}
+        return False if call.func(**tool_input) is not None else None
+
+    register_before_tool_call_hook(before)
