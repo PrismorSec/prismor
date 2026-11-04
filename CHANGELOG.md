@@ -1,3 +1,8 @@
+## [Unreleased]
+
+### Fixed
+- **SDK adapter calls are typed from the tool and its arguments.** Adapters gave every call one type (`shell` by default) and joined all argument values into one field, so `fetch(url=…)` never met an egress rule and an adapter asked for `file_write` got "path content" as its path. The runtime now types an adapter call from its tool name and structured arguments (command → shell, URL → network, path + content → write, a lone path → read; uploads are reads), keeps the rest for the text rules, and turns OpenAI Agents handoffs (`transfer_to_*`) and CrewAI delegation into `subagent_spawn`. LangChain tools that only define `_run` (ShellTool, the file-management and Requests tools) are now guarded; CrewAI calls are judged once instead of twice, and the delegation tools and a Task's own tools go through CrewAI's before-tool-call hook; OpenAI Agents MCP server calls, LocalShell/ShellTool executors, apply_patch edits and handoffs are guarded; browser-use file actions read `file_name`, `search` is no longer a URL and `evaluate` is judged as code.
+
 ## [1.72.5] — 2026-11-04
 
 ### Added
