@@ -115,5 +115,69 @@ class TestCrushOpenHands(unittest.TestCase):
         self.assertEqual((ev["type"], ev["content"]), ("file_write", "x = 1"))
 
 
+class TestSubagentsAndMisc(unittest.TestCase):
+    def test_codex_spawn_agent(self):
+        from prismor.runtime.hooks import _normalize_codex
+        ev = _normalize_codex({"hook_event_name": "PreToolUse", "tool_name": "spawn_agent", "tool_input": {
+            "message": "audit the repo", "task_name": "audit", "agent_type": "explorer"}}, "s", WS)
+        self.assertEqual((ev["type"], ev["prompt"], ev["subagent_type"], ev["description"]),
+                         ("subagent_spawn", "audit the repo", "explorer", "audit"))
+
+    def test_codex_spawn_agent_items(self):
+        from prismor.runtime.hooks import _normalize_codex
+        ev = _normalize_codex({"hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+                               "tool_input": {"items": [{"type": "text", "text": "do x"}]}}, "s", WS)
+        self.assertEqual(ev["prompt"], "do x")
+
+    def test_codex_matcher_fires_for_spawn_agent(self):
+        import re
+        from prismor.runtime.hooks import _merge_codex
+        m = _merge_codex({}, "x")["hooks"]["PreToolUse"][0]["matcher"]
+        self.assertTrue(re.fullmatch(m, "spawn_agent"))
+
+    def test_qwen_agent_and_subagent_id(self):
+        from prismor.runtime.hooks import _normalize_qwen
+        ev = _normalize_qwen({"hook_event_name": "PreToolUse", "tool_name": "agent", "tool_input": {
+            "description": "d", "prompt": "p", "subagent_type": "fork"}}, "s", WS)
+        self.assertEqual((ev["type"], ev["prompt"], ev["subagent_type"]), ("subagent_spawn", "p", "fork"))
+        inner = _normalize_qwen({"hook_event_name": "PreToolUse", "tool_name": "read_file", "agent_id": "sub-1",
+                                 "agent_type": "fork", "tool_input": {"file_path": "/a"}}, "s", WS)
+        self.assertEqual(inner["metadata"]["subagent_id"], "sub-1")
+
+    def test_copilot_camel_post_is_post(self):
+        from prismor.runtime.hooks import _normalize_copilot
+        ev = _normalize_copilot({"toolName": "mcp__srv__t", "toolArgs": {"a": 1},
+                                 "toolResult": "RESULT"}, "s", WS)
+        self.assertEqual(ev["type"], "tool_result")
+        self.assertIn("RESULT", ev["response"])
+
+    def test_kiro_v3_prompt(self):
+        from prismor.runtime.hooks import _normalize_kiro
+        ev = _normalize_kiro({"hook_event_name": "UserPromptSubmit", "prompt": "hi"}, "s", WS)
+        self.assertEqual((ev["type"], ev["prompt"]), ("prompt", "hi"))
+
+    def test_continue_search_is_local(self):
+        from prismor.runtime.hooks import _normalize_continue
+        ev = _normalize_continue({"hook_event_name": "PreToolUse", "tool_name": "Search",
+                                  "tool_input": {"query": "TODO"}}, "s", WS)
+        self.assertEqual(ev["type"], "file_read")
+
+    def test_antigravity_search_web_not_a_url(self):
+        from prismor.runtime.hooks import _normalize_antigravity
+        ev = _normalize_antigravity({"toolCall": {"name": "search_web", "args": {"query": "rust async"}}}, "s", WS)
+        self.assertEqual((ev["type"], ev["url"], ev["query"]), ("network", "", "rust async"))
+
+    def test_mcp_server_name_with_double_underscore(self):
+        from prismor.runtime import hooks
+        with tempfile.TemporaryDirectory() as tmp:
+            hooks._mcp_index_cache[str(Path(tmp))] = {"my__srv": {}}
+            try:
+                ev = _normalize_claude({"hook_event_name": "PreToolUse", "tool_name": "mcp__my__srv__do_thing",
+                                        "tool_input": {}}, "s", Path(tmp))
+            finally:
+                hooks._mcp_index_cache.pop(str(Path(tmp)), None)
+        self.assertEqual((ev["mcp_server"], ev["mcp_tool"]), ("my__srv", "do_thing"))
+
+
 if __name__ == "__main__":
     unittest.main()
