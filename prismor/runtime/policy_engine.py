@@ -1308,6 +1308,7 @@ class PolicyEngine:
         self.egress: EgressPolicy = EgressPolicy()
         self.data_boundary: DataBoundaryPolicy = DataBoundaryPolicy()
         self._data_boundary_source: str = "default"
+        self._agent_connections_source: str = "default"
         # Which policy layer last set the egress config. "remote" means the org
         # signed it, which is what makes an enforce verdict authoritative.
         self._egress_source: str = "default"
@@ -1611,6 +1612,8 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        if "agent_connections" in override_settings:
+            self._agent_connections_source = source
         if "default_mode" in override_settings or "mode" in override_settings:
             self._default_mode_source = source
         # semantic_guard is a nested stanza with its own defaults (enabled,
@@ -1871,6 +1874,12 @@ class PolicyEngine:
         )
         for _db_err in self.data_boundary.errors:
             sys.stderr.write(f"[prismor] data_boundary policy: {_db_err}\n")
+        # Agent connections (settings.agent_connections): which agent may hand
+        # work to which — see agent_connections.py.
+        from prismor.runtime.agent_connections import ConnectionPolicy
+        self.agent_connections = ConnectionPolicy.from_settings(
+            settings, source=self._agent_connections_source
+        )
         if self.data_boundary.enabled:
             _db_raw = settings.get("data_boundary") or {}
             if isinstance(_db_raw, dict) and _db_raw.get("self_identity_auto", True):
@@ -2679,6 +2688,19 @@ class PolicyEngine:
                 ))
             except Exception as _db_exc:  # never let data-boundary screening break evaluation
                 sys.stderr.write(f"[prismor] data_boundary evaluation error: {_db_exc}\n")
+
+        # Agent connections: may this agent hand work to that one at all, over
+        # any channel (handoff, CLI, MCP agent, A2A) - see agent_connections.py.
+        if self.agent_connections.enabled:
+            from prismor.runtime.agent_connections import agent_message
+            _am = agent_message(event, self.agent_connections)
+            if _am:
+                event.setdefault("metadata", {})["agent_message"] = {
+                    **_am, "from_id": self.agent_connections.resolve(_am["from"]),
+                    "to_id": self.agent_connections.resolve(_am["to"])}
+                _cf = self.agent_connections.finding(_am, index, session_id)
+                if _cf:
+                    findings.append(_cf)
 
         # Data boundary on handoffs: what an agent passes to a subagent.
         if self.data_boundary.enabled and (event_type == "subagent_spawn"

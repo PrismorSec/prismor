@@ -342,11 +342,19 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_ext_reviews_sig is not None
         and str(latest_ext_reviews_sig) != str(_settings_block_sig("extension_reviews"))
     )
+    # Agent connections (settings.agent_connections): drawing or removing an
+    # edge between two agents applies without a version bump.
+    latest_conn_sig = body.get("agentConnectionsSig")
+    connections_changed = (
+        latest_conn_sig is not None
+        and str(latest_conn_sig) != str(_settings_block_sig("agent_connections"))
+    )
     if (version_changed or profile_changed or capture_changed or guardrails_changed or ext_reviews_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
-            or self_edit_changed or identity_changed or copilot_studio_changed):
+            or self_edit_changed or identity_changed or copilot_studio_changed
+            or connections_changed):
         return fetch(force=True)
     return False
 
