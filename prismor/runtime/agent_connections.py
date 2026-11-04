@@ -152,8 +152,17 @@ class ConnectionPolicy:
             f.update(action="step_up", mode="enforce", title=f"{src} → {dst} needs approval",
                      remediation="Approve it, or change the connection to allow in Agent flows.")
         else:
-            f.update(action="block", title=f"No connection policy lets {src} hand work to {dst}",
-                     remediation=f"Add a connection from {src} to {dst} in Agent flows if this is intended.")
+            # Connected, just not over this channel: say so, or the admin goes
+            # looking for an edge that is already there.
+            rs, rd = self.resolve(msg["from"]), self.resolve(msg["to"])
+            over = sorted({c for e in self.allow if e["from"] in (rs, "*") and e["to"] in (rd, "*")
+                           for c in (e["channels"] or ())})
+            if over:
+                f.update(action="block", title=f"{src} may hand work to {dst} only over {', '.join(over)}, not {msg.get('channel') or 'handoff'}",
+                         remediation=f"Tick {msg.get('channel') or 'handoff'} on the {src} → {dst} connection in Agent flows if this is intended.")
+            else:
+                f.update(action="block", title=f"No connection policy lets {src} hand work to {dst}",
+                         remediation=f"Add a connection from {src} to {dst} in Agent flows if this is intended.")
         f["message"] = f["title"]
         if f["mode"] == "enforce" and self.source == "remote":
             f["authoritative"] = True

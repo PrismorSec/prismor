@@ -93,7 +93,8 @@ def test_names_ids_and_aliases_meet(tmp_path):
 
 
 def test_channel_limited_connection(tmp_path):
-    assert not _handoff(_ws(tmp_path), "reporter", "deploy-bot").allow  # only allowed over a2a
+    d = _handoff(_ws(tmp_path), "reporter", "deploy-bot")  # only allowed over a2a
+    assert not d.allow and _rule(d)[0]["title"] == "reporter may hand work to deploy-bot only over a2a, not handoff"
 
 
 # -- every channel, one decision ---------------------------------------------------
