@@ -177,12 +177,41 @@ def test_openai_handoff_is_judged_as_spawn(tmp_path, monkeypatch):
     async def invoke(ctx, input_json):
         return "AGENT"
 
-    h = NS(tool_name="transfer_to_billing", on_invoke_handoff=invoke)
-    prismor_openai._guard_runtime_surfaces(NS(name="triage", tools=[], mcp_servers=[], handoffs=[h]), _openai_opts(tmp_path))
-    assert asyncio.run(h.on_invoke_handoff(None, json.dumps({"reason": "go"}))) == "AGENT"
+    h = NS(tool_name="transfer_to_billing", agent_name="Billing", on_invoke_handoff=invoke)
+    triage = NS(name="triage", tools=[], mcp_servers=[], handoffs=[h])
+    prismor_openai._guard_runtime_surfaces(triage, _openai_opts(tmp_path))
+    assert asyncio.run(triage.handoffs[0].on_invoke_handoff(None, json.dumps({"reason": "go"}))) == "AGENT"
     assert (seen[0]["type"], seen[0]["prompt"]) == ("subagent_spawn", "go")
     # the agent handing off, for agent_connections - not the run's top-level agent
     assert seen[0]["metadata"]["from_agent"] == "triage"
+    assert seen[0]["metadata"]["handoff_to"] == "Billing"  # the Handoff's agent, whatever its tool is called
+
+
+def test_openai_shared_handoff_reports_each_sender(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    from types import SimpleNamespace as NS
+    import prismor_openai
+    seen = []
+
+    async def spy(event, name, o):
+        seen.append(event["metadata"]["from_agent"])
+
+    monkeypatch.setattr(prismor_openai, "_judge", spy)
+
+    async def invoke(ctx, input_json):
+        return "AGENT"
+
+    shared = NS(tool_name="transfer_to_billing", agent_name="Billing", on_invoke_handoff=invoke)
+    a = NS(name="Triage", tools=[], mcp_servers=[], handoffs=[shared])
+    b = NS(name="Sales", tools=[], mcp_servers=[], handoffs=[shared])
+    o = {**_openai_opts(tmp_path), "name": "support-bot"}
+    prismor_openai._guard_runtime_surfaces(a, o, root=True)   # the root: its registered label
+    prismor_openai._guard_runtime_surfaces(b, o)
+    prismor_openai._guard_runtime_surfaces(b, o)              # guarding twice wraps once
+    for agent in (a, b):
+        asyncio.run(agent.handoffs[0].on_invoke_handoff(None, "{}"))
+    assert seen == ["support-bot", "Sales"]
+    assert shared.on_invoke_handoff is invoke                 # the shared object is left alone
 
 
 @pytest.mark.parametrize("action,params,kind,field,value", [

@@ -38,7 +38,9 @@ from __future__ import annotations
 import base64
 import json
 import re
+import shlex
 import sys
+import threading
 import time
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -64,6 +66,8 @@ class ConnectionPolicy:
         self.names: Dict[str, str] = {}   # id -> display name
         self.keys: Dict[str, str] = {}    # id -> base64 Ed25519 public key
         self._alias: Dict[str, str] = {}  # normalized name/alias -> id
+        self._bare: set = set()           # keys only a "kind:" alias's bare form gave
+        self._ambiguous: set = set()      # keys more than one agent claimed
         self.source = ""
 
     @classmethod
@@ -76,24 +80,29 @@ class ConnectionPolicy:
         mode = str(raw.get("mode") or "").lower()
         pol.mode = mode if mode in ("observe", "enforce") else None
         agents = raw.get("agents")
-        for aid, spec in (agents.items() if isinstance(agents, dict) else []):
-            spec = spec if isinstance(spec, dict) else {}
-            aid = str(aid)
+        specs = [(str(aid), spec if isinstance(spec, dict) else {})
+                 for aid, spec in (agents.items() if isinstance(agents, dict) else [])]
+        # Every explicit id, name and alias first, so a bare form below never
+        # takes a name another agent registered outright.
+        for aid, spec in specs:
             pol.names[aid] = str(spec.get("name") or aid)
             for alias in [aid, spec.get("name"), *(spec.get("aliases") or [])]:
-                if alias:
-                    owner = pol._alias.setdefault(norm(alias), aid)
-                    if owner != aid:
-                        sys.stderr.write(f"[prismor] agent_connections: {alias!r} names both {owner} and {aid}; "
-                                         f"it resolves to {owner}. Give {aid} a distinct name or alias.\n")
-            # ponytail: "crewai:Deploy Engineer" also answers to the bare name, so an
-            # adapter that does not say which framework it is still resolves; the
-            # first agent to claim a bare name keeps it.
-            for alias in spec.get("aliases") or []:
-                if ":" in str(alias) and not str(alias).startswith(("a2a:", "mcp:")):
-                    pol._alias.setdefault(norm(str(alias).split(":", 1)[1]), aid)
+                owner = pol._claim(alias, aid)
+                if owner and owner != aid:
+                    sys.stderr.write(f"[prismor] agent_connections: {alias!r} names both {owner} and {aid}; "
+                                     f"it resolves to {owner}. Give {aid} a distinct name or alias.\n")
             if spec.get("public_key"):
                 pol.keys[aid] = str(spec["public_key"])
+        # ponytail: "crewai:Deploy Engineer" also answers to the bare name, so an
+        # adapter that does not say which framework it is still resolves; the
+        # first agent to claim a bare name keeps it.
+        for aid, spec in specs:
+            for alias in spec.get("aliases") or []:
+                if ":" in str(alias) and not str(alias).startswith(("a2a:", "mcp:")):
+                    key = norm(str(alias).split(":", 1)[1])
+                    if key and (key not in pol._alias or key in pol._bare):
+                        pol._bare.add(key)
+                        pol._claim(key, aid)
         peers = raw.get("peers")
         for name, key in (peers.items() if isinstance(peers, dict) else []):
             if key:
@@ -109,6 +118,20 @@ class ConnectionPolicy:
                     "channels": {str(c) for c in channels} if isinstance(channels, list) else None,
                 })
         return pol
+
+    def _claim(self, alias: Any, aid: str) -> Optional[str]:
+        """Register ``alias`` for ``aid``; the agent that holds it (first wins)."""
+        key = norm(alias)
+        if not alias or not key:  # "-" or "/" normalizes to nothing: it would match an unnamed sender
+            return None
+        owner = self._alias.setdefault(key, aid)
+        if owner != aid:
+            self._ambiguous.add(key)
+        return owner
+
+    def ambiguous(self, name: Any) -> bool:
+        """``name`` is claimed by more than one agent, so it can't say which."""
+        return norm(name) in self._ambiguous
 
     @property
     def enabled(self) -> bool:
@@ -178,19 +201,166 @@ class ConnectionPolicy:
 # -- one shape for every channel ------------------------------------------------
 
 # A coding agent run headless by another: the prompt it is handed is the message.
-# Command position: the start of the command or of a line, after a separator,
-# inside $( ) or backticks, or as the script of `sh -c '…'`; then any env
-# assignments and wrappers (env, sudo, exec, nohup, time, npx, …) and their flags.
-_START = r"(?:^|[;&|(\n`]|\$\(|\b(?:ba|z|da)?sh\s+-\w*c\s+['\"])"
-_WRAP = r"(?:(?:\S+=\S+|env|sudo|exec|nohup|time|command|nice|xargs|npx|bunx|pnpx|-\S+)\s+)*"
-_CLI = [(re.compile(rf"{_START}\s*{_WRAP}(?:\S*/)?{pat}"), name) for pat, name in (
-    (r"claude(?:-code)?\s+(?:\S+\s+)*?(?:-p|--print)\b", "claude"),
-    (r"codex\s+exec\b", "codex"),
-    (r"gemini\s+(?:\S+\s+)*?(?:-p|--prompt)\b", "gemini"),
-    (r"opencode\s+run\b", "opencode"),
-    (r"copilot\s+(?:\S+\s+)*?(?:-p|--prompt)\b", "copilot"),
-    (r"cursor-agent\s+(?:\S+\s+)*?(?:-p|--print)\b", "cursor"),
-)]
+# The command is parsed, not pattern-matched: quoted text and heredoc bodies
+# (commit messages, docs) are data, and a wrapper's own arguments are skipped.
+_HEADLESS = {  # binary -> (agent, what makes the run headless: a flag or a subcommand)
+    "claude": ("claude", {"-p", "--print"}), "claude-code": ("claude", {"-p", "--print"}),
+    "codex": ("codex", {"exec", "e"}), "gemini": ("gemini", {"-p", "--prompt"}),
+    "opencode": ("opencode", {"run"}), "copilot": ("copilot", {"-p", "--prompt"}),
+    "cursor-agent": ("cursor", {"-p", "--print"}),
+}
+_NAMED = re.compile("|".join(map(re.escape, _HEADLESS)))
+# Commands that run the command after them, and which of their options take a value.
+_WRAPPERS = {
+    "env": {"-u", "--unset", "-C", "--chdir"}, "doas": {"-u", "-C"},
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T", "--user", "--group",
+             "--chdir", "--host", "--prompt", "--role", "--type", "--other-user", "--close-from"},
+    "timeout": {"-s", "--signal", "-k", "--kill-after"}, "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "-P", "-u", "--class", "--classdata"}, "stdbuf": {"-i", "-o", "-e"},
+    "xargs": {"-I", "-n", "-P", "-d", "-L", "-s", "-E", "-a", "--max-args", "--max-procs",
+              "--delimiter", "--arg-file", "--replace"},
+    "npx": {"-p", "--package"}, "bunx": {"-p", "--package"}, "pnpx": {"-p", "--package"},
+    "exec": {"-a"}, "nohup": set(), "time": set(), "setsid": set(), "command": set(), "builtin": set(),
+}
+_LINE_FLAGS = {"env": {"-S", "--split-string"}, "npx": {"-c", "--call"}}  # the value is a command line
+_RUNNERS = {"npm": {"exec", "x"}, "pnpm": {"exec", "dlx"}, "yarn": {"exec", "dlx"}, "bun": {"x"}}
+_KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "do", "while", "until"}
+_SHELLS = {"sh", "bash", "zsh", "ksh", "dash", "mksh", "fish"}
+_PUNCT = "();<>|&\n"
+
+
+def _substitutions(text: str) -> List[str]:
+    """The body of every ``$( )`` and backtick the shell runs (not in single quotes)."""
+    out, i, n, dq = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+        elif c == "'" and not dq:
+            j = text.find("'", i + 1)
+            i = n if j < 0 else j + 1
+        elif c == '"':
+            dq, i = not dq, i + 1
+        elif c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i + 1:j])
+            i = j + 1
+        elif text.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                d = text[j]
+                if d == "\\":
+                    j += 2
+                    continue
+                if d == "'":
+                    k = text.find("'", j + 1)
+                    j = n if k < 0 else k + 1
+                    continue
+                depth += (d == "(") - (d == ")")
+                j += 1
+            out.append(text[i + 2:j - 1])
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def _headless(argv: List[str], depth: int) -> Optional[str]:
+    """The agent one simple command runs headless, past env assignments and wrappers."""
+    i = 0
+    while i < len(argv):
+        word = argv[i]
+        base = word.rsplit("/", 1)[-1]
+        if word in _KEYWORDS or re.match(r"[A-Za-z_][A-Za-z0-9_]*=", word):
+            i += 1
+            continue
+        if base in _RUNNERS and i + 1 < len(argv) and argv[i + 1] in _RUNNERS[base]:
+            i, base = i + 1, "npx"  # npm exec / pnpm dlx run a package's binary, as npx does
+        if base not in _WRAPPERS:
+            break
+        i += 1
+        while i < len(argv) and argv[i].startswith("-"):
+            flag = argv[i]
+            i += 1
+            if flag == "--":
+                break
+            if base == "command" and flag in ("-v", "-V"):
+                return None  # only looks the name up
+            if flag in _LINE_FLAGS.get(base, ()) and i < len(argv):
+                return _cli_agent(argv[i], depth + 1)
+            if flag in _WRAPPERS[base]:
+                i += 1
+        if base == "timeout":
+            i += 1  # its duration
+    if i >= len(argv):
+        return None
+    base, args = argv[i].rsplit("/", 1)[-1], argv[i + 1:]
+    if base == "eval":
+        return _cli_agent(" ".join(args), depth + 1)
+    if base in _SHELLS:  # sh -c 'script': the script is a command line
+        j = 0
+        while j < len(args) and args[j][:1] in ("-", "+"):
+            flag = args[j]
+            j += 1
+            if flag in ("-o", "+o", "-O", "+O"):
+                j += 1
+            elif flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+                return _cli_agent(args[j], depth + 1) if j < len(args) else None
+        return None
+    hit = _HEADLESS.get(base)
+    if hit and hit[1] & {a.split("=", 1)[0] for a in args}:
+        return hit[0]
+    return None
+
+
+def _cli_agent(command: str, depth: int = 0) -> Optional[str]:
+    """The coding agent ``command`` runs headless (``claude -p``, ``codex exec``, …), else None."""
+    if depth > 3 or not _NAMED.search(re.sub(r"[\\'\"]", "", command)):
+        return None
+    from prismor.runtime.shell_context import heredocs
+
+    # A heredoc body is data (a commit message, a file being written) unless a
+    # shell is reading it as its script.
+    text, parts, last = command, [], 0
+    for h in heredocs(command):
+        opener = re.split(r"[;&|(`\n]", command[:h.start])[-1].split()
+        if any(w.rsplit("/", 1)[-1] in _SHELLS for w in opener):
+            hit = _cli_agent(command[h.body_start:h.body_end], depth + 1)
+            if hit:
+                return hit
+        parts.append(command[last:h.body_start])
+        last = h.end
+    if parts:
+        text = "".join(parts) + command[last:]
+    for inner in _substitutions(text):
+        hit = _cli_agent(inner, depth + 1)
+        if hit:
+            return hit
+    lex = shlex.shlex(text.replace("\\\n", " "), posix=True, punctuation_chars=_PUNCT)
+    lex.whitespace, lex.commenters, lex.whitespace_split = " \t\r", "", True
+    try:
+        tokens = list(lex)
+    except ValueError:  # an unclosed quote: the shell would not run it either
+        return None
+    argv: List[str] = []
+    skip = False
+    for tok in tokens + [";"]:
+        if skip:
+            skip = False
+        elif tok and all(c in _PUNCT for c in tok) and not ("(" in tok or ")" in tok) and ("<" in tok or ">" in tok):
+            skip = True  # a redirect: its target is not an argument
+        elif tok and all(c in _PUNCT for c in tok):
+            hit = _headless(argv, depth) if argv else None
+            if hit:
+                return hit
+            argv = []
+        else:
+            argv.append(tok)
+    return None
+
+
 _CREW_DELEGATE = {"delegate-work", "delegate-work-to-coworker", "ask-question", "ask-question-to-coworker"}
 
 
@@ -216,8 +386,8 @@ def agent_message(event: Dict[str, Any], policy: ConnectionPolicy) -> Optional[D
             channel = "a2a"
             if meta.get("a2a_url") and policy.known(meta["a2a_url"], "a2a"):
                 to = policy.resolve(meta["a2a_url"], "a2a")
-    elif tool == "transfer_to_agent":  # Google ADK: the target is an argument
-        to = _arg(meta, "agent_name")
+    elif tool == "transfer_to_agent" and _arg(meta, "agent_name"):  # Google ADK: the target is an argument
+        to = str(_arg(meta, "agent_name"))
     elif tool.startswith("transfer_to_"):  # LangGraph supervisor / swarm, OpenAI Agents handoffs
         to = tool[len("transfer_to_"):]
     elif norm(tool) in _CREW_DELEGATE and _arg(meta, "coworker"):  # CrewAI delegation
@@ -227,10 +397,13 @@ def agent_message(event: Dict[str, Any], policy: ConnectionPolicy) -> Optional[D
         if policy.known(server, "mcp"):
             to, channel = policy.resolve(server, "mcp"), "tool"
     elif event.get("type") == "shell" and event.get("command"):
-        cmd = str(event["command"])
-        to = next((name for rx, name in _CLI if rx.search(cmd)), None)
-        channel = "cli"
-    if not to or policy.resolve(to) == policy.resolve(src):
+        to, channel = _cli_agent(str(event["command"])), "cli"
+    if not to:
+        return None
+    # The same agent under another of its names is not a message; a name two
+    # agents share can't say that, so it is checked (and the clash shown).
+    if norm(to) == norm(src) or (policy.resolve(to) == policy.resolve(src)
+                                 and not policy.ambiguous(to) and not policy.ambiguous(src)):
         return None
     return {"from": src, "to": to, "channel": channel}
 
@@ -269,6 +442,7 @@ def sign_caller(src: str, dst: str, key: Any = None, *, now: Optional[float] = N
 # ponytail: replay cache is per receiver process and only holds unexpired ids;
 # a fleet of receiver replicas behind a load balancer would need a shared one.
 _seen: Dict[str, int] = {}
+_seen_lock = threading.Lock()
 
 
 def verify_caller(token: str, dst: str, policy: ConnectionPolicy, *,
@@ -282,12 +456,14 @@ def verify_caller(token: str, dst: str, policy: ConnectionPolicy, *,
         header, claims = json.loads(_unb64(head)), json.loads(_unb64(body))
     except Exception:
         raise ValueError("malformed caller header")
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise ValueError("malformed caller header")
     if header.get("alg") != "EdDSA":  # never "none", never a key reused as an HMAC secret
         raise ValueError("caller header must be signed with EdDSA")
     src = policy.resolve(claims.get("sub"))
     pub = policy.keys.get(src)
     if not pub:
-        raise ValueError(f"{claims.get('sub') or 'caller'} is not a registered agent")
+        raise ValueError(f"{str(claims.get('sub') or 'caller')[:80]} is not a registered agent")
     try:
         Ed25519PublicKey.from_public_bytes(base64.b64decode(pub)).verify(
             _unb64(sig), f"{head}.{body}".encode())
@@ -295,7 +471,10 @@ def verify_caller(token: str, dst: str, policy: ConnectionPolicy, *,
         raise ValueError("caller signature does not verify")
     t = int(now if now is not None else time.time())
     aud = claims.get("aud")
-    if policy.resolve(dst) not in {policy.resolve(a) for a in (aud if isinstance(aud, list) else [aud])}:
+    auds = aud if isinstance(aud, list) else [aud]
+    # Every audience must be this agent: a header issued to several receivers
+    # could be replayed at each, since the replay cache is per receiver.
+    if not auds or any(policy.resolve(a) != policy.resolve(dst) for a in auds):
         raise ValueError("caller header was issued for another agent")
     iat, exp = claims.get("iat"), claims.get("exp")
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (iat, exp)):
@@ -307,12 +486,13 @@ def verify_caller(token: str, dst: str, policy: ConnectionPolicy, *,
     jti = str(claims.get("jti") or "")
     if not jti:
         raise ValueError("caller header has no jti, so a replay can't be told apart")
-    for seen, until in list(_seen.items()):
-        if until < t:
-            del _seen[seen]
-    if jti in _seen:
-        raise ValueError("caller header replayed")
-    _seen[jti] = int(exp)
+    with _seen_lock:  # a threaded server checks two copies of one header at once
+        for seen, until in list(_seen.items()):
+            if until < t:
+                _seen.pop(seen, None)
+        if jti in _seen:
+            raise ValueError("caller header replayed")
+        _seen[jti] = int(exp)
     return src
 
 
@@ -327,6 +507,8 @@ def check_inbound(policy: ConnectionPolicy, token: Optional[str], dst: str,
         src = verify_caller(token, dst, policy, now=now)
     except ValueError as exc:
         return policy.mode != "enforce", str(exc)
+    except Exception:  # whatever a forged header trips over, it is not a valid caller
+        return policy.mode != "enforce", "malformed caller header"
     # ponytail: an `ask` pair is held at the sender; the receiver has no
     # approval queue, so it lets through what the sender's approval released.
     if policy.decide(src, dst, "a2a") in ("allow", "ask"):
@@ -344,29 +526,45 @@ def asgi_guard(app: Callable, *, agent: str, policy: Optional[ConnectionPolicy] 
     """
     cache: Dict[str, Any] = {"at": 0.0, "policy": None}
 
-    def _active() -> ConnectionPolicy:
+    def _active() -> Optional[ConnectionPolicy]:
         if policy is not None:
             return policy
         if time.monotonic() - cache["at"] > 5:  # building the engine costs ~20ms
-            from pathlib import Path
-            from prismor.runtime.policy_engine import PolicyEngine
-            cache.update(at=time.monotonic(), policy=PolicyEngine(Path.cwd()).agent_connections)
+            cache["at"] = time.monotonic()
+            try:
+                from pathlib import Path
+                from prismor.runtime.policy_engine import PolicyEngine
+                cache["policy"] = PolicyEngine(Path.cwd()).agent_connections
+            except Exception as exc:  # keep the last policy that loaded
+                sys.stderr.write(f"[prismor] agent_connections: policy reload failed: {exc!r}\n")
         return cache["policy"]
 
     async def guarded(scope: Dict[str, Any], receive: Callable, send: Callable) -> None:
-        # Discovery (the Agent Card at /.well-known/agent-card.json) is public:
-        # a client fetches it, unsigned, before it can send anything.
-        if scope.get("type") != "http" or str(scope.get("path") or "").startswith("/.well-known/"):
+        if scope.get("type") != "http":
             return await app(scope, receive, send)
-        token = dict(scope.get("headers") or []).get(HEADER.encode(), b"").decode() or None
-        ok, reason = check_inbound(_active(), token, agent)
+        # Discovery (the Agent Card at /.well-known/agent-card.json) is public:
+        # a client fetches it, unsigned, before it can send anything. Only a
+        # read, and only under this app's own root (it may be mounted).
+        path, root = str(scope.get("path") or ""), str(scope.get("root_path") or "")
+        if root and path.startswith(root):
+            path = path[len(root):]
+        if scope.get("method") in ("GET", "HEAD") and path.startswith("/.well-known/"):
+            return await app(scope, receive, send)
+        pol = _active()
+        if pol is None:  # fail closed: no policy has ever loaded
+            ok, reason, status = False, "agent connection policy could not be loaded", 503
+        else:
+            # Headers are latin-1 bytes (ASGI); a decode that can't fail.
+            token = dict(scope.get("headers") or []).get(HEADER.encode(), b"").decode("latin-1") or None
+            (ok, reason), status = check_inbound(pol, token, agent), 403
         if ok and reason:  # observe: let it through, but say what enforce would refuse
-            sys.stderr.write(f"[prismor] agent_connections (observe) would refuse a call to {agent}: {reason}\n")
+            # repr: the reason can quote the caller's unverified sub, newlines and all.
+            sys.stderr.write(f"[prismor] agent_connections (observe) would refuse a call to {agent}: {reason!r}\n")
         if not ok:
             body = json.dumps({"jsonrpc": "2.0", "id": None,
                                "error": {"code": -32001, "message": f"Blocked by Prismor: {reason}",
                                          "data": {"prismor": "agent_connection"}}}).encode()
-            await send({"type": "http.response.start", "status": 403,
+            await send({"type": "http.response.start", "status": status,
                         "headers": [(b"content-type", b"application/json")]})
             await send({"type": "http.response.body", "body": body})
             return

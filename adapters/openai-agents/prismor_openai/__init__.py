@@ -25,6 +25,7 @@ live model) and on OpenAI Agents SDK ``FunctionTool`` objects.
 from __future__ import annotations
 
 import contextvars
+import copy
 import functools
 import json
 import os
@@ -440,7 +441,7 @@ def guard_agent(
         pending.extend(_subagents_of(current))
         _guard_runtime_surfaces(current, dict(
             subject=subject, workspace=workspace, agent=agent, name=name, mode=mode,
-            session_id=session_id, approvals=approvals))
+            session_id=session_id, approvals=approvals), root=current is agent_obj)
         for tool in getattr(current, "tools", None) or []:
             if _is_function_tool(tool):
                 _guard_function_tool(
@@ -603,8 +604,10 @@ class _GuardedEditor:
 
 
 def _guard_handoff(h: Any, o: dict, src: str = "") -> None:
-    original = h.on_invoke_handoff
+    # A copy of an already-guarded Handoff wraps the SDK's callback, not the guard.
+    original = h.__prismor_original__ = getattr(h, "__prismor_original__", None) or h.on_invoke_handoff
     name = str(getattr(h, "tool_name", None) or "transfer_to_agent")
+    target = str(getattr(h, "agent_name", "") or "")
 
     @functools.wraps(original)
     async def on_invoke_handoff(ctx: Any, input_json: str = "") -> Any:
@@ -616,6 +619,8 @@ def _guard_handoff(h: Any, o: dict, src: str = "") -> None:
         ev = _event(name, kwargs if isinstance(kwargs, dict) else {"input": kwargs}, type="shell")
         if src:  # the agent handing off, not the top-level one the run was guarded under
             ev.setdefault("metadata", {})["from_agent"] = src
+        if target:  # the Handoff names its agent; transfer_to_<x> may be a custom tool name
+            ev.setdefault("metadata", {})["handoff_to"] = target
         denial = await _judge(ev, name, o)
         if denial is not None:
             raise PrismorBlocked(denial)  # the SDK has no "refused" handoff result
@@ -624,7 +629,7 @@ def _guard_handoff(h: Any, o: dict, src: str = "") -> None:
     h.on_invoke_handoff = on_invoke_handoff
 
 
-def _guard_runtime_surfaces(agent_obj: Any, o: dict) -> None:
+def _guard_runtime_surfaces(agent_obj: Any, o: dict, root: bool = False) -> None:
     for server in getattr(agent_obj, "mcp_servers", None) or []:
         if not getattr(server, "__prismor_guarded__", False) and callable(getattr(server, "call_tool", None)):
             _guard_mcp_server(server, o)
@@ -643,13 +648,25 @@ def _guard_runtime_surfaces(agent_obj: Any, o: dict) -> None:
             continue
         tool.__prismor_guarded__ = True
     handoffs = getattr(agent_obj, "handoffs", None)
-    for i, h in enumerate(handoffs or []):
+    if not handoffs:
+        return
+    # The root agent hands off under the label it was guarded with (its
+    # registered name); the agents it reaches under their own names.
+    src = str((o.get("name") if root else "") or getattr(agent_obj, "name", "") or "")
+    mine = []
+    for h in handoffs:
         if not callable(getattr(h, "on_invoke_handoff", None)):
             try:  # a bare Agent in handoffs: build the Handoff the SDK would
                 from agents import handoff as _make_handoff
-                h = handoffs[i] = _make_handoff(h)
+                h = _make_handoff(h)
             except Exception:
+                mine.append(h)
                 continue
-        if not getattr(h, "__prismor_guarded__", False):
-            _guard_handoff(h, o, str(getattr(agent_obj, "name", "") or ""))
-            h.__prismor_guarded__ = True
+        if getattr(h, "__prismor_guarded_for__", None) != id(agent_obj):
+            # One Handoff can sit in several agents' lists: each gets its own
+            # guarded copy, so a handoff reports the agent that made it.
+            h = copy.copy(h)
+            _guard_handoff(h, o, src)
+            h.__prismor_guarded_for__ = id(agent_obj)
+        mine.append(h)
+    agent_obj.handoffs = mine
