@@ -1906,6 +1906,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ProxyConfigError as exc:
             self._refuse(provider, f"prismor-proxy: {exc}", status=502)
             return
+        if provider == "a2a":
+            # A fallback upstream is another agent, one the connection check
+            # above never looked at: A2A goes to the agent it named or nowhere.
+            chain = chain[:1]
 
         last_error: Optional[str] = None
         for attempt, upstream_name in enumerate(chain):
@@ -2026,9 +2030,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
-        if provider == "a2a" and self._a2a_from:
-            event["metadata"].update(handoff_to=self._a2a_to, from_agent=self._a2a_from,
+        if provider == "a2a":
+            # Always a handoff, even when the caller is unnamed: then the sender
+            # falls back to this proxy's agent, and with no connection it is
+            # refused in enforce rather than passed unchecked.
+            event["metadata"].update(handoff_to=self._a2a_to,
                                      a2a_url=str((self.config.upstreams.get(self._a2a_to) or {}).get("base_url") or ""))
+            if self._a2a_from:
+                event["metadata"]["from_agent"] = self._a2a_from
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:

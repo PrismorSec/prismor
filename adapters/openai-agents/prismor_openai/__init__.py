@@ -602,7 +602,7 @@ class _GuardedEditor:
         return op
 
 
-def _guard_handoff(h: Any, o: dict) -> None:
+def _guard_handoff(h: Any, o: dict, src: str = "") -> None:
     original = h.on_invoke_handoff
     name = str(getattr(h, "tool_name", None) or "transfer_to_agent")
 
@@ -613,8 +613,10 @@ def _guard_handoff(h: Any, o: dict) -> None:
         except ValueError:
             kwargs = {"input": input_json}
         # The runtime types transfer_to_* as a subagent_spawn with the brief as its prompt.
-        denial = await _judge(_event(name, kwargs if isinstance(kwargs, dict) else {"input": kwargs},
-                                     type="shell"), name, o)
+        ev = _event(name, kwargs if isinstance(kwargs, dict) else {"input": kwargs}, type="shell")
+        if src:  # the agent handing off, not the top-level one the run was guarded under
+            ev.setdefault("metadata", {})["from_agent"] = src
+        denial = await _judge(ev, name, o)
         if denial is not None:
             raise PrismorBlocked(denial)  # the SDK has no "refused" handoff result
         return await original(ctx, input_json)
@@ -649,5 +651,5 @@ def _guard_runtime_surfaces(agent_obj: Any, o: dict) -> None:
             except Exception:
                 continue
         if not getattr(h, "__prismor_guarded__", False):
-            _guard_handoff(h, o)
+            _guard_handoff(h, o, str(getattr(agent_obj, "name", "") or ""))
             h.__prismor_guarded__ = True
