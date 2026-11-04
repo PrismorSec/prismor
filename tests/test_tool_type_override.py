@@ -68,4 +68,18 @@ def test_override_reaches_policy_and_inventory(tmp_path, monkeypatch):
     ev = _unmapped("exec", {"path": str(ws / ".env")})
     d = evaluate_tool_call(event=ev, workspace=ws, agent="claude", mode="enforce", session_id="s")
     assert any(f.get("category") == "secret_access" for f in d.findings), d.findings
-    assert {"name": "exec", "source": "observed", "type": "file_read"} in seen
+    # The inventory gets the runtime's own call, not the correction, so the
+    # console can say "was Unclassified" and show it again if the fix is lifted.
+    assert {"name": "exec", "source": "observed", "type": "tool_result"} in seen
+
+
+def test_narrowest_scope_wins_whatever_the_order():
+    entries = [_classify("exec", "network", "org"), _classify("exec", "file_read", "device", "d1"),
+               _classify("exec", "file_write", "agent", "claude"), _classify("exec", "shell", "session", "s")]
+    for order in (entries, entries[::-1], entries[1:] + entries[:1]):
+        ev = _unmapped("exec", {"cmd": "ls"})
+        _apply_tool_type_override(ev, order, "claude", None, "s")
+        assert ev["type"] == "shell", order
+    ev = _unmapped("exec", {"cmd": "ls"})
+    _apply_tool_type_override(ev, [entries[0], entries[2], entries[1]], "claude", None, "other")
+    assert ev["type"] == "file_write"

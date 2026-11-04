@@ -288,6 +288,7 @@ def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
 
 
 # Types an admin may reclassify a tool into from the console.
+_SCOPE_RANK = {"session": 0, "agent": 1, "device": 2, "org": 3}
 _OVERRIDE_TYPES = ("shell", "file_read", "file_write", "network", "tool_result", "subagent_spawn")
 # Where an unmapped hook payload keeps the tool's arguments, per agent.
 _ARG_KEYS = ("tool_input", "toolInput", "toolArgs", "tool_args", "arguments", "args", "input", "params")
@@ -338,16 +339,16 @@ def _apply_tool_type_override(event: Dict[str, Any], entries: Any, agent_name: s
     tags = resolve_tool_tags(event, families=True)
     if not tags:
         return
-    hit = None
+    hit, best = None, len(_SCOPE_RANK)
     for e in entries:
         if not isinstance(e, dict) or e.get("type") not in _OVERRIDE_TYPES or not tag_matches(e.get("tool"), tags):
             continue
         scope, sid = e.get("scope") or "org", e.get("scopeId")
         if scope in ("org", "device") or (scope == "agent" and sid in (agent_name, parent)) \
                 or (scope == "session" and sid == session_id):
-            hit = e
-            if scope != "org":  # the narrowest matching scope wins
-                break
+            rank = _SCOPE_RANK.get(scope, len(_SCOPE_RANK))
+            if rank < best:  # the narrowest matching scope wins, whatever the list order
+                hit, best = e, rank
     old = event.get("type")
     if hit is None or hit["type"] == old:
         return
@@ -623,9 +624,11 @@ def evaluate_tool_call(
             # "Skill:<name>" tag, so the console can inventory which skills this
             # agent actually reaches for — not just that it uses skills at all.
             for _tag in resolve_tool_tags(event):
-                # The type policy judged it as, so the console shows each
-                # tool's classification and an admin can correct it.
-                _capabilities.append({"name": _tag, "source": "observed", "type": str(event.get("type") or "")})
+                # The type this runtime judged it as - before any console
+                # correction, so the console can show "was X" and an admin
+                # removing the correction sees the runtime's own call again.
+                _typed = (meta.get("type_override") or {}).get("from") or event.get("type")
+                _capabilities.append({"name": _tag, "source": "observed", "type": str(_typed or "")})
             for _tool in meta.get("available_tools") or []:
                 _capabilities.append({"name": str(_tool), "source": "declared"})
             _scoped = load_scoped_rules(workspace, session_id) if session_id else None
