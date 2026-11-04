@@ -14,7 +14,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|apply_patch|mcp__.*",
+        "matcher": "Bash|apply_patch|spawn_agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -26,7 +26,7 @@
     ],
     "PermissionRequest": [
       {
-        "matcher": "Bash|apply_patch|mcp__.*",
+        "matcher": "Bash|apply_patch|spawn_agent|mcp__.*",
         "hooks": [
           {
             "type": "command",
@@ -38,7 +38,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash|apply_patch|mcp__.*",
+        "matcher": "Bash|apply_patch|spawn_agent|mcp__.*",
         "hooks": [
           {
             "type": "command",

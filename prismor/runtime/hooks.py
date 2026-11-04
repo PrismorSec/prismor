@@ -2111,7 +2111,7 @@ def _merge_codex(config: Dict[str, Any], command: str) -> Dict[str, Any]:
         hooks[event_name] = _merge_claude_entries(
             hooks.get(event_name, []),
             {
-                "matcher": "Bash|apply_patch|mcp__.*",
+                "matcher": "Bash|apply_patch|spawn_agent|mcp__.*",
                 "hooks": [{"type": "command", "command": command}],
             },
         )
@@ -2523,7 +2523,9 @@ def _normalize_copilot(payload: Dict[str, Any], session_id: str, workspace: Path
         tool_name=tool_name,
         tool_input=tool_args,
         response=payload.get("toolResult", payload.get("tool_result", payload.get("response"))),
-        is_post=(hook_event == "PostToolUse"),
+        # camelCase postToolUse payloads may carry no event name; their
+        # toolResult is what marks them as post-call.
+        is_post=(hook_event in {"PostToolUse", "postToolUse"} or "toolResult" in payload),
         workspace=workspace,
     )
     if mcp_event is not None:
@@ -2565,6 +2567,18 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
     }
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name == "spawn_agent":
+        # codex-rs tools/handlers/multi_agents{,_v2}/spawn.rs: the charter is
+        # `message` (v1 may send `items` instead), the persona `agent_type`.
+        items = tool_input.get("items") if isinstance(tool_input.get("items"), list) else []
+        return {
+            **base,
+            "type": "subagent_spawn",
+            "subagent_type": tool_input.get("agent_type") or "",
+            "description": tool_input.get("task_name") or "",
+            "prompt": tool_input.get("message") or "\n".join(
+                str(i.get("text", "")) for i in items if isinstance(i, dict)),
+        }
     if tool_name == "Bash":
         return {
             **base,
@@ -2703,7 +2717,8 @@ def _normalize_kiro(payload: Dict[str, Any], session_id: str, workspace: Path) -
         "agent_event": hook_event,
         "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
     }
-    if hook_event == "userPromptSubmit":
+    # CLI 2.x sends camelCase, V3 PascalCase (kiro.dev/docs/cli/v3/hooks-migration).
+    if hook_event in {"userPromptSubmit", "UserPromptSubmit"}:
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
     # Kiro's canonical tool names are snake_case (execute_bash, fs_read,
     # fs_write, use_aws); it also accepts camelCase/short aliases (shell,
@@ -2825,10 +2840,23 @@ def _normalize_qwen(payload: Dict[str, Any], session_id: str, workspace: Path) -
         "session_id": session_id,
         "agent": "qwen",
         "agent_event": hook_event,
-        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name, "raw": payload},
+        # Qwen tags calls made inside a subagent with agent_id/agent_type, as
+        # Claude does.
+        "metadata": {"cwd": payload.get("cwd"), "tool_name": tool_name,
+                     "subagent_id": payload.get("agent_id"),
+                     "subagent_type": payload.get("agent_type"), "raw": payload},
     }
     if hook_event == "UserPromptSubmit":
         return {**base, "type": "prompt", "prompt": payload.get("prompt", "")}
+    if tool_name in {"agent", "task"}:
+        # `agent` (renamed from `task`) takes Claude's Agent arguments.
+        return {
+            **base,
+            "type": "subagent_spawn",
+            "subagent_type": tool_input.get("subagent_type", ""),
+            "description": tool_input.get("description", ""),
+            "prompt": tool_input.get("prompt", ""),
+        }
     if tool_name == "run_shell_command":
         return {**base, "type": "shell", "command": tool_input.get("command", "")}
     if tool_name == "read_file":
@@ -2888,7 +2916,10 @@ def _normalize_continue(payload: Dict[str, Any], session_id: str, workspace: Pat
                 or tool_input.get("new_string", "")
             ),
         }
-    if tool_name in {"Fetch", "Search"}:
+    if tool_name == "Search":
+        # Local ripgrep code search (searchCode.ts), not a web search.
+        return {**base, "type": "file_read", "path": tool_input.get("path") or "", "query": tool_input.get("query", "")}
+    if tool_name == "Fetch":
         return {**base, "type": "network", "url": tool_input.get("url", ""), "query": tool_input.get("query", "")}
     mcp_event = _classify_mcp_event(
         base=base,
@@ -3113,7 +3144,16 @@ def _classify_mcp_event(
     if parsed is None:
         return None
     server, mcp_tool = parsed
-    meta = _mcp_server_index(workspace).get(server.lower(), {})
+    index = _mcp_server_index(workspace)
+    if server.lower() not in index:
+        # A configured server name can itself contain "__"; prefer the longest
+        # one that prefixes the name over splitting at the first "__".
+        rest = tool_name[len("mcp__"):]
+        for known in sorted(index, key=len, reverse=True):
+            if rest.lower().startswith(known + "__") and len(rest) > len(known) + 2:
+                server, mcp_tool = rest[:len(known)], rest[len(known) + 2:]
+                break
+    meta = index.get(server.lower(), {})
     url = meta.get("url", "")
     remote = bool(meta.get("remote"))
     mcp_meta = {"mcp_server": server, "mcp_tool": mcp_tool}
@@ -4231,7 +4271,9 @@ def _normalize_antigravity(payload: Dict[str, Any], session_id: str, workspace: 
     if tool_name in {"read_url_content", "open_browser_url", "read_browser_page"}:
         return {**base, "type": "network", "url": _ag_pick(args, "Url", "URL", "url")}
     if tool_name == "search_web":
-        return {**base, "type": "network", "url": _ag_pick(args, "query", "Query")}
+        # A search has no destination; as with Claude's WebSearch the terms go
+        # in `query`, so egress rules don't read them as a host.
+        return {**base, "type": "network", "url": "", "query": _ag_pick(args, "query", "Query")}
     if tool_name in {"call_mcp_tool", "mcp_tool"}:
         mcp_args = args.get("Arguments")
         if isinstance(mcp_args, str):
