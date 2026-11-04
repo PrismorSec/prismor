@@ -1309,6 +1309,10 @@ class PolicyEngine:
         self.data_boundary: DataBoundaryPolicy = DataBoundaryPolicy()
         self._data_boundary_source: str = "default"
         self._agent_connections_source: str = "default"
+        # Off until _load reads settings.agent_connections; set here so an early
+        # return from _load still leaves evaluate() something to read.
+        from prismor.runtime.agent_connections import ConnectionPolicy
+        self.agent_connections = ConnectionPolicy()
         # Which policy layer last set the egress config. "remote" means the org
         # signed it, which is what makes an enforce verdict authoritative.
         self._egress_source: str = "default"

@@ -178,9 +178,11 @@ def test_openai_handoff_is_judged_as_spawn(tmp_path, monkeypatch):
         return "AGENT"
 
     h = NS(tool_name="transfer_to_billing", on_invoke_handoff=invoke)
-    prismor_openai._guard_runtime_surfaces(NS(tools=[], mcp_servers=[], handoffs=[h]), _openai_opts(tmp_path))
+    prismor_openai._guard_runtime_surfaces(NS(name="triage", tools=[], mcp_servers=[], handoffs=[h]), _openai_opts(tmp_path))
     assert asyncio.run(h.on_invoke_handoff(None, json.dumps({"reason": "go"}))) == "AGENT"
     assert (seen[0]["type"], seen[0]["prompt"]) == ("subagent_spawn", "go")
+    # the agent handing off, for agent_connections - not the run's top-level agent
+    assert seen[0]["metadata"]["from_agent"] == "triage"
 
 
 @pytest.mark.parametrize("action,params,kind,field,value", [

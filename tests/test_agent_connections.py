@@ -231,3 +231,82 @@ def test_asgi_guard_blocks_before_the_agent_runs():
     status, sent = call(ac.sign_caller("planner", "deploy-bot", key))
     assert status == 200 and reached
     assert json.loads(call(None)[1][1]["body"])["error"]["code"] == -32001
+
+
+# -- review fixes ---------------------------------------------------------------
+
+def test_adk_transfer_to_agent_reads_its_target(tmp_path):
+    ws = _ws(tmp_path)
+    meta = {"kwargs": {"agent_name": "deploy-bot"}}
+    assert _eval(ws, "planner", tool="transfer_to_agent", meta=meta).allow
+    assert not _eval(ws, "research-crawler", tool="transfer_to_agent", meta=meta).allow
+
+
+def test_ask_pair_in_observe_is_flagged_not_held(tmp_path):
+    d = _handoff(_ws(tmp_path, mode="observe"), "support-triage", "billing-assistant")
+    assert d.allow and _rule(d)[0]["mode"] == "observe"
+
+
+@pytest.mark.parametrize("cmd", [
+    "cd x\nclaude -p hi", "env claude -p hi", "FOO=1 sudo codex exec hi", "exec codex exec hi",
+    "bash -c 'claude -p hi'", "sh -lc \"codex exec hi\"", "echo `codex exec hi`",
+    "npx -y @anthropic-ai/claude-code -p hi", "nohup gemini -p hi &",
+])
+def test_cli_agent_behind_wrappers_is_caught(tmp_path, cmd):
+    d = _eval(_ws(tmp_path), "opencode", command=cmd)
+    assert not d.allow and _rule(d)[0]["channel"] == "cli", cmd
+
+
+@pytest.mark.parametrize("cmd", ['git commit -m "claude -p fix"', "echo claude -p", "grep -r 'codex exec' ."])
+def test_cli_agent_named_in_text_is_not_a_call(tmp_path, cmd):
+    assert _eval(_ws(tmp_path), "opencode", command=cmd).allow, cmd
+
+
+def test_self_handoff_under_an_alias_is_not_a_message(tmp_path):
+    assert _handoff(_ws(tmp_path), "deploy-bot", "Deploy Engineer").allow
+
+
+def test_a2a_url_matches_with_a_trailing_slash(tmp_path):
+    meta = {"handoff_to": "upstream-1", "provider": "a2a", "a2a_url": "https://deploy.internal/"}
+    assert _eval(_ws(tmp_path), "reporter", meta=meta).allow  # reporter -> deploy-bot over a2a
+
+
+def _tok(key, **claims):
+    h = ac._b64(b'{"alg":"EdDSA","typ":"JWT"}')
+    b = ac._b64(json.dumps(claims).encode())
+    return f"{h}.{b}.{ac._b64(key.sign(f'{h}.{b}'.encode()))}"
+
+
+def test_receiver_rejects_odd_claims_with_a_reason():
+    import time
+    key, pub = _pair()
+    pol = _policy({"agt_planner": pub})
+    now = int(time.time())
+    base = {"sub": "planner", "aud": "deploy-bot", "iat": now, "exp": now + 60, "jti": "j1"}
+    assert ac.check_inbound(pol, _tok(key, **{**base, "aud": ["deploy-bot"]}), "deploy-bot")[0]  # RFC 7519 list aud
+    for bad in ({"exp": now + 10**8, "jti": "j2"}, {"exp": "soon", "jti": "j3"}, {"jti": ""}):
+        ok, reason = ac.check_inbound(pol, _tok(key, **{**base, **bad}), "deploy-bot")
+        assert not ok and reason, bad
+
+
+def test_asgi_guard_lets_agent_card_discovery_through():
+    reached = []
+
+    async def app(scope, receive, send):
+        reached.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+
+    guarded = ac.asgi_guard(app, agent="deploy-bot", policy=_policy({}))
+
+    async def send(msg):
+        pass
+
+    asyncio.run(guarded({"type": "http", "path": "/.well-known/agent-card.json", "headers": []}, None, send))
+    asyncio.run(guarded({"type": "http", "path": "/", "headers": []}, None, send))
+    assert reached == ["/.well-known/agent-card.json"]
+
+
+def test_engine_has_connections_even_when_load_bails(monkeypatch):
+    from prismor.runtime import policy_engine as pe
+    monkeypatch.setattr(pe, "_load_yaml", lambda *a, **k: None)
+    assert pe.PolicyEngine(workspace=None).agent_connections.enabled is False

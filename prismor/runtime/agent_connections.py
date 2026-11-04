@@ -38,6 +38,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import sys
 import time
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -45,13 +46,15 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 HEADER = "x-prismor-caller"
 RULE_ID = "agent-connection"
 TOKEN_TTL = 60  # seconds a signed caller header stays valid
+MAX_TTL = 300   # the longest lifetime a receiver accepts from any signer
 ISSUER = "prismor"
 
 _SEP = re.compile(r"[\s_\-]+")
 
 
 def norm(name: Any) -> str:
-    return _SEP.sub("-", str(name or "").strip().lower()).strip("-")
+    # A trailing "/" is dropped so a2a:https://host and a2a:https://host/ meet.
+    return _SEP.sub("-", str(name or "").strip().lower()).strip("-/")
 
 
 class ConnectionPolicy:
@@ -79,7 +82,10 @@ class ConnectionPolicy:
             pol.names[aid] = str(spec.get("name") or aid)
             for alias in [aid, spec.get("name"), *(spec.get("aliases") or [])]:
                 if alias:
-                    pol._alias.setdefault(norm(alias), aid)
+                    owner = pol._alias.setdefault(norm(alias), aid)
+                    if owner != aid:
+                        sys.stderr.write(f"[prismor] agent_connections: {alias!r} names both {owner} and {aid}; "
+                                         f"it resolves to {owner}. Give {aid} a distinct name or alias.\n")
             # ponytail: "crewai:Deploy Engineer" also answers to the bare name, so an
             # adapter that does not say which framework it is still resolves; the
             # first agent to claim a bare name keeps it.
@@ -149,7 +155,7 @@ class ConnectionPolicy:
             "mode": self.mode,
         }
         if verdict == "ask":
-            f.update(action="step_up", mode="enforce", title=f"{src} → {dst} needs approval",
+            f.update(action="step_up", title=f"{src} → {dst} needs approval",
                      remediation="Approve it, or change the connection to allow in Agent flows.")
         else:
             # Connected, just not over this channel: say so, or the admin goes
@@ -172,8 +178,13 @@ class ConnectionPolicy:
 # -- one shape for every channel ------------------------------------------------
 
 # A coding agent run headless by another: the prompt it is handed is the message.
-_CLI = [(re.compile(rf"(?:^|[;&|(]|\$\()\s*(?:\S+=\S+\s+)*(?:\S*/)?{pat}"), name) for pat, name in (
-    (r"claude\s+(?:\S+\s+)*?(?:-p|--print)\b", "claude"),
+# Command position: the start of the command or of a line, after a separator,
+# inside $( ) or backticks, or as the script of `sh -c '…'`; then any env
+# assignments and wrappers (env, sudo, exec, nohup, time, npx, …) and their flags.
+_START = r"(?:^|[;&|(\n`]|\$\(|\b(?:ba|z|da)?sh\s+-\w*c\s+['\"])"
+_WRAP = r"(?:(?:\S+=\S+|env|sudo|exec|nohup|time|command|nice|xargs|npx|bunx|pnpx|-\S+)\s+)*"
+_CLI = [(re.compile(rf"{_START}\s*{_WRAP}(?:\S*/)?{pat}"), name) for pat, name in (
+    (r"claude(?:-code)?\s+(?:\S+\s+)*?(?:-p|--print)\b", "claude"),
     (r"codex\s+exec\b", "codex"),
     (r"gemini\s+(?:\S+\s+)*?(?:-p|--prompt)\b", "gemini"),
     (r"opencode\s+run\b", "opencode"),
@@ -205,7 +216,9 @@ def agent_message(event: Dict[str, Any], policy: ConnectionPolicy) -> Optional[D
             channel = "a2a"
             if meta.get("a2a_url") and policy.known(meta["a2a_url"], "a2a"):
                 to = policy.resolve(meta["a2a_url"], "a2a")
-    elif tool.startswith("transfer_to_"):  # LangGraph supervisor / swarm handoff tools
+    elif tool == "transfer_to_agent":  # Google ADK: the target is an argument
+        to = _arg(meta, "agent_name")
+    elif tool.startswith("transfer_to_"):  # LangGraph supervisor / swarm, OpenAI Agents handoffs
         to = tool[len("transfer_to_"):]
     elif norm(tool) in _CREW_DELEGATE and _arg(meta, "coworker"):  # CrewAI delegation
         to = str(_arg(meta, "coworker"))
@@ -217,7 +230,7 @@ def agent_message(event: Dict[str, Any], policy: ConnectionPolicy) -> Optional[D
         cmd = str(event["command"])
         to = next((name for rx, name in _CLI if rx.search(cmd)), None)
         channel = "cli"
-    if not to or norm(to) == norm(src):
+    if not to or policy.resolve(to) == policy.resolve(src):
         return None
     return {"from": src, "to": to, "channel": channel}
 
@@ -281,17 +294,25 @@ def verify_caller(token: str, dst: str, policy: ConnectionPolicy, *,
     except (InvalidSignature, ValueError):
         raise ValueError("caller signature does not verify")
     t = int(now if now is not None else time.time())
-    if policy.resolve(claims.get("aud")) != policy.resolve(dst):
+    aud = claims.get("aud")
+    if policy.resolve(dst) not in {policy.resolve(a) for a in (aud if isinstance(aud, list) else [aud])}:
         raise ValueError("caller header was issued for another agent")
-    if not (claims.get("iat", 0) - 5 <= t <= claims.get("exp", 0)):
+    iat, exp = claims.get("iat"), claims.get("exp")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (iat, exp)):
+        raise ValueError("caller header needs numeric iat and exp")
+    if exp - iat > MAX_TTL:  # a long-lived header is a replayable credential
+        raise ValueError(f"caller header lives longer than {MAX_TTL}s")
+    if not (iat - 5 <= t <= exp):
         raise ValueError("caller header expired")
-    for jti, exp in list(_seen.items()):
-        if exp < t:
-            del _seen[jti]
     jti = str(claims.get("jti") or "")
+    if not jti:
+        raise ValueError("caller header has no jti, so a replay can't be told apart")
+    for seen, until in list(_seen.items()):
+        if until < t:
+            del _seen[seen]
     if jti in _seen:
         raise ValueError("caller header replayed")
-    _seen[jti] = int(claims["exp"])
+    _seen[jti] = int(exp)
     return src
 
 
@@ -333,10 +354,14 @@ def asgi_guard(app: Callable, *, agent: str, policy: Optional[ConnectionPolicy] 
         return cache["policy"]
 
     async def guarded(scope: Dict[str, Any], receive: Callable, send: Callable) -> None:
-        if scope.get("type") != "http":
+        # Discovery (the Agent Card at /.well-known/agent-card.json) is public:
+        # a client fetches it, unsigned, before it can send anything.
+        if scope.get("type") != "http" or str(scope.get("path") or "").startswith("/.well-known/"):
             return await app(scope, receive, send)
         token = dict(scope.get("headers") or []).get(HEADER.encode(), b"").decode() or None
         ok, reason = check_inbound(_active(), token, agent)
+        if ok and reason:  # observe: let it through, but say what enforce would refuse
+            sys.stderr.write(f"[prismor] agent_connections (observe) would refuse a call to {agent}: {reason}\n")
         if not ok:
             body = json.dumps({"jsonrpc": "2.0", "id": None,
                                "error": {"code": -32001, "message": f"Blocked by Prismor: {reason}",
