@@ -18,6 +18,20 @@ Detects your environment and uses the right install method automatically.
 
 After a successful install the script sends one anonymous request with your OS, CPU architecture, installer (pipx/pip) and Prismor version, so we can count installs. No identifiers are sent. Opt out with `PRISMOR_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`.
 
+### Verify a release download
+
+Every file attached to a GitHub Release (the wheel and sdist, the macOS
+`.pkg`, the Windows `.zip` and `.intunewin`, the Cowork plugins) carries a
+build-provenance attestation. It proves the file was built from this
+repository by its release workflow, which a `.sha256` file alone cannot:
+
+```bash
+gh attestation verify prismor-<version>-macos.pkg --repo PrismorSec/prismor
+```
+
+The PyPI upload is published through trusted publishing, so PyPI shows its
+provenance on the release page too.
+
 ## Skill (zero-interrupt setup)
 
 Point your agent at [`SKILL.md`](../SKILL.md). It is a standing instruction file: the agent reads it at session start, checks whether Prismor is installed, and follows the decision tree throughout the session without pausing your workflow.

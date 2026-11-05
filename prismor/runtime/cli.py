@@ -1673,6 +1673,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         emit(session, as_json=args.json, formatter=format_session)
         return
 
+    if args.command == "traces":
+        from prismor.runtime import traces
+        raise SystemExit(traces.run(workspace, all_workspaces=args.global_view, limit=args.limit))
+
     if args.command in ("rca", "blame", "friction"):
         from prismor.runtime import devlog
         if args.command == "rca":
@@ -4519,6 +4523,12 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--session-id", help="Session ID to view")
     session_parser.add_argument("--json", action="store_true", help="Output raw JSON")
     session_parser.add_argument("--changes", action="store_true", help="Files written, commands run, and a drafted PR description")
+
+    # ── traces (terminal browser, prismor/runtime/traces.py) ───────────
+    traces_parser = subparsers.add_parser("traces", help="Browse sessions, their event timelines and findings in the terminal")
+    traces_parser.add_argument("--workspace", help="Workspace path")
+    traces_parser.add_argument("--global", dest="global_view", action="store_true", help="Sessions from every workspace")
+    traces_parser.add_argument("--limit", type=int, default=200, help="Max sessions to load (default: 200)")
 
     # ── rca / blame / friction (developer views, prismor/runtime/devlog.py) ──
     rca_parser = subparsers.add_parser("rca", help="What went wrong in a session: first failure, retry loops, reverts")
