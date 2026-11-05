@@ -708,7 +708,7 @@ def _pyc_problem(pyc: Path) -> Optional[str]:
     try:
         # ponytail: marshal is not hardened against crafted input; a malformed
         # .pyc can make the scan fail loudly, never pass silently.
-        cached = marshal.loads(data[16:])
+        cached = marshal.loads(data[16:])  # compared, never executed  # nosec B302
         opt = 2 if ".opt-2." in pyc.name else 1 if ".opt-1." in pyc.name else 0
         fresh = compile(src.read_bytes(), cached.co_filename, "exec", dont_inherit=True, optimize=opt)
     except Exception:
