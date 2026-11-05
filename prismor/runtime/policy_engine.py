@@ -978,13 +978,14 @@ class CompiledRule:
 
     __slots__ = (
         "id", "severity", "category", "title", "event_types", "declared_types",
-        "fields", "patterns", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
+        "fields", "_patterns", "_joined", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
         "transform",
         "severity_on_write", "severity_on_manifest",
         "pattern_groups", "condition", "layer", "mode_layer", "when", "match_all", "flags",
     )
 
-    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
+    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None,
+                 shipped: Optional[List[str]] = None) -> None:
         self.id: str = raw["id"]
         # Which policy layer last wrote this rule: default, project,
         # remote (signed org) or exemption. Answers "why is this rule
@@ -1110,8 +1111,15 @@ class CompiledRule:
         self.raw_patterns: List[str] = effective
         # A when-only rule has no text to match; `(?!)` keeps every other
         # caller of `.patterns` (repo scans, context checks) inert for it.
-        joined = _alternation(effective) if effective else "(?!)"
-        self.patterns: re.Pattern[str] = re.compile(joined, self.flags)
+        self._joined: str = _alternation(effective) if effective else "(?!)"
+        self._patterns: Optional[re.Pattern[str]] = None
+        # The shipped default patterns, unchanged, are known to compile (the
+        # suite compiles every one), so they compile on first use: a hook
+        # process screens one event and only touches that event type's rules.
+        # Anything an overlay changed compiles now, so a bad regex still fails
+        # the load exactly as before.
+        if effective != shipped:
+            self._patterns = re.compile(self._joined, self.flags)
 
         # ── Optional named groups + boolean condition ────────────────────
         # Absent `condition:` => self.condition stays None and matching takes
@@ -1153,6 +1161,12 @@ class CompiledRule:
                     # Fail toward MORE detection: drop the condition, keep the
                     # flat alternation. A typo must never silently disable a rule.
                     sys.stderr.write(f"[prismor] rule '{self.id}': {exc} — condition ignored\n")
+
+    @property
+    def patterns(self) -> "re.Pattern[str]":
+        if self._patterns is None:
+            self._patterns = re.compile(self._joined, self.flags)
+        return self._patterns
 
     def evaluate_condition(self, values: List[str]) -> Optional[str]:
         """Evaluate this rule's condition across ``values`` (the checked fields).
@@ -1668,6 +1682,9 @@ class PolicyEngine:
 
         # Start with default rules indexed by id.
         rules_by_id: Dict[str, Dict[str, Any]] = {}
+        # Each default rule's patterns as shipped, before any overlay merges.
+        shipped: Dict[str, List[str]] = {
+            r["id"]: [str(p) for p in (r.get("patterns") or [])] for r in default_raw.get("rules", [])}
         for rule in default_raw.get("rules", []):
             rule["_layer"] = "default"
             rule["_builtin"] = True
@@ -1914,13 +1931,7 @@ class PolicyEngine:
         if self.data_boundary.enabled:
             _db_raw = settings.get("data_boundary") or {}
             if isinstance(_db_raw, dict) and _db_raw.get("self_identity_auto", True):
-                try:
-                    from prismor.runtime.data_boundary import discover_self_identity
-                    for _ident in discover_self_identity(self.workspace):
-                        if _ident not in self.data_boundary.self_identity:
-                            self.data_boundary.self_identity.append(_ident)
-                except Exception:
-                    pass
+                self.data_boundary.discover_self_later(self.workspace)
         # Keep the flat list in sync when a modern policy defines the allowlist
         # only under settings.egress, so the MCP static scanner still sees it.
         if not self.egress_allowlist and self.egress.enabled:
@@ -2000,7 +2011,7 @@ class PolicyEngine:
             if rule_data.get("id") in floor_off:
                 continue
             if rule_data.get("enabled", True):
-                compiled = CompiledRule(rule_data, self.named_conditions)
+                compiled = CompiledRule(rule_data, self.named_conditions, shipped.get(rule_data["id"]))
                 if compiled.enabled:  # a when-only rule with a broken `when` disables itself
                     self.rules.append(compiled)
 

@@ -384,7 +384,8 @@ def _run_memory(args) -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = build_parser()
+    _argv = sys.argv[1:] if argv is None else argv
+    parser = _hook_dispatch_parser() if _argv[:1] == ["hook-dispatch"] else build_parser()
     args = parser.parse_args(argv)
     # `--scope user` and `--scope global` are the same thing (hooks in $HOME);
     # both spellings are accepted everywhere so users need not remember which
@@ -1908,15 +1909,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         # across two tool names in the console. Only skipped while a live mirror
         # for this workspace actually serves a tool of that name.
         try:
-            from prismor.runtime import mirror as _mirror
             _screened_name = payload.get("tool_name") or ""
             if args.agent == "opencode":
                 # OpenCode names a mirrored tool prismor-tools_Bash, not mcp__…__Bash.
                 from prismor.runtime.hooks import opencode_mcp_tool_name
                 _screened_name = opencode_mcp_tool_name(str(payload.get("toolName") or ""), workspace)
-            if _mirror.already_screened(_screened_name, workspace,
-                                        cwd=str(payload.get("cwd") or "")):
-                sys.exit(0)
+            # Only an mcp__ name can be mirrored; skip importing the module otherwise.
+            if str(_screened_name).startswith("mcp__"):
+                from prismor.runtime import mirror as _mirror
+                if _mirror.already_screened(_screened_name, workspace,
+                                            cwd=str(payload.get("cwd") or "")):
+                    sys.exit(0)
         except SystemExit:
             raise
         except Exception:
@@ -3997,6 +4000,24 @@ def main(argv: Optional[List[str]] = None) -> None:
     raise SystemExit(f"Unsupported command: {args.command}")
 
 
+def _add_hook_dispatch_parser(subparsers: Any) -> None:
+    hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
+    hook_dispatch.add_argument("--workspace", help="Workspace path")
+    # Every agent install-hooks writes a command for; a hand-kept list here once
+    # left gemini and opencode out, so their hooks died in argparse with exit 2.
+    hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
+    hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
+
+
+def _hook_dispatch_parser() -> argparse.ArgumentParser:
+    """build_parser() cut down to hook-dispatch. The full CLI is ~340
+    subparsers, and building it is a fixed cost on every tool call."""
+    parser = argparse.ArgumentParser(prog="prismor")
+    parser.add_argument("--workspace", help="Workspace path (applies to all commands)")
+    _add_hook_dispatch_parser(parser.add_subparsers(dest="command"))
+    return parser
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         # `prismor` is the canonical entrypoint that forwards here, so anchor
@@ -4749,12 +4770,7 @@ def build_parser() -> argparse.ArgumentParser:
     mirror_sub.choices["status"].add_argument("--workspace", help="Workspace path (default: $PRISMOR_WORKSPACE, then cwd)")
 
     # ── hook-dispatch (internal) ───────────────────────────────────────
-    hook_dispatch = subparsers.add_parser("hook-dispatch", help="(internal) Called by IDE hooks")
-    hook_dispatch.add_argument("--workspace", help="Workspace path")
-    # Every agent install-hooks writes a command for; a hand-kept list here once
-    # left gemini and opencode out, so their hooks died in argparse with exit 2.
-    hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
-    hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
+    _add_hook_dispatch_parser(subparsers)
 
     # ── policy ─────────────────────────────────────────────────────────
     allow_parser = subparsers.add_parser(

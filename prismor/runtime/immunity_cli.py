@@ -194,7 +194,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Any genuine prismor top-level command (domains, shortcuts, and any future
     # prismor subcommand) forwards straight through: `prismor <cmd> ...`.
-    if cmd in _prismor_commands():
+    # hook-dispatch runs on every tool call: skip building the full parser
+    # just to learn it is a command.
+    if cmd == "hook-dispatch" or cmd in _prismor_commands():
         from prismor.runtime.cli import main as prismor_main
         try:
             prismor_main([cmd, *rest])
