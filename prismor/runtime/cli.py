@@ -100,7 +100,7 @@ except ImportError:
 
 from prismor.runtime.feed import load_feed, match_advisories
 from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
-from prismor.runtime.policy_engine import PolicyEngine, validate_policy
+from prismor.runtime.policy_engine import PolicyEngine, drop_post_twin_findings, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import (
     get_session,
@@ -1839,6 +1839,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             if isinstance(_cwd, str) and _cwd:
                 workspace = _git_root_or_self(Path(_cwd))
         register_workspace(workspace)
+        # A sibling agent's hooks vanishing is only visible from a hook that
+        # still runs. Rate-limited inside; never affects this call's verdict.
+        try:
+            from prismor.runtime import hook_drift
+            hook_drift.report(workspace, from_hook=True)
+        except Exception:
+            pass
 
         # The session is over: nothing to screen, and no later hook in it will
         # run the heartbeat tick, so ship the outbox now. Clear the backoff an
@@ -6257,6 +6264,14 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add(state, "hooks", f"configured ({' · '.join(_parts)}); agent invocation not verified")
     else:
         add("warn", "hooks", "no IDE hooks installed (run `prismor install-hooks`; SDK adapters are unaffected)")
+    try:
+        from prismor.runtime import hook_drift
+        _gone = hook_drift.report(workspace)
+    except Exception:
+        _gone = []
+    if _gone:
+        add("fail", "hooks missing", f"{', '.join(_gone)} were installed by prismor setup and are now gone "
+                                     f"(another tool rewrote the agent config?); reinstall with prismor setup")
     # 1b. Version skew: the `prismor` a person runs and the one their hooks run
     #     can be different installs (pipx vs a venv). They then screen the same
     #     call differently, and doctor only ever checked the one on PATH.
@@ -6589,6 +6604,14 @@ def _print_status_overview(workspace: Path) -> None:
     for check in hook_checks:
         if check["state"] != "ok":
             print(f"  {_color('Hook health:', _YELLOW)} {check['agent']} ({check['scope']}): {check['detail']}")
+    try:
+        from prismor.runtime import hook_drift
+        _gone = hook_drift.report(workspace)
+    except Exception:
+        _gone = []
+    if _gone:
+        print(f"  {_color('MISSING:', _RED)}     {', '.join(_gone)} — installed by prismor setup, now gone "
+              f"(another tool rewrote the agent config?). Reinstall: prismor setup")
     if agents_with_hooks:
         print(f"  {_color('Note:', _DIM)}        agent invocation not verified; run prismor doctor for configuration checks")
 
@@ -7574,7 +7597,8 @@ def analyze_events(
     engine = PolicyEngine(workspace=workspace)
     findings: List[Dict[str, Any]] = list(prior_findings or [])
     for index in range(start, len(events)):
-        findings.extend(engine.evaluate(events[index], index, session_id=session_id))
+        findings.extend(drop_post_twin_findings(
+            engine.evaluate(events[index], index, session_id=session_id), events, index, findings))
 
     feed_matches = match_advisories(findings, load_feed(repo_root))
     summary = {

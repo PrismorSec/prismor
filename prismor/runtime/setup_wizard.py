@@ -225,8 +225,16 @@ def _annotate_rules(rules: List[dict], block_categories: Optional[set] = None) -
 
 def _recommended_ids() -> set:
     try:
-        from prismor.runtime.policy_engine import _RECOMMENDED_RULE_IDS
-        return set(_RECOMMENDED_RULE_IDS)
+        from prismor.runtime.policy_engine import _RECOMMENDED_ASK_RULE_IDS, _RECOMMENDED_RULE_IDS
+        return set(_RECOMMENDED_RULE_IDS) | set(_RECOMMENDED_ASK_RULE_IDS)
+    except Exception:
+        return set()
+
+
+def _ask_ids() -> set:
+    try:
+        from prismor.runtime.policy_engine import _RECOMMENDED_ASK_RULE_IDS
+        return set(_RECOMMENDED_ASK_RULE_IDS)
     except Exception:
         return set()
 
@@ -1452,8 +1460,11 @@ def _render_selection_policy(selected: List[str]) -> str:
         # anyone adds an exception. Two lines per rule also made a recommended
         # install 58 lines of mostly punctuation.
         lines.append("rules:")
+        ask = _ask_ids()
         for rid in selected:
-            lines.append(f"  - {{id: {rid}, mode: enforce}}")
+            # step_up: the agent asks the user first instead of being refused.
+            extra = ", action: step_up" if rid in ask else ""
+            lines.append(f"  - {{id: {rid}, mode: enforce{extra}}}")
     else:
         lines.append("# No rules selected — nothing blocks yet.")
         lines.append("rules: []")

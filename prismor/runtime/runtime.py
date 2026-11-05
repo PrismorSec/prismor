@@ -534,6 +534,7 @@ def evaluate_tool_call(
     if not record:
         persist = False
     events = [event]
+    analysis: Optional[Dict[str, Any]] = None
     if persist:
         try:
             append_session_event(workspace, session_id, event)
@@ -672,6 +673,13 @@ def evaluate_tool_call(
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
     findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
                                trace=_trace)
+    if analysis is not None:
+        # A post-action event repeats its call's command/path, so every rule the
+        # pre-action event already reported fires again. Report it once: the
+        # duplicate was stored and sent as a second finding for the same call.
+        from prismor.runtime.policy_engine import drop_post_twin_findings
+        findings = drop_post_twin_findings(
+            findings, events, _session_seq, analysis.get("findings") or [])
     _host_rate_findings: List[Dict[str, Any]] = []
     _host_rate_report = None
     # Stateful admission is performed ONCE, outside evaluate(): session replay,

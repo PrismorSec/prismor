@@ -292,6 +292,12 @@ def install(
     if scope == "project":
         _inject_claude_md(workspace)
 
+    try:
+        from prismor.runtime import hook_drift
+        hook_drift.record("cloak", "cloak", scope, workspace, True)
+    except Exception:
+        pass
+
     return {
         "configPath": str(path),
         "hooksInstalled": installed,
@@ -344,6 +350,12 @@ def uninstall(*, workspace: Path, scope: str = "project") -> Dict[str, Any]:
     if removed_any:
         _write_json(path, new_config)
 
+    if removed_any:
+        try:
+            from prismor.runtime import hook_drift
+            hook_drift.record("cloak", "cloak", scope, workspace, False)
+        except Exception:
+            pass
     return {"configPath": str(path), "removed": removed_any}
 
 

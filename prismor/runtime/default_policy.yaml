@@ -878,6 +878,26 @@ rules:
       - '\.(?:execute|executescript|executemany|exec|query|raw|run)\s*\(\s*(?:[rfbu]?[''\"`]{1,3})\s*\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
     action: block
 
+  # ── HIGH: Datastore wipe — a whole database dropped or a cache flushed ──
+  # Narrower than db-modification above (no INSERT/UPDATE/ALTER), so
+  # `setup --recommended` can ask before it runs without asking on routine
+  # writes. Field test: DROP DATABASE ran unasked under --recommended, and
+  # dropdb / FLUSHALL were not detected at all.
+  - id: datastore-destroy
+    severity: HIGH
+    category: db_modification
+    title: Flags dropping a whole database or flushing a datastore (DROP DATABASE, dropdb, FLUSHALL)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b[^\n]*?\bDROP\s+(?:DATABASE|SCHEMA)\b'
+      - '\bDROP\s+(?:DATABASE|SCHEMA)\b[^\n]*\|\s*(?:\S*/)?(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b'
+      - '(?:^|[;&]\s*)DROP\s+(?:DATABASE|SCHEMA)\b'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:dropdb|dropuser)\s'
+      - '\b(?:redis|valkey|keydb)-cli\b[^\n;&|]*\bFLUSH(?:ALL|DB)\b'
+      - '\.dropDatabase\s*\('
+    action: warn
+
   # ── HIGH: Database dumps / sensitive queries ──────────────────────────
   - id: db-access
     severity: HIGH
@@ -917,6 +937,29 @@ rules:
     fields: [path]
     patterns:
       - '(^|/)(\.github/workflows/.+\.(yml|yaml)|Dockerfile|docker-compose\.ya?ml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|Pipfile|Gemfile|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|terraform\.tfvars|\.env(\..*)?)$'
+    action: warn
+
+  # ── HIGH: CI workflow that pipes a remote script into a shell ─────────
+  # risky-write flags every workflow edit (MEDIUM). This is the one worth
+  # stopping for: the edit adds `curl ... | sh`, which runs with the
+  # repository's CI secrets on the next push.
+  - id: ci-workflow-remote-exec
+    severity: HIGH
+    category: risky_write
+    title: Flags a CI workflow edit that pipes a downloaded script into a shell
+    event_types: [file_write]
+    fields: [path, content]
+    patterns:
+      - '\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\S*/)?(?:ba|z|da)?sh\b'
+      - '\b(?:ba|z)?sh\s+(?:-c\s+)?["\'']?(?:<\(|\$\()\s*(?:curl|wget)\b'
+    pattern_groups:
+      ci_file:
+        - '(^|/)\.github/workflows/[^/]+\.ya?ml$'
+        - '(^|/)\.gitlab-ci\.ya?ml$'
+        - '(^|/)\.circleci/config\.ya?ml$'
+        - '(^|/)(azure-pipelines|bitbucket-pipelines|\.travis)\.ya?ml$'
+        - '(^|/)Jenkinsfile$'
+    condition: "patterns and ci_file"
     action: warn
 
   # ── Network Isolation ──────────────────────────────────────────────
@@ -1504,12 +1547,21 @@ rules:
     fields: [command, path]
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?=$|[\s;&|)])'
-      - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
-      - '(^|/)\.cursorrules$'
-      - '(^|/)\.windsurfrules$'
-      - '(^|/)\.github/copilot-instructions\.md$'
-      - '(^|/)\.github/chatmodes/'
-      - '(^|/)\.mcp\.json$'
+      # Loop variable: `for f in CLAUDE.md AGENTS.md; do echo x >> "$f"; done`
+      # names the file in the word list and writes through `$f`.
+      - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
+      # Path patterns match a whole path value: absolute (spaces allowed) or a
+      # relative path with no spaces. Ending in `(^|/)CLAUDE.md$` alone they also
+      # matched any shell command that merely ends with the file name
+      # (`cat docs/CLAUDE.md`): 36 of 50 hits in a 30-day transcript replay.
+      # ponytail: a command that starts with an absolute binary path
+      # (`/bin/cat /x/CLAUDE.md`) still matches; split the rule by field if that bites.
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?(CLAUDE|AGENTS|GEMINI)\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.cursorrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.windsurfrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/copilot-instructions\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/chatmodes/'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.mcp\.json$'
     action: warn
 
   # ── MEDIUM: Embedded directive in project-memory content (#153) ───────
@@ -2300,6 +2352,19 @@ rules:
     fields: [command]
     patterns:
       - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:rm|mv|push|replace-provider)|workspace\s+delete|run-all\s+(?:apply|destroy))(?=\s|$|[;&|)])'
+    action: warn
+
+  # Teardown only, split out of terraform-state-change so `setup --recommended`
+  # can ask before a destroy without asking on every apply.
+  - id: iac-destroy
+    severity: HIGH
+    category: change_control
+    title: Flags infrastructure teardown (terraform/tofu/terragrunt/pulumi/cdk destroy, apply -destroy)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:destroy|run-all\s+destroy|(?:apply|plan)\b[^\n;&|]*?\s-destroy)(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:npx\s+)?(?:pulumi|cdk|cdktf|sst)\s+(?:[^\n;&|]*?\s)?destroy(?=\s|$|[;&|)])'
     action: warn
 
   - id: kubectl-cluster-change

@@ -66,6 +66,17 @@ def _strip_for_agent(agent: str, config: Dict[str, Any], marker: str) -> Tuple[D
     return _strip_windsurf(config, marker)
 
 
+def _record_installs(results: List[Dict[str, Any]], scope: str, workspace: Path, *, installed: bool) -> None:
+    # What setup installed, so status/doctor can flag hooks someone else removed.
+    try:
+        from prismor.runtime import hook_drift
+        for r in results:
+            if installed or r.get("removed"):
+                hook_drift.record("hook", r["agent"], scope, workspace, installed)
+    except Exception:
+        pass
+
+
 def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, mode: str, portable: bool = False) -> List[Dict[str, str]]:
     system = scope == "system"
     if agent == "all":
@@ -178,6 +189,7 @@ def install_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str, m
                 trust_codex_hooks(config_path, command, codex_home)
             except Exception as exc:
                 sys.stderr.write(f"[prismor] could not record Codex hook trust: {exc}\n")
+    _record_installs(results, scope, workspace, installed=True)
     return results
 
 
@@ -769,6 +781,7 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
             "removed": removed,
             "cloakRemoved": cloak_removed,
         })
+    _record_installs(results, scope, workspace, installed=False)
     return results
 
 
