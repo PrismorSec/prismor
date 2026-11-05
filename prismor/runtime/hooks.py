@@ -557,6 +557,13 @@ def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, A
                         row.update(state=state, detail=detail)
                     if state == "fail":
                         break
+            # Hooks installed before reply capture (#850) miss the reply event,
+            # so the trail never shows what the agent said or that a Stop hook
+            # sent it back to work. Upgrading the package does not rewrite them.
+            from prismor.runtime.replies import REPLY_EVENTS
+            stale = REPLY_EVENTS.get(entry.id, frozenset()) & set(entry.events)
+            if stale and not wired & stale:
+                row["stale_events"] = sorted(stale)
             results.append(row)
     return results
 
@@ -948,6 +955,15 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
         event["command"] = _strip_prismor_scrub_wrapper(event["command"])
     if isinstance(event, dict):
         _attach_tool_result(event, payload)
+    # Who sent a prompt: a person, another session's task brief, or a wrapper
+    # the app added around what the person typed (attribution.py).
+    if isinstance(event, dict) and event.get("type") == "prompt" and isinstance(event.get("prompt"), str):
+        from prismor.runtime.attribution import prompt_origin
+        origin, said = prompt_origin(event["prompt"])
+        meta = event.setdefault("metadata", {})
+        meta["origin"] = origin
+        if said and said != event["prompt"].strip():
+            meta.setdefault("user_message", said)
     # Which enforcement point saw this call. One agent can be governed by more
     # than one surface at a time (hooks plus the mirror), and without this the
     # telemetry cannot say which of them actually made the decision.
