@@ -26,7 +26,8 @@ import sys
 import threading
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 
 from prismor.runtime.contract import COMBINED_FIELDS, TEXT_TYPES, TYPE_FIELD, Decision
 from prismor.runtime.principal import Subject
@@ -39,8 +40,15 @@ SERVING = False
 _thread = threading.local()
 
 
-def serving_this_thread() -> None:
+@contextmanager
+def serving_this_thread() -> Iterator[None]:
+    """Suppress forwarding only for the lifetime of one evaluator request."""
+    previous = getattr(_thread, "serving", False)
     _thread.serving = True
+    try:
+        yield
+    finally:
+        _thread.serving = previous
 
 
 def remote_url() -> Optional[str]:

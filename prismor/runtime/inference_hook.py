@@ -944,6 +944,7 @@ def evaluate_turn(
             # writing: the provider owns the session, and persisting here
             # would put another tenant's transcript on our disk.
             persist=False,
+            rate_accounting=False,  # transcript replay is not a new tool execution
             # The "workspace" here is shared server infrastructure, not one
             # developer's project: registering every tenant's agents into its
             # inventory would both mix them together and put a disk write on

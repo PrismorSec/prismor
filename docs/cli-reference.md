@@ -27,6 +27,7 @@ unchanged and prints a migration notice. Use `prismor`.
 
 | Command | What it does | Deep dive |
 |---|---|---|
+| `prismor rate status [--workspace PATH] [--json]` | Read rolling-minute capacity, effective rate-rule modes, identity usage and retry timing without consuming quota or creating a store. | [Rate limits](prismor-runtime.md#per-identity-rate-limits) |
 | `prismor setup` | Interactive onboarding wizard: pick mode, choose which rules block, select agents, enable cloaking, choose install scope, set the unlock password. | [Onboarding](#onboarding--lifecycle) |
 | `prismor status` | One-shot health check: workspace, hooks, mode, cloak, latest session, next action. | [Dashboard & sessions](dashboard.md) |
 | `prismor audit` | Full security-posture audit across every subsystem. `--fix` auto-remediates. | [Prismor](prismor-runtime.md#security-audit) |

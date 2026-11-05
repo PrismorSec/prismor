@@ -1048,6 +1048,7 @@ class Gateway:
                     deny_tools=self._selection_denies(route),
                     agent=GATEWAY_AGENT, mode=self.mode, session_id="",
                     agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
                     register_agent=False, flush_at_exit=False)
         except Exception:
             return False  # a broken probe hides nothing; the call is still checked
@@ -1748,6 +1749,7 @@ class Gateway:
                 decision = evaluate_tool_call(
                     event=event, workspace=self.workspace, agent=GATEWAY_AGENT, mode="enforce",
                     session_id="", agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
                     register_agent=False, flush_at_exit=False)
             from prismor.runtime.contract import strongest
             finding = strongest([f for f in decision.findings

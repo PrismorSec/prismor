@@ -499,6 +499,15 @@ def get_db_path(workspace: Path) -> Path:
     return new
 
 
+def existing_db_path() -> Optional[Path]:
+    """Resolve an existing store without migration, directory creation or writes."""
+    for name in ("prismor.db", _LEGACY_DB_NAME):
+        path = prismor_home() / name
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
 def get_sessions_dir(workspace: Path) -> Path:
     return get_data_dir(workspace) / "sessions"
 
@@ -828,6 +837,8 @@ def initialize_database(workspace: Path) -> Path:
         initialize_learning_tables(connection)
         from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
         connection.executescript(_JUDGE_AUDIT_DDL)
+        from prismor.runtime.ratelimit import DDL as _RATE_LIMIT_DDL
+        connection.executescript(_RATE_LIMIT_DDL)
 
         connection.commit()
     finally:

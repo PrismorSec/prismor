@@ -815,6 +815,20 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         sys.stderr.write("[prismor] fetched remote policy failed verification — discarding\n")
         return False
 
+    # A signed but malformed quota must not replace the last good signed
+    # policy: rejecting it only at engine merge would drop the previous org
+    # limit on the next process. Validate before touching either cache file.
+    try:
+        import yaml
+        from prismor.runtime.ratelimit import validate_settings
+        _settings = (yaml.safe_load(policy_yaml) or {}).get("settings") or {}
+        if "rate_limit" in _settings and validate_settings(_settings["rate_limit"]):
+            sys.stderr.write("[prismor] fetched remote policy has invalid rate_limit settings — discarding\n")
+            return False
+    except (ValueError, TypeError, AttributeError, yaml.YAMLError):
+        sys.stderr.write("[prismor] fetched remote policy is malformed — discarding\n")
+        return False
+
     # Developer-facing transparency: detect the org flipping capture mode.
     # The resolved policy carries the org's full_capture decision in the
     # forced prismor output entry; surface a notice the moment it changes so

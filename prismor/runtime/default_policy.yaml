@@ -7,6 +7,9 @@ version: "1.0"
 # Only rules you define there will override — the rest fall back to defaults.
 
 settings:
+  # Optional exact rolling-minute quota. No accounting while this is absent.
+  # rate_limit: {requests_per_minute: 120, max_burst: 10}
+  # Select rate-limit-exceeded and rate-limit-unavailable in enforce mode to block.
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
@@ -484,6 +487,22 @@ settings:
     - 'pom\.xml$|build\.gradle(\.kts)?$'
 
 rules:
+  - id: rate-limit-exceeded
+    severity: HIGH
+    category: rate_limit
+    title: Per-identity rolling-minute rate limit exceeded
+    event_types: [rate_limit]
+    when: "rate.count > rate.limit"
+    action: block
+
+  - id: rate-limit-unavailable
+    severity: HIGH
+    category: rate_limit
+    title: Rate-limit accounting unavailable
+    event_types: [rate_limit]
+    when: "rate.error != null"
+    action: block
+
   # ── CRITICAL: Destructive commands ────────────────────────────────────
   # Patterns target genuinely destructive rm invocations while allowing
   # routine cleanup (rm -rf ./node_modules, rm -rf /tmp/my-cache,

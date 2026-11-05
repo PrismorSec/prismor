@@ -42,6 +42,7 @@ they all go through one [decision contract](decision-contract.md).
 | `subagent.chain` | the agents above the caller, outermost first, e.g. `['support-bot', 'researcher']` (`[]` on the main agent) | same |
 | `subagent.number` | which of its parent's subagents made the call (1 = first); on a launch, the number the new subagent gets; `0` otherwise | Prismor's [delegation records](subagent-limits.md#delegation-records) |
 | `subagent.age` | seconds since the subagent's first allowed call (`0` on the main agent) | same |
+| `rate.count`, `rate.limit`, `rate.error` | attempted admission ordinal, configured rolling-minute capacity, and accounting error (`null` on success) | trusted live admission gate, on the internal `rate_limit` event only; defaults to `0`, `0`, `null` otherwise |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a
@@ -60,7 +61,7 @@ unless a role is present therefore stays a deny for every unverified caller.
 | Function | `has(path)` — whether the path exists |
 
 Anything else is rejected when the policy loads, including calls, arithmetic
-and names outside the five roots. The expression is parsed into a checked tree
+and names outside these roots. The expression is parsed into a checked tree
 and never passed to Python's `eval`, so a signed org policy cannot carry code.
 
 ## Missing attributes fire the rule
