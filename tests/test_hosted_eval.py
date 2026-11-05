@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from prismor.runtime import remote_eval
+from prismor.runtime import eval_server, remote_eval
 from prismor.runtime.eval_server import EvalHandler, _ThreadingHTTPServer
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import read_session_events
@@ -56,16 +56,20 @@ def test_remote_allow_and_deny(hosted):
     assert _call(client_ws, "echo hi").allow is True
     denied = _call(client_ws, "run danger now")
     assert denied.allow is False and denied.rule_id == "no-danger"
-    # Recorded once, on the server, under the caller's session. Client and
-    # server share PRISMOR_HOME here, so a client-side write would make it 4.
-    assert len(read_session_events(server_ws, "s1")) == 2
+    # The agent's machine writes nothing, and a shared evaluator keeps no
+    # per-caller transcript either; the call reaches the console as telemetry.
+    assert list((server_ws.parent / "home").glob("sessions/*.jsonl")) == []
 
 
-def test_agent_name_reaches_server(hosted):
+def test_agent_name_reaches_server(hosted, monkeypatch):
     server_ws, client_ws = hosted
+    seen = []
+    real = eval_server.evaluate_tool_call
+    monkeypatch.setattr(eval_server, "evaluate_tool_call",
+                        lambda **kw: seen.append(kw) or real(**kw))
     _call(client_ws, "echo hi", sid="named")
-    (ev,) = read_session_events(server_ws, "named")
-    assert ev["metadata"]["agent_name"] == "support-bot"
+    (kw,) = seen
+    assert kw["agent_name"] == "support-bot" and kw["session_id"] == "named"
 
 
 def test_bad_key_fails_closed_in_enforce_open_in_observe(hosted, monkeypatch):
@@ -132,3 +136,12 @@ def test_lambda_allow_deny_and_auth(lam):
 def test_lambda_refuses_without_key(lam, monkeypatch):
     monkeypatch.setattr(EvalHandler, "api_key", None)
     assert lam.handler(_fn_url("/v1/evaluate", {"tool_name": "x", "arguments": {}}, key=None))["statusCode"] == 503
+
+
+def test_request_local_evaluation_does_not_leak_into_client_calls(lam, monkeypatch):
+    monkeypatch.setattr(remote_eval._thread, "serving", False, raising=False)
+    # Even an early authentication rejection must end the request-local guard.
+    assert lam.handler(_fn_url("/v1/evaluate", {"tool_name": "x", "arguments": {}}, key="wrong"))["statusCode"] == 401
+    monkeypatch.setattr(remote_eval, "SERVING", False)
+    monkeypatch.setenv("PRISMOR_EVAL_URL", "https://example.test")
+    assert remote_eval.remote_url() == "https://example.test"

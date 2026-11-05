@@ -908,8 +908,8 @@ class DataBoundaryPolicy:
     """Compiled ``settings.data_boundary``. Inert unless enabled."""
 
     __slots__ = ("enabled", "mode", "trusted", "classes", "per_domain", "bulk_threshold",
-                 "self_identity", "unknown_cli", "source", "errors", "_trusted_policy",
-                 "handoffs", "handoffs_per_subagent")
+                 "_self_identity", "_discover_self", "unknown_cli", "source", "errors",
+                 "_trusted_policy", "handoffs", "handoffs_per_subagent")
 
     def __init__(self) -> None:
         self.enabled = False
@@ -918,7 +918,11 @@ class DataBoundaryPolicy:
         self.classes: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in _DEFAULT_CLASS_ACTIONS.items()}
         self.per_domain: Dict[str, Dict[str, str]] = {}
         self.bulk_threshold = 10
-        self.self_identity: List[str] = []
+        self._self_identity: List[str] = []
+        # Workspace whose git/enrolment identity still has to be merged in (see
+        # discover_self_later). Discovery forks git twice, and most events never
+        # reach a data-boundary check.
+        self._discover_self: Optional[Tuple[Any]] = None
         self.unknown_cli = "observe"
         self.source = ""
         self.errors: List[str] = []
@@ -926,6 +930,26 @@ class DataBoundaryPolicy:
         # What may be handed to a subagent: class -> action, plus per-type overrides.
         self.handoffs: Dict[str, str] = {}
         self.handoffs_per_subagent: Dict[str, Dict[str, str]] = {}
+
+    @property
+    def self_identity(self) -> List[str]:
+        if self._discover_self is not None:
+            (workspace,), self._discover_self = self._discover_self, None
+            try:
+                for ident in discover_self_identity(workspace):
+                    if ident not in self._self_identity:
+                        self._self_identity.append(ident)
+            except Exception:
+                pass
+        return self._self_identity
+
+    @self_identity.setter
+    def self_identity(self, value: List[str]) -> None:
+        self._self_identity = value
+
+    def discover_self_later(self, workspace: Any) -> None:
+        """Add the user's own git/enrolment emails on first read of self_identity."""
+        self._discover_self = (workspace,)
 
     @classmethod
     def from_settings(cls, settings: Dict[str, Any], *, source: str = "") -> "DataBoundaryPolicy":

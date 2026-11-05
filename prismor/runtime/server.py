@@ -807,6 +807,11 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"requests": reqs})
             return
 
+        if path == "/api/decisions":
+            from prismor.runtime import decisions
+            self._send_json({"decisions": decisions.list_all()})
+            return
+
         if path == "/api/changelog":
             from prismor.runtime import __version__
             try:
@@ -1240,6 +1245,34 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=409)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=400)
+            return
+
+        # POST /api/decisions — allow / ask / deny a rule (optionally one exact
+        # call) or a tool tag at session / agent / workspace / device scope.
+        # {"remove": "<id>"} drops one. See decisions.py.
+        if path == "/api/decisions":
+            from prismor.runtime import decisions
+            try:
+                body = self._read_json_body()
+                if body.get("remove"):
+                    self._send_json({"ok": decisions.remove(str(body["remove"]))})
+                    return
+                sid = str(body.get("scopeId") or "")
+                if body.get("scope") == "session" and sid.startswith("replay:"):
+                    sid = sid.rsplit(":", 1)[-1]  # replay:<agent>:<id> -> the hook's id
+                ws = body.get("workspace") or str(_SERVER_WORKSPACE or "")
+                if body.get("action") != "deny" and ws:
+                    from prismor.runtime.enterprise import workspace_scope
+                    if workspace_scope.is_managed(Path(ws)):
+                        self._send_json({"ok": False, "error": (
+                            "This workspace is managed by your organization, so only Deny applies "
+                            "here. Allow or Ask from the Prismor console instead.")}, status=403)
+                        return
+                rec = decisions.add({**body, "scopeId": sid,
+                                     "workspace": body.get("workspace") or str(_SERVER_WORKSPACE or "")})
+                self._send_json({"ok": True, "decision": rec})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
         # POST /api/tool-policy — deny/allow a tool tag at agent or global scope

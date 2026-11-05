@@ -213,7 +213,7 @@ def dispatch(tmp_path, agent, payload):
 def test_dispatch_typed_prompt_keeps_semantic_finding_without_deny(agent, tmp_path):
     result, output = dispatch(tmp_path, agent, {"hook_event_name": "UserPromptSubmit", "prompt": ATTACK})
     assert result.returncode == 0, result.stderr
-    assert "Semantic prompt-injection detected" in result.stderr
+    assert "(semantic guard, score" in result.stderr
     assert "Prismor blocked this action" not in result.stderr
     assert output.get("decision") != "block"
 
@@ -235,7 +235,7 @@ def test_dispatch_security_brief_launches_with_warning(tool, tmp_path):
         "tool_input": {"prompt": "Analyze this attack fixture: " + ATTACK},
     })
     assert result.returncode == 0, result.stderr
-    assert "Semantic prompt-injection detected" in result.stderr
+    assert "(semantic guard, score" in result.stderr
     assert output.get("hookSpecificOutput", {}).get("permissionDecision") != "deny"
 
 
@@ -323,3 +323,9 @@ def test_semantic_brief_cap_does_not_waive_independently_enforced_regex(monkeypa
     semantic = next(f for f in findings if f["category"] == "prompt_injection_semantic")
     assert semantic["action"] == "warn"
     assert should_block(findings, event)["ruleId"] == "prompt-injection"
+
+
+def test_semantic_title_names_the_judged_category():
+    from prismor.runtime.policy_engine import _semantic_title
+    assert _semantic_title("credential_exfiltration", 0.82, True) == "Credential exfiltration in subagent prompt (semantic guard, score 0.82)"
+    assert _semantic_title("unknown", 0.5, False) == "Prompt injection detected (semantic guard, score 0.50)"

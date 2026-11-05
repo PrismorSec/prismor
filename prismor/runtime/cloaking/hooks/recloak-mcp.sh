@@ -35,7 +35,11 @@ scrubbed="$(printf '%s' "$response" | SECRETS_DIR="$SECRETS_DIR" perl -0777 -pe 
     for my $f (glob("\Q$ENV{SECRETS_DIR}\E/*")) {
       next unless -f $f && open(my $fh, "<", $f);
       local $/; my $real = <$fh>; $real =~ s/\n+\z//;
-      next unless length $real;
+      # Mirrors is_scrubbable_secret() in ../runtime.py: a short single-case
+      # word ("ses", "false") is config, and masking it mangled every
+      # "session" and boolean in browser/MCP output.
+      my $n = length $real;
+      next unless $n >= 16 || ($n >= 8 && ($real =~ /[[:digit:]]|[^[:alnum:]]/ || ($real =~ /[[:lower:]]/ && $real =~ /[[:upper:]]/)));
       (my $name = $f) =~ s{.*/}{};
       push @s, [$real, "\@\@SECRET:$name\@\@"];
     }
@@ -45,6 +49,16 @@ scrubbed="$(printf '%s' "$response" | SECRETS_DIR="$SECRETS_DIR" perl -0777 -pe 
 
 # Only mutate if something actually changed — avoids noisy empty mutations.
 if [[ "$scrubbed" != "$response" ]]; then
+  # shellcheck source=_ledger.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
+  session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
+  # One event per secret whose placeholder now appears in the scrubbed output
+  # but not in the original (names only; the value never leaves perl).
+  while IFS= read -r ph; do
+    [[ -n "$ph" && "$response" != *"$ph"* ]] || continue
+    name="${ph#@@SECRET:}"
+    prismor_cloak_event mcp_output redacted "$session_id" "${name%@@}" "" "$tool_name"
+  done < <(printf '%s' "$scrubbed" | grep -oE '@@SECRET:[a-zA-Z0-9_-]+@@' | sort -u)
   # stdin, not --arg: a multi-MB response overflows ARG_MAX and jq never runs.
   printf '%s' "$scrubbed" | jq -Rs \
     '{hookSpecificOutput:{hookEventName:"PostToolUse",updatedMCPToolOutput:.}}'

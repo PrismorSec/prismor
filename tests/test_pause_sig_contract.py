@@ -113,5 +113,39 @@ class TestRemotePauseRead(unittest.TestCase):
             self.assertIsNone(remote_policy.remote_pause())
 
 
+class TestServedYamlRoundTrip(unittest.TestCase):
+    """The server writes the pause into YAML with UNQUOTED ISO times. The tests
+    above hand verify_and_load's output in as strings, so they never saw that
+    stock yaml.safe_load turns ``at`` into a datetime — which made every org
+    pause a silent no-op and the sig a permanent re-pull."""
+
+    SERVED_YAML = (
+        "version: '1.0'\nrules: []\nsettings:\n  device_pause:\n"
+        "    state: paused\n    at: 2026-07-30T12:00:00.000Z\n"
+        "    until: 2099-01-01T00:00:00.000Z\n    reason: incident 412\n    by: user_1\n"
+    )
+
+    def test_pause_survives_the_real_loader(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            pol, sig = Path(d) / "p.yaml", Path(d) / "p.yaml.sig"
+            pol.write_text(self.SERVED_YAML)
+            sig.write_text("x")
+            remote_policy._VERIFIED.clear()
+            with patch.object(remote_policy, "cached_policy_path", return_value=pol), \
+                 patch.object(remote_policy, "_cached_sig_path", return_value=sig), \
+                 patch.object(remote_policy, "_verify_signature", return_value=True), \
+                 patch.object(remote_policy, "_meta_path", return_value=Path(d) / "meta.json"), \
+                 patch.object(remote_policy._identity, "revoked_info", return_value=None):
+                self.assertEqual(remote_policy.remote_pause(), SERVED_PAUSE)
+                self.assertEqual(remote_policy._current_pause_sig(), EXPECTED_SIG)
+                from prismor.runtime import pause
+                state = pause.org_state()
+                self.assertTrue(state and state["paused"])
+            remote_policy._VERIFIED.clear()
+
+
 if __name__ == "__main__":
     unittest.main()

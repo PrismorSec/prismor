@@ -313,3 +313,22 @@ def test_oauth_token_request_does_not_follow_a_redirect():
         origin.shutdown()
         target.shutdown()
     assert seen == []
+
+
+def test_sigv4_signed_request_is_not_redirected():
+    # SigV4 (from main) signs the POST; a redirect must not carry that signature
+    # to another host any more than a bearer token.
+    from prismor.runtime.mcp_gateway import _spec_from_entry
+    origin, target, seen = _redirect_pair(302)  # urllib follows 302 on POST, not 307
+    spec = _spec_from_entry("up", {
+        "url": f"http://127.0.0.1:{origin.server_port}/mcp",
+        "sigv4": {"service": "lambda", "region": "us-east-1"},
+        "env": {"AWS_ACCESS_KEY_ID": "AKIDEXAMPLE", "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"},
+    })
+    try:
+        with pytest.raises(UpstreamError, match="redirects are not followed"):
+            UpstreamHttp(spec, None, lambda s: None).request("initialize", {})
+    finally:
+        origin.shutdown()
+        target.shutdown()
+    assert seen == []

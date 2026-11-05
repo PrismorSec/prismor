@@ -638,6 +638,16 @@ class Screen:
         )
         self._writer.start()
         Screen._all.append(self)
+        self._connections: Any = None
+        self._connections_at = 0.0
+
+    def connections(self) -> Any:
+        """The workspace's agent_connections, re-read every few seconds (~20ms a build)."""
+        if self._connections is None or time.monotonic() - self._connections_at > 5:
+            from prismor.runtime.policy_engine import PolicyEngine
+            self._connections = PolicyEngine(workspace=self.workspace).agent_connections
+            self._connections_at = time.monotonic()
+        return self._connections
 
     # -- events ----------------------------------------------------------
 
@@ -921,31 +931,11 @@ class Screen:
         try:
             from prismor.runtime.redaction import redact_text
             out, _ = redact_text(text, workspace=self.workspace,
-                                 data_boundary=self.mode == "enforce",
-                                 engine=self._redact_engine())
+                                 data_boundary=self.mode == "enforce")
             return out
         except Exception:
             return text
 
-    #: How long one policy engine serves ``redact``. A request body is masked
-    #: string by string, and a coding agent's body holds thousands of strings
-    #: (system prompt, tool schemas, history). A fresh engine per string cost
-    #: two ``git config`` subprocesses each: ~100s of overhead on a one-word
-    #: Claude Code prompt. A few seconds keeps policy edits prompt.
-    _ENGINE_TTL = 5.0
-
-    def _redact_engine(self) -> Any:
-        cached = getattr(self, "_engine_cache", None)
-        now = time.monotonic()
-        if cached and now - cached[1] < self._ENGINE_TTL:
-            return cached[0]
-        try:
-            from prismor.runtime.policy_engine import PolicyEngine
-            engine = PolicyEngine(workspace=self.workspace)
-        except Exception:
-            return None  # redact_text builds its own; masking must not fail open
-        self._engine_cache = (engine, now)
-        return engine
 
 
 # ── cloud-provider credentials ───────────────────────────────────────────────
@@ -1001,7 +991,8 @@ def _canonical_query(query: str) -> str:
 def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
                   region: str, service: str, method: str, canonical_uri: str,
                   query: str, payload: bytes, host: str,
-                  now: Optional[datetime] = None) -> Dict[str, str]:
+                  now: Optional[datetime] = None,
+                  extra_signed: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """AWS SigV4 for one request, stdlib only.
 
     Pinned by a signature computed from the published AWS example credentials
@@ -1014,13 +1005,16 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     datestamp = now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(payload or b"").hexdigest()
 
-    # Canonical headers must be sorted by lowercased name; host, x-amz-date and
-    # x-amz-security-token already are.
-    canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
-    signed_headers = "host;x-amz-date"
+    # Canonical headers must be sorted by lowercased name. ``extra_signed``
+    # is for services that require more signed headers (S3 wants
+    # x-amz-content-sha256); the caller still sends them.
+    signed = {"host": host, "x-amz-date": amz_date}
     if session_token:
-        canonical_headers += f"x-amz-security-token:{session_token}\n"
-        signed_headers += ";x-amz-security-token"
+        signed["x-amz-security-token"] = session_token
+    for name, value in (extra_signed or {}).items():
+        signed[name.lower()] = value
+    canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
+    signed_headers = ";".join(sorted(signed))
 
     canonical_request = "\n".join([
         method, aws_canonical_path(canonical_uri), _canonical_query(query),
@@ -1845,6 +1839,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
+        # A2A: the calling agent (the key's `agent`, else this proxy's agent
+        # name) and the agent it calls (the upstream), for agent_connections.
+        self._a2a_from = (str(self._key_meta.get("agent") or "")
+                          or (self.screen.agent_name if self.screen is not None else "")) if a2a else ""
+        self._a2a_to = (upstream_override or provider) if a2a else ""
+        self._a2a_aud = self._a2a_to
+        if a2a and self.screen is not None:
+            try:  # sign for the agent the receiver knows, not this proxy's upstream key
+                pol = self.screen.connections()
+                url = self._a2a_url()
+                self._a2a_aud = (pol.resolve(url, "a2a") if url and pol.known(url, "a2a")
+                                 else pol.resolve(self._a2a_to))
+            except Exception:
+                pass
         self._spoken: Any = (self.headers.get("x-prismor-refusal") or "").strip().lower() == "spoken"
         if self._spoken:
             self._spoken = spoken_text(self.headers.get("x-prismor-refusal-text") or "") or True
@@ -1898,6 +1906,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         self._pending_verdict: Optional[Dict[str, Any]] = None
         self._t0 = time.monotonic()
+        if a2a and not screened and self.screen is not None:
+            # tasks/get, tasks/cancel, push-notification config... carry no new
+            # message to screen, but still reach another agent: the connection
+            # decides them too.
+            refusal = self._a2a_connection_refusal()
+            if refusal:
+                self._refuse(provider, refusal)
+                return
         if screened and self.screen is not None:
             parallel = ((self.headers.get("x-prismor-screening") or "").strip().lower() == "parallel"
                         and streaming and provider in ("openai", "anthropic"))
@@ -1921,6 +1937,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ProxyConfigError as exc:
             self._refuse(provider, f"prismor-proxy: {exc}", status=502)
             return
+        if provider == "a2a":
+            # A fallback upstream is another agent, one the connection check
+            # above never looked at: A2A goes to the agent it named or nowhere.
+            chain = chain[:1]
 
         last_error: Optional[str] = None
         for attempt, upstream_name in enumerate(chain):
@@ -2041,6 +2061,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
+        if provider == "a2a":
+            # Always a handoff, even when the caller is unnamed: then the sender
+            # falls back to this proxy's agent, and with no connection it is
+            # refused in enforce rather than passed unchecked.
+            event["metadata"].update(handoff_to=self._a2a_to, a2a_url=self._a2a_url())
+            if self._a2a_from:
+                event["metadata"]["from_agent"] = self._a2a_from
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -2054,6 +2081,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return refusal_reason(blocking, getattr(self, "_spoken", False))
         _mask_in_place(body, self.screen.redact)
         return None
+
+    def _a2a_url(self) -> str:
+        return str((self.config.upstreams.get(self._a2a_to) or {}).get("base_url") or "")
+
+    def _a2a_connection_refusal(self) -> Optional[str]:
+        """The refusal for an A2A call that carries no message, when no connection allows it."""
+        from prismor.runtime.agent_connections import agent_message
+        try:
+            pol = self.screen.connections()  # type: ignore[union-attr]
+        except Exception:
+            return "Blocked by Prismor: agent connection policy could not be loaded (fail-closed)"
+        if not pol.enabled:
+            return None
+        msg = agent_message({"metadata": {"handoff_to": self._a2a_to, "provider": "a2a",
+                                          "a2a_url": self._a2a_url(), "from_agent": self._a2a_from}}, pol)
+        # ponytail: an `ask` pair was approved on the message that opened the task.
+        if msg is None or pol.decide(msg["from"], msg["to"], "a2a") != "deny":
+            return None
+        reason = (f"no connection policy lets {pol.label(pol.resolve(msg['from']))} "
+                  f"call {pol.label(pol.resolve(msg['to']))}")
+        if pol.mode != "enforce":
+            sys.stderr.write(f"[prismor-proxy] agent_connections (observe) would refuse: {reason}\n")
+            return None
+        return f"Blocked by Prismor: {reason}"
 
     def _relay(self, upstream_name: str, provider: str, raw_body: bytes,
                model: str, streaming: bool, screened: bool,
@@ -2079,6 +2130,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             query = "&".join(p for p in query.split("&") if not p.startswith("key="))
         headers = self._upstream_headers(spec, raw_body, host=base.netloc or base.hostname or "",
                                          path=path, query=query)
+        if provider == "a2a" and getattr(self, "_a2a_from", ""):
+            # Lets the receiving agent's guard check who is calling.
+            from prismor.runtime.agent_connections import HEADER, sign_caller
+            token = sign_caller(self._a2a_from, getattr(self, "_a2a_aud", "") or upstream_name, act=subject)
+            if token:
+                headers[HEADER] = token
         for attempt in (1, 2):
             conn, reused = UPSTREAM_POOL.get(scheme, base.hostname, base.port)
             try:
@@ -2093,7 +2150,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     continue          # the server closed an idle connection: one fresh try
                 raise _Retryable(f"{upstream_name}: {exc}") from exc
 
-        if resp.status >= 500 and self.config.chain(upstream_name)[1:]:
+        # A2A has no fallback agent (see _forward): its 5xx goes back as it came.
+        if resp.status >= 500 and provider != "a2a" and self.config.chain(upstream_name)[1:]:
             conn.close()
             raise _Retryable(f"{upstream_name}: HTTP {resp.status}")
 
@@ -2531,6 +2589,7 @@ def install_background_sinks(maxsize: int = 10000) -> "queue.Queue[Any]":
         heartbeat.maybe_flush = maybe_flush
     except Exception:
         pass
+    sinks.run_sink_hook("start_background")
     return pending
 
 

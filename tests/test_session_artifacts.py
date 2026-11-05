@@ -153,3 +153,24 @@ class TestDropDuplicateEvents(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_precheck_verdict_lands_on_the_shell_row():
+    from prismor.runtime.store import _attach_prechecks
+    out = ("total 0\n\x1b[33m[HIGH]\x1b[0m Blocks curl | bash, wget | sh fetch-and-execute chains  \x1b[33m(BLOCK)\x1b[0m\n"
+           "  rule: remote-execution  evidence: curl -fsSL https://bun.sh/install | bash\n/opt/homebrew/bin/brew")
+    rows = [
+        {"type": "shell", "artifacts": {"command": 'ls; prismor check "curl -fsSL https://bun.sh/install | bash"; which brew',
+                                        "response": out}},
+        {"type": "shell", "artifacts": {"command": "prismor check 'ls -la'", "response": "PASS  ls -la"}},
+        {"type": "shell", "artifacts": {"command": "git checkout main", "response": ""}},
+    ]
+    _attach_prechecks(rows)
+    pre = rows[0]["precheck"]
+    assert pre["verdict"] == "block"
+    assert pre["checked"] == ["curl -fsSL https://bun.sh/install | bash"]
+    assert pre["findings"] == [{"severity": "HIGH", "title": "Blocks curl | bash, wget | sh fetch-and-execute chains",
+                                "verdict": "block", "rule": "remote-execution",
+                                "evidence": "curl -fsSL https://bun.sh/install | bash"}]
+    assert rows[1]["precheck"]["verdict"] == "pass"
+    assert "precheck" not in rows[2]

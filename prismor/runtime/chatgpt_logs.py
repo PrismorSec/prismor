@@ -230,6 +230,7 @@ def screen(rec: Dict[str, Any], workspace: Path) -> List[Dict[str, Any]]:
         # Reported once, below, together with the secret findings. The
         # conversation lives with OpenAI, so nothing goes to this machine's store.
         record=False, persist=False, register_agent=False, flush_at_exit=False,
+        rate_accounting=False,
     )
     # The message was sent before the log existed: every finding is observed,
     # whatever an enrolled device's enforce mode would make of it.

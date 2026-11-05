@@ -5,12 +5,13 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _dispatch(tmp_path, stdout_text):
+def _dispatch(tmp_path, stdout_text, call_id=""):
     ws = tmp_path / "ws"
     ws.mkdir(exist_ok=True)
     env = {k: v for k, v in os.environ.items()
@@ -19,6 +20,7 @@ def _dispatch(tmp_path, stdout_text):
     payload = {
         "session_id": "post-notice", "hook_event_name": "PostToolUse", "tool_name": "Bash",
         "tool_input": {"command": "python3 scripts/total.py"},
+        "tool_use_id": call_id,
         "tool_response": {"stdout": stdout_text, "stderr": ""}, "cwd": str(ws),
     }
     proc = subprocess.run(
@@ -45,3 +47,13 @@ def test_injected_tool_output_warns_the_agent(tmp_path):
 
 def test_benign_tool_output_adds_nothing(tmp_path):
     assert _dispatch(tmp_path, "TOTAL: 1354.85") == ""
+
+
+def test_parallel_notice_names_only_the_scored_call(tmp_path):
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        flagged = pool.submit(_dispatch, tmp_path, INJECTED_OUTPUT, "toolu_flagged")
+        clean = pool.submit(_dispatch, tmp_path, "TOTAL: 1354.85", "toolu_clean")
+        ctx = flagged.result()
+        assert "UNTRUSTED DATA" in ctx and "toolu_flagged" in ctx
+        assert "toolu_clean" not in ctx
+        assert clean.result() == ""

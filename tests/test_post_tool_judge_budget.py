@@ -49,6 +49,26 @@ def test_paused_tool_results_skip_the_judge(engine, monkeypatch):
     assert time.perf_counter() - t0 < 1 and SlowGuard.calls == 0
 
 
+class CliGuard(SlowGuard):
+    mode = "hybrid_local_llm"   # a Claude/Codex CLI judge
+
+
+def test_a_cli_judge_is_not_spawned_under_a_budget_it_cannot_meet(engine, monkeypatch):
+    # It needs 5-20s; abandoned at 1.5s it orphaned its process and its verdict.
+    monkeypatch.setattr(engine, "_get_semantic_guard", lambda: CliGuard())
+    t0 = time.perf_counter()
+    finding = engine._run_semantic_layer(_event("PostToolUse"), {"combined_text": TEXT}, 0, "s")
+    assert time.perf_counter() - t0 < 1 and SlowGuard.calls == 0
+    assert "[LLM skipped]" in finding["evidence"]
+
+
+def test_a_cli_judge_runs_when_the_budget_fits_it(engine, monkeypatch):
+    monkeypatch.setattr(engine, "_get_semantic_guard", lambda: CliGuard())
+    monkeypatch.setenv("PRISMOR_SEMANTIC_BUDGET_MS", "25000")
+    engine._run_semantic_layer(_event("PreToolUse"), {"combined_text": TEXT}, 0, "s")
+    assert SlowGuard.calls == 1
+
+
 def test_a_pre_action_call_still_waits_for_the_judge(engine, monkeypatch):
     # Before the tool runs the verdict can block: no post-tool budget here.
     monkeypatch.setenv("PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS", "200")

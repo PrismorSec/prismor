@@ -20,6 +20,18 @@ Supported sink types (configured under ``settings.outputs`` in policy.yaml):
     - type: datadog            # Datadog Logs intake (OCSF body)
       api_key: ${DD_API_KEY}
       site: datadoghq.com
+    - type: elastic            # Elasticsearch / OpenSearch _bulk (OCSF docs)
+      url: https://es.example.com:9200
+      api_key: ${ES_API_KEY}
+    - type: sentinel           # Azure Monitor Logs Ingestion API
+      endpoint: https://<dce>.ingest.monitor.azure.com
+      dcr_id: dcr-...
+      tenant_id: ${AZURE_TENANT_ID}
+      client_id: ${AZURE_CLIENT_ID}
+      client_secret: ${AZURE_CLIENT_SECRET}
+    - type: s3                 # one NDJSON object of OCSF findings per call
+      bucket: security-logs
+      region: us-east-1
     - type: otel               # OpenTelemetry collector (OTLP/HTTP logs)
       endpoint: http://localhost:4318   # base URL; the sink appends /v1/logs
       headers: { "Authorization": "Bearer ${OTEL_TOKEN}" }
@@ -240,6 +252,152 @@ def _dispatch_datadog(cfg: Dict[str, Any], event: Dict[str, Any]) -> None:
     req.add_header("User-Agent", _http_user_agent())
     with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # fixed or operator-configured URL  # nosec B310
         resp.read(16)
+
+
+# Batch sinks take every event from one dispatch call in a single request:
+# each request is a round trip on the hook path, and Elastic _bulk, the
+# Azure Logs Ingestion API and an S3 object all accept many records at once.
+
+def _post(url: str, data: bytes, headers: Dict[str, str], cfg: Dict[str, Any]) -> None:
+    import urllib.request
+    req = urllib.request.Request(url, data=data, headers=headers, method=cfg.get("_method", "POST"))
+    req.add_header("User-Agent", _http_user_agent())
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # operator-configured URL  # nosec B310
+        resp.read(16)
+
+
+def _dispatch_elastic(cfg: Dict[str, Any], events: List[Dict[str, Any]]) -> None:
+    """Elasticsearch / OpenSearch ``_bulk``. One OCSF document per finding,
+    plus ``@timestamp`` so the index sorts by time without a pipeline.
+    Config: url, [index] (default prismor-findings), api_key | username+password."""
+    url = str(cfg.get("url") or "").rstrip("/")
+    if not url or not events:
+        return
+    import base64
+    index = cfg.get("index", "prismor-findings")
+    lines = []
+    for event in events:
+        lines.append(json.dumps({"create": {"_index": index}}))
+        lines.append(json.dumps({"@timestamp": event.get("@timestamp"), **_format_ocsf(event)}))
+    headers = {"Content-Type": "application/x-ndjson"}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"ApiKey {cfg['api_key']}"
+    elif cfg.get("username"):
+        pair = f"{cfg['username']}:{cfg.get('password', '')}".encode("utf-8")
+        headers["Authorization"] = "Basic " + base64.b64encode(pair).decode("ascii")
+    _post(f"{url}/_bulk", ("\n".join(lines) + "\n").encode("utf-8"), headers, cfg)
+
+
+_AZURE_TOKENS: Dict[str, Any] = {}
+_AZURE_LOCK = threading.Lock()
+
+
+def _azure_monitor_token(cfg: Dict[str, Any]) -> str:
+    """Entra client-credentials token for the Logs Ingestion API, cached until
+    two minutes before expiry. ``token`` in the config skips the exchange."""
+    if cfg.get("token"):
+        return str(cfg["token"])
+    tenant, client, secret = cfg.get("tenant_id"), cfg.get("client_id"), cfg.get("client_secret")
+    if not (tenant and client and secret):
+        raise ValueError("sentinel needs tenant_id, client_id and client_secret (or token)")
+    key = f"{tenant}:{client}"
+    with _AZURE_LOCK:
+        cached = _AZURE_TOKENS.get(key)
+        if cached and cached[1] - 120 > time.time():
+            return cached[0]
+    import urllib.parse
+    import urllib.request
+    body = urllib.parse.urlencode({
+        "grant_type": "client_credentials",
+        "client_id": client,
+        "client_secret": secret,
+        "scope": "https://monitor.azure.com/.default",
+    }).encode("ascii")
+    authority = str(cfg.get("authority", "https://login.microsoftonline.com")).rstrip("/")
+    req = urllib.request.Request(f"{authority}/{tenant}/oauth2/v2.0/token", data=body, method="POST",
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    req.add_header("User-Agent", _http_user_agent())
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # operator-configured URL  # nosec B310
+        reply = json.loads(resp.read())
+    token = reply["access_token"]
+    with _AZURE_LOCK:
+        _AZURE_TOKENS[key] = (token, time.time() + float(reply.get("expires_in", 3600)))
+    return token
+
+
+def _sentinel_row(event: Dict[str, Any]) -> Dict[str, Any]:
+    """One row of the custom table. Column names match the DCR stream in
+    docs/telemetry-sinks.md; ``Ocsf`` keeps the full finding as dynamic."""
+    return {
+        "TimeGenerated": event.get("@timestamp"),
+        "Severity": event.get("severity"),
+        "Category": event.get("category"),
+        "RuleId": event.get("rule_id"),
+        "Action": event.get("action"),
+        "Title": event.get("title"),
+        "Evidence": event.get("evidence"),
+        "Computer": event.get("hostname"),
+        "SessionId": event.get("session_id"),
+        "Agent": event.get("agent"),
+        "Ocsf": _format_ocsf(event),
+    }
+
+
+def _dispatch_sentinel(cfg: Dict[str, Any], events: List[Dict[str, Any]]) -> None:
+    """Microsoft Sentinel via the Azure Monitor Logs Ingestion API (the
+    DCR-based API; the shared-key Data Collector API is retired).
+    Config: endpoint (DCE ingestion URL), dcr_id (immutable id), [stream]
+    (default Custom-PrismorFindings_CL), and tenant_id/client_id/client_secret."""
+    endpoint = str(cfg.get("endpoint") or "").rstrip("/")
+    dcr = cfg.get("dcr_id")
+    if not endpoint or not dcr or not events:
+        return
+    stream = cfg.get("stream", "Custom-PrismorFindings_CL")
+    url = f"{endpoint}/dataCollectionRules/{dcr}/streams/{stream}?api-version=2023-01-01"
+    headers = {"Authorization": f"Bearer {_azure_monitor_token(cfg)}", "Content-Type": "application/json"}
+    _post(url, json.dumps([_sentinel_row(e) for e in events]).encode("utf-8"), headers, cfg)
+
+
+def _dispatch_s3(cfg: Dict[str, Any], events: List[Dict[str, Any]]) -> None:
+    """One NDJSON object of OCSF findings per dispatch, under
+    ``<prefix>/YYYY/MM/DD/<host>-<time>-<rand>.ndjson`` so Athena, Security
+    Lake crawlers or a SIEM S3 input can pick it up. SigV4, stdlib only.
+    Config: bucket, region, [prefix] (default prismor), [endpoint] for
+    S3-compatible stores (path-style). Credentials from AWS_ACCESS_KEY_ID /
+    AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN, or access_key/secret_key."""
+    bucket, region = cfg.get("bucket"), cfg.get("region") or os.environ.get("AWS_REGION")
+    if not bucket or not region or not events:
+        return
+    import hashlib
+    import secrets
+    from urllib.parse import urlsplit
+    from prismor.runtime.proxy import sigv4_headers
+
+    access = cfg.get("access_key") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = cfg.get("secret_key") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    if not access or not secret:
+        raise ValueError("s3 needs AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY")
+    token = cfg.get("session_token") or os.environ.get("AWS_SESSION_TOKEN") or ""
+
+    now = datetime.now(timezone.utc)
+    prefix = str(cfg.get("prefix", "prismor")).strip("/")
+    host_part = re.sub(r"[^A-Za-z0-9._-]", "_", _hostname())
+    key = f"{prefix}/{now:%Y/%m/%d}/{host_part}-{now:%H%M%S}-{secrets.token_hex(4)}.ndjson".lstrip("/")
+    if cfg.get("endpoint"):
+        base = urlsplit(str(cfg["endpoint"]).rstrip("/"))
+        host, path = base.netloc, f"{base.path}/{bucket}/{key}"
+        scheme = base.scheme or "https"
+    else:
+        host, path, scheme = f"{bucket}.s3.{region}.amazonaws.com", f"/{key}", "https"
+
+    data = ("\n".join(json.dumps(_format_ocsf(e)) for e in events) + "\n").encode("utf-8")
+    content_sha = hashlib.sha256(data).hexdigest()
+    headers = sigv4_headers(access_key=access, secret_key=secret, session_token=token,
+                            region=region, service="s3", method="PUT", canonical_uri=path,
+                            query="", payload=data, host=host, now=now,
+                            extra_signed={"x-amz-content-sha256": content_sha})
+    headers.update({"x-amz-content-sha256": content_sha, "Content-Type": "application/x-ndjson"})
+    _post(f"{scheme}://{host}{path}", data, headers, {**cfg, "_method": "PUT"})
 
 
 # OTLP severity numbers (spec): 9 INFO, 13 WARN, 17 ERROR, 21 FATAL.
@@ -505,6 +663,21 @@ def _dispatch_prismor(
     if not records:
         return
 
+    # A device that has never reported coverage sends it with its first
+    # upload (immediately if that is a block, else on the next flush): the
+    # console otherwise showed a device whose first record was a block as
+    # "coverage not reported". Added after the redaction check on purpose --
+    # device_status is not a finding record.
+    first_status = None
+    try:
+        from prismor.runtime.enterprise.heartbeat import status_record_once
+        _ws = extra.get("workspace")
+        first_status = status_record_once(Path(_ws) if _ws else None)
+    except Exception:
+        first_status = None
+    if first_status:
+        records.insert(0, first_status)
+
     # SECURITY: the prismor sink carries the device-key bearer credential
     # (see upload_telemetry's Authorization header). A local policy.yaml could
     # otherwise set `url:` and redirect that credential to an attacker endpoint,
@@ -677,6 +850,55 @@ _DISPATCHERS = {
     "otel": _dispatch_otel,
 }
 
+#: Sinks that take the whole list of events from one dispatch call.
+_BATCH_DISPATCHERS = {
+    "elastic": _dispatch_elastic,
+    "sentinel": _dispatch_sentinel,
+    "s3": _dispatch_s3,
+}
+
+#: Entry-point group for sinks shipped outside this package. The entry point
+#: name is the sink ``type``; the target is a module with any of
+#: ``dispatch_events(cfg, events)``, ``dispatch_inventory(cfg, rows)`` and the
+#: lifecycle hooks ``start_background``, ``exit_flush``, ``system_sync`` and
+#: ``doctor`` (each takes the policy ``outputs`` or None). Events and rows are
+#: built by this module, so a plugin only sees what the builtin sinks see.
+SINK_PLUGIN_GROUP = "prismor.sinks"
+_SINK_PLUGINS: Optional[Dict[str, Any]] = None
+
+
+def sink_plugins() -> Dict[str, Any]:
+    """Installed sink plugins by type. A plugin that fails to import is skipped."""
+    global _SINK_PLUGINS
+    if _SINK_PLUGINS is None:
+        found: Dict[str, Any] = {}
+        try:
+            from importlib.metadata import entry_points
+            eps = list(entry_points(group=SINK_PLUGIN_GROUP))
+        except Exception:
+            eps = []
+        for ep in eps:
+            try:
+                found[ep.name.lower()] = ep.load()
+            except Exception:
+                continue
+        _SINK_PLUGINS = found
+    return _SINK_PLUGINS
+
+
+def run_sink_hook(name: str, outputs: Optional[List[Dict[str, Any]]] = None) -> List[Any]:
+    """Call lifecycle hook ``name`` on every plugin. Never raises; returns results."""
+    results: List[Any] = []
+    for kind, plugin in sink_plugins().items():
+        fn = getattr(plugin, name, None)
+        if fn is None:
+            continue
+        try:
+            results.append(fn(outputs))
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] sink {kind!r} {name} failed: {exc.__class__.__name__}\n")
+    return results
+
 
 def dispatch(
     findings: List[Dict[str, Any]],
@@ -707,8 +929,10 @@ def dispatch(
         except Exception as exc:
             sys.stderr.write(f"[prismor] sink 'prismor' failed: {exc}\n")
 
+    events: List[Dict[str, Any]] = []
     for finding in findings:
         event = _build_event(finding, extra=extra)
+        events.append(event)
         for sink_cfg in generic_sinks:
             sink = _expand_env(sink_cfg)
             kind = str(sink.get("type", "")).lower()
@@ -719,3 +943,114 @@ def dispatch(
                 disp(sink, event)
             except Exception as exc:
                 sys.stderr.write(f"[prismor] sink {kind!r} failed: {exc}\n")
+    for sink_cfg in generic_sinks:
+        kind = str((sink_cfg or {}).get("type", "")).lower()
+        if kind in _DISPATCHERS:
+            continue
+        if kind in _BATCH_DISPATCHERS:
+            try:
+                _BATCH_DISPATCHERS[kind](_expand_env(sink_cfg), events)
+            except Exception as exc:
+                # The message may carry a token or URL; the class name cannot.
+                sys.stderr.write(f"[prismor] sink {kind!r} failed: {exc.__class__.__name__}\n")
+            continue
+        plugin_fn = getattr(sink_plugins().get(kind), "dispatch_events", None)
+        if plugin_fn is None:
+            continue
+        try:
+            plugin_fn(_expand_env(sink_cfg), events)
+        except Exception as exc:
+            # The message may carry a token or URL; the class name cannot.
+            sys.stderr.write(f"[prismor] sink {kind!r} failed: {exc.__class__.__name__}\n")
+
+
+# ── inventory sinks ──────────────────────────────────────────────────────────
+
+def _scrub_obj(value: Any) -> Any:
+    """Scrub every string in an inventory payload. Fails closed per string."""
+    if isinstance(value, str):
+        return _scrub_for_sink(value)
+    if isinstance(value, dict):
+        return {str(k): _scrub_obj(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_obj(v) for v in value]
+    return value
+
+
+def _dispatch_splunk_inventory(cfg: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """HEC event is the inventory record, not an OCSF finding."""
+    import urllib.request
+    url = cfg.get("url")
+    token = cfg.get("token")
+    if not url or not token:
+        return
+    envelope = {
+        "event": record,
+        "sourcetype": cfg.get("sourcetype", "prismor:inventory"),
+    }
+    if cfg.get("index"):
+        envelope["index"] = cfg["index"]
+    data = json.dumps(envelope).encode("utf-8")
+    headers = {"Authorization": f"Splunk {token}", "Content-Type": "application/json"}
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    req.add_header("User-Agent", _http_user_agent())
+    with urllib.request.urlopen(req, timeout=float(cfg.get("timeout_seconds", 3))) as resp:  # operator-configured URL  # nosec B310
+        resp.read(16)
+
+
+def dispatch_inventory(records: List[Dict[str, Any]], sinks: List[Dict[str, Any]]) -> None:
+    """Send inventory records to ``settings.outputs`` sinks. Best-effort.
+
+    Rows are scrubbed here, before any sink (builtin or plugin) sees them.
+    """
+    if not records or not sinks:
+        return
+    rows = [_scrub_obj(record) for record in records]
+    for sink_cfg in sinks:
+        sink = _expand_env(sink_cfg)
+        kind = str(sink.get("type", "")).lower()
+        try:
+            if kind == "file":
+                for row in rows:
+                    _dispatch_file(sink, row)
+            elif kind == "webhook":
+                _dispatch_webhook(sink, rows)
+            elif kind == "syslog":
+                for row in rows:
+                    _dispatch_syslog(sink, row)
+            elif kind == "splunk":
+                for row in rows:
+                    _dispatch_splunk_inventory(sink, row)
+            elif kind == "datadog":
+                for row in rows:
+                    _dispatch_datadog(sink, {
+                        "severity": str((row.get("risk") or {}).get("level") or "LOW").upper(),
+                        "title": f"{row.get('kind')}:{row.get('name')}",
+                        "evidence": row.get("entity_key") or "",
+                        "category": "inventory",
+                    })
+            elif kind == "otel":
+                for row in rows:
+                    _dispatch_otel(sink, {
+                        "severity": str((row.get("risk") or {}).get("level") or "LOW").upper(),
+                        "title": f"{row.get('kind')}:{row.get('name')}",
+                        "evidence": row.get("entity_key") or "",
+                        "hostname": (row.get("location") or {}).get("hostname"),
+                    })
+            elif kind in _BATCH_DISPATCHERS:
+                _BATCH_DISPATCHERS[kind](sink, [{
+                    "@timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "severity": str((row.get("risk") or {}).get("level") or "LOW").upper(),
+                    "title": f"{row.get('kind')}:{row.get('name')}",
+                    "evidence": row.get("entity_key") or "",
+                    "category": "inventory",
+                    "hostname": (row.get("location") or {}).get("hostname"),
+                } for row in rows])
+            else:
+                plugin_fn = getattr(sink_plugins().get(kind), "dispatch_inventory", None)
+                if plugin_fn is None:
+                    sys.stderr.write(f"[prismor] inventory sink {kind!r} is not installed\n")
+                else:
+                    plugin_fn(sink, rows)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] inventory sink {kind!r} failed: {exc.__class__.__name__}\n")

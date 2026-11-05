@@ -26,6 +26,8 @@ set -uo pipefail
 
 # shellcheck source=_patterns.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_patterns.sh"
+# shellcheck source=_ledger.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
 
 SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
@@ -36,6 +38,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 [[ -n "$tool_name" ]] || exit 0
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
 
 # Pick the text to scan. For Bash we scan only the command; for file-writing
 # and MCP tools we scan the entire input object so we cover content,
@@ -61,6 +64,14 @@ esac
 
 prismor_load_patterns
 [[ "${#PATTERNS[@]}" -gt 0 ]] || exit 0
+
+# One grep over every pattern first: most calls carry no secret, and the loop
+# below forks grep once per pattern. Only a definite no-match (exit 1) skips
+# it; a match or a grep error (one bad custom pattern) runs the loop as before.
+grep_args=()
+for pat in "${PATTERNS[@]}"; do grep_args+=(-e "$pat"); done
+printf '%s' "$scan_text" | grep -qE "${grep_args[@]}" 2>/dev/null
+[[ $? -eq 1 ]] && exit 0
 
 # Collect unique matches across all patterns.
 matches="$(
@@ -89,6 +100,7 @@ while IFS= read -r real_value; do
     printf '%s' "$real_value" > "$secret_file"
     chmod 600 "$secret_file" 2>/dev/null || true
   fi
+  prismor_cloak_event tool_input redacted "$session_id" "$placeholder_name" "$(prismor_pattern_for "$real_value")" "$tool_name"
   reported+="  • @@SECRET:${placeholder_name}@@"$'\n'
   new_count=$((new_count + 1))
 done <<< "$matches"

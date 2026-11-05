@@ -69,6 +69,36 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 
 ---
 
+## Supported Agents<a name="supported-agents" />
+
+<!-- BEGIN GENERATED: agent-coverage (scripts/gen_integration_matrix.py) -->
+
+| Agent | Interception | Blocks before the call | MCP mirror verified |
+|---|---|---|---|
+| Claude Code | native hooks | ✅ | ✅ |
+| Codex (OpenAI) | native hooks | ✅ | ✅ |
+| Continue CLI | native hooks | ✅ |  |
+| Crush (Charmbracelet) | native hooks | ✅ |  |
+| Cursor | native hooks | ✅ |  |
+| Gemini CLI (Google) | native hooks | ✅ |  |
+| GitHub Copilot CLI | native hooks | ✅ |  |
+| Google Antigravity | native hooks | ✅ |  |
+| Goose (Agentic AI Foundation) | native hooks | ✅ |  |
+| Grok Build (xAI) | native hooks | ✅ |  |
+| Hermes Agent (Nous Research) | plugin | ✅ |  |
+| Kiro CLI (AWS) | native hooks | ✅ |  |
+| OpenClaw | plugin | ✅ |  |
+| OpenCode | plugin | ✅ | ✅ |
+| OpenHands | native hooks | ✅ |  |
+| Qwen Code (Alibaba) | native hooks | ✅ |  |
+| Windsurf (Codeium Cascade) | native hooks | ✅ |  |
+
+Config scan only (no hook protocol to intercept): Aider, GitHub Copilot for JetBrains, JetBrains AI Assistant, Junie, Kilocode, Roo Code, Trae / Trae CN (ByteDance), Warp (Agent Mode). Next up: Amazon Q Developer CLI (AWS), Amp (Sourcegraph spinoff), Auggie CLI (Augment Code), Devin CLI (Cognition AI), Factory Droid, Kimi Code (Moonshot AI), Pi Coding Agent. Full matrix, frameworks and SDKs: [AGENT_INTEGRATIONS.md](AGENT_INTEGRATIONS.md) and [governance surfaces](docs/governance-surfaces.md).
+
+<!-- END GENERATED: agent-coverage -->
+
+---
+
 ## Capabilities<a name="capabilities" />
 
 ![Prismor Architecture](assets/immunity-highlevel.png)
@@ -90,6 +120,7 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - ☁️ [Hosted Agent VMs](docs/cloud-agents.md) governs agents that run on a machine you never log into (Claude Code on the web, Cursor cloud agents, Copilot coding agent, OpenHands Cloud, Codex cloud, Replicas): the platform's setup script installs the binary, and `install-hooks --portable` writes a hook config that is safe to commit
 - 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
 - 🚧 [Data Boundary](docs/data-boundary.md) decides what may be sent where: real emails, phones, SSNs, cards, IBANs and secrets are screened against the destination's trust tier, so an agent following a third-party setup guide can't ship your data to a service you never approved
+- 👤 [PII detection](docs/pii.md) is an optional Presidio pass for names, places and NHS numbers the regex rules do not see. It is off by default (`pip install "prismor[pii]"`), so the hook path stays on the regex budget
 - 🧑‍🤝‍🧑 [Subagents](docs/subagents.md) enforces the same policy inside Claude Code subagents, refuses approval prompts a background subagent can't ask for, and tells you in one line what happened inside each one. [Limiting subagents](docs/subagent-limits.md) caps how many an agent launches, lets a delegation expire, and screens what a subagent is handed
 - 🔎 [Dev Insights](docs/dev-insights.md): `prismor rca`, `blame`, `friction` and `session --changes` answer where an agent run went wrong, who wrote a line, and what agents keep tripping over
 - ⏸️ [Pause and Login](docs/pause-and-login.md): `prismor pause` stops blocking without going dark; `prismor login` connects the hosted judge
@@ -101,7 +132,7 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
 - 🔐 [Explicit enforce selection & the unlock window](docs/cli-reference.md#choosing-what-blocks) — enforce setup starts with nothing blocking and you pick the set; `prismor allow` makes narrow exceptions, and `prismor unlock` opens a password-gated, time-boxed window in which an agent may edit policy (never the self-protection rules that guard Prismor itself)
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
-- 🔌 [Telemetry Sinks](docs/telemetry-sinks.md) forward every finding to what you already run — an OpenTelemetry collector (OTLP/HTTP logs), Splunk HEC, Datadog, syslog, a webhook, or a local file in JSON/CEF/OCSF — dispatched before the blocking decision and never able to stall a tool call
+- 🔌 [Telemetry Sinks](docs/telemetry-sinks.md) forward every finding to what you already run — an OpenTelemetry collector (OTLP/HTTP logs), Splunk HEC, Microsoft Sentinel, Datadog, Elasticsearch/OpenSearch, an S3 bucket, syslog, a webhook, or a local file in JSON/CEF/OCSF — dispatched before the blocking decision and never able to stall a tool call
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics, with `prismor tokens` breaking down where a session's context and token spend actually went
 - 🩺 [Health and Recovery](docs/cli-reference.md) — `prismor doctor` health-checks every subsystem (hooks, policy signature, enrollment, telemetry sink, chain state), and `prismor pause` / `pause-hard` suspends *enforcement only* for a human during an incident while observe-mode logging keeps running
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
@@ -337,6 +368,10 @@ prismor dashboard            # opens http://127.0.0.1:7070 in your browser
 prismor dashboard --port 8080
 prismor dashboard --no-open  # headless server only (was: prismor serve)
 ```
+
+Prefer the terminal? `prismor traces` browses the same sessions without a
+browser: their event timelines with findings marked, token cost, and each
+event in full.
 
 Sessions, findings, threat categories, agent breakdowns, and a live event feed - all from local workspace DBs. No cloud.
 

@@ -470,10 +470,10 @@ class _ReplayLedger(TagLedger):
     def _load(self) -> None:  # pragma: no cover - trivially empty
         pass
 
-    def _commit(self, new_tags, index: int, tool: str) -> None:
+    def _commit(self, new_tags, index: int, tool: str, fired=()) -> None:
         # Persistence seam: apply to the in-memory view only, so a replay can
         # never write into (or be polluted by) real enforcement state.
-        self._apply(new_tags, index, tool)
+        self._apply(new_tags, index, tool, fired)
 
 
 def tags_test(
@@ -520,7 +520,8 @@ def tags_test(
                 if done.get("action") == "block":
                     # a blocked call would not have executed: don't record
                     continue
-            ledger.record(tags, idx, tool)
+            warned = done is not None and done.get("action") == "warn"
+            ledger.record(tags, idx, tool, fired=[done["rule_id"]] if warned else ())
         label = _c(sid[:24], _BOLD)
         if not hits:
             print(f"{label}  {_c('clean', _GREEN)} ({len(events)} events)")

@@ -131,6 +131,66 @@ block. Hosted endpoints use this for the tools you select per endpoint in the
 console, and for **New tools start off**, where `allow` is the tools you have
 reviewed, so a tool the server adds later stays off until you turn it on.
 
+### Renaming tools, caching the tool list, and timeouts
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "timeout": 60,
+      "tools": {
+        "cacheTtl": 300,
+        "overrides": {
+          "search_code": {
+            "name": "find_code",
+            "description": "Search code in the acme org only.",
+            "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"] }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+- `tools.overrides` changes what the agent sees for a tool: its `name`,
+  `description` or `inputSchema`. Use it to give an agent a description you have
+  reviewed instead of whatever the server sends, or a narrower schema. It only
+  changes the display. Policy rules, `allow`/`deny`, definition pinning and the
+  console all keep the server's own name and definition, so renaming a tool
+  does not get it past a rule that denies it, and a changed upstream definition
+  is still caught. The new name is still namespaced (`github__find_code`).
+- `tools.cacheTtl` reuses the server's tool list for that many seconds instead
+  of asking it on every `tools/list`. The cache is dropped as soon as the
+  server announces its tools changed. Leave it out to ask every time.
+- `timeout` is how many seconds a tool call to this server may take (default
+  300).
+
+Five more keys on a server entry:
+
+- `forwardHeaders: ["X-Request-Id"]` copies those headers from the caller's
+  request to a remote server, on hosted endpoints (a local gateway has no
+  caller headers). `Authorization`, `Cookie`, `Host`, `Content-Length` and
+  `Mcp-Session-Id` are never forwarded, and the entry's own `headers` win over
+  a caller's value.
+- `logPayloads: true` keeps each call's arguments and result in the activity
+  log, even when the organization keeps telemetry redacted. Both are masked
+  first (cloaked secrets and data-boundary values), capped at 4 KB, and the
+  record is marked as not redacted.
+- `maxBodyBytes: 1048576` refuses a call whose arguments are bigger than this,
+  and fails a call whose reply is, with an error naming the limit.
+- `sigv4: {"service": "lambda", "region": "us-east-1"}` signs every request to
+  a remote server with AWS SigV4, using `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` from the environment or the
+  entry's `env`. Without credentials the request is refused, never sent
+  unsigned. OAuth sign-in is off for such a server.
+- `managedSession: false` stops the gateway keeping the server's
+  `Mcp-Session-Id`, for servers that reject sessions. By default it keeps the
+  session and, when the server says it expired (HTTP 404), opens a new one and
+  retries once.
+
 ## Signing in to OAuth servers
 
 Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API
@@ -458,6 +518,8 @@ Everything above runs the gateway **locally** on your machine, on every plan.
 Team and Enterprise add a **hosted** option: in the console's MCP Hub, *Spin up
 MCP instance* gives you one governed MCP URL for the servers you choose from your
 registry. Paste it into any agent on any machine; there is nothing to install.
+For a step-by-step walkthrough of the console side, from adding a server to
+an agent calling it, see [MCP Hub](mcp-hub.md).
 
 ```
 <your org's endpoint>/mcp/<key>
@@ -486,12 +548,11 @@ the endpoint's tools, so store it like a secret.
 - **Version.** The Hosted endpoints table shows the Prismor runtime each endpoint
   runs and flags one that is behind the current release.
 
-How it runs: each org's endpoints are served by one AWS Lambda function built from
-this repo (`deploy/lambda/Dockerfile.mcp`, `prismor.runtime.lambda_mcp_handler`)
-and released with every runtime version. Each key gets its own warm gateway
-process: the first call after a cold start takes about a second, and the first
-tool list with `npx` / `uvx` servers about ten while their packages download.
-Operators: see `deploy/lambda/README.md`.
+How it runs: each org's endpoints are served by one AWS Lambda function running
+`prismor.runtime.lambda_mcp_handler` at a released runtime version. Each key
+gets its own warm gateway process: the first call after a cold start takes about
+a second, and the first tool list with `npx` / `uvx` servers about ten while
+their packages download.
 
 Local gateway vs hosted endpoint:
 
@@ -508,8 +569,13 @@ Local gateway vs hosted endpoint:
 
 - The gateway config may contain tokens in `env` blocks; `install` writes it
   with `0600` permissions and Prismor never logs config values.
-- Aggregation is tools-only: resources/prompts from downstream servers are
-  not advertised in v1.
+- Resources and prompts are aggregated too. Resource URIs pass through
+  unchanged (the first server to list a URI serves it); prompts are named
+  `<server>__<prompt>` like tools. `resources/read` and `prompts/get` are judged
+  as `mcp__<server>__read_resource` (the URI in its arguments) and
+  `mcp__<server>__prompt__<name>`, so a server-wide deny covers them, and what
+  they return is masked and scanned like a tool result: a poisoned resource is
+  withheld. Mirrored built-ins serve tools only.
 - Upstreams are started concurrently and may take up to 10 minutes to answer
   `initialize` (a cold `npx -y` install). `tools/list` waits up to 30s for
   servers still in their handshake; one that is still starting after that is

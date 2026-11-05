@@ -11,8 +11,9 @@ So a block now carries a request id, and the human runs:
     prismor approvals deny <id>
 
 The approval matches only the same agent making the same tool call (tool name
-plus its exact input) in the same workspace, is used up by the first call it
-lets through, and lapses after APPROVED_TTL seconds if nothing uses it.
+plus its exact input) in the same session and working directory. Hooks without
+that context fall back to the policy workspace. It is used up by the first call
+it lets through, and lapses after APPROVED_TTL seconds if nothing uses it.
 
 How the agent gets going again, in order of preference:
 
@@ -90,12 +91,19 @@ def _expire(reqs: Dict[str, Dict[str, Any]]) -> None:
 
 
 def fingerprint(agent: str, workspace: Any, payload: Dict[str, Any], event: Dict[str, Any]) -> str:
-    """The exact action: same agent, workspace, tool and tool input."""
+    """Identify the action independently of which hook's policy screens it."""
     tool = payload.get("tool_name") or payload.get("toolName") or event.get("type") or ""
     inp = payload.get("tool_input") or payload.get("toolArgs") or payload.get("input")
     if not inp:
         inp = {k: event.get(k) for k in ("type", "command", "path", "url", "content") if event.get(k)}
-    raw = json.dumps([agent, str(workspace or ""), tool, inp], sort_keys=True, default=str)
+    scope: str | List[str] = str(workspace or "")
+    cwd = payload.get("cwd")
+    session = payload.get("session_id") or payload.get("sessionId")
+    # A global hook may use the Git root while a project hook uses a subdir.
+    # Both see the same call context. Without it, retain workspace isolation.
+    if isinstance(cwd, str) and Path(cwd).is_absolute() and isinstance(session, str) and session:
+        scope = [session, str(Path(cwd).resolve())]
+    raw = json.dumps([agent, scope, tool, inp], sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -146,19 +154,23 @@ def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
         return dict(rec)
 
 
-def wait(rid: str, seconds: float) -> bool:
+def wait(rid: str, seconds: float, call_id: str = "") -> bool:
     """Hold the hook until the request is decided. True only on approval, and
     the approval is spent by this call."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         time.sleep(0.5)
         with _locked() as state:
+            _expire(state["requests"])
             rec = state["requests"].get(rid)
-            if rec is None or rec.get("status") in ("denied", "expired", "used"):
+            if rec is None or rec.get("status") in ("denied", "expired"):
                 return False
+            if rec.get("status") == "used":
+                return bool(call_id and rec.get("used_by") == call_id)
             if rec.get("status") == "approved":
                 rec["status"] = "used"
                 rec["used_at"] = time.time()
+                rec["used_by"] = call_id
                 rec["resumed"] = True
                 return True
     with _locked() as state:

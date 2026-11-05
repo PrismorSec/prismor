@@ -61,4 +61,4 @@ def test_install_targets_paths_copilot_loads(tmp_path):
 def test_merge_registers_firing_events_and_drops_dead_one():
     cmd = "prismor hook-dispatch --agent copilot"
     merged = _merge_copilot({"hooks": {"UserPromptSubmitted": [{"command": cmd}]}}, cmd)
-    assert set(merged["hooks"]) == {"PreToolUse", "PostToolUse", "UserPromptSubmit"}
+    assert set(merged["hooks"]) == {"PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop"}

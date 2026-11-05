@@ -79,8 +79,15 @@ def _update_notice() -> None:
     this adds no network latency to most invocations. Never called for
     `hook-dispatch`, which fires on every tool call and cannot afford stderr
     noise or a network hit on that path. Suppressable with
-    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI."""
+    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI.
+
+    Not shown inside an agent's shell: the agent cannot act on it and relays
+    it into answers about something else. The human still sees it in their
+    own terminal."""
     if os.environ.get("PRISMOR_NO_UPDATE_CHECK"):
+        return
+    from prismor.runtime.agent_env import running_under_agent
+    if running_under_agent():
         return
     try:
         from prismor.runtime.version_check import latest_known_version
@@ -187,7 +194,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Any genuine prismor top-level command (domains, shortcuts, and any future
     # prismor subcommand) forwards straight through: `prismor <cmd> ...`.
-    if cmd in _prismor_commands():
+    # hook-dispatch runs on every tool call: skip building the full parser
+    # just to learn it is a command.
+    if cmd == "hook-dispatch" or cmd in _prismor_commands():
         from prismor.runtime.cli import main as prismor_main
         try:
             prismor_main([cmd, *rest])
@@ -323,7 +332,7 @@ def _print_usage(query: str = "") -> None:
             return
         print(f"  Commands matching '{query}':")
     else:
-        print(f"  {b('prismor')} — runtime security for AI coding agents")
+        print(f"  {b('prismor')} {d('v' + __version__)} — runtime security for AI coding agents")
         print()
         print(f"  Usage: {b('prismor')} <command> [options]")
         print(f"  New here? Run {b('prismor setup')}, then {b('prismor status')}.")

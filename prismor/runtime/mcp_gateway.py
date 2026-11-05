@@ -42,12 +42,13 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
 
@@ -95,6 +96,30 @@ class UpstreamSpec:
     #: Scan and pin this server's tool definitions (runtime/mcp_tool_pins.py).
     #: ``"pin": false`` on the entry turns it off.
     pin: bool = True
+    #: What agents see instead of the upstream's own metadata, from
+    #: ``"tools": {"overrides": {"<tool>": {"name", "description", "inputSchema"}}}``.
+    #: Display only: policy, tool selection, pinning and telemetry keep the
+    #: upstream's name and definition, so a rename can't dodge a deny rule.
+    overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    #: Seconds to reuse this server's tools/list (``"tools": {"cacheTtl": 300}``).
+    #: 0 asks the upstream on every list. Cleared when it announces list_changed.
+    tools_ttl: float = 0.0
+    #: Seconds a tools/call may take (``"timeout": 60``); None = CALL_TIMEOUT.
+    call_timeout: Optional[float] = None
+    #: Inbound client headers copied to an http(s) upstream (hosted endpoints;
+    #: the stdio gateway has none). Never NEVER_FORWARD; the entry's own
+    #: ``headers`` win over a client-sent value.
+    forward_headers: List[str] = field(default_factory=list)
+    #: Ship this server's call arguments and result text (after redaction) in
+    #: telemetry even when the org keeps telemetry redacted.
+    log_payloads: bool = False
+    #: Refuse a call whose JSON arguments, or an upstream reply, exceeds this.
+    max_body_bytes: Optional[int] = None
+    #: {"service", "region"}: sign every http(s) request with AWS SigV4.
+    sigv4: Optional[Dict[str, str]] = None
+    #: Keep the upstream's Mcp-Session-Id and re-initialize once if it expires
+    #: (HTTP 404). False never stores or sends one.
+    managed_session: bool = True
 
     @property
     def identity(self) -> str:
@@ -108,7 +133,7 @@ class UpstreamSpec:
 
     @property
     def uses_oauth(self) -> bool:
-        return (self.remote and self.oauth is not False
+        return (self.remote and self.oauth is not False and not self.sigv4
                 and not any(k.lower() == "authorization" for k in self.headers))
 
     def excludes(self, tool: str) -> bool:
@@ -156,9 +181,35 @@ def _tool_selection(cfg: Dict[str, Any]) -> Dict[str, Any]:
     sel = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
     allow = sel.get("allow")
     deny = sel.get("deny")
+    overrides = sel.get("overrides") if isinstance(sel.get("overrides"), dict) else {}
+    ttl, timeout = sel.get("cacheTtl"), cfg.get("timeout")
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0  # noqa: E731
     return {
         "allow_tools": [str(t) for t in allow] if isinstance(allow, list) else None,
         "deny_tools": [str(t) for t in deny] if isinstance(deny, list) else [],
+        "overrides": {str(k): v for k, v in overrides.items() if isinstance(v, dict)},
+        "tools_ttl": float(ttl) if num(ttl) else 0.0,
+        "call_timeout": float(timeout) if num(timeout) else None,
+        **_server_options(cfg, num),
+    }
+
+
+#: Never copied from a client request, whatever forwardHeaders says.
+NEVER_FORWARD = frozenset({"authorization", "cookie", "host", "content-length", "mcp-session-id"})
+
+
+def _server_options(cfg: Dict[str, Any], num: Callable[[Any], bool]) -> Dict[str, Any]:
+    fwd = cfg.get("forwardHeaders")
+    sig = cfg.get("sigv4")
+    body = cfg.get("maxBodyBytes")
+    return {
+        "forward_headers": [str(h) for h in fwd if isinstance(h, str) and h.lower() not in NEVER_FORWARD]
+        if isinstance(fwd, list) else [],
+        "log_payloads": cfg.get("logPayloads") is True,
+        "max_body_bytes": int(body) if num(body) else None,
+        "sigv4": {"service": str(sig["service"]), "region": str(sig["region"])}
+        if isinstance(sig, dict) and sig.get("service") and sig.get("region") else None,
+        "managed_session": cfg.get("managedSession") is not False,
     }
 
 
@@ -174,7 +225,8 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
             raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
         oauth = cfg.get("oauth")
-        return UpstreamSpec(name=name, url=meta["url"],
+        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}  # SigV4 credentials
+        return UpstreamSpec(name=name, url=meta["url"], env={str(k): str(v) for k, v in env.items()},
                             transport=meta["transport"] or "http",
                             headers=dict(headers or {}), pin=cfg.get("pin") is not False,
                             oauth=oauth if oauth is False or isinstance(oauth, dict) else None,
@@ -290,6 +342,11 @@ class UpstreamStdio(Upstream):
                 continue
             msg_id = msg.get("id")
             if msg_id is not None and ("result" in msg or "error" in msg):
+                limit = self.spec.max_body_bytes
+                if limit and len(line.encode("utf-8")) > limit:
+                    # Answer the waiting call with the limit, not the payload.
+                    msg = {"jsonrpc": "2.0", "id": msg_id,
+                           "error": {"code": -32603, "message": str(_too_big(self.spec, "the reply"))}}
                 pending = self._pending.pop(str(msg_id), None)
                 if pending is not None:
                     pending.resolve(msg)
@@ -403,6 +460,20 @@ class _Unauthorized(Exception):
         self.reason = reason
 
 
+class _SessionExpired(Exception):
+    """HTTP 404 to a request that carried a session id (streamable-HTTP spec)."""
+
+
+#: The inbound client request's headers for the message being handled, set
+#: per thread by Gateway._dispatch (hosted endpoints pass them in
+#: ``_inboundHeaders``). Read by UpstreamHttp for ``forwardHeaders``.
+_inbound = threading.local()
+
+
+def _too_big(spec: UpstreamSpec, what: str) -> UpstreamError:
+    return UpstreamError(f"MCP server '{spec.name}': {what} is larger than its {spec.max_body_bytes}-byte limit (maxBodyBytes)")
+
+
 class UpstreamHttp(Upstream):
     """Streamable-HTTP upstream via stdlib urllib.
 
@@ -418,6 +489,7 @@ class UpstreamHttp(Upstream):
                  guard: Optional[Callable[[UpstreamSpec], None]] = None):
         super().__init__(spec, on_notification, guard)
         self._session_id: Optional[str] = None
+        self._init_params: Optional[Dict[str, Any]] = None  # to re-open an expired session
         self._counter = 0
         self._lock = threading.Lock()
         self.oauth = None
@@ -435,7 +507,20 @@ class UpstreamHttp(Upstream):
             self.guard(self.spec)
         auth = self.oauth.authorization() if self.oauth is not None else None
         try:
-            return self._send_once(body, timeout, want_reply, auth)
+            try:
+                return self._send_once(body, timeout, want_reply, auth)
+            except _SessionExpired:
+                # The server dropped our session: open a new one, then retry
+                # this message once. initialize itself never gets here (it is
+                # sent without a session id).
+                self._session_id = None
+                if self._init_params is None:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session")
+                self.initialize(self._init_params, timeout=REQUEST_TIMEOUT)
+                try:
+                    return self._send_once(body, timeout, want_reply, auth)
+                except _SessionExpired:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session again right after a new one was opened")
         except _Unauthorized as exc:
             # A token the server no longer takes: refresh (or pick up a newer
             # sign-in) and retry once. Without one, the model is told which
@@ -462,30 +547,43 @@ class UpstreamHttp(Upstream):
             # common CDNs/WAFs (Cloudflare returns 403) — identify honestly.
             "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
-        headers.update(self.spec.headers)
+        if self.spec.forward_headers:
+            inbound = {k.lower(): v for k, v in (getattr(_inbound, "headers", None) or {}).items()}
+            for name in self.spec.forward_headers:
+                if name.lower() not in NEVER_FORWARD and name.lower() in inbound:
+                    headers[name] = str(inbound[name.lower()])
+        headers.update(self.spec.headers)  # the entry's own headers win
         if auth:
             headers["Authorization"] = auth
-        if self._session_id:
+        sent_session = self.spec.managed_session and self._session_id
+        if sent_session:
             headers["Mcp-Session-Id"] = self._session_id
-        req = urllib.request.Request(
-            self.spec.url, data=json.dumps(body).encode("utf-8"),
-            headers=headers, method="POST")
+        data = json.dumps(body).encode("utf-8")
+        if self.spec.sigv4:
+            headers.update(self._sigv4(data))
+        req = urllib.request.Request(self.spec.url, data=data, headers=headers, method="POST")
         from prismor.runtime.mcp_oauth import no_redirect
         try:
             with no_redirect.open(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
                 sid = resp.headers.get("Mcp-Session-Id")
-                if sid:
+                if sid and self.spec.managed_session:
                     self._session_id = sid
                 if not want_reply:
                     return None
                 ctype = (resp.headers.get("Content-Type") or "").lower()
-                raw = resp.read().decode("utf-8", errors="replace")
+                limit = self.spec.max_body_bytes
+                raw_bytes = resp.read(limit + 1) if limit else resp.read()
+                if limit and len(raw_bytes) > limit:
+                    raise _too_big(self.spec, "the reply")
+                raw = raw_bytes.decode("utf-8", errors="replace")
                 if "text/event-stream" in ctype:
                     return self._parse_sse(raw, str(body.get("id")))
                 if not raw.strip():
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
+            if exc.code == 404 and sent_session:
+                raise _SessionExpired()
             if exc.code == 401:
                 raise _Unauthorized(exc.code, exc.reason)
             if 300 <= exc.code < 400:
@@ -508,6 +606,28 @@ class UpstreamHttp(Upstream):
                 f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise UpstreamError(f"MCP server '{self.spec.name}' unreachable: {exc}")
+
+    def _sigv4(self, payload: bytes) -> Dict[str, str]:
+        """SigV4 headers for one POST, from the environment overlaid with the
+        entry's env. Missing credentials refuse the request: never unsigned."""
+        from urllib.parse import urlsplit
+        from prismor.runtime.proxy import sigv4_headers
+        env = {**os.environ, **self.spec.env}
+        key, secret = env.get("AWS_ACCESS_KEY_ID"), env.get("AWS_SECRET_ACCESS_KEY")
+        if not key or not secret:
+            raise UpstreamError(
+                f"MCP server '{self.spec.name}' signs with AWS SigV4 but AWS_ACCESS_KEY_ID / "
+                "AWS_SECRET_ACCESS_KEY are not set (environment or the server's env)")
+        u = urlsplit(self.spec.url)
+        return sigv4_headers(
+            access_key=key, secret_key=secret, session_token=env.get("AWS_SESSION_TOKEN") or "",
+            region=self.spec.sigv4["region"], service=self.spec.sigv4["service"], method="POST",
+            canonical_uri=u.path or "/", query=u.query, payload=payload, host=u.netloc)
+
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        self._init_params = client_params
+        return super().initialize(client_params, timeout=timeout)
 
     def _parse_sse(self, raw: str, want_id: str) -> Optional[Dict[str, Any]]:
         reply: Optional[Dict[str, Any]] = None
@@ -706,6 +826,12 @@ class Gateway:
             for s in specs
         ]
         self._routes: Dict[str, _Route] = {}
+        #: resources/read and prompts/get routing, built by their list calls:
+        #: resource URI -> upstream, client prompt name -> (upstream, name),
+        #: and (uriTemplate prefix, upstream) for templated resources.
+        self._resource_routes: Dict[str, Upstream] = {}
+        self._prompt_routes: Dict[str, Tuple[Upstream, str]] = {}
+        self._template_routes: List[Tuple[str, Upstream]] = []
         self._routes_lock = threading.Lock()
         self._stdout_lock = threading.Lock()
         self._eval_lock = threading.Lock()
@@ -776,6 +902,9 @@ class Gateway:
             self._handle_notification(method, msg.get("params") or {})
             return
         params = msg.get("params") or {}
+        # The hosted handler attaches the HTTP request's headers (forwardHeaders).
+        inbound = msg.get("_inboundHeaders") if isinstance(msg.get("_inboundHeaders"), dict) else None
+        _inbound.headers = inbound
         if method == "initialize":
             self._handle_initialize(req_id, params)
         elif method == "tools/list":
@@ -783,13 +912,23 @@ class Gateway:
         elif method == "tools/call":
             # Claude Code issues concurrent tool calls; handle off-loop so one
             # slow upstream doesn't head-of-line-block the others.
-            self._executor.submit(self._handle_tools_call_safe, req_id, params)
+            self._executor.submit(self._with_inbound, inbound, self._handle_tools_call_safe, req_id, params)
+        elif method in ("resources/list", "resources/templates/list", "prompts/list"):
+            self._handle_catalog_list(req_id, method)
+        elif method in ("resources/read", "prompts/get"):
+            self._executor.submit(self._with_inbound, inbound, self._handle_fetch_safe, req_id, method, params)
         elif method == "ping":
             self._reply(req_id, {})
         else:
-            # Tools-only aggregation: resources/prompts are never advertised in
-            # the initialize capabilities, so a compliant client won't ask.
             self._reply_error(req_id, -32601, f"method not supported by prismor-gateway: {method}")
+
+    @staticmethod
+    def _with_inbound(inbound: Optional[Dict[str, Any]], fn: Callable[..., None], *args: Any) -> None:
+        _inbound.headers = inbound  # worker threads are pooled: always reset
+        try:
+            fn(*args)
+        finally:
+            _inbound.headers = None
 
     def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         if method == "notifications/initialized":
@@ -824,7 +963,12 @@ class Gateway:
                              name=f"mcp-init-{up.spec.name}", daemon=True).start()
         self._reply(req_id, {
             "protocolVersion": self._client_protocol,
-            "capabilities": {"tools": {"listChanged": True}},
+            # Resources and prompts are always advertised: upstreams are still
+            # starting here, so whether any has them isn't known yet, and an
+            # empty list is a valid answer.
+            "capabilities": {"tools": {"listChanged": True},
+                             "resources": {"listChanged": True},
+                             "prompts": {"listChanged": True}},
             "serverInfo": {"name": "prismor-gateway",
                            "version": _gateway_version()},
         })
@@ -913,6 +1057,7 @@ class Gateway:
                     deny_tools=self._selection_denies(route),
                     agent=GATEWAY_AGENT, mode=self.mode, session_id="",
                     agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
                     register_agent=False, flush_at_exit=False)
         except Exception:
             return False  # a broken probe hides nothing; the call is still checked
@@ -935,7 +1080,7 @@ class Gateway:
         src += " " + " ".join(c.source for n, c in named.items() if n in src)
         return "args" not in src and "resource" not in src
 
-    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
+    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any], reply: bool = True) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
         hidden: Dict[str, _Route] = {}
@@ -959,19 +1104,26 @@ class Gateway:
                     f"[prismor-gateway] upstream '{up.spec.name}' is still starting; "
                     "its tools will be announced via tools/list_changed\n")
                 continue
-            try:
-                result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
-            except UpstreamError as exc:
-                sys.stderr.write(
-                    f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
-                self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
-                continue
+            cached = getattr(up, "tools_cache", None)
+            if up.spec.tools_ttl and cached and time.monotonic() - cached[0] < up.spec.tools_ttl:
+                result = cached[1]
+            else:
+                try:
+                    result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError as exc:
+                    sys.stderr.write(
+                        f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
+                    self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
+                    continue
+                if up.spec.tools_ttl:
+                    up.tools_cache = (time.monotonic(), result)
             for tool in result.get("tools") or []:
                 if not isinstance(tool, dict) or not tool.get("name"):
                     continue
                 original = str(tool["name"])
-                exposed = self._client_tool_name(up.spec.name, original,
-                                                 local=up.spec.local)
+                override = up.spec.overrides.get(original) or {}
+                exposed = self._client_tool_name(
+                    up.spec.name, str(override.get("name") or original), local=up.spec.local)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
                                          meta_tags=_extract_meta_tags(tool))
@@ -986,10 +1138,16 @@ class Gateway:
                         continue
                     sys.stderr.write(f"[prismor] observe ({exposed}): would hide in enforce mode - "
                                      f"[{problem.get('severity')}] {problem.get('title')}\n")
+                # Pinning above judged the upstream's own definition; the
+                # override only changes what the agent is shown.
                 entry = dict(tool)
+                if isinstance(override.get("description"), str):
+                    entry["description"] = override["description"]
+                if isinstance(override.get("inputSchema"), dict):
+                    entry["inputSchema"] = override["inputSchema"]
                 entry["name"] = exposed
                 if self.namespace != "none" and not up.spec.local:
-                    desc = str(tool.get("description") or "")
+                    desc = str(entry.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
         # Held definitions are hidden in enforce; without a status entry a
@@ -1020,7 +1178,8 @@ class Gateway:
             self._quarantined = quarantined
             # Which end user this list was filtered for (see _identity_changed).
             self._listed_token = current_token()
-        self._reply(req_id, {"tools": tools})
+        if reply:
+            self._reply(req_id, {"tools": tools})
 
     def _identity_changed(self) -> None:
         """Tell the host to re-list when the end user's token has changed since
@@ -1054,6 +1213,15 @@ class Gateway:
             # when called by name (an agent probing for denied tools must show
             # up in the console); the policy that hid it blocks it below.
             route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
+            unlisted = not self._routes and not getattr(self, "_hidden", None)
+        if route is None and unlisted and name != STATUS_TOOL:
+            # Routes are built by tools/list. A call that comes first (a new
+            # hosted session, a client reusing a tool name it remembers)
+            # builds them once instead of answering "unknown tool" for a tool
+            # that exists.
+            self._handle_tools_list(None, {}, reply=False)
+            with self._routes_lock:
+                route = self._routes.get(name) or self._hidden.get(name)
         if route is None and self._failed:
             self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
@@ -1069,6 +1237,10 @@ class Gateway:
             down = next((f"{n}: {e}" for n, e in self._failed.items()
                          if self.namespace != "none" and name.startswith(f"{n}__")), None)
             self._reply_error(req_id, -32602, down or f"unknown tool: {name}")
+            return
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
             return
         with self._routes_lock:
             held = self._quarantined.get(name)
@@ -1148,7 +1320,7 @@ class Gateway:
 
         result = route.upstream.request(
             "tools/call", {"name": route.tool, "arguments": arguments},
-            timeout=CALL_TIMEOUT)
+            timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
 
         # The gateway holds the response, so its output can be *repaired*
         # rather than only refused: strip credential material before the model
@@ -1169,11 +1341,20 @@ class Gateway:
         # either, so a paused gateway must not start pushing raw secret values
         # into the model's context. Data-boundary redaction IS policy, so it
         # goes with the rest of enforcement.
-        result = self._redact_result(result, data_boundary=not passthrough)
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        result = self._redact_result(
+            result, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
 
         # Post-call: the response is untrusted content — scan before the model
         # ever sees it (prompt injection, poisoned tool output, secrets).
-        decision = self._evaluate(self._build_result_event(route, result, arguments))
+        # NER already ran inside redaction when it is in redact+enforce; do
+        # not pay for the model a second time on the masked text.
+        _result_event = self._build_result_event(route, result, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
         if decision is not None:
             from prismor.runtime.runtime import log_observe_findings
             log_observe_findings(decision, tool_name=name,
@@ -1202,6 +1383,164 @@ class Gateway:
                 include_evidence=False))
             return
 
+        self._reply(req_id, result)
+
+    # ── resources and prompts ────────────────────────────────────────────
+
+    def _catalog_upstreams(self) -> List[Upstream]:
+        """Upstreams that can serve resources/prompts: up, and not mirrors."""
+        with self._init_cv:
+            self._init_cv.wait_for(lambda: not (self._starting - self._late), timeout=REQUEST_TIMEOUT)
+            starting = set(self._starting)
+        return [up for up in self.upstreams
+                if not up.spec.local and up.spec.name not in starting and up.spec.name not in self._failed]
+
+    def _handle_catalog_list(self, req_id: Any, method: str) -> None:
+        key = {"resources/list": "resources", "resources/templates/list": "resourceTemplates",
+               "prompts/list": "prompts"}[method]
+        items: List[Dict[str, Any]] = []
+        resources: Dict[str, Upstream] = {}
+        prompts: Dict[str, Tuple[Upstream, str]] = {}
+        templates: List[Tuple[str, Upstream]] = []
+        for up in self._catalog_upstreams():
+            cursor = None
+            for _ in range(20):  # ponytail: page cap, a catalog past 20 pages is truncated
+                try:
+                    page = up.request(method, {"cursor": cursor} if cursor else {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError:
+                    break  # most servers have no resources or prompts (-32601)
+                for entry in page.get(key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry = dict(entry)
+                    if self.namespace != "none" and isinstance(entry.get("description"), str):
+                        entry["description"] = f"[{up.spec.name}] {entry['description']}"
+                    if key == "resources" and isinstance(entry.get("uri"), str):
+                        resources.setdefault(entry["uri"], up)  # URIs are global: first server wins
+                    elif key == "resourceTemplates" and isinstance(entry.get("uriTemplate"), str):
+                        templates.append((entry["uriTemplate"].split("{", 1)[0], up))
+                    elif key == "prompts" and isinstance(entry.get("name"), str):
+                        exposed = self._client_tool_name(up.spec.name, entry["name"])
+                        prompts[exposed] = (up, entry["name"])
+                        entry["name"] = exposed
+                    else:
+                        continue
+                    items.append(entry)
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+        with self._routes_lock:
+            if key == "resources":
+                self._resource_routes = resources
+            elif key == "resourceTemplates":
+                self._template_routes = templates
+            else:
+                self._prompt_routes = prompts
+        if req_id is not None:
+            self._reply(req_id, {key: items})
+
+    def _fetch_route(self, method: str, params: Dict[str, Any]) -> Optional[Tuple[_Route, Dict[str, Any]]]:
+        """The route and upstream params for resources/read or prompts/get."""
+        def lookup() -> Optional[Tuple[_Route, Dict[str, Any]]]:
+            with self._routes_lock:
+                if method == "prompts/get":
+                    hit = self._prompt_routes.get(str(params.get("name") or ""))
+                    if hit is None:
+                        return None
+                    up, name = hit
+                    # Policy sees `mcp__<server>__prompt__<name>`: denyable apart from a tool of the same name.
+                    return (_Route(upstream=up, server=up.spec.name, tool=f"prompt__{name}"),
+                            {"name": name, "arguments": params.get("arguments") or {}})
+                uri = str(params.get("uri") or "")
+                up = self._resource_routes.get(uri) or next(
+                    (u for prefix, u in self._template_routes if prefix and uri.startswith(prefix)), None)
+                if up is None:
+                    return None
+                return _Route(upstream=up, server=up.spec.name, tool="read_resource"), {"uri": uri}
+        found = lookup()
+        if found is None:
+            # As with tools: a client may fetch without listing first.
+            if method == "prompts/get":
+                self._handle_catalog_list(None, "prompts/list")
+            else:
+                self._handle_catalog_list(None, "resources/list")
+                self._handle_catalog_list(None, "resources/templates/list")
+            found = lookup()
+        return found
+
+    def _handle_fetch_safe(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        try:
+            self._handle_fetch(req_id, method, params)
+        except UpstreamError as exc:
+            self._reply_error(req_id, exc.code or -32603, str(exc))
+        except Exception as exc:  # never kill the serve loop from a worker
+            self._reply_error(req_id, -32603, f"prismor-gateway internal error: {exc}")
+
+    def _handle_fetch(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        """resources/read and prompts/get, judged like a tool call.
+
+        Both put server-written text in front of the model, so the result is
+        masked and scanned exactly as a tool result is. Pre-call, policy sees
+        `mcp__<server>__read_resource` (the URI in its arguments) or
+        `mcp__<server>__prompt__<name>`, so server-wide denies cover them.
+        """
+        found = self._fetch_route(method, params)
+        if found is None:
+            what = "prompt" if method == "prompts/get" else "resource"
+            self._reply_error(req_id, -32602, f"unknown {what}: {params.get('name') or params.get('uri')}")
+            return
+        route, upstream_params = found
+        arguments = upstream_params.get("arguments", {"uri": upstream_params.get("uri")})
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
+            return
+        try:
+            from prismor.runtime.enterprise import remote_policy as _remote
+            _remote.check_and_refresh()
+        except Exception:
+            pass
+        passthrough = self._passthrough(route)
+        name = f"{route.server}__{route.tool}"
+        # ponytail: a block here is final; step-up approval and pii_redact
+        # rewrites are tools/call only. Add them when a resource rule needs one.
+        decision = self._evaluate(self._build_call_event(route, arguments))
+        if decision is not None and decision.blocking is not None:
+            if passthrough:
+                self._note_passthrough(name, decision.blocking, passthrough)
+            else:
+                text = _blocked_result("Blocked by Prismor", decision.blocking,
+                                       unblock=self._unblock_text(decision.blocking, route))
+                self._reply_error(req_id, -32001, text["content"][0]["text"])
+                return
+
+        result = route.upstream.request(method, upstream_params,
+                                        timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
+        # Mask and scan the text the model will read, as for tool results.
+        slots = _fetched_text_slots(method, result)
+        shaped = {"content": [{"type": "text", "text": s["text"]} for s in slots]}
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        shaped = self._redact_result(
+            shaped, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
+        for slot, block in zip(slots, shaped["content"]):
+            slot["text"] = block["text"]
+        _result_event = self._build_result_event(route, shaped, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
+        withhold = None
+        if decision is not None and not passthrough:
+            withhold = decision.blocking
+            if withhold is None and self.mode == "enforce":
+                withhold = _result_withhold_finding(decision.findings)
+        if withhold is not None:
+            text = _blocked_result("[Prismor] response withheld", withhold,
+                                   unblock=self._unblock_text(withhold, route, arguments=arguments),
+                                   include_evidence=False)
+            self._reply_error(req_id, -32001, text["content"][0]["text"])
+            return
         self._reply(req_id, result)
 
     # ── pause / pass-through ─────────────────────────────────────────────
@@ -1278,7 +1617,14 @@ class Gateway:
                 "(takes effect on the next session)")
         return "\n\n".join(lines)
 
-    def _redact_result(self, result: Any, *, data_boundary: bool = True) -> Any:
+    def _redact_result(
+        self,
+        result: Any,
+        *,
+        data_boundary: bool = True,
+        engine: Any = None,
+        pii_notes: Optional[List[Any]] = None,
+    ) -> Any:
         """Mask cloak secrets and data-boundary values in a mirrored tool's output.
 
         The masking itself is shared with every other surface that can see tool
@@ -1287,7 +1633,8 @@ class Gateway:
         """
         from prismor.runtime.redaction import redact_mcp_result
         out, changed = redact_mcp_result(
-            result, workspace=self.workspace, data_boundary=data_boundary)
+            result, workspace=self.workspace, data_boundary=data_boundary,
+            engine=engine, pii_notes=pii_notes)
         if changed:
             sys.stderr.write(
                 "[prismor-gateway] redacted sensitive values from tool output\n")
@@ -1411,6 +1758,7 @@ class Gateway:
                 decision = evaluate_tool_call(
                     event=event, workspace=self.workspace, agent=GATEWAY_AGENT, mode="enforce",
                     session_id="", agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
                     register_agent=False, flush_at_exit=False)
             from prismor.runtime.contract import strongest
             finding = strongest([f for f in decision.findings
@@ -1504,6 +1852,12 @@ class Gateway:
 
     def _build_call_event(self, route: _Route, arguments: Any) -> Dict[str, Any]:
         base = self._event_base(route, "PreToolUse")
+        if route.upstream.spec.log_payloads:
+            # The logged copy only, masked like results are (cloak secrets and
+            # data-boundary values); the upstream still gets the real arguments.
+            from prismor.runtime.redaction import redact_text
+            logged, _ = redact_text(json.dumps(arguments, default=str), workspace=self.workspace)
+            base["log_payloads"] = {"arguments": logged}
         # The structured arguments, for `when:` rules (`args.amount`). Without
         # this every args.* path is missing and an attribute rule fires on
         # every call through the gateway.
@@ -1556,6 +1910,9 @@ class Gateway:
         spec = route.upstream.spec
         if spec.remote:
             event["url"] = spec.url
+        if spec.log_payloads:
+            # The result as the model sees it: built after _redact_result.
+            event["log_payloads"] = {"result": event["response"]}
         return event
 
     # ── upstream notifications ───────────────────────────────────────────
@@ -1566,6 +1923,9 @@ class Gateway:
                 # Route map is rebuilt on the client's next tools/list.
                 with self._routes_lock:
                     self._routes = {}
+                for up in self.upstreams:
+                    if up.spec.name == server:
+                        up.tools_cache = None
                 self._send({"jsonrpc": "2.0", "method": method, "params": params})
             elif method.startswith("notifications/"):
                 # progress / logging — pass through untouched (tokens are
@@ -1588,6 +1948,50 @@ _DEFINITION_CATEGORIES = frozenset({"skill_risk", "prompt_injection", "prompt_in
 _WITHHOLD_CATEGORIES = frozenset({"prompt_injection", "prompt_injection_semantic",
                                   "secret_access", "secret_exfiltration",
                                   "data_boundary", "pii"})
+
+
+def _pii_notes_for(engine: Any):
+    """A note list only when NER redaction will run. The default path allocates nothing."""
+    pii = getattr(engine, "pii", None) if engine is not None else None
+    if (
+        pii is None
+        or not getattr(pii, "enabled", False)
+        or getattr(pii, "action", "") != "redact"
+        or getattr(pii, "mode", "") != "enforce"
+    ):
+        return None
+    from prismor.runtime.pii import PiiNotes
+    return PiiNotes()
+
+
+def _merge_pii_notes(decision: Any, notes: List[Any], engine: Any, session_id: str) -> None:
+    """Record PII that result redaction already removed, so the audit row exists.
+
+    Redaction runs before the post-call scan, and the scan is what the model
+    will see. A name that was just masked would otherwise leave no finding.
+    The note list holds spans in memory; the finding stores a mask.
+    """
+    if not notes or decision is None or engine is None:
+        return
+    findings = getattr(decision, "findings", None)
+    if not isinstance(findings, list):
+        return
+    if any(f.get("ruleId") == "pii-ner" for f in findings if isinstance(f, dict)):
+        return
+    from prismor.runtime.pii import finding_from_hits
+    index = 0
+    for existing in findings:
+        if isinstance(existing, dict) and existing.get("eventIndex") is not None:
+            index = existing["eventIndex"]
+            break
+    finding = finding_from_hits(
+        notes, index=index, session_id=session_id or "",
+        settings=engine.pii,
+        backend=getattr(notes, "backend", "") or engine.pii.backend,
+        fallback_reason=getattr(notes, "fallback", ""),
+    )
+    if finding:
+        findings.append(finding)
 
 
 def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1623,7 +2027,14 @@ def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[st
     return strongest([
         f for f in (findings or [])
         if not f.get("contextInert")
-        and f.get("category") in _WITHHOLD_CATEGORIES
+        and (
+            f.get("category") in _WITHHOLD_CATEGORIES
+            or (
+                f.get("ruleId") == "pii-ner"
+                and f.get("action") == "block"
+                and str(f.get("mode") or "").lower() == "enforce"
+            )
+        )
         and not _heuristic_semantic_warn(f)
     ])
 
@@ -1632,6 +2043,19 @@ def _heuristic_semantic_warn(finding: Dict[str, Any]) -> bool:
     return (finding.get("category") == "prompt_injection_semantic"
             and not finding.get("judged")
             and finding.get("action") != "block")
+
+
+def _fetched_text_slots(method: str, result: Any) -> List[Dict[str, Any]]:
+    """The dicts holding model-bound text in a resources/read or prompts/get
+    result, so their `text` can be masked in place. Blobs and embedded
+    resources inside prompt messages are left as they are."""
+    if not isinstance(result, dict):
+        return []
+    if method == "resources/read":
+        items = result.get("contents") or []
+    else:
+        items = [m.get("content") for m in result.get("messages") or [] if isinstance(m, dict)]
+    return [i for i in items if isinstance(i, dict) and isinstance(i.get("text"), str)]
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],

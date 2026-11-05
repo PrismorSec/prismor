@@ -25,6 +25,10 @@ def _setup(monkeypatch, tmp_path, verdict):
         "device_id": "d", "org_id": "o", "user_id": "u",
         "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1",
     })
+    # These pin the batching of findings; the one-off first device_status is
+    # covered in test_first_upload_carries_device_status below.
+    import prismor.runtime.enterprise.heartbeat as hb
+    monkeypatch.setattr(hb, "status_record_once", lambda *a, **k: None)
     monkeypatch.setattr(telem, "build_record", lambda *a, **k: {"ts": None, "verdict": verdict})
     monkeypatch.setattr(telem, "assert_redacted", lambda rec: None)
     uploads = []
@@ -155,3 +159,27 @@ def test_background_mode_drains_observed_records_without_a_kick(monkeypatch, tmp
     sinks.upload_in_background()
 
     assert done.wait(5), "spooled records never shipped"
+
+
+def test_first_upload_carries_device_status_once(monkeypatch, tmp_path):
+    """Demo finding #14: a device whose first record was a block showed
+    'coverage not reported'. The first upload now carries device_status."""
+    import prismor.runtime.enterprise.heartbeat as hb
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    ident.save_identity({
+        "device_id": "d", "org_id": "o", "user_id": "u",
+        "device_key": "prism_dev_x", "api_base": "http://127.0.0.1:1",
+    })
+    monkeypatch.setattr(telem, "build_record", lambda *a, **k: {"ts": None, "verdict": "blocked"})
+    monkeypatch.setattr(telem, "assert_redacted", lambda rec: None)
+    uploads = []
+    monkeypatch.setattr(sinks, "upload_telemetry", lambda recs, **kw: uploads.append(recs))
+    seen = []
+    monkeypatch.setattr(hb, "device_status_record",
+                        lambda ws=None: seen.append(ws) or {"type": "device_status", "redacted": True})
+    for _ in range(2):
+        sinks._dispatch_prismor({"type": "prismor"}, [_finding()], {"type": "shell"},
+                                {"workspace": str(tmp_path)})
+    assert [r.get("type") for r in uploads[0]] == ["device_status", None]
+    assert [r.get("type") for r in uploads[1]] == [None]
+    assert len(seen) == 1 and str(seen[0]) == str(tmp_path)

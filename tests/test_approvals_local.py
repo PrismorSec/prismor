@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -81,6 +82,55 @@ class TestHookApprovals(unittest.TestCase):
         self.assertEqual(self._hook(cmd, call_id="t2").returncode, 0)
         self.assertEqual(self._hook(cmd, call_id="t2", workspace_flag=True).returncode, 0)
         self.assertEqual(self._hook(cmd, call_id="t3").returncode, 2, "still once only")
+
+    def test_nested_project_and_global_hook_share_one_approval(self):
+        # The global hook selects the Git root; --workspace selects the project.
+        (self.ws / ".git").mkdir()
+        self.ws = self.ws / "project"
+        (self.ws / ".prismor").mkdir(parents=True)
+        (self.ws / ".prismor" / "policy.yaml").write_text(_CANARY_POLICY)
+        cmd = "echo approval-canary"
+        for project in (False, True):
+            self.assertEqual(self._hook(cmd, agent="claude", call_id="t1",
+                                        workspace_flag=project).returncode, 2)
+        (req,) = self._pending()
+        approvals_local.decide(req["id"], approve=True)
+        for project in (True, False):
+            self.assertEqual(self._hook(cmd, agent="claude", call_id="t2",
+                                        workspace_flag=project).returncode, 0)
+        self.assertEqual(self._hook(cmd, agent="claude", call_id="t3").returncode, 2)
+
+    def test_fingerprint_keeps_action_and_session_boundaries(self):
+        payload = {"cwd": str(self.ws), "session_id": "s1", "tool_name": "Bash",
+                   "tool_input": {"command": "echo approval-canary"}}
+        fp = approvals_local.fingerprint("claude", self.ws, payload, {})
+        self.assertEqual(fp, approvals_local.fingerprint("claude", self.ws.parent, payload, {}))
+        for change in ({"cwd": str(self.ws / "other")}, {"session_id": "s2"},
+                       {"tool_name": "Other"}, {"tool_input": {"command": "another call"}}):
+            with self.subTest(change=change):
+                self.assertNotEqual(fp, approvals_local.fingerprint("claude", self.ws, payload | change, {}))
+        self.assertNotEqual(fp, approvals_local.fingerprint("codex", self.ws, payload, {}))
+        for change in ({"cwd": ""}, {"cwd": "relative"}, {"cwd": None}, {"session_id": ""}):
+            incomplete = payload | change
+            self.assertNotEqual(approvals_local.fingerprint("claude", self.ws, incomplete, {}),
+                                approvals_local.fingerprint("claude", self.ws.parent, incomplete, {}))
+
+    def test_hold_open_approval_is_shared_only_by_the_same_call(self):
+        req = approvals_local.request("fp", agent="claude", session_id="s1", finding={}, summary="test")
+        approvals_local.decide(req["id"], approve=True)
+        with patch.object(approvals_local.time, "sleep"):
+            self.assertTrue(approvals_local.wait(req["id"], 1, call_id="t1"))
+            self.assertTrue(approvals_local.wait(req["id"], 1, call_id="t1"))
+            self.assertFalse(approvals_local.wait(req["id"], 1, call_id="t2"))
+        self.assertIsNotNone(approvals_local.consume("fp", "t1"))
+        self.assertIsNone(approvals_local.consume("fp", "t2"))
+        req = approvals_local.request("expired", agent="claude", session_id="s1", finding={}, summary="test")
+        approvals_local.decide(req["id"], approve=True)
+        with patch.object(approvals_local.time, "sleep"), patch.object(
+            approvals_local.time, "time", return_value=approvals_local.time.time() + approvals_local.APPROVED_TTL + 1
+        ):
+            self.assertFalse(approvals_local.wait(req["id"], 1, call_id="t3"))
+            self.assertIsNone(approvals_local.consume("expired", "t3"))
 
     def test_call_allowed_another_way_closes_its_request(self):
         # Allowed in the agent's prompt, by `prismor allow` or a policy change:

@@ -133,8 +133,6 @@ Validated live on an Ubuntu EC2 instance with real OpenAI function calls:
 | Java 21 | ~25 lines | stdlib `java.net.http` |
 | Rust | ~25 lines | `ureq` crate |
 
-See `examples/multilang/` for runnable examples in all four languages.
-
 ## Naming agents
 
 Every guard entry point takes an optional `name=` — an **instance label**

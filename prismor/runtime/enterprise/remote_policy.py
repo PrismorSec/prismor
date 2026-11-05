@@ -334,11 +334,27 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_cs_sig is not None
         and str(latest_cs_sig) != str(_settings_block_sig("copilot_studio"))
     )
-    if (version_changed or profile_changed or capture_changed or guardrails_changed
+    # Extensions an org admin reviewed in the console (settings.extension_reviews),
+    # served without a version bump; a review should reach the device's next
+    # session rather than wait for some other change.
+    latest_ext_reviews_sig = body.get("extensionReviewsSig")
+    ext_reviews_changed = (
+        latest_ext_reviews_sig is not None
+        and str(latest_ext_reviews_sig) != str(_settings_block_sig("extension_reviews"))
+    )
+    # Agent connections (settings.agent_connections): drawing or removing an
+    # edge between two agents applies without a version bump.
+    latest_conn_sig = body.get("agentConnectionsSig")
+    connections_changed = (
+        latest_conn_sig is not None
+        and str(latest_conn_sig) != str(_settings_block_sig("agent_connections"))
+    )
+    if (version_changed or profile_changed or capture_changed or guardrails_changed or ext_reviews_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
-            or self_edit_changed or identity_changed or copilot_studio_changed):
+            or self_edit_changed or identity_changed or copilot_studio_changed
+            or connections_changed):
         return fetch(force=True)
     return False
 
@@ -382,6 +398,8 @@ def _current_rule_exemptions_sig() -> str:
         lines = sorted(
             f"{e.get('id')}:{e.get('ruleId') or ''}:{e.get('scope') or ''}:"
             f"{e.get('scopeId') or ''}:{e.get('action') or 'allow'}:{e.get('expires') or ''}"
+            # Appended only when set, so signatures of older entries are unchanged.
+            + (f":{e['pattern']}" if e.get("pattern") else "")
             for e in exemptions if isinstance(e, dict) and e.get("id")
         )
         if not lines:
@@ -702,7 +720,19 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
             return None
         try:
             import yaml
-            parsed = yaml.safe_load(payload.decode("utf-8"))
+
+            # The server writes ISO times unquoted (device_pause.at). Stock
+            # safe_load turns them into datetimes, which pause.py can't parse
+            # and the *Sig helpers can't json.dumps, so an org pause was
+            # silently ignored and re-pulled forever. Keep the exact string.
+            class _Loader(yaml.SafeLoader):
+                pass
+
+            _Loader.add_constructor(
+                "tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node)
+            )
+            # SafeLoader subclass; the timestamp tag stays a string so pause.py can parse it.
+            parsed = yaml.load(payload.decode("utf-8"), Loader=_Loader)  # nosec B506
         except Exception:
             return None
         if not isinstance(parsed, dict):
@@ -783,6 +813,20 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         return False
     if not _verify_signature(policy_yaml.encode("utf-8"), signature):
         sys.stderr.write("[prismor] fetched remote policy failed verification — discarding\n")
+        return False
+
+    # A signed but malformed quota must not replace the last good signed
+    # policy: rejecting it only at engine merge would drop the previous org
+    # limit on the next process. Validate before touching either cache file.
+    try:
+        import yaml
+        from prismor.runtime.ratelimit import validate_settings
+        _settings = (yaml.safe_load(policy_yaml) or {}).get("settings") or {}
+        if "rate_limit" in _settings and validate_settings(_settings["rate_limit"]):
+            sys.stderr.write("[prismor] fetched remote policy has invalid rate_limit settings — discarding\n")
+            return False
+    except (ValueError, TypeError, AttributeError, yaml.YAMLError):
+        sys.stderr.write("[prismor] fetched remote policy is malformed — discarding\n")
         return False
 
     # Developer-facing transparency: detect the org flipping capture mode.

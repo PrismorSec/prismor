@@ -171,7 +171,8 @@ def test_initialize_captures_client_and_advertises_tools(tmp_path, monkeypatch):
                                   "clientInfo": {"name": "claude-code"}}})
     reply = sent[-1]["result"]
     assert reply["serverInfo"]["name"] == "prismor-gateway"
-    assert reply["capabilities"] == {"tools": {"listChanged": True}}
+    assert reply["capabilities"] == {"tools": {"listChanged": True}, "resources": {"listChanged": True},
+                                     "prompts": {"listChanged": True}}
     assert reply["protocolVersion"] == "2025-06-18"
     assert gateway.agent_name == "claude-code"
 

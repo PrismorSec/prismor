@@ -137,3 +137,14 @@ class CopilotStudioRefreshTrigger(PauseRefreshTrigger):
             with self._respond({**STEADY_STATE, "copilotStudioSig": "0123456789abcdef"}):
                 self.assertFalse(remote_policy.check_and_refresh(interval=0))
         self.fetch.assert_not_called()
+
+
+class AgentConnectionsRefreshTrigger(PauseRefreshTrigger):
+    """Same wiring check for settings.agent_connections: an edge drawn in the
+    console must reach the device without a policy version bump."""
+
+    def test_a_new_connection_triggers_a_signed_repull(self):
+        with patch.object(remote_policy, "_settings_block_sig", return_value=""):
+            with self._respond({**STEADY_STATE, "agentConnectionsSig": "0123456789abcdef"}):
+                self.assertTrue(remote_policy.check_and_refresh(interval=0))
+        self.fetch.assert_called_once_with(force=True)

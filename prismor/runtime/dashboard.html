@@ -28,7 +28,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 .docs-clear:hover{color:var(--gray-900)}
 .doc-row{padding:9px 10px;border-radius:8px;cursor:pointer}
 .doc-row:hover{background:var(--gray-100)}
-.doc-row.sel{background:var(--gray-100);box-shadow:inset 2px 0 0 var(--accent)}
+.doc-row.sel{background:var(--gray-100)}
 .doc-row-title{font-size:13px;font-weight:600}
 .doc-row-name{font:12px var(--font-mono);color:var(--gray-500);margin-top:2px}
 .doc-group{font-size: 11px;font-weight: 600;text-transform:uppercase;letter-spacing: .06em;color:var(--gray-500);margin:14px 10px 4px}
@@ -1350,6 +1350,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tree-turn-label { font-weight: 600; color:var(--gray-800); }
   .tree-turn-sub { color:var(--gray-500); font-weight:400; margin-left:8px; min-width:0;
     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tree-row.refused .tree-turn-sub { color:var(--red); }
   .tree-count { margin-left:auto; flex:none; font-size: 11px; font-weight:600; color:var(--gray-500);
     background:var(--gray-100); border-radius:8px; padding:1px 7px; min-width:20px; text-align:center; }
   .tree-row.turn .tree-count { color:var(--gray-700); }
@@ -1365,7 +1366,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tree-leaf { display:flex; align-items:center; gap:9px; width:100%; text-align:left;
     background:none; border:0; padding:5px 8px; border-radius:8px; cursor:pointer; color:inherit; }
   .tree-leaf:hover { background:var(--gray-50); }
-  .tree-leaf.sel { background:var(--gray-100); box-shadow:inset 2px 0 0 var(--accent); }
+  .tree-leaf.sel { background:var(--gray-100); }
   .tree-leaf.sel .tree-text { color:var(--gray-900); font-weight:500; }
   .tree-dot { width:8px; height:8px; border-radius:50%; flex:none; background:var(--green-500); }
   .tree-dot.warn { background: var(--sev-medium); }
@@ -1378,6 +1379,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background:var(--gray-100); color:var(--gray-600); font-variant-numeric:tabular-nums; }
   .hook-chip.slow { background:rgba(217,119,6,.14); color:#d97706; }
   .hook-chip.fail { background:rgba(220,38,38,.12); color:#dc2626; }
+  .hook-chip.pre-block { background:rgba(220,38,38,.08); color:#dc2626; border:1px dashed rgba(220,38,38,.45); }
+  .hook-chip.pre-warn { background:rgba(217,119,6,.10); color:#d97706; border:1px dashed rgba(217,119,6,.45); }
   .hook-runs { margin-top:4px; }
   .hook-phase { font-size: 11px; font-weight: 600; color:var(--gray-500); margin:8px 0 3px; text-transform:uppercase; letter-spacing: .06em; }
   .hook-run { font-size: 12px; margin-bottom:5px; }
@@ -1462,6 +1465,19 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .na-btn { font-size: 12px; font-weight:600; padding:5px 10px; border-radius:6px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700); cursor:pointer; transition:all .12s; }
   .na-btn.deny:hover { background:#fef2f2; border-color:#fecaca; color:#b91c1c; }
   .na-btn.allow:hover { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
+  .na-btn.ask:hover { background:#fffbeb; border-color:#fde68a; color:#b45309; }
+  .na-drop { position:relative; }
+  .na-menu { position:absolute; top:calc(100% + 4px); left:0; z-index:20; min-width:170px; background:var(--surface, #fff); border:1px solid var(--gray-200); border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.08); padding:4px; }
+  .na-menu[hidden] { display:none; }
+  .na-menu-item { display:block; width:100%; text-align:left; font-size:12px; padding:6px 8px; border:0; border-radius:6px; background:transparent; color:var(--gray-700); cursor:pointer; }
+  .na-menu-item:hover:not([disabled]) { background:var(--gray-100); }
+  .na-menu-item[disabled] { color:var(--gray-400); cursor:not-allowed; }
+  .na-sub { color:var(--gray-400); font-family:var(--font-mono); font-size:11px; }
+  .na-exact { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--gray-600); margin:2px 0 4px; }
+  .na-existing { margin:4px 0 8px; display:flex; flex-direction:column; gap:4px; }
+  .na-existing-row { display:flex; align-items:center; gap:8px; font-size:12px; color:var(--gray-600); }
+  .na-pill { font-size:11px; font-weight:600; border-radius:999px; padding:1px 8px; background:var(--gray-100); }
+  .na-pill.allow { color:#15803d; } .na-pill.ask { color:#b45309; } .na-pill.deny { color:#b91c1c; }
   .na-status { font-size: 12px; margin:6px 0 4px; min-height:14px; }
   .na-hint { font-size: 11px; color:var(--gray-400); line-height:1.5; }
   .theme-toggle {
@@ -1790,7 +1806,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .prec-mode.enf { color: #b91c1c; font-weight: 600; }
   .prec-open { padding: 4px 10px; font-size: 12px; justify-self: end; }
   .prec-line > span:last-child { justify-self: end; }
-  .prec-line.governs { background: var(--gray-100); box-shadow: inset 3px 0 0 var(--ink); }
+  .prec-line.governs { background: var(--gray-100); }
   .prec-line.governs .prec-status { color: var(--ink); font-weight: 600; }
   .prec-line.unset .prec-name, .prec-line.unset .prec-note { color: var(--muted); }
   @media (max-width: 720px) {
@@ -1852,9 +1868,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-hook-evs { display:flex; flex-wrap:wrap; gap:4px; }
   .sess-ext-hooks[open] > .ext-row { padding-left:18px; }
   .sess-ext-all[open] > summary { border-bottom: 1px solid var(--gray-100); margin-bottom: 10px; }
-  .sess-ext-all[open] .sess-ext-toggle::after { content: ' \25B4'; }
-  .sess-ext-all:not([open]) .sess-ext-toggle::after { content: ' \25BE'; }
-  /* The session's summary sections share one card; one opens at a time and
+      /* The session's summary sections share one card; one opens at a time and
      scrolls inside it, so opening one never shoves the flow off the page. */
   .sess-summary { margin-bottom:8px; background:var(--surface); border:1px solid var(--gray-200); border-radius:8px; }
   .sess-summary:not(:has(> :not([hidden]))) { display:none; }
@@ -2161,8 +2175,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .kpi-strip .kpi-delta.neutral .up, .kpi-strip .kpi-delta.neutral .down { color: var(--muted); }
   .how-it-works { margin-bottom: 28px; } .how-it-works > summary { list-style: none; cursor: pointer; display: flex; gap: 10px; align-items: center; }
   .how-it-works > summary::-webkit-details-marker { display: none; } .how-it-works[open] > summary { margin-bottom: 14px; }
-  .how-it-works:not([open]) .sess-ext-toggle::after { content: ' \25BE'; } .how-it-works[open] .sess-ext-toggle::after { content: ' \25B4'; }
-  .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
+    .ext-stat { cursor: pointer; } .ext-stat.warn { border-color: #f59e0b; } .ext-stat.warn b { color: #b45309; }
   .ext-stat small { display: block; font-size: 12px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   .ext-kinds { display:flex; flex-wrap:wrap; }
   .ext-item { display:grid; grid-template-columns:minmax(0,2.4fr) 96px 70px 70px minmax(0,1fr) 80px 48px; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; }
@@ -2624,31 +2637,47 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .rule-floor-form .finput { width: 220px; }
   .rule-floor-err { color: var(--tone-danger-fg); }
 
-  /* A faint rainbow drifting behind everything. Fixed, never intercepts
-     clicks, slower than anyone would notice, and still for reduced motion. */
-  body::before {
-    content: ''; position: fixed; inset: -20vmax; z-index: -1; pointer-events: none;
-    background:
-      radial-gradient(38vmax 30vmax at 18% 22%, rgba(255,122,162,.24), transparent 70%),
-      radial-gradient(34vmax 28vmax at 82% 18%, rgba(255,196,92,.21), transparent 70%),
-      radial-gradient(40vmax 32vmax at 70% 78%, rgba(96,200,255,.22), transparent 70%),
-      radial-gradient(36vmax 30vmax at 24% 82%, rgba(150,120,255,.21), transparent 70%),
-      radial-gradient(30vmax 24vmax at 50% 50%, rgba(110,220,160,.15), transparent 70%);
-    filter: blur(40px);
-    animation: bg-drift 60s ease-in-out infinite alternate;
-  }
-  html[data-theme="dark"] body::before { opacity: .55; }
-  /* Frosted chrome so the tint reads through the top bar and sidebar too. */
+  /* Plain white page: no tinted backdrop layer, solid top bar and sidebar. */
   .topbar, .tab-nav, html[data-theme="dark"] .topbar, html[data-theme="dark"] .tab-nav {
-    background: color-mix(in srgb, var(--surface) 70%, transparent);
-    -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
+    background: var(--surface);
   }
-  @keyframes bg-drift {
-    0%   { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
-    50%  { transform: translate3d(4vmax, -3vmax, 0) rotate(8deg) scale(1.06); }
-    100% { transform: translate3d(-3vmax, 3vmax, 0) rotate(-6deg) scale(1.02); }
+
+  /* Theme switch: sun in the light theme, moon in the dark one. */
+  .theme-ico { width: 15px; height: 15px; flex: none; }
+  .theme-ico.moon, html[data-theme="dark"] .theme-ico.sun { display: none; }
+  html[data-theme="dark"] .theme-ico.moon { display: block; }
+
+  /* Dropdowns: draw the chevron ourselves so it sits 12px in from the edge
+     instead of touching the border. */
+  select, .fsel, .tool-add-select, .agent-switch {
+    -webkit-appearance: none; appearance: none;
+    padding-right: 32px !important;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%23626d7c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 12px center; background-size: 12px;
   }
-  @media (prefers-reduced-motion: reduce) { body::before { animation: none; } }
+
+  /* State buttons (Observe/Enforce, Allow/Deny, On/Off, pause/resume/clear):
+     no tinted fill, black outline, text colour unchanged. */
+  :root { --btn-outline: #000; }
+  html[data-theme="dark"] { --btn-outline: var(--ink); }
+  html .mode-btn.active-observe, html .mode-btn.active-enforce {
+    background: transparent; box-shadow: inset 0 0 0 1px var(--btn-outline);
+  }
+  html .mode-chip.observe, html .mode-chip.enforce,
+  html .net-toggle-btn.allowed, html .net-toggle-btn.denied,
+  html .en-toggle.on, html .en-toggle.off,
+  html .drawer-toggle.pause, html .drawer-toggle.resume, html .drawer-toggle.clear,
+  html .sess-act-btn.pause, html .sess-act-btn.resume, html .sess-act-btn.clear,
+  html .ext-approve, html .tp-allow.on, html .tp-ask.on, html .tp-deny.on,
+  html .fbtn.active, html .rules-filters .fbtn.active {
+    background: transparent; border-color: var(--btn-outline);
+  }
+  html .ext-approve:hover, html .tp-btn.on:hover, html .fbtn.active:hover { background: var(--gray-100); }
+  html .en-toggle.on:hover, html .en-toggle.off:hover,
+  html .drawer-toggle.pause:hover, html .drawer-toggle.resume:hover, html .drawer-toggle.clear:hover,
+  html .sess-act-btn.pause:hover, html .sess-act-btn.resume:hover, html .sess-act-btn.clear:hover {
+    background: var(--gray-100);
+  }
 
   /* Cards */
   .card, .drawer-event-card, .rt-bar, .prec-table, .tp-grid, .agent-ctrl-card, .banner, .chart-card { border-radius: var(--r-card); }
@@ -2734,6 +2763,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <symbol id="kl-network" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C17.5228 2 22 6.47715 22 12ZM2 12H22M12 2C14.6667 5 16 8.5 16 12C16 15.5 14.6667 19 12 22C9.33333 19 8 15.5 8 12C8 8.5 9.33333 5 12 2Z"/></symbol>
   <symbol id="kl-other" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12H5.01M12 12H12.01M19 12H19.01"/></symbol>
   <symbol id="kl-prompt" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 3 C20.6569 3 22 4.3431 22 6 C22 7.6569 20.6569 9 19 9 C17.3431 9 16 7.6569 16 6 C16 4.3431 17.3431 3 19 3 ZM12.668 3.0179 C12.4456 3.006 12.2228 3 12 3 C6.4772 3 2 6.5817 2 11 C2 12.9769 2.915 14.8839 4.5686 16.353 L5 21 L9.5808 18.7624 C10.3721 18.9202 11.1845 19 12 19 C16.8496 19 21.0003 16.2162 21.8466 12.3961" fill="none"/></symbol>
+  <symbol id="kl-assistant" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2zM8 9h8M8 13h5"/></symbol>
   <symbol id="kl-shell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5L10.5571 10.6204C10.7899 10.8199 10.7899 11.1801 10.5571 11.3796L4 17M20 19H13"/></symbol>
   <symbol id="kl-task" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6v6l4 2M22 12c0 5.5228-4.4772 10-10 10S2 17.5228 2 12 6.4772 2 12 2s10 4.4772 10 10Z"/></symbol>
   <symbol id="kl-tools" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.682 8.8536L20.2678 7.2678C20.4553 7.0802 20.7097 6.9749 20.9749 6.9749C21.4902 6.9749 21.9211 7.3664 21.9703 7.8794C21.9901 8.0857 22 8.2928 22 8.5C22 12.0899 19.0899 15 15.5 15C11.9101 15 9 12.0899 9 8.5C9 4.9101 11.9101 2 15.5 2C15.7072 2 15.9143 2.0099 16.1206 2.0297C16.6336 2.0789 17.0251 2.5098 17.0251 3.0251C17.0251 3.2903 16.9198 3.5447 16.7322 3.7322L15.1464 5.318C14.6776 5.7869 14.4142 6.4227 14.4142 7.0858C14.4142 8.4665 15.5335 9.5858 16.9142 9.5858C17.5773 9.5858 18.2131 9.3224 18.682 8.8536ZM15.3955 14.9992C15.3688 14.9987 15.342 14.9985 15.3152 14.9985C13.9891 14.9985 12.7173 15.5253 11.7797 16.463L7.1213 21.1213C6.5587 21.6839 5.7956 22 5 22C3.3431 22 2 20.6569 2 19C2 18.2044 2.3161 17.4413 2.8787 16.8787L7.537 12.2203C8.4747 11.2827 9.0015 10.0109 9.0015 8.6848C9.0015 8.658 9.0013 8.6312 9.0008 8.6045"/></symbol>
@@ -2782,7 +2812,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="tab-nav-footer">
     <span id="statusBadge" class="badge badge-demo"><span class="badge-dot"></span> loading</span>
     <button id="themeToggle" class="theme-toggle" type="button" onclick="toggleTheme()" aria-pressed="false" title="Switch theme">
-      <span class="theme-toggle-dot"></span>
+      <svg class="theme-ico sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="theme-ico moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       <span id="themeToggleLabel">Dark</span>
     </button>
   </div>
@@ -2817,9 +2847,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <button id="apprBtn" class="upgrade-btn rt-appr" hidden onclick="openApprovals()" title="Blocked calls waiting for your decision"></button>
     <span id="rtPause"></span>
     <button class="upgrade-btn" onclick="openPageHelp()" title="Open the guide for this page">Help</button>
-    <button id="refreshBtn" class="upgrade-btn" onclick="refreshDashboard()"><svg class="icon"><use href="#i-refresh"/></svg> Refresh</button>
+    <button id="refreshBtn" class="upgrade-btn" onclick="refreshDashboard()">Refresh</button>
     <button class="upgrade-btn" id="upgradeBtn" onclick="openUpgradeModal()"><svg class="icon"><use href="#i-sparkles"/></svg> Upgrade</button>
-    <a class="upgrade-btn" id="orgBtn" hidden target="_blank" rel="noopener">Org dashboard ↗</a>
+    <a class="upgrade-btn" id="orgBtn" hidden target="_blank" rel="noopener">Org dashboard</a>
   </div>
 </div>
 
@@ -3187,7 +3217,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="bar" style="margin-bottom:14px">
       <span id="agentsCount" class="result-count"></span>
       <div class="bar-right">
-        <button class="fbtn" id="agentsRefresh">↺ Refresh</button>
+        <button class="fbtn" id="agentsRefresh">Refresh</button>
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -3246,7 +3276,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="bar" style="margin-bottom:16px">
       <span id="scSessCount" class="result-count"></span>
       <div class="bar-right">
-        <button class="fbtn" id="scSessRefresh">↺ Refresh</button>
+        <button class="fbtn" id="scSessRefresh">Refresh</button>
         <label>Per page</label>
         <select id="scSessLimit" class="fsel">
           <option value="20" selected>20</option>
@@ -3709,7 +3739,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="lock"><svg class="icon"><use href="#i-building"/></svg></div>
     <h3>Your fleet lives in the org dashboard</h3>
     <p id="fleetEnrolledText">This device is enrolled. Every enrolled device, its sessions, findings and policy status are in your organization's Prismor dashboard.</p>
-    <a class="btn-primary" id="fleetOrgLink" target="_blank" rel="noopener">Open org dashboard ↗</a>
+    <a class="btn-primary" id="fleetOrgLink" target="_blank" rel="noopener">Open org dashboard</a>
   </div>
   <div class="locked-hero" id="fleetLocked">
     <div class="lock"><svg class="icon"><use href="#i-lock"/></svg></div>
@@ -5345,7 +5375,7 @@ async function refreshDashboard() {
   const old = btn ? btn.innerHTML : '';
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = '<svg class="icon"><use href="#i-refresh"/></svg> Refreshing…';
+    btn.innerHTML = 'Refreshing…';
   }
   try {
     const result = await apiFetch('/api/refresh', { method: 'POST' });
@@ -6446,9 +6476,10 @@ async function sessViewAction(action){
 // index, so clicking one still selects it in the detail panel.
 const LANE_LABEL = {
   prompt:'Prompts', tools:'Tool calls', files:'Files', shell:'Shell',
-  network:'Network', context:'Context', mcp:'MCP', task:'Background tasks', other:'Other',
+  network:'Network', context:'Context', mcp:'MCP', task:'Background tasks', assistant:'Replies', other:'Other',
 };
-const LANE_ORDER = ['prompt','context','task','tools','shell','files','network','mcp','other'];
+// The reply closes a turn, so it sits after what the agent did.
+const LANE_ORDER = ['prompt','context','task','tools','shell','files','network','mcp','assistant','other'];
 
 // A task notification is the harness handing the same turn back to the agent
 // when out-of-band work finishes -- a backgrounded command, a Monitor, a
@@ -6476,7 +6507,7 @@ function eventSummary(ev){
   // For a prompt, the person's own message beats the flattened blob: a chat
   // API resends the whole conversation every round trip, so the blob grows by
   // the previous answer each time and the recognisable part is buried.
-  const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.content
+  const raw = a.command || a.path || a.url || a.user_message || a.prompt || a.response || a.reply || a.reasoning || a.content
     || (ev.action||'').replace(/^[a-z_]+:\s*/i,'') || ev.type || 'event';
   // Agents prefix nearly every command with `cd <repo> &&`; in a row 90 chars
   // wide that prefix is all a reader sees. The panel still shows it in full.
@@ -6554,6 +6585,12 @@ function groupTrail(trail){
       return;  // already represented by the turn it opened
     }
     if (isTurnStart && !cur.sub) cur.sub = eventSummary(ev).slice(0,90);
+    // The provider's classifier refused it, so nothing ran, and the retry
+    // usually differs only at the end: show the end, not the shared start.
+    if (isTurnStart && (ev.artifacts||{}).refused){
+      cur.refused = true;
+      cur.sub = 'refused by safety classifier ('+ev.artifacts.refused+') \u00b7 \u2026'+text.slice(-70);
+    }
     const note = taskNote(ev);
     const sid = subagentOf(ev) || (note && subs[note.id] ? note.id : '');
     // Async subagents keep working (and report back) after later prompts;
@@ -6590,9 +6627,9 @@ function treeLeafEl(ev, idx){
   const text = eventSummary(ev);
   btn.innerHTML =
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
-    '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
+    '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : ev.type === 'assistant_response' ? 'reply' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
-    extCauseChip(ev.extension)+hookChip(ev)+
+    extCauseChip(ev.extension)+precheckChip(ev)+hookChip(ev)+
     '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
@@ -6642,7 +6679,7 @@ function subagentCards(turn, lanes){
     const more = document.createElement('button'); more.className = 'sa-more';
     const list = document.createElement('div'); list.className = 'sa-calls hidden';
     c.items.forEach(({ev,i})=>list.appendChild(treeLeafEl(ev,i)));
-    const label = open => (open ? 'Hide calls ▾' : 'Show '+c.calls.length+' call'+(c.calls.length===1?'':'s')+' ▸');
+    const label = open => (open ? 'Hide calls' : 'Show '+c.calls.length+' call'+(c.calls.length===1?'':'s'));
     more.textContent = label(false); more.setAttribute('aria-expanded', 'false');
     more.onclick = ()=>{ const open = list.classList.toggle('hidden') === false; el.classList.toggle('open', open);
       more.textContent = label(open); more.setAttribute('aria-expanded', String(open)); };
@@ -6654,7 +6691,7 @@ function subagentCards(turn, lanes){
     const more = document.createElement('button'); more.className = 'sa-more sa-minor';
     const list = document.createElement('div'); list.className = 'sa-calls hidden sa-minor-calls';
     minor.forEach(c=>c.items.forEach(({ev,i})=>list.appendChild(treeLeafEl(ev,i))));
-    const label = open => (open ? 'Hide ' : '+ ')+minor.length+' minor subagent'+(minor.length===1?'':'s')+' ('+n+' call'+(n===1?'':'s')+', no task or report recorded)'+(open?' ▾':' ▸');
+    const label = open => (open ? 'Hide ' : '+ ')+minor.length+' minor subagent'+(minor.length===1?'':'s')+' ('+n+' call'+(n===1?'':'s')+', no task or report recorded)'+'';
     more.textContent = label(false); more.setAttribute('aria-expanded', 'false');
     more.onclick = ()=>{ const open = list.classList.toggle('hidden') === false; more.textContent = label(open); more.setAttribute('aria-expanded', String(open)); };
     wrap.appendChild(more); wrap.appendChild(list);
@@ -6671,6 +6708,7 @@ function renderSessionFlow(trail){
     const kids = document.createElement('div'); kids.className='tree-children';
     const head = treeRowEl({cls:'turn', caret:true, label:turn.label, sub:turn.sub, count:turn.count,
       onToggle:(e)=>{ kids.classList.toggle('hidden'); e.currentTarget.classList.toggle('collapsed'); }});
+    if (turn.refused) head.classList.add('refused');
     box.appendChild(head); box.appendChild(kids);
     const subLanes = [...turn.lanes.keys()].filter(l=>l.startsWith('sub:'));
     // Read order: what was asked, what the subagents did, then the main
@@ -6769,8 +6807,10 @@ function renderNodePanel(ev){
             '<a class="link" style="margin-left:14px" onclick="openDoc(\'faq.md\',\'Why was my command blocked?\')">Why was this flagged?</a></div>':'')+
         '</div>':'')+
     '</div>';
+  panel.querySelector('.drawer-event-card').insertAdjacentHTML('beforeend', precheckHtml(ev));
   panel.insertAdjacentHTML('beforeend', artifactsHtml(ev));
   panel.insertAdjacentHTML('beforeend', nodeActionsHtml(ev));
+  renderNaExisting(naTarget(ev));
 }
 
 // What the event actually carried. The log has held this all along -- the
@@ -6780,7 +6820,8 @@ function renderNodePanel(ev){
 const ARTIFACT_FIELDS = [
   // What the person said comes first; the system prompt the workflow wraps
   // around it, and the flattened blob policy actually read, come after.
-  ['user_message','User message'], ['description','Description'], ['command','Command'], ['path','Path'], ['url','URL'],
+  ['user_message','User message'], ['reply','Reply'], ['reasoning','Reasoning'],
+  ['description','Description'], ['command','Command'], ['path','Path'], ['url','URL'],
   ['response','Tool output'], ['stdout','stdout'], ['stderr','stderr'],
   ['content','Content'], ['mcp_server','MCP server'], ['mcp_tool','MCP tool'],
   ['system','System prompt'], ['prompt','Full prompt evaluated'],
@@ -6844,58 +6885,98 @@ function artifactsHtml(ev){
   return '<div class="artifacts"><h4>Artefacts'+phases+'</h4>'+rows.join('')+'</div>';
 }
 
+// Allow / Ask / Deny for the selected call, each at a scope picked from its
+// menu. A call a rule flagged is decided on that rule (by default for this
+// exact call only); any other call on its tool tag. Stored by /api/decisions
+// (decisions.py) and applied on the next call, in observe mode too.
+const NA_TOOL_RULES = /^(agent-tool-deny|agent-tool-step-up|org-tool-deny|org-tool-step-up|scoped-agent|tool-decision)/;
+const NA_SCOPES = [['session','This session'],['agent','This agent'],['workspace','This workspace'],['device','This device']];
+const NA_ACTIONS = [['allow','Allow'],['ask','Ask'],['deny','Deny']];
+
+function naTarget(ev){
+  const ruleId = String((ev.policy||{}).ruleId||'').replace(/^[0-9a-f-]{20,}:/,'');
+  const a = ev.artifacts || {};
+  const call = String(a.command || a.file_path || a.path || a.url || ev.action || '');
+  if (ruleId && flowVerdict(ev)!=='allow' && !NA_TOOL_RULES.test(ruleId)) return {target:'rule', ruleId, call};
+  // Only the agent's own tool name matches at runtime; ev.type ("shell") never would.
+  return {target:'tool', tool: ev.toolTag || '', call};
+}
+
 function nodeActionsHtml(ev){
-  const tool = safe(ev.toolTag || ev.type || 'tool');
-  const scopes = [['session','This session'],['agent','This agent'],['global','Across agents']];
-  const btns = (action)=> scopes.map(sc=>'<button class="na-btn '+action+'" onclick="applyNodePolicy(\''+action+'\',\''+sc[0]+'\')">'+sc[1]+'</button>').join('');
+  const t = naTarget(ev);
+  if (t.target==='tool' && !t.tool) return '';
+  const what = t.target==='rule'
+    ? 'rule <span class="na-tool">'+safe(t.ruleId)+'</span>'
+    : 'tool <span class="na-tool">'+safe(t.tool)+'</span>';
+  const st = _sessionViewState || {};
+  const menu = (action)=> '<div class="na-menu" id="naMenu-'+action+'" hidden>'+NA_SCOPES.map(sc=>{
+    const off = sc[0]==='agent' && !st.agent;
+    return '<button class="na-menu-item"'+(off?' disabled title="No agent recorded for this session"':'')+
+      ' onclick="applyNodeDecision(\''+action+'\',\''+sc[0]+'\')">'+sc[1]+
+      (sc[0]==='agent' && st.agent ? ' <span class="na-sub">'+safe(st.agent)+'</span>' : '')+'</button>';
+  }).join('')+'</div>';
   return '<div class="node-actions">'+
-    '<h4>Apply a rule for <span class="na-tool">'+tool+'</span></h4>'+
-    '<div class="na-row"><span class="na-label na-deny">Block</span>'+btns('deny')+'</div>'+
-    '<div class="na-row"><span class="na-label na-allow">Allow</span>'+btns('allow')+'</div>'+
+    '<h4>Decide this '+what+'</h4>'+
+    '<div class="na-row">'+NA_ACTIONS.map(a=>'<div class="na-drop">'+
+      '<button class="na-btn '+a[0]+'" onclick="toggleNaMenu(\''+a[0]+'\')" aria-haspopup="menu">'+a[1]+' \u25be</button>'+menu(a[0])+'</div>').join('')+'</div>'+
+    (t.target==='rule' && t.call ? '<label class="na-exact"><input type="checkbox" id="naExact" checked> Only this exact call</label>' : '')+
     '<div class="na-status" id="naStatus"></div>'+
-    '<div class="na-hint">Block adds this tool tag to a deny list; Allow lifts a deny. Session denials are reversible via \u201cClear scope\u201d. Agent and across-agents rules apply to future calls immediately, even in observe mode.</div>'+
+    '<div id="naExisting"></div>'+
+    '<div class="na-hint">Allow lets it run, Ask holds it for your approval, Deny blocks it, in observe mode too. '+
+      (t.target==='rule' ? 'Safety-floor rules can only be relaxed for one exact call.' : 'Applies to every call of this tool.')+'</div>'+
   '</div>';
 }
 
-async function applyNodePolicy(action, scope){
+function toggleNaMenu(action){
+  document.querySelectorAll('.na-menu').forEach(m=>{ m.hidden = m.id!=='naMenu-'+action || !m.hidden; });
+}
+document.addEventListener('click', e=>{
+  if (!e.target.closest('.na-drop')) document.querySelectorAll('.na-menu').forEach(m=>{ m.hidden = true; });
+});
+
+async function applyNodeDecision(action, scope){
   const ev = _flowSelEvent; if(!ev) return;
-  const tool = ev.toolTag || ev.type; if(!tool) return;
+  toggleNaMenu('');
+  const t = naTarget(ev);
   const st = _sessionViewState || {};
   const ws = st.workspace || '';
   const statusEl = document.getElementById('naStatus');
   const setStatus = (m,err)=>{ if(statusEl){ statusEl.textContent=m; statusEl.style.color=err?'#b91c1c':'var(--gray-500)'; } };
-  const where = {session:'this session', agent:'this agent'+(st.agent?' ('+st.agent+')':''), global:'all agents'}[scope];
-  if (scope==='agent' && !st.agent){ setStatus('\u2717 No agent recorded for this session.', true); return; }
-  if (scope!=='session' && !(await askConfirm((action==='deny'?'Block':'Allow')+' \u201c'+tool+'\u201d for '+where+'?\n\nThis affects future tool calls across sessions.'))) return;
+  const exact = t.target==='rule' && document.getElementById('naExact')?.checked;
+  const name = t.target==='rule' ? t.ruleId : t.tool;
+  const where = {session:'this session', agent:'agent '+(st.agent||''), workspace:'this workspace', device:'every workspace on this device'}[scope];
+  const verb = {allow:'Allow', ask:'Ask before', deny:'Deny'}[action];
+  if (scope!=='session' && !(await askConfirm(verb+' \u201c'+name+'\u201d'+(exact?' for this exact call':'')+' in '+where+'?'))) return;
+  const body = {target:t.target, action, scope, workspace:ws,
+    scopeId: scope==='session' ? st.sessionId : scope==='agent' ? st.agent : ''};
+  if (t.target==='rule'){ body.ruleId = t.ruleId; if (exact) body.pattern = t.call; }
+  else body.tool = t.tool;
   setStatus('Applying\u2026');
   try {
-    if (scope==='session'){
-      const sc = (st.data && st.data.scoped) ? JSON.parse(JSON.stringify(st.data.scoped)) : {};
-      let deny = Array.isArray(sc.deny_tools) ? sc.deny_tools.slice() : [];
-      let allow = Array.isArray(sc.allowed_tools) ? sc.allowed_tools.slice() : [];
-      if (action==='deny'){
-        if(!deny.includes(tool)) deny.push(tool);
-        if(allow.length===0) allow=['*'];
-        else if(!allow.includes('*')) allow=allow.filter(t=>t!==tool);
-      } else {
-        deny = deny.filter(t=>t!==tool);
-        if(allow.length && !allow.includes('*') && !allow.includes(tool)) allow.push(tool);
-      }
-      await apiFetch('/api/sessions/'+encodeURIComponent(st.sessionId)+'/control', {
-        method:'PATCH', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({action:'update', workspace:ws, deny_tools:deny, allowed_tools:allow,
-          deny_network:!!sc.deny_network, allowed_paths: sc.allowed_paths || ['**']}),
-      });
-    } else {
-      const body = {scope:scope, action:action, tool:tool, workspace:ws};
-      if (scope==='agent') body.agent = st.agent;
-      await apiFetch('/api/tool-policy', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-    }
-    const verb = action==='deny' ? 'Blocked' : 'Allowed';
-    setStatus('\u2713 '+verb+' '+tool+' for '+where+'.');
-    toast('\u2713 '+verb+' '+tool+' for '+where);
-    setTimeout(()=>{ if(_sessionViewState && _sessionViewState.sessionId===st.sessionId) openSessionView(st.sessionId, ws); }, 650);
+    await apiFetch('/api/decisions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    setStatus('\u2713 '+verb+' '+name+' in '+where+'.');
+    toast('\u2713 '+verb+' '+name+' in '+where);
+    renderNaExisting(t);
   } catch(e){ setStatus('\u2717 '+e.message, true); }
+}
+
+// The decisions already standing for this rule or tool, each revocable.
+async function renderNaExisting(t){
+  const box = document.getElementById('naExisting'); if(!box) return;
+  let list = [];
+  try { list = (await apiFetch('/api/decisions')).decisions || []; } catch(_){ return; }
+  const mine = list.filter(d => t.target==='rule' ? d.ruleId===t.ruleId : d.tool===t.tool);
+  box.innerHTML = mine.length ? '<div class="na-existing">'+mine.map(d=>
+    '<div class="na-existing-row"><span class="na-pill '+safeAttr(d.action)+'">'+safe(d.action)+'</span>'+
+    '<span>'+safe(d.scope)+(d.scopeId?' '+safe(String(d.scopeId).slice(0,12)):'')+(d.pattern?' \u00b7 exact call':'')+'</span>'+
+    '<button class="link" onclick="revokeNaDecision(\''+safeJsArg(d.id)+'\')">Remove</button></div>').join('')+'</div>' : '';
+}
+
+async function revokeNaDecision(id){
+  try {
+    await apiFetch('/api/decisions', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({remove:id})});
+    if (_flowSelEvent) renderNaExisting(naTarget(_flowSelEvent));
+  } catch(e){ toast('\u2717 '+e.message); }
 }
 
 
@@ -7232,6 +7313,33 @@ function hookChip(ev){
   return '<span class="hook-chip' + (fail ? ' fail' : wait >= HOOK_SLOW_MS ? ' slow' : '') + '" title="' +
     safeAttr(runs.map(r => r.event + ' ' + hookLabel(r.command) + ' ' + fmtDur(r.ms)).join('\n')) + '">' +
     runs.length + ' hook' + (runs.length === 1 ? '' : 's') + ' · ' + fmtDur(wait) + '</span>';
+}
+// `prismor check "<cmd>"` the agent ran itself: a dry run, so the call stays
+// allowed, but its verdict is usually why the agent stopped right after.
+const PRECHECK_LABEL = {block:'would block', warn:'would warn', pass:'would allow', unknown:'ran'};
+function precheckChip(ev){
+  const p = ev.precheck; if (!p) return '';
+  const rules = [...new Set(p.findings.map(f => f.rule))];
+  return '<span class="hook-chip' + (p.verdict === 'block' ? ' pre-block' : p.verdict === 'warn' ? ' pre-warn' : '') +
+    '" title="' + safeAttr('Dry run via prismor check; nothing was blocked' + (rules.length ? '\nrule: ' + rules.join(', ') : '')) +
+    '">pre-check \u00b7 ' + PRECHECK_LABEL[p.verdict] + '</span>';
+}
+function precheckHtml(ev){
+  const p = ev.precheck; if (!p) return '';
+  const cls = {block:'', warn:'warned', pass:'allowed', unknown:'allowed'}[p.verdict];
+  return '<div class="drawer-policy-card ' + cls + '">' +
+    '<div class="drawer-rule-row"><span class="drawer-rule-label">Pre-check</span>' +
+      '<div style="font-size: 12px;color:var(--gray-700);line-height:1.5">The agent asked Prismor what policy would do with this command, without running it. ' +
+      'Verdict: <b>' + PRECHECK_LABEL[p.verdict] + '</b>.</div></div>' +
+    '<div class="drawer-rule-row stack"><span class="drawer-rule-label">Checked</span>' +
+      p.checked.map(c => '<div class="drawer-code">' + safe(c) + '</div>').join('') + '</div>' +
+    p.findings.map(f =>
+      '<div class="drawer-rule-row stack"><span class="drawer-rule-label">' + safe(f.rule) + ' \u00b7 ' + safe(f.verdict) + '</span>' +
+        '<div style="font-size: 12px;color:var(--gray-700);line-height:1.4"><span class="sev-badge ' + sevClass(f.severity.toLowerCase()) + '">' + safe(f.severity.toLowerCase()) + '</span> ' + safe(f.title) + '</div>' +
+        '<div class="drawer-code">' + safe(f.evidence) + '</div></div>').join('') +
+    '<div class="drawer-rule-row stack" style="margin-bottom:0"><span class="drawer-rule-label">What happened</span>' +
+      '<div style="font-size: 12px;color:var(--gray-600);line-height:1.5">Nothing was blocked here. If the agent then skipped the command, it chose to on this verdict.</div></div>' +
+  '</div>';
 }
 function hookRunsHtml(ev){
   const runs = ev.hookRuns || [];
@@ -7821,7 +7929,7 @@ function renderSessionControl(items, workspace) {
       '</div>' +
       '<div class="sess-ctrl-btns">' +
         '<button class="sess-act-btn open" onclick="navigateToSession(\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\')">Open</button>' +
-        '<button class="sess-act-btn expand" title="Scope, recent blocks, and pause or resume protection" onclick="toggleSessDetail(\'' + detailId + '\',\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\',' + i + ')">Controls ▸</button>' +
+        '<button class="sess-act-btn expand" title="Scope, recent blocks, and pause or resume protection" onclick="toggleSessDetail(\'' + detailId + '\',\'' + safeAttr(sessId) + '\',\'' + safeAttr(ws) + '\',' + i + ')">Controls</button>' +
       '</div>' +
     '</div>';
   }).join('');

@@ -54,6 +54,37 @@ prismor cloak status
 prismor cloak run -- <command>               # Codex-safe decloak + execute + scrub
 ```
 
+### From a secret manager
+
+If the secret already lives in 1Password, Okta Privileged Access or AWS
+AgentCore Identity, fetch it from there instead of pasting it. The value is
+written to the vault like any other secret, so every hook works unchanged;
+only the reference is kept, in `$PRISMOR_HOME/secret-sources.json`.
+
+```bash
+prismor cloak add openai --from-ref op://Engineering/OpenAI/credential
+prismor cloak add stripe --from-ref 'okta-pam://acme/<resource_group>/<project>/<secret_id>#api_key'
+prismor cloak add github --from-ref agentcore://us-east-1/dev-cli/github
+prismor cloak list                           # shows where each one came from
+prismor cloak sync                           # fetch them all again after a rotation
+```
+
+| Reference | Fetched with | Needs |
+|---|---|---|
+| `op://vault/item[/section]/field[?attribute=…]` | `op read -n` | The 1Password CLI, signed in through the desktop app, or `OP_SERVICE_ACCOUNT_TOKEN` / Connect in the environment. |
+| `okta-pam://team/resource_group/project/secret_id[#field]` | Service token, then plain-text reveal | `PRISMOR_OKTA_PAM_URL` (`https://<org>.pam.okta.com`), and a service user's `PRISMOR_OKTA_PAM_KEY_ID` / `PRISMOR_OKTA_PAM_KEY_SECRET`. The user needs a role and security policy that allow plain-text reveal. `#field` picks one key of a multi-field secret. |
+| `agentcore://region/workload_identity/api_key_provider` | `GetWorkloadAccessToken`, then `GetResourceApiKey` | `boto3`, AWS credentials allowed `bedrock-agentcore:GetWorkloadAccessToken` and `GetResourceApiKey`, and a workload identity you created (one linked to Runtime or Gateway cannot be used from a laptop). |
+
+A fetch that takes longer than `PRISMOR_SECRET_SOURCE_TIMEOUT` seconds
+(default 20, e.g. a locked 1Password app) fails without writing anything.
+`sync` keeps the last good value of any source it can't reach and exits 1, so
+one locked manager never empties the vault.
+
+Adding a `--from-ref` secret is a person's job: it decides which real secret a
+placeholder unlocks, so `prismor-self-edit` blocks an agent running
+`cloak add --from-ref` or editing `secret-sources.json`. An agent may run
+`prismor cloak sync`.
+
 ### Custom detection patterns
 
 Built-in patterns cover Stripe, GitHub, AWS, Google, Slack, GitLab, and JWTs.
@@ -101,6 +132,29 @@ never sees vault contents. The vault is not encrypted at rest — the protection
 against a *direct read* is the runtime monitor and file permissions, not the
 cloaking hooks alone.
 
+### What the console sees
+
+Every catch is counted. Each cloak hook appends one line to
+`~/.prismor/cloak_events.jsonl`. On its next tool call, the Prismor hook drains
+that file and sends each line to your configured sinks as a finding. On an
+enrolled device the finding lands in the console's Secrets page.
+
+| Rule id | When |
+|---|---|
+| `cloak-prompt` | a secret pasted in a prompt was vaulted and the prompt sanitized |
+| `cloak-prompt-file` | a prompt `@`-mentioned a file holding a registered secret (blocked) |
+| `cloak-tool-input` | a raw secret in a command, file write or MCP arg was vaulted (denied) |
+| `cloak-read` | a Read of a file holding a registered secret was blocked |
+| `cloak-output` / `cloak-mcp-output` | a registered value was scrubbed from command or MCP output |
+| `cloak-command` | a `@@SECRET:name@@` placeholder was resolved at execution |
+
+A line carries the vault **name** (`auto_<hash>` or the name you registered),
+the pattern that matched, the session id and the tool. It never carries the
+value. Redactions arrive with `redaction_applied: true` and
+`data_classes: ["secret"]`. PII findings (`pii-ner`) carry their entity types in
+`data_classes`, and are marked redacted when `settings.pii` is `redact` +
+`enforce`.
+
 ---
 
 ## Sweep
@@ -128,6 +182,7 @@ the cloak pattern list before reaching for `--purge`.
 ## See also
 
 - [`prismor/runtime/cloaking/README.md`](../prismor/runtime/cloaking/README.md) — full implementation details
+- [PII detection](pii.md) — optional Presidio pass for names and other personal data Cloak does not vault
 - [Prismor](prismor-runtime.md) — the enforce-mode monitor that closes the vault-read gap
 - [Canary](canary.md) — honeytokens for detecting recon attempts
 - [CLI Reference](cli-reference.md) — all commands at a glance
