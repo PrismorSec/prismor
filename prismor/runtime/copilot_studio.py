@@ -47,6 +47,8 @@ See docs/copilot-studio.md.
 """
 from __future__ import annotations
 
+from prismor.runtime.ratelimit import Scope as RateScope
+
 import base64
 import hashlib
 import json
@@ -518,6 +520,8 @@ def _evaluate(events: List[Dict[str, Any]], ctx: Dict[str, Any], workspace: Path
             # puts the agent's tools on its console page (Tool access), off
             # the request path (a daemon-thread POST, debounced on disk).
             persist=False, register_agent=record, taint_store=taint, record=record and not escalate,
+            rate_accounting=record and event is events[-1],
+            rate_scope=RateScope(workspace, AGENT_ID, authoritative=True),
         )
         blocking = decision.blocking
         if escalate:

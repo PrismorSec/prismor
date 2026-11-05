@@ -66,6 +66,8 @@ TYPE_FIELD: Dict[str, str] = {
     "skill_manifest": "content",
     "subagent_spawn": "content",
     "ui_action": "control_label",
+    # Runtime-generated accounting context; supplied metadata cannot trigger it.
+    "rate_limit": "content",
 }
 
 EVENT_TYPES: Tuple[str, ...] = tuple(TYPE_FIELD)

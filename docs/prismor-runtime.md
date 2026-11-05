@@ -119,6 +119,93 @@ See [`prismor/runtime/default_policy.yaml`](../prismor/runtime/default_policy.ya
 | Skill secret access       | HIGH     | Flags skills referencing `.env`, `.ssh/id_rsa`, `.aws/credentials` |
 | Skill overpermission      | MEDIUM   | Flags skills requesting wildcard filesystem or network access      |
 
+## Per-identity rate limits
+
+An optional SQLite-backed admission gate limits live tool-call attempts in an
+exact rolling 60-second window. Configure a workspace policy:
+
+```yaml
+version: "1.0"
+settings:
+  rate_limit:
+    requests_per_minute: 120
+    max_burst: 10
+rules:
+  - id: rate-limit-exceeded
+    mode: enforce
+  - id: rate-limit-unavailable
+    mode: enforce
+```
+
+Capacity is the sum: this example admits at most 130 attempts in any rolling
+minute, including an instantaneous burst of 130. `max_burst` defaults to zero;
+the minute limit must be a positive integer. Omit `rate_limit` to disable
+accounting. Modes follow the existing policy rules; use `observe` to report
+would-be denials before enforcing. An unavailable store/configuration reports
+`rate-limit-unavailable` and blocks when that rule is enforced.
+
+The quota is scoped to the canonical workspace, trusted principal (when
+verified), and host-configured agent identity. It spans sessions and processes
+sharing `$PRISMOR_HOME/prismor.db`. Unverified principal strings share a fallback
+bucket for that agent. The eval-server uses its configured workspace and fixed
+integration identity for accounting, even when a request selects another
+workspace or supplies another agent/session/user label. Its Prismor and AuthZEN
+evaluation routes share that quota. It applies the server's enforced rate rules
+regardless of a request's observe flag. A verified
+principal can have its own quota. This is local accounting, not a distributed
+cross-device quota, and is not a substitute for authenticating HTTP callers.
+Quota identity verification and exemptions use the server's own policy, even
+when the selected action workspace has different identity settings. Only the
+quota owner's policy or dashboard decisions can grant an exception. Asserted
+usernames and request-selected agent/session labels cannot select one.
+The server's quota sinks receive rate findings even if another action workspace
+selects different sinks. Additional owner reports contain quota metadata, not
+that workspace's tool arguments or command. Identical sink configurations
+receive one report.
+
+Quota reservation, expiry pruning, duplicate lookup and counting run in one
+SQLite write transaction with a 100 ms lock timeout. Accounting stores only
+workspace, identity/call fingerprints and timestamps. Lock contention beyond
+that timeout produces `rate-limit-unavailable` and follows its rule mode.
+Denied retries add no admission rows; ordinary findings/audit retention still
+applies. Expired rows
+for inactive identities are removed on subsequent writes. A later rejection by
+another guard does not refund an admission. A persisted clock high-water mark
+prevents clock rollback from freeing slots; forward wall-clock changes expire
+entries normally. Restarting the process does not reset usage.
+Invalid persisted clock values and commit, rollback or close failures produce
+an unavailable result. Session-log failures do not stop policy/rate evaluation;
+the current event is still checked, with whatever history remains readable.
+
+Local hook deliveries with the same host-issued call id and input share a
+reservation, while still re-evaluating policy. Calls without a trustworthy id
+count separately. Arbitrary HTTP ids do not waive accounting. Pre-action tool
+calls through local hooks, SDKs, MCP and the proxy count; local post-tool events,
+prompts, checks, discovery probes, historical analysis and transcript replay do not.
+The Copilot Studio channel counts its current planned tool, not prior transcript
+events. Inference-hook and ChatGPT-log transcript replay reserve no slots.
+An HTTP evaluation request is a live admission request even if its supplied
+event claims to be a prompt or post-action event; result redaction uses the
+separate `/v1/redact` endpoint and consumes no tool-call quota.
+With `PRISMOR_EVAL_URL`, accounting belongs to that evaluator: requests sent to
+its evaluation endpoint count there, including remotely forwarded inspections.
+Clients cannot request an accounting exemption through event/body fields.
+
+```bash
+prismor rate status
+prismor rate status --workspace /path/to/project --json
+```
+
+Status reads existing accounting without creating a database, reserving a slot
+or pruning. It reports configured capacity, rule modes, policy layer, active
+identity fingerprints, usage, remaining slots and retry timing. When a lowered
+limit requires several reservations to expire, retry timing accounts for all
+of them. `rate-limit-exceeded` and `rate-limit-unavailable` appear as standard
+`rate_limit` findings in sessions, the dashboard and configured sinks. Wait for
+capacity or ask the operator to review policy; changing session ids does not
+reset quota. The internal `rate_limit` policy event and `rate.*` conditions are
+populated by the live gate; supplied event metadata cannot manufacture them.
+
 ## Semantic Guard
 
 The regex rules above catch injection attempts that match known patterns. The semantic guard adds a second layer for paraphrased, social-engineered, and in-content injections.

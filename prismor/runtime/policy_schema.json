@@ -33,6 +33,16 @@
       "type": "object",
       "description": "Policy-level settings that control enforcement behaviour",
       "properties": {
+        "rate_limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests_per_minute"],
+          "properties": {
+            "requests_per_minute": {"type": "integer", "minimum": 1},
+            "max_burst": {"type": "integer", "minimum": 0, "default": 0}
+          },
+          "description": "Optional per-identity, per-workspace admissions in an exact rolling 60 seconds. Capacity is requests_per_minute + max_burst. Enforcement follows the rate-limit-exceeded and rate-limit-unavailable rules."
+        },
         "default_mode": {
           "type": "string",
           "enum": [
@@ -815,8 +825,11 @@
         "category",
         "title",
         "event_types",
-        "patterns",
         "action"
+      ],
+      "anyOf": [
+        {"required": ["patterns"]},
+        {"required": ["when"]}
       ],
       "properties": {
         "id": {
@@ -857,6 +870,7 @@
               "memory",
               "skill_manifest",
               "ui_action",
+              "rate_limit",
               "mcp"
             ]
           },
@@ -896,6 +910,11 @@
             "type": "string"
           },
           "minItems": 1
+        },
+        "when": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Attribute condition. A when-only rule needs no patterns. The rate namespace is populated only by the live admission gate."
         },
         "action": {
           "type": "string",
