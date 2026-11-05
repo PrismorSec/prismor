@@ -355,7 +355,7 @@ def hook_installed(agent: str, scope: str, workspace: Path) -> bool:
         return False
 
 
-def _dispatcher_self_test(executable: str, shim: Path) -> Tuple[str, str]:
+def _dispatcher_self_test(executable: str, shim: Path, agent: str) -> Tuple[str, str]:
     """Probe only our generated shim, with synthetic events and disposable state."""
     try:
         source = shim.read_text(encoding="utf-8")
@@ -369,6 +369,8 @@ def _dispatcher_self_test(executable: str, shim: Path) -> Tuple[str, str]:
             return "warn", "custom dispatcher script; self-test skipped"
     except (OSError, ValueError, SyntaxError):
         return "fail", "dispatcher script cannot be read or parsed"
+    if agent not in ("claude", "codex", "copilot", "qwen"):
+        return "warn", f"{agent} protocol self-test not supported; runtime not verified"
     with tempfile.TemporaryDirectory(prefix="prismor-doctor-") as scratch:
         ws = Path(scratch)
         env = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if k in os.environ}
@@ -381,25 +383,45 @@ def _dispatcher_self_test(executable: str, shim: Path) -> Tuple[str, str]:
                                       encoding="utf-8", errors="replace", timeout=10)
             if imported.returncode:
                 return "fail", "configured interpreter cannot import dispatcher dependencies in the isolated environment"
-            # This exercises the installed dispatcher using a known protocol, not
-            # the client or its policy. No shell command is ever executed.
-            for command, expected in (("pwd", 0), ("rm -rf /", 2)):
-                payload = {"hook_event_name": "PreToolUse", "session_id": "doctor-" + str(expected),
-                           "cwd": scratch, "tool_name": "Bash", "tool_input": {"command": command}}
+            # Match the registered PreToolUse payload and the client's deny
+            # signal. No client is launched and no shell command is executed.
+            nested = agent == "qwen" or (agent == "codex" and os.name == "nt")
+            json_verdict = nested or agent == "copilot"
+            for command, blocked in (("pwd", False), ("rm -rf /", True)):
+                payload = {"hook_event_name": "PreToolUse", "session_id": "doctor-" + str(blocked),
+                           "cwd": scratch, "tool_name": "run_shell_command" if agent == "qwen" else "Bash",
+                           "tool_input": {"command": command}}
                 result = subprocess.run(
-                    [executable, "-I", str(shim), "hook-dispatch", "--agent", "claude",
+                    [executable, "-I", str(shim), "hook-dispatch", "--agent", agent,
                      "--workspace", scratch, "--mode", "enforce"],
                     input=json.dumps(payload), cwd=scratch, env=env,
                     capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 )
-                denial = "Prismor blocked this action:" in result.stderr and "(rule: destructive-command)" in result.stderr
-                if result.returncode != expected or (expected == 2 and not denial):
-                    return "fail", "dispatcher self-test did not produce the expected allow/block verdict"
+                expected_exit = 2 if blocked and not json_verdict else 0
+                if json_verdict:
+                    try:
+                        output = json.loads(result.stdout) if result.stdout.strip() else {}
+                        verdict = output.get("hookSpecificOutput", {}) if nested else output
+                        valid = isinstance(verdict, dict)
+                        if blocked:
+                            valid = (valid and verdict.get("permissionDecision") == "deny"
+                                     and "(rule: destructive-command)" in str(verdict.get("permissionDecisionReason", ""))
+                                     and (not nested or verdict.get("hookEventName") == "PreToolUse"))
+                        else:
+                            valid = valid and verdict.get("permissionDecision") in (None, "allow")
+                    except (ValueError, AttributeError):
+                        valid = False
+                else:
+                    valid = not result.stdout.strip() and (
+                        not blocked or ("Prismor blocked this action:" in result.stderr
+                                        and "(rule: destructive-command)" in result.stderr))
+                if result.returncode != expected_exit or not valid:
+                    return "fail", f"{agent} dispatcher self-test did not produce the expected allow/block verdict"
         except subprocess.TimeoutExpired:
             return "fail", "dispatcher self-test timed out"
         except OSError:
             return "fail", "configured interpreter could not be started"
-    return "ok", "imports and synthetic Claude-protocol allow/block verified; client invocation and active policy not verified"
+    return "ok", f"imports and synthetic {agent}-protocol allow/block verified; client invocation and active policy not verified"
 
 
 def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, Any]]:
@@ -425,7 +447,7 @@ def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, A
         return found
 
     results: List[Dict[str, Any]] = []
-    probes: Dict[Tuple[str, str], Tuple[str, str]] = {}
+    probes: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
     for scope in ("project", "global"):
         for entry in load_registry():
             if entry.kind != "coding-agent" or entry.id not in _SUPPORTED_AGENTS:
@@ -549,9 +571,9 @@ def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, A
                     row.update(state="fail", detail="dispatcher script is missing or unreadable")
                     break
                 if self_test:
-                    key = (executable, str(shim))
+                    key = (executable, str(shim), entry.id)
                     if key not in probes:
-                        probes[key] = _dispatcher_self_test(executable, shim)
+                        probes[key] = _dispatcher_self_test(executable, shim, entry.id)
                     state, detail = probes[key]
                     if row["state"] == "ok" or state == "fail":
                         row.update(state=state, detail=detail)
