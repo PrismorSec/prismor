@@ -1422,6 +1422,19 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
             {"title": str(f.get("title") or "")[:200], "severity": str(f.get("severity") or "")}
             for f in findings[:_ARTIFACT_LIST] if isinstance(f, dict)
         ]
+    # Who started the turn: a person, a parent session's brief, an app wrapper,
+    # or a Stop hook that sent the agent back to work (attribution.py). Prompts
+    # recorded before the hook tagged them are worked out here.
+    if raw.get("type") == "prompt" and not meta.get("origin") and isinstance(raw.get("prompt"), str):
+        from prismor.runtime.attribution import prompt_origin
+        origin, said = prompt_origin(raw["prompt"])
+        meta = {**meta, "origin": origin}
+        if said and said != raw["prompt"].strip() and "user_message" not in out:
+            out["user_message"] = _clip(said)
+    if meta.get("origin"):
+        out["origin"] = str(meta["origin"])[:20]
+    if isinstance(meta.get("triggered_by"), dict):
+        out["triggered_by"] = {k: str(v)[:500] for k, v in meta["triggered_by"].items()}
     if meta.get("has_invisible_controls"):
         out["has_invisible_controls"] = True
     if meta.get("truncated"):
@@ -2181,6 +2194,7 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
     """What each session was started to do: its first real prompt, one line.
     A person recognises "fix the login bug" where a session id says nothing.
     Slash-command wrappers and pasted tags are skipped."""
+    from prismor.runtime.attribution import prompt_origin
     want, out = set(session_ids), {}
     for ws in workspaces:
         if not want:
@@ -2191,11 +2205,13 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
         try:
             for sid in list(want):
                 for (text,) in conn.execute(
-                    "SELECT substr(content_text, 1, 400) FROM events WHERE session_id = ? "
+                    "SELECT substr(content_text, 1, 20000) FROM events WHERE session_id = ? "
                     "AND type = 'prompt' ORDER BY id LIMIT 5",
                     (sid,),
                 ):
-                    line = re.sub(r"<[^>]+>", " ", text or "")
+                    # An app wrapper (<system-reminder>…) can fill the first KBs;
+                    # the title is what the person typed after it.
+                    line = re.sub(r"<[^>]+>", " ", prompt_origin(text or "")[1])
                     line = " ".join(line.split())
                     if line and not line.startswith("/") and not line.lower().startswith(("caveat:", "clear")):
                         out[sid] = line[:140]

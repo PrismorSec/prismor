@@ -6604,6 +6604,12 @@ def _print_status_overview(workspace: Path) -> None:
     for check in hook_checks:
         if check["state"] != "ok":
             print(f"  {_color('Hook health:', _YELLOW)} {check['agent']} ({check['scope']}): {check['detail']}")
+    # Installed before reply capture: replies and Stop-hook-started turns are missing.
+    _stale = sorted({(c["agent"], c["scope"]) for c in hook_checks if c.get("stale_events")})
+    if _stale:
+        print(f"  {_color('Note:', _YELLOW)}        {', '.join(f'{a} ({s})' for a, s in _stale)} hooks predate reply "
+              "capture, so the session trail misses replies and turns a Stop hook started. Refresh: "
+              f"prismor install-hooks --agent {_stale[0][0]} --scope {_stale[0][1]}")
     try:
         from prismor.runtime import hook_drift
         _gone = hook_drift.report(workspace)

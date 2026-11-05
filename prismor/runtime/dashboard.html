@@ -4630,6 +4630,10 @@ async function loadSessionDev(sessionId) {
       '<span class="dev-quiet">' + x.writes + ' edit' + (x.writes === 1 ? '' : 's') + '</span></summary>' + devDiff(x.diff, x.truncated) + '</details>').join('') +
     '<div class="dev-h">Draft PR description <button class="fbtn" onclick="devCopy(this.parentNode.nextElementSibling.value,this)">Copy</button></div>' +
     '<textarea class="dev-pr dev-mono" readonly>' + safeAttr(ch.prDescription) + '</textarea></details>';
+  const lin = ch.lineage || {}, link = sid => '<a href="#/session/'+encodeURIComponent(sid)+'" class="dev-mono">'+safe(sid.slice(0,8))+'</a>';
+  if (lin.from || (lin.as||[]).length) h = '<div class="dev-row">' +
+    (lin.from ? 'Continues session ' + link(lin.from) + ' <span class="dev-quiet">its copied history is not counted here</span>' : '') +
+    ((lin.as||[]).length ? (lin.from ? ' · ' : '') + 'Continued as ' + lin.as.map(link).join(', ') : '') + '</div>' + h;
   el.innerHTML = h; el.hidden = false;
 }
 let _filesSel = '', _filesTimer = null;
@@ -6629,7 +6633,7 @@ function treeLeafEl(ev, idx){
     '<span class="tree-dot '+(v==='block'?'block':(v==='warn'?'warn':''))+'"></span>'+
     '<span class="tree-id">'+safe((taskNote(ev) ? 'task' : ev.type === 'assistant_response' ? 'reply' : (ev.toolTag||ev.type||'ev')).toString().slice(0,14))+'</span>'+
     '<span class="tree-text" title="'+safeAttr(text)+'">'+safe(text)+'</span>'+
-    extCauseChip(ev.extension)+precheckChip(ev)+hookChip(ev)+
+    originChip(ev)+extCauseChip(ev.extension)+precheckChip(ev)+hookChip(ev)+
     '<span class="tree-ts">'+safe(ev.ts||'')+((ev.hookMs != null || ev.postHookMs != null) ? ' &middot; '+fmtMs((ev.hookMs||0)+(ev.postHookMs||0)) : '')+'</span>';
   return btn;
 }
@@ -7302,6 +7306,13 @@ const HOOK_OUTCOME_TEXT = {timeout: 'timed out: the agent killed it', error: 'th
 function hookPhaseStats(runs){
   const slowest = Math.max(0, ...runs.map(r => r.ms || 0));
   return {slowest, fail: runs.some(hookRunFailed)};
+}
+// Who started this turn, when it was not simply the person typing.
+function originChip(ev){
+  const a = ev.artifacts || {}, t = a.triggered_by;
+  if (t) return '<span class="ext-cause" title="'+safeAttr((t.message||'').slice(0,300))+'">after '+safe(t.event||'Stop')+' hook'+(t.hook ? ': '+safe(t.hook) : '')+'</span>';
+  const label = {session:'from parent session', hook:'from hook', harness:'from app'}[a.origin];
+  return label ? '<span class="ext-cause">'+label+'</span>' : '';
 }
 function hookChip(ev){
   const runs = ev.hookRuns || [];

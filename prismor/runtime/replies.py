@@ -93,8 +93,12 @@ def _after_last(rows: List[Dict[str, Any]], is_start) -> List[Dict[str, Any]]:
 
 def _claude_turn_start(row: Dict[str, Any]) -> bool:
     # A person's prompt, not a tool result (also a "user" row) or harness meta.
-    if row.get("type") != "user" or row.get("isMeta") or row.get("toolUseResult") is not None:
+    # Hook feedback is meta but still starts a turn (attribution.stop_hook_trigger).
+    if row.get("type") != "user" or row.get("toolUseResult") is not None:
         return False
+    if row.get("isMeta"):
+        from prismor.runtime.attribution import stop_hook_trigger
+        return stop_hook_trigger([row]) is not None
     content = (row.get("message") or {}).get("content")
     if isinstance(content, str):
         return bool(content.strip())
@@ -167,6 +171,10 @@ def reply_event(agent: str, payload: Dict[str, Any], session_id: str) -> Dict[st
         reply = str(payload.get("last_assistant_message") or "")
         rows = _tail_rows(transcript) if transcript else []
         reasoning = _join(_claude_reasoning(rows) if agent == "claude" else _codex_reasoning(rows))
+        # A Stop hook that exited 2 started this turn; nobody typed a prompt.
+        if agent == "claude" and payload.get("stop_hook_active"):
+            from prismor.runtime.attribution import stop_hook_trigger
+            meta["triggered_by"] = stop_hook_trigger(rows) or {"event": "Stop", "hook": ""}
         if name == "StopFailure":
             meta["error"] = True  # the field holds the API error text, not a reply
     elif agent == "cursor":
