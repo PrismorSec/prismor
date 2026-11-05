@@ -537,8 +537,9 @@ class UpstreamHttp(Upstream):
 
     def _send_once(self, body: Dict[str, Any], timeout: float, want_reply: bool,
                    auth: Optional[str]) -> Optional[Dict[str, Any]]:
-        import urllib.request
         import urllib.error
+        import urllib.parse
+        import urllib.request
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -561,8 +562,9 @@ class UpstreamHttp(Upstream):
         if self.spec.sigv4:
             headers.update(self._sigv4(data))
         req = urllib.request.Request(self.spec.url, data=data, headers=headers, method="POST")
+        from prismor.runtime.mcp_oauth import no_redirect
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
+            with no_redirect.open(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
                 sid = resp.headers.get("Mcp-Session-Id")
                 if sid and self.spec.managed_session:
                     self._session_id = sid
@@ -584,6 +586,13 @@ class UpstreamHttp(Upstream):
                 raise _SessionExpired()
             if exc.code == 401:
                 raise _Unauthorized(exc.code, exc.reason)
+            if 300 <= exc.code < 400:
+                # Following would hand our headers to a host the egress guard
+                # never screened. The config should name the final address.
+                loc = urllib.parse.urljoin(self.spec.url, exc.headers.get("Location") or "")
+                raise UpstreamError(
+                    f"MCP server '{self.spec.name}' redirected (HTTP {exc.code}) to "
+                    f"{loc.split('?')[0]}; redirects are not followed. Set its url to that address.")
             if exc.code == 403 and self.oauth is not None:
                 from prismor.runtime.mcp_oauth import parse_www_authenticate
                 challenge = parse_www_authenticate(exc.headers.get("WWW-Authenticate") or "")
