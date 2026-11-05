@@ -120,6 +120,18 @@ _RECOMMENDED_RULE_IDS = frozenset({
     "mcp-arg-metadata-endpoint",
 })
 
+# Recommended rules that ask the user (step_up) instead of blocking: actions an
+# agent legitimately takes, but too destructive to run unseen. `setup
+# --recommended` writes them with `action: step_up`. Field test: each of these
+# was detected at HIGH but ran without a prompt under --recommended.
+_RECOMMENDED_ASK_RULE_IDS = frozenset({
+    "datastore-destroy",
+    "iac-destroy",
+    "persistence-shell-profile",
+    "ci-workflow-remote-exec",
+    "agent-instruction-tampering",
+})
+
 # Self-protection rules whose jurisdiction is strictly THIS machine: they guard
 # Prismor's own policy file, unlock credential, and the agent hook config. When
 # one of them matches inside an ssh/docker/kubectl payload, the thing being
@@ -164,6 +176,8 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "credential-staging",
     "agent-config-tampering",
     "prismor-self-edit",
+    "iac-destroy",
+    "persistence-shell-profile",
 })
 
 
@@ -1288,6 +1302,44 @@ _PRISMOR_STATUS_CMD = re.compile(
     r"|\s+cloak\s+(?:list|--help|-h)|\s+query\s+--schema|\s+(?:--?(?:version|help)|-h))?"
     r"(?:\s+2>&1)?(?:\s*\|\s*(?:head|tail)(?:\s+-(?:n\s*)?\d+)?)?\s*$"
 )
+
+
+_PRE_EVENTS = {"pretooluse", "beforeshellexecution", "beforemcpexecution"}
+_POST_EVENTS = {"posttooluse", "aftershellexecution", "aftermcpexecution"}
+
+
+def _call_key(event: Dict[str, Any]) -> Tuple[Any, ...]:
+    raw = (event.get("metadata") or {}).get("raw") or {}
+    call_id = raw.get("tool_use_id") or raw.get("toolUseId") or raw.get("call_id") if isinstance(raw, dict) else None
+    if call_id:
+        return ("id", str(call_id))
+    return ("call", event.get("type"), event.get("command"), event.get("path"), event.get("url"))
+
+
+def pre_twin_index(events: List[Dict[str, Any]], index: int) -> Optional[int]:
+    """Index of the pre-action event of the same tool call as the post-action
+    ``events[index]``, or None. A post event repeats the call's command/path, so
+    every rule that matched the call fires on it again: one tool call, two
+    findings (field test: each detect-only shell finding stored twice)."""
+    event = events[index]
+    if str(event.get("agent_event") or "").lower() not in _POST_EVENTS:
+        return None
+    key = _call_key(event)
+    for j in range(index - 1, max(-1, index - 50), -1):
+        prev = events[j]
+        if str(prev.get("agent_event") or "").lower() in _PRE_EVENTS and _call_key(prev) == key:
+            return j
+    return None
+
+
+def drop_post_twin_findings(findings: List[Dict[str, Any]], events: List[Dict[str, Any]],
+                            index: int, prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``findings`` for ``events[index]`` minus rules its pre twin already raised."""
+    twin = pre_twin_index(events, index) if 0 <= index < len(events) else None
+    if twin is None:
+        return findings
+    seen = {f.get("ruleId") for f in prior if f.get("eventIndex") == twin}
+    return [f for f in findings if f.get("ruleId") not in seen]
 
 
 def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
