@@ -127,6 +127,10 @@ def test_agent_served_over_mcp(tmp_path):
     d = _eval(ws, "research-crawler", tool="mcp__deploy-server__run")
     assert not d.allow and _rule(d)[0]["channel"] == "tool"
     assert _eval(ws, "research-crawler", tool="mcp__github__list_prs").allow  # not an agent
+    # SDK adapters keep the server's bare tool name and pass the server alongside
+    d = _eval(ws, "research-crawler", tool="run", meta={"mcp_server": "deploy-server"})
+    assert not d.allow and _rule(d)[0]["channel"] == "tool"
+    assert _eval(ws, "planner", tool="run", meta={"mcp_server": "deploy-server"}).allow
 
 
 def test_message_is_stamped_on_the_event(tmp_path):

@@ -155,3 +155,32 @@ def test_use_subject_per_user_iam(tmp_path, monkeypatch):
 
     with use_subject("user:bob"), pytest.raises(PrismorBlocked):
         guarded[0].run(tool_input={"command": "ls -la"})
+
+
+def test_agent_served_over_mcp_is_a_handoff(tmp_path):
+    """langchain-mcp-adapters names a tool by the server's bare tool name; the
+    server is only in the call closure. An agent served over MCP is still checked."""
+    import yaml
+    from langchain_core.tools import StructuredTool
+
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({"settings": {"agent_connections": {
+        "mode": "enforce",
+        "agents": {"agt_claude": {"name": "claude", "aliases": ["mcp:claude"]}},
+        "allow": [{"from": "planner", "to": "claude"}],
+    }}}))
+
+    def mcp_tool(server_name):
+        async def call_tool(**arguments):  # closes over server_name, as langchain-mcp-adapters' does
+            return f"{server_name} ran", None
+        return StructuredTool(name="Agent", description="Run a subagent.", coroutine=call_tool,
+                              response_format="content_and_artifact",
+                              args_schema={"type": "object", "properties": {"prompt": {"type": "string"}}})
+
+    def call(name):
+        t = prismor_guard_tool(mcp_tool("claude"), workspace=tmp_path, agent="langchain", name=name, mode="enforce")
+        return asyncio.run(t.ainvoke({"prompt": "hi"}))
+
+    assert call("planner") == "claude ran"
+    blocked = call("researcher")
+    assert "Prismor blocked" in blocked and "researcher" in blocked and "claude" in blocked

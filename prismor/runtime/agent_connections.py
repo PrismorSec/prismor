@@ -392,8 +392,10 @@ def agent_message(event: Dict[str, Any], policy: ConnectionPolicy) -> Optional[D
         to = tool[len("transfer_to_"):]
     elif norm(tool) in _CREW_DELEGATE and _arg(meta, "coworker"):  # CrewAI delegation
         to = str(_arg(meta, "coworker"))
-    elif tool.startswith("mcp__") and tool.count("__") >= 2:  # an agent served over MCP
-        server = tool.split("__")[1]
+    elif meta.get("mcp_server") or (tool.startswith("mcp__") and tool.count("__") >= 2):  # an agent served over MCP
+        # Hooks name the server inside the tool name; SDK adapters, whose MCP
+        # tools keep the server's bare tool name, pass it as mcp_server.
+        server = str(meta.get("mcp_server") or tool.split("__")[1])
         if policy.known(server, "mcp"):
             to, channel = policy.resolve(server, "mcp"), "tool"
     elif event.get("type") == "shell" and event.get("command"):
