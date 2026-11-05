@@ -66,7 +66,7 @@ def _payload(args: tuple, kwargs: dict) -> str:
     return " ".join(parts).strip()
 
 
-def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None, subagent_id=None, subagent_type=None):
+def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None, subagent_id=None, subagent_type=None, mcp_server=None):
     field = _TYPE_FIELD.get(event_type, "command")
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -87,11 +87,34 @@ def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), 
             # wrap in prismor_guard_tool has no per-call context to draw it from.
             "subagent_id": subagent_id,
             "subagent_type": subagent_type,
+            # The MCP server this tool calls, so a call to an agent served over
+            # MCP (``claude mcp serve``) is checked as a handoff to that agent.
+            "mcp_server": mcp_server,
         },
     }
 
 
-def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="", subagent_id=None, subagent_type=None) -> Decision:
+def _mcp_server(tool: Any) -> Optional[str]:
+    """The MCP server a tool from langchain-mcp-adapters calls, or None.
+
+    Those tools keep the server's bare tool name (``Agent``), and the server
+    only lives in the call closure. ``metadata["mcp_server"]`` overrides it.
+    """
+    md = getattr(tool, "metadata", None)
+    if isinstance(md, dict) and md.get("mcp_server"):
+        return str(md["mcp_server"])
+    fn = getattr(tool, "coroutine", None)
+    code = getattr(fn, "__code__", None)
+    if code is None or "server_name" not in code.co_freevars or not fn.__closure__:
+        return None
+    try:
+        server = fn.__closure__[code.co_freevars.index("server_name")].cell_contents
+    except ValueError:  # an empty cell
+        return None
+    return str(server) if server else None
+
+
+def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="", subagent_id=None, subagent_type=None, mcp_server=None) -> Decision:
     event = _build_event(
         tool_name=tool_name,
         payload=_payload(args, kwargs),
@@ -102,6 +125,7 @@ def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_t
         kwargs=kwargs,
         subagent_id=subagent_id,
         subagent_type=subagent_type,
+        mcp_server=mcp_server,
     )
     return evaluate_tool_call(
         event=event, workspace=ws, agent=agent, agent_name=agent_name,
@@ -172,13 +196,14 @@ def prismor_guard_tool(
     sid = session_id or f"langchain-{os.getpid()}"
     _agent_name = name  # per-instance label (distinct from framework id)
     tool_name = getattr(tool, "name", None) or getattr(tool, "__name__", "tool")
+    mcp_server = _mcp_server(tool)  # before the coroutine is wrapped
 
     def _decide(args: tuple, kwargs: dict):
         sub_id, sub_type = _graph_subagent()
         decision = _evaluate(
             tool_name=tool_name, args=args, kwargs=kwargs, subject=subject, ws=ws,
             agent=agent, agent_name=_agent_name, mode=mode, sid=sid, event_type=event_type,
-            subagent_id=sub_id, subagent_type=sub_type,
+            subagent_id=sub_id, subagent_type=sub_type, mcp_server=mcp_server,
         )
         log_observe_findings(decision, mode=mode, tool_name=tool_name)
         _engine[0] = decision.engine
@@ -207,7 +232,10 @@ def prismor_guard_tool(
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
-            return f"⛔ Prismor blocked this tool call: {reason}"
+            denial = f"⛔ Prismor blocked this tool call: {reason}"
+            # A content_and_artifact tool (every langchain-mcp-adapters tool)
+            # must return (content, artifact), or LangChain raises on the denial.
+            return (denial, None) if getattr(tool, "response_format", None) == "content_and_artifact" else denial
         return None  # allowed
 
     # The Decision's own PolicyEngine, parked by _decide for _redact to reuse
