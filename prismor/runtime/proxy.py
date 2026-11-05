@@ -991,7 +991,8 @@ def _canonical_query(query: str) -> str:
 def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
                   region: str, service: str, method: str, canonical_uri: str,
                   query: str, payload: bytes, host: str,
-                  now: Optional[datetime] = None) -> Dict[str, str]:
+                  now: Optional[datetime] = None,
+                  extra_signed: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """AWS SigV4 for one request, stdlib only.
 
     Pinned by a signature computed from the published AWS example credentials
@@ -1004,13 +1005,16 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     datestamp = now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(payload or b"").hexdigest()
 
-    # Canonical headers must be sorted by lowercased name; host, x-amz-date and
-    # x-amz-security-token already are.
-    canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
-    signed_headers = "host;x-amz-date"
+    # Canonical headers must be sorted by lowercased name. ``extra_signed``
+    # is for services that require more signed headers (S3 wants
+    # x-amz-content-sha256); the caller still sends them.
+    signed = {"host": host, "x-amz-date": amz_date}
     if session_token:
-        canonical_headers += f"x-amz-security-token:{session_token}\n"
-        signed_headers += ";x-amz-security-token"
+        signed["x-amz-security-token"] = session_token
+    for name, value in (extra_signed or {}).items():
+        signed[name.lower()] = value
+    canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
+    signed_headers = ";".join(sorted(signed))
 
     canonical_request = "\n".join([
         method, aws_canonical_path(canonical_uri), _canonical_query(query),

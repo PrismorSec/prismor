@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the coverage matrix in AGENT_INTEGRATIONS.md from the registry.
+"""Regenerate the coverage tables in AGENT_INTEGRATIONS.md and README.md from the registry.
 
 The registry (``prismor/runtime/integrations/registry.yaml``) is the source of truth;
 the prose in AGENT_INTEGRATIONS.md is hand-written, but the coverage tables are
@@ -26,6 +26,12 @@ from prismor.runtime.integrations.registry import Integration, load_registry  # 
 _DOC_PATH = _REPO_ROOT / "AGENT_INTEGRATIONS.md"
 _BEGIN = "<!-- BEGIN GENERATED: coverage-matrix (scripts/gen_integration_matrix.py) -->"
 _END = "<!-- END GENERATED: coverage-matrix -->"
+
+_README_PATH = _REPO_ROOT / "README.md"
+_README_BEGIN = "<!-- BEGIN GENERATED: agent-coverage (scripts/gen_integration_matrix.py) -->"
+_README_END = "<!-- END GENERATED: agent-coverage -->"
+
+_SURFACE_LABEL = {"hook-config": "native hooks", "sdk": "plugin", "mcp": "MCP proxy", "rules-only": "config scan"}
 
 _STATUS_BADGE = {"shipped": "✅", "roadmap": "🟡", "sweep-only": "—"}
 
@@ -83,14 +89,43 @@ def render_matrix() -> str:
     return "\n".join(lines)
 
 
-def _splice(doc: str, block: str) -> str:
-    if _BEGIN in doc and _END in doc:
-        pre = doc.split(_BEGIN, 1)[0]
-        post = doc.split(_END, 1)[1]
+def render_readme() -> str:
+    """The short table on the README: what each shipped coding agent gets."""
+    coding = [i for i in load_registry() if i.kind == "coding-agent"]
+    shipped = sorted((i for i in coding if i.status == "shipped"), key=lambda i: i.name.lower())
+    others = sorted((i for i in coding if i.status != "shipped"), key=lambda i: i.name.lower())
+
+    def row(i: Integration) -> str:
+        blocks = "—" if i.blocking == "none" else "✅"
+        mirror = "✅" if (i.mirror or {}).get("status") == "verified" else ""
+        return (f"| {i.name} | {_SURFACE_LABEL.get(i.surface, i.surface)} | {blocks} "
+                f"| {mirror} |")
+
+    return "\n".join([
+        _README_BEGIN,
+        "",
+        "| Agent | Interception | Blocks before the call | MCP mirror verified |",
+        "|---|---|---|---|",
+        *[row(i) for i in shipped],
+        "",
+        "Config scan only (no hook protocol to intercept): "
+        + ", ".join(i.name for i in others if i.status == "sweep-only") + ". "
+        "Next up: " + ", ".join(i.name for i in others if i.status == "roadmap") + ". "
+        "Full matrix, frameworks and SDKs: [AGENT_INTEGRATIONS.md](AGENT_INTEGRATIONS.md) and "
+        "[governance surfaces](docs/governance-surfaces.md).",
+        "",
+        _README_END,
+    ])
+
+
+def _splice(doc: str, block: str, begin: str = _BEGIN, end: str = _END, name: str = "") -> str:
+    if begin in doc and end in doc:
+        pre = doc.split(begin, 1)[0]
+        post = doc.split(end, 1)[1]
         return f"{pre}{block}{post}"
     raise SystemExit(
-        f"markers not found in {_DOC_PATH.name}; add:\n  {_BEGIN}\n  {_END}\n"
-        "where the coverage matrix should go."
+        f"markers not found in {name or _DOC_PATH.name}; add:\n  {begin}\n  {end}\n"
+        "where the coverage table should go."
     )
 
 
@@ -99,24 +134,29 @@ def main() -> int:
     ap.add_argument("--check", action="store_true", help="fail if the doc is out of date")
     args = ap.parse_args()
 
-    current = _DOC_PATH.read_text(encoding="utf-8")
-    updated = _splice(current, render_matrix())
+    targets = [
+        (_DOC_PATH, lambda doc: _splice(doc, render_matrix())),
+        (_README_PATH, lambda doc: _splice(doc, render_readme(), _README_BEGIN, _README_END, _README_PATH.name)),
+    ]
+    stale = []
+    for path, update in targets:
+        current = path.read_text(encoding="utf-8")
+        updated = update(current)
+        if current == updated:
+            continue
+        if args.check:
+            stale.append(path.name)
+        else:
+            path.write_text(updated, encoding="utf-8")
+            print(f"updated coverage table in {path.name}")
 
-    if args.check:
-        if current != updated:
-            sys.stderr.write(
-                "AGENT_INTEGRATIONS.md coverage matrix is out of date.\n"
-                "Run: python3 scripts/gen_integration_matrix.py\n"
-            )
-            return 1
-        print("coverage matrix up to date.")
-        return 0
-
-    if current != updated:
-        _DOC_PATH.write_text(updated, encoding="utf-8")
-        print(f"updated coverage matrix in {_DOC_PATH.name}")
-    else:
-        print("coverage matrix already up to date.")
+    if stale:
+        sys.stderr.write(
+            f"{', '.join(stale)} coverage table is out of date.\n"
+            "Run: python3 scripts/gen_integration_matrix.py\n"
+        )
+        return 1
+    print("coverage tables up to date.")
     return 0
 
 

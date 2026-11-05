@@ -6,8 +6,9 @@ on:
       - "v*"
 
 permissions:
-  contents: write   # create GitHub Release
-  id-token: write   # OIDC token for PyPI trusted publishing
+  contents: write      # create GitHub Release
+  id-token: write      # OIDC token for PyPI trusted publishing and attestations
+  attestations: write  # build provenance: gh attestation verify <file> --repo PrismorSec/prismor
 
 jobs:
   # A tag can point at any commit, so the publish below must not trust it.
@@ -72,6 +73,12 @@ jobs:
       - name: Build immunity-agent redirect package
         run: python -m build packaging/immunity-agent-shim --outdir dist-shim
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*
+            dist-shim/*
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -226,6 +233,10 @@ jobs:
           rm -f "$APPLE_NOTARY_KEY_PATH"
       - name: Checksum
         run: cd out && for f in *.pkg; do shasum -a 256 "$f" > "$f.sha256"; done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/*.pkg
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
@@ -273,6 +284,12 @@ jobs:
           Get-ChildItem out -File -Include *.zip, *.intunewin -Recurse | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Set-Content -Encoding ascii "$($_.FullName).sha256"
           }
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            out/*.zip
+            out/*.intunewin
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
@@ -280,6 +297,45 @@ jobs:
             out/*.zip
             out/*.intunewin
             out/*.sha256
+
+  # Homebrew tap (packaging/homebrew). Points the formula at this version's
+  # PyPI sdist and pushes it to PrismorSec/homebrew-tap. Skipped until the
+  # HOMEBREW_TAP_TOKEN secret (contents:write on the tap repo) is set.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      HAS_TAP: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_TAP == 'true'
+      - name: Render the formula from the PyPI sdist
+        if: env.HAS_TAP == 'true'
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          meta=""
+          for i in $(seq 1 30); do
+            meta=$(curl -fsS "https://pypi.org/pypi/prismor/$version/json") && break
+            sleep 10   # PyPI's JSON API lags the upload by a little
+          done
+          [ -n "$meta" ] || { echo "prismor $version not on PyPI"; exit 1; }
+          url=$(jq -r '.urls[] | select(.packagetype == "sdist") | .url' <<<"$meta")
+          sha=$(jq -r '.urls[] | select(.packagetype == "sdist") | .digests.sha256' <<<"$meta")
+          [ -n "$url" ] && [ -n "$sha" ] || { echo "no sdist for $version"; exit 1; }
+          # Only the first url/sha256 pair is the formula's own; the rest are resources.
+          sed -i -E "0,/^  url \".*\"/s##  url \"$url\"#; 0,/^  sha256 \".*\"/s##  sha256 \"$sha\"#" packaging/homebrew/prismor.rb
+          grep -E '^  (url|sha256) ' packaging/homebrew/prismor.rb | head -2
+      - name: Push to the tap
+        if: env.HAS_TAP == 'true'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/PrismorSec/homebrew-tap.git" tap
+          mkdir -p tap/Formula && cp packaging/homebrew/prismor.rb tap/Formula/prismor.rb
+          cd tap
+          git config user.name "prismor-release" && git config user.email "hello@prismor.dev"
+          git add Formula/prismor.rb
+          git diff --cached --quiet || { git commit -m "prismor ${GITHUB_REF_NAME#v}" && git push; }
 
   # Claude Cowork plugin templates (packaging/cowork). Stable asset names so the
   # console can fetch releases/latest/download/<name> and add an org agent key.
@@ -299,6 +355,10 @@ jobs:
             python packaging/cowork/build_plugin.py dist/*.whl out --arch "$arch"
           done
           cd out && for f in *.plugin; do sha256sum "$f" > "$f.sha256"; done
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: out/*.plugin
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
