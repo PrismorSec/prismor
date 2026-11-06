@@ -9,6 +9,7 @@ byte-for-byte against botocore's SigV4Auth.
 from __future__ import annotations
 
 import datetime
+import json
 import sys
 from pathlib import Path
 
@@ -118,3 +119,24 @@ def test_gcp_token_failure_is_an_actionable_config_error(monkeypatch):
     monkeypatch.setitem(proxy_mod._GCP_TOKEN, "expires", 0.0)
     with pytest.raises(ProxyConfigError, match="gcp-oauth"):
         gcp_access_token()
+
+
+def test_client_signing_headers_are_replaced_not_forwarded(monkeypatch):
+    """boto3/LiteLLM sign for themselves; their x-amz-* beside ours fails SigV4."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", AK)
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", SK)
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "TOKEN123")
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.command = "POST"
+    handler.headers = {"Authorization": "AWS4-HMAC-SHA256 client-sig",
+                       "X-Amz-Date": "20200101T000000Z", "X-Amz-Security-Token": "client-token",
+                       "X-Amzn-Bedrock-GuardrailIdentifier": "gr-1",
+                       "Content-Type": "application/json"}
+    out = handler._upstream_headers(
+        {"auth": "aws-sigv4", "region": "us-east-1", "service": "bedrock"}, b"{}",
+        host=HOST, path="/model/m-v1%3A0/invoke-with-response-stream", query="")
+    names = [k.lower() for k in out]
+    assert names.count("x-amz-date") == 1 and out.get("x-amz-date") != "20200101T000000Z"
+    assert out.get("x-amz-security-token") == "TOKEN123"
+    assert "client-sig" not in json.dumps(out)
+    assert out.get("X-Amzn-Bedrock-GuardrailIdentifier") == "gr-1"
