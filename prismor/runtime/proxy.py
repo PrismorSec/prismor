@@ -1199,6 +1199,41 @@ def _refused_tool_block(provider: str, block: Dict[str, Any], message: str) -> D
 
 # ── streaming reframer ───────────────────────────────────────────────────────
 
+class _CarryMasker:
+    """Redacts streamed text with a held-back tail, so a secret split across
+    deltas (``"sk-ab"`` + ``"cdef..."``) is whole when it is masked.
+
+    Text is released only up to the last whitespace before the final
+    ``hold`` characters: a secret has no whitespace, so it is never cut. A
+    run longer than ``cap`` with no whitespace at all is released anyway.
+    """
+
+    def __init__(self, redact: Callable[[str], str], hold: int = 32, cap: int = 2048) -> None:
+        self.redact = redact
+        self.hold = hold
+        self.cap = cap
+        self.buf = ""
+
+    def feed(self, text: str) -> str:
+        buf = self.buf + text
+        cut = len(buf) - self.hold
+        if cut <= 0:
+            self.buf = buf
+            return ""
+        ws = max(buf.rfind(c, 0, cut) for c in " \n\t")
+        if ws >= 0:
+            cut = ws + 1
+        elif len(buf) < self.cap:
+            self.buf = buf
+            return ""
+        self.buf = buf[cut:]
+        return self.redact(buf[:cut])
+
+    def flush(self) -> str:
+        buf, self.buf = self.buf, ""
+        return self.redact(buf) if buf else ""
+
+
 class StreamScreen:
     """Rewrites an SSE stream in flight, holding tool calls until they can be judged.
 
@@ -1206,10 +1241,9 @@ class StreamScreen:
     in ``_pending`` and are released only once the block closes and policy has
     seen the whole thing. Both provider dialects are folded into that one rule.
 
-    ponytail: redaction runs per text delta, so a secret split across two
-    deltas can slip through. The PostToolUse scrubber has the same ceiling and
-    the same fix — carry a tail buffer of the longest cloak value — which is
-    worth doing when a real value survives a stream, not before.
+    Text is redacted through a ``_CarryMasker``, which holds back a tail so a
+    secret split across deltas is masked whole; any non-text frame first
+    releases what is held, as a text delta of its own.
     """
 
     def __init__(self, screen: Screen, provider: str, model: str,
@@ -1239,6 +1273,34 @@ class StreamScreen:
         # The stream's id/model/etc., stamped on a synthesized refusal: the SDK
         # seeds its snapshot from the first chunk and asserts without them.
         self._chunk_meta: Dict[str, Any] = {}
+        self._carry = _CarryMasker(screen.redact)
+        self._fed_text = False
+        self._text_index = 0
+        self._text_template: Dict[str, Any] = {}   # Responses API delta ids
+
+    def _text(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        self._fed_text = True
+        return _rewrite_text_delta(chunk, event, self._carry.feed, always=True)
+
+    def _flush_text(self) -> bytes:
+        """What the carry still holds, as one text delta in this stream's dialect."""
+        text = self._carry.flush()
+        if not text:
+            return b""
+        if self.provider == "anthropic":
+            return ("event: content_block_delta\ndata: " + json.dumps({
+                "type": "content_block_delta", "index": self._text_index,
+                "delta": {"type": "text_delta", "text": text}}) + "\n\n").encode()
+        if self.provider == "google":
+            payload: Dict[str, Any] = {"candidates": [{"index": 0, "content": {
+                "role": "model", "parts": [{"text": text}]}}]}
+        elif self._text_template:
+            payload = {**self._text_template, "delta": text}
+            return (f"event: {payload.get('type')}\ndata: {json.dumps(payload)}\n\n").encode()
+        else:
+            payload = {**self._chunk_meta, "choices": [
+                {"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+        return f"data: {json.dumps(payload)}\n\n".encode()
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -1266,14 +1328,15 @@ class StreamScreen:
         A held tool call was never judged. In enforce mode it is dropped, not
         released: a truncated call is unusable anyway, and releasing it is
         a bypass (cut the stream before the stop frame, skip the policy)."""
+        text = self._flush_text()
         out, self._pending = b"".join(self._pending), []
         holding, self._holding, self._calls = self._holding, False, {}
         if holding and out and self.screen.mode == "enforce":
             reason = "Blocked by Prismor: tool call cut off before it could be screened"
             self.blocked.append(reason)
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return b""
-        return out
+            return text
+        return text + out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
         """Accumulate the token-usage a stream carries, wherever it lands.
@@ -1326,6 +1389,13 @@ class StreamScreen:
     # -- internals -------------------------------------------------------
 
     def _feed(self, chunk: bytes) -> bytes:
+        self._fed_text = False
+        out = self._feed_frame(chunk)
+        if not self._fed_text and self._carry.buf:
+            out = self._flush_text() + out
+        return out
+
+    def _feed_frame(self, chunk: bytes) -> bytes:
         event = _sse_payload(chunk)
         if event is None:
             return b"" if self._holding else chunk
@@ -1354,7 +1424,12 @@ class StreamScreen:
         """
         calls = response_tool_calls("google", event)
         if not calls:
-            return _rewrite_text_delta(chunk, event, self.screen.redact)
+            if any((c or {}).get("finishReason") for c in event.get("candidates") or []):
+                # The last frame: nothing follows it to carry the tail.
+                self._fed_text = True
+                return _rewrite_text_delta(
+                    chunk, event, lambda t: self._carry.feed(t) + self._carry.flush(), always=True)
+            return self._text(chunk, event)
         for tool_name, arguments in calls:
             reason = self._verdict(tool_name, arguments)
             if reason is None:
@@ -1380,6 +1455,9 @@ class StreamScreen:
             return chunk
 
         if not self._holding:
+            if etype == "content_block_delta" and "text" in (event.get("delta") or {}):
+                self._text_index = int(event.get("index") or 0)
+                return self._text(chunk, event)
             if etype == "content_block_delta":
                 return _rewrite_text_delta(chunk, event, self.screen.redact)
             delta = event.get("delta") or {}
@@ -1445,6 +1523,8 @@ class StreamScreen:
         if self._holding:
             self._pending.append(chunk)
             return b""
+        if delta.get("content") and not finish:
+            return self._text(chunk, event)
         if delta.get("content"):
             return _rewrite_text_delta(chunk, event, self.screen.redact)
         return chunk
@@ -1499,6 +1579,11 @@ class StreamScreen:
                 return _responses_refusal_frames(reason, self._tool_index)
             return b""
 
+        if etype == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            self._fed_text = True
+            self._text_template = {k: v for k, v in event.items() if k not in ("delta", "sequence_number")}
+            event["delta"] = self._carry.feed(event["delta"])
+            return _sse_reframe(chunk, event)
         before = json.dumps(event)
         response = event.get("response")
         if self._denied and isinstance(response, dict):
@@ -1603,19 +1688,22 @@ def _sse_payload(chunk: bytes) -> Optional[Dict[str, Any]]:
 
 
 def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
-                        redact: Callable[[str], str]) -> bytes:
-    """Re-emit a text delta with its text redacted, or unchanged if nothing changed."""
+                        redact: Callable[[str], str], always: bool = False) -> bytes:
+    """Re-emit a text delta with its text redacted, or unchanged if nothing changed.
+
+    ``always`` re-emits even when nothing changed: a carrying redactor returns
+    a different slice of the text, not the same one."""
     if "delta" in event and isinstance(event["delta"], dict) and "text" in event["delta"]:
         original = str(event["delta"].get("text") or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
         event["delta"]["text"] = masked
     elif event.get("choices"):
         delta = (event["choices"][0] or {}).get("delta") or {}
         original = str(delta.get("content") or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
         delta["content"] = masked
     elif event.get("candidates"):
@@ -1625,7 +1713,7 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
                 if not isinstance(part, dict) or not isinstance(part.get("text"), str):
                     continue
                 masked = redact(part["text"])
-                if masked != part["text"]:
+                if masked != part["text"] or always:
                     part["text"], changed = masked, True
         if not changed:
             return chunk

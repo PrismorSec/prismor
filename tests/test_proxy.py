@@ -235,7 +235,20 @@ def test_stream_text_passes_through(monkeypatch, tmp_path):
     frame = _sse("content_block_delta",
                  {"type": "content_block_delta", "index": 0,
                   "delta": {"type": "text_delta", "text": "hello"}})
-    assert stream.feed(frame) == frame
+    out = stream.feed(frame)
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    texts = [json.loads(line[6:])["delta"].get("text", "") for line in out.decode().splitlines()
+             if line.startswith("data: ") and "text_delta" in line]
+    assert "".join(texts) == "hello"
+    assert out.rstrip().endswith(b'"content_block_stop", "index": 0}')
+
+
+def test_carry_masks_a_secret_split_across_deltas():
+    from prismor.runtime.proxy import _CarryMasker
+    masker = _CarryMasker(lambda t: t.replace("sk-abcdef123456", "[REDACTED]"), hold=4)
+    parts = ["here is the key sk-ab", "cdef12", "3456 and more text ", "to follow"]
+    out = "".join(masker.feed(p) for p in parts) + masker.flush()
+    assert out == "here is the key [REDACTED] and more text to follow"
 
 
 def test_openai_stream_holds_tool_calls(monkeypatch, tmp_path):
@@ -878,7 +891,10 @@ def test_gemini_stream_text_passes_through(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path)
     stream = StreamScreen(screen, "google", "gemini-2.5-pro", None)
     frame = b'data: {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}\n\n'
-    assert stream.feed(frame) == frame
+    out = stream.feed(frame) + stream.flush()
+    texts = [p["text"] for line in out.decode().splitlines() if line.startswith("data: ")
+             for p in json.loads(line[6:])["candidates"][0]["content"]["parts"]]
+    assert "".join(texts) == "hello"
 
 
 def test_strip_blocked_calls_google_keeps_turn_valid():

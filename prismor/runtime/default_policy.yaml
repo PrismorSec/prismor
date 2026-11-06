@@ -254,13 +254,14 @@ settings:
   inspect_execution_targets: true
 
   # How findings from inspected content are treated:
-  #   observe (default) — reported with file:line provenance, never blocking.
-  #   enforce           — blocks exactly as the same finding would inline,
-  #                       including the non-overridable floor.
-  # Deliberately observe by default so upgrading an install cannot start
-  # breaking builds. Promote it once your telemetry shows the real
-  # false-positive rate for your repositories.
-  execution_target_action: observe
+  #   enforce (default) — each finding resolves its mode exactly as it would
+  #                       inline: the non-overridable floor blocks, every other
+  #                       rule follows its own mode (observe unless promoted).
+  #   observe           — reported with file:line provenance, never blocking.
+  # Observe here let an agent write `rm -rf /` into a script and run it, the
+  # one thing the floor exists to stop. Floor rules match little in real
+  # scripts, so this rarely touches a build.
+  execution_target_action: enforce
 
   supply_chain_install_check: true
 
@@ -1340,6 +1341,14 @@ rules:
     # so without them the split would have opened a real gap.
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      # Every other host Prismor hooks into: deregistering the agent's own
+      # hook (or Codex's `[features] hooks`) is a total bypass for that host.
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\b(?:rm|mv|cp|tee|truncate|ln)\b[^\n;&|<>]*?[\s"''=]["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))'
+      # Interpreter writes (python -c, perl -i, node -e ...) need no shell
+      # verb and emit no file_write event, so they are matched on the line.
+      - '\b(?:python[0-9.]*|perl|ruby|node|deno|bun|php)[ \t]+(?:-\S+[ \t]+)*?-[ce]\b(?=[^\n]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))(?=[^\n]*(?:\.write|write_text|write_bytes|writefile|appendfile|os\.(?:replace|rename|remove|unlink|symlink)|shutil\.|\bunlink\b|\bopen\s*\([^)]*,\s*["''][wax+]))'
+      # perl -pi / ruby -i rewrite a file in place.
+      - '\b(?:perl|ruby)[ \t]+(?:-\S+[ \t]+)*?-\S*i\S*[^\n;&|]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)'
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
     action: block
 
@@ -1356,6 +1365,21 @@ rules:
     patterns:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
+      # The other hosts' hook registrations and the hook launcher itself.
+      - '(^|/)\.codex/(hooks\.json|config\.toml)$'
+      - '(^|/)\.cursor/hooks\.json$'
+      - '(^|/)\.gemini/(settings\.json|config/hooks\.json)$'
+      - '(^|/)\.github/hooks/prismor\.json$'
+      - '(^|/)\.(copilot|grok)/hooks/[^/]+\.json$'
+      - '(^|/)(\.windsurf|\.codeium/windsurf)/hooks\.json$'
+      - '(^|/)\.qwen/settings\.json$'
+      - '(^|/)\.kiro/agents/kiro_default\.json$'
+      - '(^|/)\.openhands/hooks\.json$'
+      - '(^|/)\.agents/(hooks\.json|plugins/prismor/)'
+      - '(^|/)\.?opencode/plugins/'
+      - '(^|/)\.openclaw/extensions/'
+      - '(^|/)hermes/plugins/'
+      - '(^|/)hook-dispatch\.py$'
       # A system install keeps the machine's selection in /etc/prismor.
       - '(^|/)etc/prismor/policy\.yaml$'
       - '(^|[/\\])programdata[/\\]prismor[/\\]policy\.yaml$'
@@ -1436,6 +1460,11 @@ rules:
       # Safety-floor rules a human turned off with that password (floor_off.py).
       - '\bfloor-off\.json\b'
       - '(^|/)floor-off\.json$'
+      # The HMAC key a pause marker is signed with: reading it is the first
+      # half of forging a pause that silences every other rule.
+      - '\bpause\.key\b'
+      # Ships the whole decision to another server (remote_eval.py).
+      - '\bPRISMOR_EVAL_URL='
       # Approving a held MCP tool definition is the human's review of it; an
       # agent approving (or rewriting the pins of) the tool that is steering it
       # would make the review meaningless. Writes to the pin store go through
