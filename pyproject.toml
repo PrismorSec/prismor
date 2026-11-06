@@ -185,6 +185,7 @@ packages = [
 "docs/deploy-docker.md" = "prismor/runtime/data/docs/deploy-docker.md"
 "docs/deploy-intune.md" = "prismor/runtime/data/docs/deploy-intune.md"
 "docs/deploy-jamf.md" = "prismor/runtime/data/docs/deploy-jamf.md"
+"docs/deploy-workspace-one.md" = "prismor/runtime/data/docs/deploy-workspace-one.md"
 "docs/dev-insights.md" = "prismor/runtime/data/docs/dev-insights.md"
 "docs/docker.md" = "prismor/runtime/data/docs/docker.md"
 "docs/elevenlabs.md" = "prismor/runtime/data/docs/elevenlabs.md"
