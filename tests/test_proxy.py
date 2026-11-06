@@ -1056,3 +1056,133 @@ def test_allowed_stream_turn_keeps_tool_use(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
     out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "ls")
     assert b'"stop_reason": "tool_use"' in out
+
+
+# ── stream framings that once bypassed the screen ───────────────────────────
+
+class _Chunked:
+    """An upstream response read in small pieces, like a socket."""
+
+    def __init__(self, data, size=7, status=200):
+        self.data, self.size, self.status = data, size, status
+
+    def read(self, n=-1):
+        out, self.data = self.data[:self.size], self.data[self.size:]
+        return out
+
+    def getheaders(self):
+        return [("Content-Type", "application/vnd.amazon.eventstream")]
+
+
+def _bedrock(events):
+    """Anthropic stream events as Bedrock InvokeModelWithResponseStream bytes."""
+    import base64
+    return b"".join(
+        proxy_mod._es_encode(proxy_mod._ES_CHUNK_HEADERS, json.dumps(
+            {"bytes": base64.b64encode(json.dumps(e).encode()).decode()}).encode())
+        for e in events)
+
+
+def _bedrock_events(raw):
+    import base64
+    return [json.loads(base64.b64decode(json.loads(payload)["bytes"]))
+            for payload in (m[1] for m in proxy_mod._es_messages(_Chunked(raw)))]
+
+
+def _anthropic_tool_turn(command):
+    args = json.dumps({"command": command})
+    return [
+        {"type": "message_start", "message": {"id": "m", "usage": {"input_tokens": 1}}},
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": args[:9]}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": args[9:]}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ]
+
+
+def test_bedrock_stream_is_streaming_by_path():
+    assert is_streaming("anthropic", "/model/m/invoke-with-response-stream", {})
+    assert not is_streaming("anthropic", "/model/m/invoke", {})
+
+
+def test_bedrock_stream_denied_tool_call_never_reaches_client(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = _bedrock(_anthropic_tool_turn("rm -rf /"))
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    events = _bedrock_events(out)
+    blob = json.dumps(events)
+    assert "rm -rf" not in blob and "Blocked by Prismor" in blob
+    assert events[-2]["delta"]["stop_reason"] == "end_turn"
+
+
+def test_bedrock_stream_allowed_tool_call_is_released(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = _bedrock(_anthropic_tool_turn("ls -la"))
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    assert _bedrock_events(out) == _anthropic_tool_turn("ls -la")
+
+
+def test_bedrock_stream_text_is_redacted(monkeypatch, tmp_path):
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    raw = _bedrock([
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": f"key {secret} ok"}},
+        {"type": "content_block_stop", "index": 0},
+    ])
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    text = "".join((e.get("delta") or {}).get("text", "") for e in _bedrock_events(out))
+    assert secret not in text and "[REDACTED]" in text
+
+
+def test_bedrock_stream_broken_framing_fails_closed(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = bytearray(_bedrock(_anthropic_tool_turn("ls")))
+    raw[-1] ^= 0xFF                              # last message's CRC no longer matches
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(bytes(raw))))
+    assert len(_bedrock_events(out)) < len(_anthropic_tool_turn("ls"))
+    assert stream.blocked
+
+
+def test_thinking_delta_is_redacted(monkeypatch, tmp_path):
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    out = stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": f"the key is {secret}"}}))
+    assert secret.encode() not in out and b"[REDACTED]" in out
+
+
+def test_tool_call_in_second_choice_of_one_chunk_is_held(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "m", None)
+    call = {"index": 0, "id": "c", "type": "function",
+            "function": {"name": "Bash", "arguments": json.dumps({"command": "rm -rf /"})}}
+    out = stream.feed(("data: " + json.dumps({"id": "x", "choices": [
+        {"index": 0, "delta": {"content": "hi"}, "finish_reason": None},
+        {"index": 1, "delta": {"tool_calls": [call]}, "finish_reason": None}]}) + "\n\n").encode())
+    out += stream.feed(("data: " + json.dumps({"id": "x", "choices": [
+        {"index": 1, "delta": {}, "finish_reason": "tool_calls"}]}) + "\n\n").encode())
+    out += stream.flush()
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+
+
+def test_unparseable_screened_response_is_refused_in_enforce(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = screen
+    refused = []
+    monkeypatch.setattr(handler, "_refuse", lambda p, m, status=403: refused.append((m, status)))
+    response = type("Response", (), {"status": 200, "read": lambda self: b"\x00\x00binary"})()
+    proxy_mod.ProxyHandler._relay_buffered(handler, response, "anthropic", "m", True, None,
+                                           "anthropic")
+    assert refused and refused[0][1] == 502

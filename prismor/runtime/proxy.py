@@ -60,12 +60,14 @@ the agent it is supposed to be governing.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 from collections import OrderedDict
 import hmac
 import json
 import os
 import queue
+import struct
 import re
 import signal
 import ssl
@@ -73,6 +75,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -582,12 +585,17 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
 
 
 def is_streaming(provider: str, path: str, body: Optional[Dict[str, Any]]) -> bool:
-    """Gemini streams by *method name*; the others by a ``stream`` body flag."""
+    """Gemini and Bedrock stream by *path*; the others by a ``stream`` body flag."""
     if provider == "a2a":
         return False
     if provider == "google":
         return ":streamGenerateContent" in path
-    return bool((body or {}).get("stream"))
+    return bool((body or {}).get("stream")) or is_eventstream(path)
+
+
+def is_eventstream(path: str) -> bool:
+    """Bedrock InvokeModelWithResponseStream: AWS event-stream framing, not SSE."""
+    return path.rstrip("/").endswith("/invoke-with-response-stream")
 
 
 # ── the screen ───────────────────────────────────────────────────────────────
@@ -1489,6 +1497,12 @@ class StreamScreen:
                                 ("id", "object", "created", "model", "system_fingerprint")
                                 if k in event}
         choices = event.get("choices") or []
+        if len(choices) > 1:
+            # Everything below reads choices[0]; a tool call in choices[1] of a
+            # combined (n>1) chunk would pass unscreened. Feed them one by one.
+            return b"".join(
+                self._feed_openai(_sse_reframe(chunk, one), one)
+                for one in ({**event, "choices": [c]} for c in choices))
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
 
@@ -1693,12 +1707,16 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
 
     ``always`` re-emits even when nothing changed: a carrying redactor returns
     a different slice of the text, not the same one."""
-    if "delta" in event and isinstance(event["delta"], dict) and "text" in event["delta"]:
-        original = str(event["delta"].get("text") or "")
+    if "delta" in event and isinstance(event["delta"], dict) and (
+            "text" in event["delta"] or "thinking" in event["delta"]):
+        # Anthropic thinking deltas are model output like any text. Masking one
+        # invalidates its signature; the outbound mask would anyway, next turn.
+        key = "text" if "text" in event["delta"] else "thinking"
+        original = str(event["delta"].get(key) or "")
         masked = redact(original)
         if masked == original and not always:
             return chunk
-        event["delta"]["text"] = masked
+        event["delta"][key] = masked
     elif event.get("choices"):
         delta = (event["choices"][0] or {}).get("delta") or {}
         original = str(delta.get("content") or "")
@@ -2313,6 +2331,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._discard_upstream = True
             return
         if screened and self.screen is not None:
+            if (resp.status < 400 and payload and _loads_object(payload) is None
+                    and self.screen.mode == "enforce"):
+                # Not JSON means no tool call could be found in it, which is not
+                # evidence there is none (Bedrock's event-stream framing was).
+                self._refuse(provider, "Blocked by Prismor: response could not be "
+                                       "screened (fail-closed)", status=502)
+                return
             if resp.status < 400:
                 payload = self._screen_response(provider, model, payload, subject)
             else:
@@ -2389,13 +2414,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                               getattr(self, "_session_id", ""),
                               spoken=getattr(self, "_spoken", False))
         try:
-            for frame in _sse_frames(resp):
-                out = stream.feed(frame)
-                if out:
+            if is_eventstream(urlsplit(self.path).path):
+                for out in _eventstream_relay(stream, resp):
                     self._write_chunk(out)
-            tail = stream.flush()
-            if tail:
-                self._write_chunk(tail)
+            else:
+                for frame in _sse_frames(resp):
+                    out = stream.feed(frame)
+                    if out:
+                        self._write_chunk(out)
+                tail = stream.flush()
+                if tail:
+                    self._write_chunk(tail)
             stream.meter()
         finally:
             try:
@@ -2468,6 +2497,120 @@ def _sse_frames(resp: Any) -> Iterator[bytes]:
             yield frame + b"\n\n"
     if buffer:
         yield buffer
+
+
+# ── AWS event-stream (Bedrock InvokeModelWithResponseStream) ─────────────────
+#
+# A message is: total length, headers length, prelude CRC (3 x uint32), headers,
+# payload, message CRC. A ``chunk`` event's payload is ``{"bytes": base64}`` and
+# the base64 holds one Anthropic stream event, so each is unwrapped into an SSE
+# frame for the same StreamScreen and whatever it emits is wrapped back.
+
+_ES_VALUE_SIZES = {0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16}
+
+
+def _es_headers(raw: bytes) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    i = 0
+    while i < len(raw):
+        n = raw[i]
+        name = raw[i + 1:i + 1 + n].decode("utf-8", "replace")
+        kind = raw[i + 1 + n]
+        i += 2 + n
+        if kind in (6, 7):                       # bytes / string: uint16 length
+            (size,) = struct.unpack(">H", raw[i:i + 2])
+            value = raw[i + 2:i + 2 + size]
+            out[name] = value.decode("utf-8", "replace") if kind == 7 else value
+            i += 2 + size
+        else:
+            i += _ES_VALUE_SIZES[kind]
+    return out
+
+
+def _es_header(name: str, value: str) -> bytes:
+    n, v = name.encode(), value.encode()
+    return bytes([len(n)]) + n + b"\x07" + struct.pack(">H", len(v)) + v
+
+
+_ES_CHUNK_HEADERS = (_es_header(":event-type", "chunk")
+                     + _es_header(":content-type", "application/json")
+                     + _es_header(":message-type", "event"))
+
+
+def _es_encode(headers: bytes, payload: bytes) -> bytes:
+    prelude = struct.pack(">II", 16 + len(headers) + len(payload), len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude))
+    message = prelude + headers + payload
+    return message + struct.pack(">I", zlib.crc32(message))
+
+
+def _es_messages(resp: Any) -> Iterator[Optional[Tuple[bytes, bytes]]]:
+    """``(headers, payload)`` per message; ``None`` once the framing breaks."""
+    buffer = b""
+    while True:
+        while len(buffer) >= 12:
+            total, hlen = struct.unpack(">II", buffer[:8])
+            if (struct.unpack(">I", buffer[8:12])[0] != zlib.crc32(buffer[:8])
+                    or total < 16 + hlen):
+                yield None
+                return
+            if len(buffer) < total:
+                break
+            message, buffer = buffer[:total], buffer[total:]
+            if struct.unpack(">I", message[-4:])[0] != zlib.crc32(message[:-4]):
+                yield None
+                return
+            yield message[12:12 + hlen], message[12 + hlen:-4]
+        chunk = resp.read(1024)
+        if not chunk:
+            if buffer:
+                yield None                       # cut mid-message
+            return
+        buffer += chunk
+
+
+def _eventstream_relay(stream: "StreamScreen", resp: Any) -> Iterator[bytes]:
+    """Bedrock's stream through the Anthropic StreamScreen, re-framed."""
+    enforce = stream.screen.mode == "enforce"
+
+    def wrap(sse: bytes) -> bytes:
+        out = b""
+        for frame in sse.split(b"\n\n"):
+            event = _sse_payload(frame + b"\n\n")
+            if event is not None:
+                data = base64.b64encode(json.dumps(event).encode()).decode()
+                out += _es_encode(_ES_CHUNK_HEADERS, json.dumps({"bytes": data}).encode())
+        return out
+
+    for message in _es_messages(resp):
+        if message is None:
+            sys.stderr.write("[prismor-proxy] bedrock event-stream framing broken\n")
+            if enforce:
+                stream.blocked.append("Blocked by Prismor: event stream could not be screened")
+                break
+            continue
+        raw_headers, payload = message
+        headers = _es_headers(raw_headers)
+        if headers.get(":message-type") != "event" or headers.get(":event-type") != "chunk":
+            # Exceptions (throttling, model errors) can echo the request: mask them.
+            masked = stream.screen.redact(payload.decode("utf-8", "replace")).encode()
+            yield _es_encode(raw_headers, masked)
+            continue
+        try:
+            inner = base64.b64decode(json.loads(payload)["bytes"])
+        except Exception:
+            sys.stderr.write("[prismor-proxy] bedrock chunk could not be decoded\n")
+            if enforce:                          # unread is not the same as safe
+                stream.blocked.append("Blocked by Prismor: stream chunk could not be screened")
+                continue
+            yield _es_encode(raw_headers, payload)
+            continue
+        out = stream.feed(b"data: " + inner + b"\n\n")
+        if out:
+            yield wrap(out)
+    tail = stream.flush()
+    if tail:
+        yield wrap(tail)
 
 
 def _loads_object(raw: bytes) -> Optional[Dict[str, Any]]:
