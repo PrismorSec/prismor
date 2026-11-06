@@ -671,8 +671,19 @@ def evaluate_tool_call(
     _guard_t0 = time.perf_counter()
     _session_seq = session_seq if session_seq is not None else len(events) - 1
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
-    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
-                               trace=_trace)
+    try:
+        findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
+                                   trace=_trace)
+    except Exception as exc:
+        # An engine that cannot decide must not let the call through: on
+        # enforce this blocks, on observe it is reported like any finding.
+        sys.stderr.write(f"[prismor] policy engine error: {exc}\n")
+        findings = [{
+            "id": f"{session_id}:policy-engine-error", "ruleId": "policy-engine-error",
+            "severity": "high", "category": "policy-engine-error", "mode": "enforce",
+            "title": "Policy engine failed on this call — blocked rather than unscreened",
+            "evidence": f"{type(exc).__name__}: {exc}", "eventIndex": _session_seq,
+        }]
     if analysis is not None:
         # A post-action event repeats its call's command/path, so every rule the
         # pre-action event already reported fires again. Report it once: the

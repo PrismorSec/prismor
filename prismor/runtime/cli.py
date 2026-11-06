@@ -2360,6 +2360,12 @@ def main(argv: Optional[List[str]] = None) -> None:
                 pass
 
         force_observe = args.mode == "observe" and os.environ.get("PRISMOR_LOCAL_DRY_RUN", "").lower() in {"1", "true", "yes", "on"}
+        # Pause silences policy, not the floor: a forged or stale pause marker
+        # must never let an agent run `rm -rf /` or rewrite Prismor itself.
+        _paused = _pstate is not None
+        if _paused and blocking is not None:
+            from prismor.runtime.policy_engine import _NON_OVERRIDABLE_RULE_IDS
+            _paused = str(blocking.get("ruleId") or "") not in _NON_OVERRIDABLE_RULE_IDS
 
         # One-shot human approval (approvals_local.py): a person ran
         # `prismor approvals approve <id>` for exactly this call. Not for
@@ -2367,7 +2373,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # approval queue owns those), and not where the agent can ask inline -
         # its native prompt is the better surface there.
         _approval_req = None
-        if blocking is not None and not force_observe and _pstate is None:
+        if blocking is not None and not force_observe and not _paused:
             try:
                 from prismor.runtime.contract import verdict_of as _verdict_of
                 from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS as _SP_IDS
@@ -2434,7 +2440,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             except Exception:
                 pass
 
-        if blocking is not None and not force_observe and _pstate is None:
+        if blocking is not None and not force_observe and not _paused:
             # R4 authorization verdict, driven by the surfaced enforce finding's
             # `action`. `block` (or unset) → DENY; `step_up` → inline human
             # approval; `modify` → rewrite the tool input via a named transform.
@@ -8346,6 +8352,10 @@ def _print_surfaces(workspace: Path) -> None:
     if gaps:
         print(f"\n  {_color('Ungoverned:', _YELLOW)} {', '.join(sorted(gaps))}")
         print(_color("  Prismor cannot constrain an agent it does not sit in front of.", _DIM))
+    blind = [a for a in _surfaces.unsupported_present() if a not in rows]
+    if blind:
+        print(f"\n  {_color('Installed, cannot be governed:', _YELLOW)} {', '.join(blind)}")
+        print(_color("  No hook or MCP surface exists for these; every tool call they make is unscreened.", _DIM))
 
     print()
     print(_color("  prismor setup                 install hooks (widest coverage)", _DIM))

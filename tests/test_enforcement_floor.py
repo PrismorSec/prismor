@@ -21,6 +21,16 @@ def _engine(overlay_yaml=None):
     return PolicyEngine(workspace=Path(d), policy_path=p)
 
 
+def _org_engine(remote_yaml):
+    """Engine whose settings arrive in the signed org layer (device_mode's real source)."""
+    import yaml
+    from unittest import mock
+    with mock.patch("prismor.runtime.enterprise.workspace_scope.is_managed", return_value=True), \
+         mock.patch("prismor.runtime.enterprise.remote_policy.verify_and_load",
+                    return_value=yaml.safe_load(remote_yaml)):
+        return PolicyEngine(workspace=Path(tempfile.mkdtemp()))
+
+
 class TestEnforcementFloor(unittest.TestCase):
     def test_floor_rule_enforces_on_default_observe_policy(self):
         # Shipped default policy has default_mode=observe and no per-rule enforce,
@@ -152,7 +162,7 @@ class TestDeviceModeOverride(unittest.TestCase):
     def test_device_mode_observe_cannot_downgrade_floor(self):
         # A device pinned to observe (e.g. a pilot machine) must not weaken the
         # non-overridable floor.
-        eng = _engine(
+        eng = _org_engine(
             'version: "1.0"\nsettings:\n  default_mode: enforce\n  device_mode: observe\n'
         )
         findings = eng.evaluate({"type": "shell", "command": "rm -rf /"}, index=0)
@@ -163,12 +173,12 @@ class TestDeviceModeOverride(unittest.TestCase):
     def test_device_mode_wins_over_per_rule_mode(self):
         # Same resolution order evaluate() applies to a non-core finding:
         # device_mode beats an explicit rule.mode.
-        eng = _engine('version: "1.0"\nsettings:\n  device_mode: observe\n')
+        eng = _org_engine('version: "1.0"\nsettings:\n  device_mode: observe\n')
         noncore = next((r for r in eng.rules
                         if r.category not in _CORE_BLOCK_CATEGORIES
                         and r.id not in _NON_OVERRIDABLE_RULE_IDS), None)
         self.assertIsNotNone(noncore)
-        eng2 = _engine(
+        eng2 = _org_engine(
             'version: "1.0"\nsettings:\n  device_mode: observe\n'
             f"rules:\n  - id: {noncore.id}\n    mode: enforce\n"
         )
@@ -179,6 +189,13 @@ class TestDeviceModeOverride(unittest.TestCase):
         effective = "enforce" if floor_applies else (eng2.device_mode or rule.mode or eng2.default_mode)
         self.assertEqual(rule.mode, "enforce")
         self.assertEqual(effective, "observe", "device_mode must win over an explicit rule.mode")
+
+    def test_local_layer_cannot_set_device_observe(self):
+        # A repo file any agent can write must not downgrade every rule.
+        eng = _engine('version: "1.0"\nsettings:\n  device_mode: observe\n')
+        self.assertIsNone(eng.device_mode)
+        self.assertEqual(_org_engine('version: "1.0"\nsettings:\n  device_mode: observe\n').device_mode,
+                         "observe")
 
     def test_no_device_mode_falls_back_to_existing_behavior(self):
         eng = _engine('version: "1.0"\nsettings:\n  default_mode: observe\n')

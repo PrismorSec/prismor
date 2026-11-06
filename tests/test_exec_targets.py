@@ -161,10 +161,15 @@ def test_resolution_covers_expected_forms(repo):
 
 # ── rollout semantics ────────────────────────────────────────────────────────
 
-def test_observe_is_the_default_and_never_blocks(repo):
+def test_enforce_is_the_default(repo):
     engine = PolicyEngine(workspace=repo)
     assert engine.inspect_execution_targets is True
-    assert engine.execution_target_action == "observe"
+    assert engine.execution_target_action == "enforce"
+
+
+def test_observe_never_blocks(repo):
+    engine = PolicyEngine(workspace=repo)
+    engine.execution_target_action = "observe"
     event = {"type": "shell", "command": "bash deploy.sh", "agent_event": "pre_tool_use"}
     findings = [f for f in engine.evaluate(event, 0) if f.get("execTarget")]
     assert findings, "content finding should still be reported"

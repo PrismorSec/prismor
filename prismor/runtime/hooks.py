@@ -480,6 +480,12 @@ def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, A
                 continue
             row["configured"] = True
             row["detail"] = "launcher files accessible; imports and agent invocation not verified"
+            if entry.id == "codex" and not _codex_hooks_feature_on():
+                # Codex then never runs any hook: every call passes unscreened (#149).
+                row.update(state="fail", detail=f"[features] hooks is not on in "
+                           f"{_codex_home() / 'config.toml'}; Codex runs no hooks. Fix: prismor setup")
+                results.append(row)
+                continue
             if launchers:
                 groups = (list(hook_config.values()) if entry.id == "antigravity"
                           and isinstance(hook_config, dict) else [hook_config])
@@ -674,7 +680,28 @@ def ensure_global_coverage(*, repo_root: Path, workspace: Path, mode: str = "obs
             repaired.append(agent)
         except Exception:
             pass
+    # A Codex hook with its feature flag turned off is installed and inert.
+    try:
+        if ("codex" not in repaired and hook_installed("codex", "global", workspace)
+                and not _codex_hooks_feature_on()):
+            _ensure_codex_hooks_feature_enabled(_codex_home() / "config.toml")
+            repaired.append("codex")
+    except Exception:
+        pass
     return repaired
+
+
+def _codex_hooks_feature_on() -> bool:
+    """Whether Codex will run hooks: ``[features] hooks = true`` in the user's
+    config.toml, or in Prismor's managed requirements block (system install)."""
+    for path in (_codex_home() / "config.toml", Path("/etc/codex/requirements.toml")):
+        try:
+            features = _toml_loads(path.read_text(encoding="utf-8")).get("features") or {}
+        except Exception:
+            continue
+        if features.get("hooks") is True or features.get("codex_hooks") is True:
+            return True
+    return False
 
 
 def _ensure_codex_hooks_feature_enabled(config_toml_path: Path) -> None:

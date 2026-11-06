@@ -39,6 +39,15 @@ FLUSH_INTERVAL = 60.0
 STATUS_INTERVAL = 3600.0
 
 
+def _unsupported_agents():
+    """Installed agents no Prismor surface can reach (see surfaces.unsupported_present)."""
+    try:
+        from prismor.runtime.surfaces import unsupported_present
+        return unsupported_present()
+    except Exception:
+        return []
+
+
 def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
     """What the console needs to answer "is this machine covered?": the
     running version, whether it is a system (every-user) or per-user install,
@@ -92,7 +101,8 @@ def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
             "install": "system" if system_install.is_system_managed() else "user",
             "platform": platform.system().lower(),
             **({"agents": agents,
-                "unguarded": sorted(a for a, v in agents.items() if not v["covered"])} if scan else {}),
+                "unguarded": sorted(a for a, v in agents.items() if not v["covered"]),
+                "unsupported": _unsupported_agents()} if scan else {}),
             # observe | enforce | mixed: what the hooks above were installed
             # with, so the console has a mode before the first finding arrives.
             **({"mode": mode} if mode else {}),

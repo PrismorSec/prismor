@@ -1664,6 +1664,16 @@ class PolicyEngine:
                 f"(the safety floor stays on for managed workspaces)\n"
             )
             override_settings.pop("selection", None)
+        # device_mode is the console's per-device kill switch. A repo or local
+        # file may tighten it to enforce, never set observe: that would downgrade
+        # every non-floor rule from a file any agent in the repo can write.
+        if (source != "remote"
+                and str(override_settings.get("device_mode", "")).lower() == "observe"):
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.device_mode: observe from the {source} policy layer "
+                "(only the console may set a device to observe)\n"
+            )
+            override_settings.pop("device_mode", None)
         # Identity config names the issuer whose tokens Prismor believes. From a
         # repo or local file it would let whoever writes that file mint users
         # and roles, so only the signed org policy may set it.
@@ -1998,16 +2008,15 @@ class PolicyEngine:
         # unacceptable latency.
         # Resolve what a command actually runs (script argument, sourced file,
         # npm script, make recipe, Dockerfile) and evaluate that content too.
-        # Findings are advisory until an operator promotes them -- see
-        # execution_target_action.
+        # See execution_target_action for whether those findings can block.
         self.inspect_execution_targets: bool = bool(
             settings.get("inspect_execution_targets", True)
         )
-        # "observe" reports without ever blocking (default, so upgrading an
-        # install cannot start breaking builds). "enforce" lets a finding from
-        # inspected content block exactly as an inline one would.
+        # "enforce" (default) resolves a finding from inspected content exactly
+        # as an inline one: the floor blocks, other rules keep their own mode.
+        # "observe" reports without ever blocking.
         self.execution_target_action: str = str(
-            settings.get("execution_target_action", "observe")
+            settings.get("execution_target_action", "enforce")
         ).strip().lower()
         self.supply_chain_install_check: bool = bool(
             settings.get("supply_chain_install_check", True)
@@ -4593,6 +4602,74 @@ def _equate_shell(cmd: str) -> str:
     return cmd
 
 
+_SHELL_ASSIGN = re.compile(
+    r"(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+(?:-\S+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)="
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|<>()`]*)"
+)
+_SHELL_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_shell_vars(cmd: str) -> str:
+    """``CMD=rm; DIR=/; $CMD -rf $DIR`` with the variables substituted, or "".
+
+    One pass over assignments made on the same command line; the environment
+    the shell inherits is unknown here and left as written.
+    """
+    values = {m.group(1): m.group(2).strip("\"'") for m in _SHELL_ASSIGN.finditer(cmd)}
+    if not values:
+        return ""
+    out = _SHELL_REF.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), cmd)
+    return out if out != cmd else ""
+
+
+# A decoder anywhere on the line makes its literal operands worth decoding.
+_B64_DECODER = re.compile(
+    r"\bbase64\s+(?:-\S*\s+)*(?:-d|-D|--decode)\b|\bb64decode\b|\batob\s*\(|"
+    r"\bopenssl\s+(?:base64|enc)\b[^\n]*\s-d\b|\bfrombase64string\b",
+    re.I,
+)
+_HEX_DECODER = re.compile(r"\bxxd\s+(?:-\S+\s+)*-r\b|\bfromhex\b|\bunhexlify\b", re.I)
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}")
+_HEX_TOKEN = re.compile(r"\b(?:[0-9a-fA-F]{2}){6,}\b")
+
+
+def _decode_inline_payloads(cmd: str) -> str:
+    """Decoded text of base64/hex literals on a line that decodes them, or "".
+
+    ``echo cm0gLXJmIC8= | base64 -d | sh`` never shows ``rm -rf /`` to a
+    pattern. Bounded: at most 8 operands of 4 KB, one level deep, and only
+    results that read as text are kept.
+    """
+    import base64
+    import binascii
+
+    def _text(raw: bytes) -> str:
+        try:
+            s = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+        printable = sum(ch.isprintable() or ch in "\n\t" for ch in s)
+        return s if s and printable >= 0.9 * len(s) else ""
+
+    found: List[str] = []
+    if _B64_DECODER.search(cmd):
+        for tok in _B64_TOKEN.findall(cmd)[:8]:
+            tok = tok[:4096]
+            try:
+                raw = base64.b64decode(tok + "=" * (-len(tok) % 4), altchars=b"-_" if "-" in tok or "_" in tok else None)
+            except (binascii.Error, ValueError):
+                continue
+            text = _text(raw)
+            if text:
+                found.append(text)
+    if _HEX_DECODER.search(cmd):
+        for tok in _HEX_TOKEN.findall(cmd)[:8]:
+            text = _text(bytes.fromhex(tok[:8192]))
+            if text:
+                found.append(text)
+    return "\n".join(found)
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
 
@@ -4621,6 +4698,11 @@ def _normalize_command(cmd: str) -> str:
         r'\1',
         cmd,
     )
+    # What a decode or a variable would put on the command line at run time.
+    # Appended, like the rewrites below, so it can add a match but never hide one.
+    derived = [d for d in (_expand_shell_vars(cmd), _decode_inline_payloads(cmd)) if d]
+    if derived:
+        cmd = "\n".join([cmd, *derived])
     # Rewritten shell forms are matched next to the original, so a rewrite
     # can add a match but never hide one.
     equated = _equate_shell(cmd)

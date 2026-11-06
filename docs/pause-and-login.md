@@ -18,6 +18,11 @@ call is still screened, recorded and sent to your sinks as if the workspace were
 in observe mode, so nothing goes dark and the audit trail has no gap. A blocked
 call while paused shows up as a finding that would have blocked.
 
+The non-overridable floor keeps blocking while paused: destructive commands,
+secret exfiltration, remote execution, privilege escalation and Prismor's own
+self-protection rules (an agent rewriting its hooks or policy). A pause is for
+getting work past a rule that is in your way, not for running `rm -rf /`.
+
 - `pause` auto-resumes after 24 hours, or after `--for` (`30m`, `2h`, `1d`). The
   expiry is checked on every hook call, so protection comes back even if nobody
   runs `prismor resume`.
