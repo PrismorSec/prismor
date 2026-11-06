@@ -1024,8 +1024,14 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
     signed_headers = ";".join(sorted(signed))
 
+    # SigV4 URI-encodes each path segment twice for every service but S3: the
+    # wire path's ``%3A`` (a Bedrock model id's colon) is signed as ``%253A``.
+    uri = aws_canonical_path(canonical_uri)
+    if service != "s3":
+        from urllib.parse import quote
+        uri = quote(uri, safe="/~")
     canonical_request = "\n".join([
-        method, aws_canonical_path(canonical_uri), _canonical_query(query),
+        method, uri, _canonical_query(query),
         canonical_headers, signed_headers, payload_hash,
     ])
     scope = f"{datestamp}/{region}/{service}/aws4_request"

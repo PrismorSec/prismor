@@ -35,6 +35,8 @@ NOW = datetime.datetime(2026, 9, 22, 12, 36, 0, tzinfo=datetime.timezone.utc)
 
 
 def test_sigv4_matches_the_verified_vector():
+    # Signature from botocore's SigV4Auth for the same request: the model id's
+    # colon is signed double-encoded (%253A), as AWS does for non-S3 services.
     out = sigv4_headers(
         access_key=AK, secret_key=SK, session_token="", region="us-east-1",
         service="bedrock", method="POST",
@@ -45,7 +47,7 @@ def test_sigv4_matches_the_verified_vector():
     assert out["authorization"] == (
         "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260922/us-east-1/bedrock/"
         "aws4_request, SignedHeaders=host;x-amz-date, Signature="
-        "44296b997233f049d20d2ece05f4ece9e80ad0944a4283d53821a9359523de45")
+        "e839270bb2133fcb4fa1f13bf192b97fd6121676891e5855707be8a191bd9920")
 
 
 def test_session_token_is_signed_and_sent():
