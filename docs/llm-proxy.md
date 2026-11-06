@@ -235,10 +235,11 @@ Anthropic messages shape, so the same rules that govern a Claude call govern a
 Bedrock one, and Azure's `/openai/deployments/<d>/chat/completions` is screened
 as OpenAI.
 
-One gap to know about: Bedrock's `invoke-with-response-stream` answers in AWS
-event-stream framing rather than SSE, so it cannot be reframed. It is signed
-and forwarded, but not screened — use the buffered `invoke` where policy must
-hold on the response.
+Bedrock's `invoke-with-response-stream` answers in AWS event-stream framing
+rather than SSE. The proxy decodes each message, runs the Anthropic event inside
+it through the same stream screen (tool calls held and judged, text masked) and
+re-encodes what it releases with fresh CRCs. A message with a broken CRC or an
+undecodable payload ends the stream in enforce mode instead of being forwarded.
 
 ## Virtual keys
 
