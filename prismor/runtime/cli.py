@@ -6071,12 +6071,12 @@ def _run_trail(args) -> None:
             except ValueError:
                 print("  <unparseable line>")
                 continue
-            verdict = str(r.get("verdict") or r.get("status") or "?")
+            verdict = str(r.get("verdict") or r.get("status") or r.get("record_type") or "?")
             glyph = {"allowed": "·", "warned": "⚠", "blocked": "✗",
                      "step_up": "?", "approved": "✓", "denied": "✗"}.get(verdict, "·")
             ts = str(r.get("ts") or "")[:19]
-            who = str(r.get("agent_name") or r.get("agent") or "-")
-            tool = str(r.get("tool_name") or r.get("event_type") or "-")
+            who = str(r.get("agent_name") or r.get("agent") or r.get("changed_by") or "-")
+            tool = str(r.get("tool_name") or r.get("event_type") or r.get("event") or "-")
             detail = str(r.get("input_summary") or r.get("reason") or "").replace("\n", " ")
             print(f"  [{str(r.get('seq', '?')):>5}] {ts} {glyph} {verdict:<9} "
                   f"{who:<12} {tool:<20} {detail[:70]}")
