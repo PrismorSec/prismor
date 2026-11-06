@@ -1024,8 +1024,14 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
     signed_headers = ";".join(sorted(signed))
 
+    # SigV4 URI-encodes each path segment twice for every service but S3: the
+    # wire path's ``%3A`` (a Bedrock model id's colon) is signed as ``%253A``.
+    uri = aws_canonical_path(canonical_uri)
+    if service != "s3":
+        from urllib.parse import quote
+        uri = quote(uri, safe="/~")
     canonical_request = "\n".join([
-        method, aws_canonical_path(canonical_uri), _canonical_query(query),
+        method, uri, _canonical_query(query),
         canonical_headers, signed_headers, payload_hash,
     ])
     scope = f"{datestamp}/{region}/{service}/aws4_request"
@@ -1285,6 +1291,10 @@ class StreamScreen:
         self._fed_text = False
         self._text_index = 0
         self._text_template: Dict[str, Any] = {}   # Responses API delta ids
+        # chat/completions with n>1: OpenAI interleaves the choices' argument
+        # fragments, every choice's call at tool index 0. One screen per extra
+        # choice keeps each call whole and judges it at its own finish.
+        self._choices: Optional[Dict[int, "StreamScreen"]] = {}
 
     def _text(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
         self._fed_text = True
@@ -1343,7 +1353,13 @@ class StreamScreen:
             reason = "Blocked by Prismor: tool call cut off before it could be screened"
             self.blocked.append(reason)
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return text
+            out = b""
+        for index, child in (self._choices or {}).items():
+            seen = len(child.blocked)
+            out += _with_choice_index(child.flush(), index)
+            self.blocked.extend(child.blocked[seen:])
+        if self._choices:
+            self._choices = {}
         return text + out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
@@ -1503,6 +1519,18 @@ class StreamScreen:
             return b"".join(
                 self._feed_openai(_sse_reframe(chunk, one), one)
                 for one in ({**event, "choices": [c]} for c in choices))
+        index = (choices[0] or {}).get("index") if choices else None
+        if isinstance(index, int) and index > 0 and self._choices is not None:
+            child = self._choices.get(index)
+            if child is None:
+                child = self._choices[index] = StreamScreen(
+                    self.screen, self.provider, self.model, self.subject,
+                    self.session_id, spoken=self.spoken)
+                child._choices = None            # it screens this one choice itself
+            seen = len(child.blocked)
+            out = _with_choice_index(child._feed(chunk), index)
+            self.blocked.extend(child.blocked[seen:])
+            return out
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
 
@@ -1738,6 +1766,36 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
     else:
         return chunk
     return _sse_reframe(chunk, event)
+
+
+def _with_choice_index(sse: bytes, index: int) -> bytes:
+    """Frames a per-choice screen emitted, stamped with the choice they belong to
+    (its synthesized refusals and carried text are written as choice 0)."""
+    if not sse or index == 0:
+        return sse
+    out = b""
+    for frame in sse.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is not None and event.get("choices"):
+            for choice in event["choices"]:
+                choice["index"] = index
+            frame = _sse_reframe(frame, event)[:-2]
+        if frame:
+            out += frame + b"\n\n"
+    return out
+
+
+def _mask_sse(body: bytes, redact: Callable[[str], str]) -> bytes:
+    """A whole SSE body with every event's strings masked."""
+    out = []
+    for frame in body.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is None:
+            out.append(frame)
+            continue
+        _mask_in_place(event, redact)
+        out.append(_sse_reframe(frame, event)[:-2])
+    return b"\n\n".join(out)
 
 
 def _sse_reframe(chunk: bytes, event: Dict[str, Any]) -> bytes:
@@ -2289,6 +2347,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # applied whenever the upstream asks for it -- virtual-key mode is
             # about swapping a key the client sent, and here there is none.
             headers = without_client_auth(headers)
+            if auth_mode == "aws-sigv4":
+                # A client that signed for itself (boto3, LiteLLM) sends its own
+                # x-amz-date / x-amz-security-token. AWS wants every x-amz-*
+                # header signed, so a stale copy beside ours fails the request.
+                # x-amzn-* (Bedrock guardrail/trace) are not signing headers.
+                headers = {k: v for k, v in headers.items()
+                           if not k.lower().startswith("x-amz-")}
             if auth_mode == "gcp-oauth":
                 headers["authorization"] = f"Bearer {gcp_access_token()}"
             else:
@@ -2331,14 +2396,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._discard_upstream = True
             return
         if screened and self.screen is not None:
-            if (resp.status < 400 and payload and _loads_object(payload) is None
-                    and self.screen.mode == "enforce"):
+            unparsed = resp.status < 400 and payload and _loads_object(payload) is None
+            if unparsed and provider == "a2a":
+                # message/stream answers in SSE. An agent's reply carries no tool
+                # call to judge, but it can carry a secret: mask every event.
+                payload = _mask_sse(payload, self.screen.redact)
+            elif unparsed and self.screen.mode == "enforce":
                 # Not JSON means no tool call could be found in it, which is not
                 # evidence there is none (Bedrock's event-stream framing was).
                 self._refuse(provider, "Blocked by Prismor: response could not be "
                                        "screened (fail-closed)", status=502)
                 return
-            if resp.status < 400:
+            elif resp.status < 400:
                 payload = self._screen_response(provider, model, payload, subject)
             else:
                 body = _loads_object(payload)

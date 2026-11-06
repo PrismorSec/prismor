@@ -1186,3 +1186,66 @@ def test_unparseable_screened_response_is_refused_in_enforce(monkeypatch, tmp_pa
     proxy_mod.ProxyHandler._relay_buffered(handler, response, "anthropic", "m", True, None,
                                            "anthropic")
     assert refused and refused[0][1] == 502
+
+
+def test_a2a_stream_reply_is_masked_not_refused(monkeypatch, tmp_path):
+    """message/stream answers SSE: not JSON, but not a reason to refuse it."""
+    secret = "dummy_test_key_12345"
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    written, refused = [], []
+    handler.wfile = type("Writer", (), {"write": lambda self, b: written.append(b)})()
+    monkeypatch.setattr(handler, "_refuse", lambda *a, **k: refused.append(a))
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda k, v: None)
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    body = ("data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+        "kind": "message", "parts": [{"kind": "text", "text": f"hi {secret}"}]}}) + "\n\n").encode()
+    response = type("Response", (), {
+        "status": 200, "read": lambda self: body,
+        "getheaders": lambda self: [("Content-Type", "text/event-stream")]})()
+    proxy_mod.ProxyHandler._relay_buffered(handler, response, "a2a", "", True, None, "a2a")
+    out = b"".join(written)
+    assert not refused and secret.encode() not in out and b"[REDACTED]" in out
+
+
+def test_n2_interleaved_choices_are_judged_each_on_its_own(monkeypatch, tmp_path):
+    """OpenAI streams n>1 calls interleaved, every choice at tool index 0.
+
+    Merged, the fragments read as one garbled call no rule matches, and the
+    client reassembles a clean `rm -rf` per choice from the released chunks."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "m", None)
+
+    def frame(choice, args=None, name=None, finish=None):
+        delta = {}
+        if args is not None or name:
+            fn = {"arguments": args or ""}
+            if name:
+                fn["name"] = name
+            delta["tool_calls"] = [{"index": 0, "function": fn,
+                                    **({"id": f"c{choice}", "type": "function"} if name else {})}]
+        return ("data: " + json.dumps({"id": "x", "choices": [
+            {"index": choice, "delta": delta, "finish_reason": finish}]}) + "\n\n").encode()
+
+    safe = ['{"command":"', "ls", " -la", '"}']
+    bad = ['{"command":"', "rm", " -rf", " /", '"}']
+    frames = [frame(0, "", "Bash"), frame(1, "", "Bash")]
+    for i in range(max(len(safe), len(bad))):
+        if i < len(safe):
+            frames.append(frame(0, safe[i]))
+        if i < len(bad):
+            frames.append(frame(1, bad[i]))
+    frames += [frame(0, finish="stop"), frame(1, finish="stop")]
+    out = b"".join(stream.feed(f) for f in frames) + stream.flush()
+
+    args, text = {}, {}
+    for f in out.split(b"\n\n"):
+        event = proxy_mod._sse_payload(f) or {}
+        for c in event.get("choices") or []:
+            d = c.get("delta") or {}
+            text[c["index"]] = text.get(c["index"], "") + (d.get("content") or "")
+            for tc in d.get("tool_calls") or []:
+                args[c["index"]] = args.get(c["index"], "") + (tc["function"].get("arguments") or "")
+    assert json.loads(args[0]) == {"command": "ls -la"}
+    assert 1 not in args and "Blocked by Prismor" in text[1]
