@@ -1285,6 +1285,10 @@ class StreamScreen:
         self._fed_text = False
         self._text_index = 0
         self._text_template: Dict[str, Any] = {}   # Responses API delta ids
+        # chat/completions with n>1: OpenAI interleaves the choices' argument
+        # fragments, every choice's call at tool index 0. One screen per extra
+        # choice keeps each call whole and judges it at its own finish.
+        self._choices: Optional[Dict[int, "StreamScreen"]] = {}
 
     def _text(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
         self._fed_text = True
@@ -1343,7 +1347,13 @@ class StreamScreen:
             reason = "Blocked by Prismor: tool call cut off before it could be screened"
             self.blocked.append(reason)
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return text
+            out = b""
+        for index, child in (self._choices or {}).items():
+            seen = len(child.blocked)
+            out += _with_choice_index(child.flush(), index)
+            self.blocked.extend(child.blocked[seen:])
+        if self._choices:
+            self._choices = {}
         return text + out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
@@ -1503,6 +1513,18 @@ class StreamScreen:
             return b"".join(
                 self._feed_openai(_sse_reframe(chunk, one), one)
                 for one in ({**event, "choices": [c]} for c in choices))
+        index = (choices[0] or {}).get("index") if choices else None
+        if isinstance(index, int) and index > 0 and self._choices is not None:
+            child = self._choices.get(index)
+            if child is None:
+                child = self._choices[index] = StreamScreen(
+                    self.screen, self.provider, self.model, self.subject,
+                    self.session_id, spoken=self.spoken)
+                child._choices = None            # it screens this one choice itself
+            seen = len(child.blocked)
+            out = _with_choice_index(child._feed(chunk), index)
+            self.blocked.extend(child.blocked[seen:])
+            return out
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
 
@@ -1738,6 +1760,23 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
     else:
         return chunk
     return _sse_reframe(chunk, event)
+
+
+def _with_choice_index(sse: bytes, index: int) -> bytes:
+    """Frames a per-choice screen emitted, stamped with the choice they belong to
+    (its synthesized refusals and carried text are written as choice 0)."""
+    if not sse or index == 0:
+        return sse
+    out = b""
+    for frame in sse.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is not None and event.get("choices"):
+            for choice in event["choices"]:
+                choice["index"] = index
+            frame = _sse_reframe(frame, event)[:-2]
+        if frame:
+            out += frame + b"\n\n"
+    return out
 
 
 def _mask_sse(body: bytes, redact: Callable[[str], str]) -> bytes:
