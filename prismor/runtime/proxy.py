@@ -2347,6 +2347,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # applied whenever the upstream asks for it -- virtual-key mode is
             # about swapping a key the client sent, and here there is none.
             headers = without_client_auth(headers)
+            if auth_mode == "aws-sigv4":
+                # A client that signed for itself (boto3, LiteLLM) sends its own
+                # x-amz-date / x-amz-security-token. AWS wants every x-amz-*
+                # header signed, so a stale copy beside ours fails the request.
+                # x-amzn-* (Bedrock guardrail/trace) are not signing headers.
+                headers = {k: v for k, v in headers.items()
+                           if not k.lower().startswith("x-amz-")}
             if auth_mode == "gcp-oauth":
                 headers["authorization"] = f"Bearer {gcp_access_token()}"
             else:
