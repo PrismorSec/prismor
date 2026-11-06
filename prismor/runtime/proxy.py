@@ -1740,6 +1740,19 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
     return _sse_reframe(chunk, event)
 
 
+def _mask_sse(body: bytes, redact: Callable[[str], str]) -> bytes:
+    """A whole SSE body with every event's strings masked."""
+    out = []
+    for frame in body.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is None:
+            out.append(frame)
+            continue
+        _mask_in_place(event, redact)
+        out.append(_sse_reframe(frame, event)[:-2])
+    return b"\n\n".join(out)
+
+
 def _sse_reframe(chunk: bytes, event: Dict[str, Any]) -> bytes:
     """``event`` re-serialized, keeping the original frame's ``event:`` line."""
     name = b""
@@ -2331,14 +2344,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._discard_upstream = True
             return
         if screened and self.screen is not None:
-            if (resp.status < 400 and payload and _loads_object(payload) is None
-                    and self.screen.mode == "enforce"):
+            unparsed = resp.status < 400 and payload and _loads_object(payload) is None
+            if unparsed and provider == "a2a":
+                # message/stream answers in SSE. An agent's reply carries no tool
+                # call to judge, but it can carry a secret: mask every event.
+                payload = _mask_sse(payload, self.screen.redact)
+            elif unparsed and self.screen.mode == "enforce":
                 # Not JSON means no tool call could be found in it, which is not
                 # evidence there is none (Bedrock's event-stream framing was).
                 self._refuse(provider, "Blocked by Prismor: response could not be "
                                        "screened (fail-closed)", status=502)
                 return
-            if resp.status < 400:
+            elif resp.status < 400:
                 payload = self._screen_response(provider, model, payload, subject)
             else:
                 body = _loads_object(payload)

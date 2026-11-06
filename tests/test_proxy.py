@@ -1186,3 +1186,24 @@ def test_unparseable_screened_response_is_refused_in_enforce(monkeypatch, tmp_pa
     proxy_mod.ProxyHandler._relay_buffered(handler, response, "anthropic", "m", True, None,
                                            "anthropic")
     assert refused and refused[0][1] == 502
+
+
+def test_a2a_stream_reply_is_masked_not_refused(monkeypatch, tmp_path):
+    """message/stream answers SSE: not JSON, but not a reason to refuse it."""
+    secret = "dummy_test_key_12345"
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    written, refused = [], []
+    handler.wfile = type("Writer", (), {"write": lambda self, b: written.append(b)})()
+    monkeypatch.setattr(handler, "_refuse", lambda *a, **k: refused.append(a))
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda k, v: None)
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    body = ("data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+        "kind": "message", "parts": [{"kind": "text", "text": f"hi {secret}"}]}}) + "\n\n").encode()
+    response = type("Response", (), {
+        "status": 200, "read": lambda self: body,
+        "getheaders": lambda self: [("Content-Type", "text/event-stream")]})()
+    proxy_mod.ProxyHandler._relay_buffered(handler, response, "a2a", "", True, None, "a2a")
+    out = b"".join(written)
+    assert not refused and secret.encode() not in out and b"[REDACTED]" in out
