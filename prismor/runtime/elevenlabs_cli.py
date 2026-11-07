@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -181,6 +182,11 @@ def _llm_url(proxy_url: str) -> str:
 #: The model a connected agent runs on unless ``--model`` says otherwise.
 DEFAULT_MODEL = "gpt-5.6-luna"
 
+#: Models that fail every turn on chat completions, the API ElevenLabs calls:
+#: OpenAI serves gpt-5-pro only on /v1/responses, and astra / sol 6.1 take function
+#: tools (system tools like end_call included) only there. Checked live 2026-11-07.
+_CHAT_UNSERVABLE = ("gpt-5-pro", "gpt-6-astra", "gpt-6.1-sol")
+
 
 def body_rules(model: str) -> Dict[str, Any]:
     """Request fixes the proxy applies for this agent's virtual key.
@@ -238,6 +244,11 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
         # in the Authorization header: plain http would put it on the wire.
         raise ElevenLabsError("--proxy-url must be a public https:// URL that reaches "
                               "`prismor proxy` (a tunnel or a TLS reverse proxy)")
+    model_id = model or DEFAULT_MODEL
+    if re.sub(r"-\d{4}-\d{2}-\d{2}$", "", model_id) in _CHAT_UNSERVABLE:
+        # Refuse before any agent is patched: every turn would come back a 400/404.
+        raise ElevenLabsError(f"{model_id} does not serve ElevenLabs' chat completion turns "
+                              f"with tools at OpenAI; pick {DEFAULT_MODEL}, gpt-6-luna or gpt-6-sol")
     config_path = config_path or default_config_path()
     proxy_cfg = _load_json(config_path)
     proxy_cfg.setdefault("keys", {})
@@ -249,7 +260,6 @@ def connect(client: Client, agent_ids: List[str], proxy_url: str, *,
         agent = client.agent(aid)
         name = agent.get("name") or aid
         prompt = _prompt(agent)
-        model_id = model or DEFAULT_MODEL
         key_meta: Dict[str, Any] = {"subject": f"elevenlabs:{name}", "upstream": upstream}
         if body_rules(model_id):
             key_meta["body"] = body_rules(model_id)
