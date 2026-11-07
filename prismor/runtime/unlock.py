@@ -130,6 +130,7 @@ def method() -> Optional[str]:
 def set_password(
     password: str,
     *,
+    current: Optional[str] = None,
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
     system: bool = False,
 ) -> Dict[str, Any]:
@@ -138,7 +139,19 @@ def set_password(
     ``system=True`` records that unlocking should be verified against the
     operating system's own account password instead — nothing derived from a
     password is stored in that case, because there is nothing we should keep.
+
+    Changing a credential that already exists requires ``current`` to verify
+    against it. Setting the *first* credential needs no proof — there is no
+    operator to impersonate yet. Without this, anything that can import this
+    module could silently replace the password (locking the operator out) or
+    mint one on a fresh host and then open its own window; the CLI asked for
+    the old password, the function did not. Raises ``PermissionError`` when the
+    proof is missing or wrong, and writes nothing.
     """
+    if is_configured() and not verify(current or "")[0]:
+        raise PermissionError(
+            "Changing the Prismor unlock password requires the current one."
+        )
     record: Dict[str, Any] = {
         "schema": _CRED_SCHEMA,
         "method": "system" if system else "passphrase",
@@ -341,6 +354,12 @@ def active_state(workspace: Optional[Path] = None) -> Optional[Dict[str, Any]]:
     until = _parse_iso(rec.get("until"))
     if until is None or _now() >= until:
         close_window()  # heal rather than linger
+        return None
+
+    # The cap is enforced when a grant is written, but a forged one skips that
+    # path, so re-check it on read: a window reaching further than the ceiling
+    # could ever grant never authorized anything, whatever its MAC says.
+    if until - _now() > MAX_WINDOW_SECONDS:
         return None
 
     key = _grant_key()
