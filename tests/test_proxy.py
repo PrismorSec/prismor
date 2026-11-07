@@ -1158,8 +1158,27 @@ def test_thinking_delta_is_redacted(monkeypatch, tmp_path):
     stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
     out = stream.feed(_sse("content_block_delta", {
         "type": "content_block_delta", "index": 0,
-        "delta": {"type": "thinking_delta", "thinking": f"the key is {secret}"}}))
+        "delta": {"type": "thinking_delta", "thinking": f"the key is {secret}"}})) + stream.flush()
     assert secret.encode() not in out and b"[REDACTED]" in out
+
+
+def test_thinking_secret_split_across_deltas_is_redacted(monkeypatch, tmp_path):
+    """Live Bedrock streams thinking in ~10-char deltas; a token always spans several."""
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    text = f"the key is {secret} ok"
+    out = b"".join(stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": text[i:i + 6]}})) for i in range(0, len(text), 6))
+    out += stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}}))
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    out += stream.flush()
+    thinking = "".join((json.loads(line[6:]).get("delta") or {}).get("thinking", "")
+                       for line in out.decode().splitlines() if line.startswith("data: "))
+    assert secret not in thinking and "[REDACTED]" in thinking and thinking.endswith("ok")
+    assert b'"text_delta"' not in out
+    assert out.index(b"signature_delta") > out.rindex(b"thinking_delta")
 
 
 def test_tool_call_in_second_choice_of_one_chunk_is_held(monkeypatch, tmp_path):
