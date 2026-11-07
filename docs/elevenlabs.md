@@ -103,8 +103,10 @@ For each agent this:
    refuse both, and they refuse function tools on chat completions unless
    reasoning is off. The key gets a `body` rule that renames `max_tokens` to
    `max_completion_tokens`, drops `temperature` and sets
-   `reasoning_effort: none`. Without the rule, every turn of a luna agent fails
-   at OpenAI. With it, the agent also skips a thinking pause before it speaks;
+   `reasoning_effort: none` (`minimal` for `gpt-5`, `gpt-5-mini` and `gpt-5-nano`,
+   `low` for `gpt-6-astra` and `gpt-6.1-sol`, which reject `none`). Without the
+   rule, every turn of a luna agent fails at OpenAI. With it, the agent also
+   skips a thinking pause before it speaks;
 5. adds request headers ElevenLabs sends on every turn:
    `X-Prismor-Session = system__conversation_id` (one call, one session),
    `X-Prismor-Refusal = spoken` (blocks are spoken as a sentence; set your own
