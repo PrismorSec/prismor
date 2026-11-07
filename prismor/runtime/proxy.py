@@ -1290,7 +1290,7 @@ class StreamScreen:
         self._carry = _CarryMasker(screen.redact)
         self._fed_text = False
         self._text_index = 0
-        self._text_key = "text"                    # Anthropic: text or thinking
+        self._text_key = "text"         # Anthropic: text/thinking; Gemini: text/thought
         self._text_template: Dict[str, Any] = {}   # Responses API delta ids
         # chat/completions with n>1: OpenAI interleaves the choices' argument
         # fragments, every choice's call at tool index 0. One screen per extra
@@ -1311,8 +1311,11 @@ class StreamScreen:
                 "type": "content_block_delta", "index": self._text_index,
                 "delta": {"type": f"{self._text_key}_delta", self._text_key: text}}) + "\n\n").encode()
         if self.provider == "google":
+            part: Dict[str, Any] = {"text": text}
+            if self._text_key == "thought":
+                part["thought"] = True
             payload: Dict[str, Any] = {"candidates": [{"index": 0, "content": {
-                "role": "model", "parts": [{"text": text}]}}]}
+                "role": "model", "parts": [part]}}]}
         elif self._text_template:
             payload = {**self._text_template, "delta": text}
             return (f"event: {payload.get('type')}\ndata: {json.dumps(payload)}\n\n").encode()
@@ -1449,12 +1452,20 @@ class StreamScreen:
         """
         calls = response_tool_calls("google", event)
         if not calls:
+            # Thought summaries are parts flagged ``thought``: release a held
+            # thought tail as a thought part before answer text, or it lands
+            # in the answer and the client shows thinking as the reply.
+            kind = "thought" if any(
+                (part or {}).get("thought") for c in event.get("candidates") or []
+                for part in ((c or {}).get("content") or {}).get("parts") or []) else "text"
+            lead = self._flush_text() if kind != self._text_key else b""
+            self._text_key = kind
             if any((c or {}).get("finishReason") for c in event.get("candidates") or []):
                 # The last frame: nothing follows it to carry the tail.
                 self._fed_text = True
-                return _rewrite_text_delta(
+                return lead + _rewrite_text_delta(
                     chunk, event, lambda t: self._carry.feed(t) + self._carry.flush(), always=True)
-            return self._text(chunk, event)
+            return lead + self._text(chunk, event)
         for tool_name, arguments in calls:
             reason = self._verdict(tool_name, arguments)
             if reason is None:
