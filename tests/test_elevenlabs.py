@@ -212,6 +212,16 @@ def test_connect_writes_the_models_lowest_effort_into_the_key_rules(home):
     assert meta["body"]["set"] == {"reasoning_effort": "minimal"}
 
 
+
+@pytest.mark.parametrize("model", ["gpt-5-pro", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-astra-2026-09-01"])
+def test_connect_refuses_models_chat_completions_cannot_serve(home, model):
+    fake = FakeElevenLabs([_agent("a1")])
+    with pytest.raises(el.ElevenLabsError, match="gpt-6-luna"):
+        el.connect(fake, ["a1"], "https://p.example.com", model=model)
+    assert _prompt(fake, "a1")["llm"] == "gemini-2.5-flash"  # agent left untouched
+    assert not (home / "proxy.json").exists()
+
+
 def test_connect_refuses_plain_http(home):
     with pytest.raises(el.ElevenLabsError):
         el.connect(FakeElevenLabs([_agent("a1")]), ["a1"], "http://1.2.3.4:7080")
