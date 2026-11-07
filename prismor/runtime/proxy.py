@@ -1290,6 +1290,7 @@ class StreamScreen:
         self._carry = _CarryMasker(screen.redact)
         self._fed_text = False
         self._text_index = 0
+        self._text_key = "text"                    # Anthropic: text or thinking
         self._text_template: Dict[str, Any] = {}   # Responses API delta ids
         # chat/completions with n>1: OpenAI interleaves the choices' argument
         # fragments, every choice's call at tool index 0. One screen per extra
@@ -1308,7 +1309,7 @@ class StreamScreen:
         if self.provider == "anthropic":
             return ("event: content_block_delta\ndata: " + json.dumps({
                 "type": "content_block_delta", "index": self._text_index,
-                "delta": {"type": "text_delta", "text": text}}) + "\n\n").encode()
+                "delta": {"type": f"{self._text_key}_delta", self._text_key: text}}) + "\n\n").encode()
         if self.provider == "google":
             payload: Dict[str, Any] = {"candidates": [{"index": 0, "content": {
                 "role": "model", "parts": [{"text": text}]}}]}
@@ -1479,8 +1480,11 @@ class StreamScreen:
             return chunk
 
         if not self._holding:
-            if etype == "content_block_delta" and "text" in (event.get("delta") or {}):
+            delta = event.get("delta") or {}
+            if etype == "content_block_delta" and ("text" in delta or "thinking" in delta):
+                # Thinking streams in ~10-char deltas: it needs the carry too.
                 self._text_index = int(event.get("index") or 0)
+                self._text_key = "text" if "text" in delta else "thinking"
                 return self._text(chunk, event)
             if etype == "content_block_delta":
                 return _rewrite_text_delta(chunk, event, self.screen.redact)
