@@ -25,6 +25,7 @@ a password-verified unlock window (`prismor unlock`).
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -251,7 +252,16 @@ def check_allowed(
         )
     return None
 
-
+def audit_policy_change(event:str,workspace:Optional[Path] = None,**detail:Any) -> None:
+  """Record a policy change in the signed audit trail. Best-effort: a failed
+  append must never undo or block the edit the person just made."""
+  try:
+    from prismor.runtime.enterprise import audit_trail
+    if audit_trail.enabled():
+       audit_trail.append_policy_record(event=event,workspace=workspace,**detail)
+  except Exception as exc:
+    sys.stderr.write(f"[prismor] policy audit error:{exc}\n")
+    
 # ── the ladder ───────────────────────────────────────────────────────────────
 
 def _next_allow_id(data: Dict[str, Any], rule_id: str) -> str:
@@ -302,6 +312,11 @@ def add_allowlist(
                     existing["patterns"] = pats
                     data["allowlists"] = entries
                     _save(policy_path(workspace), header, data)
+                    audit_policy_change(
+                        "allowlist_added", workspace, rule_id=rule_id,
+                        after={"id": existing.get("id"), "pattern": pattern},
+                        reason=default_reason,
+                    )
                 return existing
 
     entry: Dict[str, Any] = {
@@ -318,37 +333,49 @@ def add_allowlist(
     entries.append(entry)
     data["allowlists"] = entries
     _save(policy_path(workspace), header, data)
+    audit_policy_change(
+        "allowlist_added", workspace, rule_id=rule_id, after=entry, reason=entry["reason"],
+    )
     return entry
-
+    
 
 def set_rule_mode(workspace: Path, rule_id: str, mode: str) -> None:
     """Set (or clear) a rule's mode without disturbing the rest of its entry."""
     header, data = _load(policy_path(workspace))
     data.setdefault("version", "1.0")
     rules = list(data.get("rules") or [])
+    before=None
     for rule in rules:
         if isinstance(rule, dict) and rule.get("id") == rule_id:
+            before=rule.get("mode")
             rule["mode"] = mode
             break
     else:
         rules.append({"id": rule_id, "mode": mode})
     data["rules"] = rules
     _save(policy_path(workspace), header, data)
+    audit_policy_change(
+        "rule_mode_changed",workspace,rule_id=rule_id,before=before,after=mode,
+    )
 
 
 def set_rule_enabled(workspace: Path, rule_id: str, enabled: bool) -> None:
     header, data = _load(policy_path(workspace))
     data.setdefault("version", "1.0")
     rules = list(data.get("rules") or [])
+    before = None
     for rule in rules:
         if isinstance(rule, dict) and rule.get("id") == rule_id:
+            before = rule.get("enabled")
             rule["enabled"] = enabled
             break
     else:
         rules.append({"id": rule_id, "enabled": enabled})
     data["rules"] = rules
     _save(policy_path(workspace), header, data)
-
+    audit_policy_change(
+        "rule_enabled_changed",workspace,rule_id=rule_id,before=before,after=enabled,
+    )
 
 def list_allows(workspace: Path) -> List[Dict[str, Any]]:
     _, data = _load(policy_path(workspace))
@@ -371,11 +398,18 @@ def undo(workspace: Path, target: str) -> bool:
 
     kept = [e for e in entries if not (isinstance(e, dict) and str(e.get("id")) == target)]
     if len(kept) != len(entries):
+        removed = [e for e in entries if isinstance(e,dict) and str(e.get("id"))==target]
         data["allowlists"] = kept
         _save(policy_path(workspace), header, data)
+        rule_ids = list(removed[0].get("rule_ids")or[])
+        audit_policy_change(
+            "allowlist_removed",workspace,
+            rule_id=rule_ids[0]if len(rule_ids)==1 else None,before=removed[0],
+        )
         return True
 
     changed = False
+    removed_patterns:List[Dict[str,Any]]=[]
     for entry in entries:
         if not isinstance(entry, dict):
             continue
@@ -384,6 +418,7 @@ def undo(workspace: Path, target: str) -> bool:
             patterns.remove(target)
             entry["patterns"] = patterns
             changed = True
+            removed_patterns.append(entry)
     if not changed:
         return False
     data["allowlists"] = [
@@ -391,6 +426,13 @@ def undo(workspace: Path, target: str) -> bool:
         if not (isinstance(e, dict) and not (e.get("patterns") or []))
     ]
     _save(policy_path(workspace), header, data)
+    for entry in removed_patterns:
+        rule_ids = list(entry.get("rule_ids") or [])
+        audit_policy_change(
+            "allowlist_removed",workspace,
+            rule_id=rule_ids[0] if len(rule_ids) == 1 else None,
+            before={"id":entry.get("id"),"pattern":target},
+        )
     return True
 
 

@@ -77,9 +77,11 @@ def add(decision: Dict[str, Any]) -> Dict[str, Any]:
         # The newest decision for the same thing at the same scope replaces the
         # old one, so flipping allow -> deny never leaves both behind.
         same = ("target", "ruleId", "tool", "pattern", "scope", "scopeId", "workspace")
+        replaced = [d for d in items if all(d.get(k)==rec.get(k) for k in same)]
         items = [d for d in items if any(d.get(k) != rec.get(k) for k in same)]
         items.append(rec)
         data["decisions"] = items
+        _audit("decision_added",rec,before=replaced[0] if replaced else None , after=rec)
     return rec
 
 
@@ -89,9 +91,21 @@ def remove(decision_id: str) -> bool:
         items = [d for d in (data.get("decisions") or []) if isinstance(d, dict)]
         kept = [d for d in items if d.get("id") != decision_id]
         data["decisions"] = kept
+    removed = [d for d in items if d.get("id") == decision_id]
+    if removed:
+        _audit("decision_removed", removed[0], before=removed[0])
     return len(kept) != len(items)
 
 
+def _audit(event: str, decision: Dict[str, Any], **detail: Any) -> None:
+    from prismor.runtime.allow import audit_policy_change
+    ws = decision.get("workspace")
+    audit_policy_change(
+        event, Path(ws) if ws else None, rule_id=decision.get("ruleId"),
+        source="dashboard", reason=str(decision.get("reason") or ""), **detail,
+    )
+
+    
 def _is_floor(rule_id: str) -> bool:
     from prismor.runtime.allow import is_floor_rule
     return is_floor_rule(rule_id)

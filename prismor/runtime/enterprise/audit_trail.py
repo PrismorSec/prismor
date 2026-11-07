@@ -378,6 +378,59 @@ def append_extension_record(
     return _append(record)
 
 
+
+def _os_user() -> Optional[str]:
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return None
+
+
+def append_policy_record(
+    *,
+    event: str,
+    source: str = "cli",
+    rule_id: Optional[str] = None,
+    workspace: Optional[Path] = None,
+    before: Any = None,
+    after: Any = None,
+    reason: str = "",
+) -> Dict[str, Any]:
+    """Append one signed record for a local policy change: who changed what,
+    when, and from where.
+
+    ``event`` names the change (``allowlist_added | allowlist_removed |
+    rule_mode_changed | rule_enabled_changed | decision_added |
+    decision_removed``); ``source`` says which surface made it (``cli`` or
+    ``dashboard``); ``before``/``after`` are the old and new value (``None`` when
+    there was none). ``changed_by`` is the OS user, ``subject`` the resolved
+    Prismor principal. Neither proves the actor was a human: an agent edit is
+    blocked by the self-protection rules before it reaches here.
+    """
+    try:
+        from prismor.runtime.principal import resolve_subject
+        subject = resolve_subject().as_dict()
+    except Exception:
+        subject = {}
+    record: Dict[str, Any] = {
+        "record_type": "policy",
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "device_id": _device_id(),
+        "prismor_version": _prismor_version(),
+        "event": event,
+        "source": source,
+        "changed_by": _os_user(),
+        "subject": subject,
+        "workspace": str(workspace) if workspace else None,
+        "rules": [rule_id] if rule_id else [],
+        "before": before,
+        "after": after,
+        "reason": reason or (event.replace("_", " ") + (f": {rule_id}" if rule_id else "")),
+    }
+    return _append(record)
+
+
 # ── Verification ─────────────────────────────────────────────────────────────
 
 def verify_trail(
