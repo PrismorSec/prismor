@@ -95,7 +95,9 @@ For each agent this:
 2. stores that key as an ElevenLabs **workspace secret**, so the agent
    config references it by id and never contains it;
 3. sets **LLM → Custom LLM** with the proxy URL on `gpt-5.6-luna`
-   (`--model` to choose another);
+   (`--model` to choose another; `gpt-5-pro`, `gpt-6-astra` and `gpt-6.1-sol`
+   are refused, because OpenAI serves them, or their tool calls, only on the
+   Responses API and every turn would fail);
 4. tells the proxy how to adapt ElevenLabs' requests for that model. ElevenLabs
    sends `max_tokens` and `temperature: 0` on every turn. GPT-5-era models
    refuse both, and they refuse function tools on chat completions unless
