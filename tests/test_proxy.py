@@ -1181,6 +1181,28 @@ def test_thinking_secret_split_across_deltas_is_redacted(monkeypatch, tmp_path):
     assert out.index(b"signature_delta") > out.rindex(b"thinking_delta")
 
 
+def test_gemini_thought_tail_stays_a_thought_part(monkeypatch, tmp_path):
+    """The carry's held thought text must not be released into the answer part."""
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "google", "m", None)
+
+    def frame(part, finish=None):
+        cand = {"index": 0, "content": {"role": "model", "parts": [part]}}
+        if finish:
+            cand["finishReason"] = finish
+        return ("data: " + json.dumps({"candidates": [cand]}) + "\n\n").encode()
+
+    out = stream.feed(frame({"text": f"thinking about {secret[:8]}", "thought": True}))
+    out += stream.feed(frame({"text": f"{secret[8:]} done thinking", "thought": True}))
+    out += stream.feed(frame({"text": "40"}, "STOP")) + stream.flush()
+    parts = [p for line in out.decode().splitlines() if line.startswith("data: ")
+             for p in json.loads(line[6:])["candidates"][0]["content"]["parts"]]
+    thought = "".join(p["text"] for p in parts if p.get("thought"))
+    answer = "".join(p["text"] for p in parts if not p.get("thought"))
+    assert answer == "40"
+    assert secret not in thought and "[REDACTED]" in thought and thought.endswith("done thinking")
+
+
 def test_tool_call_in_second_choice_of_one_chunk_is_held(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
     stream = StreamScreen(screen, "openai", "m", None)
