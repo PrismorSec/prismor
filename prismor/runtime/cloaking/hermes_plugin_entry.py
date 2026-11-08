@@ -1,4 +1,4 @@
-"""Hermes Agent entry point / plugin module for Prismor cloaking.
+"""Hermes Agent entry point / plugin module for Prismor Warden cloaking.
 
 This module serves TWO discovery modes with a single ``register()``
 implementation:
@@ -6,15 +6,14 @@ implementation:
 1. **pip entry point** — when immunity-agent is pip-installed, Hermes
    discovers it via ``pyproject.toml``'s
    ``[project.entry-points."hermes_agent.plugins"]`` section. The entry
-   point ``prismor-cloak`` points to
-   ``prismor.runtime.cloaking.hermes_plugin_entry:register``.
+   point ``prismor-warden-cloak`` points to
+   ``warden.cloaking.hermes_plugin_entry:register``.
 
-2. **Filesystem plugin** — when installed via ``prismor cloak install
+2. **Filesystem plugin** — when installed via ``immunity cloak install
    --agent hermes``, the plugin directory is copied to
-   ``~/.hermes/plugins/prismor-cloak/`` with its own
-   ``plugin.yaml`` + ``__init__.py``. That ``__init__.py`` carries a
-   verbatim copy of this module's code (enforced by
-   tests/test_hermes_plugin_sync.py).
+   ``~/.hermes/plugins/prismor-warden-cloak/`` with its own
+   ``plugin.yaml`` + ``__init__.py``. The ``__init__.py`` re-exports the
+   ``register()`` function from here.
 
 Both paths converge on the same hook registration logic below.
 """
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 _SECRET_PLACEHOLDER_RE = re.compile(r"@@SECRET:([a-zA-Z0-9_-]{1,64})@@")
 
-# Built-in secret detection patterns (mirrors prismor/runtime/cloaking/builtin_patterns.txt)
+# Built-in secret detection patterns (mirrors warden/cloaking/builtin_patterns.txt)
 _BUILTIN_PATTERNS: List[re.Pattern] = [
     re.compile(r"sk_live_[0-9a-zA-Z]{24,}"),            # Stripe live secret
     re.compile(r"sk_test_[0-9a-zA-Z]{24,}"),             # Stripe test secret
@@ -46,6 +45,7 @@ _BUILTIN_PATTERNS: List[re.Pattern] = [
     re.compile(r"AIza[0-9A-Za-z_-]{35}"),                # Google API key
     re.compile(r"sk-[0-9a-zA-Z]{20,}"),                  # OpenAI secret
     re.compile(r"xox[baprs]-[0-9a-zA-Z-]{10,}"),        # Slack token
+    re.compile(r"AIK_CLIENT_[0-9a-zA-Z]{20,}"),           # AIK client key
     re.compile(r"glpat-[0-9a-zA-Z_-]{20,}"),             # GitLab PAT
     re.compile(r"[Bb]earer\s+[0-9a-zA-Z._-]{20,}"),      # Bearer token
     re.compile(r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+"),  # JWT
@@ -68,19 +68,19 @@ def _secrets_dir() -> Path:
 
 
 def _read_secret(name: str) -> Optional[str]:
-    """Read a secret value by placeholder name. Returns None if missing.
-
-    Searches the root secrets dir first, then falls back to the
-    auto_vault subdirectory so paste-guard-auto-vaulted secrets
-    (stored under auto_vault/auto_*) are resolvable by name.
-    """
-    for base in (_secrets_dir(), _vault_path()):
-        try:
-            path = base / name
-            if path.exists() and path.is_file():
-                return path.read_text(encoding="utf-8").strip()
-        except Exception:
-            continue
+    """Read a secret value by placeholder name. Returns None if missing."""
+    try:
+        sdir = _secrets_dir()
+        # Check root first for registered secrets
+        path = sdir / name
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8").strip()
+        # Fall back to auto_vault for auto-generated placeholders
+        auto_path = sdir / _VAULT_DIR / name
+        if auto_path.exists() and auto_path.is_file():
+            return auto_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
     return None
 
 
@@ -154,24 +154,6 @@ def _scan_for_raw_secrets(text: str) -> List[str]:
     return matches
 
 
-def _is_scrubbable_secret(value: str) -> bool:
-    """Whether a raw secret value is distinctive enough to mask by substring
-    without false positives. Eligible if >= 16 chars, or >= 8 chars AND carrying
-    a digit, a symbol, or mixed case. A short single-case word collides with
-    ordinary text and is skipped. Mirrors is_scrubbable_secret() in runtime.py.
-    """
-    n = len(value or "")
-    if n < 8:
-        return False
-    if n >= 16:
-        return True
-    return (
-        any(c.isdigit() for c in value)
-        or any(not c.isalnum() for c in value)
-        or (any(c.isupper() for c in value) and any(c.islower() for c in value))
-    )
-
-
 def _scrub_secrets(text: str) -> str:
     """Replace known secret values in text with ``@@SECRET:name@@`` placeholders."""
     sdir = _secrets_dir()
@@ -206,7 +188,7 @@ def _scrub_secrets(text: str) -> str:
     for value, placeholder in sorted(
         value_to_name.items(), key=lambda x: -len(x[0])
     ):
-        if value and value in result and _is_scrubbable_secret(value):
+        if value and len(value) >= 4 and value in result:
             result = result.replace(value, placeholder)
     return result
 
@@ -214,24 +196,14 @@ def _scrub_secrets(text: str) -> str:
 # ── Hook Handlers ──────────────────────────────────────────────────────────
 
 
-# Hermes passes more keyword arguments with each release (turn_id,
-# api_request_id, middleware_trace, ...). Every handler takes **_ so a new one
-# can't raise TypeError, which Hermes logs and then runs the call unguarded.
-
-
 def on_pre_tool_call(
-    tool_name: str = "",
-    args: Optional[Dict[str, Any]] = None,
+    tool_name: str,
+    args: Dict[str, Any],
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
-    **_: Any,
 ) -> Optional[Dict[str, Any]]:
-    """Pre-tool-call hook: check secret placeholders and block raw secrets.
-
-    Hermes honours only "block" / "approve" here, so placeholders are swapped
-    for their values later, in the tool_execution middleware (on_tool_execution),
-    after every hook and approval has seen the cloaked call."""
+    """Pre-tool-call hook: handle secret placeholders and raw secret detection."""
     search_text = json.dumps(args) if args else ""
 
     if not search_text:
@@ -255,18 +227,19 @@ def on_pre_tool_call(
                     "action": "block",
                     "message": (
                         f"Secret @@SECRET:{name}@@ is not registered. "
-                        f"Register it with: prismor cloak add {name}"
+                        f"Register it with: immunity cloak add {name}"
                     ),
                 }
 
-        if env_vars and not _CAN_DECLOAK:
+        if env_vars:
             return {
-                "action": "block",
-                "message": (
-                    "This Hermes version has no tool_execution middleware, so Prismor "
-                    "cannot substitute secret placeholders. Upgrade Hermes, or run "
-                    "the command without the secret."
-                ),
+                "action": "decloak",
+                "env": env_vars,
+                "placeholders": {
+                    name: env_vars[f"PRISMOR_SECRET_VALUE_{name.upper()}"]
+                    for name in placeholder_matches
+                    if f"PRISMOR_SECRET_VALUE_{name.upper()}" in env_vars
+                },
             }
 
     # Phase 2: Raw secret detection - always block, regardless of vault state.
@@ -292,51 +265,27 @@ def on_pre_tool_call(
     return None
 
 
-def _decloak(value: Any) -> Any:
-    """``value`` with every registered secret placeholder replaced by its value."""
-    if isinstance(value, str):
-        return _SECRET_PLACEHOLDER_RE.sub(lambda m: _read_secret(m.group(1)) or m.group(0), value)
-    if isinstance(value, dict):
-        return {k: _decloak(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_decloak(v) for v in value]
-    return value
-
-
-def on_tool_execution(next_call: Any = None, args: Optional[Dict[str, Any]] = None, **_: Any) -> Any:
-    """tool_execution middleware: run the tool with placeholders decloaked.
-
-    Only the executed copy carries real values; the transcript, hooks and
-    approvals keep the placeholder, and the transform hooks below scrub any
-    value that comes back in the output."""
-    return next_call(_decloak(args or {}))
-
-
 def on_post_tool_call(
-    tool_name: str = "",
-    args: Optional[Dict[str, Any]] = None,
-    result: Any = "",
+    tool_name: str,
+    args: Dict[str, Any],
+    result: str,
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
     duration_ms: int = 0,
-    **_: Any,
 ) -> None:
     """Post-tool-call hook: observational audit log (currently a no-op)."""
     pass
 
 
 def on_transform_terminal_output(
-    command: str = "",
-    output: str = "",
-    returncode: int = 0,
+    command: str,
+    output: str,
+    returncode: int,
     task_id: str = "",
     env_type: str = "",
-    **_: Any,
 ) -> Optional[str]:
     """Transform terminal output: scrub secret values before they reach context."""
-    if not isinstance(output, str):
-        return None
     scrubbed = _scrub_secrets(output)
     if scrubbed != output:
         return scrubbed
@@ -344,18 +293,15 @@ def on_transform_terminal_output(
 
 
 def on_transform_tool_result(
-    tool_name: str = "",
-    args: Optional[Dict[str, Any]] = None,
-    result: Any = "",
+    tool_name: str,
+    args: Dict[str, Any],
+    result: str,
     task_id: str = "",
     session_id: str = "",
     tool_call_id: str = "",
     duration_ms: int = 0,
-    **_: Any,
 ) -> Optional[str]:
     """Transform tool result: scrub secret values from non-terminal tool output."""
-    if not isinstance(result, str):
-        return None
     scrubbed = _scrub_secrets(result)
     if scrubbed != result:
         return scrubbed
@@ -363,10 +309,9 @@ def on_transform_tool_result(
 
 
 def on_pre_gateway_dispatch(
-    event: Any = None,
-    gateway: Any = None,
-    session_store: Any = None,
-    **_: Any,
+    event: Any,
+    gateway: Any,
+    session_store: Any,
 ) -> Optional[Dict[str, Any]]:
     """Pre-gateway dispatch: detect and auto-cloak pasted secrets."""
     try:
@@ -408,15 +353,8 @@ def on_pre_gateway_dispatch(
 # ── Plugin Registration ────────────────────────────────────────────────────
 
 
-_CAN_DECLOAK = False
-
-
 def register(ctx) -> None:
     """Register all cloaking hooks with the Hermes plugin system."""
-    global _CAN_DECLOAK
-    if hasattr(ctx, "register_middleware"):
-        ctx.register_middleware("tool_execution", on_tool_execution)
-        _CAN_DECLOAK = True
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("transform_terminal_output", on_transform_terminal_output)
@@ -424,8 +362,7 @@ def register(ctx) -> None:
     ctx.register_hook("pre_gateway_dispatch", on_pre_gateway_dispatch)
 
     logger.info(
-        "Prismor cloak plugin registered: "
+        "Prismor Warden cloak plugin registered: "
         "pre_tool_call, post_tool_call, transform_terminal_output, "
-        "transform_tool_result, pre_gateway_dispatch%s",
-        ", tool_execution (decloak)" if _CAN_DECLOAK else " (no decloak: Hermes lacks middleware)"
+        "transform_tool_result, pre_gateway_dispatch"
     )

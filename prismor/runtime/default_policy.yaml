@@ -2457,4 +2457,35 @@ rules:
       - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
     action: warn
 
+
+  # ── CRITICAL: AI agent sandbox escape (CVE-2026-42074) ──────────────────────
+  - id: ai-sandbox-escape
+    description: >-
+      Blocks AI agents from disabling sandboxes or escalating privileges via
+      prompt injection. Covers CVE-2026-42074 (OpenClaude sandbox escape) and
+      similar patterns in Claude Code, Codex, Copilot, and other coding agents.
+    severity: critical
+    tags:
+      - cve-2026-42074
+      - ai-agent
+      - sandbox
+      - prompt-injection
+    filters:
+      - field: tool_call
+        values:
+          - dangerouslyDisableSandbox
+          - unsafe_unsandbox
+          - skip_sandbox
+          - disable_sandbox
+      - field: prompt
+        values:
+          - auto-escalate-on-error
+          - allowUnsandboxedCommands
+          - unsandboxed_command
+      - field: tool_call
+        operator: regex
+        values:
+          - '(?:dangerously|unsafe|skip|disable)[_-]?(?:Disable)?Sandbox'
+    action: block
+
 allowlists: []

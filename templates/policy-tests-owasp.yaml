@@ -174,3 +174,31 @@ tests:
     type: command
     input: "npm install lodash"
     expect: pass
+
+  # ── CVE-2026-8206: Kirki Forgot Password Email Injection ──────────
+  - name: "CVE-2026-8206 — password reset to attacker email must WARN"
+    type: command
+    input: 'curl -X POST https://target.com/wp-json/KirkiComponentLibrary/v1/kirki-forgot-password -H "Content-Type: application/json" -H "X-WP-Element-Nonce: abcdef1234" -d "{\"username\":\"admin\",\"email\":\"attacker@gmail.com\"}"'
+    expect: warn
+
+  # ── CVE-2026-8207: Kirki Unauthenticated Form Injection ──────────
+  - name: "CVE-2026-8207 — unauthenticated form submission must WARN"
+    type: command
+    input: 'curl -X POST https://target.com/wp-json/kirki/v1/frontend/form -H "Content-Type: application/json" -d "{\"form_id\":1,\"form_data\":{\"test\":\"value\"}}"'
+    expect: warn
+
+  - name: "CVE-2026-8207 — unauthenticated user data access must WARN"
+    type: command
+    input: 'curl -X POST https://target.com/wp-json/kirki/v1/frontend/users -H "Content-Type: application/json" -d "{\"user_id\":1}"'
+    expect: warn
+
+  # ── CVE-2026-42074: OpenClaude Sandbox Escape ─────────────────────
+  - name: "CVE-2026-42074 — dangerouslyDisableSandbox in shell command must BLOCK"
+    type: command
+    input: "dangerouslyDisableSandbox: true"
+    expect: block
+
+  - name: "CVE-2026-42074 — model-facing tool schema with sandbox bypass param must WARN"
+    type: command
+    input: 'cat openclaude/src/tools/bash.ts | grep dangerouslyDisableSandbox'
+    expect: warn
