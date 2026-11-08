@@ -198,7 +198,19 @@ tests:
     input: "dangerouslyDisableSandbox: true"
     expect: block
 
-  - name: "CVE-2026-42074 — model-facing tool schema with sandbox bypass param must WARN"
+  - name: "CVE-2026-42074 — grepping source for the flag name is NOT a security event"
     type: command
-    input: 'cat openclaude/src/tools/bash.ts | grep dangerouslyDisableSandbox'
-    expect: warn
+    input: 'grep -rn dangerouslyDisableSandbox src/'
+    expect: pass
+
+  - name: "CVE-2026-42074 — sandbox-disable flag passed as a parameter must BLOCK"
+    type: command
+    input: 'bash -c "make test" --dangerously-disable-sandbox'
+    expect: block
+    expect_rule: ai-sandbox-escape
+
+  - name: "CVE-2026-42074 — non-standard sandbox flag must BLOCK"
+    type: command
+    input: 'agent run --skip-sandbox deploy.sh'
+    expect: block
+    expect_rule: ai-sandbox-escape

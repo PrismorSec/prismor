@@ -2458,34 +2458,24 @@ rules:
     action: warn
 
 
-  # ── CRITICAL: AI agent sandbox escape (CVE-2026-42074) ──────────────────────
+  # AI agent sandbox escape (CVE-2026-42074) -- see notes in PR body
   - id: ai-sandbox-escape
-    description: >-
-      Blocks AI agents from disabling sandboxes or escalating privileges via
-      prompt injection. Covers CVE-2026-42074 (OpenClaude sandbox escape) and
-      similar patterns in Claude Code, Codex, Copilot, and other coding agents.
-    severity: critical
-    tags:
-      - cve-2026-42074
-      - ai-agent
-      - sandbox
-      - prompt-injection
-    filters:
-      - field: tool_call
-        values:
-          - dangerouslyDisableSandbox
-          - unsafe_unsandbox
-          - skip_sandbox
-          - disable_sandbox
-      - field: prompt
-        values:
-          - auto-escalate-on-error
-          - allowUnsandboxedCommands
-          - unsandboxed_command
-      - field: tool_call
-        operator: regex
-        values:
-          - '(?:dangerously|unsafe|skip|disable)[_-]?(?:Disable)?Sandbox'
+    severity: CRITICAL
+    category: privilege_escalation
+    title: Blocks AI agents from disabling their sandbox or auto-escalating on sandbox errors
+    event_types: [shell, prompt]
+    patterns:
+      # Match parameter *usage*, not a bare mention: grepping source code
+      # for the flag name is legitimate research and must not be blocked.
+      - '(?:dangerously[_-]?disable[_-]?sandbox|disable[_-]?sandbox|skip[_-]?sandbox|unsafe[_-]?unsandbox)\s*[:=]\s*(?:true|1|yes)'
+      - '--(?:dangerously[_-]?disable[_-]?sandbox|disable[_-]?sandbox|skip[_-]?sandbox|unsafe[_-]?unsandbox)\b'
+      - 'allowUnsandboxedCommands\s*[:=]\s*(?:true|1|yes)'
+      - 'unsandboxed[_-]?command\s*[:=]\s*(?:true|1|yes)'
+      - '--allow-unsandboxed-commands\b'
+      - '(?:retry|re-?run|execute).{0,40}(?:without|outside|disabl|bypass).{0,20}sandbox'
+      - '(?:sandbox|isolation).{0,40}(?:auto-?escalat|escalate automatically)'
+      - '(?:auto-?escalat|escalate automatically).{0,40}(?:sandbox|isolation)'
+      - '(?:sandbox|isolation)\s+(?:errors?|failures?)\s+(?:should\s+)?(?:be\s+)?(?:overrid|ignor|bypass)'
     action: block
 
 allowlists: []
