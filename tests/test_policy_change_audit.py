@@ -212,3 +212,43 @@ def test_trail_show_renders_policy_records(env, capsys):
     line = capsys.readouterr().out.strip()
     assert "policy" in line and "rule_mode_changed" in line and "risky-write" in line
     assert "?" not in line.split("policy", 1)[0]  # no unknown-verdict placeholder
+
+
+def test_unchanged_rule_mode_and_enabled_record_nothing(env):
+    trail, ws = env
+    from prismor.runtime import allow
+
+    allow.set_rule_mode(ws, "risky-write", "observe")
+    allow.set_rule_mode(ws, "risky-write", "observe")      # same value: no change
+    allow.set_rule_enabled(ws, "risky-write", False)
+    allow.set_rule_enabled(ws, "risky-write", False)       # same value: no change
+    events = [r["event"] for r in _policy_records(trail)]
+    assert events == ["rule_mode_changed", "rule_enabled_changed"]
+
+
+def test_decision_is_saved_before_it_is_audited(env, monkeypatch):
+    trail, ws = env
+    from prismor.runtime import decisions
+
+    seen = {}
+
+    def spy(event, decision, **_kw):
+        seen["on_disk"] = [d["id"] for d in decisions.list_all()]
+        seen["id"] = decision["id"]
+
+    monkeypatch.setattr(decisions, "_audit", spy)
+    decisions.add({
+        "target": "rule", "ruleId": "risky-write", "action": "deny",
+        "scope": "workspace", "workspace": str(ws),
+    })
+    assert seen["id"] in seen["on_disk"]
+
+
+def test_large_before_and_after_are_capped(env):
+    trail, ws = env
+    big = {"id": "allow-x", "patterns": [f"cmd {i} " + "x" * 1000 for i in range(50)]}
+    rec = trail.append_policy_record(event="allowlist_removed", before=big)
+    pats = rec["before"]["patterns"]
+    assert len(pats) == 11 and pats[-1] == "... +40 more"
+    assert all(len(p) <= 400 for p in pats)
+    assert rec["before"]["id"] == "allow-x"

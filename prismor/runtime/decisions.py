@@ -77,11 +77,11 @@ def add(decision: Dict[str, Any]) -> Dict[str, Any]:
         # The newest decision for the same thing at the same scope replaces the
         # old one, so flipping allow -> deny never leaves both behind.
         same = ("target", "ruleId", "tool", "pattern", "scope", "scopeId", "workspace")
-        replaced = [d for d in items if all(d.get(k)==rec.get(k) for k in same)]
+        replaced = [d for d in items if all(d.get(k) == rec.get(k) for k in same)]
         items = [d for d in items if any(d.get(k) != rec.get(k) for k in same)]
         items.append(rec)
         data["decisions"] = items
-        _audit("decision_added",rec,before=replaced[0] if replaced else None , after=rec)
+    _audit("decision_added", rec, before=replaced[0] if replaced else None, after=rec)
     return rec
 
 

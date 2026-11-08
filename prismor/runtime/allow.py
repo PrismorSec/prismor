@@ -252,17 +252,16 @@ def check_allowed(
         )
     return None
 
-def audit_policy_change(event:str,workspace:Optional[Path] = None,**detail:Any) -> None:
-  """Record a policy change in the signed audit trail. Best-effort: a failed
-  append must never undo or block the edit the person just made."""
-  try:
-    from prismor.runtime.enterprise import audit_trail
-    if audit_trail.enabled():
-       audit_trail.append_policy_record(event=event,workspace=workspace,**detail)
-  except Exception as exc:
-    sys.stderr.write(f"[prismor] policy audit error:{exc}\n")
-    
-# ── the ladder ───────────────────────────────────────────────────────────────
+def audit_policy_change(event: str, workspace: Optional[Path] = None, **detail: Any) -> None:
+    """Record a policy change in the signed audit trail. Best-effort: a failed
+    append must never undo or block the edit the person just made."""
+    try:
+        from prismor.runtime.enterprise import audit_trail
+        if audit_trail.enabled():
+            audit_trail.append_policy_record(event=event, workspace=workspace, **detail)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] policy audit error: {exc}\n")
+        # ── the ladder ───────────────────────────────────────────────────────────────
 
 def _next_allow_id(data: Dict[str, Any], rule_id: str) -> str:
     existing = {str(e.get("id")) for e in (data.get("allowlists") or []) if isinstance(e, dict)}
@@ -344,19 +343,20 @@ def set_rule_mode(workspace: Path, rule_id: str, mode: str) -> None:
     header, data = _load(policy_path(workspace))
     data.setdefault("version", "1.0")
     rules = list(data.get("rules") or [])
-    before=None
+    before = None
     for rule in rules:
         if isinstance(rule, dict) and rule.get("id") == rule_id:
-            before=rule.get("mode")
+            before = rule.get("mode")
             rule["mode"] = mode
             break
     else:
         rules.append({"id": rule_id, "mode": mode})
     data["rules"] = rules
     _save(policy_path(workspace), header, data)
-    audit_policy_change(
-        "rule_mode_changed",workspace,rule_id=rule_id,before=before,after=mode,
-    )
+    if before != mode:
+        audit_policy_change(
+            "rule_mode_changed", workspace, rule_id=rule_id, before=before, after=mode,
+        )
 
 
 def set_rule_enabled(workspace: Path, rule_id: str, enabled: bool) -> None:
@@ -373,9 +373,10 @@ def set_rule_enabled(workspace: Path, rule_id: str, enabled: bool) -> None:
         rules.append({"id": rule_id, "enabled": enabled})
     data["rules"] = rules
     _save(policy_path(workspace), header, data)
-    audit_policy_change(
-        "rule_enabled_changed",workspace,rule_id=rule_id,before=before,after=enabled,
-    )
+    if before != enabled:
+        audit_policy_change(
+            "rule_enabled_changed", workspace, rule_id=rule_id, before=before, after=enabled,
+        )
 
 def list_allows(workspace: Path) -> List[Dict[str, Any]]:
     _, data = _load(policy_path(workspace))
