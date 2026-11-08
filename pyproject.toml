@@ -107,10 +107,6 @@ immunity = "prismor.runtime.immunity_cli:main"   # deprecated alias — prints a
 [project.entry-points."hermes_agent.plugins"]
 prismor-cloak = "prismor.runtime.cloaking.hermes_plugin_entry:register"
 
-# Hermes Agent plugin auto-discovery entry point
-[project.entry-points."hermes_agent.plugins"]
-prismor-warden-cloak = "warden.cloaking.hermes_plugin_entry"
-
 [tool.hatch.version]
 path = "prismor/runtime/__init__.py"
 
