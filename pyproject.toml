@@ -133,7 +133,8 @@ packages = [
     "adapters/claude-agent-sdk/prismor_claude_agent_sdk",
 ]
 
-# Bundle runtime data into the wheel under warden/data/
+# Bundle runtime data into the wheel under warden/data/ (the runtime
+# data prefix kept its historical name; sources now live under prismor/)
 [tool.hatch.build.targets.wheel.force-include]
 # prismor.<framework> namespace shims (PEP 420 — no __init__.py above
 # the leaf, so the prismor/ and prismor/ levels stay namespaces).
@@ -158,8 +159,8 @@ packages = [
 "keys/public.pub" = "warden/data/keys/public.pub"
 "templates/policy-tests-owasp.yaml" = "warden/data/templates/policy-tests-owasp.yaml"
 "templates/CLAUDE.md.template" = "warden/data/templates/CLAUDE.md.template"
-"warden/cloaking/hermes-plugin/plugin.yaml" = "warden/data/cloaking/hermes-plugin/plugin.yaml"
-"warden/cloaking/hermes-plugin/__init__.py" = "warden/data/cloaking/hermes-plugin/__init__.py"
+"prismor/runtime/cloaking/hermes-plugin/plugin.yaml" = "warden/data/cloaking/hermes-plugin/plugin.yaml"
+"prismor/runtime/cloaking/hermes-plugin/__init__.py" = "warden/data/cloaking/hermes-plugin/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
