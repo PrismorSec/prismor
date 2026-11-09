@@ -874,6 +874,8 @@ def initialize_database(workspace: Path) -> Path:
         connection.executescript(_JUDGE_AUDIT_DDL)
         from prismor.runtime.ratelimit import DDL as _RATE_LIMIT_DDL
         connection.executescript(_RATE_LIMIT_DDL)
+        from prismor.runtime.mcp_budget import DDL as _MCP_BUDGET_DDL
+        connection.executescript(_MCP_BUDGET_DDL)
 
         connection.commit()
     finally:

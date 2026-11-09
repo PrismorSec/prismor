@@ -1318,6 +1318,18 @@ class Gateway:
                     unblock=self._unblock_text(decision.blocking, route)))
                 return
 
+        # Admission is separate from the security check: denied calls and
+        # discovery never spend budget. Keep this ledger local even when the
+        # ordinary decision is hosted, and never trust caller-supplied costs.
+        budget_decision = self._budget_decision(route, decision)
+        if budget_decision is not None:
+            from prismor.runtime.runtime import log_observe_findings
+            log_observe_findings(budget_decision, tool_name=name,
+                                 mode="observe" if passthrough else self.mode)
+            if budget_decision.blocking is not None and not passthrough:
+                self._reply(req_id, _blocked_result("Blocked by Prismor", budget_decision.blocking))
+                return
+
         result = route.upstream.request(
             "tools/call", {"name": route.tool, "arguments": arguments},
             timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
@@ -1786,7 +1798,21 @@ class Gateway:
             return []
         return [f"mcp__{route.server}__{route.tool}"]
 
-    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None):
+    def _budget_decision(self, route: _Route, decision: Any):
+        from prismor.runtime.policy_engine import PolicyEngine
+        engine = getattr(decision, "engine", None) or PolicyEngine(workspace=self.workspace)
+        if (not engine.mcp_tool_budgets_error
+                and route.tool not in engine.mcp_tool_budgets.get(route.server, {})):
+            return None
+        # This is an accounting event, not a second execution of the tool.
+        # In particular, do not carry its tool tags into the session ledger.
+        event = {"type": "mcp_budget", "agent_event": "PreToolUse",
+                 "ts": datetime.now(timezone.utc).isoformat(),
+                 "metadata": {"surface": "mcp-gateway"}}
+        return self._evaluate(event, mcp_budget_tool=(route.server, route.tool))
+
+    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None,
+                  mcp_budget_tool: Optional[tuple[str, str]] = None):
         """Run one event through the shared runtime pipeline.
 
         Serialized: the trifecta TagLedger depends on session ordering, and
@@ -1804,6 +1830,9 @@ class Gateway:
                     session_id=self.session_id,
                     agent_name=self.agent_name,
                     deny_tools=deny_tools or (),
+                    **({"mcp_budget_tool": mcp_budget_tool, "rate_accounting": False,
+                        "register_agent": False}
+                       if mcp_budget_tool is not None else {}),
                 )
         except Exception as exc:
             # Fail open on engine *errors* only in observe mode; in enforce

@@ -430,6 +430,7 @@ def evaluate_tool_call(
     deny_tools: Sequence[str] = (),
     rate_accounting: bool = True,
     rate_scope: Optional[ratelimit.Scope] = None,
+    mcp_budget_tool: Optional[tuple[str, str]] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -459,6 +460,9 @@ def evaluate_tool_call(
             Independent of persist/record: live proxies do their own recording.
         rate_scope: host-owned quota workspace/agent and optional hook call id.
             HTTP callers cannot select these through event/body fields.
+        mcp_budget_tool: gateway-owned (server, tool) for a separate local
+            budget reservation. Never accepted from event metadata or HTTP.
+            The normal call must pass security evaluation before this gate.
         taint_store: optional session-taint store to use instead of the on-disk
             per-session file. Callers with no local box (the hosted
             inference-hook channel) pass one ``InMemoryTaintStore`` shared
@@ -518,7 +522,9 @@ def evaluate_tool_call(
     # records and reports, so nothing is written or uploaded from here.
     from prismor.runtime import remote_eval as _remote_eval
     _remote = _remote_eval.remote_url()
-    if _remote:
+    # The gateway retains its local spending ledger even with hosted security
+    # evaluation. Only its separate, argument-free budget gate stays local.
+    if _remote and mcp_budget_tool is None:
         return _remote_eval.evaluate_remote(
             _remote, event=event, agent=agent, agent_name=agent_name, mode=mode,
             session_id=session_id, subject=subject,
@@ -671,9 +677,29 @@ def evaluate_tool_call(
     _guard_t0 = time.perf_counter()
     _session_seq = session_seq if session_seq is not None else len(events) - 1
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
+    _budget = None
+    if mcp_budget_tool is not None:
+        from prismor.runtime.mcp_budget import reserve
+        server, tool = mcp_budget_tool
+        configured = engine.mcp_tool_budgets.get(server, {}).get(tool)
+        _budget = {"exceeded": False, "error": engine.mcp_tool_budgets_error}
+        if configured is not None and not _budget["error"]:
+            _budget = reserve(workspace, session_id, server, tool, configured)
+        _budget.update(server=server, tool=tool)
+        event["type"] = "mcp_budget"
+        event["content"] = json.dumps(_budget, sort_keys=True)
     try:
         findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
-                                   trace=_trace)
+                                   trace=_trace, **({"budget_context": _budget} if _budget is not None else {}))
+        if _budget is not None:
+            for finding in findings:
+                if finding.get("category") == "mcp_budget":
+                    finding["budget"] = _budget
+                    finding["evidence"] = json.dumps(_budget, sort_keys=True)
+                    finding["policyLayer"] = engine.mcp_tool_budgets_source
+                    finding["remediation"] = "Ask the operator to review the tool budget or restore its accounting store."
+                    if engine.mcp_tool_budgets_source in {"remote", "exemption"}:
+                        finding["authoritative"] = True
     except Exception as exc:
         # An engine that cannot decide must not let the call through: on
         # enforce this blocks, on observe it is reported like any finding.

@@ -545,6 +545,10 @@ Defaults to **observe**. Tools appear namespaced as `<server>__<tool>`. If a
 tool name suddenly has that shape, the gateway is active. Deep dive:
 [`docs/mcp-gateway.md`](./docs/mcp-gateway.md).
 
+If `mcp-budget-exceeded` or `mcp-budget-unavailable` blocks a call, ask the
+operator to review the cap or restore the accounting store. Do not change the
+session ID or bypass the gateway to obtain more budget.
+
 ### LLM proxy
 
 The only surface that doesn't need the agent's cooperation — it needs only that

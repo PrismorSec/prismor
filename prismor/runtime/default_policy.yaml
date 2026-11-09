@@ -13,6 +13,7 @@ settings:
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
+    - mcp_budget
     - destructive_command
     - secret_exfiltration
     - secret_access
@@ -488,6 +489,22 @@ settings:
     - 'pom\.xml$|build\.gradle(\.kts)?$'
 
 rules:
+  - id: mcp-budget-exceeded
+    severity: HIGH
+    category: mcp_budget
+    title: MCP tool spending cap exceeded
+    event_types: [mcp_budget]
+    when: "budget.exceeded == true"
+    action: block
+
+  - id: mcp-budget-unavailable
+    severity: HIGH
+    category: mcp_budget
+    title: MCP tool budget accounting unavailable
+    event_types: [mcp_budget]
+    when: "budget.error != null"
+    action: block
+
   - id: rate-limit-exceeded
     severity: HIGH
     category: rate_limit

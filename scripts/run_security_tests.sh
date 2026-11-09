@@ -46,6 +46,8 @@ for t in \
   tests/test_cloak_secret_guard.py \
   tests/test_egress_resolve.py \
   tests/test_mcp_gateway_connect_guard.py \
+  tests/test_mcp_gateway.py \
+  tests/test_gateway_identity.py \
   tests/test_discover_workspace_mcp.py \
   tests/test_telemetry_receipt_schema.py \
   tests/test_dogfood_configs.py \
