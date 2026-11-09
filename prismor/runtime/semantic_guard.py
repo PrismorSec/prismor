@@ -62,7 +62,9 @@ _sig(r"(already|previously)\s+(approved|authorized|granted|permitted)", 0.55, "f
 _sig(r"(the\s+)?(previous|prior|last)\s+(maintainer|admin|engineer|ciso|security\s+team)", 0.45, "authority_claim")
 _sig(r"(ciso|security\s+team|compliance\s+team|platform\s+team)\s+(has|have|already)", 0.55, "org_authority_claim")
 _sig(r"no\s+need\s+to\s+(check|verify|confirm|ask|validate)", 0.50, "skip_verification")
-_sig(r"(skip|bypass|disable|ignore)\s+(\w+\s+){0,2}(security|validation|check|permission|prismor|hook|safety|restrictions?|safeguards?|guardrails?|controls?)", 0.70, "explicit_bypass")
+# Verb as a word: in `ls` output "prismor-bypass" ended one line and the next
+# began "prismor-...", which read as "bypass prismor" (#879).
+_sig(r"(?<![-\w])(skip|bypass|disable|ignore)\s+(\w+\s+){0,2}(security|validation|check|permission|prismor|hook|safety|restrictions?|safeguards?|guardrails?|controls?)", 0.70, "explicit_bypass")
 
 # Compliance / audit pretexts
 _sig(r"compliance\s+(requires|mandates|demands|needs)", 0.60, "compliance_pretext")
