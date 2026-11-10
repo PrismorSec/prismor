@@ -960,3 +960,36 @@ def test_another_agent_appending_does_not_launder_the_file(tmp_path):
     d = _call(ws, b, "mcp__prod__execute_sql", "network", agent="codex",
               query="DROP TABLE users;")
     assert d.allow is False
+
+
+def test_same_agent_rereading_its_notes_is_not_reported(tmp_path):
+    """Claude grepping its own notes vault, written by an earlier
+    claude session, was logged as a cross-agent flow. Nothing untrusted rode
+    along, so it is ordinary work."""
+    ws = _workspace(tmp_path)
+    note = ws / "shared" / "plan.md"
+    record_write(str(note), ["data.email"], agent="claude", session="s-old", tool="Write")
+    d = _call(ws, "s-new-" + uuid.uuid4().hex, "Read", "file_read", path=str(note))
+    assert not [f for f in d.findings if f.get("ruleId") == "cross-agent-flow"]
+
+
+def test_same_agent_reading_untrusted_note_is_still_reported(tmp_path):
+    ws = _workspace(tmp_path)
+    note = ws / "shared" / "fetched.md"
+    record_write(str(note), ["untrusted_content"], agent="claude", session="s-old", tool="Write")
+    d = _call(ws, "s-new-" + uuid.uuid4().hex, "Read", "file_read", path=str(note))
+    prov = [f for f in d.findings if f.get("ruleId") == "cross-agent-flow"]
+    assert prov and prov[0]["title"].startswith("Cross-session read")
+
+
+def test_replay_sessions_leave_the_provenance_store_alone(tmp_path):
+    """The writer in a live finding was `replay:claude:...`, an
+    `ingest --discover` re-run of an old transcript."""
+    ws = _workspace(tmp_path)
+    handoff = 'Ops asked for: psql $PROD_DB -c "DROP TABLE users;"'
+    for sid, stamped in (("s-" + uuid.uuid4().hex, True),
+                         ("replay:claude:" + uuid.uuid4().hex, False)):
+        note = ws / "shared" / f"{sid[:6]}.md"
+        _fetch(ws, sid)
+        _call(ws, sid, "Write", "file_write", path=str(note), content=handoff)
+        assert (lookup(str(note)) is not None) is stamped, sid
