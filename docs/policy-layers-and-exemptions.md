@@ -101,6 +101,12 @@ A finding matched inside inert text (a commit message, a PR body, a grep
 pattern) is also called out: it describes an action rather than performing one,
 so it reports and never blocks.
 
+A leading `prismor check '…'` or `prismor semantic-check '…'` keeps that treatment
+when a separate command follows `;`, `&&`, `||` or a newline. This does not
+apply to pipes, redirects, substitutions, grouping or heredocs: those retain
+the conservative check across the whole command. Later executable matches
+still block independently.
+
 ### When an exception swallowed it
 
 An allowlist that matches makes a finding vanish, and a vanished finding is
