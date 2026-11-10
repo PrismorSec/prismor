@@ -7,6 +7,9 @@ version: "1.0"
 # Only rules you define there will override — the rest fall back to defaults.
 
 settings:
+  # Optional exact rolling-minute quota. No accounting while this is absent.
+  # rate_limit: {requests_per_minute: 120, max_burst: 10}
+  # Select rate-limit-exceeded and rate-limit-unavailable in enforce mode to block.
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
@@ -251,13 +254,14 @@ settings:
   inspect_execution_targets: true
 
   # How findings from inspected content are treated:
-  #   observe (default) — reported with file:line provenance, never blocking.
-  #   enforce           — blocks exactly as the same finding would inline,
-  #                       including the non-overridable floor.
-  # Deliberately observe by default so upgrading an install cannot start
-  # breaking builds. Promote it once your telemetry shows the real
-  # false-positive rate for your repositories.
-  execution_target_action: observe
+  #   enforce (default) — each finding resolves its mode exactly as it would
+  #                       inline: the non-overridable floor blocks, every other
+  #                       rule follows its own mode (observe unless promoted).
+  #   observe           — reported with file:line provenance, never blocking.
+  # Observe here let an agent write `rm -rf /` into a script and run it, the
+  # one thing the floor exists to stop. Floor rules match little in real
+  # scripts, so this rarely touches a build.
+  execution_target_action: enforce
 
   supply_chain_install_check: true
 
@@ -336,6 +340,56 @@ settings:
       - stdout
       - stderr
       - command
+
+  # ── NER PII (Microsoft Presidio) — optional, off by default ─────────────
+  # Names, locations and NHS numbers that the regex `pii-exposure` rule and
+  # the data-boundary classifier do not see. Nothing here runs until
+  # `enabled: true`, and Presidio is not imported until then, so a default
+  # hook stays on the regex budget (~1 ms). The analyzer is cached for the
+  # life of the process: the eval-server, MCP gateway and LLM proxy pay the
+  # spaCy load once; a coding-agent hook is a new process per call and pays
+  # it every time. Install with `pip install "prismor[pii]"` and
+  # `python -m spacy download en_core_web_sm`. A missing install falls back
+  # to the regex detector (no names or locations) and says so once on stderr.
+  #
+  # `action` is what a hit should do. `mode` is whether that action is live,
+  # same as every other rule: observe records a finding and leaves the call
+  # alone; enforce lets redact rewrite the text and block refuse the call.
+  # Evidence stored for the finding is masked. The raw value is not logged.
+  #
+  # See docs/pii.md.
+  pii:
+    enabled: false
+    backend: presidio       # presidio | regex. regex is the no-dependency fallback
+    language: en
+    model: en_core_web_sm    # small spaCy model. en_core_web_lg is not the default
+    score_threshold: 0.5     # drop hits below this. IP_ADDRESS regex scores 0.6
+    action: observe          # observe | redact | block
+    mode: observe            # observe | enforce. redact/block act only in enforce
+    mask_style: mask         # mask (•) | replace (<ENTITY>) | hash | redact ([REDACTED])
+    max_chars: 4000          # scan at most this many characters of each field
+    entities:
+      - PERSON               # spaCy NER; regex fallback cannot do these three
+      - LOCATION
+      - MEDICAL_LICENSE
+      - EMAIL_ADDRESS
+      - PHONE_NUMBER
+      - CREDIT_CARD
+      - IBAN_CODE
+      - US_SSN
+      - UK_NHS
+      - IP_ADDRESS
+    fields:
+      - prompt
+      - response
+      - content
+      - stdout
+      - stderr
+      - command
+      - mcp_args
+      - outbound_payload
+      - typed_text
+    allow_list: []           # values never reported, e.g. [Django, Jira, Claude]
 
   # Data boundary — what an outbound call SENDS, screened against where it is
   # going. Complements `egress` (which only decides whether a host may be
@@ -434,6 +488,22 @@ settings:
     - 'pom\.xml$|build\.gradle(\.kts)?$'
 
 rules:
+  - id: rate-limit-exceeded
+    severity: HIGH
+    category: rate_limit
+    title: Per-identity rolling-minute rate limit exceeded
+    event_types: [rate_limit]
+    when: "rate.count > rate.limit"
+    action: block
+
+  - id: rate-limit-unavailable
+    severity: HIGH
+    category: rate_limit
+    title: Rate-limit accounting unavailable
+    event_types: [rate_limit]
+    when: "rate.error != null"
+    action: block
+
   # ── CRITICAL: Destructive commands ────────────────────────────────────
   # Patterns target genuinely destructive rm invocations while allowing
   # routine cleanup (rm -rf ./node_modules, rm -rf /tmp/my-cache,
@@ -570,8 +640,10 @@ rules:
       # stand-in for `timeout` (no coreutils), and its exec runs the argv the
       # same command line already shows, which the other rules judge.
       - 'perl\s+-e\s+(?!["'']alarm\b[^"''\n]*;\s*exec\s+@ARGV\s*["''])[^\n]*(?:socket|exec)'
-      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
-      - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
+      # A method call `re.exec(c)` is RegExp.prototype.exec, a regex loop, not
+      # a process: only a bare exec( (a destructured child_process import) runs one.
+      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|(?<![.\w])exec\s*\()'
+      - 'ruby\s+-e\b[^\n]*((?<![.\w])system\s*\(|(?<![.\w])exec\s*\(|IO\.popen|Open3)'
       - 'echo\s+.*\|\s*crontab'
       - '\*\s+\*\s+\*\s+\*\s+\*.*crontab'
       - '\b(ncat|socat)\b.*(?:exec|listen|EXEC)'
@@ -807,6 +879,26 @@ rules:
       - '\.(?:execute|executescript|executemany|exec|query|raw|run)\s*\(\s*(?:[rfbu]?[''\"`]{1,3})\s*\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
     action: block
 
+  # ── HIGH: Datastore wipe — a whole database dropped or a cache flushed ──
+  # Narrower than db-modification above (no INSERT/UPDATE/ALTER), so
+  # `setup --recommended` can ask before it runs without asking on routine
+  # writes. Field test: DROP DATABASE ran unasked under --recommended, and
+  # dropdb / FLUSHALL were not detected at all.
+  - id: datastore-destroy
+    severity: HIGH
+    category: db_modification
+    title: Flags dropping a whole database or flushing a datastore (DROP DATABASE, dropdb, FLUSHALL)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b[^\n]*?\bDROP\s+(?:DATABASE|SCHEMA)\b'
+      - '\bDROP\s+(?:DATABASE|SCHEMA)\b[^\n]*\|\s*(?:\S*/)?(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b'
+      - '(?:^|[;&]\s*)DROP\s+(?:DATABASE|SCHEMA)\b'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:dropdb|dropuser)\s'
+      - '\b(?:redis|valkey|keydb)-cli\b[^\n;&|]*\bFLUSH(?:ALL|DB)\b'
+      - '\.dropDatabase\s*\('
+    action: warn
+
   # ── HIGH: Database dumps / sensitive queries ──────────────────────────
   - id: db-access
     severity: HIGH
@@ -846,6 +938,29 @@ rules:
     fields: [path]
     patterns:
       - '(^|/)(\.github/workflows/.+\.(yml|yaml)|Dockerfile|docker-compose\.ya?ml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|Pipfile|Gemfile|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|terraform\.tfvars|\.env(\..*)?)$'
+    action: warn
+
+  # ── HIGH: CI workflow that pipes a remote script into a shell ─────────
+  # risky-write flags every workflow edit (MEDIUM). This is the one worth
+  # stopping for: the edit adds `curl ... | sh`, which runs with the
+  # repository's CI secrets on the next push.
+  - id: ci-workflow-remote-exec
+    severity: HIGH
+    category: risky_write
+    title: Flags a CI workflow edit that pipes a downloaded script into a shell
+    event_types: [file_write]
+    fields: [path, content]
+    patterns:
+      - '\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\S*/)?(?:ba|z|da)?sh\b'
+      - '\b(?:ba|z)?sh\s+(?:-c\s+)?["\'']?(?:<\(|\$\()\s*(?:curl|wget)\b'
+    pattern_groups:
+      ci_file:
+        - '(^|/)\.github/workflows/[^/]+\.ya?ml$'
+        - '(^|/)\.gitlab-ci\.ya?ml$'
+        - '(^|/)\.circleci/config\.ya?ml$'
+        - '(^|/)(azure-pipelines|bitbucket-pipelines|\.travis)\.ya?ml$'
+        - '(^|/)Jenkinsfile$'
+    condition: "patterns and ci_file"
     action: warn
 
   # ── Network Isolation ──────────────────────────────────────────────
@@ -1226,6 +1341,14 @@ rules:
     # so without them the split would have opened a real gap.
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      # Every other host Prismor hooks into: deregistering the agent's own
+      # hook (or Codex's `[features] hooks`) is a total bypass for that host.
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\b(?:rm|mv|cp|tee|truncate|ln)\b[^\n;&|<>]*?[\s"''=]["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))'
+      # Interpreter writes (python -c, perl -i, node -e ...) need no shell
+      # verb and emit no file_write event, so they are matched on the line.
+      - '\b(?:python[0-9.]*|perl|ruby|node|deno|bun|php)[ \t]+(?:-\S+[ \t]+)*?-[ce]\b(?=[^\n]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))(?=[^\n]*(?:\.write|write_text|write_bytes|writefile|appendfile|os\.(?:replace|rename|remove|unlink|symlink)|shutil\.|\bunlink\b|\bopen\s*\([^)]*,\s*["''][wax+]))'
+      # perl -pi / ruby -i rewrite a file in place.
+      - '\b(?:perl|ruby)[ \t]+(?:-\S+[ \t]+)*?-\S*i\S*[^\n;&|]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)'
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
     action: block
 
@@ -1242,6 +1365,21 @@ rules:
     patterns:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
+      # The other hosts' hook registrations and the hook launcher itself.
+      - '(^|/)\.codex/(hooks\.json|config\.toml)$'
+      - '(^|/)\.cursor/hooks\.json$'
+      - '(^|/)\.gemini/(settings\.json|config/hooks\.json)$'
+      - '(^|/)\.github/hooks/prismor\.json$'
+      - '(^|/)\.(copilot|grok)/hooks/[^/]+\.json$'
+      - '(^|/)(\.windsurf|\.codeium/windsurf)/hooks\.json$'
+      - '(^|/)\.qwen/settings\.json$'
+      - '(^|/)\.kiro/agents/kiro_default\.json$'
+      - '(^|/)\.openhands/hooks\.json$'
+      - '(^|/)\.agents/(hooks\.json|plugins/prismor/)'
+      - '(^|/)\.?opencode/plugins/'
+      - '(^|/)\.openclaw/extensions/'
+      - '(^|/)hermes/plugins/'
+      - '(^|/)hook-dispatch\.py$'
       # A system install keeps the machine's selection in /etc/prismor.
       - '(^|/)etc/prismor/policy\.yaml$'
       - '(^|[/\\])programdata[/\\]prismor[/\\]policy\.yaml$'
@@ -1302,6 +1440,12 @@ rules:
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
+      # Pulling a secret from a manager into the vault picks which real secret a
+      # placeholder unlocks: a person's call (cloaking/sources.py). An agent
+      # may still `prismor cloak sync` the references a person set up.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
       # The unlock credential and grant. Reads matter as much as writes: the
       # credential file is what an offline guess would need, and the grant file
       # is what a forged window would be written to.
@@ -1316,6 +1460,11 @@ rules:
       # Safety-floor rules a human turned off with that password (floor_off.py).
       - '\bfloor-off\.json\b'
       - '(^|/)floor-off\.json$'
+      # The HMAC key a pause marker is signed with: reading it is the first
+      # half of forging a pause that silences every other rule.
+      - '\bpause\.key\b'
+      # Ships the whole decision to another server (remote_eval.py).
+      - '\bPRISMOR_EVAL_URL='
       # Approving a held MCP tool definition is the human's review of it; an
       # agent approving (or rewriting the pins of) the tool that is steering it
       # would make the review meaningless. Writes to the pin store go through
@@ -1332,8 +1481,8 @@ rules:
       # approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
       # Other Prismor state an agent has no legitimate reason to rewrite.
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install)\.json'
-      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
+      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'
@@ -1353,9 +1502,9 @@ rules:
       # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
       # put the `$` on the line, not in the request (replay: 92 such GETs).
       # A flag counts quoted or not (`"-XPOST"` is still a method).
-      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals)'
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions)'
       # The same URL built by joining the path in the interpreter.
-      - '/api/["'']\s*\+\s*["''](?:policy|tool-policy)\b'
+      - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
@@ -1427,12 +1576,21 @@ rules:
     fields: [command, path]
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?=$|[\s;&|)])'
-      - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
-      - '(^|/)\.cursorrules$'
-      - '(^|/)\.windsurfrules$'
-      - '(^|/)\.github/copilot-instructions\.md$'
-      - '(^|/)\.github/chatmodes/'
-      - '(^|/)\.mcp\.json$'
+      # Loop variable: `for f in CLAUDE.md AGENTS.md; do echo x >> "$f"; done`
+      # names the file in the word list and writes through `$f`.
+      - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
+      # Path patterns match a whole path value: absolute (spaces allowed) or a
+      # relative path with no spaces. Ending in `(^|/)CLAUDE.md$` alone they also
+      # matched any shell command that merely ends with the file name
+      # (`cat docs/CLAUDE.md`): 36 of 50 hits in a 30-day transcript replay.
+      # ponytail: a command that starts with an absolute binary path
+      # (`/bin/cat /x/CLAUDE.md`) still matches; split the rule by field if that bites.
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?(CLAUDE|AGENTS|GEMINI)\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.cursorrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.windsurfrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/copilot-instructions\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/chatmodes/'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.mcp\.json$'
     action: warn
 
   # ── MEDIUM: Embedded directive in project-memory content (#153) ───────
@@ -2223,6 +2381,19 @@ rules:
     fields: [command]
     patterns:
       - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:rm|mv|push|replace-provider)|workspace\s+delete|run-all\s+(?:apply|destroy))(?=\s|$|[;&|)])'
+    action: warn
+
+  # Teardown only, split out of terraform-state-change so `setup --recommended`
+  # can ask before a destroy without asking on every apply.
+  - id: iac-destroy
+    severity: HIGH
+    category: change_control
+    title: Flags infrastructure teardown (terraform/tofu/terragrunt/pulumi/cdk destroy, apply -destroy)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:destroy|run-all\s+destroy|(?:apply|plan)\b[^\n;&|]*?\s-destroy)(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:npx\s+)?(?:pulumi|cdk|cdktf|sst)\s+(?:[^\n;&|]*?\s)?destroy(?=\s|$|[;&|)])'
     action: warn
 
   - id: kubectl-cluster-change

@@ -60,12 +60,14 @@ the agent it is supposed to be governing.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 from collections import OrderedDict
 import hmac
 import json
 import os
 import queue
+import struct
 import re
 import signal
 import ssl
@@ -73,6 +75,7 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -582,12 +585,17 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
 
 
 def is_streaming(provider: str, path: str, body: Optional[Dict[str, Any]]) -> bool:
-    """Gemini streams by *method name*; the others by a ``stream`` body flag."""
+    """Gemini and Bedrock stream by *path*; the others by a ``stream`` body flag."""
     if provider == "a2a":
         return False
     if provider == "google":
         return ":streamGenerateContent" in path
-    return bool((body or {}).get("stream"))
+    return bool((body or {}).get("stream")) or is_eventstream(path)
+
+
+def is_eventstream(path: str) -> bool:
+    """Bedrock InvokeModelWithResponseStream: AWS event-stream framing, not SSE."""
+    return path.rstrip("/").endswith("/invoke-with-response-stream")
 
 
 # ── the screen ───────────────────────────────────────────────────────────────
@@ -638,6 +646,16 @@ class Screen:
         )
         self._writer.start()
         Screen._all.append(self)
+        self._connections: Any = None
+        self._connections_at = 0.0
+
+    def connections(self) -> Any:
+        """The workspace's agent_connections, re-read every few seconds (~20ms a build)."""
+        if self._connections is None or time.monotonic() - self._connections_at > 5:
+            from prismor.runtime.policy_engine import PolicyEngine
+            self._connections = PolicyEngine(workspace=self.workspace).agent_connections
+            self._connections_at = time.monotonic()
+        return self._connections
 
     # -- events ----------------------------------------------------------
 
@@ -921,31 +939,11 @@ class Screen:
         try:
             from prismor.runtime.redaction import redact_text
             out, _ = redact_text(text, workspace=self.workspace,
-                                 data_boundary=self.mode == "enforce",
-                                 engine=self._redact_engine())
+                                 data_boundary=self.mode == "enforce")
             return out
         except Exception:
             return text
 
-    #: How long one policy engine serves ``redact``. A request body is masked
-    #: string by string, and a coding agent's body holds thousands of strings
-    #: (system prompt, tool schemas, history). A fresh engine per string cost
-    #: two ``git config`` subprocesses each: ~100s of overhead on a one-word
-    #: Claude Code prompt. A few seconds keeps policy edits prompt.
-    _ENGINE_TTL = 5.0
-
-    def _redact_engine(self) -> Any:
-        cached = getattr(self, "_engine_cache", None)
-        now = time.monotonic()
-        if cached and now - cached[1] < self._ENGINE_TTL:
-            return cached[0]
-        try:
-            from prismor.runtime.policy_engine import PolicyEngine
-            engine = PolicyEngine(workspace=self.workspace)
-        except Exception:
-            return None  # redact_text builds its own; masking must not fail open
-        self._engine_cache = (engine, now)
-        return engine
 
 
 # ── cloud-provider credentials ───────────────────────────────────────────────
@@ -1001,7 +999,8 @@ def _canonical_query(query: str) -> str:
 def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
                   region: str, service: str, method: str, canonical_uri: str,
                   query: str, payload: bytes, host: str,
-                  now: Optional[datetime] = None) -> Dict[str, str]:
+                  now: Optional[datetime] = None,
+                  extra_signed: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """AWS SigV4 for one request, stdlib only.
 
     Pinned by a signature computed from the published AWS example credentials
@@ -1014,16 +1013,25 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     datestamp = now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(payload or b"").hexdigest()
 
-    # Canonical headers must be sorted by lowercased name; host, x-amz-date and
-    # x-amz-security-token already are.
-    canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
-    signed_headers = "host;x-amz-date"
+    # Canonical headers must be sorted by lowercased name. ``extra_signed``
+    # is for services that require more signed headers (S3 wants
+    # x-amz-content-sha256); the caller still sends them.
+    signed = {"host": host, "x-amz-date": amz_date}
     if session_token:
-        canonical_headers += f"x-amz-security-token:{session_token}\n"
-        signed_headers += ";x-amz-security-token"
+        signed["x-amz-security-token"] = session_token
+    for name, value in (extra_signed or {}).items():
+        signed[name.lower()] = value
+    canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
+    signed_headers = ";".join(sorted(signed))
 
+    # SigV4 URI-encodes each path segment twice for every service but S3: the
+    # wire path's ``%3A`` (a Bedrock model id's colon) is signed as ``%253A``.
+    uri = aws_canonical_path(canonical_uri)
+    if service != "s3":
+        from urllib.parse import quote
+        uri = quote(uri, safe="/~")
     canonical_request = "\n".join([
-        method, aws_canonical_path(canonical_uri), _canonical_query(query),
+        method, uri, _canonical_query(query),
         canonical_headers, signed_headers, payload_hash,
     ])
     scope = f"{datestamp}/{region}/{service}/aws4_request"
@@ -1205,6 +1213,41 @@ def _refused_tool_block(provider: str, block: Dict[str, Any], message: str) -> D
 
 # ── streaming reframer ───────────────────────────────────────────────────────
 
+class _CarryMasker:
+    """Redacts streamed text with a held-back tail, so a secret split across
+    deltas (``"sk-ab"`` + ``"cdef..."``) is whole when it is masked.
+
+    Text is released only up to the last whitespace before the final
+    ``hold`` characters: a secret has no whitespace, so it is never cut. A
+    run longer than ``cap`` with no whitespace at all is released anyway.
+    """
+
+    def __init__(self, redact: Callable[[str], str], hold: int = 32, cap: int = 2048) -> None:
+        self.redact = redact
+        self.hold = hold
+        self.cap = cap
+        self.buf = ""
+
+    def feed(self, text: str) -> str:
+        buf = self.buf + text
+        cut = len(buf) - self.hold
+        if cut <= 0:
+            self.buf = buf
+            return ""
+        ws = max(buf.rfind(c, 0, cut) for c in " \n\t")
+        if ws >= 0:
+            cut = ws + 1
+        elif len(buf) < self.cap:
+            self.buf = buf
+            return ""
+        self.buf = buf[cut:]
+        return self.redact(buf[:cut])
+
+    def flush(self) -> str:
+        buf, self.buf = self.buf, ""
+        return self.redact(buf) if buf else ""
+
+
 class StreamScreen:
     """Rewrites an SSE stream in flight, holding tool calls until they can be judged.
 
@@ -1212,10 +1255,9 @@ class StreamScreen:
     in ``_pending`` and are released only once the block closes and policy has
     seen the whole thing. Both provider dialects are folded into that one rule.
 
-    ponytail: redaction runs per text delta, so a secret split across two
-    deltas can slip through. The PostToolUse scrubber has the same ceiling and
-    the same fix — carry a tail buffer of the longest cloak value — which is
-    worth doing when a real value survives a stream, not before.
+    Text is redacted through a ``_CarryMasker``, which holds back a tail so a
+    secret split across deltas is masked whole; any non-text frame first
+    releases what is held, as a text delta of its own.
     """
 
     def __init__(self, screen: Screen, provider: str, model: str,
@@ -1245,6 +1287,42 @@ class StreamScreen:
         # The stream's id/model/etc., stamped on a synthesized refusal: the SDK
         # seeds its snapshot from the first chunk and asserts without them.
         self._chunk_meta: Dict[str, Any] = {}
+        self._carry = _CarryMasker(screen.redact)
+        self._fed_text = False
+        self._text_index = 0
+        self._text_key = "text"         # Anthropic: text/thinking; Gemini: text/thought
+        self._text_template: Dict[str, Any] = {}   # Responses API delta ids
+        # chat/completions with n>1: OpenAI interleaves the choices' argument
+        # fragments, every choice's call at tool index 0. One screen per extra
+        # choice keeps each call whole and judges it at its own finish.
+        self._choices: Optional[Dict[int, "StreamScreen"]] = {}
+
+    def _text(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        self._fed_text = True
+        return _rewrite_text_delta(chunk, event, self._carry.feed, always=True)
+
+    def _flush_text(self) -> bytes:
+        """What the carry still holds, as one text delta in this stream's dialect."""
+        text = self._carry.flush()
+        if not text:
+            return b""
+        if self.provider == "anthropic":
+            return ("event: content_block_delta\ndata: " + json.dumps({
+                "type": "content_block_delta", "index": self._text_index,
+                "delta": {"type": f"{self._text_key}_delta", self._text_key: text}}) + "\n\n").encode()
+        if self.provider == "google":
+            part: Dict[str, Any] = {"text": text}
+            if self._text_key == "thought":
+                part["thought"] = True
+            payload: Dict[str, Any] = {"candidates": [{"index": 0, "content": {
+                "role": "model", "parts": [part]}}]}
+        elif self._text_template:
+            payload = {**self._text_template, "delta": text}
+            return (f"event: {payload.get('type')}\ndata: {json.dumps(payload)}\n\n").encode()
+        else:
+            payload = {**self._chunk_meta, "choices": [
+                {"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+        return f"data: {json.dumps(payload)}\n\n".encode()
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -1272,14 +1350,21 @@ class StreamScreen:
         A held tool call was never judged. In enforce mode it is dropped, not
         released: a truncated call is unusable anyway, and releasing it is
         a bypass (cut the stream before the stop frame, skip the policy)."""
+        text = self._flush_text()
         out, self._pending = b"".join(self._pending), []
         holding, self._holding, self._calls = self._holding, False, {}
         if holding and out and self.screen.mode == "enforce":
             reason = "Blocked by Prismor: tool call cut off before it could be screened"
             self.blocked.append(reason)
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return b""
-        return out
+            out = b""
+        for index, child in (self._choices or {}).items():
+            seen = len(child.blocked)
+            out += _with_choice_index(child.flush(), index)
+            self.blocked.extend(child.blocked[seen:])
+        if self._choices:
+            self._choices = {}
+        return text + out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
         """Accumulate the token-usage a stream carries, wherever it lands.
@@ -1332,6 +1417,13 @@ class StreamScreen:
     # -- internals -------------------------------------------------------
 
     def _feed(self, chunk: bytes) -> bytes:
+        self._fed_text = False
+        out = self._feed_frame(chunk)
+        if not self._fed_text and self._carry.buf:
+            out = self._flush_text() + out
+        return out
+
+    def _feed_frame(self, chunk: bytes) -> bytes:
         event = _sse_payload(chunk)
         if event is None:
             return b"" if self._holding else chunk
@@ -1360,7 +1452,20 @@ class StreamScreen:
         """
         calls = response_tool_calls("google", event)
         if not calls:
-            return _rewrite_text_delta(chunk, event, self.screen.redact)
+            # Thought summaries are parts flagged ``thought``: release a held
+            # thought tail as a thought part before answer text, or it lands
+            # in the answer and the client shows thinking as the reply.
+            kind = "thought" if any(
+                (part or {}).get("thought") for c in event.get("candidates") or []
+                for part in ((c or {}).get("content") or {}).get("parts") or []) else "text"
+            lead = self._flush_text() if kind != self._text_key else b""
+            self._text_key = kind
+            if any((c or {}).get("finishReason") for c in event.get("candidates") or []):
+                # The last frame: nothing follows it to carry the tail.
+                self._fed_text = True
+                return lead + _rewrite_text_delta(
+                    chunk, event, lambda t: self._carry.feed(t) + self._carry.flush(), always=True)
+            return lead + self._text(chunk, event)
         for tool_name, arguments in calls:
             reason = self._verdict(tool_name, arguments)
             if reason is None:
@@ -1386,6 +1491,12 @@ class StreamScreen:
             return chunk
 
         if not self._holding:
+            delta = event.get("delta") or {}
+            if etype == "content_block_delta" and ("text" in delta or "thinking" in delta):
+                # Thinking streams in ~10-char deltas: it needs the carry too.
+                self._text_index = int(event.get("index") or 0)
+                self._text_key = "text" if "text" in delta else "thinking"
+                return self._text(chunk, event)
             if etype == "content_block_delta":
                 return _rewrite_text_delta(chunk, event, self.screen.redact)
             delta = event.get("delta") or {}
@@ -1417,6 +1528,24 @@ class StreamScreen:
                                 ("id", "object", "created", "model", "system_fingerprint")
                                 if k in event}
         choices = event.get("choices") or []
+        if len(choices) > 1:
+            # Everything below reads choices[0]; a tool call in choices[1] of a
+            # combined (n>1) chunk would pass unscreened. Feed them one by one.
+            return b"".join(
+                self._feed_openai(_sse_reframe(chunk, one), one)
+                for one in ({**event, "choices": [c]} for c in choices))
+        index = (choices[0] or {}).get("index") if choices else None
+        if isinstance(index, int) and index > 0 and self._choices is not None:
+            child = self._choices.get(index)
+            if child is None:
+                child = self._choices[index] = StreamScreen(
+                    self.screen, self.provider, self.model, self.subject,
+                    self.session_id, spoken=self.spoken)
+                child._choices = None            # it screens this one choice itself
+            seen = len(child.blocked)
+            out = _with_choice_index(child._feed(chunk), index)
+            self.blocked.extend(child.blocked[seen:])
+            return out
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
 
@@ -1451,6 +1580,8 @@ class StreamScreen:
         if self._holding:
             self._pending.append(chunk)
             return b""
+        if delta.get("content") and not finish:
+            return self._text(chunk, event)
         if delta.get("content"):
             return _rewrite_text_delta(chunk, event, self.screen.redact)
         return chunk
@@ -1505,6 +1636,11 @@ class StreamScreen:
                 return _responses_refusal_frames(reason, self._tool_index)
             return b""
 
+        if etype == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            self._fed_text = True
+            self._text_template = {k: v for k, v in event.items() if k not in ("delta", "sequence_number")}
+            event["delta"] = self._carry.feed(event["delta"])
+            return _sse_reframe(chunk, event)
         before = json.dumps(event)
         response = event.get("response")
         if self._denied and isinstance(response, dict):
@@ -1609,19 +1745,26 @@ def _sse_payload(chunk: bytes) -> Optional[Dict[str, Any]]:
 
 
 def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
-                        redact: Callable[[str], str]) -> bytes:
-    """Re-emit a text delta with its text redacted, or unchanged if nothing changed."""
-    if "delta" in event and isinstance(event["delta"], dict) and "text" in event["delta"]:
-        original = str(event["delta"].get("text") or "")
+                        redact: Callable[[str], str], always: bool = False) -> bytes:
+    """Re-emit a text delta with its text redacted, or unchanged if nothing changed.
+
+    ``always`` re-emits even when nothing changed: a carrying redactor returns
+    a different slice of the text, not the same one."""
+    if "delta" in event and isinstance(event["delta"], dict) and (
+            "text" in event["delta"] or "thinking" in event["delta"]):
+        # Anthropic thinking deltas are model output like any text. Masking one
+        # invalidates its signature; the outbound mask would anyway, next turn.
+        key = "text" if "text" in event["delta"] else "thinking"
+        original = str(event["delta"].get(key) or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
-        event["delta"]["text"] = masked
+        event["delta"][key] = masked
     elif event.get("choices"):
         delta = (event["choices"][0] or {}).get("delta") or {}
         original = str(delta.get("content") or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
         delta["content"] = masked
     elif event.get("candidates"):
@@ -1631,13 +1774,43 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
                 if not isinstance(part, dict) or not isinstance(part.get("text"), str):
                     continue
                 masked = redact(part["text"])
-                if masked != part["text"]:
+                if masked != part["text"] or always:
                     part["text"], changed = masked, True
         if not changed:
             return chunk
     else:
         return chunk
     return _sse_reframe(chunk, event)
+
+
+def _with_choice_index(sse: bytes, index: int) -> bytes:
+    """Frames a per-choice screen emitted, stamped with the choice they belong to
+    (its synthesized refusals and carried text are written as choice 0)."""
+    if not sse or index == 0:
+        return sse
+    out = b""
+    for frame in sse.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is not None and event.get("choices"):
+            for choice in event["choices"]:
+                choice["index"] = index
+            frame = _sse_reframe(frame, event)[:-2]
+        if frame:
+            out += frame + b"\n\n"
+    return out
+
+
+def _mask_sse(body: bytes, redact: Callable[[str], str]) -> bytes:
+    """A whole SSE body with every event's strings masked."""
+    out = []
+    for frame in body.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is None:
+            out.append(frame)
+            continue
+        _mask_in_place(event, redact)
+        out.append(_sse_reframe(frame, event)[:-2])
+    return b"\n\n".join(out)
 
 
 def _sse_reframe(chunk: bytes, event: Dict[str, Any]) -> bytes:
@@ -1845,6 +2018,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
+        # A2A: the calling agent (the key's `agent`, else this proxy's agent
+        # name) and the agent it calls (the upstream), for agent_connections.
+        self._a2a_from = (str(self._key_meta.get("agent") or "")
+                          or (self.screen.agent_name if self.screen is not None else "")) if a2a else ""
+        self._a2a_to = (upstream_override or provider) if a2a else ""
+        self._a2a_aud = self._a2a_to
+        if a2a and self.screen is not None:
+            try:  # sign for the agent the receiver knows, not this proxy's upstream key
+                pol = self.screen.connections()
+                url = self._a2a_url()
+                self._a2a_aud = (pol.resolve(url, "a2a") if url and pol.known(url, "a2a")
+                                 else pol.resolve(self._a2a_to))
+            except Exception:
+                pass
         self._spoken: Any = (self.headers.get("x-prismor-refusal") or "").strip().lower() == "spoken"
         if self._spoken:
             self._spoken = spoken_text(self.headers.get("x-prismor-refusal-text") or "") or True
@@ -1898,6 +2085,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         self._pending_verdict: Optional[Dict[str, Any]] = None
         self._t0 = time.monotonic()
+        if a2a and not screened and self.screen is not None:
+            # tasks/get, tasks/cancel, push-notification config... carry no new
+            # message to screen, but still reach another agent: the connection
+            # decides them too.
+            refusal = self._a2a_connection_refusal()
+            if refusal:
+                self._refuse(provider, refusal)
+                return
         if screened and self.screen is not None:
             parallel = ((self.headers.get("x-prismor-screening") or "").strip().lower() == "parallel"
                         and streaming and provider in ("openai", "anthropic"))
@@ -1921,6 +2116,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ProxyConfigError as exc:
             self._refuse(provider, f"prismor-proxy: {exc}", status=502)
             return
+        if provider == "a2a":
+            # A fallback upstream is another agent, one the connection check
+            # above never looked at: A2A goes to the agent it named or nowhere.
+            chain = chain[:1]
 
         last_error: Optional[str] = None
         for attempt, upstream_name in enumerate(chain):
@@ -2041,6 +2240,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
+        if provider == "a2a":
+            # Always a handoff, even when the caller is unnamed: then the sender
+            # falls back to this proxy's agent, and with no connection it is
+            # refused in enforce rather than passed unchecked.
+            event["metadata"].update(handoff_to=self._a2a_to, a2a_url=self._a2a_url())
+            if self._a2a_from:
+                event["metadata"]["from_agent"] = self._a2a_from
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -2054,6 +2260,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return refusal_reason(blocking, getattr(self, "_spoken", False))
         _mask_in_place(body, self.screen.redact)
         return None
+
+    def _a2a_url(self) -> str:
+        return str((self.config.upstreams.get(self._a2a_to) or {}).get("base_url") or "")
+
+    def _a2a_connection_refusal(self) -> Optional[str]:
+        """The refusal for an A2A call that carries no message, when no connection allows it."""
+        from prismor.runtime.agent_connections import agent_message
+        try:
+            pol = self.screen.connections()  # type: ignore[union-attr]
+        except Exception:
+            return "Blocked by Prismor: agent connection policy could not be loaded (fail-closed)"
+        if not pol.enabled:
+            return None
+        msg = agent_message({"metadata": {"handoff_to": self._a2a_to, "provider": "a2a",
+                                          "a2a_url": self._a2a_url(), "from_agent": self._a2a_from}}, pol)
+        # ponytail: an `ask` pair was approved on the message that opened the task.
+        if msg is None or pol.decide(msg["from"], msg["to"], "a2a") != "deny":
+            return None
+        reason = (f"no connection policy lets {pol.label(pol.resolve(msg['from']))} "
+                  f"call {pol.label(pol.resolve(msg['to']))}")
+        if pol.mode != "enforce":
+            sys.stderr.write(f"[prismor-proxy] agent_connections (observe) would refuse: {reason}\n")
+            return None
+        return f"Blocked by Prismor: {reason}"
 
     def _relay(self, upstream_name: str, provider: str, raw_body: bytes,
                model: str, streaming: bool, screened: bool,
@@ -2079,6 +2309,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             query = "&".join(p for p in query.split("&") if not p.startswith("key="))
         headers = self._upstream_headers(spec, raw_body, host=base.netloc or base.hostname or "",
                                          path=path, query=query)
+        if provider == "a2a" and getattr(self, "_a2a_from", ""):
+            # Lets the receiving agent's guard check who is calling.
+            from prismor.runtime.agent_connections import HEADER, sign_caller
+            token = sign_caller(self._a2a_from, getattr(self, "_a2a_aud", "") or upstream_name, act=subject)
+            if token:
+                headers[HEADER] = token
         for attempt in (1, 2):
             conn, reused = UPSTREAM_POOL.get(scheme, base.hostname, base.port)
             try:
@@ -2093,7 +2329,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     continue          # the server closed an idle connection: one fresh try
                 raise _Retryable(f"{upstream_name}: {exc}") from exc
 
-        if resp.status >= 500 and self.config.chain(upstream_name)[1:]:
+        # A2A has no fallback agent (see _forward): its 5xx goes back as it came.
+        if resp.status >= 500 and provider != "a2a" and self.config.chain(upstream_name)[1:]:
             conn.close()
             raise _Retryable(f"{upstream_name}: HTTP {resp.status}")
 
@@ -2125,6 +2362,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # applied whenever the upstream asks for it -- virtual-key mode is
             # about swapping a key the client sent, and here there is none.
             headers = without_client_auth(headers)
+            if auth_mode == "aws-sigv4":
+                # A client that signed for itself (boto3, LiteLLM) sends its own
+                # x-amz-date / x-amz-security-token. AWS wants every x-amz-*
+                # header signed, so a stale copy beside ours fails the request.
+                # x-amzn-* (Bedrock guardrail/trace) are not signing headers.
+                headers = {k: v for k, v in headers.items()
+                           if not k.lower().startswith("x-amz-")}
             if auth_mode == "gcp-oauth":
                 headers["authorization"] = f"Bearer {gcp_access_token()}"
             else:
@@ -2167,7 +2411,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._discard_upstream = True
             return
         if screened and self.screen is not None:
-            if resp.status < 400:
+            unparsed = resp.status < 400 and payload and _loads_object(payload) is None
+            if unparsed and provider == "a2a":
+                # message/stream answers in SSE. An agent's reply carries no tool
+                # call to judge, but it can carry a secret: mask every event.
+                payload = _mask_sse(payload, self.screen.redact)
+            elif unparsed and self.screen.mode == "enforce":
+                # Not JSON means no tool call could be found in it, which is not
+                # evidence there is none (Bedrock's event-stream framing was).
+                self._refuse(provider, "Blocked by Prismor: response could not be "
+                                       "screened (fail-closed)", status=502)
+                return
+            elif resp.status < 400:
                 payload = self._screen_response(provider, model, payload, subject)
             else:
                 body = _loads_object(payload)
@@ -2243,13 +2498,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                               getattr(self, "_session_id", ""),
                               spoken=getattr(self, "_spoken", False))
         try:
-            for frame in _sse_frames(resp):
-                out = stream.feed(frame)
-                if out:
+            if is_eventstream(urlsplit(self.path).path):
+                for out in _eventstream_relay(stream, resp):
                     self._write_chunk(out)
-            tail = stream.flush()
-            if tail:
-                self._write_chunk(tail)
+            else:
+                for frame in _sse_frames(resp):
+                    out = stream.feed(frame)
+                    if out:
+                        self._write_chunk(out)
+                tail = stream.flush()
+                if tail:
+                    self._write_chunk(tail)
             stream.meter()
         finally:
             try:
@@ -2322,6 +2581,120 @@ def _sse_frames(resp: Any) -> Iterator[bytes]:
             yield frame + b"\n\n"
     if buffer:
         yield buffer
+
+
+# ── AWS event-stream (Bedrock InvokeModelWithResponseStream) ─────────────────
+#
+# A message is: total length, headers length, prelude CRC (3 x uint32), headers,
+# payload, message CRC. A ``chunk`` event's payload is ``{"bytes": base64}`` and
+# the base64 holds one Anthropic stream event, so each is unwrapped into an SSE
+# frame for the same StreamScreen and whatever it emits is wrapped back.
+
+_ES_VALUE_SIZES = {0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16}
+
+
+def _es_headers(raw: bytes) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    i = 0
+    while i < len(raw):
+        n = raw[i]
+        name = raw[i + 1:i + 1 + n].decode("utf-8", "replace")
+        kind = raw[i + 1 + n]
+        i += 2 + n
+        if kind in (6, 7):                       # bytes / string: uint16 length
+            (size,) = struct.unpack(">H", raw[i:i + 2])
+            value = raw[i + 2:i + 2 + size]
+            out[name] = value.decode("utf-8", "replace") if kind == 7 else value
+            i += 2 + size
+        else:
+            i += _ES_VALUE_SIZES[kind]
+    return out
+
+
+def _es_header(name: str, value: str) -> bytes:
+    n, v = name.encode(), value.encode()
+    return bytes([len(n)]) + n + b"\x07" + struct.pack(">H", len(v)) + v
+
+
+_ES_CHUNK_HEADERS = (_es_header(":event-type", "chunk")
+                     + _es_header(":content-type", "application/json")
+                     + _es_header(":message-type", "event"))
+
+
+def _es_encode(headers: bytes, payload: bytes) -> bytes:
+    prelude = struct.pack(">II", 16 + len(headers) + len(payload), len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude))
+    message = prelude + headers + payload
+    return message + struct.pack(">I", zlib.crc32(message))
+
+
+def _es_messages(resp: Any) -> Iterator[Optional[Tuple[bytes, bytes]]]:
+    """``(headers, payload)`` per message; ``None`` once the framing breaks."""
+    buffer = b""
+    while True:
+        while len(buffer) >= 12:
+            total, hlen = struct.unpack(">II", buffer[:8])
+            if (struct.unpack(">I", buffer[8:12])[0] != zlib.crc32(buffer[:8])
+                    or total < 16 + hlen):
+                yield None
+                return
+            if len(buffer) < total:
+                break
+            message, buffer = buffer[:total], buffer[total:]
+            if struct.unpack(">I", message[-4:])[0] != zlib.crc32(message[:-4]):
+                yield None
+                return
+            yield message[12:12 + hlen], message[12 + hlen:-4]
+        chunk = resp.read(1024)
+        if not chunk:
+            if buffer:
+                yield None                       # cut mid-message
+            return
+        buffer += chunk
+
+
+def _eventstream_relay(stream: "StreamScreen", resp: Any) -> Iterator[bytes]:
+    """Bedrock's stream through the Anthropic StreamScreen, re-framed."""
+    enforce = stream.screen.mode == "enforce"
+
+    def wrap(sse: bytes) -> bytes:
+        out = b""
+        for frame in sse.split(b"\n\n"):
+            event = _sse_payload(frame + b"\n\n")
+            if event is not None:
+                data = base64.b64encode(json.dumps(event).encode()).decode()
+                out += _es_encode(_ES_CHUNK_HEADERS, json.dumps({"bytes": data}).encode())
+        return out
+
+    for message in _es_messages(resp):
+        if message is None:
+            sys.stderr.write("[prismor-proxy] bedrock event-stream framing broken\n")
+            if enforce:
+                stream.blocked.append("Blocked by Prismor: event stream could not be screened")
+                break
+            continue
+        raw_headers, payload = message
+        headers = _es_headers(raw_headers)
+        if headers.get(":message-type") != "event" or headers.get(":event-type") != "chunk":
+            # Exceptions (throttling, model errors) can echo the request: mask them.
+            masked = stream.screen.redact(payload.decode("utf-8", "replace")).encode()
+            yield _es_encode(raw_headers, masked)
+            continue
+        try:
+            inner = base64.b64decode(json.loads(payload)["bytes"])
+        except Exception:
+            sys.stderr.write("[prismor-proxy] bedrock chunk could not be decoded\n")
+            if enforce:                          # unread is not the same as safe
+                stream.blocked.append("Blocked by Prismor: stream chunk could not be screened")
+                continue
+            yield _es_encode(raw_headers, payload)
+            continue
+        out = stream.feed(b"data: " + inner + b"\n\n")
+        if out:
+            yield wrap(out)
+    tail = stream.flush()
+    if tail:
+        yield wrap(tail)
 
 
 def _loads_object(raw: bytes) -> Optional[Dict[str, Any]]:
@@ -2531,6 +2904,7 @@ def install_background_sinks(maxsize: int = 10000) -> "queue.Queue[Any]":
         heartbeat.maybe_flush = maybe_flush
     except Exception:
         pass
+    sinks.run_sink_hook("start_background")
     return pending
 
 

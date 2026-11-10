@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import functools
 import re
 import shutil
 import sqlite3
@@ -183,13 +184,37 @@ def _load_secret_map() -> List[tuple[str, str]]:
     return pairs
 
 
+@functools.lru_cache(maxsize=4)
+def _compile_secret_patterns(patterns: Tuple[str, ...]) -> Optional["re.Pattern[str]"]:
+    ok = []
+    for pat in patterns:
+        try:
+            re.compile(pat)
+            ok.append(f"(?:{pat})")
+        except re.error:
+            continue
+    return re.compile("|".join(ok)) if ok else None
+
+
+def mask_secret_patterns(text: str) -> str:
+    """Mask credentials that match a cloak detection pattern but were never
+    registered in the vault: a key pasted straight into a prompt otherwise
+    reaches the store, and the session title, in plaintext."""
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        from prismor.runtime.cloaking.patterns import all_patterns
+        rx = _compile_secret_patterns(tuple(all_patterns()))
+    except Exception:
+        return text
+    return rx.sub("[REDACTED:secret]", text) if rx else text
+
+
 def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Replace any raw secret value with its placeholder across all string
-    fields of an event (recursively). Returns a scrubbed copy; the input is not
-    mutated. A no-op when the vault is empty or no value appears in the event."""
+    fields of an event (recursively), then mask anything else shaped like a
+    credential. Returns a scrubbed copy; the input is not mutated."""
     secret_map = _load_secret_map()
-    if not secret_map:
-        return event
 
     def scrub(obj: Any) -> Any:
         if isinstance(obj, str):
@@ -197,7 +222,7 @@ def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
             for real, placeholder in secret_map:
                 if real in s:
                     s = s.replace(real, placeholder)
-            return s
+            return mask_secret_patterns(s)
         if isinstance(obj, list):
             return [scrub(x) for x in obj]
         if isinstance(obj, dict):
@@ -414,20 +439,19 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
     project_dir = workspace / ".prismor"
     legacy_dir = workspace / _LEGACY_DATA_DIR
     previous_central_dir = _workspace_state_dir(workspace)
-    source_paths = [
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-        project_dir / "sessions",
-        legacy_dir / "sessions",
-        previous_central_dir / "sessions",
-        project_dir / "scoped",
-        legacy_dir / "scoped",
-        previous_central_dir / "scoped",
-        project_dir / "taint",
-        legacy_dir / "taint",
-        previous_central_dir / "taint",
+    roots = [project_dir, legacy_dir, previous_central_dir]
+    try:
+        # A workspace at $HOME has .prismor == Prismor home: that is the live
+        # store, not a legacy source. Its sessions/ changes every call, so the
+        # marker never verified and every hook re-merged the legacy DBs.
+        if project_dir.resolve() == data_dir.resolve():
+            roots.remove(project_dir)
+    except OSError:
+        pass
+    src_dbs = [
+        root / (_LEGACY_DB_NAME if root == legacy_dir else "prismor.db") for root in roots
     ]
+    source_paths = src_dbs + [root / child for child in ("sessions", "scoped", "taint") for root in roots]
 
     marker_dir = data_dir / "migrations" / "runtime-state"
     marker = marker_dir / f"{_workspace_state_id(workspace)}.json"
@@ -451,17 +475,12 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
         except (OSError, ValueError, TypeError):
             pass
 
-    for src_db in (
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-    ):
+    for src_db in src_dbs:
         _merge_sqlite_db_once(src_db, data_dir / "prismor.db")
 
     for child in ("sessions", "scoped", "taint"):
-        _copy_tree_contents_once(project_dir / child, data_dir / child)
-        _copy_tree_contents_once(legacy_dir / child, data_dir / child)
-        _copy_tree_contents_once(previous_central_dir / child, data_dir / child)
+        for root in roots:
+            _copy_tree_contents_once(root / child, data_dir / child)
 
     try:
         marker_dir.mkdir(parents=True, exist_ok=True)
@@ -503,6 +522,15 @@ def get_db_path(workspace: Path) -> Path:
         except OSError:
             return legacy  # fall back to the legacy filename if the rename fails
     return new
+
+
+def existing_db_path() -> Optional[Path]:
+    """Resolve an existing store without migration, directory creation or writes."""
+    for name in ("prismor.db", _LEGACY_DB_NAME):
+        path = prismor_home() / name
+        if path.is_file():
+            return path.resolve()
+    return None
 
 
 def get_sessions_dir(workspace: Path) -> Path:
@@ -707,6 +735,40 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
         pass
 
 
+def _recloak_learning_rows_once(connection: sqlite3.Connection, db_path: Path) -> None:
+    """Re-cloak raw secrets that older versions wrote into the learning tables.
+
+    Before #808 the evasion and staged-execution detectors stored the decloaked
+    PostToolUse command verbatim.
+    """
+    marker = db_path.parent / "migrations" / "runtime-state" / "recloak-learning-rows-v1.json"
+    if marker.exists():
+        return
+    columns = {
+        "evasion_attempts": ("blocked_command", "evading_command"),
+        "staged_executions": ("created_path", "created_evidence", "executing_command"),
+    }
+    try:
+        if _load_secret_map():
+            for table, cols in columns.items():
+                try:
+                    rows = connection.execute(f"SELECT id, {', '.join(cols)} FROM {table}").fetchall()  # identifiers are constants  # nosec B608
+                except sqlite3.OperationalError:
+                    continue  # table not created yet
+                for row_id, *values in rows:
+                    scrubbed = _recloak_event(list(values))
+                    if scrubbed != values:
+                        connection.execute(
+                            f"UPDATE {table} SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",  # nosec B608
+                            (*scrubbed, row_id),
+                        )
+            connection.commit()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def initialize_database(workspace: Path) -> Path:
     ensure_data_dirs(workspace)
     db_path = get_db_path(workspace)
@@ -813,6 +875,7 @@ def initialize_database(workspace: Path) -> Path:
         _migrate_schema(connection)
         _dedupe_runtime_events_once(connection, db_path)
         _canonicalize_workspace_paths_once(connection, db_path)
+        _recloak_learning_rows_once(connection, db_path)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
@@ -834,6 +897,8 @@ def initialize_database(workspace: Path) -> Path:
         initialize_learning_tables(connection)
         from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
         connection.executescript(_JUDGE_AUDIT_DDL)
+        from prismor.runtime.ratelimit import DDL as _RATE_LIMIT_DDL
+        connection.executescript(_RATE_LIMIT_DDL)
 
         connection.commit()
     finally:
@@ -1310,6 +1375,7 @@ _EVENT_LANES = {
     "network": "network",
     "tool_result": "tools",
     "mcp_call": "mcp",
+    "assistant_response": "assistant",
 }
 
 
@@ -1344,10 +1410,14 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
     meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     out: Dict[str, Any] = {}
 
-    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query"):
+    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query",
+                "reasoning"):
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)
+    # A reply's `response` is what the model said, not what a tool returned.
+    if raw.get("type") == "assistant_response" and "response" in out:
+        out["reply"] = out.pop("response")
 
     for key in ("mcp_server", "mcp_tool"):
         if raw.get(key):
@@ -1377,6 +1447,19 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
             {"title": str(f.get("title") or "")[:200], "severity": str(f.get("severity") or "")}
             for f in findings[:_ARTIFACT_LIST] if isinstance(f, dict)
         ]
+    # Who started the turn: a person, a parent session's brief, an app wrapper,
+    # or a Stop hook that sent the agent back to work (attribution.py). Prompts
+    # recorded before the hook tagged them are worked out here.
+    if raw.get("type") == "prompt" and not meta.get("origin") and isinstance(raw.get("prompt"), str):
+        from prismor.runtime.attribution import prompt_origin
+        origin, said = prompt_origin(raw["prompt"])
+        meta = {**meta, "origin": origin}
+        if said and said != raw["prompt"].strip() and "user_message" not in out:
+            out["user_message"] = _clip(said)
+    if meta.get("origin"):
+        out["origin"] = str(meta["origin"])[:20]
+    if isinstance(meta.get("triggered_by"), dict):
+        out["triggered_by"] = {k: str(v)[:500] for k, v in meta["triggered_by"].items()}
     if meta.get("has_invisible_controls"):
         out["has_invisible_controls"] = True
     if meta.get("truncated"):
@@ -2136,6 +2219,7 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
     """What each session was started to do: its first real prompt, one line.
     A person recognises "fix the login bug" where a session id says nothing.
     Slash-command wrappers and pasted tags are skipped."""
+    from prismor.runtime.attribution import prompt_origin
     want, out = set(session_ids), {}
     for ws in workspaces:
         if not want:
@@ -2146,12 +2230,15 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
         try:
             for sid in list(want):
                 for (text,) in conn.execute(
-                    "SELECT substr(content_text, 1, 400) FROM events WHERE session_id = ? "
+                    "SELECT substr(content_text, 1, 20000) FROM events WHERE session_id = ? "
                     "AND type = 'prompt' ORDER BY id LIMIT 5",
                     (sid,),
                 ):
-                    line = re.sub(r"<[^>]+>", " ", text or "")
-                    line = " ".join(line.split())
+                    # An app wrapper (<system-reminder>…) can fill the first KBs;
+                    # the title is what the person typed after it.
+                    line = re.sub(r"<[^>]+>", " ", prompt_origin(text or "")[1])
+                    # Rows stored before patterned masking still hold raw keys.
+                    line = " ".join(mask_secret_patterns(line).split())
                     if line and not line.startswith("/") and not line.lower().startswith(("caveat:", "clear")):
                         out[sid] = line[:140]
                         want.discard(sid)
@@ -4725,6 +4812,86 @@ def _attach_hook_runs(events: List[Dict[str, Any]], transcript: str) -> None:
             ev["hookRuns"] = sorted(by_call[ev["toolUseId"]], key=lambda r: (_TOOL_HOOK_EVENTS.index(r["event"]), r["ts"]))
 
 
+def transcript_refusals(transcript: str) -> List[Dict[str, str]]:
+    """The prompts the model provider's safety classifier refused, oldest
+    first: the refusal record's uuid and time, the classifier's category, and
+    the refused prompt's text. The agent ran nothing for them, and the person
+    usually edits and resends, so unmarked they read as near-identical empty
+    turns. Claude Code logs each as a system record naming the refused message."""
+    texts: Dict[str, str] = {}
+    found: List[Dict[str, str]] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"type":"user"' not in line and "model_refusal_fallback" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("subtype") == "model_refusal_fallback" and rec.get("refusedUserMessageUuid"):
+                    tag = re.search(r"Details: `\[([^\]]+)\]`", str(rec.get("content") or ""))
+                    found.append({"uuid": str(rec.get("uuid") or ""), "ts": str(rec.get("timestamp") or ""),
+                                  "category": tag[1] if tag else "policy",
+                                  "refused": str(rec["refusedUserMessageUuid"])})
+                elif rec.get("type") == "user" and isinstance((rec.get("message") or {}).get("content"), str):
+                    texts[str(rec.get("uuid"))] = rec["message"]["content"].strip()
+    except OSError:
+        return []
+    for r in found:
+        r["prompt"] = texts.get(r.pop("refused"), "")
+    return found
+
+
+_PRECHECK_CALL = re.compile(r"""\b(?:prismor|immunity)\s+check\s+(?:-\S+\s+)*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))""")
+_PRECHECK_FINDING = re.compile(
+    r"^\[(\w+)\] (.+?)  \((\w+)\)\n(?:  suppressed by .*\n)?  rule: (\S+)  evidence: (.*)$", re.M)
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _attach_prechecks(events: List[Dict[str, Any]]) -> None:
+    """Surface `prismor check "<cmd>"` dry runs an agent made from a shell call.
+
+    The agent asks what policy would do and then decides on its own, so the
+    verdict that stopped it lived only in the command's output: the trail
+    showed an allowed `ls; prismor check ...` row and no hint of why nothing
+    ran next. Nothing was blocked, so this never changes the row's verdict.
+    """
+    for ev in events:
+        arts = ev.get("artifacts") or {}
+        command = str(arts.get("command") or "")
+        if ev.get("type") != "shell" or "check" not in command:
+            continue
+        checked = [next(g for g in m.groups() if g is not None) for m in _PRECHECK_CALL.finditer(command)]
+        if not checked:
+            continue
+        out = _ANSI.sub("", "\n".join(str(arts.get(f) or "") for f in ("response", "stdout", "stderr")))
+        findings = [{"severity": s, "title": t, "verdict": v.lower(), "rule": r, "evidence": e.strip()}
+                    for s, t, v, r, e in _PRECHECK_FINDING.findall(out)]
+        verdicts = {f["verdict"] for f in findings}
+        ev["precheck"] = {
+            "checked": checked,
+            "findings": findings,
+            # Same order as the CLI's exit code: block beats warn beats a clean pass.
+            "verdict": "block" if "block" in verdicts else "warn" if findings else
+                       ("pass" if "PASS" in out else "unknown"),
+        }
+
+
+def _attach_refusals(events: List[Dict[str, Any]], transcript: str) -> None:
+    """Mark each prompt row the safety classifier refused with its category."""
+    if not transcript:
+        return
+    by_text = {r["prompt"]: r["category"] for r in transcript_refusals(transcript) if r["prompt"]}
+    for ev in events:
+        artifacts = ev.get("artifacts") or {}
+        text = str(artifacts.get("user_message") or artifacts.get("prompt") or "").strip()
+        if ev.get("type") == "prompt" and text in by_text:
+            artifacts["refused"] = by_text[text]
+
+
 def _attach_task_durations(
     events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
 ) -> None:
@@ -5015,7 +5182,9 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
             _attach_task_durations(recent_events, tool_calls)
             _attach_hook_runs(recent_events, transcript)
+            _attach_refusals(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
+            _attach_prechecks(recent_events)
             _slim_old_trail(recent_events)
             # Dedupe on the raw timestamp: recent_blocked carries it, while an
             # event's "ts" is relative ("1m ago"), so the two never matched and

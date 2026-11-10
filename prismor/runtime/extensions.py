@@ -743,6 +743,23 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True,
                         moved[row["id"]] = {"row": row, "event": "extension_changed", "new": [], "changed": [],
                                             "previous_sha256": prior.get("sha256")}
             row["invocations"] = prior.get("invocations", [])
+    # An org admin reviewed this exact content in the console: accept it as if
+    # `prismor extensions approve` ran here. Matching is by kind + name + hash,
+    # so a later edit to the file comes back as changed.
+    reviewed = _org_reviews(workspace)
+    for row in rows:
+        key = (row["kind"], row["name"], row.get("sha256") or "")
+        if not key[2] or key not in reviewed or row.get("status") == "approved":
+            continue
+        row["status"] = "approved"
+        if record:
+            entry = items.setdefault(row["id"], {"first_seen": now})
+            entry.update({"sha256": row["sha256"], "approved": True, "approved_at": now, "approved_by": "org"})
+            entry.pop("reported_sha", None)
+            data["report_due"] = True  # tell the console the device took it
+            if row["kind"] == "skill" and row.get("path"):
+                from prismor.runtime.skills_audit import approve_skill
+                approve_skill(workspace, Path(row["path"]))
     for m in moved.values():
         # One record per install or update; what came with it rides in the detail.
         _audit(m["event"], m["row"], session_id, previous_sha256=m.get("previous_sha256"),
@@ -764,6 +781,23 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True,
     elif report:
         send_report(workspace)
     return rows
+
+
+def _org_reviews(workspace: Path) -> set:
+    """(kind, name, sha256) an org admin reviewed in the console, from the
+    signed org policy (settings.extension_reviews). Empty outside an
+    org-managed workspace or without a verified policy. Never raises."""
+    try:
+        from prismor.runtime.enterprise import workspace_scope as _scope
+        if not _scope.is_managed(workspace):
+            return set()
+        from prismor.runtime.enterprise.remote_policy import verify_and_load
+        block = ((verify_and_load() or {}).get("settings") or {}).get("extension_reviews") or {}
+        items = block.get("items") if isinstance(block, dict) else None
+        return {(str(i.get("kind") or ""), str(i.get("name") or ""), str(i.get("sha256") or ""))
+                for i in (items or []) if isinstance(i, dict) and i.get("sha256")}
+    except Exception:
+        return set()
 
 
 def _resolve(rows: List[Dict[str, Any]], ref: str) -> List[Dict[str, Any]]:

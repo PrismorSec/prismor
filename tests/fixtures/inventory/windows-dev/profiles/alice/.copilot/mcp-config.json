@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "copilot-cli": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "some-mcp-server@1.2.3"
+      ]
+    }
+  }
+}

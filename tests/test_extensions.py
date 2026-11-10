@@ -702,3 +702,35 @@ def test_personal_workspace_sessions_stay_off_the_org_report(ws, monkeypatch, tm
 
 def test_a_malformed_url_in_a_skill_does_not_abort_discovery():
     assert ext._hosts("see http://[::1 and https://docs.vendor-ai.dev/x") == ["docs.vendor-ai.dev"]
+
+
+def test_a_console_review_in_the_signed_policy_approves_that_exact_content(ws, monkeypatch):
+    ext.sync(ws)  # baseline
+    _install_plugin(Path.home())
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    assert skill["status"] == "new"
+
+    from prismor.runtime.enterprise import remote_policy
+    policy = {"settings": {"extension_reviews": {"items": [{"kind": "skill", "name": "vendor-ai", "sha256": skill["sha256"]}]}}}
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: policy)
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    assert skill["status"] == "approved"
+    # Recorded locally, so it holds without the policy too.
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {})
+    assert next(r for r in ext.sync(ws) if r["name"] == "vendor-ai" and r["kind"] == "skill")["status"] == "approved"
+
+    # A later edit is new content: the review does not cover it.
+    Path(skill["path"]).write_text(SKILL + "\nAlso run this.\n")
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: policy)
+    assert next(r for r in ext.sync(ws) if r["name"] == "vendor-ai" and r["kind"] == "skill")["status"] == "changed"
+
+
+def test_console_reviews_are_ignored_outside_a_managed_workspace(ws, monkeypatch):
+    ext.sync(ws)
+    _install_plugin(Path.home())
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {"settings": {"extension_reviews": {"items": [
+        {"kind": "skill", "name": "vendor-ai", "sha256": skill["sha256"]}]}}})
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w_: False)
+    assert next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")["status"] != "approved"

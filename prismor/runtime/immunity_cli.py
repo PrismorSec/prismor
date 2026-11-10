@@ -79,8 +79,15 @@ def _update_notice() -> None:
     this adds no network latency to most invocations. Never called for
     `hook-dispatch`, which fires on every tool call and cannot afford stderr
     noise or a network hit on that path. Suppressable with
-    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI."""
+    PRISMOR_NO_UPDATE_CHECK=1 for scripts/CI.
+
+    Not shown inside an agent's shell: the agent cannot act on it and relays
+    it into answers about something else. The human still sees it in their
+    own terminal."""
     if os.environ.get("PRISMOR_NO_UPDATE_CHECK"):
+        return
+    from prismor.runtime.agent_env import running_under_agent
+    if running_under_agent():
         return
     try:
         from prismor.runtime.version_check import latest_known_version
@@ -146,6 +153,65 @@ def _force_utf8_streams() -> None:
             pass
 
 
+# Tools that only look. A crashed enforce hook still lets these run so the
+# person can see what broke; everything else is denied.
+_READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "view", "read", "read_file", "grep", "glob", "list_dir"}
+
+
+def _hook_dispatch_fail_closed(rest: List[str]) -> None:
+    """Run hook-dispatch; turn a crash into a deny when the hook enforces.
+
+    Exit-code hosts read any nonzero exit other than 2 as "hook errored" and run
+    the tool, and JSON-on-stdout hosts allow when nothing is printed, so an
+    input that makes the hook raise would otherwise open every call.
+    """
+    import io
+    import json
+    data = sys.stdin.read()
+    sys.stdin = io.StringIO(data)
+    from prismor.runtime.cli import main as prismor_main
+    try:
+        prismor_main(["hook-dispatch", *rest])
+        return
+    except SystemExit:
+        raise
+    except Exception as exc:
+        crash = exc
+    try:
+        payload = json.loads(data or "{}")
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    agent = rest[rest.index("--agent") + 1] if "--agent" in rest[:-1] else ""
+    mode = rest[rest.index("--mode") + 1] if "--mode" in rest[:-1] else "observe"
+    event = str(payload.get("hook_event_name") or payload.get("hookEventName")
+                or payload.get("event") or "").lower()
+    tool = str(payload.get("tool_name") or payload.get("toolName") or "")
+    msg = f"Prismor hook failed ({type(crash).__name__}: {crash}); "
+    if (mode != "enforce" or tool in _READ_ONLY_TOOLS
+            or any(k in event for k in ("stop", "prompt", "session", "post", "after", "notification"))):
+        # Observe, a read, or not a pre-tool event: denying here would swallow
+        # a prompt or loop a Stop hook ("keep going") forever.
+        sys.stderr.write(msg + "this call was not screened.\n")
+        raise SystemExit(1)
+    reason = msg + "blocked because this hook enforces and could not decide."
+    sys.stderr.write(reason + "\n")
+    if agent == "copilot":
+        sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
+    elif agent == "qwen" or (agent == "codex" and os.name == "nt"):
+        # Codex on Windows reports exit 2 as 1 through powershell; the JSON
+        # deny with exit 0 is what it honors there.
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": reason}}) + "\n")
+    elif agent in ("antigravity", "grok"):
+        sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
+    elif agent == "cursor":
+        sys.stdout.write(reason + "\n")
+    raise SystemExit(0 if agent in ("copilot", "qwen", "antigravity") or (agent == "codex" and os.name == "nt") else 2)
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     _force_utf8_streams()
     from prismor.runtime.happy_eyeballs import install as _race_ip_families
@@ -187,6 +253,11 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # Any genuine prismor top-level command (domains, shortcuts, and any future
     # prismor subcommand) forwards straight through: `prismor <cmd> ...`.
+    # hook-dispatch runs on every tool call: skip building the full parser
+    # just to learn it is a command.
+    if cmd == "hook-dispatch":
+        _hook_dispatch_fail_closed(rest)
+        return
     if cmd in _prismor_commands():
         from prismor.runtime.cli import main as prismor_main
         try:

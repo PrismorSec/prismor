@@ -1,0 +1,107 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://prismor.dev/schema/inventory-record.v1.json",
+  "title": "Prismor inventory record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema", "record_id", "entity_key", "group_id", "kind", "surface", "source",
+    "product", "vendor", "name", "observed_at", "location", "governance",
+    "attributes", "risk", "evidence", "related", "run"
+  ],
+  "properties": {
+    "schema": {"const": "prismor.inventory.v1"},
+    "record_id": {"type": "string", "pattern": "^inv_[0-9a-f]{20}$"},
+    "entity_key": {"type": "string"},
+    "group_id": {"type": "string"},
+    "kind": {
+      "enum": [
+        "agent", "mcp_server", "ide_extension", "browser_extension", "package",
+        "model_runtime", "process", "listener", "container", "credential_ref",
+        "desktop_app", "repo_artifact", "ci_workflow", "k8s_workload", "cloud_agent",
+        "oauth_grant", "agent_identity", "saas_app", "network_destination",
+        "lowcode_agent", "lowcode_flow", "diagnostic"
+      ]
+    },
+    "surface": {
+      "enum": ["endpoint", "repo", "ci", "k8s", "cloud", "identity", "saas", "network", "lowcode"]
+    },
+    "source": {"type": "string"},
+    "product": {"type": "string"},
+    "vendor": {"type": "string"},
+    "name": {"type": "string"},
+    "version": {"type": ["string", "null"]},
+    "observed_at": {"type": "string"},
+    "location": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["host_id", "hostname", "os", "user", "scope"],
+      "properties": {
+        "host_id": {"type": "string"},
+        "hostname": {"type": "string"},
+        "os": {"type": "string"},
+        "user": {"type": "string"},
+        "path": {"type": ["string", "null"]},
+        "scope": {"type": "string"},
+        "repo": {"type": ["string", "null"]},
+        "ref": {"type": ["string", "null"]},
+        "tenant_id": {"type": ["string", "null"]},
+        "environment_id": {"type": ["string", "null"]},
+        "account": {"type": ["string", "null"]},
+        "region": {"type": ["string", "null"]},
+        "project": {"type": ["string", "null"]},
+        "namespace": {"type": ["string", "null"]}
+      }
+    },
+    "governance": {
+      "type": "object",
+      "required": ["managed", "governed_by", "coverable"],
+      "properties": {
+        "managed": {"type": "boolean"},
+        "governed_by": {
+          "enum": [
+            "prismor-hook", "prismor-gateway", "prismor-cloak",
+            "prismor-copilot-studio-provider", "prismor-proxy", "prismor-adapter",
+            "m365-agent365", "none"
+          ]
+        },
+        "coverable": {"type": "boolean"},
+        "mode": {"type": ["string", "null"]},
+        "approved": {"type": ["boolean", "null"]}
+      }
+    },
+    "attributes": {"type": "object"},
+    "risk": {
+      "type": "object",
+      "required": ["score", "level", "signals"],
+      "properties": {
+        "score": {"type": "integer", "minimum": 0, "maximum": 100},
+        "level": {"enum": ["none", "low", "medium", "high", "critical"]},
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "weight", "evidence"],
+            "properties": {
+              "id": {"type": "string"},
+              "weight": {"type": "integer"},
+              "evidence": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "evidence": {"type": "array"},
+    "related": {"type": "array"},
+    "run": {
+      "type": "object",
+      "required": ["run_id", "scanner", "scanner_version", "collector_version"],
+      "properties": {
+        "run_id": {"type": "string"},
+        "scanner": {"type": "string"},
+        "scanner_version": {"type": "string"},
+        "collector_version": {"type": "integer"}
+      }
+    }
+  }
+}

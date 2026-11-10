@@ -20,7 +20,7 @@ import re
 import stat
 from collections import OrderedDict
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # Valid placeholder names mirror the regex used by the decloak hook.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -32,6 +32,28 @@ def secrets_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return Path(os.environ.get("PRISMOR_HOME", Path.home() / ".prismor")) / "secrets"
+
+
+def pinned_secrets_dir() -> Optional[Path]:
+    """The secrets dir to write into an agent's hook config, or None to let the
+    hooks resolve ``${PRISMOR_HOME:-$HOME/.prismor}/secrets`` themselves when
+    they run.
+
+    Pinned only when it was chosen on purpose. The default needs no pin, and a
+    pin is what broke a sandbox HOME: Prismor's own settings.json ``env`` block
+    exports PRISMOR_SECRETS_DIR into every agent shell, so an install run from
+    one copied that session's vault path into another HOME's hooks. Inside an
+    agent session the variable says where that session's vault is, not where
+    this install's should be.
+    """
+    from prismor.runtime.agent_env import running_under_agent
+
+    chosen = secrets_dir()
+    if chosen == Path.home() / ".prismor" / "secrets":
+        return None
+    if os.environ.get("PRISMOR_SECRETS_DIR") and running_under_agent():
+        return None
+    return chosen
 
 
 def _ensure_dir() -> Path:

@@ -1,7 +1,8 @@
 # Telemetry Sinks
 
 Every finding Prismor produces can be forwarded to systems you already run —
-a SIEM, an OpenTelemetry collector, a log file, or the Prismor control plane.
+a SIEM (Splunk, Microsoft Sentinel, Datadog, Elastic), an OpenTelemetry collector,
+an S3 bucket, a log file, or the Prismor control plane.
 Sinks are configured under `settings.outputs` in `policy.yaml`:
 
 ```yaml
@@ -113,6 +114,73 @@ Sends the OCSF form of the finding inside the HEC envelope.
 
 Sends the OCSF finding with `ddsource: prismor` and tags for severity and
 category.
+
+### `elastic` — Elasticsearch / OpenSearch
+
+```yaml
+- type: elastic
+  url: https://es.example.com:9200
+  index: prismor-findings              # default
+  api_key: ${ES_API_KEY}               # or: username + password
+```
+
+Sends every finding from one tool call in a single `_bulk` request, one OCSF
+document per finding with `@timestamp` set, so the index sorts by time without
+an ingest pipeline. Works against OpenSearch with `username`/`password`.
+
+### `sentinel` — Microsoft Sentinel
+
+```yaml
+- type: sentinel
+  endpoint: https://prismor-dce-abcd.eastus-1.ingest.monitor.azure.com
+  dcr_id: dcr-00000000000000000000000000000000   # the DCR's immutable id
+  stream: Custom-PrismorFindings_CL               # default
+  tenant_id: ${AZURE_TENANT_ID}
+  client_id: ${AZURE_CLIENT_ID}
+  client_secret: ${AZURE_CLIENT_SECRET}
+```
+
+Uses the Azure Monitor Logs Ingestion API (the shared-key HTTP Data Collector
+API is retired). Prismor exchanges the app registration's credentials for a
+token, caches it until shortly before it expires, and posts each tool call's
+findings as one batch. Give the app the **Monitoring Metrics Publisher** role
+on the DCR. Pass `token:` instead of the three credentials if something else
+already mints one.
+
+Create a custom table `PrismorFindings_CL` and a DCR whose stream declares
+these columns (types for the DCR `streamDeclarations`):
+
+| Column | Type |
+|---|---|
+| `TimeGenerated` | datetime |
+| `Severity`, `Category`, `RuleId`, `Action`, `Title`, `Evidence`, `Computer`, `SessionId`, `Agent` | string |
+| `Ocsf` | dynamic — the full OCSF Detection Finding |
+
+Then query it from Sentinel:
+
+```kusto
+PrismorFindings_CL
+| where Action == "block"
+| summarize count() by RuleId, Computer
+```
+
+### `s3` — Amazon S3 and S3-compatible stores
+
+```yaml
+- type: s3
+  bucket: security-logs
+  region: us-east-1
+  prefix: prismor                      # default
+  # endpoint: http://minio:9000        # S3-compatible store, path-style
+```
+
+Writes one NDJSON object of OCSF findings per tool call, at
+`<prefix>/YYYY/MM/DD/<host>-<time>-<random>.ndjson`. That layout is what
+Athena, Glue crawlers, Amazon Security Lake custom sources and SIEM S3 inputs
+(Splunk, Sentinel, Elastic, Panther) read. Credentials come from
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN`, or from
+`access_key`/`secret_key` in the sink. The identity needs `s3:PutObject` on the
+prefix and nothing else.
 
 ### `syslog`
 

@@ -1,0 +1,13 @@
+{
+  "name": "heuristic",
+  "publisher": "local",
+  "displayName": "Local Model Tool",
+  "version": "0.1.0",
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "local.tool"
+      }
+    ]
+  }
+}

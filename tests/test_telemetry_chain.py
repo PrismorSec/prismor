@@ -116,7 +116,8 @@ def test_record_carries_eval_ms_and_session_seq():
         })
     assert rec["eval_ms"] == 12
     assert rec["session_seq"] == 7
-    assert rec["workspace_path"] == "/Users/alice/work/acme-api"
+    # Redacted capture: the folder name, never the path (it names the user).
+    assert rec["workspace_path"] == "acme-api"
     telemetry.assert_redacted(rec)  # operational metadata, never evidence
 
     legacy = telemetry.build_record(FINDING, EVENT, extra={})
@@ -162,3 +163,35 @@ def test_policy_engine_reports_matched_pattern(tmp_path):
     assert hit["pattern"]  # the specific sub-pattern that fired
     rule = next(r for r in engine.rules if r.id == "remote-execution")
     assert hit["pattern"] in rule.raw_patterns
+
+
+# ── workspace path under redacted capture (demo finding #9) ─────────────────
+
+def test_redacted_record_never_carries_the_workspace_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path / "alice"))
+    for ws, want in (
+        ("/home/alice/src/acme-app", "acme-app"),
+        ("/home/alice/src/acme-app/", "acme-app"),
+        ("C:\\Users\\alice\\acme-app", "acme-app"),
+        (str(tmp_path / "alice"), "~"),  # the home dir's name is the login
+        ("/", None),
+        (None, None),
+    ):
+        rec = telemetry.build_record(FINDING, EVENT, extra={"workspace": ws})
+        assert rec["workspace_path"] == want, ws
+        assert "alice" not in str(rec["workspace_path"])
+        telemetry.assert_redacted(rec)
+
+
+def test_full_capture_keeps_the_workspace_path():
+    rec = telemetry.build_record(FINDING, EVENT, extra={"workspace": "/home/alice/src/acme-app"},
+                                 full_capture=True)
+    assert rec["workspace_path"] == "/home/alice/src/acme-app"
+
+
+def test_assert_redacted_rejects_a_path_in_workspace_path():
+    import pytest
+    rec = telemetry.build_record(FINDING, EVENT, extra={})
+    rec["workspace_path"] = "/home/alice/src/acme-app"
+    with pytest.raises(AssertionError):
+        telemetry.assert_redacted(rec)

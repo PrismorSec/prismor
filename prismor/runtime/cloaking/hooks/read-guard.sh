@@ -50,6 +50,9 @@ for secret_file in "$SECRETS_DIR"/*; do
   real="$(cat "$secret_file")"
   _prismor_scrubbable "$real" || continue
   if grep -qF -- "$real" "$file_path" 2>/dev/null; then
+    # shellcheck source=_ledger.sh
+    source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
+    prismor_cloak_event read blocked "$(printf '%s' "$input" | jq -r '.session_id // empty')" "$name" "" Read
     reason="Prismor cloaking: '$file_path' contains the registered secret '$name'. Reading it would place the raw value in context. Reference it as @@SECRET:${name}@@ in a Bash command instead — Prismor substitutes the real value at execution time and scrubs it from the output."
     jq -n --arg r "$reason" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'

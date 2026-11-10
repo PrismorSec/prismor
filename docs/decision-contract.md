@@ -166,7 +166,9 @@ the file with the credential masked.
 
 Surfaces that see tool output share one implementation,
 [`prismor/runtime/redaction.py`](../prismor/runtime/redaction.py): cloak
-secrets first (an exact-value swap), then data-boundary classification.
+secrets first (an exact-value swap), then data-boundary classification. When
+`settings.pii` is enabled with `action: redact` and `mode: enforce`, a third
+pass masks Presidio hits. It is not imported otherwise. See [PII detection](pii.md).
 
 Redaction is best-effort by contract — it never raises and never fails a call
 closed. Pre-call policy has already had its say and the result scan still gets a
@@ -208,6 +210,13 @@ Prefer the `event` form when a field must stay addressable. The
 `tool_name` + `arguments` form joins every argument value into one string, which
 is fine for regex matching but loses the distinction between a `file_write`'s
 path and its content.
+
+Pass `session_id` to tie a caller's calls together: taint from an earlier call
+(an injection seen in a tool result) carries to later calls in the same session.
+A call that names no session gets one of its own, never another caller's. The
+server writes no session transcript; decisions reach the console as telemetry.
+It caps the semantic judge at 4s per call by default (`PRISMOR_SEMANTIC_BUDGET_MS`,
+or `budget_ms` in policy), under the adapters' 5s `PRISMOR_EVAL_TIMEOUT`.
 
 Bind beyond localhost only with `--api-key` (or `PRISMOR_EVAL_KEY`): anyone who
 can reach the port can otherwise evaluate against your policy.

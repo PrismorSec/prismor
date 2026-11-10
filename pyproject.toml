@@ -48,6 +48,14 @@ identity = ["PyJWT[crypto]>=2.8"]
 # LLM layer of the semantic prompt-injection guard on hosts without the Claude
 # Code CLI: routes to any provider via litellm. `pip install "prismor[semantic]"`.
 semantic = ["litellm>=1.40"]
+# NER PII detection (Microsoft Presidio). Off until settings.pii.enabled.
+# The spaCy model is a separate download: python -m spacy download en_core_web_sm
+# `pip install "prismor[pii]"`. Python 3.9+ (Presidio does not publish 3.8 wheels).
+pii = [
+    "presidio-analyzer>=2.2.354; python_version >= '3.9'",
+    "presidio-anonymizer>=2.2.354; python_version >= '3.9'",
+    "spacy>=3.7,<4; python_version >= '3.9'",
+]
 # Framework adapters ship inside this package (prismor.<framework>);
 # the extras just pull the framework itself so `pip install "prismor[langchain]"`
 # is a one-liner. See adapters/ for the sources and docs/frameworks-*.
@@ -177,10 +185,12 @@ packages = [
 "docs/deploy-docker.md" = "prismor/runtime/data/docs/deploy-docker.md"
 "docs/deploy-intune.md" = "prismor/runtime/data/docs/deploy-intune.md"
 "docs/deploy-jamf.md" = "prismor/runtime/data/docs/deploy-jamf.md"
+"docs/deploy-workspace-one.md" = "prismor/runtime/data/docs/deploy-workspace-one.md"
 "docs/dev-insights.md" = "prismor/runtime/data/docs/dev-insights.md"
 "docs/docker.md" = "prismor/runtime/data/docs/docker.md"
 "docs/elevenlabs.md" = "prismor/runtime/data/docs/elevenlabs.md"
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
+"docs/event-types.md" = "prismor/runtime/data/docs/event-types.md"
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/faq.md" = "prismor/runtime/data/docs/faq.md"
 "docs/frameworks-agent-framework.md" = "prismor/runtime/data/docs/frameworks-agent-framework.md"
@@ -206,6 +216,7 @@ packages = [
 "docs/governance-surfaces.md" = "prismor/runtime/data/docs/governance-surfaces.md"
 "docs/hermes.md" = "prismor/runtime/data/docs/hermes.md"
 "docs/hosted-evaluation.md" = "prismor/runtime/data/docs/hosted-evaluation.md"
+"docs/hosted-proxy.md" = "prismor/runtime/data/docs/hosted-proxy.md"
 "docs/iam.md" = "prismor/runtime/data/docs/iam.md"
 "docs/identity-verification.md" = "prismor/runtime/data/docs/identity-verification.md"
 "docs/inference-hook.md" = "prismor/runtime/data/docs/inference-hook.md"
@@ -214,6 +225,7 @@ packages = [
 "docs/live-telemetry.md" = "prismor/runtime/data/docs/live-telemetry.md"
 "docs/llm-proxy.md" = "prismor/runtime/data/docs/llm-proxy.md"
 "docs/mcp-gateway.md" = "prismor/runtime/data/docs/mcp-gateway.md"
+"docs/mcp-hub.md" = "prismor/runtime/data/docs/mcp-hub.md"
 "docs/memory-integrity.md" = "prismor/runtime/data/docs/memory-integrity.md"
 "docs/modes.md" = "prismor/runtime/data/docs/modes.md"
 "docs/n8n.md" = "prismor/runtime/data/docs/n8n.md"
@@ -221,6 +233,8 @@ packages = [
 "docs/observability.md" = "prismor/runtime/data/docs/observability.md"
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/pause-and-login.md" = "prismor/runtime/data/docs/pause-and-login.md"
+"docs/pii.md" = "prismor/runtime/data/docs/pii.md"
+"docs/shadow-discovery.md" = "prismor/runtime/data/docs/shadow-discovery.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
 "docs/prompt-guardrails.md" = "prismor/runtime/data/docs/prompt-guardrails.md"

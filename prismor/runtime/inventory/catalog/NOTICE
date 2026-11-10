@@ -1,0 +1,12 @@
+Prismor inventory catalogs are original data, written for this package and
+checked against vendor docs and marketplace APIs where ``verified: true``.
+
+No Elastic detection content (Elastic License 2.0) is included.
+No bumblebee or invariantlabs catalog files are copied here. Paths that those
+projects also document are re-derived from the public vendor pages cited on
+each entry (``source_url``) and are not a redistribution of their files.
+
+JetBrains plugin ids marked verified were read from
+https://plugins.jetbrains.com/api/plugins/<marketplace id> (the ``xmlId`` field)
+on 2026-11-03. VS Code extension ids marked verified were read from the
+Marketplace gallery extensionquery API on the same date.

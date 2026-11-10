@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "wsl-git": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git"
+      ]
+    }
+  }
+}

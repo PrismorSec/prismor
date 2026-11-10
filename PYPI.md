@@ -1,5 +1,7 @@
 # Prismor
 
+<!-- mcp-name: io.github.PrismorSec/prismor -->
+
 > _formerly **Immunity Agent**_
 
 Runtime security for AI coding agents. Policy enforcement, secret prevention, supply-chain blocking, and session auditing — all running locally on your machine.

@@ -58,7 +58,10 @@ class TestBackwardCompatibility(unittest.TestCase):
         # tool_result / file_write content, and "install this skill" is normal
         # skill prose — only the remote-fetch AND overwrite AND auto-load
         # combination is the remote-controlled-instructions shape it targets.
-        expected = {"memory-directive-on-write", "skill-self-persist"}
+        #
+        # ci-workflow-remote-exec: `curl | sh` is ordinary in install scripts and
+        # docs; only inside a CI workflow file does it run with the repo's secrets.
+        expected = {"memory-directive-on-write", "skill-self-persist", "ci-workflow-remote-exec"}
         engine = PolicyEngine()
         actual = {r.id for r in engine.rules if r.condition is not None}
         self.assertEqual(actual, expected)

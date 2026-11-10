@@ -1,0 +1,72 @@
+# Extra MCP config paths. ``verified: false`` means the path is cited by the
+# discovery plan or a secondary write-up and was not re-checked against the
+# vendor's current doc page in this change. Collectors still read the file
+# when it exists.
+- id: kiro-mcp
+  name: Kiro MCP
+  vendor: Amazon Web Services
+  kind: mcp_server
+  match: {relative: ".kiro/settings/mcp.json"}
+  source_url: https://docs.codetogether.com/reference/files-and-locations
+  verified: false
+- id: copilot-cli-mcp
+  name: GitHub Copilot CLI MCP
+  vendor: GitHub
+  kind: mcp_server
+  match: {relative: ".copilot/mcp-config.json"}
+  source_url: https://docs.codetogether.com/reference/files-and-locations
+  verified: false
+- id: windsurf-mcp
+  name: Windsurf MCP
+  vendor: Codeium
+  kind: mcp_server
+  match: {relative: ".codeium/windsurf/mcp_config.json"}
+  source_url: https://docs.windsurf.com/windsurf/mcp
+  verified: false
+- id: antigravity-mcp
+  name: Antigravity MCP
+  vendor: Google
+  kind: mcp_server
+  match: {relative: ".gemini/antigravity/mcp_config.json"}
+  source_url: https://github.com/google-gemini/gemini-cli
+  verified: false
+- id: amazon-q-mcp
+  name: Amazon Q MCP
+  vendor: Amazon Web Services
+  kind: mcp_server
+  match: {relative: ".aws/amazonq/mcp.json"}
+  source_url: https://docs.aws.amazon.com/amazonq/latest/qdeveloper-ug/command-line.html
+  verified: false
+- id: junie-mcp
+  name: Junie MCP
+  vendor: JetBrains
+  kind: mcp_server
+  match: {relative: ".junie/mcp/mcp.json"}
+  source_url: https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html
+  verified: true
+- id: copilot-jetbrains-mcp
+  name: Copilot for JetBrains MCP
+  vendor: GitHub
+  kind: mcp_server
+  match: {relative: "github-copilot/intellij/mcp.json"}
+  source_url: https://github.com/microsoft/copilot-intellij-feedback/issues/1579
+  verified: true
+- id: roo-mcp
+  name: Roo Code MCP
+  vendor: Roo
+  kind: mcp_server
+  match: {relative: "globalStorage/rooveterinaryinc.roo-cline/settings/mcp_settings.json"}
+  source_url: https://docs.roocode.com/features/mcp/using-mcp-in-roo
+  verified: false
+- id: jetbrains-ai-mcp-xml
+  name: JetBrains AI Assistant MCP
+  vendor: JetBrains
+  kind: mcp_server
+  match: {relative: "options/llm.mcpServers.xml"}
+  source_url: https://www.jetbrains.com/help/ai-assistant/mcp.html
+  verified: false
+  notes: >
+    The official help page documents a JSON mcpServers snippet in the IDE UI.
+    The on-disk file options/llm.mcpServers.xml is confirmed by user reports
+    (Stack Overflow 79738609, public gists) and is not an official schema.
+    The XML element names are therefore unverified against JetBrains.

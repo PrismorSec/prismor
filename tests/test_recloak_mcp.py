@@ -39,6 +39,16 @@ def test_scrubs_literally(tmp_path):
     assert got == "x @@SECRET:A_KEY@@ @@SECRET:RE_KEY@@ aXb*c[d]$x\\1/@@ @@SECRET:PEM@@ é✓"
 
 
+def test_word_like_values_are_not_masked(tmp_path):
+    d = tmp_path / "secrets dir"
+    d.mkdir()
+    (d / "EMAIL_PROVIDER").write_text("ses")
+    (d / "FLAG").write_text("false")
+    (d / "LONGWORD").write_text("abcdefgh")
+    got = _run(tmp_path, "session false abcdefgh sk-test-abc123")
+    assert got == "session false abcdefgh @@SECRET:A_KEY@@"
+
+
 def test_no_secret_is_noop(tmp_path):
     assert _run(tmp_path, "nothing here") == ""
 

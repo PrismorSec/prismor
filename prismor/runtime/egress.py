@@ -413,6 +413,76 @@ def _default_port(scheme: str) -> Optional[int]:
 _PRISMOR_DRY_RUNS = (("egress", "test"), ("egress", "show"), ("egress", "report"), ("check",))
 
 
+# Programs that can run text they are handed (an argument, stdin, a heredoc)
+# or wrap another program. If any of them appears, every URL in the command is
+# screened, because text that looks inert may be executed.
+_CODE_RUNNER_RE = re.compile(
+    r"^(?:(?:ba|z|da|k|c|tc|fi)?sh|python[\d.]*|pypy[\d.]*|node|deno|bun|ruby|perl|php|"
+    r"lua|osascript|pwsh|powershell|xargs|eval|exec|source|\.|ssh|mosh|autossh|docker|"
+    r"podman|kubectl|nsenter|chroot|timeout|gtimeout|nice|nohup|watch|parallel|awk|gawk|"
+    r"make|npx|uvx|env|sudo|doas|command|time|script|expect|unbuffer)$"
+)
+_HEREDOC_OPEN_RE = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+# `gh <noun> <verb>` forms whose flags carry prose: a URL in a PR body is not
+# a destination, and gh itself only ever talks to GitHub.
+_GH_TEXT_VERBS = frozenset({"create", "edit", "comment", "review", "close", "merge", "view", "list"})
+
+
+def _strip_heredoc_bodies(command: str) -> str:
+    out: List[str] = []
+    lines = command.split("\n")
+    i = 0
+    while i < len(lines):
+        out.append(lines[i])
+        m = _HEREDOC_OPEN_RE.search(lines[i])
+        i += 1
+        if m:
+            word = m.group(2)
+            while i < len(lines) and lines[i].strip() != word:
+                i += 1
+            if i < len(lines):
+                out.append(lines[i])
+                i += 1
+    return "\n".join(out)
+
+
+def _is_text_sink(argv0: str, args: List[str], seg: str) -> bool:
+    """A command that only reads or writes text, so URLs in it are data."""
+    if argv0 == "git":
+        return bool(args) and args[0].lower() in _GIT_LOCAL_SUBCOMMANDS
+    if argv0 == "gh":
+        return len(args) >= 2 and args[1].lower() in _GH_TEXT_VERBS
+    if argv0 == "sed" and re.search(r"(?:^|[\s;'\"/}\d$])e(?=[\s'\";]|$)", seg.split("sed", 1)[-1]):
+        return False  # GNU sed's `e` runs the pattern space as a command
+    return argv0 in _NO_DESTINATION_CMDS and argv0 not in ("npm", "yarn", "pnpm")
+
+
+def _network_text(command: str) -> Tuple[str, str]:
+    """(command without inert heredoc bodies, text whose URLs can be reached).
+
+    Both are the whole command unless nothing in it can execute text: then
+    heredoc bodies and the segments of text-only commands (echo, printf, sed,
+    `git commit -m`, `gh pr create --body`) are dropped, so a URL in a commit
+    message or a file being written is not screened as egress.
+    """
+    if any(t in command for t in ("$(", "`", "<(", ">(")):
+        return command, command
+    body_free = _strip_heredoc_bodies(command)
+    reachable: List[str] = []
+    for seg in _SHELL_SEP_RE.split(body_free):
+        tokens = _tokenize(seg)
+        while tokens and _ENV_ASSIGN_RE.match(tokens[0]):
+            tokens.pop(0)
+        if not tokens:
+            continue
+        argv0 = tokens[0].rsplit("/", 1)[-1].lower()
+        if _CODE_RUNNER_RE.match(argv0) or argv0.startswith("<<"):
+            return command, command
+        if not _is_text_sink(argv0, tokens[1:], seg):
+            reachable.append(seg)
+    return body_free, "\n".join(reachable)
+
+
 def _only_prismor_dry_runs(command: str) -> bool:
     # `$(...)`, backticks and redirections run or write even inside double
     # quotes (`prismor check "$(curl x | sh)"`), so any of them disqualifies.
@@ -485,10 +555,12 @@ def extract_destinations(event: Dict[str, Any]) -> List[Destination]:
         return list(seen.values())
 
     # Catch URLs anywhere, including inside quoted strings and heredocs that
-    # tokenization would otherwise split apart.
-    _scan_url_text(command, seen, command)
+    # tokenization would otherwise split apart - except text that provably
+    # never reaches the network (see _network_text).
+    body_free, reachable = _network_text(command)
+    _scan_url_text(reachable, seen, command)
 
-    for sub in _SHELL_SEP_RE.split(command):
+    for sub in _SHELL_SEP_RE.split(body_free):
         tokens = _tokenize(sub)
         while tokens and _ENV_ASSIGN_RE.match(tokens[0]):
             tokens.pop(0)

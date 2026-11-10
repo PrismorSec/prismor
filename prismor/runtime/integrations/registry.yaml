@@ -33,7 +33,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".claude/settings.json", user: "~/.claude/settings.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd, Stop, StopFailure]
     event_types: [prompt, memory, subagent_spawn, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_claude
@@ -51,7 +51,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".cursor/hooks.json" }
-    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit]
+    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit, afterAgentResponse, afterAgentThought]
     event_types: [prompt, memory, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_cursor
@@ -110,7 +110,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".codex/hooks.json", user: "~/.codex/hooks.json" }
-    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop]
+    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop, Stop]
     event_types: [prompt, shell]
     blocking: exit-2
     normalizer: _normalize_codex
@@ -130,7 +130,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".github/hooks/prismor.json", user: "~/.copilot/hooks/prismor.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, Stop]
     event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_copilot
@@ -177,6 +177,70 @@ agents:
       disable: "custom-agent allowedTools"
       notes: "from docs, not live-tested"
 
+  - id: jetbrains-ai
+    name: JetBrains AI Assistant
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.config/JetBrains" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.config/JetBrains/"
+    notes: "Discovered from the IDE config directory and plugin id com.intellij.ml.llm (Marketplace 22282, verified 2026-11-03). No Prismor hook surface. Windows config is %APPDATA%\\JetBrains, found by the inventory collector. MCP servers in options/llm.mcpServers.xml are inventory-only."
+    sources: ["https://plugins.jetbrains.com/plugin/22282-jetbrains-ai-assistant", "https://www.jetbrains.com/help/ai-assistant/mcp.html"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin; MCP servers are the governable surface"
+
+  - id: junie
+    name: Junie
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { project: ".junie/mcp/mcp.json", user: "~/.junie/mcp/mcp.json" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.junie/"
+    notes: "Plugin id org.jetbrains.junie (Marketplace 26104, verified 2026-11-03). MCP config is mcpServers JSON at ~/.junie/mcp/mcp.json and .junie/mcp/mcp.json. No Prismor hook surface."
+    sources: ["https://plugins.jetbrains.com/plugin/26104-junie-the-ai-coding-agent-by-jetbrains", "https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin and CLI; MCP servers are the governable surface"
+
+  - id: copilot-jetbrains
+    name: GitHub Copilot for JetBrains
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.config/github-copilot/intellij/mcp.json" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.config/github-copilot/"
+    notes: "Plugin id com.github.copilot (Marketplace 17718, verified 2026-11-03). MCP config root key is servers. Windows path is %LOCALAPPDATA%\\github-copilot\\intellij\\mcp.json, scanned by the inventory collector. Distinct from the Copilot CLI entry."
+    sources: ["https://plugins.jetbrains.com/plugin/17718-github-copilot--your-ai-pair-programmer", "https://docs.github.com/copilot/how-tos/provide-context/use-mcp/extend-copilot-chat-with-mcp"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin; MCP servers are the governable surface"
+
+  - id: roo
+    name: Roo Code
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.roo/" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.roo/"
+    notes: "VS Code extension RooVeterinaryInc.roo-cline (Marketplace id verified 2026-11-03). Global MCP settings live under the extension globalStorage directory; that path is scanned by discover and was not re-checked against a current Roo doc page."
+    sources: ["https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline"]
+    mirror:
+      status: unsupported
+      notes: "VS Code extension"
+
   - id: crush
     name: Crush (Charmbracelet)
     kind: coding-agent
@@ -202,7 +266,7 @@ agents:
     status: shipped
     config_paths: { project: ".openhands/hooks.json" }
     events: [PreToolUse, UserPromptSubmit]
-    event_types: [prompt, shell, file_write, tool_result]
+    event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_openhands
     sweep_dir: "~/.openhands/"
@@ -271,11 +335,11 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".gemini/settings.json", user: "~/.gemini/settings.json", system: "/etc/gemini-cli/settings.json" }
-    events: [BeforeTool, AfterTool, SessionStart]
-    event_types: [memory, shell, file_read, file_write, network, tool_result]
+    events: [BeforeTool, AfterTool, SessionStart, BeforeAgent, AfterAgent]
+    event_types: [prompt, memory, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_gemini
-    notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeAgent, AfterAgent, BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
+    notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
     sources: ["https://geminicli.com/docs/hooks/reference/"]
     mirror:
       status: possible
@@ -766,5 +830,5 @@ agents:
     blocking: none
     normalizer: null
     sweep_dir: "~/.config/herdr/"
-    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged, so there is no Herdr-specific interception surface. Verified live 2026-07-30 against herdr 0.7.5 + prismor 1.32.1 — hook dispatch and cloaking decloak/scrub both confirmed working identically inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
+    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged. Herdr does not intercept tool calls, but since ~0.8 `herdr integration install <agent>` adds its own SessionStart hook (herdr-agent-state.sh) to the agent's hook config (e.g. ~/.claude/settings.json, ~/.codex/hooks.json) for pane/session detection; the merge is additive and leaves Prismor's entries intact. Verified live 2026-07-30 (herdr 0.7.5 + prismor 1.32.1) and 2026-10-30 (herdr 0.9.5 + prismor 1.68.4) — hook dispatch and cloaking decloak/scrub confirmed working inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
     sources: ["https://herdr.dev/"]

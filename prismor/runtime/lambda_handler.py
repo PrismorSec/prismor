@@ -28,6 +28,7 @@ from typing import Any, Dict, Tuple
 os.environ.setdefault("PRISMOR_HOME", "/tmp/prismor")  # Lambda's only writable dir, private per instance  # nosec B108
 os.environ.setdefault("HOME", "/tmp")  # Lambda's only writable dir, private per instance  # nosec B108
 os.environ.setdefault("PRISMOR_WORKSPACE_SCOPE", "managed")
+os.environ.setdefault("PRISMOR_SEMANTIC_BUDGET_MS", "4000")  # under the adapters' 5s PRISMOR_EVAL_TIMEOUT, as run_eval_server
 
 from prismor.runtime import remote_eval  # noqa: E402
 from prismor.runtime.eval_server import EvalHandler  # noqa: E402
@@ -79,6 +80,7 @@ def _warm() -> float:
                    "session_id": "warmup", "metadata": {"tool_name": "warmup"}},
             workspace=WORKSPACE, agent="warmup", session_id="warmup",
             record=False, persist=False, register_agent=False, flush_at_exit=False,
+            rate_accounting=False,
         )
     except Exception as exc:  # never fail the cold start
         print(f"[prismor] warmup failed: {exc}")

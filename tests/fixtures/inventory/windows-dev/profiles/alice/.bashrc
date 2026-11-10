@@ -1,0 +1,2 @@
+export OPENAI_API_KEY=sk-ant-CANARYAAAAAAAAAAAAAA
+export PATH="$PATH"

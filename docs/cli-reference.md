@@ -27,6 +27,7 @@ unchanged and prints a migration notice. Use `prismor`.
 
 | Command | What it does | Deep dive |
 |---|---|---|
+| `prismor rate status [--workspace PATH] [--json]` | Read rolling-minute capacity, effective rate-rule modes, identity usage and retry timing without consuming quota or creating a store. | [Rate limits](prismor-runtime.md#per-identity-rate-limits) |
 | `prismor setup` | Interactive onboarding wizard: pick mode, choose which rules block, select agents, enable cloaking, choose install scope, set the unlock password. | [Onboarding](#onboarding--lifecycle) |
 | `prismor status` | One-shot health check: workspace, hooks, mode, cloak, latest session, next action. | [Dashboard & sessions](dashboard.md) |
 | `prismor audit` | Full security-posture audit across every subsystem. `--fix` auto-remediates. | [Prismor](prismor-runtime.md#security-audit) |
@@ -71,7 +72,7 @@ prismor
 │   └─ learn                  Mine session history for new rules
 │
 ├─ Secrets
-│   ├─ cloak <action>         install · add · list · remove · status · run · pattern
+│   ├─ cloak <action>         install · add · list · sync · remove · status · run · pattern
 │   ├─ sweep                  Find & vault leaked secrets on disk
 │   └─ canary <action>        Plant & manage honeytoken tripwires
 │
@@ -334,7 +335,11 @@ prismor approvals deny 4c3e28
 ```
 
 The approval covers the same agent making the same tool call with the same
-input in the same workspace. The first call it lets through spends it, and it
+input in the same session and working directory, even when global and project
+hooks select different policy workspaces. If the hook omits a session ID or an
+absolute working directory, approvals remain scoped to its policy workspace.
+The first call it lets through spends it; another hook screening that same call
+can reuse it, including when the first hook held the call open. The approval
 lapses after 30 minutes if nothing uses it. `approve` tells you whether the
 agent is still waiting (it carries on by itself) or you have to go back and tell
 it to retry. Set `PRISMOR_APPROVAL_WAIT=30` to make Claude Code and Codex hold
@@ -489,6 +494,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor analyze-history --show <rule>` | — | List the individual tool calls behind one rule id. |
 | `prismor analyze-history --export-corpus <dir>` | — | Write redacted, labelled rule fixtures (positives + negatives) from real usage. |
 | `prismor sessions` | `--findings-only`, `--global`, `--limit`, `--json`, `--shared` | List stored sessions, optionally only flagged ones, optionally across all workspaces. `--shared` lists sessions teammates shared with you (needs `prismor login`). |
+| `prismor traces` | `--global`, `--limit`, `--workspace` | Browse sessions in the terminal: pick a session to see its event timeline with findings marked and its token cost, open an event for the full record. `n` jumps to the next finding, `f` shows only sessions with findings. Needs a terminal; scripts use `prismor sessions` / `prismor session`. |
 | `prismor session <id>` | `--json`, `--changes`, `--remote`, `--limit` | Drill into one session's tool-call trace + findings. `--changes` lists the files it wrote (as diffs), the commands it ran, and a drafted PR description. `--remote` reads the session from your org's console (implied by a pasted link); `--limit N` caps it to the last N events (default 400). See [Dev insights](dev-insights.md). |
 | `prismor session share [SESSION]` | `--org`, `--with <emails>`, `--public` | Share a session (default: this workspace's latest) as a console link. `--org` lets anyone in your org open it, `--with` adds named teammates, `--public` makes it readable by anyone with the link without sign-in. `--public` is for you to run, not your agent. Needs `prismor login`. |
 | `prismor rca [session]` | `--workspace`, `--json` | What went wrong in a session (default: the latest): the first failure with the calls before it, retry loops, reverted edits. See [Dev insights](dev-insights.md). |
@@ -502,6 +508,7 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor attest verify <bundle>` | `--pubkey`, `--json` | Re-verify a bundle's content hash and signature. `--pubkey` pins an out-of-band signer key. Exit non-zero on failure. |
 | `prismor attest coverage` | `--json`, `--workspace` | Show which compliance-framework controls the active policy covers (OWASP LLM/Agentic, NIST AI RMF, EU AI Act). |
 | `prismor discover [all\|agents\|mcp\|keys]` | `--fix`, `--yes`, `--fix-mode`, `--json`, `--report`, `--no-file-scan`, `--fail-on-shadow`, `--workspace` | Sweep this host for the AI surface running outside Prismor's coverage (shadow AI): agents without hooks, MCP servers not routed through the gateway, and provider keys not registered with Cloak. Ends with a coverage score. Pass a section to limit the report; `--fail-on-shadow` exits 1 for CI; `--report` sends the inventory to your organization console for the fleet-wide Shadow AI view (enrolled devices only, and a no-op otherwise). `--fix` governs what it found — hooks the unmanaged agents, moves MCP servers behind the gateway (any config declaring `mcpServers`/`servers`, not just the workspace's), imports dotenv keys into Cloak — printing the plan and asking first (`--yes` to skip the prompt, `--fix-mode enforce` to install in enforce). Without `--fix` it is read-only; credential-shaped values in MCP URLs and argv are redacted before they reach output. On an enrolled device each reported finding also carries whether it is fixable and the command that fixes it, so the console can show what is actionable today. See [Host discovery](attestation-bundle.md#host-discovery). |
+| `prismor discover endpoint\|jetbrains\|extensions\|wsl\|inventory` | `--format table\|json\|ndjson`, `--out`, `--sink`, `--fail-on`, `--all-users`, `--dry-run`, `--strict` | Unified `prismor.inventory.v1` scan. Legacy sections above are unchanged. See [Shadow-agent discovery](shadow-discovery.md). |
 | `prismor status --all` | `--days N` | Terminal overview of every registered workspace. See [Dashboard](dashboard.md). |
 | `prismor dashboard` | `--port`, `--host`, `--no-open` | Local web dashboard at `http://127.0.0.1:7070` (opens a browser tab). See [Dashboard](dashboard.md). |
 | `prismor query "SQL"` | `--schema`, `--path`, `--workspace`, `--limit`, `--format json\|jsonl\|table` | Read-only SQL over the local session store (SELECT/WITH/EXPLAIN only, output redacted). See [Query your data](query-your-data.md). |
@@ -517,7 +524,9 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor cloak install` | `--scope`, `--no-userprompt-guard`, `--no-secret-guard`, `--no-read-guard`, `--no-env-guard`, `--sweep-on-stop` | Install cloaking hooks so real secrets stay out of model context. `--no-read-guard` skips the hook that denies reading files containing a registered secret; `--no-env-guard` skips the one that denies reading `.env`-style files not yet imported with `prismor cloak add --env-file`. |
 | `prismor cloak add <name>` | `--from-file` | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. |
 | `prismor cloak add --env-file .env` | — | Import every `KEY=VALUE` entry from a dotenv file as `@@SECRET:KEY@@`. |
-| `prismor cloak list` | — | List registered placeholder names (never values). |
+| `prismor cloak add <name> --from-ref <ref>` | — | Fetch the value from 1Password (`op://…`), Okta Privileged Access (`okta-pam://…`) or AWS AgentCore Identity (`agentcore://…`) and vault it; only the reference is kept. Blocked for agents. See [Sweep and Cloak](sweep-and-cloak.md#from-a-secret-manager). |
+| `prismor cloak list` | — | List registered placeholder names (never values), with the source of any added with `--from-ref`. |
+| `prismor cloak sync [name…]` | — | Fetch `--from-ref` secrets again after a rotation. A source that can't be reached keeps its last value; exits 1 if any failed. |
 | `prismor cloak remove <name>` | — | Delete a registered secret. |
 | `prismor cloak status` | `--scope` | Show whether cloaking hooks are installed + secret count. |
 | `prismor cloak run -- <command>` | — | Run a command with `@@SECRET:name@@` placeholders resolved locally and stdout/stderr scrubbed. Use this for Codex, whose hooks are block-only. |

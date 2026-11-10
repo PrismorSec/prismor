@@ -113,3 +113,44 @@ def test_sig_round_trips(tmp_path, monkeypatch):
 
     monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {"settings": {}})
     assert remote_policy._current_rule_exemptions_sig() == ""
+
+
+# ── exact-call decisions, ask / deny, agent and org scope ─────────────────────
+
+def test_floor_rule_allowed_for_one_exact_call_only():
+    ev = {"type": "shell", "command": "node -e 'let m; while((m=re.exec(c))){}'"}
+    ex = [{"ruleId": "rce-canary", "scope": "session", "scopeId": "s1", "action": "allow",
+           "pattern": "node -e 'let m; while((m=re.exec(c))){}'"}]
+    f = _finding("rce-canary", category="rce_canary")
+    assert _apply_rule_exemptions([f], ex, session_id="s1", subject=SUBJ, event=ev) == []
+    other = {"type": "shell", "command": "node -e 'require(\"child_process\").execSync(x)'"}
+    assert len(_apply_rule_exemptions([f], ex, session_id="s1", subject=SUBJ, event=other)) == 1
+
+
+def test_self_protection_rule_never_relaxed_even_for_exact_call():
+    ev = {"type": "shell", "command": "prismor allow x"}
+    ex = [{"ruleId": "prismor-self-edit", "scope": "org", "scopeId": "org", "action": "allow",
+           "pattern": "prismor allow x"}]
+    f = _finding("prismor-self-edit", category="security_bypass")
+    assert len(_apply_rule_exemptions([f], ex, session_id="s1", subject=SUBJ, event=ev)) == 1
+
+
+def test_ask_turns_finding_into_step_up():
+    ex = [{"ruleId": "r", "scope": "session", "scopeId": "s1", "action": "ask"}]
+    out = _apply_rule_exemptions([_finding("r", mode="observe")], ex, session_id="s1", subject=SUBJ)
+    assert out[0]["action"] == "step_up" and out[0]["mode"] == "enforce"
+
+
+def test_deny_makes_observe_finding_block():
+    ex = [{"ruleId": "r", "scope": "agent", "scopeId": "claude", "action": "deny"}]
+    out = _apply_rule_exemptions([_finding("r", mode="observe")], ex, session_id="s1",
+                                 subject=SUBJ, agent_names=("claude",))
+    assert out[0]["action"] == "block" and out[0]["authoritative"]
+    miss = _apply_rule_exemptions([_finding("r", mode="observe")], ex, session_id="s1",
+                                  subject=SUBJ, agent_names=("codex",))
+    assert miss[0]["mode"] == "observe"
+
+
+def test_org_scope_applies_everywhere():
+    ex = [{"ruleId": "r", "scope": "org", "scopeId": "org", "action": "allow"}]
+    assert _apply_rule_exemptions([_finding("r")], ex, session_id="s9", subject=None) == []

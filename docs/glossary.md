@@ -100,6 +100,14 @@ Temporarily stops Prismor from blocking, while it keeps checking and
 recording. `prismor pause` lasts 24 hours by default; `prismor resume` ends it
 early. See [Pause and resume](pause-and-login.md).
 
+## PII detection
+
+An optional check for personal data in prompts, tool arguments and tool
+results: names, emails, phone numbers, card numbers, NHS numbers and similar.
+The regex rules catch the formatted ones. Names and places need the Presidio
+extra, which is off until you turn it on. A finding stores a mask, not the
+value. See [PII detection](pii.md).
+
 ## Pinned rule
 
 A rule shown with a lock on the **Policy Control** page. It belongs to

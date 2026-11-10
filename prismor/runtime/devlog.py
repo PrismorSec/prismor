@@ -109,7 +109,9 @@ def _transcript_path(conn: sqlite3.Connection, session_id: str) -> str:
     return str(row[0]) if row and row[0] else ""
 
 
-def _from_transcript(path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _from_transcript(path: str, skip: frozenset = frozenset()) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Calls and prompts in a transcript; rows whose uuid is in ``skip`` (history
+    copied from the session this one continues) are not this session's work."""
     calls: Dict[str, Dict[str, Any]] = {}
     prompts: List[Dict[str, str]] = []
     branch = cwd = ""
@@ -126,7 +128,9 @@ def _from_transcript(path: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
             except ValueError:
                 continue
             msg = rec.get("message") if isinstance(rec, dict) else None
-            if not isinstance(msg, dict):
+            # api-request-blob / api-request-shape rows replay earlier messages
+            # to the API; only user/assistant rows are what happened.
+            if not isinstance(msg, dict) or rec.get("type") not in ("user", "assistant") or rec.get("uuid") in skip:
                 continue
             branch = branch or rec.get("gitBranch") or ""
             cwd = cwd or rec.get("cwd") or ""
@@ -196,8 +200,12 @@ def session_calls(session_id: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     try:
         transcript = _transcript_path(conn, session_id)
         if transcript:
-            calls, meta = _from_transcript(transcript)
-            if calls:
+            from prismor.runtime.attribution import lineage
+            kin = lineage(transcript)
+            calls, meta = _from_transcript(transcript, frozenset(kin.pop("inherited", ())))
+            if kin:
+                meta["lineage"] = kin
+            if calls or kin.get("from"):
                 calls.sort(key=lambda c: c["ts"])
                 return calls, {**meta, "source": "transcript"}
         calls, meta = _from_events(conn, session_id)
@@ -376,7 +384,8 @@ def changes(session_id: str) -> Dict[str, Any]:
         md += ["", "## Tested with", *[f"- `{t[:160]}`" for t in tests[-5:]]]
     return _redact({"sessionId": session_id, "branch": meta.get("branch", ""),
                     "prompts": asks, "files": [{"path": f, "writes": n, **_diff_stats(diffs[f])} for f, n in files.most_common()],
-                    "commands": commands[-40:], "prDescription": "\n".join(md)})
+                    "commands": commands[-40:], "prDescription": "\n".join(md),
+                    "lineage": meta.get("lineage", {})})
 
 
 def _ensure_path_index() -> None:

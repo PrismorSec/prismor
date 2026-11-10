@@ -147,12 +147,14 @@ SAMPLES = {
         {"event": "PreToolUse", "tool_name": "fetch", "tool_input": {"url": "https://example.com"}},
         {"event": "PreToolUse", "tool_name": "grep", "tool_input": {"pattern": "x"}},
     ],
-    # OpenHands' file_editor covers both view and edit, so reads arrive as file_write.
+    # OpenHands' file_editor covers both view (file_read) and edits (file_write).
     "openhands": [
         {"event_type": "UserPromptSubmit", "message": "hi"},
         {"event_type": "PreToolUse", "tool_name": "terminal", "tool_input": {"command": "ls"}},
         {"event_type": "PreToolUse", "tool_name": "file_editor",
          "tool_input": {"command": "view", "path": "a.py"}},
+        {"event_type": "PreToolUse", "tool_name": "file_editor",
+         "tool_input": {"command": "str_replace", "path": "a.py", "new_str": "y"}},
         {"event_type": "PreToolUse", "tool_name": "task_tracker", "tool_input": {"command": "view"}},
     ],
     "qwen": [
@@ -178,9 +180,10 @@ SAMPLES = {
         {"event": "PreToolUse", "tool_name": "edit", "tool_input": {"path": "a.py", "after": "y"}},
         {"event": "PreToolUse", "tool_name": "tree", "tool_input": {"path": "."}},
     ],
-    # Gemini's BeforeAgent (prompt) hook is not installed.
+    # AfterAgent is a reply, recorded before normalize_payload, so not a sample.
     "gemini": [
         {"hook_event_name": "SessionStart"},
+        {"hook_event_name": "BeforeAgent", "prompt": "hi"},
         _claude_shape("BeforeTool", "run_shell_command", command="ls"),
         _claude_shape("AfterTool", "run_shell_command", command="ls"),
         _claude_shape("BeforeTool", "read_file", absolute_path="/w/a.py"),

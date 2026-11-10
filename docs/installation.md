@@ -18,6 +18,20 @@ Detects your environment and uses the right install method automatically.
 
 After a successful install the script sends one anonymous request with your OS, CPU architecture, installer (pipx/pip) and Prismor version, so we can count installs. No identifiers are sent. Opt out with `PRISMOR_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`.
 
+### Verify a release download
+
+Every file attached to a GitHub Release (the wheel and sdist, the macOS
+`.pkg`, the Windows `.zip` and `.intunewin`, the Cowork plugins) carries a
+build-provenance attestation. It proves the file was built from this
+repository by its release workflow, which a `.sha256` file alone cannot:
+
+```bash
+gh attestation verify prismor-<version>-macos.pkg --repo PrismorSec/prismor
+```
+
+The PyPI upload is published through trusted publishing, so PyPI shows its
+provenance on the release page too.
+
 ## Skill (zero-interrupt setup)
 
 Point your agent at [`SKILL.md`](../SKILL.md). It is a standing instruction file: the agent reads it at session start, checks whether Prismor is installed, and follows the decision tree throughout the session without pausing your workflow.
@@ -42,6 +56,18 @@ See [`SKILL.md`](../SKILL.md) for the full decision tree and hard rules.
 pip install prismor
 prismor setup          # interactive onboarding wizard
 ```
+
+PII detection with Microsoft Presidio is a separate extra and stays off until
+you enable it in policy. It does not change the default hook path.
+
+```bash
+pip install "prismor[pii]"
+python -m spacy download en_core_web_sm
+```
+
+See [PII detection](pii.md).
+
+
 
 `prismor setup` lets you pick enforcement mode, choose which rules block (enforce mode starts with nothing selected and the safety floor marked *recommended*), select agents, optionally enable secret cloaking, and optionally set an unlock password for the agent self-edit window. Pass `--non-interactive` to skip the TUI (`--recommended` or `--enforce-rules id1,id2` picks the blocking set). See [Choosing what blocks](cli-reference.md#choosing-what-blocks).
 

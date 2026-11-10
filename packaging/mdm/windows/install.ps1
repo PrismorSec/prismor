@@ -11,7 +11,8 @@ param(
     [string]$Mode = "enforce",
     [string]$Rules = "",
     [string]$ApiBase = "",
-    [string]$Label = ""
+    [string]$Label = "",
+    [switch]$Discover
 )
 $ErrorActionPreference = "Stop"
 
@@ -73,6 +74,22 @@ try {
             $null | & $py -m prismor.runtime.immunity_cli system-sync --quiet
         }
     }
+
+    if ($Discover) {
+        # Endpoint inventory settings. Add sinks by editing this file; sink
+        # secrets stay in the environment or Cloak, never here.
+        $inv = Join-Path $env:ProgramData "Prismor\inventory.yaml"
+        @"
+schema: prismor.inventory.settings.v1
+surfaces: [endpoint]
+interval_hours: 24
+all_users: true
+hash_users: true
+sinks: []
+"@ | Set-Content -Path $inv -Encoding utf8
+        Write-Output "inventory enabled ($inv)"
+    }
+
     Set-Content -Path (Join-Path $root "VERSION") -Value $ver -Encoding ascii
 
     # Older runtimes: nothing points at them now. A file still held open by a

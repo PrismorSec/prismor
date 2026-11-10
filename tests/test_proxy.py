@@ -235,7 +235,20 @@ def test_stream_text_passes_through(monkeypatch, tmp_path):
     frame = _sse("content_block_delta",
                  {"type": "content_block_delta", "index": 0,
                   "delta": {"type": "text_delta", "text": "hello"}})
-    assert stream.feed(frame) == frame
+    out = stream.feed(frame)
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    texts = [json.loads(line[6:])["delta"].get("text", "") for line in out.decode().splitlines()
+             if line.startswith("data: ") and "text_delta" in line]
+    assert "".join(texts) == "hello"
+    assert out.rstrip().endswith(b'"content_block_stop", "index": 0}')
+
+
+def test_carry_masks_a_secret_split_across_deltas():
+    from prismor.runtime.proxy import _CarryMasker
+    masker = _CarryMasker(lambda t: t.replace("sk-abcdef123456", "[REDACTED]"), hold=4)
+    parts = ["here is the key sk-ab", "cdef12", "3456 and more text ", "to follow"]
+    out = "".join(masker.feed(p) for p in parts) + masker.flush()
+    assert out == "here is the key [REDACTED] and more text to follow"
 
 
 def test_openai_stream_holds_tool_calls(monkeypatch, tmp_path):
@@ -878,7 +891,10 @@ def test_gemini_stream_text_passes_through(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path)
     stream = StreamScreen(screen, "google", "gemini-2.5-pro", None)
     frame = b'data: {"candidates": [{"content": {"parts": [{"text": "hello"}]}}]}\n\n'
-    assert stream.feed(frame) == frame
+    out = stream.feed(frame) + stream.flush()
+    texts = [p["text"] for line in out.decode().splitlines() if line.startswith("data: ")
+             for p in json.loads(line[6:])["candidates"][0]["content"]["parts"]]
+    assert "".join(texts) == "hello"
 
 
 def test_strip_blocked_calls_google_keeps_turn_valid():
@@ -1040,3 +1056,237 @@ def test_allowed_stream_turn_keeps_tool_use(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
     out = _anthropic_turn(StreamScreen(screen, "anthropic", "m", None), "ls")
     assert b'"stop_reason": "tool_use"' in out
+
+
+# ── stream framings that once bypassed the screen ───────────────────────────
+
+class _Chunked:
+    """An upstream response read in small pieces, like a socket."""
+
+    def __init__(self, data, size=7, status=200):
+        self.data, self.size, self.status = data, size, status
+
+    def read(self, n=-1):
+        out, self.data = self.data[:self.size], self.data[self.size:]
+        return out
+
+    def getheaders(self):
+        return [("Content-Type", "application/vnd.amazon.eventstream")]
+
+
+def _bedrock(events):
+    """Anthropic stream events as Bedrock InvokeModelWithResponseStream bytes."""
+    import base64
+    return b"".join(
+        proxy_mod._es_encode(proxy_mod._ES_CHUNK_HEADERS, json.dumps(
+            {"bytes": base64.b64encode(json.dumps(e).encode()).decode()}).encode())
+        for e in events)
+
+
+def _bedrock_events(raw):
+    import base64
+    return [json.loads(base64.b64decode(json.loads(payload)["bytes"]))
+            for payload in (m[1] for m in proxy_mod._es_messages(_Chunked(raw)))]
+
+
+def _anthropic_tool_turn(command):
+    args = json.dumps({"command": command})
+    return [
+        {"type": "message_start", "message": {"id": "m", "usage": {"input_tokens": 1}}},
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": args[:9]}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "input_json_delta", "partial_json": args[9:]}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "tool_use"}},
+        {"type": "message_stop"},
+    ]
+
+
+def test_bedrock_stream_is_streaming_by_path():
+    assert is_streaming("anthropic", "/model/m/invoke-with-response-stream", {})
+    assert not is_streaming("anthropic", "/model/m/invoke", {})
+
+
+def test_bedrock_stream_denied_tool_call_never_reaches_client(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = _bedrock(_anthropic_tool_turn("rm -rf /"))
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    events = _bedrock_events(out)
+    blob = json.dumps(events)
+    assert "rm -rf" not in blob and "Blocked by Prismor" in blob
+    assert events[-2]["delta"]["stop_reason"] == "end_turn"
+
+
+def test_bedrock_stream_allowed_tool_call_is_released(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = _bedrock(_anthropic_tool_turn("ls -la"))
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    assert _bedrock_events(out) == _anthropic_tool_turn("ls -la")
+
+
+def test_bedrock_stream_text_is_redacted(monkeypatch, tmp_path):
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    raw = _bedrock([
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "text_delta", "text": f"key {secret} ok"}},
+        {"type": "content_block_stop", "index": 0},
+    ])
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(raw)))
+    text = "".join((e.get("delta") or {}).get("text", "") for e in _bedrock_events(out))
+    assert secret not in text and "[REDACTED]" in text
+
+
+def test_bedrock_stream_broken_framing_fails_closed(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    raw = bytearray(_bedrock(_anthropic_tool_turn("ls")))
+    raw[-1] ^= 0xFF                              # last message's CRC no longer matches
+    out = b"".join(proxy_mod._eventstream_relay(stream, _Chunked(bytes(raw))))
+    assert len(_bedrock_events(out)) < len(_anthropic_tool_turn("ls"))
+    assert stream.blocked
+
+
+def test_thinking_delta_is_redacted(monkeypatch, tmp_path):
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    out = stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": f"the key is {secret}"}})) + stream.flush()
+    assert secret.encode() not in out and b"[REDACTED]" in out
+
+
+def test_thinking_secret_split_across_deltas_is_redacted(monkeypatch, tmp_path):
+    """Live Bedrock streams thinking in ~10-char deltas; a token always spans several."""
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "anthropic", "m", None)
+    text = f"the key is {secret} ok"
+    out = b"".join(stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": text[i:i + 6]}})) for i in range(0, len(text), 6))
+    out += stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}}))
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    out += stream.flush()
+    thinking = "".join((json.loads(line[6:]).get("delta") or {}).get("thinking", "")
+                       for line in out.decode().splitlines() if line.startswith("data: "))
+    assert secret not in thinking and "[REDACTED]" in thinking and thinking.endswith("ok")
+    assert b'"text_delta"' not in out
+    assert out.index(b"signature_delta") > out.rindex(b"thinking_delta")
+
+
+def test_gemini_thought_tail_stays_a_thought_part(monkeypatch, tmp_path):
+    """The carry's held thought text must not be released into the answer part."""
+    secret = "dummy_test_key_12345"
+    stream = StreamScreen(_redacting_screen(monkeypatch, tmp_path, secret), "google", "m", None)
+
+    def frame(part, finish=None):
+        cand = {"index": 0, "content": {"role": "model", "parts": [part]}}
+        if finish:
+            cand["finishReason"] = finish
+        return ("data: " + json.dumps({"candidates": [cand]}) + "\n\n").encode()
+
+    out = stream.feed(frame({"text": f"thinking about {secret[:8]}", "thought": True}))
+    out += stream.feed(frame({"text": f"{secret[8:]} done thinking", "thought": True}))
+    out += stream.feed(frame({"text": "40"}, "STOP")) + stream.flush()
+    parts = [p for line in out.decode().splitlines() if line.startswith("data: ")
+             for p in json.loads(line[6:])["candidates"][0]["content"]["parts"]]
+    thought = "".join(p["text"] for p in parts if p.get("thought"))
+    answer = "".join(p["text"] for p in parts if not p.get("thought"))
+    assert answer == "40"
+    assert secret not in thought and "[REDACTED]" in thought and thought.endswith("done thinking")
+
+
+def test_tool_call_in_second_choice_of_one_chunk_is_held(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "m", None)
+    call = {"index": 0, "id": "c", "type": "function",
+            "function": {"name": "Bash", "arguments": json.dumps({"command": "rm -rf /"})}}
+    out = stream.feed(("data: " + json.dumps({"id": "x", "choices": [
+        {"index": 0, "delta": {"content": "hi"}, "finish_reason": None},
+        {"index": 1, "delta": {"tool_calls": [call]}, "finish_reason": None}]}) + "\n\n").encode())
+    out += stream.feed(("data: " + json.dumps({"id": "x", "choices": [
+        {"index": 1, "delta": {}, "finish_reason": "tool_calls"}]}) + "\n\n").encode())
+    out += stream.flush()
+    assert b"rm -rf" not in out and b"Blocked by Prismor" in out
+
+
+def test_unparseable_screened_response_is_refused_in_enforce(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path)
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = screen
+    refused = []
+    monkeypatch.setattr(handler, "_refuse", lambda p, m, status=403: refused.append((m, status)))
+    response = type("Response", (), {"status": 200, "read": lambda self: b"\x00\x00binary"})()
+    proxy_mod.ProxyHandler._relay_buffered(handler, response, "anthropic", "m", True, None,
+                                           "anthropic")
+    assert refused and refused[0][1] == 502
+
+
+def test_a2a_stream_reply_is_masked_not_refused(monkeypatch, tmp_path):
+    """message/stream answers SSE: not JSON, but not a reason to refuse it."""
+    secret = "dummy_test_key_12345"
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = _redacting_screen(monkeypatch, tmp_path, secret)
+    written, refused = [], []
+    handler.wfile = type("Writer", (), {"write": lambda self, b: written.append(b)})()
+    monkeypatch.setattr(handler, "_refuse", lambda *a, **k: refused.append(a))
+    monkeypatch.setattr(handler, "send_response", lambda code: None)
+    monkeypatch.setattr(handler, "send_header", lambda k, v: None)
+    monkeypatch.setattr(handler, "end_headers", lambda: None)
+    body = ("data: " + json.dumps({"jsonrpc": "2.0", "id": 1, "result": {
+        "kind": "message", "parts": [{"kind": "text", "text": f"hi {secret}"}]}}) + "\n\n").encode()
+    response = type("Response", (), {
+        "status": 200, "read": lambda self: body,
+        "getheaders": lambda self: [("Content-Type", "text/event-stream")]})()
+    proxy_mod.ProxyHandler._relay_buffered(handler, response, "a2a", "", True, None, "a2a")
+    out = b"".join(written)
+    assert not refused and secret.encode() not in out and b"[REDACTED]" in out
+
+
+def test_n2_interleaved_choices_are_judged_each_on_its_own(monkeypatch, tmp_path):
+    """OpenAI streams n>1 calls interleaved, every choice at tool index 0.
+
+    Merged, the fragments read as one garbled call no rule matches, and the
+    client reassembles a clean `rm -rf` per choice from the released chunks."""
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "m", None)
+
+    def frame(choice, args=None, name=None, finish=None):
+        delta = {}
+        if args is not None or name:
+            fn = {"arguments": args or ""}
+            if name:
+                fn["name"] = name
+            delta["tool_calls"] = [{"index": 0, "function": fn,
+                                    **({"id": f"c{choice}", "type": "function"} if name else {})}]
+        return ("data: " + json.dumps({"id": "x", "choices": [
+            {"index": choice, "delta": delta, "finish_reason": finish}]}) + "\n\n").encode()
+
+    safe = ['{"command":"', "ls", " -la", '"}']
+    bad = ['{"command":"', "rm", " -rf", " /", '"}']
+    frames = [frame(0, "", "Bash"), frame(1, "", "Bash")]
+    for i in range(max(len(safe), len(bad))):
+        if i < len(safe):
+            frames.append(frame(0, safe[i]))
+        if i < len(bad):
+            frames.append(frame(1, bad[i]))
+    frames += [frame(0, finish="stop"), frame(1, finish="stop")]
+    out = b"".join(stream.feed(f) for f in frames) + stream.flush()
+
+    args, text = {}, {}
+    for f in out.split(b"\n\n"):
+        event = proxy_mod._sse_payload(f) or {}
+        for c in event.get("choices") or []:
+            d = c.get("delta") or {}
+            text[c["index"]] = text.get(c["index"], "") + (d.get("content") or "")
+            for tc in d.get("tool_calls") or []:
+                args[c["index"]] = args.get(c["index"], "") + (tc["function"].get("arguments") or "")
+    assert json.loads(args[0]) == {"command": "ls -la"}
+    assert 1 not in args and "Blocked by Prismor" in text[1]

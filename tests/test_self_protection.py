@@ -93,6 +93,12 @@ BLOCKED_COMMANDS = [
     "python3 -m prismor.runtime.cli session share --public",
     "bash -c 'prismor session share --public'",
     "script -q /dev/null prismor session share --public",
+    # Which real secret a placeholder unlocks is the human's call too.
+    "prismor cloak add OPENAI_KEY --from-ref op://Private/OpenAI/credential",
+    "cd /x && prismor cloak add k --from-ref agentcore://us-east-1/cli/openai",
+    "python3 -m prismor.runtime.cli cloak add k --from-ref okta-pam://t/g/p/s",
+    "bash -c 'prismor cloak add k --from-ref op://v/i/f'",
+    "echo '{}' > ~/.prismor/secret-sources.json",
 ]
 
 # Things an agent legitimately does, which must keep working.
@@ -129,6 +135,13 @@ ALLOWED_COMMANDS = [
     "prismor session share",
     "prismor session share --org",
     "prismor session share --with bob@example.com",
+    # Refreshing references a person set up, or vaulting a value the agent
+    # already holds, changes nothing about which secrets it can reach.
+    "prismor cloak sync",
+    "prismor cloak sync OPENAI_KEY",
+    "prismor cloak list",
+    "prismor cloak add k --from-file /tmp/v",
+    'grep -n "from-ref" docs/sweep-and-cloak.md',
     "prismor session https://www.prismor.dev/s/Tk9x",
     'grep -n "session share --public" SKILL.md',
     # Reading the dashboard API is not writing it: every GET on these routes
