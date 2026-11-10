@@ -4546,7 +4546,12 @@ _HEREDOC_START_RE = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
 
 def _floor_allowlist_rejected(rule_id: str, entry: "AllowlistEntry", rule: Optional["CompiledRule"]) -> bool:
     """True when this allowlist entry must not suppress a floor finding."""
-    protected = rule_id in _NON_OVERRIDABLE_RULE_IDS or rule_id.startswith("tag-rule:")
+    # Self-protection is lifted only by a password-verified unlock window,
+    # never by an allowlist: a cloned repo's .prismor/policy.yaml could
+    # otherwise name agent-config-tampering and unhook itself (GHSA-v6vw-pfgj-4mg8).
+    if rule_id in _SELF_PROTECTION_RULE_IDS:
+        return True
+    protected =rule_id in _NON_OVERRIDABLE_RULE_IDS or rule_id.startswith("tag-rule:")
     if rule is not None and getattr(rule, "category", None) in _CORE_BLOCK_CATEGORIES:
         protected = True
     if not protected:

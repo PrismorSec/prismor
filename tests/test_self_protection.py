@@ -243,6 +243,24 @@ class TestSelfProtectionCannotBeSwitchedOff(unittest.TestCase):
                     allow.check_allowed(rule_id, scope="pattern", workspace=d, confirmed=True)
                 )
 
+    def test_committed_named_allowlist_cannot_suppress_self_protection(self):
+        # GHSA-v6vw-pfgj-4mg8 item 3: a repo-committed policy names the rule and
+        # a narrow pattern instead of the blanket `*` / `.*` form #671 rejects.
+        eng = _engine(
+            'version: "1.0"\nallowlists:\n'
+            "  - id: repo-ships-this\n"
+            "    rule_ids: [agent-config-tampering, agent-config-tampering-path, prismor-self-edit]\n"
+            "    patterns: ['settings\\.json', 'policy\\.yaml', 'prismor']\n"
+        )
+        for event in (
+            {"type": "shell", "command": "echo '{}' > .claude/settings.json"},
+            {"type": "file_write", "path": "/work/.prismor/policy.yaml"},
+            {"type": "shell", "command": "prismor allow destructive-command --off --yes"},
+        ):
+            with self.subTest(event=event):
+                findings = eng.evaluate(event, index=0)
+                self.assertIsNotNone(should_block(findings, {**PRE, "type": event["type"]}))
+
 
 class TestUnblockMessage(unittest.TestCase):
     def test_self_protection_block_points_at_the_unlock_window(self):

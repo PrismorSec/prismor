@@ -32,6 +32,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -47,6 +48,20 @@ _GRANT_SCHEMA = "prismor.unlock-grant.v1"
 # short enough that walking away from the keyboard closes it.
 DEFAULT_WINDOW_SECONDS = 180
 MAX_WINDOW_SECONDS = 3600
+
+# A window lets the agent edit policy and hook config. It never lets the agent
+# touch the window's own credential, the pause key, the device identity, or the
+# signed trail and its key, whichever rule caught the call (GHSA-v6vw-pfgj-4mg8).
+_NEVER_LIFTED_RULE_IDS = frozenset({"audit-trail-tampering"})
+_NEVER_LIFTED_TARGETS = re.compile(
+    r"unlock(-grant)?\.json|pause\.(key|json)|identity\.json|receipt_signing_key"
+    r"|telemetry_chain\.json|\.prismor/audit\b"
+)
+
+
+def may_lift(rule_id: str, text: str) -> bool:
+    """True when an open window may lift this self-protection block."""
+    return rule_id not in _NEVER_LIFTED_RULE_IDS and not _NEVER_LIFTED_TARGETS.search(text or "")
 
 # scrypt, not a bare SHA-256: this is a human-chosen password, and the file it
 # lives in is readable by anything running as the user. Cost parameters are the
