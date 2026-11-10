@@ -42,6 +42,7 @@ _BUILTIN_PATTERNS: List[re.Pattern] = [
     re.compile(r"AIza[0-9A-Za-z_-]{35}"),                # Google API key
     re.compile(r"sk-[0-9a-zA-Z]{20,}"),                  # OpenAI secret
     re.compile(r"xox[baprs]-[0-9a-zA-Z-]{10,}"),        # Slack token
+    re.compile(r"AIK_CLIENT_[A-Za-z0-9_-]{36,}"),       # AIK client key
     re.compile(r"glpat-[0-9a-zA-Z_-]{20,}"),             # GitLab PAT
     re.compile(r"[Bb]earer\s+[0-9a-zA-Z._-]{20,}"),      # Bearer token
     re.compile(r"eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+"),  # JWT
