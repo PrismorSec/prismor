@@ -2202,6 +2202,9 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-spark { display:inline-flex; align-items:flex-end; gap:1px; height:22px; width:100%; }
   .ext-spark i { flex:1; min-height:1px; background:var(--accent); opacity:.75; border-radius:1px; }
   .ext-spark.big { height:90px; gap:3px; margin:6px 0 2px; }
+  .ext-chart { display:grid; grid-template-columns:auto 1fr; column-gap:8px; font-size:11px; color:var(--gray-500); }
+  .ext-chart .ext-y { display:flex; flex-direction:column; justify-content:space-between; text-align:right; height:90px; margin:6px 0 2px; }
+  .ext-chart .ext-x { grid-column:2; display:flex; justify-content:space-between; }
   .extd-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:14px; }
   .extd-kpis div { border:1px solid var(--gray-200); border-radius:8px; padding:8px 12px; font-size: 11px; color:var(--gray-500); text-transform:uppercase; letter-spacing: .06em; }
   .extd-kpis b { display:block; font-size:16px; color:var(--gray-900); text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums; }
@@ -4339,8 +4342,8 @@ function renderSessionUsage(sessions) {
     ['First seen', extWhen(ts[0])], ['Last seen', extWhen(ts[ts.length - 1])]];
   document.getElementById('extdUsage').innerHTML =
     '<div class="extd-kpis">' + kpis.map(([l, v]) => '<div><b>' + safe(String(v)) + '</b>' + l + '</div>').join('') + '</div>' +
-    extBars(extActivity(inWin.map(s => ({calls: 1, lastTs: s.ts})), 30), 'big') +
-    '<div class="ext-quiet" style="font-size: 12px">sessions it ran in, by day. A ' + safe(_extDetail.kind || 'hook') + ' runs around calls, so it has no calls of its own.</div>' +
+    extChart(inWin.map(s => ({calls: 1, lastTs: s.ts})), 'sessions') +
+    '<div class="ext-quiet" style="font-size: 12px">sessions it ran in, per day. A ' + safe(_extDetail.kind || 'hook') + ' runs around calls, so it has no calls of its own.</div>' +
     '<div class="extd-break"><div><h4>By agent</h4>' + extTally(inWin.map(s => ({agent: s.agent, calls: 1})), r => r.agent) + '</div></div>';
 }
 function renderExtensionDetail(row) {
@@ -4926,6 +4929,16 @@ function extBars(b, cls) {
   const m = Math.max(1, ...b);
   return '<span class="ext-spark' + (cls ? ' ' + cls : '') + '">' + b.map(v => '<i style="height:' + (v ? 8 + 92 * v / m : 0) + '%" title="' + v + ' call' + (v === 1 ? '' : 's') + '"></i>').join('') + '</span>';
 }
+// The detail chart: one bar per day of the top-bar window (capped at 60), with
+// the count on the y axis and dates on the x axis.
+function extChart(rows, unit) {
+  const n = Math.min(Math.max(_depDays, 1), 60), b = extActivity(rows, n);
+  const span = Math.ceil(_depDays / n) * 864e5, m = Math.max(1, ...b);
+  const day = t => new Date(t).toLocaleDateString(undefined, {month: 'short', day: 'numeric'});
+  return '<div class="ext-chart"><div class="ext-y"><span>' + m + ' ' + unit + '</span><span>0</span></div>' +
+    extBars(b, 'big') +
+    '<div class="ext-x"><span>' + day(Date.now() - (n - 1) * span) + '</span><span>' + (span > 864e5 ? (span / 864e5) + ' days per bar' : 'date') + '</span><span>Today</span></div></div>';
+}
 function extKindNoun(kind) { return (EXT_KINDS.find(([k]) => k === kind) || [, kind])[1].toLowerCase(); }
 function renderExtKindTabs() {
   document.getElementById('extKinds').innerHTML = [['all', 'Overview', (_extCache || {rows: []}).rows.length]]
@@ -5097,7 +5110,7 @@ function renderExtensionUsage(it) {
   const pg = clientPage('extdUsagePager', sess, 20, () => renderExtensionUsage(it), it.id + ':' + sess.length);
   const target = {mcp: ['Tools called', r => r.target], package: ['Versions and verdicts', r => [r.target, r.note].filter(Boolean).join(' ')]}[it.kind];
   el.innerHTML = '<div class="extd-kpis">' + kpis.map(([l, v]) => '<div><b>' + safe(String(v)) + '</b>' + l + '</div>').join('') + '</div>' +
-    extBars(extActivity(deps, 30), 'big') + '<div class="ext-quiet" style="font-size: 12px">calls over the window, by the day each session last used it</div>' +
+    extChart(deps, 'calls') + '<div class="ext-quiet" style="font-size: 12px">calls per day; a session\'s calls count on the day it last used this</div>' +
     '<div class="extd-break">' + (target ? '<div><h4>' + target[0] + '</h4>' + extTally(deps, target[1]) + '</div>' : '') +
       '<div><h4>By agent</h4>' + extTally(deps, r => r.agent) + '</div>' +
       '<div><h4>By project</h4>' + extTally(deps, r => r.workspace.split('/').pop() || r.workspace) + '</div></div>' +

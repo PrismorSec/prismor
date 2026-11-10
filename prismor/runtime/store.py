@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import functools
 import re
 import shutil
 import sqlite3
@@ -183,13 +184,37 @@ def _load_secret_map() -> List[tuple[str, str]]:
     return pairs
 
 
+@functools.lru_cache(maxsize=4)
+def _compile_secret_patterns(patterns: Tuple[str, ...]) -> Optional["re.Pattern[str]"]:
+    ok = []
+    for pat in patterns:
+        try:
+            re.compile(pat)
+            ok.append(f"(?:{pat})")
+        except re.error:
+            continue
+    return re.compile("|".join(ok)) if ok else None
+
+
+def mask_secret_patterns(text: str) -> str:
+    """Mask credentials that match a cloak detection pattern but were never
+    registered in the vault: a key pasted straight into a prompt otherwise
+    reaches the store, and the session title, in plaintext."""
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        from prismor.runtime.cloaking.patterns import all_patterns
+        rx = _compile_secret_patterns(tuple(all_patterns()))
+    except Exception:
+        return text
+    return rx.sub("[REDACTED:secret]", text) if rx else text
+
+
 def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Replace any raw secret value with its placeholder across all string
-    fields of an event (recursively). Returns a scrubbed copy; the input is not
-    mutated. A no-op when the vault is empty or no value appears in the event."""
+    fields of an event (recursively), then mask anything else shaped like a
+    credential. Returns a scrubbed copy; the input is not mutated."""
     secret_map = _load_secret_map()
-    if not secret_map:
-        return event
 
     def scrub(obj: Any) -> Any:
         if isinstance(obj, str):
@@ -197,7 +222,7 @@ def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
             for real, placeholder in secret_map:
                 if real in s:
                     s = s.replace(real, placeholder)
-            return s
+            return mask_secret_patterns(s)
         if isinstance(obj, list):
             return [scrub(x) for x in obj]
         if isinstance(obj, dict):
@@ -2212,7 +2237,8 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
                     # An app wrapper (<system-reminder>…) can fill the first KBs;
                     # the title is what the person typed after it.
                     line = re.sub(r"<[^>]+>", " ", prompt_origin(text or "")[1])
-                    line = " ".join(line.split())
+                    # Rows stored before patterned masking still hold raw keys.
+                    line = " ".join(mask_secret_patterns(line).split())
                     if line and not line.startswith("/") and not line.lower().startswith(("caveat:", "clear")):
                         out[sid] = line[:140]
                         want.discard(sid)

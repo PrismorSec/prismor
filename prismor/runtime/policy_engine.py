@@ -3094,7 +3094,12 @@ class PolicyEngine:
                 _prov_fetched: Set[str] = set()
                 _prov_copied = False
                 _prov_chain = ""
-                if _tt_cfg.get("provenance_enabled", True):
+                # A replay (`ingest --discover`) re-runs old transcripts out of
+                # order; letting it stamp the live store made today's sessions
+                # "inherit" from a replay of last month's.
+                if _tt_cfg.get("provenance_enabled", True) and not str(
+                    session_id or ""
+                ).startswith("replay:"):
                     from prismor.runtime import provenance as _prov
                     _prov_cwd = Path(
                         str((event.get("metadata") or {}).get("cwd") or self.workspace)
@@ -3150,7 +3155,12 @@ class PolicyEngine:
                         # The causal edge is worth reporting even when no rule
                         # fires: one agent acting on another's output is not
                         # visible anywhere else in the session log.
-                        if _is_pre_action_event(event):
+                        # The same agent re-reading its own earlier notes is
+                        # ordinary work; report it only when the file carries
+                        # something untrusted. Tags still inherit either way.
+                        if _is_pre_action_event(event) and (
+                            _wr.get("agent") != _tt_agent or UNTRUSTED in _inherit
+                        ):
                             _pf = f"provenance-read-{index}"
                             findings.append({
                                 "id": f"{session_id}:{_pf}" if session_id else _pf,
