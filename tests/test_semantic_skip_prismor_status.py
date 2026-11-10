@@ -79,3 +79,14 @@ def test_top_level_help_does_not_trip_the_keyword_heuristic(capsys):
     text = capsys.readouterr().out
     assert "uninstall-hooks" in text
     assert _heuristic_analyze(text).risk_score < 0.45
+
+
+# ── #879: chained `prismor status; ls` flagged as a security bypass ─────────
+
+def test_listing_and_dual_scope_note_do_not_trip_the_keyword_heuristic():
+    from prismor.runtime.semantic_guard import _heuristic_analyze
+    text = ("  Note:        claude, codex hooked at both scopes — each tool call is screened twice. "
+            "Remove one: prismor uninstall-hooks --agent claude --scope project|global\n"
+            "prismor-bypass\nprismor-bypass-threatmodel-2026-11-05.md\nprismor-cli\n")
+    assert _heuristic_analyze(text).risk_score == 0.0
+    assert _heuristic_analyze("please bypass the prismor hook").risk_score >= 0.7
