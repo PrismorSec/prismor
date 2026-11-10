@@ -2335,27 +2335,35 @@ def main(argv: Optional[List[str]] = None) -> None:
         if blocking is not None:
             try:
                 from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS
-                if str(blocking.get("ruleId") or "") in _SELF_PROTECTION_RULE_IDS:
-                    from prismor.runtime import unlock as _unlock
-                    if _unlock.is_open(workspace):
-                        _left = _unlock.remaining_seconds(workspace)
-                        sys.stderr.write(
-                            f"[prismor] self-edit allowed: unlock window open "
-                            f"({_left}s left, rule: {blocking.get('ruleId')})\n"
-                        )
+                _rid = str(blocking.get("ruleId") or "")
+                _target = " ".join(str(x or "") for x in (
+                    blocking.get("evidence"), event.get("command"), event.get("path")))
+                from prismor.runtime import unlock as _unlock
+                if (_rid in _SELF_PROTECTION_RULE_IDS and _unlock.may_lift(_rid, _target)
+                        and _unlock.is_open(workspace)):
+                    _left = _unlock.remaining_seconds(workspace)
+                    sys.stderr.write(
+                        f"[prismor] self-edit allowed: unlock window open "
+                        f"({_left}s left, rule: {_rid})\n"
+                    )
+                    # The action record for this call was signed as "blocked"
+                    # before the lift; this record says it ran anyway.
+                    if _hook_claimed:
                         try:
-                            findings.append({
-                                "severity": "MEDIUM",
-                                "category": "security_bypass",
-                                "ruleId": "self-edit-under-unlock",
-                                "title": "Agent edited Prismor policy inside an unlock window",
-                                "evidence": str(blocking.get("evidence") or "")[:200],
-                                "mode": "observe",
-                                "action": "log",
-                            })
-                        except Exception:
-                            pass
-                        blocking = None
+                            from prismor.runtime.enterprise import audit_trail as _audit
+                            if _audit.enabled():
+                                _audit.append_approval_record(
+                                    status="unlock_window",
+                                    tool=str(event.get("tool_name") or event.get("type") or ""),
+                                    rule_id=_rid,
+                                    severity=str(blocking.get("severity") or ""),
+                                    reason=f"self-edit allowed inside unlock window ({_left}s left)",
+                                    agent=args.agent,
+                                    session_id=normalized["sessionId"],
+                                )
+                        except Exception as exc:
+                            sys.stderr.write(f"[prismor] audit trail error: {exc}\n")
+                    blocking = None
             except Exception:
                 pass
 
