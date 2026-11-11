@@ -254,3 +254,27 @@ def test_resources_and_prompts_reach_a_hosted_endpoint(h):
     assert st == 200 and res["result"]["contents"][0]["text"] == "Hello from the readme"
     st, res = rpc(h, {"jsonrpc": "2.0", "id": 3, "method": "prompts/list"})
     assert [p["name"] for p in res["result"]["prompts"]] == ["cat__greet"]
+
+
+def test_resolve_sends_the_edge_secret_only_when_configured(monkeypatch):
+    import urllib.request
+    import prismor.runtime.lambda_mcp_handler as mod
+    seen = []
+
+    class Resp(io.BytesIO):
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def fake_urlopen(req, timeout=None):
+        seen.append({k.lower(): v for k, v in req.header_items()})
+        return Resp(b"{}")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.delenv("PRISMOR_EDGE_SECRET", raising=False)
+    mod._fetch_config(KEY)
+    monkeypatch.setenv("PRISMOR_EDGE_SECRET", "s3")
+    mod._fetch_config(KEY)
+    assert "x-prismor-edge" not in seen[0]
+    assert seen[1]["x-prismor-edge"] == "s3"
+    assert seen[1]["authorization"] == f"Bearer {KEY}"
