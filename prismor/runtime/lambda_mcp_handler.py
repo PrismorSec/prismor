@@ -72,10 +72,14 @@ _resolved: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 def _fetch_config(key: str) -> Tuple[int, Optional[Dict[str, Any]]]:
     """(status, config) from the control plane. Status 0 means unreachable."""
     base = (os.environ.get("PRISMOR_WEB_URL") or "https://www.prismor.dev").rstrip("/")
-    req = urllib.request.Request(
-        f"{base}/api/mcp/fleet/resolve",
-        headers={"Authorization": f"Bearer {key}", "User-Agent": f"prismor-hosted-mcp/{VERSION}"},
-    )
+    headers = {"Authorization": f"Bearer {key}", "User-Agent": f"prismor-hosted-mcp/{VERSION}"}
+    # The console sets this per-org secret in the function's env; fleet/resolve
+    # refuses to hand out decrypted server env without it, so a key on its own
+    # (e.g. a member's grant key) cannot read the org's MCP secrets.
+    edge = os.environ.get("PRISMOR_EDGE_SECRET")
+    if edge:
+        headers["X-Prismor-Edge"] = edge
+    req = urllib.request.Request(f"{base}/api/mcp/fleet/resolve", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as r:  # fixed control-plane URL.  # nosec B310
             return r.status, json.loads(r.read().decode("utf-8"))
