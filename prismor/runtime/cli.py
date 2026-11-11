@@ -7256,6 +7256,16 @@ def _policy_show(workspace: Path) -> None:
     print(f"Allowlists:   {len(engine.allowlists)}")
     print()
 
+    if engine.mcp_tool_budgets:
+        print(f"MCP tool budgets ({engine.mcp_tool_budgets_source} policy):")
+        for server, tools in sorted(engine.mcp_tool_budgets.items()):
+            for tool, budget in sorted(tools.items()):
+                print(f"  {server}/{tool}: ${budget['cost_usd']} per call, "
+                      f"${budget['limit_usd']} per session")
+        print()
+    if engine.mcp_tool_budgets_error:
+        print(f"MCP tool budget error: {engine.mcp_tool_budgets_error}")
+
     override_path = workspace / ".prismor" / "policy.yaml"
     if override_path.exists():
         print(f"Project policy: {override_path}")

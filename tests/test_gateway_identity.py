@@ -116,3 +116,30 @@ def test_token_change_tells_the_host_to_relist(ws, monkeypatch):
         assert sum(m.get("method") == "notifications/tools/list_changed" for m in sent) == 1
     finally:
         g.close()
+
+
+def test_tool_budget_preserves_token_checks_and_counts_across_rotation(ws, monkeypatch):
+    policy = {**POLICY, "settings": {"mcp_tool_budgets": {
+        "shop": {"list_orders": {"cost_usd": 0.1, "limit_usd": 0.1}}}},
+        "rules": POLICY["rules"] + [{"id": name, "mode": "enforce"} for name in
+                                    ("mcp-budget-exceeded", "mcp-budget-unavailable")]}
+    (ws / ".prismor" / "policy.yaml").write_text(yaml.safe_dump(policy))
+    g = Gateway([UpstreamSpec(name="shop", command=[sys.executable, str(SERVER)])],
+                workspace=ws, mode="enforce")
+    sent = []
+    monkeypatch.setattr(g, "_send", lambda message: sent.append(message))
+    call = {"name": "shop__list_orders", "arguments": {}}
+    try:
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("bob", ["support"], exp=-60))
+        g._handle_tools_call_safe(1, call)
+        assert sent[-1]["result"]["isError"]
+        assert "identity-unverified" in json.dumps(sent[-1])
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("bob", ["support"]))
+        g._handle_tools_call_safe(2, call)
+        assert not sent[-1]["result"].get("isError")  # denied token spent nothing
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("carol", ["finance"]))
+        g._handle_tools_call_safe(3, call)
+        assert sent[-1]["result"]["isError"]
+        assert "mcp-budget-exceeded" in json.dumps(sent[-1])
+    finally:
+        g.close()

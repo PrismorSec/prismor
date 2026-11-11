@@ -956,3 +956,173 @@ def test_server_wide_org_deny_blocks_through_the_real_engine(tmp_path, monkeypat
     gateway._handle_tools_call_safe("C2", {"name": "mail__echo", "arguments": {}})
     assert sent[-1]["result"].get("isError") is not True
     assert ("tools/call", {"name": "echo", "arguments": {}}) in mail.requests
+
+
+# Fixed-cost budgets use the gateway's resolved route, not caller metadata.
+def _budget_policy(workspace, *, cost=0.1, limit=0.3, mode="enforce"):
+    import yaml
+    path = workspace / ".prismor" / "policy.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({
+        "version": "1.0",
+        "settings": {"mcp_tool_budgets": {"a": {"echo": {"cost_usd": cost, "limit_usd": limit}}}},
+        "rules": [{"id": rule, "mode": mode} for rule in
+                  ("mcp-budget-exceeded", "mcp-budget-unavailable")],
+    }))
+    return path
+
+
+def test_budget_caps_forwarded_calls_and_survives_gateway_restart(tmp_path, monkeypatch, capsys):
+    from prismor.runtime import store
+    from prismor.runtime.cli import _policy_show
+    import sqlite3
+    _budget_policy(tmp_path)
+    _policy_show(tmp_path)
+    assert "a/echo: $0.1 per call, $0.3 per session" in capsys.readouterr().out
+    a, b = stub("a"), stub("b")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [a, b])
+    gateway.session_id = "budget-session"
+    for _ in range(2):
+        list_tools(gateway, sent)  # discovery consumes no budget
+    for n in range(4):
+        gateway._handle_tools_call_safe(n, {"name": "a__echo", "arguments": {
+            "session_id": str(n), "cost_usd": 0, "budget": {"exceeded": False}}})
+    assert len([r for r in a.requests if r[0] == "tools/call"]) == 3
+    assert sent[-1]["result"]["isError"]
+    assert "mcp-budget-exceeded" in json.dumps(sent[-1])
+    gateway._handle_tools_call_safe(5, {"name": "b__echo", "arguments": {}})
+    assert len([r for r in b.requests if r[0] == "tools/call"]) == 1
+    again, messages = make_gateway(tmp_path, monkeypatch, [a])
+    again.session_id = gateway.session_id
+    again._handle_tools_call_safe(6, {"name": "a__echo", "arguments": {}})
+    assert messages[-1]["result"]["isError"]
+    again.session_id = "another-session"
+    again._handle_tools_call_safe(7, {"name": "a__echo", "arguments": {}})
+    assert not messages[-1]["result"].get("isError")
+    with sqlite3.connect(store.get_db_path(tmp_path)) as db:
+        assert db.execute("SELECT used_microusd FROM mcp_tool_spend ORDER BY used_microusd").fetchall() == [(100000,), (300000,)]
+
+
+@pytest.mark.parametrize("mode,blocked", [("enforce", True), ("observe", False)])
+def test_budget_storage_failure_obeys_enforcement(tmp_path, monkeypatch, mode, blocked):
+    from prismor.runtime import mcp_budget
+    _budget_policy(tmp_path, mode=mode)
+    monkeypatch.setattr(mcp_budget, "reserve", lambda *a: {"exceeded": False, "error": "OperationalError"})
+    upstream = stub("a")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [upstream])
+    gateway._handle_tools_call_safe(1, {"name": "a__echo", "arguments": {}})
+    assert bool(sent[-1]["result"].get("isError")) == blocked
+    assert bool([r for r in upstream.requests if r[0] == "tools/call"]) != blocked
+
+
+def test_budget_reservations_are_atomic_and_exact(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from prismor.runtime import mcp_budget
+    # Independent SQLite connections exercise the same transaction boundary as
+    # separate gateway processes. A denial must not consume or refund budget.
+    cfg = {"cost_usd": 0.1, "limit_usd": 0.3}
+    first = mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg)
+    assert first["used_usd"] == 0.1
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg), range(6)))
+    assert sum(not r["exceeded"] and not r["error"] for r in results) == 2
+    assert mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg)["used_usd"] == 0.3
+    assert mcp_budget.reserve(tmp_path, "s", "b", "echo", cfg)["used_usd"] == 0.1
+    assert mcp_budget.reserve(tmp_path / "other", "s", "a", "echo", cfg)["used_usd"] == 0.1
+
+
+@pytest.mark.parametrize("cost,limit", [(False, 1), (0, 1), (-1, 1), (0.0000001, 1),
+                                       (float("nan"), 1), (1, float("inf")), (1, -1)])
+def test_invalid_budget_is_reported_and_blocks(tmp_path, monkeypatch, cost, limit):
+    from prismor.runtime.policy_engine import validate_policy
+    path = _budget_policy(tmp_path, cost=cost, limit=limit)
+    assert any("mcp_tool_budgets" in error for error in validate_policy(path))
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [stub("a")])
+    gateway._handle_tools_call_safe(1, {"name": "a__echo", "arguments": {}})
+    assert sent[-1]["result"]["isError"]
+    assert "mcp-budget-unavailable" in json.dumps(sent[-1])
+
+
+def test_budget_keeps_hosted_security_decision_and_local_cap(tmp_path, monkeypatch):
+    from prismor.runtime import remote_eval
+    _budget_policy(tmp_path, limit=0.1)
+    hosted = []
+    monkeypatch.setattr(remote_eval, "remote_url", lambda: "https://eval.test")
+    def remote(*a, **kw):
+        hosted.append(kw["event"])
+        return Decision(allow=True)
+    monkeypatch.setattr(remote_eval, "evaluate_remote", remote)
+    upstream = stub("a")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [upstream])
+    for n in range(2):
+        gateway._handle_tools_call_safe(n, {"name": "a__echo", "arguments": {}})
+    assert len([r for r in upstream.requests if r[0] == "tools/call"]) == 1
+    assert "mcp-budget-exceeded" in json.dumps(sent[-1])
+    assert any(e.get("agent_event") == "PreToolUse" for e in hosted)
+    assert all(e["type"] != "mcp_budget" for e in hosted)
+
+
+def test_budget_store_lock_denies_without_losing_usage(tmp_path):
+    import sqlite3
+    from prismor.runtime import mcp_budget, store
+    cfg = {"cost_usd": 0.1, "limit_usd": 0.2}
+    assert mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg)["used_usd"] == 0.1
+    with sqlite3.connect(store.get_db_path(tmp_path)) as lock:
+        lock.execute("BEGIN IMMEDIATE")
+        assert mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg)["error"] == "OperationalError"
+    assert mcp_budget.reserve(tmp_path, "s", "a", "echo", cfg)["used_usd"] == 0.2
+    assert mcp_budget.reserve(tmp_path, "s", "a", "echo", {**cfg, "limit_usd": 0})["exceeded"]
+
+
+def test_budget_does_not_charge_security_denials_or_refund_upstream_errors(tmp_path, monkeypatch):
+    from prismor.runtime import mcp_budget, runtime
+    _budget_policy(tmp_path, limit=0.1)
+    original = runtime.evaluate_tool_call
+    def deny(**kw):
+        return Decision(allow=False, blocking={
+            "ruleId": "test-deny", "title": "denied", "severity": "HIGH"})
+    monkeypatch.setattr(runtime, "evaluate_tool_call", deny)
+    upstream = stub("a")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [upstream])
+    gateway._handle_tools_call_safe(1, {"name": "a__echo", "arguments": {}})
+    assert "test-deny" in json.dumps(sent[-1])
+    monkeypatch.setattr(runtime, "evaluate_tool_call", original)
+    list_tools(gateway, sent)
+    upstream.fail = UpstreamError("synthetic timeout")
+    gateway._handle_tools_call_safe(2, {"name": "a__echo", "arguments": {}})
+    assert sent[-1]["error"]["message"] == "synthetic timeout"
+    assert mcp_budget.reserve(tmp_path, gateway.session_id, "a", "echo",
+                              {"cost_usd": 0.1, "limit_usd": 0.1})["exceeded"]
+
+
+def test_budget_policy_layers_and_invalid_refresh_keep_the_cap(tmp_path, monkeypatch):
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    from prismor.runtime.policy_engine import PolicyEngine
+    path = _budget_policy(tmp_path, limit=1)
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w: True)
+    monkeypatch.setattr(remote_policy, "check_and_refresh", lambda: False)
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {
+        "settings": {"mcp_tool_budgets": {"a": {"echo": {"cost_usd": 0.1, "limit_usd": 0.1}}}},
+        "rules": [{"id": name, "mode": "enforce"} for name in
+                  ("mcp-budget-exceeded", "mcp-budget-unavailable")],
+    })
+    engine = PolicyEngine(workspace=tmp_path)
+    assert engine.mcp_tool_budgets_source == "remote"
+    assert engine.mcp_tool_budgets["a"]["echo"]["limit_usd"] == 0.1
+    # A malformed local update cannot replace the last valid local cap.
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w: False)
+    _budget_policy(tmp_path, limit=-1)
+    engine = PolicyEngine(workspace=tmp_path)
+    assert engine.project_policy_fallback
+    assert engine.mcp_tool_budgets["a"]["echo"]["limit_usd"] == 1
+    path.unlink()
+
+
+def test_budget_observes_while_gateway_is_paused(tmp_path, monkeypatch):
+    _budget_policy(tmp_path, limit=0)
+    upstream = stub("a")
+    gateway, sent = make_gateway(tmp_path, monkeypatch, [upstream])
+    monkeypatch.setattr(gateway, "_passthrough", lambda route: {"source": "pause"})
+    gateway._handle_tools_call_safe(1, {"name": "a__echo", "arguments": {}})
+    assert not sent[-1]["result"].get("isError")
+    assert len([r for r in upstream.requests if r[0] == "tools/call"]) == 1

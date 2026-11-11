@@ -822,6 +822,10 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         import yaml
         from prismor.runtime.ratelimit import validate_settings
         _settings = (yaml.safe_load(policy_yaml) or {}).get("settings") or {}
+        from prismor.runtime.mcp_budget import validate_settings as validate_budgets
+        if "mcp_tool_budgets" in _settings and validate_budgets(_settings["mcp_tool_budgets"]):
+            sys.stderr.write("[prismor] fetched remote policy has invalid mcp_tool_budgets settings — discarding\n")
+            return False
         if "rate_limit" in _settings and validate_settings(_settings["rate_limit"]):
             sys.stderr.write("[prismor] fetched remote policy has invalid rate_limit settings — discarding\n")
             return False

@@ -70,6 +70,50 @@ Your agent now sees the same tools, namespaced as `<server>__<tool>`
 Prismor.
 
 
+## Per-tool spending caps
+
+Configure a fixed estimated cost and session cap using the upstream server and
+tool names (exact names, without wildcards or the gateway's display namespace):
+
+```yaml
+settings:
+  mcp_tool_budgets:
+    warehouse:
+      query:
+        cost_usd: 0.25
+        limit_usd: 5
+rules:
+  - id: mcp-budget-exceeded
+    mode: enforce
+  - id: mcp-budget-unavailable
+    mode: enforce
+```
+
+This allows twenty forwarded `warehouse` / `query` calls per session. Costs
+must be positive; a zero cap blocks every call. Values support up to six decimal
+places. `prismor policy show` displays the effective settings. Signed org policy
+overrides local settings using the normal policy layering.
+
+The gateway reserves the cost atomically in its local SQLite store after the
+call passes security checks and before forwarding. Concurrent calls share the
+cap. Usage survives restarts when the same workspace and `--session-id` are used;
+a new session has a new budget. This is a session cap, not an identity-wide or
+cross-machine spending limit. Tokens and arguments cannot change its accounting
+key. Calls without a configured budget, discovery, and native hooks consume no
+budget. Mirrors are covered only when their upstream server/tool is configured.
+
+These are operator estimates, not measured provider charges. A forwarded call
+keeps its reservation even if it times out or returns an error, since work may
+already have run. Denied reservations add no usage. Observe mode and pause keep
+their existing pass-through behavior, so a cap is not a spending guarantee in
+those modes. Accounting stops reserving at the cap while excess calls report
+findings. Enforce both rules above to deny when the cap or accounting fails.
+
+With hosted evaluation, the ordinary security decision still runs on the hosted
+server; the budget gate and its findings run on the gateway using its local
+effective policy and store. Call-frequency limits, repeated-call circuit breakers,
+and delegation limits are separate controls.
+
 ## Tools a caller can never use are not listed
 
 In enforce mode, `tools/list` leaves out the tools this caller could only fail

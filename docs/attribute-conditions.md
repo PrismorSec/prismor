@@ -43,6 +43,7 @@ they all go through one [decision contract](decision-contract.md).
 | `subagent.number` | which of its parent's subagents made the call (1 = first); on a launch, the number the new subagent gets; `0` otherwise | Prismor's [delegation records](subagent-limits.md#delegation-records) |
 | `subagent.age` | seconds since the subagent's first allowed call (`0` on the main agent) | same |
 | `rate.count`, `rate.limit`, `rate.error` | attempted admission ordinal, configured rolling-minute capacity, and accounting error (`null` on success) | trusted live admission gate, on the internal `rate_limit` event only; defaults to `0`, `0`, `null` otherwise |
+| `budget.exceeded`, `budget.error` | whether the next fixed-cost MCP call exceeds its session cap, and accounting error | gateway-owned reservation on the internal `mcp_budget` event; defaults to `false`, `null` otherwise; never read from tool arguments |
 
 A caller can *name* a user (`subject: "user:alice"`) but cannot grant itself a
 role: roles and claims come only from a

@@ -282,6 +282,7 @@ _LINE_FIELDS = frozenset({"command", "path", "url"})
 
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
     "rate_limit": ["content"],
+    "mcp_budget": ["content"],
     "shell": ["command"],
     "file_read": ["path"],
     "file_write": ["path"],
@@ -748,7 +749,7 @@ class RuleCondition:
         return hits >= need
 
 
-_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent", "rate"})
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent", "rate", "budget"})
 _WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
 
 
@@ -949,7 +950,8 @@ def _int(value: Any) -> int:
 
 
 def _when_context(event: Dict[str, Any], subject: Optional[Any],
-                  rate_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                  rate_context: Optional[Dict[str, Any]] = None,
+                  budget_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The attribute namespaces a ``when:`` expression can read."""
     meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
     args = meta.get("kwargs")
@@ -987,6 +989,7 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any],
     return {
         # Only the live runtime supplies this context, never event metadata.
         "rate": rate_context or {"count": 0, "limit": 0, "error": None},
+        "budget": budget_context or {"exceeded": False, "error": None},
         "principal": principal,
         "resource": resource,
         "args": args,
@@ -1409,6 +1412,9 @@ class PolicyEngine:
         self.rate_limit: Optional[Dict[str, int]] = None
         self.rate_limit_source: str = "default"
         self.rate_limit_error: Optional[str] = None
+        self.mcp_tool_budgets: Dict[str, Any] = {}
+        self.mcp_tool_budgets_error: Optional[str] = None
+        self.mcp_tool_budgets_source = "default"
         self.outputs: List[Dict[str, Any]] = []
         self.semantic_guard_config: Dict[str, Any] = {}
         self.sandbox_config: Dict[str, Any] = {}
@@ -1572,6 +1578,12 @@ class PolicyEngine:
         wins (remote is applied after project = org-admin authoritative).
         """
         _layer_settings = override_raw.get("settings") or {}
+        if "mcp_tool_budgets" in _layer_settings:
+            from prismor.runtime.mcp_budget import validate_settings as validate_budgets
+            errors = validate_budgets(_layer_settings["mcp_tool_budgets"])
+            if errors:
+                self.mcp_tool_budgets_error = "; ".join(errors)
+                return
         if "rate_limit" in _layer_settings:
             from prismor.runtime.ratelimit import validate_settings
             _rate_errors = validate_settings(_layer_settings["rate_limit"])
@@ -1720,6 +1732,9 @@ class PolicyEngine:
             self._data_boundary_source = source
         if "agent_connections" in override_settings:
             self._agent_connections_source = source
+        if "mcp_tool_budgets" in override_settings:
+            self.mcp_tool_budgets_source = source
+            self.mcp_tool_budgets_error = None
         if "rate_limit" in override_settings:
             self.rate_limit_source = source
             self.rate_limit_error = None
@@ -1820,6 +1835,12 @@ class PolicyEngine:
                 if override_raw is not None and not isinstance(override_raw, dict):
                     raise ValueError("the top level must be a mapping (version:, rules:, settings:)")
                 _rate_settings = (override_raw or {}).get("settings") or {}
+                if "mcp_tool_budgets" in _rate_settings:
+                    from prismor.runtime.mcp_budget import validate_settings as validate_budgets
+                    errors = validate_budgets(_rate_settings["mcp_tool_budgets"])
+                    if errors:
+                        self.mcp_tool_budgets_error = "; ".join(errors)
+                        raise ValueError(self.mcp_tool_budgets_error)
                 if "rate_limit" in _rate_settings:
                     from prismor.runtime.ratelimit import validate_settings
                     _rate_errors = validate_settings(_rate_settings["rate_limit"])
@@ -1893,6 +1914,7 @@ class PolicyEngine:
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
         self.rate_limit = settings.get("rate_limit")
+        self.mcp_tool_budgets = settings.get("mcp_tool_budgets", {})
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
         # org-managed workspaces (the remote overlay is only merged there); the
@@ -2103,6 +2125,7 @@ class PolicyEngine:
         include_suppressed: bool = False,
         trace: Optional[List[Dict[str, Any]]] = None,
         rate_context: Optional[Dict[str, Any]] = None,
+        budget_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -2284,7 +2307,7 @@ class PolicyEngine:
             when_holds: Optional[bool] = None
             if rule.when is not None:
                 if when_ctx is None:
-                    when_ctx = _when_context(event, subject, rate_context)
+                    when_ctx = _when_context(event, subject, rate_context, budget_context)
                 when_holds = rule.when.evaluate(when_ctx)
             if trace is not None:
                 # Every rule whose patterns matched, including the ones a
@@ -5511,6 +5534,10 @@ def validate_policy(path: Path) -> List[str]:
         errors.append("Missing required field: rules")
         return errors
 
+    if "mcp_tool_budgets" in (raw.get("settings") or {}):
+        from prismor.runtime.mcp_budget import validate_settings as validate_budgets
+        errors.extend(validate_budgets(raw["settings"]["mcp_tool_budgets"]))
+
     if "rate_limit" in (raw.get("settings") or {}):
         from prismor.runtime.ratelimit import validate_settings
         errors.extend(validate_settings(raw["settings"]["rate_limit"]))
@@ -5687,6 +5714,7 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
             "block_categories": sorted(engine.block_categories),
             "egress_allowlist": list(engine.egress_allowlist),
             "mcp_transport_action": engine.mcp_transport_action,
+            "mcp_tool_budgets": engine.mcp_tool_budgets,
             "supply_chain_install_check": engine.supply_chain_install_check,
             "supply_chain_transitive_scan": engine.supply_chain_transitive_scan,
             "semantic_guard": engine.semantic_guard_config,

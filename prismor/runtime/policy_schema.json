@@ -33,6 +33,22 @@
       "type": "object",
       "description": "Policy-level settings that control enforcement behaviour",
       "properties": {
+        "mcp_tool_budgets": {
+          "type": "object",
+          "description": "Exact server and tool names mapped to fixed USD costs and per-session caps. Enforcement follows mcp-budget-exceeded and mcp-budget-unavailable.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cost_usd", "limit_usd"],
+              "properties": {
+                "cost_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 1000000000},
+                "limit_usd": {"type": "number", "minimum": 0, "maximum": 1000000000}
+              }
+            }
+          }
+        },
         "rate_limit": {
           "type": "object",
           "additionalProperties": false,
@@ -871,6 +887,7 @@
               "skill_manifest",
               "ui_action",
               "rate_limit",
+              "mcp_budget",
               "mcp"
             ]
           },

@@ -14,6 +14,7 @@ from prismor.runtime.feed_signature import (
 
 CATEGORY_TO_FEED_TYPES = {
     "rate_limit": {"model_denial_of_service"},
+    "mcp_budget": {"model_denial_of_service"},
     "prompt_injection": {"prompt_injection", "jailbreak", "policy_bypass"},
     "destructive_command": {"unsafe_tool_execution", "policy_bypass"},
     "remote_execution": {"unsafe_tool_execution", "policy_bypass"},
