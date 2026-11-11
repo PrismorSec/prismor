@@ -206,8 +206,34 @@ def mask_secret_patterns(text: str) -> str:
         from prismor.runtime.cloaking.patterns import all_patterns
         rx = _compile_secret_patterns(tuple(all_patterns()))
     except Exception:
+        rx = None
+    # Spans from both pattern sets are taken on the original text, then merged:
+    # masking in sequence would hide the key id the AWS id+secret pattern
+    # anchors on. The data_boundary set is what the proxy uses toward the
+    # upstream (URL passwords, AWS secret keys, PEM bodies) and goes beyond the
+    # cloak set, so the log never keeps what the upstream was spared.
+    spans = [m.span() for m in rx.finditer(text)] if rx else []
+    try:
+        from prismor.runtime.data_boundary import _SECRET_PATTERNS
+        from prismor.runtime.redaction import _URL_PASSWORD
+        spans += [m.span(2) for m in _URL_PASSWORD.finditer(text)]
+        for pat, _kind in _SECRET_PATTERNS:
+            grp = "secret" if "secret" in pat.groupindex else 0
+            spans += [m.span(grp) for m in pat.finditer(text) if m.group(grp)]
+    except Exception:
+        pass
+    if not spans:
         return text
-    return rx.sub("[REDACTED:secret]", text) if rx else text
+    out, pos = [], 0
+    for start, end in sorted(spans):
+        if end <= pos:
+            continue
+        if start >= pos:
+            out.append(text[pos:start])
+            out.append("[REDACTED:secret]")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:

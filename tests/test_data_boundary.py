@@ -592,3 +592,30 @@ def test_unprefixed_and_new_vendor_secrets_are_redacted():
     # Masked with the cloak layer too, i.e. in observe mode and while paused.
     out_observe, _ = redact_text(f"token: {openai_key}", data_boundary=False)
     assert openai_key not in out_observe
+
+
+def test_aws_secret_forms_and_pem_private_keys_are_redacted():
+    """Through the proxy, an AWS secret in STS JSON / the credentials CSV and
+    a PEM private key reached the upstream unmasked. Values are assembled here
+    so no literal credential sits in the repo."""
+    from prismor.runtime.redaction import redact_text
+    secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
+    key_id = "AKIA" + "IOSFODNN7EXAMPLE"
+    body = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW"
+    pem = f"-----BEGIN OPENSSH PRIVATE KEY-----\n{body}\n-----END OPENSSH PRIVATE KEY-----"
+    leaking = [f'{{"AccessKeyId": "{key_id}", "SecretAccessKey": "{secret}"}}',
+               f"{key_id},{secret}",
+               f"key id {key_id} secret {secret}",
+               pem,
+               pem.split("\n-----END")[0]]          # a paste cut off before END
+    for text in leaking:
+        for db in (True, False):
+            out, _ = redact_text(text, data_boundary=db)
+            assert secret not in out and body not in out, (db, text[:40])
+    # The PEM header stays so a reader still sees what kind of key was there.
+    assert redact_text(pem)[0].startswith("-----BEGIN OPENSSH PRIVATE KEY-----")
+    # Not secrets: a git SHA after a key id, public keys.
+    sha = "3f2a9c8e1b7d4f6a0e5c2b9d8a7f6e5d4c3b2a19"
+    assert sha in redact_text(f"{key_id} commit {sha}")[0]
+    pub = "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----"
+    assert redact_text(pub)[1] is False

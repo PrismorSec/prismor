@@ -16,3 +16,21 @@ def test_unregistered_key_is_masked_before_it_is_stored(tmp_path, monkeypatch):
 def test_ordinary_text_is_untouched():
     t = "fix the login bug in sk-learn notes"
     assert mask_secret_patterns(t) == t
+
+
+def test_store_masks_what_the_proxy_masks_toward_the_upstream(tmp_path, monkeypatch):
+    """The proxy masked a DB-URL password toward the upstream, but the session
+    log kept it (and AWS secrets, PEM keys) raw: the store used only the cloak
+    pattern set. It now also applies the upstream set."""
+    from prismor.runtime.redaction import redact_text
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    secret = "wJalrXUtnFEMI/K7MDENG/" + "bPxRfiCY" + "EXAMPLEKEY"
+    body = "MIIEpAIBAAKCAQEA0Z3VS5JJcds3xfn/ygWyF8PbnGy0AHB7MaH"
+    prompt = ("db postgres://app:" + "hunter2pass" + "@db.internal:5432/x\n"
+              f"AKIA{'IOSFODNN7EXAMPLE'},{secret}\n"
+              f"-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----")
+    stored = _recloak_event({"type": "prompt", "prompt": prompt})["prompt"]
+    for raw in ("hunter2pass", secret, body):
+        assert raw not in stored
+        assert raw not in redact_text(prompt)[0]
+    assert "postgres://app:[REDACTED:secret]@db.internal" in stored
