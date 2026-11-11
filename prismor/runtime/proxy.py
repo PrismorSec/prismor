@@ -510,34 +510,63 @@ def conversation_key(body: Dict[str, Any]) -> str:
 
 def response_tool_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[str, Any]]:
     """``(tool_name, arguments)`` for every tool call in a completed response."""
-    calls: List[Tuple[str, Any]] = []
+    return [(name, args) for _, name, args in _response_calls(provider, body)]
+
+
+def _response_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[Any, str, Any]]:
+    """``(call object, tool_name, arguments)`` for every tool call in a response.
+
+    The object is the dict ``_strip_blocked_calls`` later walks, so a verdict
+    keyed by ``id(obj)`` lands on exactly that call. Keying by tool name would
+    strip every parallel call that shares a name (``bash`` x2) with a denied one.
+    """
+    calls: List[Tuple[Any, str, Any]] = []
     if provider == "google":
         for candidate in body.get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             for part in content.get("parts") or []:
                 call = part.get("functionCall") if isinstance(part, dict) else None
                 if isinstance(call, dict):
-                    calls.append((str(call.get("name") or ""), call.get("args") or {}))
+                    calls.append((call, str(call.get("name") or ""), call.get("args") or {}))
         return calls
     if provider == "anthropic":
         for block in body.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls.append((str(block.get("name") or ""), block.get("input")))
+                calls.append((block, str(block.get("name") or ""), block.get("input")))
         return calls
     for choice in body.get("choices") or []:
         message = (choice or {}).get("message") or {}
         for call in message.get("tool_calls") or []:
             fn = (call or {}).get("function") or {}
-            calls.append((str(fn.get("name") or ""), _loads(fn.get("arguments"))))
+            calls.append((call, str(fn.get("name") or ""), _loads(fn.get("arguments"))))
         legacy = message.get("function_call")
         if isinstance(legacy, dict) and legacy.get("name"):
-            calls.append((str(legacy.get("name") or ""), _loads(legacy.get("arguments"))))
+            calls.append((legacy, str(legacy.get("name") or ""), _loads(legacy.get("arguments"))))
     # Responses API
     for item in body.get("output") or []:
         call = _response_item_call(item)
         if call is not None:
-            calls.append(call)
+            calls.append((item, *call))
     return calls
+
+
+def _denial(blocked: Dict[Any, str], obj: Any, name: Any) -> Optional[str]:
+    """The refusal for this one call: by object, then Responses item id, then name.
+
+    The buffered path keys by ``id(obj)``; the streamed Responses path, which
+    sees the call again as a fresh object in ``response.completed``, keys by
+    ``item:<id>`` plus the tool name. A call that carries an id is matched by
+    id only, so an allowed sibling of the same name survives; one with no id
+    falls back to the name, which over-strips rather than letting a denied
+    call back through.
+    """
+    if id(obj) in blocked:
+        return blocked[id(obj)]
+    per_call = any(not isinstance(k, str) or k.startswith("item:") for k in blocked)
+    ids = [obj.get(f) for f in ("id", "call_id")] if isinstance(obj, dict) else []
+    if per_call and any(ids):
+        return next((blocked[f"item:{v}"] for v in ids if v and f"item:{v}" in blocked), None)
+    return blocked.get(name) if isinstance(name, str) else None
 
 
 def _response_item_call(item: Any) -> Optional[Tuple[str, Any]]:
@@ -1301,7 +1330,7 @@ class StreamScreen:
         self._finish_override: Optional[str] = None
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
-        self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
+        self._denied: Dict[str, str] = {}    # Responses API: "item:<id>" (or name) -> refusal
         # chat/completions: parallel calls interleave by ``index``; each is
         # judged on its own, or their JSON concatenates and policy sees none.
         self._calls: Dict[int, Dict[str, Any]] = {}
@@ -1660,7 +1689,10 @@ class StreamScreen:
                 if reason is None:
                     return held
                 self.blocked.append(reason)
-                self._denied[self._tool_name] = reason
+                for item_id in (item.get("id"), item.get("call_id")):
+                    if item_id:
+                        self._denied[f"item:{item_id}"] = reason
+                self._denied[self._tool_name] = reason   # for a recap item with no id
                 return _responses_refusal_frames(reason, self._tool_index)
             return b""
 
@@ -2480,22 +2512,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = _loads_object(payload)
         if body is None:
             return payload
-        blocked: Dict[str, str] = {}
-        for tool_name, arguments in response_tool_calls(provider, body):
+        blocked: Dict[Any, str] = {}
+        for call_obj, tool_name, arguments in _response_calls(provider, body):
             event = self.screen.tool_event(tool_name, arguments, provider, model, subject,
                                            session_id=getattr(self, "_session_id", ""))
             try:
                 decision = self.screen.evaluate(event, subject)
             except Exception:
-                blocked[tool_name] = ("Blocked by Prismor: policy evaluation failed "
-                                      "(fail-closed)")
+                blocked[id(call_obj)] = ("Blocked by Prismor: policy evaluation failed "
+                                         "(fail-closed)")
                 continue
             self.screen.log(decision, tool_name)
             blocking = self.screen.blocking(decision)
             if blocking is not None:
-                blocked[tool_name] = refusal_reason(blocking, getattr(self, "_spoken", False))
+                blocked[id(call_obj)] = refusal_reason(blocking, getattr(self, "_spoken", False))
                 sys.stderr.write(
-                    f"[prismor-proxy] {blocked[tool_name]} (tool={tool_name})\n")
+                    f"[prismor-proxy] {blocked[id(call_obj)]} (tool={tool_name})\n")
         if blocked:
             body = _strip_blocked_calls(provider, body, blocked)
         _mask_in_place(body, self.screen.redact)
@@ -2754,17 +2786,21 @@ def _mask_in_place(node: Any, redact: Callable[[str], str]) -> None:
 
 
 def _strip_blocked_calls(provider: str, body: Dict[str, Any],
-                         blocked: Dict[str, str]) -> Dict[str, Any]:
-    """Replace denied tool calls with the refusal text, in place."""
+                         blocked: Dict[Any, str]) -> Dict[str, Any]:
+    """Replace denied tool calls with the refusal text, in place.
+
+    ``blocked`` is keyed per call (see ``_denial``) so a denied call never takes
+    an allowed sibling of the same name down with it.
+    """
     if provider == "google":
         for candidate in body.get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             parts, kept_call = [], False
             for part in content.get("parts") or []:
                 call = part.get("functionCall") if isinstance(part, dict) else None
-                name = (call or {}).get("name")
-                if isinstance(call, dict) and name in blocked:
-                    parts.append({"text": blocked[name]})
+                reason = _denial(blocked, call, (call or {}).get("name")) if isinstance(call, dict) else None
+                if reason:
+                    parts.append({"text": reason})
                 else:
                     kept_call = kept_call or isinstance(call, dict)
                     parts.append(part)
@@ -2777,48 +2813,66 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
         return body
     if provider == "anthropic":
         content = []
-        for block in body.get("content") or []:
-            name = block.get("name") if isinstance(block, dict) else None
-            if isinstance(block, dict) and block.get("type") == "tool_use" and name in blocked:
-                content.append(_refused_tool_block(provider, block, blocked[name]))
+        body_blocks = list(body.get("content") or [])
+        for block in body_blocks:
+            reason = (_denial(blocked, block, block.get("name"))
+                      if isinstance(block, dict) and block.get("type") == "tool_use" else None)
+            if reason:
+                content.append(_refused_tool_block(provider, block, reason))
             else:
                 content.append(block)
         body["content"] = content
-        if any(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        refused = any(
+            _denial(blocked, b, b.get("name")) for b in body_blocks
+            if isinstance(b, dict) and b.get("type") == "tool_use")
+        kept_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+        # Only end the turn when no call is left to run; a kept sibling still
+        # needs stop_reason tool_use or the client never executes it.
+        if refused and not kept_tool:
             body["stop_reason"] = "end_turn"
         return body
     for choice in body.get("choices") or []:
         message = (choice or {}).get("message") or {}
         kept, refusals = [], []
         for call in message.get("tool_calls") or []:
-            name = ((call or {}).get("function") or {}).get("name")
-            if name in blocked:
-                refusals.append(blocked[name])
+            reason = _denial(blocked, call, ((call or {}).get("function") or {}).get("name"))
+            if reason:
+                refusals.append(reason)
             else:
                 kept.append(call)
+        legacy = message.get("function_call")
+        legacy_reason = (_denial(blocked, legacy, legacy.get("name"))
+                         if isinstance(legacy, dict) else None)
+        if legacy_reason:
+            # The pre-tools function_call shape: judged above, so drop it too,
+            # or a denied call is logged as blocked and still handed over.
+            message.pop("function_call", None)
+            refusals.append(legacy_reason)
         if refusals:
-            message["tool_calls"] = kept
+            if "tool_calls" in message:
+                message["tool_calls"] = kept
             message["content"] = "\n".join(
                 filter(None, [message.get("content") or ""] + refusals))
             if not kept:
                 message.pop("tool_calls", None)
-                choice["finish_reason"] = "stop"
+                if "function_call" not in message:
+                    choice["finish_reason"] = "stop"
     # Responses API: tool calls are top-level output items, not inside a
     # message. Without this branch a denied call is recorded as blocked but
     # still handed back to the agent -- and gpt-6-luna forces this endpoint for
     # any request with tools, so enforce mode was silently a no-op for it.
     items = body.get("output")
 
-    def _denied_name(item: Any) -> Optional[str]:
+    def _denied_reason(item: Any) -> Optional[str]:
         call = _response_item_call(item)
-        return call[0] if call is not None and call[0] in blocked else None
+        return _denial(blocked, item, call[0]) if call is not None else None
 
-    if isinstance(items, list) and any(_denied_name(i) for i in items):
+    if isinstance(items, list) and any(_denied_reason(i) for i in items):
         kept_items, refusals = [], []
         for item in items:
-            name = _denied_name(item)
-            if name:
-                refusals.append(blocked[name])
+            reason = _denied_reason(item)
+            if reason:
+                refusals.append(reason)
             else:
                 kept_items.append(item)
         # A message item carrying the refusal, so an agent that reads output
