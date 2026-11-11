@@ -348,6 +348,21 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
     spans = quoted_spans(_blank(command, hspans))
     bare = _blank(_outside_quotes(command, spans), hspans)
 
+    lead, trimmed = match_start, match_end
+    while lead < trimmed and command[lead].isspace():
+        lead += 1  # a `(?:^|\s)` anchor takes the newline before the body
+    while trimmed > lead and command[trimmed - 1].isspace():
+        trimmed -= 1
+    for h in hdocs:
+        if h.body_start <= lead and trimmed <= h.body_end and _is_text_heredoc(command, h):
+            # Still live where the shell expands the body: `$(...)` in an
+            # unquoted-delimiter body runs as the heredoc is read.
+            body = command[h.body_start:h.body_end]
+            return not (h.expands and any(
+                match_start < h.body_start + b and trimmed > h.body_start + a
+                for a, b in command_substitution_spans(body)
+            ))
+
     for word in bare.replace(_SEPARATORS[0], " ").replace(_SEPARATORS[1], " ").replace(_SEPARATORS[2], " ").split():
         if word.rsplit("/", 1)[-1] in _INTERPRETERS:
             return False
@@ -669,13 +684,20 @@ def is_inert_remote_match(command: str, match_start: int, match_end: int,
 # Python that can start a process or run generated code. A shell-syntax match
 # inside a string literal is only text when nothing in the script could hand
 # that string to a shell (or to exec, which could).
+#
+# Searched against the script's CODE only (string literals and comments
+# blanked, see _python_tokens): a docstring that says "subprocess" runs nothing.
+# The builtins exec/eval/compile match as bare names, called or not (`run =
+# exec` is an alias), but never as an attribute: `re.compile(...)` and
+# `model.eval()` are not the builtin.
 _PY_EXEC = re.compile(
     r"\b(?:subprocess|os\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile)"
-    r"|pty\s*\.\s*spawn|commands\s*\.|exec\s*\(|eval\s*\(|compile\s*\(|__import__|importlib"
-    r"|ctypes|pexpect|paramiko|fabric|invoke|plumbum|sh\s*\.|asyncio\s*\.\s*create_subprocess\w*"
+    r"|pty\s*\.\s*spawn|commands\s*\.|__import__|importlib"
+    r"|ctypes|pexpect|paramiko|fabric|invoke|plumbum|asyncio\s*\.\s*create_subprocess\w*"
     # Indirection that reaches the above without naming it.
     r"|getattr\s*\(|globals\s*\(|locals\s*\(|vars\s*\(|builtins|runpy|multiprocessing"
     r"|concurrent|pickle|marshal|shelve|code\s*\.\s*interact|InteractiveConsole|webbrowser)"
+    r"|(?<![\w.])(?:exec|eval|compile|breakpoint)\b|(?<![\w.])sh\s*\."
 )
 _PYTHON_BIN = re.compile(r"^python[0-9.]*$")
 # Shells and runners that would execute what the script prints.
@@ -685,9 +707,12 @@ _STDOUT_EXECUTORS = frozenset({
 })
 
 
-def _python_string_spans(source: str) -> Optional[List[Tuple[int, int]]]:
-    """Character spans of every string literal (f-strings whole). None when
-    the source does not tokenize -- callers must then keep the match live."""
+def _python_tokens(source: str) -> Optional[Tuple[List[Tuple[int, int]], str]]:
+    """``(inert_spans, code)`` for a Python source: the character spans of
+    every string literal (f-strings whole) and comment, and the source with
+    the inert text blanked so :data:`_PY_EXEC` sees only code. An f-string's
+    ``{...}`` stays in ``code`` -- it is evaluated. None when the source does
+    not tokenize; callers must then keep the match live."""
     import io
     import tokenize
     line_starts = [0]
@@ -698,19 +723,28 @@ def _python_string_spans(source: str) -> Optional[List[Tuple[int, int]]]:
         return line_starts[pos[0] - 1] + pos[1]
 
     spans: List[Tuple[int, int]] = []
+    blank: List[Tuple[int, int]] = []
     fstring_start: List[int] = []
     try:
         for tok in tokenize.generate_tokens(io.StringIO(source).readline):
             name = tokenize.tok_name.get(tok.type, "")
-            if name == "STRING":
-                spans.append((at(tok.start), at(tok.end)))
+            if name in ("STRING", "COMMENT"):
+                span = (at(tok.start), at(tok.end))
+                spans.append(span)
+                # Before 3.12 an f-string is one STRING token, expressions
+                # and all: keep it in the code rather than blank a call.
+                prefix = tok.string[:3].lower()
+                if not (name == "STRING" and "f" in prefix.split("'")[0].split('"')[0]):
+                    blank.append(span)
+            elif name == "FSTRING_MIDDLE":
+                blank.append((at(tok.start), at(tok.end)))
             elif name == "FSTRING_START":
                 fstring_start.append(at(tok.start))
             elif name == "FSTRING_END" and fstring_start:
                 spans.append((fstring_start.pop(), at(tok.end)))
     except (tokenize.TokenError, IndentationError, SyntaxError):
         return None
-    return spans
+    return spans, _blank(source, blank)
 
 
 def is_inert_script_literal(command: str, match_start: int, match_end: int) -> bool:
@@ -729,13 +763,20 @@ def is_inert_script_literal(command: str, match_start: int, match_end: int) -> b
     for h in heredocs(command):
         if not (h.body_start <= match_start and match_end <= h.body_end):
             continue
-        segment = command[:h.start].rsplit("\n", 1)[-1]
-        for sep in _SEPARATORS:
-            segment = segment.split(sep)[-1]
-        tokens = segment.split()
-        while tokens and "=" in tokens[0] and not tokens[0].startswith("="):
-            tokens = tokens[1:]  # leading VAR=value assignments
-        if not tokens or not _PYTHON_BIN.match(tokens[0].rsplit("/", 1)[-1]):
+        tokens = _opener_tokens(command, h)
+        argv0 = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+        if argv0 in _HEREDOC_SINKS:
+            # `cat > probe.py <<'EOF'` writes a Python file; whatever runs it
+            # later runs Python, so the same literal analysis holds. A
+            # shebang naming anything but python means it is not Python.
+            target = _sink_target(tokens)
+            body = command[h.body_start:h.body_end]
+            first = body.lstrip("\n").split("\n", 1)[0]
+            if not (target and target.endswith(".py")) or (
+                first.startswith("#!") and "python" not in first
+            ):
+                return False
+        elif not _PYTHON_BIN.match(argv0):
             return False
         # Whatever the script prints must not be run: no pipe on the opener
         # line, and no executor anywhere outside heredoc bodies.
@@ -746,7 +787,11 @@ def is_inert_script_literal(command: str, match_start: int, match_end: int) -> b
             if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
                 return False
         body = command[h.body_start:h.body_end]
-        if _PY_EXEC.search(body):
+        parsed = _python_tokens(body)
+        if parsed is None:
+            return False
+        literals, code = parsed
+        if _PY_EXEC.search(code):
             return False
         # Patterns anchored on a trailing delimiter consume the whitespace
         # after the closing quote; that is no more code than the quote is.
@@ -755,8 +800,74 @@ def is_inert_script_literal(command: str, match_start: int, match_end: int) -> b
         rel_start, rel_end = match_start - h.body_start, match_end - h.body_start
         if h.expands and any(rel_start < b and rel_end > a for a, b in command_substitution_spans(body)):
             return False
-        literals = _python_string_spans(body)
-        if not literals:
-            return False
         return any(a <= rel_start and rel_end <= b for a, b in literals)
     return False
+
+
+def _opener_tokens(command: str, h: Heredoc) -> List[str]:
+    """Words of the simple command that owns heredoc ``h``: its segment of the
+    opener line before ``<<``, plus the rest of that line up to the next
+    separator (``cat <<'EOF' > notes.md``). Leading ``VAR=value`` dropped."""
+    before = command[:h.start].rsplit("\n", 1)[-1]
+    for sep in _SEPARATORS:
+        before = before.split(sep)[-1]
+    after = re.split(r"[;|&]", command[h.op_end:h.body_start], maxsplit=1)[0]
+    tokens = before.split() + after.split()
+    while tokens and "=" in tokens[0] and not tokens[0].startswith("="):
+        tokens = tokens[1:]
+    return tokens
+
+
+def _sink_target(tokens: List[str]) -> Optional[str]:
+    """The file a ``cat``/``tee`` heredoc writes, or None (stdout, or more
+    than one file)."""
+    if not tokens:
+        return None
+    argv0 = tokens[0].rsplit("/", 1)[-1]
+    targets: List[str] = []
+    if argv0 == "cat":
+        for k, tok in enumerate(tokens[1:], 1):
+            m = re.match(r"^\d*>{1,2}\|?(.*)$", tok)
+            if m:
+                name = m.group(1) or (tokens[k + 1] if k + 1 < len(tokens) else "")
+                targets.append(name)
+    elif argv0 == "tee":
+        targets = [t for t in tokens[1:] if not t.startswith(("-", ">", "<"))]
+    targets = [t.strip("\"'") for t in targets if t]
+    return targets[0] if len(targets) == 1 else None
+
+
+def _is_text_heredoc(command: str, h: Heredoc) -> bool:
+    """True when heredoc ``h`` is prose by where it goes, whatever else the
+    command runs: ``cat > notes.md`` / ``tee NOTES.txt`` (a text file the rest
+    of the command never names again, so it is not then sourced or run), or a
+    commit/PR message read from stdin (``git commit -F -``, ``gh pr create
+    --body "$(cat <<'EOF'``). Unlike the general sink rule, an interpreter
+    elsewhere in the command does not make this body live: nothing hands a
+    text file or a commit message to it."""
+    tokens = _opener_tokens(command, h)
+    if not tokens:
+        return False
+    argv0 = tokens[0].rsplit("/", 1)[-1]
+    if argv0 in ("git", "gh"):
+        texty = _GIT_MESSAGE_SUBCOMMANDS if argv0 == "git" else _GH_TEXT_SUBCOMMANDS
+        if len(tokens) < 2 or tokens[1] not in texty:
+            return False
+        # Body is stdin (`-F -`, `--body-file -`) or the `$(cat` of an argument.
+        return tokens[-1].endswith("$(cat") or (
+            "-" in tokens and any(t in ("-F", "--file", "--body-file") for t in tokens)
+        )
+    if argv0 not in _HEREDOC_SINKS:
+        return False
+    target = _sink_target(tokens)
+    if not target:
+        return False
+    if target in _TEXT_DEVICES:
+        return True
+    name = target.rsplit("/", 1)[-1]
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if ext not in _TEXT_FILE_EXTS:
+        return False
+    outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
+    # Named once (the redirect itself), and no glob that could pick it up.
+    return outside.count(name) == 1 and not re.search(r"\*[^\s;&|]*" + re.escape(ext) + r"\b", outside, re.I)

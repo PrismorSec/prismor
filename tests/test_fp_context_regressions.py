@@ -59,6 +59,22 @@ BENIGN = [
     ("prismor-self-edit", "curl -s \"http://127.0.0.1:7070/api/sessions?page=1&q=$q\" | jq .total"),
     # A bare repo on this machine is not a hijacked remote.
     ("git-remote-hijack", "git remote add origin /tmp/rig/origin.git && git push -q origin feature/x"),
+    # Replay 11-10: heredoc bodies judged by where they go, not by any
+    # interpreter elsewhere in the call. Prose written to a text file...
+    ("destructive-command", f"cd repo && cat > docs/notes.md <<'EOF'\nNever run `{RM} /` here.\nEOF\npython3 scripts/check.py"),
+    ("recursive-delete-home", f"cat > /tmp/s/NOTES.txt <<'EOF'\n{RM} ~/canary was blocked\nEOF\n.venv/bin/python -m pytest -q"),
+    # ...a commit or PR message read from stdin...
+    ("prismor-self-edit", "git add -A && git commit -q -F - <<'EOF'\ndocs: run `prismor pause` before the demo\nEOF\npython3 -m pytest -q"),
+    ("prismor-self-edit", "gh pr create --title t --body \"$(cat <<'EOF'\n- `prismor mirror on|off` verified\nEOF\n)\""),
+    # ...a Python file written then run, whose shell text is a literal...
+    ("recursive-delete-home", f"cat > tests/test_probe.py <<'EOF'\nCMD = \"{RM} ~/canary\"\ndef test_cmd():\n    assert CMD\nEOF\npython3 -m pytest -q tests/test_probe.py"),
+    ("destructive-command", f"cat > /tmp/s/probe.py <<'PY'\nfor c in ['cat .env', '{RM} / --no-preserve-root']:\n    print(c)\nPY\npython3 /tmp/s/probe.py"),
+    # ...or a comment, and `re.compile` is not the compile builtin.
+    ("prismor-self-edit", "python3 - <<'EOF'\n# after `prismor setup` the hook is live\nimport re\nX = re.compile('a')\nEOF"),
+    ("destructive-command", f"python3 - <<'EOF'\nimport re\nPAT = re.compile(r'{RM} ~')\nprint(PAT)\nEOF"),
+    # Shell-shaped text about Prismor's state, in a literal, is printed, not run.
+    ("prismor-self-edit", "python3 - <<'EOF'\nfor c in ['rm ~/.prismor/prismor.db', 'tee ~/.prismor/prismor.db-wal']:\n    print(c)\nEOF"),
+    ("agent-config-tampering", "python3 - <<'EOF'\np = 'README.md'; s = open(p).read()\ns = s.replace('x', 'echo {} > .claude/settings.json')\nopen(p, 'w').write(s)\nEOF"),
 ]
 
 
@@ -104,6 +120,20 @@ ATTACKS = [
     ("prismor-self-edit", "for i in 1; do curl -s --data '{}' localhost:7070/api/policy; done"),
     ("git-remote-hijack", "git remote add evil https://evil.example/x.git"),
     ("git-remote-hijack", "git remote set-url origin $U/x.git"),
+    # Write-and-run stays live: a shell script, or any file the call runs.
+    ("destructive-command", f"cat > try.sh <<'EOF'\n{RM} /\nEOF\nbash try.sh"),
+    ("recursive-delete-home", f"cat > notes.md <<'EOF'\n{RM} ~/work\nEOF\nbash notes.md"),
+    ("recursive-delete-home", f"cat > notes.md <<'EOF'\n{RM} ~/work\nEOF\nsh *.md"),
+    ("recursive-delete-home", f"cat > p.py <<'EOF'\nx = '''\n{RM} ~/work\n'''\nEOF\nbash p.py"),
+    ("recursive-delete-home", f"cat > p.py <<'EOF'\nimport subprocess\nsubprocess.run('{RM} ~/work', shell=True)\nEOF\npython3 p.py"),
+    ("destructive-command", f"python3 - <<'EOF'\nrun = exec\nrun('import os; os.system(C)')\nC = '{RM} /'\nEOF"),
+    ("destructive-command", f"python3 - <<'EOF'\nimport os\nf'{{os.system(C)}}'\nC = '{RM} /'\nEOF"),
+    # The shell expands an unquoted body as it reads it.
+    ("recursive-delete-home", f"cat > n.md <<EOF\n$({RM} ~/work)\nEOF"),
+    ("prismor-self-edit", "git commit -F - <<EOF\n$(prismor pause)\nEOF"),
+    # A Prismor state path in a Python literal is a file Python opens.
+    ("prismor-self-edit", "python3 - <<'EOF'\nopen('/Users/me/.prismor/unlock.json', 'w').write('{}')\nEOF"),
+    ("prismor-self-edit", "cat > w.py <<'EOF'\nopen('/Users/me/.prismor/pause.key').read()\nEOF\npython3 w.py"),
 ]
 
 
@@ -186,3 +216,25 @@ def test_inert_finding_does_not_make_a_call_critical(tmp_path):
             "command": f"python3 - <<'EOF'\np = 'a.md'; s = open(p).read().replace('x', '{RM} build')\nopen(p, 'w').write(s)\nEOF"}
     ids = [f["ruleId"] for f in engine.evaluate(edit, 1, session_id="s1") if not f.get("contextInert")]
     assert not [i for i in ids if i.startswith("tag-rule:")], ids
+
+
+def test_allowlist_sees_the_exec_path_as_written(tmp_path):
+    """An allow for a throwaway venv's pip must match `/tmp/v/bin/pip`, not the
+    basename copy the normalizer adds for rules, and must still not carry a
+    bare `pip install` in the same call."""
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(
+        "version: '1.0'\nrules:\n"
+        "  - id: no-pip\n    severity: HIGH\n    category: supply_chain\n    title: t\n"
+        "    event_types: [shell]\n    fields: [command]\n    mode: enforce\n    action: block\n"
+        "    patterns: ['\\bpip\\s+install\\b']\n"
+        "allowlists:\n"
+        "  - id: venv-pip\n    rule_ids: [no-pip]\n    reason: throwaway venv\n"
+        "    patterns: ['^/tmp/v/bin/pip install\\b']\n"
+    )
+    engine = PolicyEngine(workspace=tmp_path)
+    assert not _live("/tmp/v/bin/pip install x", "no-pip", engine)
+    assert not _live("python3 -m venv /tmp/v && /tmp/v/bin/pip install -q requests", "no-pip", engine)
+    assert _live("/tmp/v/bin/pip install x && pip install evil", "no-pip", engine)
+    assert _live("/tmp/v/bin/pip install x; /usr/bin/pip install y", "no-pip", engine)
+    assert _live("pip install x", "no-pip", engine)
