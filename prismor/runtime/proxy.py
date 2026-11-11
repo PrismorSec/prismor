@@ -1278,6 +1278,10 @@ class StreamScreen:
         self._tool_index: int = 0
         self._holding = False
         self._released = False            # an allowed tool call went out this turn
+        # chat/completions: the finish_reason a judged turn now ends with. Some
+        # upstreams (OpenRouter) repeat finish_reason on a trailing usage chunk
+        # that arrives after the judge, which would undo the rewrite.
+        self._finish_override: Optional[str] = None
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
         self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
@@ -1548,6 +1552,13 @@ class StreamScreen:
             return out
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
+        if (finish and not self._holding and self._finish_override
+                and finish != self._finish_override):
+            choice = {**choices[0], "finish_reason": self._finish_override}
+            if "native_finish_reason" in choice:
+                choice["native_finish_reason"] = self._finish_override
+            event = {**event, "choices": [choice]}
+            chunk, finish = _sse_reframe(chunk, event), self._finish_override
 
         legacy = delta.get("function_call")
         if isinstance(legacy, dict) and (legacy.get("name") or legacy.get("arguments")):
@@ -1683,7 +1694,9 @@ class StreamScreen:
             refusals.append(reason)
             self.blocked.append(reason)
         if not refusals:
+            self._finish_override = None
             return held
+        self._finish_override = "tool_calls" if kept else "stop"
         delta: Dict[str, Any] = {"role": "assistant", "content": "\n".join(refusals)}
         if kept:
             # Re-emit the allowed calls whole, renumbered from 0 so a client

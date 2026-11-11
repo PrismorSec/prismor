@@ -265,6 +265,48 @@ def test_openai_stream_holds_tool_calls(monkeypatch, tmp_path):
     assert b"Blocked by Prismor" in out
 
 
+def test_openai_stream_block_rewrites_trailing_finish_reason(monkeypatch, tmp_path):
+    """OpenRouter repeats finish_reason on a trailing usage chunk after the judge.
+
+    A denied call must not end the stream on "tool_calls" with no call left, or
+    a client that trusts the last finish_reason waits for a call that is gone.
+    """
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "anthropic/claude-haiku-5.5", None)
+    frame = lambda e: b"data: " + json.dumps(e).encode() + b"\n\n"
+    out = stream.feed(frame({"id": "gen-1", "choices": [{"index": 0, "delta": {"tool_calls": [
+        {"index": 0, "id": "c1", "function": {"name": "bash",
+                                              "arguments": '{"command": "rm -rf /"}'}}]}}]}))
+    out += stream.feed(frame({"id": "gen-1", "choices": [
+        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}))
+    out += stream.feed(frame({"id": "gen-1", "usage": {"prompt_tokens": 3}, "choices": [
+        {"index": 0, "delta": {"content": ""}, "finish_reason": "tool_calls",
+         "native_finish_reason": "tool_calls"}]}))
+    events = [json.loads(l[6:]) for l in out.decode().splitlines() if l.startswith("data: ")]
+    choices = [c for e in events for c in e.get("choices") or []]
+    assert b"Blocked by Prismor" in out
+    assert not any(c.get("delta", {}).get("tool_calls") for c in choices)
+    finishes = [c["finish_reason"] for c in choices if c.get("finish_reason")]
+    assert finishes and set(finishes) == {"stop"}
+    assert {c.get("native_finish_reason") for c in choices} <= {None, "stop"}
+    assert events[-1].get("usage") == {"prompt_tokens": 3}   # usage still relayed
+
+
+def test_openai_stream_allowed_call_keeps_trailing_finish_reason(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-5.6", None)
+    frame = lambda e: b"data: " + json.dumps(e).encode() + b"\n\n"
+    out = stream.feed(frame({"choices": [{"index": 0, "delta": {"tool_calls": [
+        {"index": 0, "id": "c1", "function": {"name": "bash",
+                                              "arguments": '{"command": "ls"}'}}]}}]}))
+    out += stream.feed(frame({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}))
+    out += stream.feed(frame({"usage": {}, "choices": [
+        {"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}))
+    finishes = [c["finish_reason"] for l in out.decode().splitlines() if l.startswith("data: ")
+                for c in json.loads(l[6:]).get("choices") or [] if c.get("finish_reason")]
+    assert finishes == ["tool_calls", "tool_calls"]
+
+
 def _responses_call(stream, name, args, index=0):
     """Feed one streamed Responses API function_call item, as gpt-6-luna emits it."""
     item = {"id": "fc_1", "type": "function_call", "name": name,
