@@ -1612,6 +1612,13 @@ class PolicyEngine:
                     merged["patterns"] = default["patterns"]  # block full-replace neuter
                     merged["action"] = default["action"]
                     merged["severity"] = default["severity"]
+                    # Keep detection coverage: an enabled rule is inert if an
+                    # overlay redirects its events or the fields it inspects.
+                    merged["event_types"] = default["event_types"]
+                    if "fields" in default:
+                        merged["fields"] = default["fields"]
+                    else:
+                        merged.pop("fields", None)  # retain event-type defaults
                     if merged.pop("disable_patterns", None) is not None:
                         sys.stderr.write(
                             f"[prismor] Ignoring disable_patterns on core rule '{rule_id}' (cannot be weakened)\n"
