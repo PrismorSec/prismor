@@ -36,6 +36,10 @@ Most-specific wins for non-floor rules. The floor (`_NON_OVERRIDABLE_RULE_IDS` +
 core block categories) survives every layer — an exemption literally cannot let
 `rm -rf /` or secret exfil through.
 
+Overrides preserve each floor rule's `event_types` and `fields`, including
+event-type defaults when `fields` is omitted. Non-floor rules can still change
+which events and fields they inspect.
+
 **One deliberate exception:** an *unmanaged* workspace whose policy was written
 by `prismor setup` in enforce mode carries `settings.selection: explicit` — the
 user chose their blocking set rule-by-rule, so an unselected floor rule reports
