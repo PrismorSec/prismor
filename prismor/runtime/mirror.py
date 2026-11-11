@@ -369,7 +369,8 @@ _TEXT_EDITOR_COMMANDS = {"view": "Read", "create": "Write"}
 _TOOL_ALIASES = {
     **{n: "Bash" for n in ("bash", "shell", "sh", "terminal", "exec", "run", "run_command", "run_shell",
                            "run_shell_command", "exec_command", "execute_command", "execute_shell",
-                           "shell_command", "local_shell", "container.exec", "run_terminal_cmd")},
+                           "shell_command", "local_shell", "container.exec", "run_terminal_cmd",
+                           "system", "cli", "subprocess", "run_process")},
     **{n: "Read" for n in ("read", "read_file", "cat_file", "view_file", "open_file")},
     # apply_patch (Codex, Capy) creates/overwrites files from a patch string:
     # judged as a Write on the patch's first target, with the whole patch as content.
@@ -378,12 +379,23 @@ _TOOL_ALIASES = {
                            "multi_edit", "multiedit")},
     # Anthropic's text editor tool; native_call picks Read/Write/Edit from `command`.
     **{n: "Edit" for n in _TEXT_EDITOR_TOOLS},
-    **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse")},
+    **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse",
+                               "http_request", "http", "request", "curl", "browser_navigate",
+                               "navigate", "browser_open", "open_url", "goto", "visit_url")},
     "glob": "Glob", "grep": "Grep",
 }
+# Tools named after one program take its arguments, not a shell line: judged
+# as that program's command, so `kubectl delete ns prod` or `ssh prod rm -rf /`
+# meets the same rules as when typed into Bash.
+_PROGRAM_TOOLS = {"ssh": "ssh", "kubectl": "kubectl", "node": "node -e", "nodejs": "node -e",
+                  "docker": "docker", "git": "git", "helm": "helm", "terraform": "terraform"}
 _SHELLISH_NAME = re.compile(r"shell|exec|command|terminal|bash|cmd")
 _COMMAND_KEYS = ("command", "cmd", "script")
-_EXTRA_COMMAND_KEYS = ("commands", "input", "code")
+_EXTRA_COMMAND_KEYS = ("commands", "input", "code", "argv", "args")
+_CODE_KEYS = ("code", "source", "script")
+# `source`/`script` mean code only on a code runner; elsewhere they can be a URL
+# or a name, which must keep the generic payload path.
+_CODE_RUNNER_NAME = re.compile(r"python|node|javascript|\bjs\b|code|script|eval|repl|interpreter|notebook")
 _PATCH_TARGET = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
 
 
@@ -413,6 +425,16 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
     if not isinstance(arguments, dict):
         return tool, arguments
     args = dict(arguments)
+    program = _PROGRAM_TOOLS.get(str(tool_name or "").strip().lower().rsplit(".", 1)[-1].rsplit("__", 1)[-1])
+    rest = ""
+    if program:
+        rest = next((args[k] for k in _COMMAND_KEYS + _EXTRA_COMMAND_KEYS if args.get(k)), "")
+        if isinstance(rest, list):
+            import shlex
+            rest = shlex.join(str(c) for c in rest)
+        host = args.get("host") or args.get("hostname") or args.get("target") if program == "ssh" else ""
+    if program and rest:
+        return "Bash", {**args, "command": " ".join(str(x) for x in (program, host, rest) if x)}
     if str(tool_name or "").strip().lower().rsplit(".", 1)[-1].rsplit("__", 1)[-1] in _TEXT_EDITOR_TOOLS:
         tool = _TEXT_EDITOR_COMMANDS.get(str(args.get("command") or "").lower(), "Edit")
     shellish = _SHELLISH_NAME.search(str(tool_name or "").lower())
@@ -463,8 +485,10 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
             args["new_string"] = "\n".join(str(e.get("new_string") or "")
                                            for e in args["edits"] if isinstance(e, dict))
     elif tool == "WebFetch":
-        args.setdefault("url", args.get("uri") or args.get("href") or "")
-    code = args.get("code")
+        args.setdefault("url", args.get("uri") or args.get("href") or args.get("endpoint")
+                        or args.get("target") or args.get("address") or "")
+    keys = _CODE_KEYS if _CODE_RUNNER_NAME.search(str(tool_name or "").lower()) else ("code",)
+    code = next((args[k] for k in keys if isinstance(args.get(k), str) and args[k].strip()), None)
     if (
         tool not in ("Bash", "Read", "Write", "Edit", "WebFetch", "Glob", "Grep")
         and isinstance(code, str)
