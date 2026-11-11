@@ -922,12 +922,29 @@ class Screen:
     def blocking(self, decision: Any) -> Optional[Dict[str, Any]]:
         """The finding that should stop this call, or None.
 
-        ``observe`` never blocks — it is the mode people switch the proxy on
-        in, and a proxy that blocks in observe mode gets switched off again.
+        ``observe`` never blocks on a detection — it is the mode people switch
+        the proxy on in, and a proxy that blocks in observe mode gets switched
+        off again. An operator's own switch (agent-control: agent disabled, a
+        denied tool) or an org-signed ``authoritative`` decision still blocks,
+        the same exemption the runtime gives the hook lane (#885).
         """
-        if decision is None or self.mode != "enforce":
-            return None
-        return getattr(decision, "blocking", None)
+        blocking = getattr(decision, "blocking", None) if decision is not None else None
+        if blocking is None or self.mode == "enforce":
+            return blocking
+
+        def pinned(f: Dict[str, Any]) -> bool:
+            return f.get("category") == "agent-control" or bool(f.get("authoritative"))
+
+        if pinned(blocking):
+            return blocking
+        # On an enrolled machine the runtime's pick may be an ordinary
+        # detection sitting ahead of a pinned one; observe drops only the former.
+        from prismor.runtime.contract import strongest
+        return strongest([
+            f for f in (getattr(decision, "findings", None) or [])
+            if pinned(f) and not f.get("contextInert")
+            and str(f.get("mode", "observe")).lower() == "enforce"
+        ])
 
     def redact(self, text: str) -> str:
         """Mask cloak secrets and data-boundary values in model-bound text.

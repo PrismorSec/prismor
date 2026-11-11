@@ -147,6 +147,44 @@ def test_observe_mode_never_blocks(monkeypatch, tmp_path):
     assert screen.blocking(decision) is None
 
 
+_ORDINARY = {"ruleId": "destructive-command", "category": "destructive",
+             "mode": "enforce", "action": "block"}
+
+
+@pytest.mark.parametrize("pinned", [
+    {"ruleId": "agent-disabled", "category": "agent-control", "mode": "enforce"},
+    {"ruleId": "org-tool-deny", "category": "agent-control", "mode": "enforce"},
+    {"ruleId": "egress-deny", "category": "egress", "mode": "enforce", "authoritative": True},
+])
+def test_observe_mode_keeps_operator_blocks(monkeypatch, tmp_path, pinned):
+    """#885: observe drops detections, never an operator's or the org's own block."""
+    pinned = {**pinned, "message": "refused by your admin", "action": "block"}
+    # Enrolled-machine shape: the runtime's pick is an ordinary detection
+    # sitting ahead of the pinned finding.
+    for blocking in (pinned, _ORDINARY):
+        monkeypatch.setattr(
+            "prismor.runtime.runtime.evaluate_tool_call",
+            lambda blocking=blocking, **kw: Decision(
+                allow=False, findings=[_ORDINARY, pinned], blocking=blocking, reason="x"))
+        monkeypatch.setattr("prismor.runtime.runtime.log_observe_findings",
+                            lambda *a, **k: None)
+        screen = Screen(workspace=tmp_path, mode="observe", session_id="test-session")
+        decision = screen.evaluate(
+            screen.tool_event("Bash", {"command": "echo probe-885"}, "anthropic", "m", None))
+        assert screen.blocking(decision)["ruleId"] == pinned["ruleId"]
+
+    stream = StreamScreen(screen, "anthropic", "m", None)
+    out = stream.feed(_sse("content_block_start", {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "tool_use", "id": "p", "name": "Bash"}}))
+    out += stream.feed(_sse("content_block_delta", {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "input_json_delta",
+                  "partial_json": '{"command": "echo probe-885"}'}}))
+    out += stream.feed(_sse("content_block_stop", {"type": "content_block_stop", "index": 0}))
+    assert b"probe-885" not in out and stream.blocked
+
+
 def test_enforce_mode_blocks(monkeypatch, tmp_path):
     screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
     decision = screen.evaluate(
