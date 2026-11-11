@@ -75,6 +75,14 @@ BENIGN = [
     # Shell-shaped text about Prismor's state, in a literal, is printed, not run.
     ("prismor-self-edit", "python3 - <<'EOF'\nfor c in ['rm ~/.prismor/prismor.db', 'tee ~/.prismor/prismor.db-wal']:\n    print(c)\nEOF"),
     ("agent-config-tampering", "python3 - <<'EOF'\np = 'README.md'; s = open(p).read()\ns = s.replace('x', 'echo {} > .claude/settings.json')\nopen(p, 'w').write(s)\nEOF"),
+    # Lookalikes of the nested-quote root wipe: a subdir, a relative dir.
+    ("destructive-command", f"python3 -c \"import os; os.system('{RM} /tmp/x')\""),
+    ("destructive-command", f"python3 -c \"os.system('{RM} build/')\""),
+    ("destructive-command", f"bash -c '{RM} \"$OUT\"/'"),
+    ("destructive-command", f"sh -c \"{RM} /var/tmp/cache\""),
+    # Test data: the root wipe as an argument to a checker, not a shell-out.
+    ("destructive-command", f"python3 -c 'assert check(\"{RM} /\")'"),
+    ("destructive-command", f"python3 -c \"print(evaluate({{'command': '{RM} /'}}))\""),
 ]
 
 
@@ -128,6 +136,15 @@ ATTACKS = [
     ("recursive-delete-home", f"cat > p.py <<'EOF'\nimport subprocess\nsubprocess.run('{RM} ~/work', shell=True)\nEOF\npython3 p.py"),
     ("destructive-command", f"python3 - <<'EOF'\nrun = exec\nrun('import os; os.system(C)')\nC = '{RM} /'\nEOF"),
     ("destructive-command", f"python3 - <<'EOF'\nimport os\nf'{{os.system(C)}}'\nC = '{RM} /'\nEOF"),
+    # The root target closed by nested quotes, a paren or an escaped quote.
+    ("destructive-command", f"python3 -c \"run = exec; run(\\\"import os; os.system('{RM} /')\\\")\""),
+    ("destructive-command", f"python3 -c \"import os; f'{{os.system(\\\"{RM} /\\\")}}'\""),
+    ("destructive-command", f"python3 -c 'f\"{{os.system(\\\"{RM} /\\\")}}\"'"),
+    ("destructive-command", f"python3 -c \"import os; os.system('{RM} /')\""),
+    ("destructive-command", f"python3 - <<'EOF'\nrun = exec\nrun(\"import os; os.system('{RM} /')\")\nEOF"),
+    ("destructive-command", f"python3 - <<'EOF'\nimport os\nf'{{os.system(\"{RM} /\")}}'\nEOF"),
+    ("destructive-command", f"sh -c '{RM} \"/\"'"),
+    ("destructive-command", f"echo $({RM} /)"),
     # The shell expands an unquoted body as it reads it.
     ("recursive-delete-home", f"cat > n.md <<EOF\n$({RM} ~/work)\nEOF"),
     ("prismor-self-edit", "git commit -F - <<EOF\n$(prismor pause)\nEOF"),

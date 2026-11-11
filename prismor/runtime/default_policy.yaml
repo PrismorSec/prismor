@@ -517,8 +517,13 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      # Root wipe: rm -rf /, rm -rf /*
-      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/["'']?(\s|\*|$)'
+      # Root wipe: rm -rf /, rm -rf /*, and a quoted "/" in a -c string.
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/["'']*(\s|\*|$)'
+      # Root wipe handed to a shell-out call, closed by nested quotes:
+      # os.system('rm -rf /') or a nested f-string. Only after a
+      # sink, since a test's check("rm -rf /") reads the same.
+      # ponytail: argv lists (subprocess.run(["rm", ...])) are not covered.
+      - '\b(?:os\.(?:system|popen|exec\w*|spawn\w*)|subprocess\.\w+|(?<![\w.])(?:system|popen|exec\w*|spawn\w*|shell_exec|passthru))\s*\(\s*\[?\s*\\?["''`]\s*rm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|-[rR]\s+-[fF]|-[fF]\s+-[rR])\s+\\?["'']?/\*?\\?["''`]\s*[,)\]]'
       # System-critical paths — block at any depth (optional surrounding quotes)
       - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
