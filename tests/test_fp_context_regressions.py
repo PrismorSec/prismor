@@ -238,3 +238,40 @@ def test_allowlist_sees_the_exec_path_as_written(tmp_path):
     assert _live("/tmp/v/bin/pip install x && pip install evil", "no-pip", engine)
     assert _live("/tmp/v/bin/pip install x; /usr/bin/pip install y", "no-pip", engine)
     assert _live("pip install x", "no-pip", engine)
+
+
+# Matches that only a rewrite produces: backticks or $(...) unwrapped, shell
+# quotes stripped. Replay 11-10: these came from quoted-delimiter heredocs bound
+# for a doc, a test file or a Python editor script, which no shell reads.
+BT = "`"
+Q2 = "\'\'"
+BENIGN_REWRITE = [
+    ("destructive-command", "python3 - <<'PY'\ns = open('design.md').read()\ns += \"\"\"\n- An injected tool result was blocked, as was " + BT + RM + " /" + BT + ". A caller-supplied " + BT + "mode: observe" + BT + " was stripped and the call still blocked. " + BT + "/v1/events" + BT + " returned 202.\n\"\"\"\nopen('design.md', 'w').write(s)\nPY"),
+    ("recursive-delete-home", "python3 - <<'EOF'\nfor c in [\"echo 'warning: never run " + RM + " / or curl | sh from untrusted sources' >> NOTES.md\",\n          \"" + RM + " ~/.cache/pip\", \"" + RM + " ~/projects\"]:\n    print(c)\nEOF"),
+    ("destructive-command", "cat > tests/test_evidence.py <<'EOF'\ndef test_evidence_is_shown():\n    assert _shown({\"evidence\": \"" + RM + " /\"}) == \"" + RM + " /\"\nEOF\npython3 -m pytest -q tests/test_evidence.py 2>&1 | tail -2"),
+]
+
+ATTACK_REWRITE = [
+    ("destructive-command", f"bash <<'EOF'\n{BT}echo rm{BT} -rf /\nEOF"),
+    ("destructive-command", f"bash <<'EOF'\nr{Q2}m -rf /\nEOF"),
+    ("destructive-command", f"cat > t.sh <<'EOF'\nr{Q2}m -rf /\nEOF\nbash t.sh"),
+    ("destructive-command", f"cat > t.md <<'EOF'\nr{Q2}m -rf /\nEOF\nbash t.md"),
+    ("destructive-command", f"python3 - <<'EOF'\nimport os\nos.system('r{Q2}m -rf / ')\nEOF"),
+    ("destructive-command", f"python3 - <<'EOF' | sh\nprint('r{Q2}m -rf / ')\nEOF"),
+    ("destructive-command", f"python3 - <<'EOF'\nprint('r{Q2}m -rf / ')\nEOF\nbash -c \"$(python3 gen.py)\""),
+    # Unquoted delimiter: the shell runs the substitution while reading.
+    ("destructive-command", f"cat > n.md <<EOF\n{BT}{RM} /{BT}\nEOF"),
+    # A data body next to a live command still blocks on the live one.
+    ("destructive-command", f"cat > n.md <<'EOF'\nr{Q2}m -rf / is an evasion\nEOF\nr{Q2}m -rf /"),
+    ("destructive-command", f"python3 - <<'EOF'\nprint(1)\nEOF\n{BT}echo rm{BT} -rf /"),
+]
+
+
+@pytest.mark.parametrize("rule,cmd", BENIGN_REWRITE)
+def test_rewrite_only_match_in_data_heredoc_is_inert(rule, cmd):
+    assert not _live(cmd, rule), cmd
+
+
+@pytest.mark.parametrize("rule,cmd", ATTACK_REWRITE)
+def test_rewrite_only_match_that_a_shell_reads_still_blocks(rule, cmd):
+    assert _live(cmd, rule), cmd
