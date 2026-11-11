@@ -2433,6 +2433,30 @@ class PolicyEngine:
                             for text in _texts if text
                             for m in rule.patterns.finditer(text)
                         )
+                    # A match that only a rewrite produced -- backticks or
+                    # `$(...)` unwrapped, quotes stripped, homoglyphs folded --
+                    # cannot be mapped back to the raw text, so the checks
+                    # above fall back to live. Those rewrites model what a shell
+                    # does, and no shell reads a quoted-delimiter heredoc bound
+                    # for a text file, a commit message or a Python script that
+                    # cannot reach one. Blank those bodies and look again with
+                    # every rewrite: nothing left means only data matched.
+                    # Self-protection rules stay out: their paths are files a
+                    # Python script really opens.
+                    if (not context_inert and _shell_syntax_rule(rule.id)
+                            and rule.id not in _SELF_PROTECTION_RULE_IDS):
+                        from prismor.runtime.shell_context import (
+                            blank_keep_lines,
+                            data_heredoc_spans,
+                        )
+                        _raw = str(event.get("command") or "")
+                        _data = data_heredoc_spans(_raw)
+                        if _data:
+                            _rest = blank_keep_lines(_raw, _data)
+                            _views = [_rest, _normalize_command(_rest)]
+                            _views += [d for d in map(_dequote_shell, list(_views)) if d]
+                            _views += [_fold_confusables(v) for v in list(_views)]
+                            context_inert = not any(_rule_hits(rule, v) for v in _views)
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False

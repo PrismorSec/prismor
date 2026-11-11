@@ -763,36 +763,10 @@ def is_inert_script_literal(command: str, match_start: int, match_end: int) -> b
     for h in heredocs(command):
         if not (h.body_start <= match_start and match_end <= h.body_end):
             continue
-        tokens = _opener_tokens(command, h)
-        argv0 = tokens[0].rsplit("/", 1)[-1] if tokens else ""
-        if argv0 in _HEREDOC_SINKS:
-            # `cat > probe.py <<'EOF'` writes a Python file; whatever runs it
-            # later runs Python, so the same literal analysis holds. A
-            # shebang naming anything but python means it is not Python.
-            target = _sink_target(tokens)
-            body = command[h.body_start:h.body_end]
-            first = body.lstrip("\n").split("\n", 1)[0]
-            if not (target and target.endswith(".py")) or (
-                first.startswith("#!") and "python" not in first
-            ):
-                return False
-        elif not _PYTHON_BIN.match(argv0):
+        literals = _python_data_body(command, h)
+        if literals is None:
             return False
-        # Whatever the script prints must not be run: no pipe on the opener
-        # line, and no executor anywhere outside heredoc bodies.
-        if "|" in command[h.start:h.body_start].replace("||", ""):
-            return False
-        outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
-        for word in re.split(r"[\s;&|()]+", outside):
-            if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
-                return False
         body = command[h.body_start:h.body_end]
-        parsed = _python_tokens(body)
-        if parsed is None:
-            return False
-        literals, code = parsed
-        if _PY_EXEC.search(code):
-            return False
         # Patterns anchored on a trailing delimiter consume the whitespace
         # after the closing quote; that is no more code than the quote is.
         while match_end > match_start and command[match_end - 1].isspace():
@@ -802,6 +776,67 @@ def is_inert_script_literal(command: str, match_start: int, match_end: int) -> b
             return False
         return any(a <= rel_start and rel_end <= b for a, b in literals)
     return False
+
+
+def _python_data_body(command: str, h: Heredoc) -> Optional[List[Tuple[int, int]]]:
+    """The literal/comment spans of heredoc ``h`` when it is a Python script
+    that cannot reach a shell, else None. Python here is ``python3 - <<EOF``,
+    or ``cat > x.py <<EOF`` (whatever runs that file runs Python; a shebang
+    naming anything else means it is not Python). Cannot reach a shell: no
+    process/exec primitive in its code, no pipe on the opener line, and no
+    shell or runner anywhere outside the heredoc bodies that could run what
+    it prints or the file it writes."""
+    tokens = _opener_tokens(command, h)
+    argv0 = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+    body = command[h.body_start:h.body_end]
+    if argv0 in _HEREDOC_SINKS:
+        target = _sink_target(tokens)
+        first = body.lstrip("\n").split("\n", 1)[0]
+        if not (target and target.endswith(".py")) or (
+            first.startswith("#!") and "python" not in first
+        ):
+            return None
+    elif not _PYTHON_BIN.match(argv0):
+        return None
+    if "|" in command[h.start:h.body_start].replace("||", ""):
+        return None
+    outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
+    for word in re.split(r"[\s;&|()]+", outside):
+        if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
+            return None
+    parsed = _python_tokens(body)
+    if parsed is None or _PY_EXEC.search(parsed[1]):
+        return None
+    return parsed[0]
+
+
+def data_heredoc_spans(command: str) -> List[Tuple[int, int]]:
+    """``(body_start, body_end)`` of every heredoc whose WHOLE body is data:
+    the delimiter is quoted, so the shell substitutes and dequotes nothing in
+    it, and it goes somewhere that never hands it to a shell -- a text file or
+    commit/PR message (:func:`_is_text_heredoc`), or a Python script that
+    cannot reach one (:func:`_python_data_body`).
+
+    For a match that exists only after a rewrite (``$(...)``/backticks
+    unwrapped, quotes stripped, homoglyphs folded): those rewrites model what
+    a shell would do, and no shell reads these bodies. A rule that no longer
+    matches once they are blanked matched only data. Callers apply this to
+    shell-syntax rules only, as for :func:`is_inert_script_literal`."""
+    return [
+        (h.body_start, h.body_end) for h in heredocs(command)
+        if not h.expands and (_is_text_heredoc(command, h) or _python_data_body(command, h) is not None)
+    ]
+
+
+def blank_keep_lines(text: str, spans) -> str:
+    """``text`` with each span's characters blanked, newlines kept, so line
+    structure (and every heredoc's closing delimiter) survives."""
+    chars = list(text)
+    for start, end in spans:
+        for k in range(start, min(end, len(chars))):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
 
 
 def _opener_tokens(command: str, h: Heredoc) -> List[str]:
