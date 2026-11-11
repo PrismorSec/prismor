@@ -362,6 +362,10 @@ def mirror_tool_definitions(workspace: Optional[Path] = None) -> List[Dict[str, 
 # or an argv list. Matched only on exact native names, a proposed
 # ``curl … | bash`` fell through to the generic payload path and no command rule
 # ever saw a command. Shared by the LLM proxy and the MCP gateway.
+#: Anthropic's built-in text editor tool, one name for view/create/str_replace/insert.
+_TEXT_EDITOR_TOOLS = ("str_replace_editor", "str_replace_based_edit_tool", "text_editor")
+_TEXT_EDITOR_COMMANDS = {"view": "Read", "create": "Write"}
+
 _TOOL_ALIASES = {
     **{n: "Bash" for n in ("bash", "shell", "sh", "terminal", "exec", "run", "run_command", "run_shell",
                            "run_shell_command", "exec_command", "execute_command", "execute_shell",
@@ -372,6 +376,8 @@ _TOOL_ALIASES = {
     **{n: "Write" for n in ("write", "write_file", "create_file", "save_file", "apply_patch")},
     **{n: "Edit" for n in ("edit", "edit_file", "str_replace", "replace_in_file",
                            "multi_edit", "multiedit")},
+    # Anthropic's text editor tool; native_call picks Read/Write/Edit from `command`.
+    **{n: "Edit" for n in _TEXT_EDITOR_TOOLS},
     **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse")},
     "glob": "Glob", "grep": "Grep",
 }
@@ -407,6 +413,8 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
     if not isinstance(arguments, dict):
         return tool, arguments
     args = dict(arguments)
+    if str(tool_name or "").strip().lower().rsplit(".", 1)[-1].rsplit("__", 1)[-1] in _TEXT_EDITOR_TOOLS:
+        tool = _TEXT_EDITOR_COMMANDS.get(str(args.get("command") or "").lower(), "Edit")
     shellish = _SHELLISH_NAME.search(str(tool_name or "").lower())
     if tool == "Bash" or (
         shellish and any(args.get(key) for key in _EXTRA_COMMAND_KEYS)
@@ -437,10 +445,19 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
             "file_path",
             args.get("path") or args.get("filename") or args.get("file")
             or args.get("filePath") or args.get("file_path")
+            # Cursor's edit_file/read_file, and save-style tools
+            or args.get("target_file") or args.get("filepath")
             or (target.group(1).strip() if target else ""),
         )
         if tool == "Write":
-            args.setdefault("content", args.get("text") or args.get("contents") or patch)
+            args.setdefault("content", args.get("text") or args.get("contents")
+                            or args.get("file_text") or patch)
+        if tool == "Edit" and "new_string" not in args:
+            # text editor str_replace/insert (new_str), create (file_text), Cursor (code_edit)
+            for key in ("new_str", "file_text", "code_edit"):
+                if isinstance(args.get(key), str):
+                    args["new_string"] = args[key]
+                    break
         if tool == "Edit" and "new_string" not in args and isinstance(args.get("edits"), list):
             # multi_edit: every replacement is written text, so all of it is screened.
             args["new_string"] = "\n".join(str(e.get("new_string") or "")
