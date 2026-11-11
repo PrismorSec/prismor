@@ -167,13 +167,14 @@ def generated_launcher(tmp_path, root=None):
     return f'"{sys.executable}" "{shim}" hook-dispatch --agent claude --workspace "{tmp_path}" --mode enforce'
 
 
-def test_live_dispatcher_self_test_uses_disposable_state(tmp_path):
-    configure(tmp_path, "claude", generated_launcher(tmp_path))
+@pytest.mark.parametrize("agent", ["claude", "codex", "copilot", "qwen"])
+def test_live_dispatcher_self_test_uses_disposable_state(tmp_path, agent):
+    configure(tmp_path, agent, generated_launcher(tmp_path))
     state = hooks.prismor_home()
     before = sorted(str(p.relative_to(state)) for p in state.rglob("*"))
     check = hooks.hook_health(tmp_path, self_test=True)[0]
     assert check["state"] == "ok", check
-    assert "allow/block verified" in check["detail"]
+    assert f"{agent}-protocol allow/block verified" in check["detail"]
     assert "client invocation and active policy not verified" in check["detail"]
     assert not (tmp_path / ".prismor").exists()
     assert sorted(str(p.relative_to(state)) for p in state.rglob("*")) == before
@@ -260,6 +261,7 @@ def test_dashboard_dates_cross_month_without_padding(monkeypatch, capsys):
 def test_probe_cache_and_environment_exclude_credentials(tmp_path, monkeypatch):
     command = generated_launcher(tmp_path)
     configure(tmp_path, "claude", command)
+    configure(tmp_path, "claude", command, "global")
     configure(tmp_path, "qwen", command, "global")
     monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder")
     monkeypatch.setenv("PRISMOR_SECRETS_DIR", str(tmp_path / "untouched-vault"))
@@ -267,12 +269,16 @@ def test_probe_cache_and_environment_exclude_credentials(tmp_path, monkeypatch):
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
         denied = kwargs.get("input") and json.loads(kwargs["input"])["tool_input"]["command"] == "rm -rf /"
+        if "--agent" in argv and argv[argv.index("--agent") + 1] == "qwen":
+            out = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                         "permissionDecisionReason": "(rule: destructive-command)"}}
+            return subprocess.CompletedProcess(argv, 0, json.dumps(out) if denied else "", "")
         return subprocess.CompletedProcess(argv, 2 if denied else 0, "",
             "Prismor blocked this action: (rule: destructive-command)" if denied else "")
     monkeypatch.setattr(subprocess, "run", run)
     checks = hooks.hook_health(tmp_path, self_test=True)
-    assert len(checks) == 2 and all(c["state"] == "ok" for c in checks)
-    assert len(calls) == 3  # import, allow, deny once for the shared launcher
+    assert len(checks) == 3 and all(c["state"] == "ok" for c in checks)
+    assert len(calls) == 6  # import, allow, deny per agent; Claude's two scopes share a probe
     for argv, kwargs in calls:
         assert "-I" in argv
         assert "OPENAI_API_KEY" not in kwargs["env"]
@@ -363,3 +369,30 @@ def test_portable_launcher_is_not_required_to_pin_project_workspace(tmp_path):
     configure(tmp_path, "claude", hooks._PORTABLE_TEMPLATE.format(agent="claude", mode="enforce"))
     check = hooks.hook_health(tmp_path, self_test=True)[0]
     assert check["state"] == "warn" and "portable" in check["detail"]
+
+
+@pytest.mark.parametrize("agent,stdout,exit_code,at_allow", [
+    ("copilot", "", 2, False),  # Claude's denial cannot stand in for Copilot's JSON.
+    ("copilot", "not json", 0, False),
+    ("qwen", '{"permissionDecision":"deny","permissionDecisionReason":"(rule: destructive-command)"}', 0, False),
+    ("qwen", '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}', 0, False),
+    ("copilot", '{"permissionDecision":"deny"}', 0, True),
+    ("claude", '{"hookSpecificOutput":{"permissionDecision":"deny"}}', 0, True),
+])
+def test_self_test_rejects_wrong_agent_verdict(tmp_path, monkeypatch, agent, stdout, exit_code, at_allow):
+    configure(tmp_path, agent, generated_launcher(tmp_path))
+    replies = iter([(0, "")] + ([] if at_allow else [(0, "")]) + [(exit_code, stdout)])
+    def run(argv, **kwargs):
+        code, out = next(replies)
+        return subprocess.CompletedProcess(argv, code, out,
+            "Prismor blocked this action: (rule: destructive-command)")
+    monkeypatch.setattr(subprocess, "run", run)
+    check = hooks.hook_health(tmp_path, self_test=True)[0]
+    assert check["state"] == "fail" and "expected allow/block" in check["detail"]
+
+
+def test_unsupported_protocol_is_not_probed_as_claude(tmp_path, monkeypatch):
+    configure(tmp_path, "gemini", generated_launcher(tmp_path))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: pytest.fail("unsupported agent was probed"))
+    check = hooks.hook_health(tmp_path, self_test=True)[0]
+    assert check["state"] == "warn" and "gemini protocol self-test not supported" in check["detail"]
