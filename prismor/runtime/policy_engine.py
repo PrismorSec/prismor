@@ -178,7 +178,17 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "prismor-self-edit",
     "iac-destroy",
     "persistence-shell-profile",
+    "recursive-delete-home",
 })
+# Self-protection rules carry bare PATH patterns too (unlock.json, pause.key,
+# the dashboard API). A Python literal that IS one of those paths is a file the
+# script really opens, so it stays live. Shell-shaped text in a literal --
+# `"rm ~/.prismor/prismor.db"`, `"> .claude/settings.json"`, a backticked
+# `prismor pause` -- is only printed or compared, and may be read as text.
+_SELF_PROTECTION_PATH_MATCH = re.compile(
+    r"^[^\s>`|;&]*(?:\.(?:json|key|db|lock|tmp|ya?ml|toml)\b|mcp-tool-pins/|/api/|\.prismor/|PRISMOR_EVAL_URL)[^\s]*$",
+    re.IGNORECASE,
+)
 
 
 _CONFIG_GUARD_RULE_IDS = frozenset({"agent-config-tampering", "agent-config-tampering-path"})
@@ -2337,9 +2347,10 @@ class PolicyEngine:
                     def _is_match_inert(text, m):
                         if is_inert_match(text, m.start(), m.end()):
                             return True
-                        if _shell_syntax_rule(rule.id) and is_inert_script_literal(
-                            text, m.start(), m.end()
-                        ):
+                        if _shell_syntax_rule(rule.id) and not (
+                            rule.id in _SELF_PROTECTION_RULE_IDS
+                            and _SELF_PROTECTION_PATH_MATCH.search(m.group(0).strip(" \t\n'\""))
+                        ) and is_inert_script_literal(text, m.start(), m.end()):
                             return True
                         # A self-protection rule guards THIS install. When the
                         # match sits inside an ssh/docker/kubectl payload it
@@ -4140,17 +4151,23 @@ class PolicyEngine:
                 if entry.patterns.search(evidence):
                     return entry
                 continue
-            if entry.match == "exact" and entry.covers(evidence):
+            # Coverage is judged on the statements as written. The
+            # normalized command also carries a basename spelling of each
+            # (`/tmp/v/bin/pip install` -> `pip install`, for the rules); an
+            # allow naming the full path could never cover that copy.
+            raw = _strip_basename_copy(evidence)
+            if entry.match == "exact" and entry.covers(raw):
                 return entry
             # A shell command is allowed only if every statement the rule
             # still hits is itself covered: `<allowed>; <anything else>` used
             # to ride through on the allowed half's substring match.
             from prismor.runtime.data_boundary import _split_segments
-            segments = [s for s in _split_segments(evidence) if s.strip()]
+            segments = [s.strip() for s in _split_segments(raw) if s.strip()]
             if not any(entry.covers(s) for s in segments):
                 continue
             residual = "\n".join(s for s in segments if not entry.covers(s))
-            if residual and _rule_hits(rule, residual):
+            # The rule judges what is left in both spellings, as it did the call.
+            if residual and _rule_hits(rule, residual + "\n" + _basename_command_words(residual)):
                 continue
             return entry
         return None
@@ -4774,6 +4791,17 @@ _LEAD_WRAPPER = (
 _ABS_COMMAND = re.compile(
     r"(^|[\n;|(`]|(?<![<>])&)(\s*(?:" + _LEAD_WRAPPER + r")*)['\"]?(/[^\s;&|<>'\"`]+)['\"]?"
 )
+
+
+def _strip_basename_copy(cmd: str) -> str:
+    """``cmd`` without the basename spelling _normalize_command appends."""
+    lines = cmd.split("\n")
+    half = len(lines) // 2
+    if len(lines) % 2 == 0 and half:
+        first = "\n".join(lines[:half])
+        if _basename_command_words(first) == "\n".join(lines[half:]) != first:
+            return first
+    return cmd
 
 
 def _basename_command_words(cmd: str) -> str:
