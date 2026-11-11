@@ -325,6 +325,7 @@ SECRET_VENDORS: Dict[str, Tuple[str, ...]] = {
     "openai": ("openai.com",),
     "anthropic": ("anthropic.com",),
     "jwt": (),          # bearer of unknown origin — vendor cannot be inferred
+    "private_key": (),  # a private key has no legitimate destination
     "custom": (),
 }
 _SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -339,8 +340,22 @@ _SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_\-]{80,}'), "anthropic"),
     # An AWS secret access key is 40 base64 chars with no prefix of its own, so
     # it is only recognisable by the name it is assigned to. Only the value
-    # (group "secret") is the match.
-    (re.compile(r'(?i)aws_?secret_?access_?key["\']?\s*[:=]\s*["\']?(?P<secret>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])'), "aws"),
+    # (group "secret") is the match. The name covers env/ini spelling
+    # (aws_secret_access_key) and the JSON key STS and ~/.aws/cli/cache print
+    # (SecretAccessKey).
+    (re.compile(r'(?i)(?:aws_?)?secret_?access_?key["\']?\s*[:=]\s*["\']?(?P<secret>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])'), "aws"),
+    # ...or by sitting right after its access key id, as in the credentials
+    # CSV, `aws configure list` and "key AKIA…, secret …" pastes. The id may
+    # already be a cloak placeholder by the time this runs. Mixed case is
+    # required so a 40-hex git SHA after a key id is not taken for a secret.
+    (re.compile(r'(?:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|@@SECRET:[A-Za-z0-9_.\-]+@@)[^\n]{1,40}?'
+                r'(?<![A-Za-z0-9/+])(?P<secret>(?=[A-Za-z0-9/+]{0,39}[a-z])(?=[A-Za-z0-9/+]{0,39}[A-Z])'
+                r'[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])'), "aws"),
+    # PEM / OpenSSH private keys: the body is the secret. The BEGIN line stays
+    # so a reader still sees what kind of key was there; a paste cut off before
+    # its END line is masked to the end of the base64 run.
+    (re.compile(r'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----'
+                r'(?P<secret>[A-Za-z0-9+/=\s:,\-]{16,}?)(?=-----END |[^A-Za-z0-9+/=\s:,\-]|\Z)'), "private_key"),
     (re.compile(r'\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'), "jwt"),
 ]
 
