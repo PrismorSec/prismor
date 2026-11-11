@@ -1370,3 +1370,89 @@ def test_n2_interleaved_choices_are_judged_each_on_its_own(monkeypatch, tmp_path
                 args[c["index"]] = args.get(c["index"], "") + (tc["function"].get("arguments") or "")
     assert json.loads(args[0]) == {"command": "ls -la"}
     assert 1 not in args and "Blocked by Prismor" in text[1]
+
+
+# ── buffered verdicts are per call, not per tool name ───────────────────────
+
+def _buffered(monkeypatch, tmp_path, provider, body):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    handler = proxy_mod.ProxyHandler.__new__(proxy_mod.ProxyHandler)
+    handler.screen = screen
+    out = proxy_mod.ProxyHandler._screen_response(
+        handler, provider, "m", json.dumps(body).encode(), None)
+    return json.loads(out)
+
+
+SAFE, BAD = {"command": "uname -a"}, {"command": "rm -rf /"}
+
+
+def test_buffered_chat_keeps_allowed_sibling_with_same_name(monkeypatch, tmp_path):
+    body = {"choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+        "role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": json.dumps(SAFE)}},
+            {"id": "c2", "type": "function", "function": {"name": "bash", "arguments": json.dumps(BAD)}}]}}]}
+    choice = _buffered(monkeypatch, tmp_path, "openai", body)["choices"][0]
+    assert [c["id"] for c in choice["message"]["tool_calls"]] == ["c1"]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"].count("Blocked by Prismor") == 1
+    assert "rm -rf" not in json.dumps(choice)
+
+
+def test_buffered_legacy_function_call_is_stripped(monkeypatch, tmp_path):
+    body = {"choices": [{"index": 0, "finish_reason": "function_call", "message": {
+        "role": "assistant", "content": None,
+        "function_call": {"name": "bash", "arguments": json.dumps(BAD)}}}]}
+    choice = _buffered(monkeypatch, tmp_path, "openai", body)["choices"][0]
+    assert "function_call" not in choice["message"]
+    assert choice["finish_reason"] == "stop"
+    assert "Blocked by Prismor" in choice["message"]["content"]
+    assert "rm -rf" not in json.dumps(choice)
+
+
+def test_buffered_anthropic_keeps_sibling_and_tool_use_stop(monkeypatch, tmp_path):
+    body = {"type": "message", "role": "assistant", "stop_reason": "tool_use", "content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash", "input": SAFE},
+        {"type": "tool_use", "id": "t2", "name": "Bash", "input": BAD}]}
+    out = _buffered(monkeypatch, tmp_path, "anthropic", body)
+    assert [b.get("id") for b in out["content"] if b["type"] == "tool_use"] == ["t1"]
+    assert out["stop_reason"] == "tool_use"      # the kept call must still run
+    assert "rm -rf" not in json.dumps(out)
+
+
+def test_buffered_anthropic_all_denied_ends_turn(monkeypatch, tmp_path):
+    body = {"type": "message", "role": "assistant", "stop_reason": "tool_use", "content": [
+        {"type": "tool_use", "id": "t2", "name": "Bash", "input": BAD}]}
+    out = _buffered(monkeypatch, tmp_path, "anthropic", body)
+    assert out["stop_reason"] == "end_turn"
+    assert not [b for b in out["content"] if b["type"] == "tool_use"]
+
+
+def test_buffered_gemini_keeps_allowed_sibling(monkeypatch, tmp_path):
+    body = {"candidates": [{"finishReason": "STOP", "content": {"role": "model", "parts": [
+        {"functionCall": {"name": "Bash", "args": SAFE}},
+        {"functionCall": {"name": "Bash", "args": BAD}}]}}]}
+    parts = _buffered(monkeypatch, tmp_path, "google", body)["candidates"][0]["content"]["parts"]
+    assert [p["functionCall"]["args"] for p in parts if "functionCall" in p] == [SAFE]
+    assert sum("Blocked by Prismor" in p.get("text", "") for p in parts) == 1
+
+
+def test_buffered_responses_keeps_allowed_sibling(monkeypatch, tmp_path):
+    body = {"status": "completed", "output": [
+        {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "bash", "arguments": json.dumps(SAFE)},
+        {"type": "function_call", "id": "fc_2", "call_id": "call_2", "name": "bash", "arguments": json.dumps(BAD)}]}
+    out = _buffered(monkeypatch, tmp_path, "openai", body)
+    assert [i.get("id") for i in out["output"] if i["type"] == "function_call"] == ["fc_1"]
+    assert "rm -rf" not in json.dumps(out)
+
+
+def test_responses_stream_recap_keeps_allowed_sibling(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "openai", "gpt-6-luna", None)
+    _responses_call(stream, "Bash", '{"command": "rm -rf /"}', index=1)    # id fc_1 denied
+    out = stream.feed(_sse("response.completed", {"type": "response.completed", "response": {
+        "id": "resp_1", "status": "completed", "output": [
+            {"type": "function_call", "id": "fc_0", "call_id": "call_0", "name": "Bash",
+             "arguments": '{"command": "uname -a"}'},
+            {"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "Bash",
+             "arguments": '{"command": "rm -rf /"}'}]}}))
+    assert b"rm -rf" not in out and b"uname -a" in out
