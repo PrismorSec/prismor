@@ -430,6 +430,7 @@ def evaluate_tool_call(
     deny_tools: Sequence[str] = (),
     rate_accounting: bool = True,
     rate_scope: Optional[ratelimit.Scope] = None,
+    mcp_repeat_call: Optional[tuple[str, str, str]] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -459,6 +460,9 @@ def evaluate_tool_call(
             Independent of persist/record: live proxies do their own recording.
         rate_scope: host-owned quota workspace/agent and optional hook call id.
             HTTP callers cannot select these through event/body fields.
+        mcp_repeat_call: gateway-owned (server, tool, call fingerprint) for a
+            separate local admission after security evaluation. Never accepted
+            from event metadata or HTTP; contains no raw tool arguments.
         taint_store: optional session-taint store to use instead of the on-disk
             per-session file. Callers with no local box (the hosted
             inference-hook channel) pass one ``InMemoryTaintStore`` shared
@@ -518,7 +522,9 @@ def evaluate_tool_call(
     # records and reports, so nothing is written or uploaded from here.
     from prismor.runtime import remote_eval as _remote_eval
     _remote = _remote_eval.remote_url()
-    if _remote:
+    # Repeated-call accounting stays with the forwarding gateway, even when
+    # the normal security decision is hosted.
+    if _remote and mcp_repeat_call is None:
         return _remote_eval.evaluate_remote(
             _remote, event=event, agent=agent, agent_name=agent_name, mode=mode,
             session_id=session_id, subject=subject,
@@ -671,9 +677,31 @@ def evaluate_tool_call(
     _guard_t0 = time.perf_counter()
     _session_seq = session_seq if session_seq is not None else len(events) - 1
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
+    _repeat = None
+    if mcp_repeat_call is not None:
+        server, tool, key = mcp_repeat_call
+        limit = engine.mcp_tool_repeat_limits.get(server, {}).get(tool)
+        _repeat = {"count": 0, "limit": 0, "error": engine.mcp_tool_repeat_limits_error}
+        if limit is not None and not _repeat["error"]:
+            _repeat = ratelimit.admit(workspace, key, {"requests_per_minute": limit})
+        _repeat.update(server=server, tool=tool)
+        event["type"] = "mcp_repeat"
+        event["content"] = json.dumps(_repeat, sort_keys=True)
     try:
         findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
-                                   trace=_trace)
+                                   trace=_trace, **({"rate_context": _repeat} if _repeat is not None else {}))
+        if _repeat is not None:
+            for finding in findings:
+                if finding.get("category") == "rate_limit":
+                    finding["rateLimit"] = _repeat
+                    finding["evidence"] = json.dumps(_repeat, sort_keys=True)
+                    finding["policyLayer"] = engine.mcp_tool_repeat_limits_source
+                    finding["remediation"] = (
+                        "Ask the operator to restore the repeated-call accounting store or configuration."
+                        if _repeat["error"] else
+                        f"Retry in {_repeat.get('retry_after', 0):.2f}s; ask the operator to review the limit if polling is expected.")
+                    if engine.mcp_tool_repeat_limits_source in {"remote", "exemption"}:
+                        finding["authoritative"] = True
     except Exception as exc:
         # An engine that cannot decide must not let the call through: on
         # enforce this blocks, on observe it is reported like any finding.

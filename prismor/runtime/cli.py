@@ -7263,6 +7263,15 @@ def _policy_show(workspace: Path) -> None:
         print(f"Project policy: (none — using defaults only)")
     print()
 
+    if engine.mcp_tool_repeat_limits or engine.mcp_tool_repeat_limits_error:
+        print(f"MCP identical-call limits ({engine.mcp_tool_repeat_limits_source}, per session, rolling 60s):")
+        for server, tools in sorted(engine.mcp_tool_repeat_limits.items()):
+            for tool, limit in sorted(tools.items()):
+                print(f"  {server}/{tool}: {limit}")
+        if engine.mcp_tool_repeat_limits_error:
+            print(f"  Error: {engine.mcp_tool_repeat_limits_error}")
+        print()
+
     for rule in sorted(engine.rules, key=lambda r: SEVERITY_WEIGHT.get(r.severity, 0), reverse=True):
         sev = rule.severity
         color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM

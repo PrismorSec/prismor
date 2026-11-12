@@ -820,8 +820,12 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
     # limit on the next process. Validate before touching either cache file.
     try:
         import yaml
-        from prismor.runtime.ratelimit import validate_settings
+        from prismor.runtime.ratelimit import validate_settings, validate_repeat_limits
         _settings = (yaml.safe_load(policy_yaml) or {}).get("settings") or {}
+        if ("mcp_tool_repeat_limits" in _settings
+                and validate_repeat_limits(_settings["mcp_tool_repeat_limits"])):
+            sys.stderr.write("[prismor] fetched remote policy has invalid mcp_tool_repeat_limits settings — discarding\n")
+            return False
         if "rate_limit" in _settings and validate_settings(_settings["rate_limit"]):
             sys.stderr.write("[prismor] fetched remote policy has invalid rate_limit settings — discarding\n")
             return False

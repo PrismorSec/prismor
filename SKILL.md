@@ -319,6 +319,11 @@ or fix the configuration. Checks and replay consume no quota. Do not change
 identity/session/workspace or edit policy to bypass a limit. Configuration:
 [`docs/prismor-runtime.md`](./docs/prismor-runtime.md#per-identity-rate-limits).
 
+For `mcp-repeat-limit-exceeded`, wait for the reported retry time; do not change
+arguments or sessions to evade it. For `mcp-repeat-limit-unavailable`, ask the
+operator to restore the store or configuration. Expected polling needs an
+operator-set limit: [`MCP circuit breaker`](./docs/mcp-gateway.md#identical-call-circuit-breaker).
+
 Prismor blocking is a signal, not a problem to route around. The recovery
 sequence is:
 
