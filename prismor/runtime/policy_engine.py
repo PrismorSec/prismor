@@ -1318,14 +1318,21 @@ class AllowlistEntry:
 # subcommands, cloak help and the names-only cloak list are exempt. `sessions`
 # and `agents transcript` replay untrusted content and must stay judged.
 # No shell metacharacters, so nothing else's output can ride along in the call.
-# The one tail allowed is `2>&1` and a `head`/`tail` with only a line count:
-# with no file argument they print nothing but what Prismor wrote.
+# The one tail allowed is `2>&1` and a `head`/`tail` with only a line count, or a
+# `grep` with plain flags and one pattern: with no file argument they print
+# nothing but what Prismor wrote. `cloak <sub> --help` must be the whole call:
+# `cloak run` executes everything after it.
+_GREP_WORD = r"[^\s\-;&|`$()<>'\"\\][^\s;&|`$()<>'\"\\]*"
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
-    r"|\s+cloak\s+(?:list|--help|-h)|\s+query\s+--schema|\s+(?:--?(?:version|help)|-h))?"
-    r"(?:\s+2>&1)?(?:\s*\|\s*(?:head|tail)(?:\s+-(?:n\s*)?\d+)?)?\s*$"
+    r"|\s+cloak\s+(?:list|(?:[a-z]+\s+)?(?:--help|-h))|\s+query\s+--schema"
+    r"|\s+(?:--?(?:version|help)|-h))?"
+    r"(?:\s+2>&1)?(?:\s*\|\s*(?:(?:head|tail)(?:\s+-(?:n\s*)?\d+)?"
+    rf"|grep(?:\s+-[cEFhinovwx]+)*\s+(?:{_GREP_WORD}|'{_GREP_WORD}'|\"{_GREP_WORD}\")))?\s*$"
 )
+# Commands joined by `;`, `&&` or `||` are exempt only when every one of them is.
+_CHAIN_SEP = re.compile(r";|&&|\|\|")
 
 
 _PRE_EVENTS = {"pretooluse", "beforeshellexecution", "beforemcpexecution"}
@@ -1369,7 +1376,8 @@ def drop_post_twin_findings(findings: List[Dict[str, Any]], events: List[Dict[st
 def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
     if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
         return False
-    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
+    parts = [p for p in _CHAIN_SEP.split(str(event.get("command") or "")) if p.strip()]
+    return bool(parts) and all(_PRISMOR_STATUS_CMD.match(p) for p in parts)
 
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""

@@ -246,10 +246,12 @@ the reason): CLI judges cover events before a tool runs, not tool results. The
 eval-server and hosted evaluation set a 4s budget by default, so behind them a
 CLI judge never runs; use `api`, `prismor` or `typesafe` there. While enforcement is paused, tool results get the heuristic only.
 
-Bare `prismor cloak list` and `prismor cloak --help` output is exempt from the
-semantic judge: it contains placeholder names or CLI documentation, not secret
-values. Chained commands, pipelines and commands that replay untrusted content
-still get scanned. Post-tool notices name the originating tool and its
+`prismor cloak list` and `prismor cloak [<subcommand>] --help` output is exempt
+from the semantic judge: it contains placeholder names or CLI documentation, not
+secret values. So is a `| head`, `| tail` or `| grep <pattern>` over it with no
+file argument, and a `;`, `&&` or `||` chain in which every command is exempt.
+A chain that includes any other command, and commands that replay untrusted
+content, still get scanned. Post-tool notices name the originating tool and its
 `tool_use_id` when available, so parallel results can be distinguished even if
 the client displays the notice beside another result.
 
