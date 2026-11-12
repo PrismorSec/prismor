@@ -498,6 +498,8 @@ _HOST_POLICY_MOUNT = re.compile(
     r"(?:-v|--volume)(?:=|\s+)\S*(?:\$\{?HOME\}?|~(?::|/|\s|$)|/\.prismor)"
     r"|(?:-v|--volume)(?:=|\s+)/(?::|\s|$)"
     r"|(?:-v|--volume)(?:=|\s+)\S*:/(?:\s|$)"
+    r"|(?:-v|--volume)(?:=|\s+)/home/\S+(?::)"
+    r"|--mount\s+\S*type=bind\S*(?:,|\s)source=/"
     r")"
 )
 _CHROOT_HOST_ROOT = re.compile(r"\bchroot\s+/(?:\s|$)")
