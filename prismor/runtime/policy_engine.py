@@ -1318,14 +1318,36 @@ class AllowlistEntry:
 # subcommands, cloak help and the names-only cloak list are exempt. `sessions`
 # and `agents transcript` replay untrusted content and must stay judged.
 # No shell metacharacters, so nothing else's output can ride along in the call.
-# The one tail allowed is `2>&1` and a `head`/`tail` with only a line count:
-# with no file argument they print nothing but what Prismor wrote.
+# The one tail allowed is `2>&1` and a read-only filter pipe (head/tail/grep/wc/
+# sort with no file arguments — they print nothing but what Prismor wrote).
+# `cloak` read-only subcommands and help for any subcommand are safe (#882):
+# their output is names, sizes, dates and usage text, never secret values.
+_SAFE_PIPE = (
+    r"(?:head|tail)(?:\s+-(?:n\s*)?\d+)?"
+    r"|grep(?:\s+-[a-zA-Z]+)*(?:\s+\S+)?"
+    r"|wc(?:\s+-[lwc]+)?"
+    r"|sort(?:\s+-[a-zA-Z]+)*"
+    r"|cat"
+)
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
-    r"|\s+cloak\s+(?:list|--help|-h)|\s+query\s+--schema|\s+(?:--?(?:version|help)|-h))?"
-    r"(?:\s+2>&1)?(?:\s*\|\s*(?:head|tail)(?:\s+-(?:n\s*)?\d+)?)?\s*$"
+    r"|\s+cloak\s+(?:list|status|pattern\s+list|(?:\w+\s+)?(?:--help|-h))"
+    r"|\s+query\s+--schema|\s+(?:--?(?:version|help)|-h))?"
+    r"(?:\s+2>&1)?(?:\s*\|\s*(?:" + _SAFE_PIPE + r"))?\s*$"
 )
+
+# Semicolon-chained commands where every segment matches the exempt pattern.
+# Rejects $(), backticks and other injection vectors before splitting (#882).
+_SHELL_INJECTION = re.compile(r"[`$]|\$\(")
+
+def _is_prismor_command_chain(cmd: str) -> bool:
+    if _SHELL_INJECTION.search(cmd):
+        return False
+    segments = [s.strip() for s in cmd.split(";") if s.strip()]
+    if len(segments) < 2:
+        return False
+    return all(_PRISMOR_STATUS_CMD.match(seg) for seg in segments)
 
 
 _PRE_EVENTS = {"pretooluse", "beforeshellexecution", "beforemcpexecution"}
@@ -1369,7 +1391,8 @@ def drop_post_twin_findings(findings: List[Dict[str, Any]], events: List[Dict[st
 def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
     if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
         return False
-    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
+    cmd = str(event.get("command") or "")
+    return bool(_PRISMOR_STATUS_CMD.match(cmd) or _is_prismor_command_chain(cmd))
 
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""

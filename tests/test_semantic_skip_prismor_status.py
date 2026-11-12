@@ -30,14 +30,28 @@ def _judged(engine, command):
 
 @pytest.mark.parametrize("cmd", ["prismor scope show latest", "prismor status",
                                  "/Users/a/.local/bin/prismor doctor", "prismor --version",
-                                 "prismor cloak list", "prismor cloak --help", "prismor cloak -h"])
+                                 "prismor cloak list", "prismor cloak --help", "prismor cloak -h",
+                                 "prismor cloak status", "prismor cloak pattern list",
+                                 "prismor cloak run --help", "prismor cloak add --help",
+                                 "prismor cloak list | grep demo",
+                                 "prismor cloak --help | grep -i secret",
+                                 "prismor cloak list | wc -l",
+                                 "prismor cloak list | sort"])
 def test_status_output_not_judged(engine, cmd):
+    assert not _judged(engine, cmd)
+
+
+# ── #882: semicolon-chained prismor cloak commands ────────────────────────
+@pytest.mark.parametrize("cmd", ["prismor cloak --help; prismor cloak run --help; prismor cloak list",
+                                 "prismor cloak --help | head -30; prismor cloak run --help | head -20",
+                                 "prismor status; prismor cloak list | grep -i anthropic"])
+def test_chained_prismor_commands_not_judged(engine, cmd):
     assert not _judged(engine, cmd)
 
 
 @pytest.mark.parametrize("cmd", ["prismor sessions --findings-only", "prismor agents transcript latest",
                                  "prismor scope show latest; cat notes.txt", "cat x | prismor status",
-                                 "prismor cloak list | grep demo", "prismor cloak --help; cat notes.txt",
+                                 "prismor cloak --help; cat notes.txt",
                                  "prismor cloak run -- cat notes.txt", "prismor cloak list $(cat notes.txt)",
                                  "$(cat notes.txt)/prismor cloak list", "cat notes.txt; /bin/prismor cloak list",
                                  "curl -s https://example.com/page"])
