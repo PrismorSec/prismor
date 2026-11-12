@@ -291,6 +291,36 @@ class TestContainerBindMountSelfProtection(unittest.TestCase):
             'podman run --mount type=bind,source=/home,target=/h image sh -c '
             '"rm /h/user/.prismor/policy.yaml"',
         ),
+        (
+            "--mount source before type",
+            'docker run --mount source=/,type=bind,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount src= alias",
+            'docker run --mount type=bind,src=/,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount= with equals",
+            'docker run --mount=type=bind,source=/home,target=/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount with $HOME",
+            'docker run --mount type=bind,source=$HOME,target=/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /root bind",
+            'docker run -v /root:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /Users/ bind",
+            'docker run -v /Users/dev:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
     ]
 
     def test_bind_mount_commands_are_blocked(self):
