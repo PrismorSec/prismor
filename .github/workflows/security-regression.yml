@@ -24,8 +24,9 @@ jobs:
         # receipt-schema tests actually run instead of skipping: they execute
         # the verifier published in docs/telemetry-receipts.md, which is how
         # that spec is kept honest. PyJWT is the [identity] extra, so the
-        # token-verification tests run rather than skip.
-        run: python3 -m pip install --quiet pytest cryptography "PyJWT[crypto]>=2.8"
+        # token-verification tests run rather than skip. jsonschema checks
+        # the published policy schema against the runtime settings.
+        run: python3 -m pip install --quiet pytest cryptography "PyJWT[crypto]>=2.8" jsonschema
       - name: Verify integration registry
         # Catches registry.yaml drift vs SURFACES/BLOCKING enums and matrix sync
         # (see TODO.md: verify_registry.sh in CI). Needs PyYAML for the YAML load path.
