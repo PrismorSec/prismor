@@ -1830,8 +1830,11 @@ class Gateway:
                     session_id=self.session_id,
                     agent_name=self.agent_name,
                     deny_tools=deny_tools or (),
+                    # persist=False: the accounting pass is not a session event;
+                    # a block still lands as a runtime finding (rateLimit).
                     **({"mcp_repeat_call": mcp_repeat_call, "rate_accounting": False,
-                        "register_agent": False} if mcp_repeat_call is not None else {}),
+                        "register_agent": False, "persist": False}
+                       if mcp_repeat_call is not None else {}),
                 )
         except Exception as exc:
             # Fail open on engine *errors* only in observe mode; in enforce

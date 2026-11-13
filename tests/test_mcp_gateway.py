@@ -1002,6 +1002,10 @@ def test_repeat_limit_counts_identical_calls_and_recovers(repeat_gateway):
     clock[0] = 160
     gateway._handle_tools_call_safe("retry", {"name": "echo", "arguments": args})
     assert not sent[-1]["result"].get("isError")
+    # Accounting is not a session event: the trail holds only the real calls.
+    from prismor.runtime.store import read_session_events
+    assert not any(e.get("type") == "mcp_repeat"
+                   for e in read_session_events(gateway.workspace, gateway.session_id))
 
 
 def test_repeat_limit_survives_gateway_restart_and_isolates_sessions(repeat_gateway, tmp_path, monkeypatch):
