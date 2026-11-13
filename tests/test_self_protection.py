@@ -262,6 +262,154 @@ class TestSelfProtectionCannotBeSwitchedOff(unittest.TestCase):
                 self.assertIsNotNone(should_block(findings, {**PRE, "type": event["type"]}))
 
 
+class TestContainerBindMountSelfProtection(unittest.TestCase):
+    """Bind mounts that expose the host policy must not suppress
+    self-protection findings (issue #898)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.eng = _engine(_render_selection_policy([]))
+
+    _MOUNT_CASES = [
+        (
+            "volume root bind",
+            'docker run -v /:/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount bind from root",
+            'docker run --mount type=bind,source=/,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume absolute home",
+            'docker run -v /home/user:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "podman --mount bind",
+            'podman run --mount type=bind,source=/home,target=/h image sh -c '
+            '"rm /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount source before type",
+            'docker run --mount source=/,type=bind,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount src= alias",
+            'docker run --mount type=bind,src=/,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount= with equals",
+            'docker run --mount=type=bind,source=/home,target=/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount with $HOME",
+            'docker run --mount type=bind,source=$HOME,target=/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /root bind",
+            'docker run -v /root:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /Users/ bind",
+            'docker run -v /Users/dev:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "volume parent /home",
+            'docker run -v /home:/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume parent /Users",
+            'docker run -v /Users:/h image sh -c '
+            '"echo x > /h/dev/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /home/ trailing slash",
+            'docker run -v /home/:/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume macOS /var/root",
+            'docker run -v /var/root:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount source=~",
+            'docker run --mount type=bind,source=~,target=/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume through ..",
+            'docker run -v /tmp/../home/user:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume from a variable",
+            'D=/home/user; docker run -v $D:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "clustered short flags",
+            'docker run -itv /:/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "windows drive path",
+            'docker run -v C:\\Users\\dev:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+    ]
+
+    # Binds that cannot reach this install: the payload stays remote.
+    _NON_HOST_CASES = [
+        ("--mount /tmp", 'docker run --mount type=bind,source=/tmp/x,target=/x image'),
+        ("--mount project dir", 'docker run --mount type=bind,source=/Users/dev/proj,target=/x image'),
+        ("named volume", 'docker run --mount type=volume,source=vol,target=/x image'),
+        ("volume /rootfs", 'docker run -v /rootfs:/x image'),
+        ("volume /homework", 'docker run -v /homework:/x image'),
+        ("volume project under home", 'docker run -v /home/user/proj:/app image'),
+    ]
+
+    def test_non_host_binds_stay_remote(self):
+        for label, prefix in self._NON_HOST_CASES:
+            with self.subTest(label=label):
+                command = prefix + ' sh -c "echo x > /home/user/.prismor/policy.yaml"'
+                findings = self.eng.evaluate({"type": "shell", "command": command}, index=0)
+                sp = [f for f in findings if f.get("ruleId") in _SELF_PROTECTION_RULE_IDS]
+                self.assertTrue(sp, f"no self-protection finding: {label}")
+                self.assertTrue(all(f.get("contextInert") for f in sp), f"not inert: {label}")
+
+    def test_bind_mount_commands_are_blocked(self):
+        for label, command in self._MOUNT_CASES:
+            with self.subTest(label=label):
+                event = {"type": "shell", "command": command}
+                findings = self.eng.evaluate(event, index=0)
+                blocking = should_block(findings, {**PRE, "type": "shell"})
+                self.assertIsNotNone(blocking, f"not blocked: {label}")
+
+    def test_container_without_host_mount_is_remote(self):
+        command = (
+            'docker run image sh -c '
+            '"echo x > /home/user/.prismor/policy.yaml"'
+        )
+        event = {"type": "shell", "command": command}
+        findings = self.eng.evaluate(event, index=0)
+        for f in findings:
+            if f.get("ruleId") in _SELF_PROTECTION_RULE_IDS:
+                self.assertTrue(
+                    f.get("contextInert", False),
+                    "container without host mount should be inert",
+                )
+
+
 class TestUnblockMessage(unittest.TestCase):
     def test_self_protection_block_points_at_the_unlock_window(self):
         from prismor.runtime.unblock import format_unblock

@@ -492,13 +492,39 @@ def _is_remote_argument(words: List[str]) -> bool:
 # `:/` on its own matches every absolute destination (`-v /tmp:/tmp`).
 # Only a source of `/`, a destination of `/`, or a home / policy mount
 # reaches this install.
+def _host_source(c: str) -> str:
+    """Bind source that can expose this install: `/`, a home dir or its
+    parent (`/home`, `/home/u`, not `/home/u/proj`), the policy dir, or a
+    path we can't resolve statically (`..`, `$VAR`). ``c`` is the class of
+    characters a path may contain in the surrounding flag syntax."""
+    seg = c[:-1] + r"/\\]"  # one path component: c minus separators
+    return (
+        "(?:"
+        r"/"
+        r"|~/?"
+        rf"|/(?:home|Users)(?:/{seg}*)?/?"
+        r"|/(?:var/)?root/?"
+        rf"|{c}*/\.prismor{c}*"
+        rf"|{c}*\.\.{c}*"
+        rf"|{c}*\${c}*"
+        rf"|[A-Za-z]:[\\/]Users(?:[\\/]{seg}*)?[\\/]?"
+        rf"|//[A-Za-z]/Users(?:/{seg}*)?/?"
+        ")"
+    )
+
+
+# `-v SRC:DST`, also clustered short flags (`-itv`). Sources stop at `:`.
+_VOLUME_FLAG = r"(?:(?<![\w-])-[A-Za-z]*v|--volume)(?:=|\s+)[\"']?"
+# `--mount k=v,...` with `src`/`source` anywhere in the list.
+_MOUNT_SOURCE = r"--mount(?:=|\s+)[\"']?(?:[^\s,\"']*,)*(?:src|source)="
+
 _HOST_POLICY_MOUNT = re.compile(
     r"\b(?:docker|podman|nerdctl)\b[^\n]*"
     r"(?:"
-    r"(?:-v|--volume)(?:=|\s+)\S*(?:\$\{?HOME\}?|~(?::|/|\s|$)|/\.prismor)"
-    r"|(?:-v|--volume)(?:=|\s+)/(?::|\s|$)"
-    r"|(?:-v|--volume)(?:=|\s+)\S*:/(?:\s|$)"
-    r")"
+    + _VOLUME_FLAG + _host_source(r"[^\s:\"']") + r"(?::|[\s\"']|$)"
+    + r"|" + _VOLUME_FLAG + r"[^\s:\"']*:/(?:[\s\"']|$)"
+    + r"|" + _MOUNT_SOURCE + _host_source(r"[^\s,\"']") + r"(?=[,\s\"']|$)"
+    + r")"
 )
 _CHROOT_HOST_ROOT = re.compile(r"\bchroot\s+/(?:\s|$)")
 
