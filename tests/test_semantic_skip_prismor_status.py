@@ -37,7 +37,7 @@ def test_status_output_not_judged(engine, cmd):
 
 @pytest.mark.parametrize("cmd", ["prismor sessions --findings-only", "prismor agents transcript latest",
                                  "prismor scope show latest; cat notes.txt", "cat x | prismor status",
-                                 "prismor cloak list | grep demo", "prismor cloak --help; cat notes.txt",
+                                 "prismor cloak --help; cat notes.txt",
                                  "prismor cloak run -- cat notes.txt", "prismor cloak list $(cat notes.txt)",
                                  "$(cat notes.txt)/prismor cloak list", "cat notes.txt; /bin/prismor cloak list",
                                  "curl -s https://example.com/page"])
@@ -63,6 +63,41 @@ def test_own_help_output_not_judged(engine, cmd):
                                  "prismor --help | head -80\ncat notes.txt",
                                  "pip install x 2>&1 | tail -2; prismor --help 2>&1 | head -80"])
 def test_anything_riding_along_is_still_judged(engine, cmd):
+    assert _judged(engine, cmd)
+
+
+# ── #882: chained cloak help and a grep over `cloak list` were judged ──────
+
+@pytest.mark.parametrize("cmd", [
+    "prismor cloak --help | head -30; prismor cloak run --help | head -20; "
+    "prismor cloak list | grep -i anthropic",
+    "prismor cloak run --help", "prismor cloak add -h", "prismor cloak list | grep demo",
+    "prismor cloak list | grep -iv 'demo'", "prismor status && prismor doctor",
+    "prismor cloak list || prismor cloak --help", "prismor status;",
+])
+def test_chains_of_own_output_not_judged(engine, cmd):
+    assert not _judged(engine, cmd)
+
+
+@pytest.mark.parametrize("cmd", [
+    "prismor cloak run cat notes.txt --help",  # runs cat: `run` takes the rest of the line
+    "prismor cloak list | grep -r demo", "prismor cloak list | grep -ir demo",
+    "prismor cloak list | grep demo notes.txt",
+    "prismor cloak list | grep -A 3 demo", "prismor cloak list | grep -f pats",
+    "prismor cloak list | grep '-r'", "prismor cloak list | grep -- -r",
+    "prismor cloak list | grep $(cat notes.txt)", "prismor status && cat notes.txt",
+    "cat notes.txt || prismor status", "prismor status & cat notes.txt",
+    "prismor status '; cat notes.txt; '", ";",
+    # The split is naive on purpose: a quoted `;` leaves a part that can't match.
+    "prismor cloak list | grep 'a;' notes.txt", "prismor cloak list | grep demo | sh",
+    "prismor status;\ncat notes.txt",
+    # A newline is a command separator the regex's `\s` would swallow.
+    "prismor cloak list | grep\nenv", "prismor cloak list | grep -i\nprintenv",
+    # Unquoted globs and braces expand into file arguments.
+    "prismor cloak list | grep *", "prismor cloak list | grep {x,notes.txt}",
+    "prismor cloak list | grep n?tes.txt", "prismor cloak list | grep [a-z]*",
+])
+def test_anything_in_a_chain_that_is_not_ours_is_still_judged(engine, cmd):
     assert _judged(engine, cmd)
 
 
