@@ -117,8 +117,9 @@ def _decision_mode(data: Dict[str, Any]) -> str:
     return "full" if mode == "full" else "redacted"
 
 
-def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> Tuple[Optional[str], str]:
-    """``(status, decision_mode)``. ``decision_mode`` is ``"redacted"`` when the
+def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> Tuple[Any, ...]:
+    """``(status, decision_mode, approver)``. ``approver`` is the console's
+    ``decided_by`` (``{"id", "email"}``) and ``decided_via``, or None. ``decision_mode`` is ``"redacted"`` when the
     approver chose "approve with sensitive values stripped" — the runtime then
     redacts locally before the call runs (see :func:`redact_approved_payload`).
     Status and mode come from the same response; callers must not re-fetch one
@@ -134,9 +135,11 @@ def _get_status_ex(ident: Dict[str, Any], approval_id: str, timeout: float) -> T
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # fixed or operator-configured URL  # nosec B310
             data = json.loads(resp.read().decode("utf-8"))
         status = str(data.get("status") or "").lower() or None
-        return status, _decision_mode(data)
+        who = data.get("decided_by") if isinstance(data.get("decided_by"), dict) else None
+        approver = {**who, "via": data.get("decided_via")} if who else None
+        return status, _decision_mode(data), approver
     except (urllib.error.URLError, OSError, ValueError, AttributeError):
-        return None, "redacted"
+        return None, "redacted", None
 
 
 def _audit_outcome(
@@ -146,6 +149,7 @@ def _audit_outcome(
     approval_id: Optional[str],
     agent: str,
     session_id: str,
+    approver: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Record the human-approval outcome on the signed audit trail.
 
@@ -163,7 +167,9 @@ def _audit_outcome(
                 reason=str(body.get("reason") or ""),
                 fingerprint=str(body.get("fingerprint") or ""),
                 agent=agent,
+                agent_name=str(body.get("agent") or ""),
                 session_id=session_id,
+                approver=approver,
             )
     except Exception:
         pass
@@ -261,8 +267,15 @@ def await_step_up(
     session_id: str = "",
     tool: str = "",
     agent_name: str = "",
+    resource: Optional[Dict[str, Any]] = None,
 ) -> "ApprovalOutcome":
     """Post an approval request for a STEP_UP finding and block until decided.
+
+    An approval is re-checked before it is returned: policy is refreshed and
+    the call re-evaluated (against ``resource`` when the caller passes its
+    current state). If anything other than the approved step-up now applies -
+    the account was restricted, the agent paused, a rule added - the outcome
+    is falsy with status ``revoked_after_approval``.
 
     ``tool`` and ``agent_name`` label the request for the approver: SDK
     findings carry no ``toolName``, so without them every request read
@@ -313,10 +326,12 @@ def await_step_up(
     # offering an approve that can no longer change anything.
     body["wait_seconds"] = round(_timeout())
 
-    def _record(status: str, approval_id: Optional[str] = None) -> None:
+    def _record(status: str, approval_id: Optional[str] = None, reason: Optional[str] = None,
+                approver: Optional[Dict[str, Any]] = None) -> None:
         _audit_outcome(
-            body, status=status, approval_id=approval_id,
-            agent=agent, session_id=session_id,
+            {**body, "reason": reason} if reason else body,
+            status=status, approval_id=approval_id,
+            agent=agent, session_id=session_id, approver=approver,
         )
 
     poll_timeout = min(10.0, _poll_interval() + 5.0)
@@ -328,6 +343,8 @@ def await_step_up(
     if str(created.get("status") or "").lower() == _APPROVED:
         _mode = _decision_mode(created)
         _record("approved" if _mode != "redacted" else "approved_redacted", approval_id)
+        if _revoked_since(decision, finding, resource, _record, approval_id):
+            return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
         return ApprovalOutcome(True, redacted=_mode == "redacted", approval_id=approval_id, status="approved")
 
     deadline = _monotonic() + _timeout()
@@ -335,15 +352,55 @@ def await_step_up(
     while _monotonic() < deadline:
         time.sleep(interval)
         # Keep approval and its redaction requirement from the same response.
-        status, mode = _get_status_ex(ident, approval_id, timeout=poll_timeout)
+        res = _get_status_ex(ident, approval_id, timeout=poll_timeout)
+        status, mode = res[0], res[1]
+        approver = res[2] if len(res) > 2 else None
         if status == _APPROVED:
-            _record("approved" if mode != "redacted" else "approved_redacted", approval_id)
+            _record("approved" if mode != "redacted" else "approved_redacted", approval_id, approver=approver)
+            if _revoked_since(decision, finding, resource, _record, approval_id):
+                return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
             return ApprovalOutcome(True, redacted=mode == "redacted", approval_id=approval_id, status="approved")
         if status in _DECIDED:  # denied / expired
-            _record(status, approval_id)
+            _record(status, approval_id, approver=approver)
             return ApprovalOutcome(False, approval_id=approval_id, status=status)
     _record("timeout", approval_id)
     return ApprovalOutcome(False, approval_id=approval_id, status="timeout")  # timed out → fail closed
+
+
+def _revoked_since(
+    decision: Any,
+    finding: Dict[str, Any],
+    resource: Optional[Dict[str, Any]],
+    record: Any,
+    approval_id: Optional[str],
+) -> bool:
+    """True when the approved call must not run after all.
+
+    Refreshes the org policy, then re-runs the evaluation. Still allowed, or
+    held only by the same step-up rule the human just approved -> run it.
+    Anything else (a block, a different step-up) -> refuse, and record why.
+    Fails closed if the re-check itself errors."""
+    recheck = getattr(decision, "recheck", None)
+    if recheck is None:
+        return False  # caller built its own Decision; nothing to re-run
+    try:
+        from prismor.runtime.enterprise import remote_policy as _rp
+        _rp.check_and_refresh(interval=0)
+    except Exception:
+        pass
+    try:
+        now = recheck(resource)
+    except Exception as exc:
+        record("revoked_after_approval", approval_id, f"re-check after approval failed: {exc}")
+        return True
+    if now.allow:
+        return False
+    same = (now.blocking or {}).get("ruleId") == finding.get("ruleId")
+    if same and str((now.blocking or {}).get("action") or "").lower() == "step_up":
+        return False
+    record("revoked_after_approval", approval_id,
+           "approved, then refused on re-check: " + str(now.reason or now.rule_id or "policy changed"))
+    return True
 
 
 async def await_step_up_async(
@@ -354,6 +411,7 @@ async def await_step_up_async(
     session_id: str = "",
     tool: str = "",
     agent_name: str = "",
+    resource: Optional[Dict[str, Any]] = None,
 ) -> "ApprovalOutcome":
     """Event-loop-safe :func:`await_step_up`.
 
@@ -370,7 +428,7 @@ async def await_step_up_async(
 
     return await asyncio.to_thread(
         await_step_up, decision, event=event, agent=agent, session_id=session_id,
-        tool=tool, agent_name=agent_name,
+        tool=tool, agent_name=agent_name, resource=resource,
     )
 
 

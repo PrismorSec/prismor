@@ -29,7 +29,7 @@ new surface) do not bump it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from prismor.runtime.policy_engine import PolicyEngine
@@ -158,6 +158,11 @@ class Decision:
     # and how the subject was established. Absent from the wire form unless
     # asked for, so the contract stays additive.
     explain: Optional[Dict[str, Any]] = None
+    # Set on a ``step_up`` decision: re-runs the same evaluation (optionally
+    # against a fresh ``resource``) so an approval granted minutes later is
+    # checked against current policy and state before the tool runs.
+    # In-process only; never on the wire.
+    recheck: Optional[Callable[..., "Decision"]] = field(default=None, repr=False, compare=False)
 
     @property
     def verdict(self) -> str:
