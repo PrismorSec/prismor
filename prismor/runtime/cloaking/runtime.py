@@ -32,10 +32,12 @@ _READER_UTILS = frozenset({
 
 
 # The two shapes decloak.sh rewrites a Bash command into (see `wrapped=` there).
+# The scrubber tail carries PRISMOR_CLOAK_SESSION since #849; older hooks omit it.
 # A quoted word from `printf %q` is backslash escapes or a $'...' string.
 _Q = r"(?:\$'(?:\\.|[^'\\])*'|(?:\\.|[^\s\\])+)"
 _DECLOAK_TAIL_RE = re.compile(
-    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r" " + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
+    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r"(?: PRISMOR_CLOAK_SESSION=(?:''|" + _Q + r"))? "
+    + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
 _DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)
 _DECLOAK_RESOLVE_RE = re.compile(
     r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _Q + r"decloak-exec\.sh\Z",
