@@ -16,8 +16,11 @@ def _q(s):
     return subprocess.run(["bash", "-c", 'printf %q "$1"', "_", s], capture_output=True, text=True).stdout
 
 
-def _tail():
-    return f" 2>&1 | PRISMOR_SECRETS_DIR={_q(VAULT)} {_q(HOOKS + '/scrub-stream.sh')}; exit ${{PIPESTATUS[0]}}"
+def _tail(session=None):
+    # decloak.sh has passed PRISMOR_CLOAK_SESSION to the scrubber since #849;
+    # session=None is the older tail without it.
+    env = "" if session is None else f" PRISMOR_CLOAK_SESSION={_q(session)}"
+    return f" 2>&1 | PRISMOR_SECRETS_DIR={_q(VAULT)}{env} {_q(HOOKS + '/scrub-stream.sh')}; exit ${{PIPESTATUS[0]}}"
 
 
 def test_placeholder_form_unwraps():
@@ -41,3 +44,20 @@ def test_anything_else_is_untouched():
 def test_vault_read_inside_a_wrapper_is_still_seen():
     inner = "cat ~/.prismor/secrets/KEY"
     assert unwrap_decloak("{\n:\n" + inner + "\n\n}" + _tail()) == inner
+
+
+def test_tail_with_cloak_session_unwraps():
+    cmd = "ls -la ~/project"
+    for session in ["00cc1a1f-3b43-4bf3-9794-9d2c1e0f7a11", ""]:
+        assert unwrap_decloak("{\n:\n" + cmd + "\n\n}" + _tail(session)) == cmd
+
+
+def test_tail_matches_decloak_sh():
+    """The tail decloak.sh writes today must be one the unwrap regex accepts."""
+    import pathlib, re
+    from prismor.runtime.cloaking import runtime
+    sh = pathlib.Path(runtime.__file__).with_name("hooks") / "decloak.sh"
+    line = next(l for l in sh.read_text().splitlines() if l.startswith('wrapped="$runner'))
+    names = re.findall(r"(PRISMOR_[A-Z_]+)=", line)
+    assert names == ["PRISMOR_SECRETS_DIR", "PRISMOR_CLOAK_SESSION"], (
+        "decloak.sh's scrubber tail changed; update _DECLOAK_TAIL_RE and this test")
