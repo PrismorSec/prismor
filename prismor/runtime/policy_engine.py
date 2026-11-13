@@ -44,6 +44,10 @@ _DEFAULT_POLICY_PATH = Path(__file__).parent / "default_policy.yaml"
 _LAYER_NAMES = {"default": "builtin", "user": "local", "project": "project",
                 "remote": "org", "exemption": "repo_exemption"}
 
+# Layers a developer (or an agent on their machine) can write. On a rule the
+# signed org policy sets, these may tighten but never loosen.
+_LOCAL_LAYERS = frozenset({"user", "system", "project"})
+
 # Rules that cannot be disabled or weakened by project-level policy overrides.
 # These protect against the most dangerous attack patterns (destructive commands,
 # credential exfiltration, reverse shells) and against disabling Prismor itself.
@@ -1276,12 +1280,14 @@ class AllowlistEntry:
     carve-out visible in the same list.
     """
 
-    __slots__ = ("id", "rule_ids", "patterns", "raw_patterns", "reason", "type", "expires", "match")
+    __slots__ = ("id", "rule_ids", "patterns", "raw_patterns", "reason", "type", "expires", "match", "source")
 
     def __init__(self, raw: Dict[str, Any]) -> None:
         self.id: str = raw["id"]
         self.rule_ids: set[str] = set(raw["rule_ids"])
         self.reason: str = raw.get("reason", "")
+        # Policy layer the entry came from ("default" for the shipped file).
+        self.source: str = str(raw.get("_source") or "default")
         # Optional ISO-8601 expiry, so a "just this once" exception written by
         # `prismor allow --expires` lapses on its own instead of quietly
         # becoming permanent policy.
@@ -1382,6 +1388,9 @@ class PolicyEngine:
         self.workspace: Optional[Path] = workspace
         self.rules: List[CompiledRule] = []
         self.allowlists: List[AllowlistEntry] = []
+        # Rule ids the signed org policy sets. Local layers can't loosen them.
+        self._org_rule_ids: set[str] = set()
+        self._pre_local: Dict[str, Dict[str, Any]] = {}
         self.block_categories: set[str] = set()
         self._manifest_re: Optional[re.Pattern[str]] = None
         self.egress_allowlist = []
@@ -1630,6 +1639,10 @@ class PolicyEngine:
             # flips one field without dropping the rule's patterns/category. A full
             # overlay rule still fully overrides — every key it provides wins.
             existing = rules_by_id.get(rule["id"])
+            if source == "remote":
+                self._org_rule_ids.add(rule["id"])
+                if isinstance(existing, dict) and existing.get("_layer") in _LOCAL_LAYERS:
+                    existing = self._drop_local_loosening(existing, rule)
             if isinstance(existing, dict):
                 merged = {**existing, **rule}
                 # add_patterns/disable_patterns are UNIONED across layers (project
@@ -1662,7 +1675,9 @@ class PolicyEngine:
                 if "mode" in rule:
                     rule["_mode_layer"] = source
                 rules_by_id[rule["id"]] = rule
-        allowlist_raw.extend(override_raw.get("allowlists", []) or [])
+        allowlist_raw.extend(
+            {**a, "_source": source} if isinstance(a, dict) else a
+            for a in override_raw.get("allowlists", []) or [])
         override_settings = dict(override_raw.get("settings", {}) or {})
         # `selection: explicit` makes the safety floor opt-in, so it is a
         # local-only affordance for a developer's own machine. Arriving from the
@@ -1747,6 +1762,30 @@ class PolicyEngine:
             override_settings["conditions"] = {**settings["conditions"], **override_settings["conditions"]}
         settings.update(override_settings)
 
+    def _drop_local_loosening(self, local: Dict[str, Any], org: Dict[str, Any]) -> Dict[str, Any]:
+        """The rule as the org layer should see it: what it was before any local
+        layer touched it, plus only the local changes that tighten it.
+
+        A field-level merge would otherwise keep every key the org entry leaves
+        out, so a local ``enabled: false``, ``disable_patterns`` or narrower
+        ``patterns`` would survive on a rule the org enforces.
+        """
+        base = self._pre_local.get(local.get("id", ""))
+        if base is None:
+            # Only a local file defines this id. A complete org rule replaces it;
+            # a sparse org tweak (e.g. add_patterns) is building on the local rule.
+            if not all(k in org for k in ("severity", "category", "title", "event_types")):
+                return local
+            base = {}
+        kept = dict(base)
+        adds = list(dict.fromkeys([*(base.get("add_patterns") or []), *(local.get("add_patterns") or [])]))
+        if adds:
+            kept["add_patterns"] = adds
+        if "mode" not in org and str(local.get("mode", "")).lower() == "enforce":
+            kept["mode"] = "enforce"
+            kept["_mode_layer"] = local.get("_mode_layer", local.get("_layer"))
+        return kept
+
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
         default_raw = _load_yaml(_DEFAULT_POLICY_PATH)
         if default_raw is None:
@@ -1765,6 +1804,9 @@ class PolicyEngine:
             rules_by_id[rule["id"]] = rule
 
         allowlist_raw: List[Dict[str, Any]] = list(default_raw.get("allowlists", []) or [])
+        # Merges build new dicts rather than mutating these, so a shallow copy
+        # is the rules as shipped (see _drop_local_loosening).
+        self._pre_local = dict(rules_by_id)
 
         # Settings start from defaults; project policy can extend or override.
         settings: Dict[str, Any] = dict(default_raw.get("settings", {}) or {})
@@ -4157,6 +4199,10 @@ class PolicyEngine:
                 return None
         for entry in self.allowlists:
             if entry.type != "allow" or not entry.applies_to(rule_id):
+                continue
+            # A local exception can't excuse a rule the org enforces. That takes
+            # an org exemption, which the console grants and records.
+            if entry.source in _LOCAL_LAYERS and rule_id in self._org_rule_ids:
                 continue
             # A `rule_ids: ["*"]` or match-anything entry blanks every floor and
             # self-protection finding. Those rules stay pinned; a named allow
