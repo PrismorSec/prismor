@@ -52,6 +52,10 @@ agent may edit policy (fully logged) but still cannot touch the self-protection
 rules or the unlock credential. Org admins can disable or cap that window per
 device from the console; the setting rides the signed bundle.
 
+Overrides preserve each floor rule's category, so rules protected by a core
+category keep their protection against narrowing conditions and later overrides.
+Non-floor rules can still change category.
+
 ## Seeing which layer won
 
 Four layers merge into one rule table, so the useful question is not "what does

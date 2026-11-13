@@ -41,6 +41,7 @@ done
 pytest_targets=()
 for t in \
   tests/test_policies.py \
+  tests/test_enforcement_floor.py \
   tests/test_ratelimit.py \
   tests/test_mcp_gateway.py \
   tests/test_hosted_eval.py \
