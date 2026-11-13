@@ -1324,6 +1324,23 @@ def evaluate_tool_call(
         _warn_observe_adapter(str(meta["framework"]), findings)
     if blocking is not None:
         _delegations.release(event, _scope)  # a refused launch uses no number
+    _recheck = None
+    if str((blocking or {}).get("action") or "").lower() == "step_up":
+        import copy as _copy
+        _snapshot = _copy.deepcopy(event)
+
+        def _recheck(resource_now: Optional[Dict[str, Any]] = None) -> Decision:
+            # Decide-only: no event, delegation number, rate count or audit
+            # record — the approval outcome record covers this call.
+            return evaluate_tool_call(
+                event=_copy.deepcopy(_snapshot), workspace=workspace, agent=agent,
+                mode=mode, session_id=session_id, repo_root=repo_root, subject=subject,
+                persist=False, record=False, agent_name=agent_name,
+                register_agent=False, flush_at_exit=False,
+                resource=resource_now if resource_now is not None else resource,
+                identity_token=identity_token, deny_tools=deny_tools,
+                rate_accounting=False,
+            )
     return Decision(
         allow=blocking is None,
         findings=findings,
@@ -1332,6 +1349,7 @@ def evaluate_tool_call(
         subject=subject,
         engine=engine,
         explain=_explain,
+        recheck=_recheck,
     )
 
 
