@@ -91,6 +91,11 @@ def test_chains_of_own_output_not_judged(engine, cmd):
     # The split is naive on purpose: a quoted `;` leaves a part that can't match.
     "prismor cloak list | grep 'a;' notes.txt", "prismor cloak list | grep demo | sh",
     "prismor status;\ncat notes.txt",
+    # A newline is a command separator the regex's `\s` would swallow.
+    "prismor cloak list | grep\nenv", "prismor cloak list | grep -i\nprintenv",
+    # Unquoted globs and braces expand into file arguments.
+    "prismor cloak list | grep *", "prismor cloak list | grep {x,notes.txt}",
+    "prismor cloak list | grep n?tes.txt", "prismor cloak list | grep [a-z]*",
 ])
 def test_anything_in_a_chain_that_is_not_ours_is_still_judged(engine, cmd):
     assert _judged(engine, cmd)

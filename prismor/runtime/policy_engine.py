@@ -1322,7 +1322,8 @@ class AllowlistEntry:
 # `grep` with plain flags and one pattern: with no file argument they print
 # nothing but what Prismor wrote. `cloak <sub> --help` must be the whole call:
 # `cloak run` executes everything after it.
-_GREP_WORD = r"[^\s\-;&|`$()<>'\"\\][^\s;&|`$()<>'\"\\]*"
+# Unquoted: no glob/brace/tilde chars, or the shell expands the pattern into file args.
+_GREP_WORD = r"[^\s\-;&|`$()<>'\"\\*?\[{~][^\s;&|`$()<>'\"\\*?\[{]*"
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
@@ -1376,7 +1377,10 @@ def drop_post_twin_findings(findings: List[Dict[str, Any]], events: List[Dict[st
 def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
     if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
         return False
-    parts = [p for p in _CHAIN_SEP.split(str(event.get("command") or "")) if p.strip()]
+    cmd = str(event.get("command") or "").strip()
+    if "\n" in cmd or "\r" in cmd:  # `\s` in the regex would let a newline start a second command
+        return False
+    parts = [p for p in _CHAIN_SEP.split(cmd) if p.strip()]
     return bool(parts) and all(_PRISMOR_STATUS_CMD.match(p) for p in parts)
 
 class PolicyEngine:
