@@ -1603,7 +1603,13 @@ class PolicyEngine:
                     merged["enabled"] = True  # force enabled
                     # Category is part of floor membership: changing it would
                     # enable narrowing conditions and weakening by later layers.
-                    merged["category"] = default["category"]
+                    # event_types/fields set what the rule sees: narrowing them
+                    # (e.g. event_types: [ui_action]) would let it never match.
+                    for _k in ("category", "event_types", "fields"):
+                        if _k in default:
+                            merged[_k] = default[_k]
+                        else:
+                            merged.pop(_k, None)
                     # Core protections are ADD-ONLY: their default patterns,
                     # action, and severity can never be replaced or weakened,
                     # only extended. Without restoring action/severity here, an
