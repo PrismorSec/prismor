@@ -92,9 +92,11 @@ prismor
 │   ├─ mcp-gateway [action]   serve · install · uninstall — one MCP connector in front of all servers
 │   ├─ acp -- <agent…>        ACP stdio proxy — agents hosted by Zed, JetBrains and other ACP editors
 │   ├─ proxy                  LLM/A2A proxy — screens model traffic and proposed tool calls
+│   ├─ hosted-proxy connect   Put an app behind the Prismor-hosted proxy (nothing installed next to it)
 │   ├─ elevenlabs <action>    status · connect · disconnect — ElevenLabs voice agents via the proxy
 │   ├─ sandbox <action>       status · check · on · off · run — Docker command sandbox
 │   ├─ inference-hook <action> serve · test · secret — Claude Inference Hooks AI security server
+│   ├─ copilot-studio <action> setup · test — Microsoft Copilot Studio threat detection
 │   └─ eval-server            HTTP evaluation endpoint for non-Python adapters
 │
 ├─ Sessions & evidence
@@ -112,6 +114,7 @@ prismor
 └─ Org enrollment
     ├─ enroll <token>         Enroll this machine against your org's control plane
     ├─ enroll-status          Show enrollment + applied policy version
+    ├─ system-sync            System install: pull org policy, upload every user's telemetry (timer)
     ├─ workspace <action>     Show/set whether this workspace is org-managed or personal
     ├─ exempt <action>        Request an admin exemption for this repo
     └─ logout                 Un-enroll (remove device identity + cached policy)
@@ -447,6 +450,12 @@ outside all of this, the same as every other Prismor control.
 |---|---|---|
 | `prismor proxy` | `--port` (default 7080), `--host` (default 127.0.0.1), `--mode <observe\|enforce>`, `--workspace`, `--config`, `--session-id`, `--agent-name`, `--judge typesafe\|prismor\|api\|claude\|codex`, `--judge-budget-ms` | The LLM lane: sits in front of Anthropic, OpenAI-compatible and Google Gen AI endpoints so an agent Prismor cannot hook is still governed. Point the client at it with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `genai.Client(http_options=types.HttpOptions(base_url=...))` — nothing else about the agent changes. The outbound prompt is screened and cloak-masked; every proposed tool call (`tool_use` / `tool_calls` / `functionCall`) is reshaped into the event a `Bash` hook produces and run through the same policy; streamed tool calls are held until they can be judged. See [LLM proxy](llm-proxy.md). |
 
+### hosted-proxy
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor hosted-proxy connect <name>` | `--env-file`, `--base-env` (default `OPENAI_BASE_URL`), `--key-env` (default `OPENAI_API_KEY`), `--endpoint`, `--provider <openai\|anthropic\|gemini>` | Put an app behind the Prismor-hosted proxy with nothing installed next to it: creates an agent key, stores the app's provider key, and rewrites the app's env file in place to point at the hosted proxy. `--endpoint` names the OpenAI-compatible URL the app calls today when `--base-env` is not set. See [Hosted proxy](hosted-proxy.md). |
+
 ### elevenlabs
 
 | Command | Key flags | Description |
@@ -474,6 +483,13 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor chatgpt-logs sync` | `--workspace-id` (required; `org-…` for an API Platform org), `--workspace`, `--since-hours` (24) | Pull new `CONVERSATION_MESSAGE` logs from the ChatGPT Enterprise Compliance Logs Platform (key in `OPENAI_COMPLIANCE_API_KEY`), screen each message and report it under the `chatgpt` agent. After the fact, never blocks; the cursor lives in `~/.prismor/chatgpt-logs/`. See [ChatGPT](chatgpt.md). |
+
+### copilot-studio
+
+| Command | Key flags | Description |
+|---|---|---|
+| `prismor copilot-studio setup` | `--tenant` (required), `--endpoint` (required), `--app-id`, `--json` | Print the Entra app, federated credential and Power Platform values for a Copilot Studio threat-detection endpoint served by `prismor eval-server`. |
+| `prismor copilot-studio test` | `--sample <clean\|external\|credential\|injection\|all>` (repeatable, default all), `--workspace`, `--user-messages <user\|untrusted>`, `--json` | Screen real-shaped sample Copilot Studio requests in-process against the workspace policy and print ALLOW / BLOCK per sample. See [Copilot Studio](copilot-studio.md). |
 
 ## Visibility
 
@@ -580,6 +596,7 @@ Deep dive: [Learning](learning.md).
 |---|---|---|
 | `prismor enroll <token>` | `--token`, `--token-file`, `--label`, `--api-base` | Exchange a single-use org token (minted in the dashboard) for this machine's device identity; pulls the signed org policy. `--token-file` (or `$PRISMOR_ENROLL_TOKEN`) keeps a fleet token out of `ps` and shell history. |
 | `prismor enroll-status` | — | Show enrollment state, device label, and the applied policy version. Exits 1 when the machine is not enrolled or its key was revoked or refused, so an MDM compliance script can use it; an unreachable control plane still exits 0. |
+| `prismor system-sync` | `--quiet` | System installs only (admin): pull the org policy and upload every user's spooled telemetry with the machine's device key. Run every minute by the timer the system installer sets up; you rarely run it by hand. See [System install](system-install.md#the-device-key-and-system-sync). |
 | `prismor workspace [managed\|personal\|auto]` | — | With no argument, shows whether this workspace is org-managed (org policy + telemetry) or personal (local-only). Pass `managed`/`personal`/`auto` to set it. Org-claimed repos can't be downgraded, and `personal` is ignored entirely when the org policy sets `allow_personal_workspaces: false`. |
 | `prismor exempt request` | `--reason` | Ask an org admin to relax specific non-floor rules for this repo; served back in the signed policy. |
 | `prismor logout` | — | Un-enroll: removes the device identity and cached remote policy. Local protection stays on. |
