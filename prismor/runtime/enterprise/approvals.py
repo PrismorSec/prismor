@@ -150,6 +150,8 @@ def _audit_outcome(
     agent: str,
     session_id: str,
     approver: Optional[Dict[str, Any]] = None,
+    resource: Optional[Dict[str, Any]] = None,
+    rules: Optional[list] = None,
 ) -> None:
     """Record the human-approval outcome on the signed audit trail.
 
@@ -170,6 +172,8 @@ def _audit_outcome(
                 agent_name=str(body.get("agent") or ""),
                 session_id=session_id,
                 approver=approver,
+                resource=resource,
+                rules=rules,
             )
     except Exception:
         pass
@@ -327,11 +331,12 @@ def await_step_up(
     body["wait_seconds"] = round(_timeout())
 
     def _record(status: str, approval_id: Optional[str] = None, reason: Optional[str] = None,
-                approver: Optional[Dict[str, Any]] = None) -> None:
+                approver: Optional[Dict[str, Any]] = None, rules: Optional[list] = None) -> None:
         _audit_outcome(
             {**body, "reason": reason} if reason else body,
             status=status, approval_id=approval_id,
             agent=agent, session_id=session_id, approver=approver,
+            resource=resource, rules=rules,
         )
 
     poll_timeout = min(10.0, _poll_interval() + 5.0)
@@ -398,8 +403,11 @@ def _revoked_since(
     same = (now.blocking or {}).get("ruleId") == finding.get("ruleId")
     if same and str((now.blocking or {}).get("action") or "").lower() == "step_up":
         return False
+    # Name the rule that refused it, not the step-up rule the human approved.
+    refusing = (now.blocking or {}).get("ruleId") or getattr(now, "rule_id", None)
     record("revoked_after_approval", approval_id,
-           "approved, then refused on re-check: " + str(now.reason or now.rule_id or "policy changed"))
+           "approved, then refused on re-check: " + str(now.reason or refusing or "policy changed"),
+           rules=[refusing] if refusing else None)
     return True
 
 

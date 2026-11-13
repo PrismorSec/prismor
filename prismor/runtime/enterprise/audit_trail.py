@@ -339,6 +339,8 @@ def append_approval_record(
     session_id: str = "",
     approver: Optional[Dict[str, Any]] = None,
     agent_name: str = "",
+    resource: Optional[Dict[str, Any]] = None,
+    rules: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Append one signed record for a human-approval outcome
     (``approved | denied | expired | timeout | request_failed``)."""
@@ -353,14 +355,18 @@ def append_approval_record(
         "prismor_version": _prismor_version(),
         "session_id": session_id,
         "tool_name": tool or None,
+        # The resource as it stood when this outcome was recorded, so a
+        # refusal on re-check shows the state that caused it.
+        "resource": _scrub(resource),
         "approval_id": approval_id,
         "status": status,
         # Who decided, as the console reports it ({"id", "email", "via"}).
         "approver": approver,
         "fingerprint": fingerprint or None,
-        "rules": [rule_id] if rule_id else [],
+        "rules": rules if rules is not None else ([rule_id] if rule_id else []),
         "severity": severity,
         "reason": reason or f"human approval {status}",
+        **_policy_ref(),
     }
     return _append(record)
 

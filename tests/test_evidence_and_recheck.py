@@ -55,6 +55,17 @@ def test_approval_record_names_approver_and_agent(trail):
     assert rec["agent_name"] == "account-freezer"
 
 
+def test_approval_record_carries_resource_and_refusing_rule(trail):
+    from prismor.runtime.enterprise import remote_policy
+    with mock.patch.object(remote_policy, "current_version", lambda: 6), \
+         mock.patch.object(remote_policy, "current_profile_id", lambda: "prof_1"):
+        rec = trail.append_approval_record(status="revoked_after_approval", tool="freeze_account",
+                                           rule_id="freeze-needs-human", resource=RESOURCE,
+                                           rules=["nw-freeze-needs-open-case"])
+    assert rec["resource"] == RESOURCE and rec["policy_version"] == 6
+    assert rec["rules"] == ["nw-freeze-needs-open-case"]
+
+
 # ── re-check after approval ──────────────────────────────────────────────────
 
 def _step_up(recheck=None):
@@ -99,6 +110,13 @@ def test_restricted_while_waiting_is_refused(approvals):
     assert not out and out.status == "revoked_after_approval"
     last = approvals._recorded[-1]
     assert last["status"] == "revoked_after_approval" and "nw-restricted-account" in last["reason"]
+    assert last["rules"] == ["nw-restricted-account"]
+
+
+def test_every_outcome_record_carries_the_resource(approvals):
+    res = {"kind": "account", "id": "ACC-3300", "attr": {"open_case": False}}
+    approvals.await_step_up(_step_up(lambda r: _now(False, "block", "nw-freeze-needs-open-case")), resource=res)
+    assert [r["resource"]["id"] for r in approvals._recorded] == ["ACC-3300", "ACC-3300"]
 
 
 def test_fresh_resource_reaches_the_recheck(approvals):
