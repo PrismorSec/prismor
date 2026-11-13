@@ -63,6 +63,29 @@ class Scope:
     authoritative: bool = False
 
 
+def validate_repeat_limits(raw: Any) -> List[str]:
+    """Exact MCP server -> tool -> identical calls allowed per rolling minute."""
+    prefix = "settings.mcp_tool_repeat_limits"
+    if not isinstance(raw, dict):
+        return [f"{prefix}: must be a mapping of server names to tool limits"]
+    errors = []
+    for server, tools in raw.items():
+        if not isinstance(server, str) or not server.strip() or not isinstance(tools, dict):
+            errors.append(f"{prefix}: each server must have a name and a tool mapping")
+            continue
+        for tool, limit in tools.items():
+            if (not isinstance(tool, str) or not tool.strip()
+                    or isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+                errors.append(f"{prefix}: each tool must have a name and a positive integer limit")
+    return errors
+
+
+def repeat_key(session: str, server: str, tool: str, arguments: Any) -> str:
+    # Canonical JSON ignores object-key order, but preserves array order and
+    # value types. Request IDs are deliberately absent: retries still count.
+    return "mcp-repeat:" + _digest([session, server, tool, arguments if arguments is not None else {}])
+
+
 def identity_key(subject: Any, agent: str, surface: str = "") -> str:
     from prismor.runtime.principal import is_verified
 
@@ -203,7 +226,8 @@ def status(workspace: Path, settings: Optional[Dict[str, int]], *,
             stamp = _clock(connection, time.time() if now is None else now)
             rows = connection.execute(
                 "SELECT identity, COUNT(*) FROM rate_limit_admissions "
-                "WHERE workspace=? AND ts > ? GROUP BY identity ORDER BY identity",
+                "WHERE workspace=? AND ts > ? AND identity NOT LIKE 'mcp-repeat:%' "
+                "GROUP BY identity ORDER BY identity",
                 (store.canonical_workspace_path(workspace), stamp - WINDOW_SECONDS)).fetchall()
             result["identities"] = [
                 {"identity": key, "used": count, "remaining": max(0, limit - count),

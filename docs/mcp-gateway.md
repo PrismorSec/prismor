@@ -20,6 +20,46 @@ servers behind it and becomes the enforcement point for every tool call:
 Zero per-framework code: any MCP-speaking agent gets coverage without a hook
 install or SDK adapter.
 
+## Identical-call circuit breaker
+
+Repeated calls can run up costs even when each call is allowed. Operators can
+limit identical calls to selected tools in a rolling 60-second window:
+
+```yaml
+version: "1.0"
+settings:
+  mcp_tool_repeat_limits:
+    jobs:                  # exact server name in the gateway config
+      get_status: 12       # exact upstream tool name; calls per session per minute
+rules:
+  - id: mcp-repeat-limit-exceeded
+    mode: enforce
+  - id: mcp-repeat-limit-unavailable
+    mode: enforce
+```
+
+This is off unless configured. Choose a limit above the tool's expected polling
+rate; unlisted tools are unaffected. `prismor policy show` lists effective limits
+and their policy layer; `prismor policy export` includes the configuration.
+Signed org settings take precedence over local settings, as with other controls.
+
+Calls count after security checks, approvals and argument redaction, immediately
+before forwarding. Upstream errors still count. Discovery, rejected calls and
+coding-agent hooks do not consume these slots. Mirrors use the same gate when
+their exact server/tool pair is configured. Observe mode and pause retain their
+usual behavior.
+
+The key includes the workspace, gateway session, server, tool and a hash of the
+forwarded arguments. Object-key order and JSON-RPC request IDs do not change the
+count. Argument values and array order do. The admission store keeps hashes, not
+raw arguments; ordinary event logging is unchanged. Counts survive a restart
+with the same session and stay local when security evaluation is hosted.
+
+Excess calls are blocked before forwarding, with a retry time. Wait for capacity;
+do not change inputs or sessions to evade the limit. If accounting is unavailable,
+ask the operator to restore the store or fix the configuration. This catches
+exact repetition, not loops that continually change their inputs or sessions.
+
 ## Quick start
 
 1. Move your existing `mcpServers` block into the gateway config

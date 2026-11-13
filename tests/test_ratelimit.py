@@ -487,7 +487,9 @@ def test_inference_replay_does_not_count_prior_tool_events(tmp_path):
     assert ratelimit.status(tmp_path, {"requests_per_minute": 1})["identities"] == []
 
 
-def test_invalid_remote_refresh_preserves_last_signed_policy(tmp_path, monkeypatch):
+@pytest.mark.parametrize("setting", ["rate_limit: {requests_per_minute: false}",
+                                     "mcp_tool_repeat_limits: {jobs: {poll: false}}"])
+def test_invalid_remote_refresh_preserves_last_signed_policy(tmp_path, monkeypatch, setting):
     import urllib.request
     from prismor.runtime.enterprise import remote_policy
     previous = "settings: {rate_limit: {requests_per_minute: 1}}\nrules: []\n"
@@ -505,7 +507,7 @@ def test_invalid_remote_refresh_preserves_last_signed_policy(tmp_path, monkeypat
         def __exit__(self, *args):
             pass
         def read(self):
-            return json.dumps({"yaml": "settings: {rate_limit: {requests_per_minute: false}}",
+            return json.dumps({"yaml": "settings: {" + setting + "}",
                                "signature": "fixture"}).encode()
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: Response())
     assert not remote_policy.fetch(force=True)
@@ -737,3 +739,51 @@ def test_status_reports_unreadable_store_directory(tmp_path, monkeypatch):
         raise PermissionError("simulated unreadable store directory")
     monkeypatch.setattr(store, "existing_db_path", denied)
     assert ratelimit.status(tmp_path, {"requests_per_minute": 1})["error"] == "PermissionError"
+
+
+def test_repeat_keys_scope_without_storing_arguments(tmp_path):
+    key = ratelimit.repeat_key("session", "server", "tool", {"token": "private-value"})
+    assert key == ratelimit.repeat_key("session", "server", "tool", {"token": "private-value"})
+    assert len(key) == len("mcp-repeat:") + 64
+    assert key != ratelimit.repeat_key("session", "other", "tool", {"token": "private-value"})
+    assert key != ratelimit.repeat_key("session", "server", "other", {"token": "private-value"})
+    assert ratelimit.repeat_key("s", "x", "y", None) == ratelimit.repeat_key("s", "x", "y", {})
+    assert ratelimit.repeat_key("s", "x", "y", [1, 2]) != ratelimit.repeat_key("s", "x", "y", [2, 1])
+    assert ratelimit.repeat_key("s", "x", "y", True) != ratelimit.repeat_key("s", "x", "y", 1)
+    assert ratelimit.admit(tmp_path, key, {"requests_per_minute": 1}, now=100)["count"] == 1
+    assert ratelimit.admit(tmp_path / "other", key, {"requests_per_minute": 1}, now=100)["count"] == 1
+    with sqlite3.connect(store.get_db_path(tmp_path)) as db:
+        assert "private-value" not in str(db.execute("SELECT * FROM rate_limit_admissions").fetchall())
+
+
+def test_repeat_policy_validation_export_and_last_good(tmp_path, capsys):
+    from prismor.runtime.cli import _policy_show
+    from prismor.runtime.policy_engine import export_effective_policy, validate_policy
+
+    directory = tmp_path / ".prismor"
+    directory.mkdir()
+    path = directory / "policy.yaml"
+    raw = {"version": "1.0", "settings": {"mcp_tool_repeat_limits": {"jobs": {"poll": 5}}},
+           "rules": [{"id": "mcp-repeat-limit-exceeded", "mode": "enforce"}]}
+    path.write_text(yaml.safe_dump(raw))
+    assert not validate_policy(path)
+    engine = PolicyEngine(workspace=tmp_path)
+    assert export_effective_policy(engine)["settings"]["mcp_tool_repeat_limits"] == {"jobs": {"poll": 5}}
+    _policy_show(tmp_path)
+    assert "jobs/poll: 5" in capsys.readouterr().out
+    schema = json.loads(Path(__file__).parents[1].joinpath("prismor/runtime/policy_schema.json").read_text())
+    import jsonschema
+    jsonschema.validate({**raw, "rules": []}, schema)
+    for invalid in (None, [], {"jobs": []}, {"jobs": {"": 2}}, {"jobs": {"poll": True}},
+                    {"jobs": {"poll": 0}}, {"jobs": {"poll": 1.5}}):
+        raw["settings"]["mcp_tool_repeat_limits"] = invalid
+        path.write_text(yaml.safe_dump(raw))
+        assert validate_policy(path)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate({**raw, "rules": []}, schema)
+        engine = PolicyEngine(workspace=tmp_path)
+        assert engine.project_policy_fallback
+        assert engine.mcp_tool_repeat_limits == {"jobs": {"poll": 5}}
+    # Supplying an accounting-looking event cannot manufacture trusted state.
+    event = {"type": "mcp_repeat", "content": "", "metadata": {"rate": {"count": 999, "limit": 1}}}
+    assert engine.evaluate(event, 0) == []

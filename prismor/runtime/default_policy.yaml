@@ -10,6 +10,9 @@ settings:
   # Optional exact rolling-minute quota. No accounting while this is absent.
   # rate_limit: {requests_per_minute: 120, max_burst: 10}
   # Select rate-limit-exceeded and rate-limit-unavailable in enforce mode to block.
+  # Optional identical MCP calls per session in a rolling 60 seconds.
+  # mcp_tool_repeat_limits: {jobs: {get_status: 12}}
+  # Select mcp-repeat-limit-exceeded and mcp-repeat-limit-unavailable to enforce.
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
@@ -488,6 +491,22 @@ settings:
     - 'pom\.xml$|build\.gradle(\.kts)?$'
 
 rules:
+  - id: mcp-repeat-limit-exceeded
+    severity: HIGH
+    category: rate_limit
+    title: Identical MCP call limit exceeded
+    event_types: [mcp_repeat]
+    when: "rate.count > rate.limit"
+    action: block
+
+  - id: mcp-repeat-limit-unavailable
+    severity: HIGH
+    category: rate_limit
+    title: Repeated MCP call accounting unavailable
+    event_types: [mcp_repeat]
+    when: "rate.error != null"
+    action: block
+
   - id: rate-limit-exceeded
     severity: HIGH
     category: rate_limit

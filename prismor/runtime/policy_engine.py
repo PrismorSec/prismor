@@ -286,6 +286,7 @@ _LINE_FIELDS = frozenset({"command", "path", "url"})
 
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
     "rate_limit": ["content"],
+    "mcp_repeat": ["content"],
     "shell": ["command"],
     "file_read": ["path"],
     "file_write": ["path"],
@@ -1428,6 +1429,9 @@ class PolicyEngine:
         # file is enforced in its place (see _load_last_good).
         self.project_policy_fallback: bool = False
         self.rate_limit: Optional[Dict[str, int]] = None
+        self.mcp_tool_repeat_limits: Dict[str, Dict[str, int]] = {}
+        self.mcp_tool_repeat_limits_error: Optional[str] = None
+        self.mcp_tool_repeat_limits_source = "default"
         self.rate_limit_source: str = "default"
         self.rate_limit_error: Optional[str] = None
         self.outputs: List[Dict[str, Any]] = []
@@ -1593,6 +1597,12 @@ class PolicyEngine:
         wins (remote is applied after project = org-admin authoritative).
         """
         _layer_settings = override_raw.get("settings") or {}
+        if "mcp_tool_repeat_limits" in _layer_settings:
+            from prismor.runtime.ratelimit import validate_repeat_limits
+            errors = validate_repeat_limits(_layer_settings["mcp_tool_repeat_limits"])
+            if errors:
+                self.mcp_tool_repeat_limits_error = "; ".join(errors)
+                return
         if "rate_limit" in _layer_settings:
             from prismor.runtime.ratelimit import validate_settings
             _rate_errors = validate_settings(_layer_settings["rate_limit"])
@@ -1747,6 +1757,9 @@ class PolicyEngine:
             self._data_boundary_source = source
         if "agent_connections" in override_settings:
             self._agent_connections_source = source
+        if "mcp_tool_repeat_limits" in override_settings:
+            self.mcp_tool_repeat_limits_source = source
+            self.mcp_tool_repeat_limits_error = None
         if "rate_limit" in override_settings:
             self.rate_limit_source = source
             self.rate_limit_error = None
@@ -1874,6 +1887,12 @@ class PolicyEngine:
                 if override_raw is not None and not isinstance(override_raw, dict):
                     raise ValueError("the top level must be a mapping (version:, rules:, settings:)")
                 _rate_settings = (override_raw or {}).get("settings") or {}
+                if "mcp_tool_repeat_limits" in _rate_settings:
+                    from prismor.runtime.ratelimit import validate_repeat_limits
+                    errors = validate_repeat_limits(_rate_settings["mcp_tool_repeat_limits"])
+                    if errors:
+                        self.mcp_tool_repeat_limits_error = "; ".join(errors)
+                        raise ValueError(self.mcp_tool_repeat_limits_error)
                 if "rate_limit" in _rate_settings:
                     from prismor.runtime.ratelimit import validate_settings
                     _rate_errors = validate_settings(_rate_settings["rate_limit"])
@@ -1947,6 +1966,7 @@ class PolicyEngine:
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
         self.rate_limit = settings.get("rate_limit")
+        self.mcp_tool_repeat_limits = settings.get("mcp_tool_repeat_limits", {})
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
         # org-managed workspaces (the remote overlay is only merged there); the
@@ -5569,6 +5589,10 @@ def validate_policy(path: Path) -> List[str]:
         errors.append("Missing required field: rules")
         return errors
 
+    if "mcp_tool_repeat_limits" in (raw.get("settings") or {}):
+        from prismor.runtime.ratelimit import validate_repeat_limits
+        errors.extend(validate_repeat_limits(raw["settings"]["mcp_tool_repeat_limits"]))
+
     if "rate_limit" in (raw.get("settings") or {}):
         from prismor.runtime.ratelimit import validate_settings
         errors.extend(validate_settings(raw["settings"]["rate_limit"]))
@@ -5745,6 +5769,7 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
             "block_categories": sorted(engine.block_categories),
             "egress_allowlist": list(engine.egress_allowlist),
             "mcp_transport_action": engine.mcp_transport_action,
+            "mcp_tool_repeat_limits": engine.mcp_tool_repeat_limits,
             "supply_chain_install_check": engine.supply_chain_install_check,
             "supply_chain_transitive_scan": engine.supply_chain_transitive_scan,
             "semantic_guard": engine.semantic_guard_config,

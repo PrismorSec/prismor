@@ -1318,6 +1318,17 @@ class Gateway:
                     unblock=self._unblock_text(decision.blocking, route)))
                 return
 
+        # Reserve only after security/approval checks and argument rewrites.
+        # Failed upstream calls still consume a slot: a retry loop must stop too.
+        repeat_decision = self._repeat_decision(route, arguments, decision)
+        if repeat_decision is not None:
+            from prismor.runtime.runtime import log_observe_findings
+            log_observe_findings(repeat_decision, tool_name=name,
+                                 mode="observe" if passthrough else self.mode)
+            if repeat_decision.blocking is not None and not passthrough:
+                self._reply(req_id, _blocked_result("Blocked by Prismor", repeat_decision.blocking))
+                return
+
         result = route.upstream.request(
             "tools/call", {"name": route.tool, "arguments": arguments},
             timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
@@ -1786,7 +1797,22 @@ class Gateway:
             return []
         return [f"mcp__{route.server}__{route.tool}"]
 
-    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None):
+    def _repeat_decision(self, route: _Route, arguments: Any, decision: Any):
+        from prismor.runtime import ratelimit
+        from prismor.runtime.policy_engine import PolicyEngine
+        engine = getattr(decision, "engine", None) or PolicyEngine(workspace=self.workspace)
+        if (not engine.mcp_tool_repeat_limits_error
+                and route.tool not in engine.mcp_tool_repeat_limits.get(route.server, {})):
+            return None
+        # No tool tags or raw arguments: this is accounting, not another call.
+        event = {"type": "mcp_repeat", "agent_event": "PreToolUse",
+                 "ts": datetime.now(timezone.utc).isoformat(),
+                 "metadata": {"surface": "mirror" if route.upstream.spec.local else "mcp-gateway"}}
+        key = ratelimit.repeat_key(self.session_id, route.server, route.tool, arguments)
+        return self._evaluate(event, mcp_repeat_call=(route.server, route.tool, key))
+
+    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None,
+                  mcp_repeat_call: Optional[tuple[str, str, str]] = None):
         """Run one event through the shared runtime pipeline.
 
         Serialized: the trifecta TagLedger depends on session ordering, and
@@ -1804,6 +1830,11 @@ class Gateway:
                     session_id=self.session_id,
                     agent_name=self.agent_name,
                     deny_tools=deny_tools or (),
+                    # persist=False: the accounting pass is not a session event;
+                    # a block still lands as a runtime finding (rateLimit).
+                    **({"mcp_repeat_call": mcp_repeat_call, "rate_accounting": False,
+                        "register_agent": False, "persist": False}
+                       if mcp_repeat_call is not None else {}),
                 )
         except Exception as exc:
             # Fail open on engine *errors* only in observe mode; in enforce
