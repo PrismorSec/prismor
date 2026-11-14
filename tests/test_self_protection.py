@@ -409,6 +409,42 @@ class TestContainerBindMountSelfProtection(unittest.TestCase):
                     "container without host mount should be inert",
                 )
 
+    def test_kubectl_payloads_fail_closed_on_local_cluster(self):
+        """A pod's hostPath isn't on the command line (issue #912). On a local
+        cluster it can be this machine's policy dir; on a remote one it can't."""
+        P = 'sh -c "echo x > /h/.prismor/policy.yaml"'
+        cmds = [
+            f"kubectl exec pod -- {P}",
+            f"kubectl -n default exec -it pod -- {P}",
+            f"oc exec pod -- {P}",
+            f"kubectl debug node/n -it --image=busybox -- {P}",
+        ]
+
+        def blocks(command):
+            event = {**PRE, "type": "shell", "command": command}
+            b = should_block(self.eng.evaluate(event, index=0), event)
+            return b is not None and b["ruleId"] in _SELF_PROTECTION_RULE_IDS
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config")
+            for ctx, local in [("kind-dev", True), ("minikube", True),
+                               ("docker-desktop", True), ("k3d-test", True),
+                               ("arn:aws:eks:us-east-1:1:cluster/prod", False),
+                               ("gke_proj_zone_prod", False)]:
+                with open(cfg, "w") as f:
+                    f.write(f"apiVersion: v1\ncurrent-context: {ctx}\n")
+                with mock.patch.dict(os.environ, {"KUBECONFIG": cfg}):
+                    for command in cmds:
+                        with self.subTest(ctx=ctx, command=command):
+                            self.assertEqual(blocks(command), local)
+            # --context on the command line wins over the kubeconfig.
+            with mock.patch.dict(os.environ, {"KUBECONFIG": cfg}):  # gke_ (remote)
+                self.assertTrue(blocks(f"kubectl --context kind-x exec pod -- {P}"))
+            self.assertTrue(blocks(f"kubectl --kubeconfig {cfg} --context=minikube exec pod -- {P}"))
+            self.assertFalse(blocks(f"kubectl --kubeconfig={cfg} exec pod -- {P}"))
+        # Unknown context: stays remote (#344).
+        self.assertFalse(blocks(f"kubectl exec pod -- {P}"))
+
     def test_compose_payloads_fail_closed(self):
         """Compose-file volumes aren't on the command line (issue #912), so
         compose payloads keep self-protection."""

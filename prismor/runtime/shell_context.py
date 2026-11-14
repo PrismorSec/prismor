@@ -12,6 +12,7 @@ the pipeline) keeps blocking.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from typing import List, NamedTuple, Optional, Pattern, Tuple
@@ -535,12 +536,48 @@ _COMPOSE = re.compile(
     r"\b(?:docker|podman|nerdctl)\b[^\n]*\scompose\s"
 )
 
+# A pod's hostPath isn't on the command line either (issue #912). When the
+# cluster runs on this machine, that mount can be this install's policy dir.
+_KUBE_EXEC = re.compile(r"\b(?:kubectl|oc)\s(?:[^\n]*\s)?(?:exec|debug|run|attach)\s")
+_KUBE_FLAG = r"--{}(?:=|\s+)[\"']?([^\s\"']+)"
+_LOCAL_KUBE_CONTEXT = re.compile(
+    r"(?:kind|k3d|minikube|docker-desktop|docker-for-desktop|rancher-desktop"
+    r"|orbstack|colima|microk8s|k3s|kubernetes-admin@kubernetes)(?:$|[-@_])"
+)
+
+
+def _kube_context(command: str) -> str:
+    """The context `kubectl` will use: `--context`, else `current-context` from
+    `--kubeconfig` / $KUBECONFIG (first entry) / ~/.kube/config. "" if unknown."""
+    m = re.search(_KUBE_FLAG.format("context"), command)
+    if m:
+        return m.group(1)
+    m = re.search(_KUBE_FLAG.format("kubeconfig"), command)
+    path = m.group(1) if m else (os.environ.get("KUBECONFIG", "").split(os.pathsep)[0]
+                                 or "~/.kube/config")
+    # ponytail: line scan, no YAML parse; cluster-server (127.0.0.1) check if
+    # custom-named local contexts show up.
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("current-context:"):
+                    return line.split(":", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
+def _local_kube_exec(command: str) -> bool:
+    return (_KUBE_EXEC.search(command) is not None
+            and _LOCAL_KUBE_CONTEXT.match(_kube_context(command)) is not None)
+
 
 def _reaches_host_policy(command: str) -> bool:
     return (
         _HOST_POLICY_MOUNT.search(command) is not None
         or _CHROOT_HOST_ROOT.search(command) is not None
         or _COMPOSE.search(command) is not None
+        or _local_kube_exec(command)
     )
 
 
