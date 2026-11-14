@@ -145,3 +145,57 @@ def test_pause_keeps_floor_blocking(tmp_path, monkeypatch):
     pause.set_paused(600, reason="test")
     assert pause.active_state() is not None
     assert _dispatch(tmp_path, "rm -rf /").returncode == 2
+
+
+# ── asserted subject on a device surface ──────────────────────────────────
+# An agent can spawn a child agent with PRISMOR_SUBJECT=user:<someone>. On a
+# hook/mirror surface the enrolled device is the actor, so that asserted
+# subject must not pick whose user-scoped exemptions apply.
+
+def _user_ex(monkeypatch, device_user="bob"):
+    from prismor.runtime.enterprise import identity
+    monkeypatch.setattr(identity, "load_identity",
+                        lambda: {"device_id": "dev1", "user_id": device_user})
+    return [{"ruleId": "r1", "category": "custom"}]
+
+
+def test_asserted_subject_on_hook_cannot_borrow_another_users_allow(monkeypatch):
+    from prismor.runtime.principal import Subject
+    from prismor.runtime.runtime import _apply_rule_exemptions
+    findings = _user_ex(monkeypatch)
+    ex = [{"ruleId": "r1", "scope": "user", "scopeId": "alice", "action": "allow"}]
+    spoof = Subject(user_id="alice", source="env")
+    for surface in ("hook", "mirror"):
+        assert _apply_rule_exemptions(findings, ex, session_id="s", subject=spoof,
+                                      surface=surface) == findings
+
+
+def test_asserted_subject_on_hook_cannot_escape_own_deny(monkeypatch):
+    from prismor.runtime.principal import Subject
+    from prismor.runtime.runtime import _apply_rule_exemptions
+    findings = _user_ex(monkeypatch)
+    ex = [{"ruleId": "r1", "scope": "user", "scopeId": "bob", "action": "deny"}]
+    out = _apply_rule_exemptions(findings, ex, session_id="s",
+                                 subject=Subject(user_id="alice", source="env"), surface="hook")
+    assert out[0]["action"] == "block"
+
+
+def test_device_subject_on_hook_keeps_its_own_user_exemptions(monkeypatch):
+    from prismor.runtime.principal import Subject
+    from prismor.runtime.runtime import _apply_rule_exemptions
+    findings = _user_ex(monkeypatch)
+    ex = [{"ruleId": "r1", "scope": "user", "scopeId": "bob", "action": "allow"}]
+    me = Subject(user_id="bob", source="device")
+    assert _apply_rule_exemptions(findings, ex, session_id="s", subject=me, surface="hook") == []
+
+
+def test_asserted_subject_off_device_surface_is_unchanged(monkeypatch):
+    # SDK / eval-server: the app names its end user; honoured unless the org
+    # turns on verified identity (pinned in test_identity_token.py).
+    from prismor.runtime.principal import Subject
+    from prismor.runtime.runtime import _apply_rule_exemptions
+    findings = _user_ex(monkeypatch)
+    ex = [{"ruleId": "r1", "scope": "user", "scopeId": "alice", "action": "allow"}]
+    alice = Subject(user_id="alice", source="explicit")
+    assert _apply_rule_exemptions(findings, ex, session_id="s", subject=alice,
+                                  surface="eval-server") == []

@@ -28,7 +28,9 @@ from prismor.runtime import ratelimit
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
-from prismor.runtime.principal import Subject, current_token, is_verified, resolve_subject
+from prismor.runtime.principal import (
+    Subject, current_token, is_verified, resolve_subject, trusted_device_surface,
+)
 from prismor.runtime.store import (
     append_session_event,
     persist_runtime_findings,
@@ -76,6 +78,12 @@ def _apply_rule_exemptions(
     ``verified_users_only`` (set when the org verifies identity): a ``user``
     exemption then needs a verified subject, so ``subject: "user:alice"`` sent
     by anyone no longer carries Alice's exemptions.
+
+    On a device surface (hook, mirror) the enrolled device is the actor, so an
+    unverified subject (``PRISMOR_SUBJECT``, which an agent can set on a child
+    agent it spawns) never chooses whose ``user`` entries apply: the device's
+    own user does. It can neither borrow another user's allow nor escape a deny
+    aimed at the device's user.
     """
     if not rule_exemptions:
         return findings
@@ -85,13 +93,18 @@ def _apply_rule_exemptions(
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     user_id = subject.user_id if subject else None
-    device_id = None
+    device_id = device_user = None
     try:
         from prismor.runtime.enterprise import identity as _identity
-        ident = _identity.load_identity()
-        device_id = ident.get("device_id") if ident else None
+        ident = _identity.load_identity() or {}
+        device_id, device_user = ident.get("device_id"), ident.get("user_id")
     except Exception:
-        device_id = None
+        device_id = device_user = None
+    if not is_verified(subject, surface):
+        if trusted_device_surface(surface):
+            user_id = device_user
+        elif verified_users_only:
+            user_id = None
     call = _call_text(event or {})
 
     def _matches(ex: Dict[str, Any], rule_id: str) -> bool:
@@ -107,8 +120,6 @@ def _apply_rule_exemptions(
         if scope == "org":
             return True
         if scope == "user":
-            if verified_users_only and not is_verified(subject, surface):
-                return False
             return bool(user_id) and scope_id == user_id
         if scope == "device":
             return bool(device_id) and scope_id == device_id
