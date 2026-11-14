@@ -2505,4 +2505,18 @@ rules:
       - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
     action: warn
 
+
+  # AI agent sandbox escape (CVE-2026-42074, GHSA-m77w-p5jj-xmhg): the model
+  # sets the Bash tool's own sandbox-off argument, usually after a tool result
+  # faked a sandbox failure. Match the argument, not text: a grep, a commit
+  # message or a user prompt that names the flag is not an escape.
+  - id: ai-sandbox-escape
+    severity: CRITICAL
+    # Not a core category: core rules ignore `when:`, and this rule is only a `when:`.
+    category: security_bypass
+    title: Blocks a tool call that asks to run outside the agent's sandbox
+    event_types: [shell]
+    when: "has(args.dangerouslyDisableSandbox) and args.dangerouslyDisableSandbox == true"
+    action: block
+
 allowlists: []
