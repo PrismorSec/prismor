@@ -83,7 +83,7 @@ def test_telemetry_record_carries_reasoning_and_1h(monkeypatch):
     from prismor.runtime import store
     from prismor.runtime.enterprise import identity, telemetry_spool
     spooled, stored = [], []
-    monkeypatch.setattr(store, "record_token_usage", lambda **k: stored.append(k) or True)
+    monkeypatch.setattr(store, "record_token_usages", lambda ws, sid, rows: stored.extend(rows) or [True] * len(rows))
     monkeypatch.setattr(identity, "is_enrolled", lambda: True)
     monkeypatch.setattr(telemetry_spool, "append", lambda recs: spooled.extend(recs))
     usage = dict(ANTHROPIC, cache_creation={"ephemeral_1h_input_tokens": 2})
@@ -185,7 +185,7 @@ def test_usage_record_carries_the_proxy_agent_name(monkeypatch):
     from prismor.runtime import store
     from prismor.runtime.enterprise import identity, telemetry_spool
     spooled = []
-    monkeypatch.setattr(store, "record_token_usage", lambda **k: True)
+    monkeypatch.setattr(store, "record_token_usages", lambda ws, sid, rows: [True] * len(rows))
     monkeypatch.setattr(identity, "is_enrolled", lambda: True)
     monkeypatch.setattr(telemetry_spool, "append", lambda recs: spooled.extend(recs))
     tu.record_llm_usage(workspace=Path("/x"), session_id="s", agent="prismor-proxy",
@@ -202,3 +202,24 @@ def test_stream_meter_passes_the_screen_agent_name(monkeypatch):
     stream._usage = dict(OPENAI_CHAT)
     stream.meter()
     assert calls and calls[0]["agent_name"] == "data-analyst"
+
+
+def test_openai_stream_asks_for_usage_once():
+    import json
+    from prismor.runtime.proxy import _request_stream_usage
+    body, changed = _request_stream_usage("/v1/chat/completions", b'{"stream": true, "model": "m"}')
+    assert changed and json.loads(body)["stream_options"] == {"include_usage": True}
+    for path, raw in (("/v1/chat/completions", b'{"stream": true, "stream_options": {"include_usage": false}}'),
+                      ("/v1/chat/completions", b'{"model": "m"}'),
+                      ("/v1/responses", b'{"stream": true}')):
+        assert _request_stream_usage(path, raw) == (raw, False)
+
+
+def test_injected_usage_chunk_is_metered_but_not_relayed(monkeypatch):
+    stream, calls = _stream(monkeypatch, "openai")
+    stream.strip_usage = True
+    out = stream.feed(_frame({"id": "chatcmpl-9", "choices": [],
+                              "usage": {"prompt_tokens": 4, "completion_tokens": 2}}))
+    stream.meter()
+    assert out == b""
+    assert calls[0]["usage"]["completion_tokens"] == 2

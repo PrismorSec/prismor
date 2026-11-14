@@ -111,3 +111,57 @@ def test_pricing_lookup(home):
     (home / "home" / "pricing.json").write_text(json.dumps({"gpt-9": {"input": 1, "output": 2, "cache_read": 0, "cache_write": 0}}))
     pricing._table.cache_clear()
     assert pricing.price_for("gpt-9-nova")["output"] == 2
+
+
+def test_subagent_transcripts_counted_at_final_usage(home):
+    """Subagents write to <session>/subagents/agent-*.jsonl, one line per
+    content block with output_tokens still growing: count the max, once."""
+    ws = home / "ws"
+    ws.mkdir()
+    transcript = home / "s2.jsonl"
+    transcript.write_text(_claude_line("m1", "claude-sonnet-5", 10, 5, 0, 0) + "\n")
+    sub = home / "s2" / "subagents"
+    sub.mkdir(parents=True)
+    (sub / "agent-a1.jsonl").write_text("\n".join([
+        _claude_line("sa1", "claude-sonnet-5", 7, 1, 100, 0),
+        _claude_line("sa1", "claude-sonnet-5", 7, 40, 100, 0),
+        _claude_line("sa1", "claude-sonnet-5", 7, 90, 100, 0),
+    ]) + "\n")
+
+    assert token_usage.backfill_session(ws, "s2", str(transcript))
+    cost = token_usage.session_cost(ws, "s2")
+
+    assert cost["turns"] == 2
+    assert cost["tokens"]["output"] == 5 + 90
+    assert cost["tokens"]["input"] == 10 + 7
+
+
+def test_repeat_message_keeps_larger_counts(home):
+    from prismor.runtime import store
+    ws = home / "ws"
+    ws.mkdir()
+    row = dict(workspace=ws, session_id="s3", ts="2026-09-14T00:00:00Z", message_id="m",
+               model="claude-sonnet-5", input_tokens=10, output_tokens=5,
+               cache_read_tokens=0, cache_creation_tokens=0)
+    assert store.record_token_usage(**row)
+    assert not store.record_token_usage(**row)                          # same counts: no change
+    assert store.record_token_usage(**{**row, "output_tokens": 50})     # grew
+    assert not store.record_token_usage(**{**row, "output_tokens": 1})  # never shrinks
+    assert store.get_sessions_token_usage(["s3"])["s3"]["by_model"]["claude-sonnet-5"]["output"] == 50
+
+
+def test_token_stats_backfills_active_sessions(home, monkeypatch):
+    """Hooks record only the turn before each tool call; a windowed total
+    must read the transcripts first or it runs behind them."""
+    from datetime import datetime, timezone
+    ws = home / "ws"
+    ws.mkdir()
+    now = datetime.now(timezone.utc).isoformat()
+    transcript = home / "s4.jsonl"
+    transcript.write_text("\n".join(
+        json.dumps({**json.loads(_claude_line(m, "claude-sonnet-5", 1, n, 0, 0)), "timestamp": now})
+        for m, n in (("t1", 3), ("t2", 4))) + "\n")
+    monkeypatch.setattr(token_usage.store, "get_active_sessions", lambda hours: [("s4", str(ws))])
+    monkeypatch.setattr(token_usage, "find_transcript", lambda sid: transcript)
+
+    assert token_usage.token_stats(None, hours=24)["outputTokens"] == 7

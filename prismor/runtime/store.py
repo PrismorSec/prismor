@@ -3500,40 +3500,57 @@ def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> int:
         return 0
 
 
-def record_token_usage(
-    *,
-    workspace: Path,
-    session_id: str,
-    ts: str,
-    message_id: str,
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-    cache_creation_tokens: int,
-    cache_1h_tokens: int = 0,
-) -> bool:
-    """Record one assistant turn's real Anthropic token usage. Fail-open.
+_TOKEN_UPSERT = """
+    INSERT INTO token_usage (
+        message_id, session_id, workspace_path, ts, model,
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(message_id) DO UPDATE SET
+        input_tokens = MAX(COALESCE(input_tokens, 0), excluded.input_tokens),
+        output_tokens = MAX(COALESCE(output_tokens, 0), excluded.output_tokens),
+        cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), excluded.cache_read_tokens),
+        cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), excluded.cache_creation_tokens),
+        cache_1h_tokens = MAX(COALESCE(cache_1h_tokens, 0), excluded.cache_1h_tokens)
+    WHERE excluded.input_tokens > COALESCE(input_tokens, 0) OR excluded.output_tokens > COALESCE(output_tokens, 0)
+       OR excluded.cache_read_tokens > COALESCE(cache_read_tokens, 0)
+       OR excluded.cache_creation_tokens > COALESCE(cache_creation_tokens, 0)
+       OR excluded.cache_1h_tokens > COALESCE(cache_1h_tokens, 0)
+"""
 
-    Deduped on ``message_id`` — a single assistant turn can trigger several
+
+def record_token_usages(workspace: Path, session_id: str, rows: List[Dict[str, Any]]) -> List[bool]:
+    """Record assistant turns' token usage in one connection. Fail-open.
+
+    Deduped on ``message_id`` -- a single assistant turn can trigger several
     PostToolUse hooks (parallel tool calls), which would otherwise count the
-    same turn's usage multiple times. Returns True only for a new row.
+    same turn's usage multiple times. A repeat keeps the larger count per
+    bucket: subagent transcripts write one line per content block with
+    output_tokens still growing, so the first line seen undercounts.
+    Returns, per row, True for a new row or one whose counts grew.
     """
-    if not message_id:
-        return False
-    return bool(_insert_fail_open(
-        workspace,
-        """
-        INSERT OR IGNORE INTO token_usage (
-            message_id, session_id, workspace_path, ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            message_id, session_id, canonical_workspace_path(workspace), ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
-        ),
-    ))
+    rows = [r for r in rows if r.get("message_id")]
+    if not rows:
+        return []
+    ws = canonical_workspace_path(workspace)
+    try:
+        connection = sqlite3.connect(initialize_database(workspace))
+        try:
+            changed = [connection.execute(_TOKEN_UPSERT, (
+                r["message_id"], session_id, ws, r.get("ts") or "", r.get("model") or "",
+                r.get("input_tokens") or 0, r.get("output_tokens") or 0, r.get("cache_read_tokens") or 0,
+                r.get("cache_creation_tokens") or 0, r.get("cache_1h_tokens") or 0,
+            )).rowcount > 0 for r in rows]
+            connection.commit()
+            return changed
+        finally:
+            connection.close()
+    except Exception:
+        return [False] * len(rows)
+
+
+def record_token_usage(*, workspace: Path, session_id: str, **row: Any) -> bool:
+    """One turn; see :func:`record_token_usages`."""
+    return any(record_token_usages(workspace, session_id, [row]))
 
 
 def record_tool_output_size(
@@ -3600,6 +3617,23 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
     finally:
         conn.close()
     return out
+
+
+def get_active_sessions(hours: int) -> List[tuple]:
+    """(session_id, workspace_path) for sessions updated in the last ``hours``."""
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return []
+    try:
+        return [(r[0], r[1]) for r in conn.execute(
+            "SELECT session_id, workspace_path FROM sessions"
+            " WHERE updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
+            (f"-{hours} hours",),
+        )]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: int = 8) -> Dict[str, Any]:

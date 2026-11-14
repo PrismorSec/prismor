@@ -135,15 +135,26 @@ def _iter_codex_usage(path: Path, session_id: str) -> Iterator[Dict[str, Any]]:
                 yield row
 
 
+_BUCKETS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens", "cache_1h_tokens")
+
+
 def _iter_claude_usage(path: Path) -> Iterator[Dict[str, Any]]:
+    """One row per message id. A response spans one line per content block;
+    in subagent transcripts output_tokens keeps growing across those lines,
+    so take each bucket's max rather than the first line."""
+    turns: Dict[str, Dict[str, Any]] = {}
     with path.open("r", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
                 usage = _claude_usage(json.loads(line))
             except ValueError:
                 continue
-            if usage and usage["message_id"]:
-                yield usage
+            if not usage or not usage["message_id"]:
+                continue
+            seen = turns.setdefault(usage["message_id"], usage)
+            for k in _BUCKETS:
+                seen[k] = max(seen[k], usage[k])
+    yield from turns.values()
 
 
 def _provider(model: str) -> str:
@@ -159,14 +170,25 @@ def _provider(model: str) -> str:
 
 def _record(workspace: Path, session_id: str, agent: str, row: Dict[str, Any],
             agent_name: str = "") -> None:
-    """Store one turn; when new and the device is enrolled, also spool an
-    ``llm_usage`` telemetry record (same shape the LLM gateway lane emits) so
-    the control plane can show tokens and spend per session. It rides the
-    heartbeat's next flush, never a request of its own."""
-    reasoning = int(row.get("reasoning_tokens") or 0)
-    row = {k: v for k, v in row.items() if k != "reasoning_tokens"}  # not a store column
-    if not store.record_token_usage(workspace=workspace, session_id=session_id, **row):
-        return
+    _record_many(workspace, session_id, agent, [row], agent_name)
+
+
+def _record_many(workspace: Path, session_id: str, agent: str, rows: List[Dict[str, Any]],
+                 agent_name: str = "") -> None:
+    """Store turns in one write; for each new or grown one, when the device is
+    enrolled, also spool an ``llm_usage`` telemetry record (same shape the LLM
+    gateway lane emits) so the control plane can show tokens and spend per
+    session. It rides the heartbeat's next flush, never a request of its own."""
+    reasoning = [int(r.get("reasoning_tokens") or 0) for r in rows]
+    rows = [{k: v for k, v in r.items() if k != "reasoning_tokens"} for r in rows]  # not a store column
+    changed = store.record_token_usages(workspace, session_id, rows)
+    for row, r_tokens, new in zip(rows, reasoning, changed):
+        if new:
+            _spool_usage(session_id, agent, row, r_tokens, agent_name)
+
+
+def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: int,
+                 agent_name: str = "") -> None:
     try:
         from prismor.runtime.enterprise import identity as _identity, telemetry_spool as _spool
         if not _identity.is_enrolled():
@@ -226,13 +248,34 @@ def backfill_session(workspace: Path, session_id: str, transcript_path: Optional
     if path is None or not path.is_file():
         return False
     codex = path.name.startswith("rollout-")
-    rows = _iter_codex_usage(path, session_id) if codex else _iter_claude_usage(path)
+    # Claude Code writes each subagent's turns to <session>/subagents/agent-*.jsonl,
+    # never to the main transcript: a quarter of a subagent-heavy session's tokens.
+    files = [path] if codex else [path, *sorted(path.with_suffix("").glob("subagents/agent-*.jsonl"))]
     try:
-        for row in rows:
-            _record(workspace, session_id, agent or ("codex" if codex else "claude"), row)
+        for f in files:
+            st = f.stat()
+            stamp = (st.st_mtime_ns, st.st_size)
+            if _scanned.get(f) == stamp:
+                continue  # unchanged since the last scan in this process
+            rows = _iter_codex_usage(f, session_id) if codex else _iter_claude_usage(f)
+            _record_many(workspace, session_id, agent or ("codex" if codex else "claude"), list(rows))
+            _scanned[f] = stamp
     except OSError:
         return False
     return True
+
+
+# ponytail: per-process memo, so a long-running dashboard rescans only files that changed.
+_scanned: Dict[Path, tuple] = {}
+
+
+def token_stats(workspace: Optional[Path] = None, hours: int = 24) -> Dict[str, Any]:
+    """``store.get_token_stats`` after backfilling every session active in the
+    window. Hooks record only the turn before each tool call, so without this
+    the totals run 10-20% behind the transcripts and miss subagents entirely."""
+    for sid, ws in store.get_active_sessions(hours):
+        backfill_session(Path(ws) if ws else (workspace or Path.cwd()), sid)
+    return store.get_token_stats(workspace, hours=hours)
 
 
 def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True) -> Dict[str, Dict[str, Any]]:
