@@ -138,6 +138,9 @@ def install(
     if target_dir.exists():
         shutil.rmtree(target_dir)
     shutil.copytree(_BUNDLED_PLUGIN_DIR, target_dir)
+    # The plugin resolves shell placeholders through the same resolver as the
+    # Claude hook; ship it beside the plugin so it works without prismor importable.
+    shutil.copy2(Path(__file__).resolve().parent / "hooks" / "decloak-exec.sh", target_dir / "decloak-exec.sh")
 
     _enable_plugin_in_config(_PLUGIN_NAME)
 

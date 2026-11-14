@@ -7,9 +7,14 @@ read ``~/.ssh/id_rsa`` (the MCP "rug pull"). The gateway therefore remembers a
 hash of every tool definition it has listed, per server, the first time it sees
 it (trust on first use), and treats a later change as unreviewed:
 
-  * ``check`` reports ``new`` / ``same`` / ``changed`` for a definition;
-  * a changed (or flagged) definition is kept as ``pending`` with a short
-    preview, so a human can review it without reconnecting to the server;
+  * trust on first use is per server, not per tool: the tools in the first
+    complete listing of a server are pinned (``mark_baseline`` closes that
+    listing); a tool that appears on the server after that is held
+    (``held``) like a change, since a server that adds a poisoned tool next to
+    the ones you already trust is the same rug pull;
+  * ``check`` reports ``new`` / ``same`` / ``changed`` / ``held`` for a definition;
+  * a changed, flagged or newly added definition is kept as ``pending`` with a
+    short preview, so a human can review it without reconnecting to the server;
   * ``approve`` pins the pending definition (``reviewed``) — only a human at a
     terminal can run it (``prismor-self-edit`` covers the command and the pin
     files).
@@ -104,7 +109,10 @@ def load(identity: str) -> Dict[str, Any]:
     except (FileNotFoundError, ValueError, OSError):
         data = None
     if not isinstance(data, dict) or data.get("identity") != identity:
-        return {"identity": identity, "tools": {}, "pending": {}}
+        # ``baseline`` False: the server's first listing is still in progress.
+        # A pin file written before this field existed has been listed, so a
+        # missing key with pins counts as baselined (see _baselined).
+        return {"identity": identity, "tools": {}, "pending": {}, "baseline": False}
     data.setdefault("tools", {})
     data.setdefault("pending", {})
     return data
@@ -133,12 +141,27 @@ def is_reviewed(identity: str, tool: str, digest: str) -> bool:
     return pin.get("hash") == digest and bool(pin.get("reviewed"))
 
 
+def _baselined(data: Dict[str, Any]) -> bool:
+    return bool(data.get("baseline", bool(data["tools"] or data["pending"])))
+
+
+def mark_baseline(identity: str) -> None:
+    """The server's first complete listing is done: tools that show up later are held."""
+    with _locked(identity):
+        data = load(identity)
+        if not data.get("baseline"):
+            data["baseline"] = True
+            _save(data)
+
+
 def check(identity: str, server: str, tool: Dict[str, Any], *, flagged: str = "") -> str:
     """Compare a listed definition with its pin.
 
-    Returns ``same``, ``new`` (pinned now), ``changed`` (kept pending), or
-    ``flagged`` (a first-seen definition the scan flagged: kept pending, never
-    pinned automatically).
+    Returns ``same``, ``new`` (pinned now: only during the server's first
+    listing), ``changed`` (kept pending), ``held`` (a tool new to a server
+    that was already listed: kept pending as ``new``), or ``flagged`` (a
+    first-seen definition the scan flagged: kept pending, never pinned
+    automatically).
     """
     name = str(tool.get("name") or "")
     digest = definition_hash(tool)
@@ -150,20 +173,24 @@ def check(identity: str, server: str, tool: Dict[str, Any], *, flagged: str = ""
             if data["pending"].pop(name, None) is not None:
                 _save(data)   # changed back to what was approved
             return "same"
-        if pin is None and not flagged:
+        bootstrap = not _baselined(data)
+        if pin is None and not flagged and bootstrap:
             data["tools"][name] = {"hash": digest, "pinned_at": _now(),
                                    "definition": definition_body(tool)}
             data["pending"].pop(name, None)
             _save(data)
             return "new"
+        reason = flagged or ("changed" if pin is not None else "new")
         pending = data["pending"].get(name) or {}
-        if pending.get("hash") != digest or pending.get("reason") != (flagged or "changed"):
+        if pending.get("hash") != digest or pending.get("reason") != reason:
             data["pending"][name] = {
-                "hash": digest, "seen_at": _now(), "reason": flagged or "changed",
+                "hash": digest, "seen_at": _now(), "reason": reason,
                 "definition": definition_body(tool),
             }
             _save(data)
-        return "changed" if pin is not None else "flagged"
+        if pin is not None:
+            return "changed"
+        return "flagged" if flagged else "held"
 
 
 SHORT_HASH = 12

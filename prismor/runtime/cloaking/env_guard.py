@@ -125,6 +125,45 @@ def local_text_main() -> None:
 
 _CMD_SEP = {"&&", "||", ";", "|", "&", "\n", "(", ")", "|&", ";;"}
 UNKNOWN = "?"
+_PUNCT = ";&|()<>\n"
+_OPS_RE = re.compile(r"&&|\|\||\|&|;;|&>>|&>|>>|>\||>&|<<<|<<-|<<|<>|<&|[;&|()<>\n]")
+# Words that may precede the command name of a simple command.
+_PREFIX_WORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done",
+                 "while", "until", "time", "command", "builtin"}
+_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+# `$IFS` / `${IFS}` / `${IFS:0:1}` expand to whitespace: `cat${IFS}.env`.
+_IFS_RE = re.compile(r"\$\{IFS[^}]*\}|\$IFS(?![A-Za-z0-9_])")
+
+
+def _tokens(command: str):
+    """Shell words and operators of ``command`` (quotes removed, so `"cat"`,
+    `\\cat` and `c""at` are all `cat`; newlines kept as separators), or None
+    when it does not lex (unbalanced quotes)."""
+    import shlex
+    try:
+        lex = shlex.shlex(_IFS_RE.sub(" ", command), posix=True, punctuation_chars=_PUNCT)
+        lex.whitespace = " \t\r"
+        lex.whitespace_split = True
+        lex.commenters = ""   # a comment swallowed the newline that ends it
+        tokens = []
+        for t in lex:
+            # shlex glues adjacent punctuation (`);`, `)&&`, `2>&1`); split it
+            # back into operators so a subshell's `)` is seen.
+            if t and set(t) <= set(_PUNCT):
+                tokens += _OPS_RE.findall(t)
+            else:
+                tokens.append(t)
+        return tokens
+    except ValueError:
+        return None
+
+
+def is_env_basename(path: str) -> bool:
+    """The Python twin of env-guard.sh's ``_is_env_basename``."""
+    b = os.path.basename(path).lower()
+    if any(x in b for x in ("example", "sample", "template", "dist")):
+        return False
+    return b in (".env", ".envrc") or b.startswith(".env.") or b.endswith(".env") or ".env." in b
 
 
 def _cd_target(arg: str | None, cur: str, prev: str) -> str:
@@ -151,19 +190,8 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
     Unparseable input (unbalanced quotes) falls back to the session cwd for
     every word, which is the old behaviour, with ``seg`` -1 (no segments).
     """
-    import shlex
-    try:
-        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
-        lex.whitespace_split = True
-        tokens = []
-        for t in lex:
-            # shlex glues adjacent punctuation (`);`, `)&&`); split it back
-            # into operators so a subshell's `)` is seen.
-            if t and set(t) <= set(";&|()"):
-                tokens += re.findall(r"&&|\|\||\|&|;;|[;&|()]", t)
-            else:
-                tokens.append(t)
-    except ValueError:
+    tokens = _tokens(command)
+    if tokens is None:
         return [(w, cwd, -1) for w in command.split()]
 
     out: List[tuple] = []
@@ -183,6 +211,10 @@ def word_dirs(command: str, cwd: str) -> List[tuple]:
             i += 1
             continue
         out.append((tok, cur, seg))
+        # `{ cd x; }`, `if cd x`, `command cd x`, `X=1 cd x` all change dir.
+        if at_start and (tok in _PREFIX_WORDS or _ASSIGN_RE.match(tok)):
+            i += 1
+            continue
         if at_start and tok in ("cd", "pushd", "popd"):
             args, j = [], i + 1
             while j < len(tokens) and tokens[j] not in _CMD_SEP:
@@ -283,6 +315,220 @@ def candidate_paths(command: str, cwd: str) -> List[str]:
 def candidate_paths_main() -> None:
     cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
     sys.stdout.write("\n".join(candidate_paths(sys.stdin.read(), cwd)))
+
+
+# ── which env files a Bash command READS ────────────────────────────────────
+# Deny-by-default: any command that names an env file reads it, except these,
+# which only look at its name or metadata, or write it. A reader list (`cat`,
+# `sed`, ...) was bypassed by every reader it didn't list (`jq`, `dd`, `.`,
+# `bash -x`) and by spelling a listed one differently (`"cat"`, `\cat`).
+_SAFE_CMDS = {"ls", "stat", "test", "[", "[[", "touch", "rm", "rmdir", "chmod", "chown",
+              "echo", "printf", "wc", "file", "mkdir", "du", "realpath", "readlink",
+              "basename", "dirname", "tee", "true", "false", ":", "exit", "cd", "pushd",
+              "popd", "which", "type"}
+_SAFE_GIT = {"add", "rm", "check-ignore", "ls-files", "status"}
+_PRESENCE_RE = re.compile(r"^(-[A-Za-z]*[qclL][A-Za-z]*|--(quiet|silent|count|files-with-matches|files-without-match))$")
+# These run text they are fed: an env path a "safe" command prints into them
+# (`echo .env | xargs cat`) is read after all.
+_RUNNERS = {"xargs", "parallel", "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", "."}
+_EXPANSION_RE = re.compile(r"\$\{[^}]*\}|\$\([^)]*\)?|\$[A-Za-z0-9_@*#?!$-]*|`[^`]*`?")
+_WRITE_REDIRS = {">", ">>", ">|", "&>", "&>>", ">&"}
+
+
+def _segments(tokens: List[str]) -> List[Dict]:
+    segs, cur = [], {"words": [], "redir_in": [], "skip": set()}
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _CMD_SEP:
+            segs.append(cur)
+            cur = {"words": [], "redir_in": [], "skip": set(), "after": t}
+        elif t in _WRITE_REDIRS or t in ("<<", "<<-", "<<<", "<&"):
+            i += 1   # write target, heredoc delimiter, here-string, fd: not a read
+        elif t in ("<", "<>"):
+            if i + 1 < len(tokens) and tokens[i + 1] not in _CMD_SEP:
+                cur["redir_in"].append(tokens[i + 1])
+            i += 1
+        else:
+            cur["words"].append(t)
+        i += 1
+    segs.append(cur)
+    return segs
+
+
+def _cmd_name(words: List[str]):
+    """(index of the command name, name) after keywords and assignments."""
+    for k, w in enumerate(words):
+        if w in _PREFIX_WORDS or _ASSIGN_RE.match(w):
+            continue
+        return k, os.path.basename(w)
+    return len(words), ""
+
+
+def _is_safe(words: List[str], k: int, name: str) -> bool:
+    args = words[k + 1:]
+    if name in _SAFE_CMDS:
+        return True
+    if name == "git":
+        return bool(args) and args[0] in _SAFE_GIT
+    if name == "find":
+        return not any(a.startswith(("-exec", "-ok", "-fprint", "-fls")) for a in args)
+    if name in _GREPPERS:
+        return any(_PRESENCE_RE.match(a) for a in args)
+    if name == "prismor":
+        # The ingestion path prints names and byte counts only; not when it
+        # carries a substitution, which runs its own reader.
+        return bool(args) and args[0] == "cloak" and not any("$" in w or "`" in w for w in words)
+    return False
+
+
+def _env_files_in(d: str) -> List[str]:
+    try:
+        return [n for n in os.listdir(d) if is_env_basename(n) and os.path.isfile(os.path.join(d, n))]
+    except OSError:
+        return []
+
+
+def _pattern_hits(word: str, d: str, out: List[str]) -> None:
+    """Env files a word with a glob or an expansion could name."""
+    import fnmatch
+    head, _, base = word.rpartition("/")
+    dynamic = "$" in base or "`" in base
+    pat = _EXPANSION_RE.sub("*", base)
+    pat = re.sub(r"\{[^}]*,[^}]*\}", "*", pat)
+    if "$" in head or "`" in head:
+        if is_env_basename(pat.replace("*", "")) and "*" not in pat:
+            out.append(UNKNOWN + word)
+        return
+    if head:
+        head = os.path.expanduser(head)
+        d = head if os.path.isabs(head) else os.path.join(d, head)
+    elif d == UNKNOWN:
+        return
+    for n in _env_files_in(d):
+        # A variable may hold a dotfile name; a bare glob `*` skips dotfiles.
+        if fnmatch.fnmatchcase(n, pat) and (dynamic or not n.startswith(".") or pat.startswith(".")):
+            out.append(os.path.join(d, n))
+
+
+def _word_hits(word: str, d: str, out: List[str], *, dynamic: bool) -> None:
+    for m in _WORD.finditer(word):
+        tok = m.group(0)
+        path = os.path.expanduser(tok)
+        if not os.path.isabs(path):
+            if d == UNKNOWN:
+                if is_env_basename(tok):
+                    out.append(UNKNOWN + tok)
+                continue
+            path = os.path.join(d, path)
+        if os.path.lexists(path):
+            real = os.path.realpath(path)   # a symlink to .env reads .env
+            if os.path.isfile(real) and (is_env_basename(path) or is_env_basename(real)):
+                out.append(real)
+    if dynamic and ("$" in word or "`" in word or any(c in word for c in "*?[{")):
+        _pattern_hits(word, d, out)
+
+
+def _recursive(name: str, words: List[str]) -> bool:
+    if name in ("rg", "ag"):   # recursive, but skip dotfiles unless told not to
+        return any(w in ("--hidden", "-uu", "-uuu", "-.") for w in words)
+    return any(w in ("--recursive", "--dereference-recursive") or
+               (w.startswith("-") and not w.startswith("--") and ("r" in w or "R" in w)) for w in words)
+
+
+def env_reads(command: str, cwd: str) -> List[str]:
+    """Env files ``command`` would read, or ``?<word>`` for one whose directory
+    can't be known before it runs (fail closed). Writes (`>> .env`), metadata
+    commands (`ls`, `stat`, `test -f`), presence checks (`grep -q`) and the
+    ``prismor cloak`` ingestion path don't count; anything else that names an
+    env file does, however the command name is spelled or quoted."""
+    tokens = _tokens(command)
+    if tokens is None:   # unbalanced quotes: every word, against cwd
+        out: List[str] = []
+        for w in command.split():
+            _word_hits(w, cwd, out, dynamic=True)
+        return list(dict.fromkeys(out))
+    # The directory each segment runs in comes from word_dirs' cd tracking.
+    dirs: Dict[int, str] = {}
+    for _, d, seg in word_dirs(command, cwd):
+        dirs.setdefault(seg, d)
+    segs = _segments(tokens)
+    names = [_cmd_name(s["words"]) for s in segs]
+    runner = any(n in _RUNNERS or n.startswith("python") for _, n in names)
+    out = []
+    for idx, (s, (k, name)) in enumerate(zip(segs, names)):
+        d = dirs.get(idx, cwd)
+        safe = not runner and _is_safe(s["words"], k, name)
+        grep_pat = set()
+        if name in _GREPPERS or (name == "git" and s["words"][k + 1:k + 2] == ["grep"]):
+            grep_pat = {w for _, w in _grep_pattern_words({0: s["words"][k:]})}
+        for j, w in enumerate(s["words"]):
+            if name in ("cd", "pushd", "popd") and j > k:
+                continue
+            # A substitution inside any word runs, whatever command holds it.
+            if "$(" in w or "`" in w:
+                # `"$(cat .env)"`, `"$(cat $F)"`; a bare `"$(date)"` is no read.
+                _word_hits(w, d, out, dynamic=w.count("$") > 1 or any(c in w for c in "*?["))
+            if safe or w in grep_pat:
+                continue
+            _word_hits(w, d, out, dynamic=True)
+            if name in _GREPPERS and j > k and _recursive(name, s["words"]) \
+                    and not w.startswith("-") and d != UNKNOWN:
+                p = os.path.join(d, os.path.expanduser(w))
+                if os.path.isdir(p):   # `grep -r KEY .` prints .env's lines too
+                    out.extend(grep_targets(p))
+        for w in s["redir_in"]:
+            # `< .env` feeds the file to whatever runs; `wc -l < .env` prints a count.
+            if not safe or name not in _SAFE_CMDS:
+                _word_hits(w, d, out, dynamic=True)
+    return list(dict.fromkeys(out))
+
+
+def bash_main() -> None:
+    """env-guard.sh's Bash path in one process: stdin = command, argv[1] = cwd.
+    Prints ``{"files": {path: [names]}, "total": N, "unknown": word}``."""
+    cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
+    reads = env_reads(local_text(sys.stdin.read()), cwd)
+    unknown = next((p[1:] for p in reads if p.startswith(UNKNOWN)), "")
+    vault = vault_values()
+    files: Dict[str, List[str]] = {}
+    for p in reads:
+        if not p.startswith(UNKNOWN):
+            names = unprotected_entries(Path(p), vault)
+            if names:
+                files[p] = names
+    print(json.dumps({"files": files, "total": sum(map(len, files.values())), "unknown": unknown}))
+
+
+def grep_targets(path: str, glob: str = "", ftype: str = "", limit: int = 20000) -> List[str]:
+    """Env files a content-mode Grep over ``path`` could print lines of."""
+    import fnmatch
+    pats = []
+    if glob:
+        g = glob.rsplit("/", 1)[-1]
+        m = re.search(r"\{([^}]*)\}", g)
+        pats = [g[:m.start()] + alt + g[m.end():] for alt in m.group(1).split(",")] if m else [g]
+    if ftype:
+        pats.append(f"*.{ftype}")
+    keep = lambda n: not pats or any(fnmatch.fnmatchcase(n, p) for p in pats)  # noqa: E731
+    if os.path.isfile(path):
+        return [path] if is_env_basename(path) and keep(os.path.basename(path)) else []
+    out, seen = [], 0
+    for root, dirs, fnames in os.walk(path):
+        dirs[:] = [x for x in dirs if x not in (".git", "node_modules")]
+        for n in fnames:
+            seen += 1
+            if is_env_basename(n) and keep(n):
+                out.append(os.path.join(root, n))
+        if seen > limit:   # ponytail: bounded walk; huge trees past it go unchecked
+            break
+    return out
+
+
+def grep_main() -> None:
+    """argv: path [glob [type]] -> same report shape as ``main``."""
+    a = sys.argv[1:] + ["", "", ""]
+    main(grep_targets(a[0], a[1], a[2]))
 
 
 if __name__ == "__main__":

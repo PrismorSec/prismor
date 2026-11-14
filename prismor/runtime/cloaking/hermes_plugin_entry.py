@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +53,12 @@ _BUILTIN_PATTERNS: List[re.Pattern] = [
 ]
 
 _VAULT_DIR = "auto_vault"
+
+# Hermes tools whose ``command`` argument is shell text. Placeholders are
+# resolved there and nowhere else - the Claude hook contract (#457/#616): a
+# placeholder in a URL, a message body or a file write stays literal, so an
+# injected placeholder can't be resolved into an outbound request.
+_SHELL_TOOLS = {"terminal"}
 _ALLOW_BYPASS_PREFIX = "!!allow "
 
 
@@ -237,8 +244,10 @@ def on_pre_tool_call(
     if not search_text:
         return None
 
-    # Phase 1: Resolve @@SECRET:name@@ placeholders
-    placeholder_matches = _SECRET_PLACEHOLDER_RE.findall(search_text)
+    # Phase 1: placeholders in a shell command must resolve. Other tools keep
+    # them literal (see _SHELL_TOOLS), so there is nothing to check.
+    command = (args or {}).get("command") if tool_name in _SHELL_TOOLS else None
+    placeholder_matches = _SECRET_PLACEHOLDER_RE.findall(command) if isinstance(command, str) else []
     if placeholder_matches:
         env_vars = {}
         for name in placeholder_matches:
@@ -268,6 +277,14 @@ def on_pre_tool_call(
                     "the command without the secret."
                 ),
             }
+        if env_vars and _resolver() is None:
+            return {
+                "action": "block",
+                "message": (
+                    "Prismor's placeholder resolver (decloak-exec.sh) is missing from "
+                    "the plugin; reinstall with: prismor cloak install --agent hermes"
+                ),
+            }
 
     # Phase 2: Raw secret detection - always block, regardless of vault state.
     # If already vaulted we surface the *existing* placeholder name so the agent
@@ -292,24 +309,40 @@ def on_pre_tool_call(
     return None
 
 
-def _decloak(value: Any) -> Any:
-    """``value`` with every registered secret placeholder replaced by its value."""
-    if isinstance(value, str):
-        return _SECRET_PLACEHOLDER_RE.sub(lambda m: _read_secret(m.group(1)) or m.group(0), value)
-    if isinstance(value, dict):
-        return {k: _decloak(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_decloak(v) for v in value]
-    return value
+def _resolver() -> Optional[Path]:
+    """decloak-exec.sh: beside the installed plugin, else in the package hooks/."""
+    here = Path(__file__).resolve().parent
+    for p in (here / "decloak-exec.sh", here / "hooks" / "decloak-exec.sh",
+              here.parent / "hooks" / "decloak-exec.sh"):
+        if p.is_file():
+            return p
+    return None
 
 
-def on_tool_execution(next_call: Any = None, args: Optional[Dict[str, Any]] = None, **_: Any) -> Any:
-    """tool_execution middleware: run the tool with placeholders decloaked.
+def _decloak_command(command: str) -> str:
+    """``command`` rewritten to run through decloak-exec.sh, which reads the
+    vault itself and turns each placeholder into a quoted reference to a
+    non-exported shell variable. No secret value is ever spliced into shell
+    text (a value holding ``"; touch pwned"`` would be re-parsed as code), and
+    the rewritten command Hermes may log holds only placeholders."""
+    resolver = _resolver()
+    if resolver is None or not _SECRET_PLACEHOLDER_RE.search(command):
+        return command
+    return (f"PRISMOR_SECRETS_DIR={shlex.quote(str(_secrets_dir()))} "
+            f"PRISMOR_CLOAK_CMD={shlex.quote(command)} bash {shlex.quote(str(resolver))}")
 
-    Only the executed copy carries real values; the transcript, hooks and
-    approvals keep the placeholder, and the transform hooks below scrub any
-    value that comes back in the output."""
-    return next_call(_decloak(args or {}))
+
+def on_tool_execution(next_call: Any = None, args: Optional[Dict[str, Any]] = None,
+                      tool_name: str = "", **_: Any) -> Any:
+    """tool_execution middleware: run a shell tool with placeholders resolved.
+
+    Only the executed copy changes; the transcript, hooks and approvals keep
+    the placeholder form, and the transform hooks below scrub any value that
+    comes back in the output. Arguments of every other tool pass unchanged."""
+    args = dict(args or {})
+    if tool_name in _SHELL_TOOLS and isinstance(args.get("command"), str):
+        args["command"] = _decloak_command(args["command"])
+    return next_call(args)
 
 
 def on_post_tool_call(

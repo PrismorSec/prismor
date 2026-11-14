@@ -103,17 +103,13 @@ if [[ -n "$placeholders" ]]; then
   # resolve it, so the recorded string holds placeholders and not secrets.
   runner="PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_CMD=$(printf '%q' "$cmd") bash $(printf '%q' "$RESOLVER")"
 else
-  # Wrapped in a multiline brace group so trailing comments (# ...) or heredocs
-  # (EOF) do not comment out or corrupt the closing brace.
-  # The leading `:` keeps a comment-only command from forming an empty
-  # (invalid) group; the blank line before `}` absorbs a trailing backslash
-  # continuation. Neither touches $? - `:` runs before the command, so the
-  # group still exits with the command's own status.
-  runner="{
-:
-$cmd
-
-}"
+  # The command text rides in ONE %q-quoted word and runs through `eval`, so
+  # nothing in it is parsed as the wrapper's own syntax: `true\n}\ncat f` used
+  # to close a `{ $cmd }` group and run outside the scrub pipe. eval keeps the
+  # tool shell's functions and aliases (a `bash -c` would lose them). The
+  # appended newline absorbs a trailing backslash continuation; a comment-only
+  # command evals to status 0; eval returns the command's own status.
+  runner="{ __prismor_cmd=$(printf '%q' "$cmd"); eval \"\$__prismor_cmd\"\$'\\n'; }"
 fi
 wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_SESSION=$(printf '%q' "$session_id") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
 

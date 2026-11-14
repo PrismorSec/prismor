@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import http.server
 import json
 import os
@@ -553,6 +554,10 @@ def _probe_challenge(server_url: str, headers: Dict[str, str]) -> Dict[str, str]
 class _CallbackHandler(http.server.BaseHTTPRequestHandler):
     result: Dict[str, str] = {}
     done: Optional[threading.Event] = None
+    # Only the redirect carrying this login's state ends the wait. The port is
+    # predictable, so any local process or web page can GET /callback.
+    expected_state: Optional[str] = None
+    ignored: int = 0
 
     def do_GET(self):  # noqa: N802
         parsed = urllib.parse.urlsplit(self.path)
@@ -561,7 +566,17 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         q = dict(urllib.parse.parse_qsl(parsed.query))
-        type(self).result.update(q)
+        cls = type(self)
+        expected = cls.expected_state
+        if (not expected or not hmac.compare_digest(q.get("state", "").encode(), expected.encode())
+                or (cls.done is not None and cls.done.is_set())):
+            cls.ignored += 1
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<h3>This is not the sign-in Prismor is waiting for.</h3>")
+            return
+        cls.result = q
         ok = "code" in q
         body = ("<h3>Signed in. You can close this tab and return to the terminal.</h3>" if ok
                 else "<h3>Sign-in failed: " + _html_escape(q.get("error_description") or q.get("error") or "no code")
@@ -648,6 +663,7 @@ def login(name: str, server_url: str, *, headers: Optional[Dict[str, str]] = Non
         scopes = scopes.split()
         pkce = _pkce()
         state = secrets.token_urlsafe(24)
+        handler.expected_state = state
         params = {"response_type": "code", "client_id": client["client_id"],
                   "redirect_uri": redirect_uri, "state": state,
                   "code_challenge": pkce["challenge"], "code_challenge_method": "S256",
@@ -665,7 +681,9 @@ def login(name: str, server_url: str, *, headers: Optional[Dict[str, str]] = Non
             except Exception:
                 pass
         if not done.wait(timeout):
-            raise OAuthError(f"no sign-in within {int(timeout)}s")
+            raise OAuthError(f"no sign-in within {int(timeout)}s"
+                             + (f" (ignored {handler.ignored} response(s) with the wrong state)"
+                                if handler.ignored else ""))
         result = handler.result
     finally:
         httpd.shutdown()

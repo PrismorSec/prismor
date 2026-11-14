@@ -694,6 +694,70 @@ def _verify_signature(payload: bytes, sig_b64: str) -> bool:
     return result.ok
 
 
+def _hwm_path() -> Path:
+    return _policy_home() / "remote-policy.hwm.json"
+
+
+def _as_epoch(v: Any) -> Optional[float]:
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _signed_binding_ok(parsed: Dict[str, Any]) -> bool:
+    """Freshness and binding checks on fields INSIDE the signed bytes.
+
+    A signature alone says "the org signed this once", so any older signed
+    policy (one that paused enforcement, or predates a block rule) could be
+    written back over the cache. When the console includes a ``_signed`` block
+    it is enforced: device/org must match this device, ``expires_at`` must be
+    in the future, and ``issued_at`` may never go backwards (high-water mark).
+    The unsigned meta.json is never consulted. Absent block = legacy console:
+    accepted, so existing deployments keep working.
+    """
+    signed = parsed.get("_signed")
+    if signed is None:
+        return True
+    if not isinstance(signed, dict):
+        return False
+    ident = _identity.load_identity() or {}
+    for field in ("device_id", "org_id"):
+        want = signed.get(field)
+        if want is not None and str(want) != str(ident.get(field)):
+            sys.stderr.write(f"[prismor] remote policy is bound to another {field} — ignoring\n")
+            return False
+    now = time.time()
+    exp = _as_epoch(signed.get("expires_at"))
+    if signed.get("expires_at") is not None and (exp is None or exp <= now):
+        sys.stderr.write("[prismor] remote policy has expired — ignoring\n")
+        return False
+    issued = _as_epoch(signed.get("issued_at"))
+    if signed.get("issued_at") is not None and issued is None:
+        return False
+    if issued is not None:
+        try:
+            hwm = float(json.loads(_hwm_path().read_text(encoding="utf-8")).get("issued_at", 0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            hwm = 0.0
+        if issued < hwm:
+            sys.stderr.write("[prismor] remote policy is older than one already applied — ignoring\n")
+            return False
+        if issued > hwm:
+            try:
+                tmp = _hwm_path().with_suffix(".tmp")
+                tmp.write_text(json.dumps({"issued_at": issued}), encoding="utf-8")
+                os.replace(tmp, _hwm_path())
+            except OSError:
+                pass
+    return True
+
+
 def verify_and_load() -> Optional[Dict[str, Any]]:
     """Load and verify the cached remote policy. Returns the parsed policy dict
     (with a ``_remote_meta`` key) or None if absent / unverifiable.
@@ -736,6 +800,8 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
         except Exception:
             return None
         if not isinstance(parsed, dict):
+            return None
+        if not _signed_binding_ok(parsed):
             return None
         _VERIFIED.clear()
         _VERIFIED[key] = parsed

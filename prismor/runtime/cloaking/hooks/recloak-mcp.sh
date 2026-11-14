@@ -21,34 +21,47 @@ input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 [[ "$tool_name" == mcp__* ]] || exit 0
 
-response="$(printf '%s' "$input" | jq -r '.tool_response // empty')"
+response="$(printf '%s' "$input" | jq -c '.tool_response // empty')"
 [[ -n "$response" ]] || exit 0
 
-# Replace every registered secret's real value with its placeholder. Literal
-# match via perl's \Q...\E, so regex metacharacters in a secret are inert.
-# Not bash's ${var//"needle"/repl}: it is quadratic in the response size, and
-# a multi-MB MCP response (browser screenshots) pinned the hook for minutes
-# per secret. Not sed: the value would be a regex there. Trailing newlines
-# are stripped from the secret file, matching $(cat). Skip missing/empty.
-scrubbed="$(printf '%s' "$response" | SECRETS_DIR="$SECRETS_DIR" perl -0777 -pe '
-  BEGIN {
+# (value, placeholder) pairs, longest value first, as JSON for jq. Built by
+# perl from the vault files and handed over a /dev/fd pipe, never argv. Each
+# secret is listed raw AND in its JSON-escaped form: a string field can hold
+# a JSON document whose text carries `\"` / `\\` / `\n` where the secret had
+# `"` / `\` / a newline. Trailing newlines are stripped from the secret file,
+# matching $(cat).
+_pairs() {
+  SECRETS_DIR="$SECRETS_DIR" perl -MJSON::PP -e '
+    my $js = JSON::PP->new->allow_nonref;   # character strings in, out
     for my $f (glob("\Q$ENV{SECRETS_DIR}\E/*")) {
-      next unless -f $f && open(my $fh, "<", $f);
+      next unless -f $f && open(my $fh, "<:raw", $f);
       local $/; my $real = <$fh>; $real =~ s/\n+\z//;
+      utf8::decode($real);
       # Mirrors is_scrubbable_secret() in ../runtime.py: a short single-case
       # word ("ses", "false") is config, and masking it mangled every
       # "session" and boolean in browser/MCP output.
       my $n = length $real;
       next unless $n >= 16 || ($n >= 8 && ($real =~ /[[:digit:]]|[^[:alnum:]]/ || ($real =~ /[[:lower:]]/ && $real =~ /[[:upper:]]/)));
       (my $name = $f) =~ s{.*/}{};
-      push @s, [$real, "\@\@SECRET:$name\@\@"];
+      my $ph = "\@\@SECRET:$name\@\@";
+      push @s, [$real, $ph];
+      my $esc = substr($js->encode($real), 1, -1);
+      push @s, [$esc, $ph] if $esc ne $real;
     }
-  }
-  for my $p (@s) { s/\Q$p->[0]\E/$p->[1]/g }
-')"
+    print JSON::PP->new->utf8->encode([sort { length($b->[0]) <=> length($a->[0]) } @s]);
+  '
+}
+
+# Scrub every string in the DECODED response (jq split/join is a literal,
+# linear replace), so a secret holding `"`, `\` or a control char is matched
+# as itself rather than as the escaped text `jq -r` used to print. Not bash's
+# ${var//"needle"/repl}: quadratic on multi-MB responses (screenshots).
+scrubbed="$(printf '%s' "$response" | jq -c --slurpfile S <(_pairs) '
+  def scrub: reduce $S[0][] as $p (.; split($p[0]) | join($p[1]));
+  walk(if type == "string" then scrub else . end)')" || exit 0
 
 # Only mutate if something actually changed — avoids noisy empty mutations.
-if [[ "$scrubbed" != "$response" ]]; then
+if [[ -n "$scrubbed" && "$scrubbed" != "$response" ]]; then
   # shellcheck source=_ledger.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
   session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
@@ -60,6 +73,7 @@ if [[ "$scrubbed" != "$response" ]]; then
     prismor_cloak_event mcp_output redacted "$session_id" "${name%@@}" "" "$tool_name"
   done < <(printf '%s' "$scrubbed" | grep -oE '@@SECRET:[a-zA-Z0-9_-]+@@' | sort -u)
   # stdin, not --arg: a multi-MB response overflows ARG_MAX and jq never runs.
-  printf '%s' "$scrubbed" | jq -Rs \
+  # Same JSON type back: a string stays a string, an object stays an object.
+  printf '%s' "$scrubbed" | jq -c \
     '{hookSpecificOutput:{hookEventName:"PostToolUse",updatedMCPToolOutput:.}}'
 fi

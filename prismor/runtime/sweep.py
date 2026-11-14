@@ -114,13 +114,25 @@ def err(msg: str) -> None:
 
 # ── Vault crypto (openssl CLI) ──────────────────────────────────────────
 
+def _openssl_with_pass(args: list, data: bytes, passphrase: str) -> subprocess.CompletedProcess:
+    """Run openssl with the passphrase on a pipe fd, never in argv (visible in ps)."""
+    r, w = os.pipe()
+    try:
+        os.write(w, passphrase.encode() + b"\n")
+    finally:
+        os.close(w)
+    try:
+        return subprocess.run(
+            ["openssl", *args, "-pass", f"fd:{r}"],
+            input=data, capture_output=True, pass_fds=(r,),
+        )
+    finally:
+        os.close(r)
+
+
 def _vault_encrypt(plaintext: bytes, passphrase: str) -> bytes:
     """Encrypt bytes with AES-256-CBC + PBKDF2 via openssl."""
-    proc = subprocess.run(
-        ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-salt", "-pass", f"pass:{passphrase}"],
-        input=plaintext,
-        capture_output=True,
-    )
+    proc = _openssl_with_pass(["enc", "-aes-256-cbc", "-pbkdf2", "-salt"], plaintext, passphrase)
     if proc.returncode != 0:
         raise RuntimeError(f"openssl encrypt failed: {proc.stderr.decode()}")
     return proc.stdout
@@ -128,11 +140,7 @@ def _vault_encrypt(plaintext: bytes, passphrase: str) -> bytes:
 
 def _vault_decrypt(ciphertext: bytes, passphrase: str) -> bytes:
     """Decrypt AES-256-CBC + PBKDF2 via openssl."""
-    proc = subprocess.run(
-        ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-pass", f"pass:{passphrase}"],
-        input=ciphertext,
-        capture_output=True,
-    )
+    proc = _openssl_with_pass(["enc", "-d", "-aes-256-cbc", "-pbkdf2"], ciphertext, passphrase)
     if proc.returncode != 0:
         raise RuntimeError("Wrong passphrase or corrupted vault.")
     return proc.stdout

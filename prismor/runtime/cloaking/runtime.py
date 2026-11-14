@@ -38,7 +38,9 @@ _Q = r"(?:\$'(?:\\.|[^'\\])*'|(?:\\.|[^\s\\])+)"
 _DECLOAK_TAIL_RE = re.compile(
     r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r"(?: PRISMOR_CLOAK_SESSION=(?:''|" + _Q + r"))? "
     + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
-_DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)
+_DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)  # before the eval form
+_DECLOAK_EVAL_RE = re.compile(
+    r"\A\{ __prismor_cmd=(" + _Q + r"); eval \"\$__prismor_cmd\"\$'\\n'; \}\Z", re.DOTALL)
 _DECLOAK_RESOLVE_RE = re.compile(
     r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _Q + r"decloak-exec\.sh\Z",
     re.DOTALL)
@@ -61,7 +63,7 @@ def unwrap_decloak(command: str) -> str:
     group = _DECLOAK_GROUP_RE.match(runner)
     if group:
         return group.group(1)
-    resolve = _DECLOAK_RESOLVE_RE.match(runner)
+    resolve = _DECLOAK_RESOLVE_RE.match(runner) or _DECLOAK_EVAL_RE.match(runner)
     if not resolve:
         return command
     word = resolve.group(1)

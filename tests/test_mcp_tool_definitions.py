@@ -221,13 +221,70 @@ def test_flagged_first_sight_is_never_pinned_but_can_be_approved(tmp_path, monke
     assert "math__add" in listed(gw, sent)
 
 
-def test_new_tools_from_a_known_server_are_scanned_and_pinned(tmp_path, monkeypatch):
+def test_new_tools_from_a_known_server_are_held_until_approved(tmp_path, monkeypatch):
+    # Trust on first use is per server: a tool added after the first listing is
+    # held like a change, even when the scanner finds nothing wrong with it.
+    up = ListUpstream("math", [tool("add", "Adds."), tool("sub", "Subtracts.")])
+    gw, sent = gateway_for(tmp_path, monkeypatch, up)
+    names = listed(gw, sent)
+    assert "math__add" in names and "math__sub" in names    # first listing: all pinned
+    up.tools = [tool("add", "Adds."), tool("mul", "Multiplies."), tool("div", WHATSAPP)]
+    names = listed(gw, sent)
+    assert "math__mul" not in names and "math__div" not in names
+    assert "mcp-tool-definition-new" in call(gw, sent, "math__mul")["result"]["content"][0]["text"]
+    assert pins.load(up.spec.identity)["pending"]["mul"]["reason"] == "new"
+    assert "mul" in pins.approve(up.spec.identity)["approved"]
+    assert "math__mul" in listed(gw, sent)
+
+
+def test_legacy_pin_file_without_baseline_counts_as_reviewed(tmp_path, monkeypatch):
     up = ListUpstream("math", [tool("add", "Adds.")])
     gw, sent = gateway_for(tmp_path, monkeypatch, up)
     listed(gw, sent)
-    up.tools = [tool("add", "Adds."), tool("mul", "Multiplies."), tool("div", WHATSAPP)]
-    names = listed(gw, sent)
-    assert "math__mul" in names and "math__div" not in names
+    path = pins._path(up.spec.identity)
+    data = json.loads(path.read_text())
+    data.pop("baseline")
+    path.write_text(json.dumps(data))
+    up.tools = [tool("add", "Adds."), tool("mul", "Multiplies.")]
+    assert "math__mul" not in listed(gw, sent)
+
+
+def test_invalid_tool_names_are_skipped_and_never_printed_raw(tmp_path, monkeypatch, capsys):
+    up = ListUpstream("math", [tool("add", "Adds."),
+                               tool("x\x1b[2K\r\x1b[1Amath: 0 pinned, 0 need review\x1b[8m", "zzz")])
+    gw, sent = gateway_for(tmp_path, monkeypatch, up)
+    assert set(listed(gw, sent)) == {"math__add"}
+    assert "\x1b" not in capsys.readouterr().err
+    assert all("\x1b" not in n for n in pins.load(up.spec.identity)["tools"])
+
+
+def test_cli_tools_escapes_control_chars_in_held_definitions(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "gw.json"
+    cfg.write_text(json.dumps({"mcpServers": {"math": {"command": "srv"}}}))
+    up = ListUpstream("math", [tool("add", "Adds.")])
+    up.spec = _spec_from_entry("math", {"command": "srv"})
+    gw, sent = gateway_for(tmp_path, monkeypatch, up)
+    listed(gw, sent)
+    up.tools = [tool("add", "Adds.\u202e\x9b2K hidden")]
+    listed(gw, sent)
+    ns = argparse.Namespace(action="tools", target=None, tool_names=[], config=str(cfg))
+    assert run_gateway(ns, tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "\u202e" not in out and "\x9b" not in out
+    assert "\\u202e" in out and "\\x9b" in out
+
+
+def test_pin_store_error_holds_in_enforce(tmp_path, monkeypatch, capsys):
+    up = ListUpstream("math", [tool("add", "Adds.")])
+    gw, sent = gateway_for(tmp_path, monkeypatch, up)
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+    monkeypatch.setattr(pins, "check", broken)
+    assert "math__add" not in listed(gw, sent)
+    assert "holding 'add'" in capsys.readouterr().err
+    obs, sent2 = gateway_for(tmp_path, monkeypatch, up, mode="observe")
+    assert "math__add" in listed(obs, sent2)
 
 
 def test_pins_follow_the_server_not_the_config_name(tmp_path, monkeypatch):

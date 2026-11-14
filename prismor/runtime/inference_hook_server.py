@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from prismor.runtime.inference_hook import (
     AGENT_ID,
@@ -127,6 +127,20 @@ def _bearer(headers: Any) -> str:
     return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
 
 
+_CREDENTIAL_KEYS = ("signing_secret", "previous_signing_secret", "api_key")
+
+
+def _has_credential(entry: Any) -> bool:
+    return isinstance(entry, dict) and any(
+        isinstance(entry.get(k), str) and entry[k].strip() for k in _CREDENTIAL_KEYS)
+
+
+def credentialed_orgs(file_config: Optional[Dict[str, Any]]) -> List[str]:
+    """Orgs in the channel config that carry a credential of their own."""
+    orgs = (file_config or {}).get("orgs")
+    return sorted(o for o, e in orgs.items() if _has_credential(e)) if isinstance(orgs, dict) else []
+
+
 def authenticate(
     cfg: ChannelConfig,
     headers: Any,
@@ -134,6 +148,7 @@ def authenticate(
     frame: Frame,
     *,
     cli_overrides: Optional[Dict[str, Any]] = None,
+    file_config: Optional[Dict[str, Any]] = None,
 ) -> Tuple[bool, str, str]:
     """Decide whether this request may receive a verdict.
 
@@ -169,6 +184,13 @@ def authenticate(
     if cfg.allow_unsigned:
         return True, "unsigned-allowed", "allow_unsigned is set"
     if not cfg.is_signed and not cfg.api_key and not fallback_key:
+        # Once any org has a credential the server is set up: a tenant that is
+        # empty or not configured is not a new org bootstrapping, it is a
+        # caller dodging its own org's secret (or forging another's org_id).
+        orgs = (file_config or {}).get("orgs")
+        known = isinstance(orgs, dict) and bool(frame.tenant_id) and frame.tenant_id in orgs
+        if credentialed_orgs(file_config) and not known:
+            return False, "rejected", "unknown tenant"
         # No credential of any kind configured for this org: bootstrap state.
         return True, "unsigned-bootstrap", "no signing secret configured yet"
     return False, "rejected", "unsigned request but a signing secret is configured"
@@ -275,7 +297,8 @@ class InferenceHookHandler(BaseHTTPRequestHandler):
         if self.cli_overrides.get("allow_unsigned"):
             cfg.allow_unsigned = True
 
-        ok, method, detail = authenticate(cfg, self.headers, raw, frame, cli_overrides=self.cli_overrides)
+        ok, method, detail = authenticate(cfg, self.headers, raw, frame, cli_overrides=self.cli_overrides,
+                                     file_config=self.file_config)
         if not ok:
             # 401 rather than a deny verdict: this is not a policy outcome, and
             # a forged or misconfigured caller must not learn our verdicts.
@@ -480,7 +503,13 @@ def run_inference_hook_server(
     orgs = InferenceHookHandler.file_config.get("orgs")
     org_count = len(orgs) if isinstance(orgs, dict) else 0
     has_default_cred = bool(default_cfg.is_signed or default_cfg.api_key or api_key)
-    if not has_default_cred and org_count == 0 and not InferenceHookHandler.config_error:
+    signed_orgs = credentialed_orgs(InferenceHookHandler.file_config)
+    open_orgs = sorted(set(orgs) - set(signed_orgs)) if isinstance(orgs, dict) else []
+    if not has_default_cred and signed_orgs and open_orgs and not InferenceHookHandler.config_error:
+        sys.stderr.write(
+            "[prismor] inference-hook: tenant(s) with no credential accept UNSIGNED requests "
+            f"(bootstrap): {', '.join(open_orgs)}. Unknown tenants are refused.\n")
+    if not has_default_cred and not signed_orgs and not InferenceHookHandler.config_error:
         sys.stderr.write(
             "[prismor] inference-hook: no signing secret configured — running in BOOTSTRAP mode "
             "(unsigned requests accepted).\n"
@@ -502,7 +531,8 @@ def run_inference_hook_server(
           f"· timeout {default_cfg.timeout_s}s · judge budget {os.environ['PRISMOR_SEMANTIC_BUDGET_MS']}ms/event · deny floor: {', '.join(sorted(default_cfg.deny_categories))}")
     print(f"[prismor] auth: "
           + ("signature (whsec_ configured)" if default_cfg.is_signed else
-             ("bearer key" if (default_cfg.api_key or api_key) else "BOOTSTRAP (unsigned accepted)"))
+             ("bearer key" if (default_cfg.api_key or api_key) else
+              "per-tenant (unknown tenants refused)" if signed_orgs else "BOOTSTRAP (unsigned accepted)"))
           + (f" · {org_count} tenant override(s)" if org_count else ""))
     print(f"[prismor] POST <any path>   →  prompt frame → {{action: allow|deny}}")
     print(f"[prismor] GET  /health       →  liveness check")
