@@ -104,7 +104,6 @@ from prismor.runtime.policy_engine import PolicyEngine, drop_post_twin_findings,
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.store import (
     get_session,
-    get_token_stats,
     infer_default_workspace,
     list_registered_workspaces,
     list_sessions,
@@ -1737,7 +1736,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             emit(payload, as_json=args.json, formatter=format_session_tokens)
             return
         show_all = getattr(args, "all", False)
-        payload = get_token_stats(None if show_all else workspace, hours=args.hours)
+        from prismor.runtime.token_usage import token_stats
+        payload = token_stats(None if show_all else workspace, hours=args.hours)
         payload.update(hours=args.hours, scope="all workspaces" if show_all else "this workspace")
         emit(payload, as_json=args.json, formatter=format_tokens)
         return

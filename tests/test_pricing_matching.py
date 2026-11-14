@@ -26,7 +26,7 @@ def offline(tmp_path, monkeypatch):
 ])
 def test_cloud_ids_normalize_to_first_party(model):
     assert pricing.normalize_model(model) == "claude-sonnet-4-5"
-    assert pricing.price_for(model) == pricing.PRICES["claude-sonnet-4-5"]
+    assert pricing.price_for(model) == {**pricing.PRICES["claude-sonnet-4-5"], "source": "snapshot"}
 
 
 def test_bedrock_version_suffix_only_after_a_date():
@@ -41,7 +41,7 @@ def test_bedrock_version_suffix_only_after_a_date():
     ("claude-opus-5[1m]", "claude-opus-5"),
 ])
 def test_prefix_keeps_correct_matches(model, base):
-    assert pricing.price_for(model) == pricing.PRICES[base]
+    assert pricing.price_for(model) == {**pricing.PRICES[base], "source": "snapshot"}
 
 
 @pytest.mark.parametrize("model", [

@@ -1330,6 +1330,7 @@ class StreamScreen:
         self._finish_override: Optional[str] = None
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
+        self.strip_usage = False  # the proxy asked for usage, the client did not
         self._denied: Dict[str, str] = {}    # Responses API: "item:<id>" (or name) -> refusal
         # chat/completions: parallel calls interleave by ``index``; each is
         # judged on its own, or their JSON concatenates and policy sees none.
@@ -1479,6 +1480,8 @@ class StreamScreen:
             return b"" if self._holding else chunk
 
         self._capture_usage(event)
+        if self.strip_usage and event.get("usage") and not event.get("choices"):
+            return b""  # usage-only chunk the client never asked for
 
         if "error" in event:
             # Anthropic's `event: error`, and OpenAI/Gemini in-stream errors.
@@ -2369,6 +2372,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # mode that would forward the *Prismor* key to Google and leave the
             # swap in _upstream_headers with nothing to override.
             query = "&".join(p for p in query.split("&") if not p.startswith("key="))
+        self._usage_injected = False
+        if streaming and provider == "openai" and base.hostname == "api.openai.com":
+            raw_body, self._usage_injected = _request_stream_usage(path, raw_body)
         headers = self._upstream_headers(spec, raw_body, host=base.netloc or base.hostname or "",
                                          path=path, query=query)
         if provider == "a2a" and getattr(self, "_a2a_from", ""):
@@ -2559,6 +2565,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         stream = StreamScreen(self.screen, provider, model, subject,
                               getattr(self, "_session_id", ""),
                               spoken=getattr(self, "_spoken", False))
+        stream.strip_usage = getattr(self, "_usage_injected", False)
         try:
             if is_eventstream(urlsplit(self.path).path):
                 for out in _eventstream_relay(stream, resp):
@@ -2581,6 +2588,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _write_chunk(self, data: bytes) -> None:
         self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
         self.wfile.flush()
+
+
+def _request_stream_usage(path: str, raw_body: bytes) -> Tuple[bytes, bool]:
+    """Ask OpenAI to put token usage on a streamed chat completion.
+
+    Without ``stream_options.include_usage`` the stream carries no usage at all
+    and the turn goes unmetered. Returns the body to send and whether it was
+    changed, so the extra usage-only chunk can be kept from the client.
+    Only for api.openai.com: other OpenAI-compatible servers may reject it."""
+    if not path.endswith("/chat/completions"):
+        return raw_body, False
+    body = _loads_object(raw_body)
+    if body is None or not body.get("stream"):
+        return raw_body, False
+    options = body.get("stream_options")
+    if isinstance(options, dict) and "include_usage" in options:
+        return raw_body, False
+    body["stream_options"] = {**(options if isinstance(options, dict) else {}), "include_usage": True}
+    return json.dumps(body).encode(), True
 
 
 class _UpstreamPool:

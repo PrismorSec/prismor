@@ -67,7 +67,6 @@ from prismor.runtime.store import (
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
-    get_token_stats,
     get_agents_overview,
     list_registered_workspaces,
     get_enrollment,
@@ -1017,7 +1016,8 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(data)
                     return
                 days = max(1, qint("days", 1))
-                data = get_token_stats(hours=days * 24)
+                from prismor.runtime.token_usage import token_stats
+                data = token_stats(hours=days * 24)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
                 return
@@ -1486,11 +1486,12 @@ class _DashboardServer(ThreadingHTTPServer):
 
 
 def _warm_dashboard_reads() -> None:
-    """Pay the one-off costs before anyone opens a page: the read index, and
-    the parse of recent shell commands the Files page lists."""
-    from prismor.runtime import devlog
+    """Pay the one-off costs before anyone opens a page: the read index, the
+    parse of recent shell commands the Files page lists, and a price refresh
+    (hooks never fetch prices, so nothing else keeps the cache current)."""
+    from prismor.runtime import devlog, pricing
     from prismor.runtime.store import ensure_read_indexes
-    for step in (ensure_read_indexes, lambda: devlog.files("")):
+    for step in (ensure_read_indexes, lambda: devlog.files(""), lambda: pricing.price_for("", fetch=True)):
         try:
             step()
         except Exception:

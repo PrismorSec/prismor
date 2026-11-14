@@ -95,7 +95,7 @@ token instead of getting a random one per start.
 | `PUT /api/policy/rules` | Toggle rule enable/mode from the Policy tab |
 | `GET /api/docs` | The docs shipped with this install — the list, one page (`?name=<file>.md`), or a search (`?q=…`) |
 | `GET /api/workspaces` | Registered workspaces, the dashboard's primary workspace, and enrollment status |
-| `GET /api/tokens` | Token usage and estimated cost (`?days`, or `?session=<id>` for one session) |
+| `GET /api/tokens` | Token usage and estimated cost (`?days`: totals, `byModel`, `usd` at list prices, `unpriced` models; or `?session=<id>` for one session). Reads the transcripts of sessions active in the window first |
 | `GET /api/query-prompt` | A copy-paste prompt that teaches an agent to query the local store |
 | `GET /api/mcp-servers` | MCP servers: where each is declared, whether the gateway manages it, risk, and call/block counts |
 | `GET /api/extensions` | The extension ledger: skills, plugins, MCP servers and hooks that put instructions or code into an agent |
@@ -257,11 +257,25 @@ and `prismor tokens --session <id>` breaks it down by model, with input,
 output, and cache read/write tokens (1-hour cache writes are priced
 separately). Usage is read from the agent's own transcript — Claude Code's
 `~/.claude/projects/*/<session>.jsonl` and Codex's `~/.codex/sessions`
-rollouts — and priced from LiteLLM's public price list, refreshed at most once
-every 12 hours into `~/.prismor/pricing-cache.json` (a built-in snapshot covers
-offline machines; `PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a
-`~/.prismor/pricing.json` (`{"model": {"input", "output", "cache_read",
-"cache_write"}}` in USD per 1M tokens) to add or override a rate. `cost=?`
+rollouts — and from responses through `prismor proxy`. The cost of a request is,
+in order:
+
+1. **What the provider reported charging.** OpenRouter puts `usage.cost` on
+   every response; the proxy stores it with the turn and nothing is estimated.
+2. **OpenRouter's price** for a `vendor/model` id (`moonshotai/kimi-k3.1-pro`),
+   the form OpenRouter traffic carries, from its public model list.
+3. **The provider's list price** from LiteLLM's public price list, for direct
+   calls (`claude-opus-5-5`, `gpt-6.1-terra`). OpenRouter's list fills in
+   models LiteLLM has not added yet.
+
+Both lists are refreshed at most once every 12 hours into
+`~/.prismor/pricing-cache.json` and `~/.prismor/openrouter-cache.json`, and the
+dashboard refreshes them when it starts and reloads them every 12 hours while
+it runs (a built-in snapshot covers offline machines;
+`PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a `~/.prismor/pricing.json`
+(`{"model": {"input", "output", "cache_read", "cache_write"}}` in USD per 1M
+tokens) to add or override a rate; it beats both lists. Hover a cost on the
+dashboard to see which of these it came from (`source` in `/api/tokens`). `cost=?`
 means no transcript is on this machine for that agent; `—` means the model has
 no known price.
 
