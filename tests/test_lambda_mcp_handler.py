@@ -76,7 +76,7 @@ def test_health_reports_the_runtime_version(h):
 
 
 @pytest.mark.parametrize("method,path,status", [
-    ("POST", "/", 404), ("POST", "/mcp", 404), ("POST", "/mcp/a/b", 404), ("GET", f"/mcp/{KEY}", 405),
+    ("POST", "/", 404), ("POST", "/mcp", 401), ("POST", "/mcp/a/b", 404), ("GET", f"/mcp/{KEY}", 405),
     ("DELETE", f"/mcp/{KEY}", 204),
 ])
 def test_routes(h, method, path, status):
@@ -278,3 +278,43 @@ def test_resolve_sends_the_edge_secret_only_when_configured(monkeypatch):
     assert "x-prismor-edge" not in seen[0]
     assert seen[1]["x-prismor-edge"] == "s3"
     assert seen[1]["authorization"] == f"Bearer {KEY}"
+
+
+# ── key in the Authorization header ──────────────────────────────────────────
+
+def bearer_event(method, key, body=None, scheme="Bearer", name="authorization"):
+    ev = event(method, "/mcp", body)
+    ev["headers"] = {name: f"{scheme} {key}"}
+    return ev
+
+
+def test_the_key_can_come_as_a_bearer_header(h):
+    msg = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+           "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}}
+    out = h.handler(bearer_event("POST", KEY, msg, name="Authorization"))
+    assert out["statusCode"] == 200, out
+    assert h._test_calls == [KEY]
+    # Same key either way: one gateway, not two.
+    init(h)
+    assert list(h._gateways) == [KEY]
+
+
+def test_a_missing_or_non_bearer_header_is_401_and_never_resolves(h):
+    out = h.handler(event("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+    assert out["statusCode"] == 401 and out["headers"]["WWW-Authenticate"] == "Bearer"
+    assert h.handler(bearer_event("POST", KEY, {}, scheme="Basic"))["statusCode"] == 401
+    assert h._test_calls == []
+
+
+def test_an_unknown_bearer_key_is_refused(h):
+    out = h.handler(bearer_event("POST", OTHER, {"jsonrpc": "2.0", "id": 1, "method": "ping"}))
+    assert out["statusCode"] == 403 and not h._gateways
+
+
+def test_the_bearer_key_is_never_forwarded_upstream(h):
+    from prismor.runtime.mcp_gateway import NEVER_FORWARD
+    assert "authorization" in NEVER_FORWARD
+
+
+def test_delete_with_a_bearer_header_ends_the_session(h):
+    assert h.handler(bearer_event("DELETE", KEY))["statusCode"] == 204
