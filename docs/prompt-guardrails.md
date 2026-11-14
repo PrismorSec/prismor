@@ -1,5 +1,10 @@
 # Prompt guardrails
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 A prompt guardrail is a rule written in plain language, such as "never push to
 main" or "ask before dropping a table", that Prismor adds to the agent's
 context. Policy rules stop an action after the model has chosen it. A guardrail

@@ -1,5 +1,10 @@
 # Live telemetry — goal, why it wasn't automatic, and the fix
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 ## The goal
 
 An org admin opens **Admin → Activity** and sees their developers' AI-agent
