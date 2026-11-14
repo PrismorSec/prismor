@@ -102,6 +102,7 @@ from prismor.runtime.feed import load_feed, match_advisories
 from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, drop_post_twin_findings, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
+from prismor.runtime.tui_format import safe_text
 from prismor.runtime.store import (
     get_session,
     infer_default_workspace,
@@ -144,7 +145,7 @@ def _block_header(finding: Dict[str, Any]) -> str:
     line = f"Prismor blocked this action: [{finding['severity']}] {finding['title']}"
     if finding.get("ruleId"):
         line += f" (rule: {finding['ruleId']})"
-    return line + "\n"
+    return safe_text(line) + "\n"
 
 
 # Cursor permission hooks that accept {"permission": "ask"}. beforeReadFile only
@@ -1301,7 +1302,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 # Truncate long evidence lines for display
                 if len(evidence) > 100:
                     evidence = evidence[:97] + "..."
-                print(f"           evidence: {_color(evidence, _DIM)}")
+                print(f"           evidence: {_color(safe_text(evidence), _DIM)}")
             print()
 
         # Summary line
@@ -2496,6 +2497,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
             if unblock_text:
                 reason += f"\n\n{unblock_text}"
+            # The host shows this to the human: no raw ESC/bidi from tool input.
+            reason = safe_text(reason)
 
             if verdict == "defer":
                 # DEFER: hold the ambiguous action and escalate to the deeper
@@ -2655,7 +2658,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         _ag_reason += f"Recommended fix: {blocking['remediation']}\n"
                     if unblock_text:
                         _ag_reason += f"\n{unblock_text}\n"
-                    sys.stdout.write(json.dumps({"decision": "deny", "reason": _ag_reason.strip()}) + "\n")
+                    sys.stdout.write(json.dumps({"decision": "deny", "reason": safe_text(_ag_reason.strip())}) + "\n")
                 elif args.agent == "grok":
                     # Grok Build reads {"decision": "deny", "reason": ...} from stdout
                     # AND requires exit code 2 (unlike Copilot, which ignores exit code).
@@ -2685,9 +2688,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                         }) + "\n")
                     sys.stderr.write(_block_header(blocking))
                     if blocking.get("evidence"):
-                        sys.stderr.write(f"{blocking['evidence']}\n")
+                        sys.stderr.write(f"{safe_text(blocking['evidence'])}\n")
                     if blocking.get("remediation"):
-                        sys.stderr.write(f"Recommended fix: {blocking['remediation']}\n")
+                        sys.stderr.write(f"Recommended fix: {safe_text(blocking['remediation'])}\n")
                     if unblock_text:
                         sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(0 if _codex_json else 2)
@@ -2696,9 +2699,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             # Prefer a would-be-blocking finding for the dismissal record.
             top = blocking or current_findings[0]
             for _f in current_findings:
-                _line = _color("[prismor] ", _YELLOW) + f"[{_f['severity']}] {_f['title']}"
+                _line = _color("[prismor] ", _YELLOW) + safe_text(f"[{_f['severity']}] {_f['title']}")
                 if _f.get("remediation"):
-                    _line += f" → {_f['remediation']}"
+                    _line += safe_text(f" → {_f['remediation']}")
                 sys.stderr.write(_line + "\n")
             # Record for learning. Nobody decided anything here: observe mode
             # surfaced the finding and the call ran. The reason says so, so a
@@ -3050,8 +3053,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     _os.environ["PRISMOR_AGENT_ID"] = old_val
 
             if finding:
-                print(_color("BLOCK", _RED) + f"  [{finding['severity']}] {finding['title']}")
-                print(f"  {finding.get('evidence', '')}")
+                print(_color("BLOCK", _RED) + safe_text(f"  [{finding['severity']}] {finding['title']}"))
+                print(f"  {safe_text(finding.get('evidence', ''))}")
                 raise SystemExit(2)
             else:
                 print(_color("ALLOW", _GREEN) + f"  agent '{agent_id}' may perform: {check_type} {check_value}")
@@ -3359,6 +3362,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 for entry in created:
                     placeholder = f"@@SECRET:{entry['name']}@@"
                     print(f"  {_color(placeholder, _CYAN)} ({entry['bytes']} bytes)")
+                    try:
+                        _warn_unscrubbable(entry["name"], Path(entry["path"]).read_text(encoding="utf-8"))
+                    except OSError:
+                        pass
                 print()
                 print("The model can now reference these values by placeholder name.")
                 return
@@ -3397,6 +3404,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"Registered @@SECRET:{name}@@ ({len(value)} bytes) at {path}")
             print("The model can now reference this secret in tool calls as:")
             print(f"  {_color(f'@@SECRET:{name}@@', _CYAN)}")
+            _warn_unscrubbable(name, value)
             return
 
         if sub == "list":
@@ -3935,7 +3943,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"  [{c['id']}] {rule.get('title', rule.get('id', '?'))}")
                 print(f"       Confidence: {c['confidence']:.0%}  |  Support: {c['support_count']}  |  Source: {c['source']}")
                 if c.get("sample_evidence"):
-                    print(f"       Sample: {c['sample_evidence'][:100]}")
+                    print(f"       Sample: {safe_text(c['sample_evidence'][:100])}")
                 print()
             print(f"Use {_color('prismor learn --apply ID', _BOLD)} to accept a rule.")
             return
@@ -5618,7 +5626,7 @@ def _print_findings(
             reason = str(suppressed.get("reason") or "no reason given")
             print(_color(f"  suppressed by allowlist {suppressed.get('id')!r} — {reason}", _DIM))
         evidence = str(f.get("evidence", "")).split("\n", 1)[0]
-        print(f"  rule: {f.get('ruleId', '?')}  evidence: {evidence}")
+        print(f"  rule: {f.get('ruleId', '?')}  evidence: {safe_text(evidence)}")
 
         if explain and engine is not None:
             rule = next((r for r in engine.rules if r.id == f.get("ruleId")), None)
@@ -5970,7 +5978,7 @@ def _print_status(session: Dict[str, Any]) -> None:
         color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
         print(f"  {_color(f'[{sev}]', color)} {finding['title']} ({finding['category']})")
         if _shown_evidence(finding):
-            print(f"         {_shown_evidence(finding)}")
+            print(f"         {safe_text(_shown_evidence(finding))}")
 
 
 def _run_query(args) -> None:
@@ -6969,6 +6977,16 @@ def _session_share_cmd(args, workspace: Path) -> int:
     return 0
 
 
+def _warn_unscrubbable(name: str, value: str) -> None:
+    """Cloak masks a raw value only when it is distinctive enough (L5)."""
+    from prismor.runtime.cloaking.runtime import is_scrubbable_secret
+    if not is_scrubbable_secret(value):
+        sys.stderr.write(
+            f"warning: @@SECRET:{name}@@ is too short or simple to be scrubbed: Prismor will NOT mask "
+            "its raw value in tool output or block reads of it. Use 16+ characters, or 8+ with a "
+            "digit, symbol or mixed case.\n")
+
+
 def _approvals_cmd(args: Any) -> int:
     """`prismor approvals [list|approve <id>|deny <id>]` - see approvals_local.py."""
     from prismor.runtime import approvals_local as _appr
@@ -6984,10 +7002,10 @@ def _approvals_cmd(args: Any) -> int:
             return 0
         for r in recs:
             when = _dt.datetime.fromtimestamp(float(r.get("created", 0))).strftime("%H:%M")
-            print(f"{r['id']}  {r['status']:<8} {when}  {r.get('agent', '')}  "
-                  f"[{r.get('severity', '')}] {r.get('title', '')} (rule: {r.get('rule', '')})")
+            print(safe_text(f"{r['id']}  {r['status']:<8} {when}  {r.get('agent', '')}  "
+                  f"[{r.get('severity', '')}] {r.get('title', '')} (rule: {r.get('rule', '')})"))
             if r.get("summary"):
-                print(f"        {r['summary'][:160]}")
+                print(f"        {safe_text(r['summary'][:160])}")
         pending = [r for r in recs if r["status"] == "pending"]
         if pending:
             print(f"\nApprove one: prismor approvals approve {pending[0]['id']}")
@@ -7008,11 +7026,11 @@ def _approvals_cmd(args: Any) -> int:
     if rec.get("decided_at") is None or rec["status"] not in ("approved", "denied"):
         print(f"{rec['id']} is already {rec['status']}.", file=sys.stderr)
         return 1
-    agent = rec.get("agent") or "the agent"
+    agent = safe_text(rec.get("agent") or "the agent")
     print(f"{'Approved once' if rec['status'] == 'approved' else 'Denied'}: "
-          f"[{rec.get('severity')}] {rec.get('title')}")
+          + safe_text(f"[{rec.get('severity')}] {rec.get('title')}"))
     if rec.get("summary"):
-        print(f"  {rec['summary'][:200]}")
+        print(f"  {safe_text(rec['summary'][:200])}")
     if rec["status"] == "denied":
         print(f"It stays blocked. {agent} was already told no; nothing else to do.")
     elif rec.get("was_waiting"):
@@ -8217,7 +8235,7 @@ def format_analysis(result: Dict[str, Any]) -> str:
         for advisory in result["feedMatches"]:
             lines.append(f"- [{advisory['severity']}] {advisory['id']} {advisory['title']}")
 
-    return "\n".join(lines)
+    return safe_text("\n".join(lines))
 
 
 def format_session(session: Dict[str, Any]) -> str:
@@ -8243,7 +8261,7 @@ def format_session(session: Dict[str, Any]) -> str:
     for event in session["events"][-10:]:
         parts = [event.get("ts"), event.get("type"), event.get("path"), event.get("command"), event.get("url")]
         lines.append(f"- {' | '.join(part for part in parts if part)}")
-    return "\n".join(lines)
+    return safe_text("\n".join(lines))
 
 
 def _fmt_cost(cost: Dict[str, Any]) -> str:

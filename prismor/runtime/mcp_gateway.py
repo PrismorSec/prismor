@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
+from prismor.runtime.tui_format import safe_text as _safe_text
 
 PROTOCOL_VERSION_FALLBACK = "2025-03-26"
 GATEWAY_AGENT = "mcp-gateway"
@@ -756,6 +757,9 @@ class _Route:
 
 
 _META_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]*$")
+#: MCP tool names: the spec (2025-11-25) allows A-Z a-z 0-9 _ - . in 1-128
+#: chars; / and : are accepted too since real servers use them for namespaces.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-/:]{1,128}\Z")
 _META_TAG_CAP = 8
 
 
@@ -1117,20 +1121,30 @@ class Gateway:
                     continue
                 if up.spec.tools_ttl:
                     up.tools_cache = (time.monotonic(), result)
+            listed_any = False
             for tool in result.get("tools") or []:
                 if not isinstance(tool, dict) or not tool.get("name"):
                     continue
                 original = str(tool["name"])
+                if not _TOOL_NAME_RE.match(original):
+                    # Control chars in a name can repaint `prismor mcp-gateway tools`.
+                    sys.stderr.write(f"[prismor-gateway] skipping a tool with an invalid name from "
+                                     f"'{up.spec.name}': {_safe_text(original[:80])}\n")
+                    continue
                 override = up.spec.overrides.get(original) or {}
                 exposed = self._client_tool_name(
                     up.spec.name, str(override.get("name") or original), local=up.spec.local)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
                                          meta_tags=_extract_meta_tags(tool))
+                # Pin before the per-caller filter: trust on first use is per
+                # server, so a tool hidden from this caller is still part of the
+                # server's first listing.
+                problem = self._definition_problem(routes[exposed], tool)
+                listed_any = True
                 if self._never_allowed(routes[exposed]):
                     hidden[exposed] = routes.pop(exposed)
                     continue
-                problem = self._definition_problem(routes[exposed], tool)
                 if problem is not None:
                     quarantined[exposed] = problem
                     if self.mode == "enforce" and not self._passthrough(routes[exposed]):
@@ -1150,6 +1164,12 @@ class Gateway:
                     desc = str(entry.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
+            if listed_any and up.spec.pin and not up.spec.local:
+                try:
+                    from prismor.runtime import mcp_tool_pins as _pins
+                    _pins.mark_baseline(up.spec.identity)
+                except OSError:
+                    pass
         # Held definitions are hidden in enforce; without a status entry a
         # legitimately updated tool would just vanish and nobody would know
         # to run `prismor mcp-gateway tools`.
@@ -1721,7 +1741,8 @@ class Gateway:
           from the user, shadowing of other servers' tools, secret reads;
         - it is compared with the definition pinned the first time this
           server listed it, so a tool that changes after it was trusted (a
-          "rug pull") is held until a human approves the new version.
+          "rug pull"), or a tool the server adds after its first listing, is
+          held until a human approves it.
 
         A definition a human approved (``prismor mcp-gateway approve``) is not
         re-scanned while it stays the same.
@@ -1739,10 +1760,29 @@ class Gateway:
             state = pins.check(identity, spec.name, tool,
                                flagged=(finding or {}).get("ruleId") or ("flagged" if finding else ""))
         except OSError as exc:
-            sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); scanning only\n")
-            return self._definition_scans.get(digest)
+            if self.mode != "enforce":
+                sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); scanning only\n")
+                return self._definition_scans.get(digest)
+            # Without the pin store a rug pull is invisible: hold, never allow unchecked.
+            sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); holding "
+                             f"'{route.tool}' on '{spec.name}' until the pin store is readable\n")
+            return {
+                "ruleId": "mcp-tool-pins-unavailable", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' on MCP server '{spec.name}' could not be checked against "
+                         f"its pinned definition (pin store error: {exc})",
+                "remediation": "Ask the user to fix the permissions or disk space of "
+                               "$PRISMOR_HOME/mcp-tool-pins and restart the gateway.",
+            }
         if finding is not None:
             return finding
+        if state == "held":
+            return {
+                "ruleId": "mcp-tool-definition-new", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' is new on MCP server '{spec.name}', which was already "
+                         "reviewed, and the new tool has not been reviewed",
+                "remediation": f"Ask the user to review it with `prismor mcp-gateway tools {spec.name}`, "
+                               "which shows the definition and the command to approve it.",
+            }
         if state == "changed":
             return {
                 "ruleId": "mcp-tool-definition-changed", "category": "skill_risk", "severity": "high",
@@ -2398,11 +2438,11 @@ def _run_pins(action: str, args) -> int:
         names = list(getattr(args, "tool_names", None) or [])
         out = pins.approve(specs[0].identity, names or None)
         if out["approved"]:
-            print(f"Approved {len(out['approved'])} tool definition(s) on {target}: "
-                  f"{', '.join(out['approved'])}. A running gateway lists them on its next tools/list.")
+            print(_safe_text(f"Approved {len(out['approved'])} tool definition(s) on {target}: "
+                  f"{', '.join(out['approved'])}. A running gateway lists them on its next tools/list."))
         if out["stale"]:
-            print(f"Not approved, changed again since you reviewed it: {', '.join(out['stale'])}. "
-                  f"Run `prismor mcp-gateway tools {target}` and review the current version.")
+            print(_safe_text(f"Not approved, changed again since you reviewed it: {', '.join(out['stale'])}. "
+                  f"Run `prismor mcp-gateway tools {target}` and review the current version."))
         if out["missing"] or not (out["approved"] or out["stale"]):
             print(f"Nothing pending for: {', '.join(out['missing']) if out['missing'] else target}")
         return 1 if out["stale"] else 0
@@ -2411,16 +2451,18 @@ def _run_pins(action: str, args) -> int:
         if not spec.pin:
             print(f"{spec.name}: pinning off (\"pin\": false)")
             continue
-        print(f"{spec.name}: {len(data['tools'])} pinned, {len(data['pending'])} need review")
+        print(_safe_text(f"{spec.name}: {len(data['tools'])} pinned, {len(data['pending'])} need review"))
         for name, entry in sorted(data["pending"].items()):
             why = [] if name not in data["tools"] else ["changed since it was pinned"]
-            if entry.get("reason") != "changed":
+            if entry.get("reason") == "new":
+                why.append("new tool on a server you already reviewed")
+            elif entry.get("reason") != "changed":
                 why.append(f"flagged by {entry.get('reason')}")
             short = entry["hash"][:pins.SHORT_HASH]
-            print(f"  ! {name}@{short}: {', '.join(why) or 'new'} (seen {entry.get('seen_at')})")
+            print(_safe_text(f"  ! {name}@{short}: {', '.join(why) or 'new'} (seen {entry.get('seen_at')})"))
             for line in pins.review_lines(data, name):
-                print(f"      | {line}")
-            print(f"    approve this exact version: prismor mcp-gateway approve {spec.name} {name}@{short}")
+                print(f"      | {_safe_text(line)}")
+            print(_safe_text(f"    approve this exact version: prismor mcp-gateway approve {spec.name} {name}@{short}"))
     return 0
 
 

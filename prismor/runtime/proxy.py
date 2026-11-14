@@ -84,6 +84,8 @@ from socketserver import ThreadingMixIn
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 from urllib.parse import unquote, urlsplit
 
+from prismor.runtime.http_gate import browser_gate
+
 PROXY_AGENT = "prismor-proxy"
 SURFACE_ID = "llm-proxy"
 
@@ -202,7 +204,10 @@ _STRIP_REQUEST_HEADERS = frozenset({
     "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
     "accept-encoding",  # we do not decompress, so do not let the upstream compress
+    "origin",  # a browser's Origin is the proxy's business, not the provider's
 })
+# Request body cap. Generous: multimodal turns carry base64 images and PDFs.
+MAX_BODY_BYTES = 32 * 1024 * 1024
 _STRIP_RESPONSE_HEADERS = frozenset({
     "connection", "keep-alive", "transfer-encoding", "content-encoding",
     "content-length", "upgrade",
@@ -1956,6 +1961,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     # -- entry points ----------------------------------------------------
 
+    def parse_request(self) -> bool:
+        # Every method, before anything is forwarded: the upstream may be
+        # signed with ambient AWS/GCP credentials, so a web page must not be
+        # able to drive it (CSRF) or read it back (DNS rebinding). A virtual
+        # key proves the caller, who may then use any Host name.
+        if not super().parse_request():
+            return False
+        refused = browser_gate(self, check_host=not self.config.keys)
+        if refused is None:
+            return True
+        self.close_connection = True  # the unread body would parse as the next request
+        self._json({"error": refused[1]}, status=refused[0])
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             self._json({"status": "ok", "surface": SURFACE_ID,
@@ -1964,8 +1983,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._forward(b"")
 
     def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        self._forward(self.rfile.read(length) if length else b"")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            self._json({"error": "payload too large"}, status=413)
+            return
+        self._forward(self.rfile.read(length) if length > 0 else b"")
 
     do_PUT = do_POST
     do_DELETE = do_GET

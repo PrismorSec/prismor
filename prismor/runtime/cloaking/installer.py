@@ -49,8 +49,13 @@ _LEGACY_MARKERS = (
 # decloak because it skips any value already present in the vault.
 _SECRET_GUARD_MATCHER = "Bash|Write|Edit|MultiEdit|mcp__.*"
 
-# The env-guard covers both the built-in Read tool and Bash reader commands.
-_ENV_GUARD_MATCHER = "Read|Bash"
+# The env-guard covers the built-in Read and Grep tools and Bash commands.
+_ENV_GUARD_MATCHER = "Read|Bash|Grep"
+
+# Built-in tools whose output can carry file content but cannot be rewritten
+# after the fact (PostToolUse only replaces MCP output): Read, a content-mode
+# Grep, and the snippet an Edit/MultiEdit result echoes back.
+_READ_GUARD_MATCHER = "Read|Grep|Edit|MultiEdit"
 
 # All cloaking hook commands share this marker so uninstall can find them.
 _MARKER = "prismor/runtime/cloaking/hooks/"
@@ -124,6 +129,21 @@ def _merge_claude_entries(
         existing_hooks.append(hook)
     existing["hooks"] = _dedupe_hook_list(existing_hooks)
     return next_entries
+
+
+def _drop_managed(entries: List[Dict[str, Any]], script: Path, keep_matcher: str) -> List[Dict[str, Any]]:
+    """``entries`` without ``script``'s hook under any other matcher, so a
+    widened matcher replaces the old one on re-install instead of running the
+    hook twice. Blocks left with no hooks are dropped."""
+    out = []
+    for e in entries:
+        if e.get("matcher") != keep_matcher:
+            hooks = [h for h in e.get("hooks", []) if _managed_hook_name(h.get("command")) != script.name]
+            if not hooks and e.get("hooks"):
+                continue
+            e = {**e, "hooks": hooks}
+        out.append(e)
+    return out
 
 
 def _hook_entry(script: Path) -> Dict[str, Any]:
@@ -225,10 +245,10 @@ def install(
     # Read has no post-hoc output scrub, so containment means blocking the read.
     if enable_read_guard:
         hooks["PreToolUse"] = _merge_claude_entries(
-            hooks.get("PreToolUse", []),
-            {"matcher": "Read", "hooks": [_hook_entry(_READ_GUARD)]},
+            _drop_managed(hooks.get("PreToolUse", []), _READ_GUARD, _READ_GUARD_MATCHER),
+            {"matcher": _READ_GUARD_MATCHER, "hooks": [_hook_entry(_READ_GUARD)]},
         )
-        installed.append("PreToolUse:Read (read-guard)")
+        installed.append(f"PreToolUse:{_READ_GUARD_MATCHER} (read-guard)")
 
     # PreToolUse: deny content access to env files with unimported entries.
     # The deny reason routes the model to `prismor cloak add --env-file`, which
@@ -236,7 +256,7 @@ def install(
     # read-guard and the decloak output scrub take over and this hook no-ops.
     if enable_env_guard:
         hooks["PreToolUse"] = _merge_claude_entries(
-            hooks.get("PreToolUse", []),
+            _drop_managed(hooks.get("PreToolUse", []), _ENV_GUARD, _ENV_GUARD_MATCHER),
             {"matcher": _ENV_GUARD_MATCHER, "hooks": [_hook_entry(_ENV_GUARD)]},
         )
         installed.append(f"PreToolUse:{_ENV_GUARD_MATCHER} (env-guard)")

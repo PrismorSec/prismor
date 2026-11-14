@@ -1380,6 +1380,21 @@ _PORTABLE_TEMPLATE = (
 )
 
 
+def _quote_path(path: object, *, powershell: bool = False) -> str:
+    """A path as one shell word. Plain paths keep the historical ``"path"``
+    form; a path with characters the shell expands inside double quotes (a
+    directory named ``$(...)``) is quoted so it stays data."""
+    text = str(path)
+    if not _IS_WINDOWS:
+        return f'"{text}"' if not set(text) & set('$`\\"!') else shlex.quote(text)
+    if powershell:
+        return f'"{text}"' if not set(text) & set('$`"') else "'" + text.replace("'", "''") + "'"
+    # cmd.exe (or Git Bash, for Claude Code): no quoting holds for both.
+    if set(text) & set('%$`"!'):
+        raise ValueError(f"cannot install a hook for a path with shell characters (% $ ` \" !): {text}")
+    return f'"{text}"'
+
+
 def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: str, pin_workspace: bool = True, portable: bool = False, shim_home: Optional[Path] = None) -> str:
     if portable:
         return _PORTABLE_TEMPLATE.format(agent=agent, mode=mode)
@@ -1389,8 +1404,10 @@ def _dispatcher_command(*, repo_root: Path, workspace: Path, agent: str, mode: s
     # IDE/agent's hook environment.
     py = sys.executable or "python3"
     shim = _write_dispatch_shim(repo_root, shim_home)
-    ws_flag = f'--workspace "{workspace}" ' if pin_workspace else ""
-    command = f'"{py}" "{shim}" hook-dispatch --agent {agent} {ws_flag}--mode {mode}'
+    ps = _IS_WINDOWS and agent in _POWERSHELL_HOOK_AGENTS
+    q = lambda p: _quote_path(p, powershell=ps)  # noqa: E731
+    ws_flag = f'--workspace {q(workspace)} ' if pin_workspace else ""
+    command = f'{q(py)} {q(shim)} hook-dispatch --agent {agent} {ws_flag}--mode {mode}'
     if _IS_WINDOWS and agent in _POWERSHELL_HOOK_AGENTS:
         return _POWERSHELL_PREFIX + command + _POWERSHELL_SUFFIX
     return command

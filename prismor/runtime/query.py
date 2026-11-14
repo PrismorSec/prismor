@@ -9,6 +9,12 @@ every string cell is passed through the cloak/data-boundary redactor before
 it is printed — event rows carry raw command and content text, and a wide
 SELECT would otherwise hand an agent whatever the first pass of redaction
 missed.
+
+Redacting result cells alone is not enough: ``hex(command_text)`` or
+``substr()`` reshapes a secret so the redactor no longer recognises it. So the
+query runs against TEMP views (same names, shadowing the tables) whose text
+columns are redacted *before* any SQL function sees them, and an authorizer
+refuses direct reads of ``main.<table>`` that do not go through a view.
 """
 from __future__ import annotations
 
@@ -69,8 +75,10 @@ def run_query(
         raise QueryError("one statement per query")
     if not db_path.exists():
         raise QueryError(f"no store at {db_path} — run an agent through Prismor first")
-    conn = _connect(db_path)
+    conn = _connect(db_path, query_only=not redact)
     try:
+        if redact:
+            _install_redacted_views(conn, _redactor(workspace))
         try:
             cur = conn.execute(stmt)
         except sqlite3.Error as exc:
@@ -85,16 +93,48 @@ def run_query(
     return out
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+def _connect(db_path: Path, query_only: bool = True) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.execute("PRAGMA query_only = 1")
+    if query_only:
+        conn.execute("PRAGMA query_only = 1")
     return conn
 
 
-def _redact_rows(rows: List[Dict[str, Any]], workspace: Optional[Path]) -> None:
+# Columns that are keys or timestamps stay raw, so WHERE/JOIN on them keeps
+# using indexes. ponytail: name heuristic; a secret in a session id is not redacted.
+_KEY_COLUMN_RE = re.compile(r"^(id|ts|.*_id|.*_at)$")
+
+
+def _install_redacted_views(conn: sqlite3.Connection, redact: Any) -> None:
+    conn.create_function("_prismor_redact", 1,
+                         lambda v: redact(v) if isinstance(v, str) and v else v, deterministic=True)
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+    for name in tables:
+        cols = []
+        qn = '"' + name.replace('"', '""') + '"'
+        for _, col, ctype, *_ in conn.execute(f"PRAGMA main.table_info({qn})"):  # nosec B608 - quoted identifier from sqlite_master
+            qc = '"' + col.replace('"', '""') + '"'
+            text = "INT" not in (ctype or "").upper() and "REAL" not in (ctype or "").upper()
+            cols.append(f"_prismor_redact({qc}) AS {qc}" if text and not _KEY_COLUMN_RE.match(col) else qc)
+        # Identifiers come from sqlite_master/table_info and are double-quote escaped.
+        conn.execute(f"CREATE TEMP VIEW {qn} AS SELECT {', '.join(cols)} FROM main.{qn}")  # nosec B608
+    conn.execute("PRAGMA query_only = 1")
+    wrapped = frozenset(tables)
+
+    def authorize(action, arg1, arg2, db, view):
+        # A read of a real table must come from one of the views above.
+        if action == sqlite3.SQLITE_READ and db == "main" and view is None and arg1 in wrapped:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+    conn.set_authorizer(authorize)
+
+
+def _redactor(workspace: Optional[Path]) -> Any:
     """Registered secrets and data-boundary values (redact_text), then the
     secret-shaped pattern list the telemetry sinks use in full-capture mode —
     the same two passes a forwarded record gets."""
+    from functools import lru_cache
     from prismor.runtime.redaction import redact_text
     from prismor.runtime.enterprise.telemetry import _compile_scrubbers, scrub
 
@@ -103,11 +143,20 @@ def _redact_rows(rows: List[Dict[str, Any]], workspace: Optional[Path]) -> None:
         scrubbers = _compile_scrubbers(all_patterns())
     except Exception:
         scrubbers = []
+
+    @lru_cache(maxsize=4096)
+    def redact(v: str) -> str:
+        text, _ = redact_text(v, workspace=workspace)
+        return scrub(text, scrubbers)
+    return redact
+
+
+def _redact_rows(rows: List[Dict[str, Any]], workspace: Optional[Path]) -> None:
+    redact = _redactor(workspace)
     for row in rows:
         for k, v in row.items():
             if isinstance(v, str) and v:
-                text, _ = redact_text(v, workspace=workspace)
-                row[k] = scrub(text, scrubbers)
+                row[k] = redact(v)
 
 
 def format_rows(rows: List[Dict[str, Any]], fmt: str = "json") -> str:

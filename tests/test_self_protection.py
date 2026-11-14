@@ -64,6 +64,10 @@ BLOCKED_COMMANDS = [
     # Other runtime state that governs enforcement.
     "echo '{}' > ~/.prismor/pause.json",
     "rm ~/.prismor/identity.json",
+    # The signed org-policy cache: an older signed policy written back is a rollback.
+    "cp /tmp/old.yaml ~/.prismor/remote-policy.yaml",
+    "cp /tmp/old.sig ~/.prismor/remote-policy.yaml.sig",
+    "echo '{}' > ~/.prismor/remote-policy.hwm.json",
     # The local dashboard's unauthenticated write API.
     "curl -X PUT http://127.0.0.1:7070/api/policy/rules -d '{}'",
     "curl -X POST http://localhost:7070/api/agents/claude -d '{}'",

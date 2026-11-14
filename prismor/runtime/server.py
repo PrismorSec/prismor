@@ -44,7 +44,6 @@ Every request passes ``_request_allowed``: no CORS, a loopback-only Host header
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import json
 import os
 import re
@@ -55,8 +54,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs, unquote, urlsplit
+from urllib.parse import urlparse, parse_qs, unquote
 
+from prismor.runtime.http_gate import browser_gate, is_loopback as _is_loopback
 from prismor.runtime.store import (
     get_aggregate_stats,
     get_sessions_page,
@@ -469,20 +469,6 @@ _SERVER_TOKEN: Optional[str] = None
 _TOKEN_COOKIE = "prismor_dashboard_token"
 
 
-def _is_loopback(host: str) -> bool:
-    host = host.strip("[]")
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _hostname(netloc: str) -> str:
-    return (urlsplit("//" + netloc).hostname or "").lower()
-
-
 def _revocation_state() -> Optional[dict]:
     """The device-revoked marker, or None. Never raises."""
     try:
@@ -611,21 +597,9 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         The API reads agent transcripts and rewrites the security policy, so a
         web page the user happens to have open must not be able to reach it.
         """
-        host = self.headers.get("Host", "")
-        bound = str(self.server.server_address[0])
-        # DNS rebinding: an attacker's hostname resolving to 127.0.0.1 is
-        # same-origin to the browser, so Origin alone can't catch it.
-        if _is_loopback(bound) and not _is_loopback(_hostname(host)):
-            return 403, "forbidden host"
-        # CSRF / cross-origin reads. Our own page is always same-origin.
-        origin = self.headers.get("Origin")
-        if origin is not None and urlsplit(origin).netloc.lower() != host.lower():
-            return 403, "cross-origin request refused"
-        # A link to the dashboard is fine (the page can't read the result);
-        # a script fetch or form post from another site is not.
-        navigation = self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
-        if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none") and not navigation:
-            return 403, "cross-site request refused"
+        refused = browser_gate(self)
+        if refused:
+            return refused
         if _SERVER_TOKEN:
             presented = self._presented_token()
             if not presented or not hmac.compare_digest(presented, _SERVER_TOKEN):

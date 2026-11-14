@@ -29,7 +29,8 @@ Request body (POST /v1/evaluate):
       "explain":    true,                # optional — add a decision trace to the response
                                          # optional — target of the call, read by `when:` rules
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
-      "workspace":  "/path/to/project"   # optional, overrides server default
+      "workspace":  "/path/to/project"   # ignored unless the server allows it
+                                         # (PRISMOR_EVAL_ALLOW_REQUEST_WORKSPACE=1)
     }
 
     X-Prismor-Agent-Name header also accepted (takes precedence over body field).
@@ -57,6 +58,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Dict, Optional
 
+from prismor.runtime.http_gate import browser_gate
 from prismor.runtime.principal import resolve_subject
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.ratelimit import Scope as RateScope
@@ -138,12 +140,19 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+# A tool call plus its arguments; far above any real one, far below a DoS.
+MAX_BODY_BYTES = 12 * 1024 * 1024
+
+
 class EvalHandler(BaseHTTPRequestHandler):
     workspace: Path = Path.cwd()
     # When set, /v1/evaluate requires `Authorization: Bearer <api_key>` — the
     # hosted/exposed mode. /health stays open (liveness probes). Compared
     # constant-time. None (default) preserves the open localhost behavior.
     api_key: Optional[str] = None
+    # The body's "workspace" picks the policy that judges the call, so a caller
+    # must not choose it unless the operator said so. Off by default.
+    allow_request_workspace: bool = False
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # silence per-request logs; server startup message is printed separately
@@ -156,16 +165,41 @@ class EvalHandler(BaseHTTPRequestHandler):
         if self.headers.get("X-Request-ID"):
             self.send_header("X-Request-ID", self.headers["X-Request-ID"])
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity, X-Request-ID")
-        self.end_headers()
+    def parse_request(self) -> bool:
+        # The dashboard's gate, for every method: no CORS, so a web page the
+        # user has open can neither read verdicts nor post forged calls.
+        if not super().parse_request():
+            return False
+        # A caller holding the API key (or Copilot Studio's Entra token) has
+        # proven itself, and may come through a tunnel under another Host.
+        from prismor.runtime import copilot_studio as _cs
+        authed = bool(self.api_key) or (
+            self.path.startswith(_cs.PREFIX) and not _cs.insecure(self.server.server_address[0]))
+        refused = browser_gate(self, check_host=not authed)
+        if refused is None:
+            return True
+        self.close_connection = True  # the unread body would parse as the next request
+        self._send_json({"error": refused[1]}, status=refused[0])
+        return False
+
+    def _read_body(self) -> Optional[bytes]:
+        """The request body, or None after answering 413."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            self._send_json({"error": "payload too large"}, 413)
+            return None
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _workspace_for(self, body: dict) -> Path:
+        ws_str = body.get("workspace") if self.allow_request_workspace else None
+        return Path(ws_str) if ws_str else self.workspace
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
@@ -214,9 +248,11 @@ class EvalHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "unauthorized: missing or invalid API key"}, 401)
                 return
 
-        length = int(self.headers.get("Content-Length", 0))
+        raw = self._read_body()
+        if raw is None:
+            return
         try:
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(raw)
         except Exception as exc:
             self._send_json({"error": f"invalid JSON: {exc}"}, 400)
             return
@@ -232,8 +268,7 @@ class EvalHandler(BaseHTTPRequestHandler):
             # One engine for the request so the optional PII pass sees policy
             # and the data-boundary pass does not rebuild it per string.
             from prismor.runtime.redaction import redact_payload_values
-            ws_str = body.get("workspace")
-            ws = Path(ws_str) if ws_str else self.workspace
+            ws = self._workspace_for(body)
             engine = None
             try:
                 from prismor.runtime.policy_engine import PolicyEngine
@@ -289,9 +324,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         )
         subject = resolve_subject(subject_str)
 
-        # Workspace: prefer body field, then server default
-        ws_str: Optional[str] = body.get("workspace")
-        workspace = Path(ws_str) if ws_str else self.workspace
+        workspace = self._workspace_for(body)
 
         event = _build_event(
             tool_name=tool_name,
@@ -372,7 +405,9 @@ class EvalHandler(BaseHTTPRequestHandler):
         the workspace is always the server's own, as for AuthZEN."""
         from prismor.runtime import copilot_studio as _cs
 
-        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        raw = self._read_body()
+        if raw is None:
+            return
         try:
             body = json.loads(raw) if raw.strip() else {}
         except Exception as exc:
@@ -405,7 +440,6 @@ class EvalHandler(BaseHTTPRequestHandler):
             or self.headers.get("X-Warden-Subject")
             or body.get("subject")
         )
-        ws_str = body.get("workspace")
         event.setdefault("session_id", session_id)
         event.setdefault("agent", agent)
         event.setdefault("agent_event", "PreToolUse")
@@ -417,7 +451,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         try:
             decision = evaluate_tool_call(
                 event=event,
-                workspace=Path(ws_str) if ws_str else self.workspace,
+                workspace=self._workspace_for(body),
                 agent=agent,
                 agent_name=str(body.get("agent_name") or ""),
                 mode=str(body.get("mode") or "enforce"),
@@ -445,6 +479,7 @@ def run_eval_server(
     workspace: Optional[Path] = None,
     api_key: Optional[str] = None,
     identity: Optional[dict] = None,
+    allow_request_workspace: Optional[bool] = None,
 ) -> None:
     """Start the evaluation HTTP server (blocking).
 
@@ -456,6 +491,9 @@ def run_eval_server(
     remote_eval.SERVING = True  # this server IS the evaluator; never forward
     EvalHandler.workspace = ws
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
+    EvalHandler.allow_request_workspace = (
+        allow_request_workspace if allow_request_workspace is not None
+        else os.environ.get("PRISMOR_EVAL_ALLOW_REQUEST_WORKSPACE") == "1")
     # Adapters give up after PRISMOR_EVAL_TIMEOUT (default 5s) and fail closed,
     # so a judge that answers later refuses the call whatever its verdict. A
     # policy's own budget_ms still wins.

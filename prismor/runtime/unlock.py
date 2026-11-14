@@ -225,6 +225,11 @@ def _verify_system_password(password: str) -> bool:
     """
     try:
         if sys.platform == "darwin":
+            # `security -i` parses stdin as a batch and returns the status of
+            # its LAST command, so a newline or quote in the password could
+            # append a command that succeeds. Keep the batch one command long.
+            if any(c in password for c in '"\\\n\r\x00'):
+                return False
             proc = subprocess.run(
                 ["security", "-i", "unlock-keychain"],
                 input=f'unlock-keychain -p "{password}"\n'.encode(),

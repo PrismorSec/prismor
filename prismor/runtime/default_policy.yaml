@@ -1531,6 +1531,10 @@ rules:
       # Other Prismor state an agent has no legitimate reason to rewrite.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
+      # The cached org policy: a validly signed but older policy written back
+      # here (e.g. one carrying device_pause: paused) would be accepted.
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
+      - '(^|/)\.prismor/remote-policy(\.yaml|\.yaml\.sig|\.meta\.json|\.hwm\.json)$'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'

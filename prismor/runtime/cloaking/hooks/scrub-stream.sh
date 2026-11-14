@@ -64,15 +64,22 @@ data="${data%x}"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh" 2>/dev/null \
   || prismor_cloak_event() { :; }
 
+# Longest value first, like scrub_text() in ../runtime.py: when one secret is a
+# prefix of another, replacing the short one first would leave the long one's
+# tail in the output.
 shopt -s nullglob
+names=() reals=()
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
-  name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   _prismor_scrubbable "$real" || continue
+  names+=("$(basename "$secret_file")") reals+=("$real")
+done
+while read -r _ i; do
+  real="${reals[i]}" name="${names[i]}"
   [[ "$data" == *"$real"* ]] || continue
   data="${data//"$real"/@@SECRET:${name}@@}"
   prismor_cloak_event output redacted "${PRISMOR_CLOAK_SESSION:-}" "$name" "" Bash
-done
+done < <(for i in "${!reals[@]}"; do printf '%d %d\n' "${#reals[i]}" "$i"; done | sort -rn)
 
 printf '%s' "$data"
