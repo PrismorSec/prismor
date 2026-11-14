@@ -1,5 +1,10 @@
 # MCP Hub: from server to governed endpoint
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 This guide walks through the console's **MCP Hub**, from adding an MCP server to
 an agent calling it through a governed URL. It uses
 [DeepWiki](https://mcp.deepwiki.com), a public server that needs no key, so

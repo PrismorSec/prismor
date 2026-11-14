@@ -1,5 +1,10 @@
 # Enterprise tool access inventory
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 Managed Prismor runtimes register tool capabilities with the control plane at
 the existing device-authenticated endpoint:
 

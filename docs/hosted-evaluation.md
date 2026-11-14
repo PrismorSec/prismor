@@ -1,5 +1,10 @@
 # Hosted evaluation (enterprise)
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 Agents normally check each tool call against policy on their own machine: the
 Python adapters run the policy engine in-process, and other languages call a
 `prismor eval-server` sidecar. On the enterprise plan, Prismor can run that
