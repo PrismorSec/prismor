@@ -694,6 +694,9 @@ def _verify_signature(payload: bytes, sig_b64: str) -> bool:
     return result.ok
 
 
+_HWM_SKEW_SECONDS = 300
+
+
 def _hwm_path() -> Path:
     return _policy_home() / "remote-policy.hwm.json"
 
@@ -745,7 +748,8 @@ def _signed_binding_ok(parsed: Dict[str, Any]) -> bool:
             hwm = float(json.loads(_hwm_path().read_text(encoding="utf-8")).get("issued_at", 0))
         except (OSError, ValueError, TypeError, AttributeError):
             hwm = 0.0
-        if issued < hwm:
+        # Several console instances sign; tolerate small clock skew between them.
+        if issued < hwm - _HWM_SKEW_SECONDS:
             sys.stderr.write("[prismor] remote policy is older than one already applied — ignoring\n")
             return False
         if issued > hwm:

@@ -50,6 +50,12 @@ def test_older_signed_policy_is_rejected(signer):
     assert signer(_doc(now - 3600, state="paused")) is None
 
 
+def test_small_clock_skew_between_signers_is_tolerated(signer):
+    now = int(time.time())
+    assert signer(_doc(now)) is not None
+    assert signer(_doc(now - 30)) is not None
+
+
 def test_newer_policy_still_applies(signer):
     now = int(time.time())
     assert signer(_doc(now - 10)) is not None
