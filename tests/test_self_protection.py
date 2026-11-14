@@ -264,13 +264,18 @@ class TestSelfProtectionCannotBeSwitchedOff(unittest.TestCase):
 
 class TestContainerBindMountSelfProtection(unittest.TestCase):
     """Bind mounts that expose the host policy must not suppress
-    self-protection findings (issue #898)."""
+    self-protection findings (issues #898, #912)."""
 
     @classmethod
     def setUpClass(cls):
         cls.eng = _engine(_render_selection_policy([]))
 
     _MOUNT_CASES = [
+        (
+            "local substitution in SSH command",
+            "ssh remote \"$(docker run -v .:/h image sh -c "
+            "'echo x > /h/.prismor/policy.yaml')\"",
+        ),
         (
             "volume root bind",
             'docker run -v /:/host image sh -c '
@@ -373,6 +378,12 @@ class TestContainerBindMountSelfProtection(unittest.TestCase):
         ("--mount /tmp", 'docker run --mount type=bind,source=/tmp/x,target=/x image'),
         ("--mount project dir", 'docker run --mount type=bind,source=/Users/dev/proj,target=/x image'),
         ("named volume", 'docker run --mount type=volume,source=vol,target=/x image'),
+        ("short named volume", 'docker run -v vol:/x image'),
+        ("default volume type", 'docker run --mount source=vol,target=/x image'),
+        ("volume type after source", 'docker run --mount source=vol,target=/x,type=volume image'),
+        ("Windows project bind", r'docker run --mount type=bind,source=C:\work,target=/x image'),
+        ("remote policy", 'ssh remote'),
+        ("relative mount on SSH host", 'ssh remote docker run -v .:/h image'),
         ("volume /rootfs", 'docker run -v /rootfs:/x image'),
         ("volume /homework", 'docker run -v /homework:/x image'),
         ("volume project under home", 'docker run -v /home/user/proj:/app image'),
@@ -394,6 +405,27 @@ class TestContainerBindMountSelfProtection(unittest.TestCase):
                 findings = self.eng.evaluate(event, index=0)
                 blocking = should_block(findings, {**PRE, "type": "shell"})
                 self.assertIsNotNone(blocking, f"not blocked: {label}")
+
+    def test_relative_binds_keep_self_protection_but_allow_ordinary_calls(self):
+        prefixes = [
+            'docker run -v .:/h image',
+            'docker run -v "./:/h" image',
+            'podman run --volume ./config:/h image',
+            'nerdctl run --volume=config/:/h image',
+            'docker run -v nested/path:/h image',
+            'docker run --mount type=bind,src=.,target=/h image',
+            'docker run --mount type=bind,source=config,target=/h image',
+            'podman run --mount="source=config,target=/h,type=bind" image',
+        ]
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                command = 'cd ~ && ' + prefix + ' sh -c "echo x > /h/.prismor/policy.yaml"'
+                event = {**PRE, "type": "shell", "command": command}
+                blocking = should_block(self.eng.evaluate(event, index=0), event)
+                self.assertIsNotNone(blocking)
+                self.assertIn(blocking["ruleId"], _SELF_PROTECTION_RULE_IDS)
+                event["command"] = 'cd ~ && ' + prefix + ' sh -c "cat /etc/hostname"'
+                self.assertIsNone(should_block(self.eng.evaluate(event, index=0), event))
 
     def test_container_without_host_mount_is_remote(self):
         command = (

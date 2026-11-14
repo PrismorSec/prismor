@@ -491,13 +491,13 @@ def _is_remote_argument(words: List[str]) -> bool:
 # A bind of this machine's home, policy dir, or root, or chroot of `/`,
 # still reaches THIS install. The payload is not someone else's Prismor.
 # `:/` on its own matches every absolute destination (`-v /tmp:/tmp`).
-# Only a source of `/`, a destination of `/`, or a home / policy mount
-# reaches this install.
+# Relative sources can also expose this install: their working directory is
+# unknown here, so they cannot establish that a policy write is remote.
 def _host_source(c: str) -> str:
     """Bind source that can expose this install: `/`, a home dir or its
     parent (`/home`, `/home/u`, not `/home/u/proj`), the policy dir, or a
-    path we can't resolve statically (`..`, `$VAR`). ``c`` is the class of
-    characters a path may contain in the surrounding flag syntax."""
+    path we can't resolve statically (relative paths, `..`, `$VAR`). ``c``
+    is the class of characters allowed by the surrounding flag syntax."""
     seg = c[:-1] + r"/\\]"  # one path component: c minus separators
     return (
         "(?:"
@@ -508,6 +508,8 @@ def _host_source(c: str) -> str:
         rf"|{c}*/\.prismor{c}*"
         rf"|{c}*\.\.{c}*"
         rf"|{c}*\${c}*"
+        rf"|\.{c}*"
+        rf"|(?![/\\]|[A-Za-z]:){c}*[/\\]{c}*"
         rf"|[A-Za-z]:[\\/]Users(?:[\\/]{seg}*)?[\\/]?"
         rf"|//[A-Za-z]/Users(?:/{seg}*)?/?"
         ")"
@@ -517,7 +519,12 @@ def _host_source(c: str) -> str:
 # `-v SRC:DST`, also clustered short flags (`-itv`). Sources stop at `:`.
 _VOLUME_FLAG = r"(?:(?<![\w-])-[A-Za-z]*v|--volume)(?:=|\s+)[\"']?"
 # `--mount k=v,...` with `src`/`source` anywhere in the list.
-_MOUNT_SOURCE = r"--mount(?:=|\s+)[\"']?(?:[^\s,\"']*,)*(?:src|source)="
+_MOUNT_FLAG = r"--mount(?:=|\s+)[\"']?"
+_MOUNT_FIELDS = r"(?:[^\s,\"']*,)*"
+_MOUNT_SOURCE = _MOUNT_FLAG + _MOUNT_FIELDS + r"(?:src|source)="
+# A bare name is a relative path only for an explicit bind, not a named volume.
+_BIND_SOURCE = (_MOUNT_FLAG + r"(?=" + _MOUNT_FIELDS + r"type=bind(?:[,\s\"']|$))"
+                + _MOUNT_FIELDS + r"(?:src|source)=")
 
 _HOST_POLICY_MOUNT = re.compile(
     r"\b(?:docker|podman|nerdctl)\b[^\n]*"
@@ -525,6 +532,7 @@ _HOST_POLICY_MOUNT = re.compile(
     + _VOLUME_FLAG + _host_source(r"[^\s:\"']") + r"(?::|[\s\"']|$)"
     + r"|" + _VOLUME_FLAG + r"[^\s:\"']*:/(?:[\s\"']|$)"
     + r"|" + _MOUNT_SOURCE + _host_source(r"[^\s,\"']") + r"(?=[,\s\"']|$)"
+    + r"|" + _BIND_SOURCE + r"(?![/\\]|[A-Za-z]:)[^\s,\"']+(?=[,\s\"']|$)"
     + r")"
 )
 _CHROOT_HOST_ROOT = re.compile(r"\bchroot\s+/(?:\s|$)")
@@ -616,8 +624,6 @@ def remote_payload_span(command: str, match_start: int, match_end: int) -> Optio
     """
     if match_start < 0 or match_end > len(command):
         return None
-    if _reaches_host_policy(command):
-        return None
     stdin_payload = _remote_heredoc_payload(command, match_start, match_end)
     if stdin_payload is not None:
         return stdin_payload
@@ -671,6 +677,10 @@ def remote_payload_span(command: str, match_start: int, match_end: int) -> Optio
         except ValueError:
             return None
         if not (words and _is_remote_argument(words)):
+            return None
+        # Mounts in an SSH payload belong to the remote host. Local option
+        # values and substitutions were rejected above before reaching here.
+        if words[0].rsplit("/", 1)[-1] not in ("ssh", "sshpass") and _reaches_host_policy(command):
             return None
         return start + 1, end, _unquote(command[start:end + 1])
     return None
