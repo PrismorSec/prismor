@@ -527,12 +527,20 @@ _HOST_POLICY_MOUNT = re.compile(
     + r")"
 )
 _CHROOT_HOST_ROOT = re.compile(r"\bchroot\s+/(?:\s|$)")
+# Compose declares its mounts in a file, not on the command line (issue
+# #912), so a compose payload can't prove it is remote. Fail closed.
+# ponytail: no compose-file parse; noisy only when the payload itself touches
+# a policy path. Parse `volumes:` with _host_source if that bites.
+_COMPOSE = re.compile(
+    r"\b(?:docker|podman|nerdctl)\b[^\n]*\scompose\s"
+)
 
 
 def _reaches_host_policy(command: str) -> bool:
     return (
         _HOST_POLICY_MOUNT.search(command) is not None
         or _CHROOT_HOST_ROOT.search(command) is not None
+        or _COMPOSE.search(command) is not None
     )
 
 

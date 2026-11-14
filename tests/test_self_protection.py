@@ -409,6 +409,28 @@ class TestContainerBindMountSelfProtection(unittest.TestCase):
                     "container without host mount should be inert",
                 )
 
+    def test_compose_payloads_fail_closed(self):
+        """Compose-file volumes aren't on the command line (issue #912), so
+        compose payloads keep self-protection."""
+        P = 'sh -c "echo x > /h/.prismor/policy.yaml"'
+        for prefix in [
+            "docker compose run svc",
+            "docker compose exec svc",
+            "podman compose run svc",
+        ]:
+            with self.subTest(prefix=prefix):
+                event = {**PRE, "type": "shell", "command": f"{prefix} {P}"}
+                blocking = should_block(self.eng.evaluate(event, index=0), event)
+                self.assertIsNotNone(blocking)
+                self.assertIn(blocking["ruleId"], _SELF_PROTECTION_RULE_IDS)
+        for command in [
+            'docker compose run svc sh -c "cat /etc/hostname"',
+            "kubectl get pods",
+        ]:
+            with self.subTest(command=command):
+                event = {**PRE, "type": "shell", "command": command}
+                self.assertIsNone(should_block(self.eng.evaluate(event, index=0), event))
+
 
 class TestUnblockMessage(unittest.TestCase):
     def test_self_protection_block_points_at_the_unlock_window(self):
