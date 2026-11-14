@@ -177,6 +177,7 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
     os.environ.update(_PRISTINE_ENV)
 
     os.environ["HOME"] = str(_sandbox_home)
+    os.environ.pop("KUBECONFIG", None)  # the dev's kube context can't flip results
     os.environ["PRISMOR_HOME"] = str(tmp_path_factory.mktemp("prismor-home"))
 
     # A module that provisioned its own home at import time keeps it.
