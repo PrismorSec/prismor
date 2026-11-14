@@ -1390,6 +1390,42 @@ def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
     parts = [p for p in _CHAIN_SEP.split(cmd) if p.strip()]
     return bool(parts) and all(_PRISMOR_STATUS_CMD.match(p) for p in parts)
 
+# The agent's own auto-memory: notes it wrote about this project (#915).
+# Descriptive text about secrets ("`.env` reads are blocked", "the scrubber
+# replaces vault values") keyword-scores as credential exfiltration.
+_AGENT_MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory/[^/]+$|/\.codex/memories/[^/]+$")
+_PLAIN_READ_CMD = re.compile(r"^\s*(?:cat|head|tail|less|bat|sed\s+-n\s+\S+)\b((?:\s+(?:-\S+|[^\s;&|`$()<>]+))+)\s*$")
+_GH_VIEW_CMD = re.compile(r"^\s*gh\s+(?:issue|pr)\s+view\b[^;&|`$()<>\n]*$")
+# Something the text could actually send data TO. Issue and PR bodies about
+# the guard quote attack phrases; without a target they are not an attack.
+_EXFIL_TARGET = re.compile(
+    r"\b(?:send|post|upload|forward|transmit|exfiltrat\w*|to)\b[^\n]{0,60}https?://"
+    r"|\b(?:curl|wget|nc|ncat|scp)\s|\b\d{1,3}(?:\.\d{1,3}){3}\b",
+    re.IGNORECASE,
+)
+
+
+def _reads_agent_memory(event: Dict[str, Any]) -> bool:
+    """A completed read whose every file is in the agent's own memory dir."""
+    if str(event.get("agent_event") or "") != "PostToolUse":
+        return False
+    if event.get("type") == "file_read":
+        paths = [str(event.get("path") or "")]
+    elif event.get("type") == "shell":
+        m = _PLAIN_READ_CMD.match(str(event.get("command") or ""))
+        paths = [w for w in (m.group(1).split() if m else []) if not w.startswith("-")]
+    else:
+        return False
+    return bool(paths) and all(
+        _AGENT_MEMORY_PATH.search(os.path.expanduser(p).replace("\\", "/")) for p in paths)
+
+
+def _is_gh_view_output(event: Dict[str, Any]) -> bool:
+    return (str(event.get("agent_event") or "") == "PostToolUse"
+            and event.get("type") == "shell"
+            and _GH_VIEW_CMD.match(str(event.get("command") or "")) is not None)
+
+
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""
 
@@ -3613,6 +3649,12 @@ class PolicyEngine:
         # its own it may block only when several strong signals agree.
         judged = str(getattr(risk, "mode", "")) in ("hybrid_local_llm", "hybrid_api", "local_llm", "api")
         if not judged:
+            # First-party text that only keyword-scores (#915). A model verdict
+            # still stands for both.
+            if _reads_agent_memory(event):
+                return None
+            if _is_gh_view_output(event) and not _EXFIL_TARGET.search(text):
+                block_t = float("inf")  # HIGH at most, never CRITICAL
             block_t = max(block_t, float(cfg.get("heuristic_block_threshold", 0.85)))
         action = "block" if score >= block_t else "warn"
         # A parent's security-analysis brief can quote attack fixtures, as can
