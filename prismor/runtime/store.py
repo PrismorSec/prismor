@@ -645,7 +645,7 @@ def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]
 # SQLite can't ADD COLUMN NOT NULL without a default, and fresh DBs already get
 # the constraint via CREATE TABLE.
 _EXPECTED_COLUMNS: Dict[str, List[tuple]] = {
-    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0")],
+    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0"), ("reported_cost_usd", "REAL")],
     "sessions": [
         ("session_id", "TEXT"), ("agent", "TEXT"), ("agent_name", "TEXT"),
         ("source", "TEXT"), ("workspace_path", "TEXT"), ("repo_url", "TEXT"),
@@ -872,7 +872,8 @@ def initialize_database(workspace: Path) -> Path:
                 output_tokens INTEGER,
                 cache_read_tokens INTEGER,
                 cache_creation_tokens INTEGER,
-                cache_1h_tokens INTEGER DEFAULT 0
+                cache_1h_tokens INTEGER DEFAULT 0,
+                reported_cost_usd REAL
             );
             CREATE TABLE IF NOT EXISTS tool_output_size (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3503,9 +3504,11 @@ def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> int:
 _TOKEN_UPSERT = """
     INSERT INTO token_usage (
         message_id, session_id, workspace_path, ts, model,
-        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
+        reported_cost_usd
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(message_id) DO UPDATE SET
+        reported_cost_usd = COALESCE(excluded.reported_cost_usd, reported_cost_usd),
         input_tokens = MAX(COALESCE(input_tokens, 0), excluded.input_tokens),
         output_tokens = MAX(COALESCE(output_tokens, 0), excluded.output_tokens),
         cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), excluded.cache_read_tokens),
@@ -3515,6 +3518,7 @@ _TOKEN_UPSERT = """
        OR excluded.cache_read_tokens > COALESCE(cache_read_tokens, 0)
        OR excluded.cache_creation_tokens > COALESCE(cache_creation_tokens, 0)
        OR excluded.cache_1h_tokens > COALESCE(cache_1h_tokens, 0)
+       OR (excluded.reported_cost_usd IS NOT NULL AND reported_cost_usd IS NOT excluded.reported_cost_usd)
 """
 
 
@@ -3539,6 +3543,7 @@ def record_token_usages(workspace: Path, session_id: str, rows: List[Dict[str, A
                 r["message_id"], session_id, ws, r.get("ts") or "", r.get("model") or "",
                 r.get("input_tokens") or 0, r.get("output_tokens") or 0, r.get("cache_read_tokens") or 0,
                 r.get("cache_creation_tokens") or 0, r.get("cache_1h_tokens") or 0,
+                r.get("reported_cost_usd"),
             )).rowcount > 0 for r in rows]
             connection.commit()
             return changed
@@ -3600,7 +3605,7 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
             "SELECT session_id, model, COALESCE(input_tokens,0) as input,"  # nosec B608 - only placeholders are interpolated
             "       COALESCE(output_tokens,0) as output, COALESCE(cache_read_tokens,0) as cache_read,"
             "       COALESCE(cache_creation_tokens,0) - COALESCE(cache_1h_tokens,0) as cache_5m,"
-            "       COALESCE(cache_1h_tokens,0) as cache_1h"
+            "       COALESCE(cache_1h_tokens,0) as cache_1h, reported_cost_usd as reported"
             f"  FROM token_usage WHERE session_id IN ({marks})"
             "   AND COALESCE(input_tokens,0) + COALESCE(output_tokens,0) + COALESCE(cache_read_tokens,0)"
             "       + COALESCE(cache_creation_tokens,0) > 0",  # older rows from zero-usage placeholder turns
@@ -3610,7 +3615,8 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
             model = r["model"] or "unknown"
             req = {k: r[k] for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
             entry["turns"] += 1
-            entry["requests"].setdefault(model, []).append(req)
+            # provider-reported USD, when the response carried one
+            entry["requests"].setdefault(model, []).append({**req, "reported": r["reported"]})
             totals = entry["by_model"].setdefault(model, dict.fromkeys(req, 0))
             for k, v in req.items():
                 totals[k] += v
@@ -3628,7 +3634,7 @@ def get_window_token_requests(hours: int, workspace: Optional[Path] = None) -> D
     sql = ("SELECT model, COALESCE(input_tokens,0) as input, COALESCE(output_tokens,0) as output,"
            "       COALESCE(cache_read_tokens,0) as cache_read,"
            "       COALESCE(cache_creation_tokens,0) - COALESCE(cache_1h_tokens,0) as cache_5m,"
-           "       COALESCE(cache_1h_tokens,0) as cache_1h"
+           "       COALESCE(cache_1h_tokens,0) as cache_1h, reported_cost_usd as reported"
            "  FROM token_usage WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)")
     args: List[Any] = [f"-{hours} hours"]
     if workspace:
@@ -3639,7 +3645,7 @@ def get_window_token_requests(hours: int, workspace: Optional[Path] = None) -> D
         for r in conn.execute(sql, args):
             req = {k: r[k] for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
             if any(req.values()):
-                out.setdefault(r["model"] or "unknown", []).append(req)
+                out.setdefault(r["model"] or "unknown", []).append({**req, "reported": r["reported"]})
     except sqlite3.Error:
         return {}
     finally:

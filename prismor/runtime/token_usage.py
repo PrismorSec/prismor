@@ -217,7 +217,8 @@ def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: in
                 "cache_read_tokens": row["cache_read_tokens"], "cache_write_tokens": row["cache_creation_tokens"],
                 "cache_1h_tokens": row["cache_1h_tokens"], "reasoning_tokens": reasoning,
             },
-            "cost_usd": cost_usd(tokens, row["model"], fetch=False),
+            "cost_usd": (row["reported_cost_usd"] if row.get("reported_cost_usd") is not None
+                         else cost_usd(tokens, row["model"], fetch=False)),
             "redacted": True,
         }])
     except Exception:
@@ -269,6 +270,25 @@ def backfill_session(workspace: Path, session_id: str, transcript_path: Optional
 _scanned: Dict[Path, tuple] = {}
 
 
+def _price_requests(model: str, requests: List[Dict[str, Any]]) -> tuple:
+    """(usd or None, source). A provider-reported cost (OpenRouter's
+    ``usage.cost``) is what was charged and wins; other requests are priced at
+    the model's list rate, each at its own long-context tier. ``source`` is
+    reported, openrouter, litellm, override, snapshot, or mixed."""
+    rate = price_for(model)
+    usd, sources = 0.0, set()
+    for r in requests:
+        if r.get("reported") is not None:
+            usd += float(r["reported"])
+            sources.add("reported")
+        elif rate is not None:
+            usd += request_cost(r, rate)
+            sources.add(rate.get("source") or "list")
+    if not sources:
+        return None, None
+    return usd, sources.pop() if len(sources) == 1 else "mixed"
+
+
 def token_stats(workspace: Optional[Path] = None, hours: int = 24) -> Dict[str, Any]:
     """``store.get_token_stats`` after backfilling every session active in the
     window. Hooks record only the turn before each tool call, so without this
@@ -278,14 +298,13 @@ def token_stats(workspace: Optional[Path] = None, hours: int = 24) -> Dict[str, 
     stats = store.get_token_stats(workspace, hours=hours)
     by_model, total, unpriced = [], 0.0, []
     for model, requests in store.get_window_token_requests(hours, workspace).items():
-        rate = price_for(model)
-        usd = None if rate is None else sum(request_cost(r, rate) for r in requests)
+        usd, source = _price_requests(model, requests)
         if usd is None:
             unpriced.append(model)
         else:
             total += usd
         sums = {k: sum(r[k] for r in requests) for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
-        by_model.append({"model": model, "turns": len(requests), "usd": usd, **sums})
+        by_model.append({"model": model, "turns": len(requests), "usd": usd, "source": source, **sums})
     by_model.sort(key=lambda m: -(m["usd"] or 0))
     # None, not $0, when nothing could be priced: "unknown" must not read as free.
     stats.update(byModel=by_model, unpriced=unpriced,
@@ -310,16 +329,17 @@ def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True
         if not entry:
             out[sid] = {"known": False, "priced": False, "usd": None}
             continue
-        total, unpriced, cost_by_model = 0.0, [], {}
+        total, unpriced, cost_by_model, sources = 0.0, [], {}, set()
         tokens = {"input": 0, "output": 0, "cache_read": 0, "cache_5m": 0, "cache_1h": 0}
         for model, t in entry["by_model"].items():
             for k in tokens:
                 tokens[k] += t[k]
             # Priced per request at today's rates: long-context tiers depend on
             # each request's size, and a price refresh corrects history too.
-            rate = price_for(model)
-            usd = None if rate is None else sum(request_cost(r, rate) for r in entry["requests"][model])
+            usd, source = _price_requests(model, entry["requests"][model])
             cost_by_model[model] = usd
+            if source:
+                sources.add(source)
             if usd is None:
                 unpriced.append(model)
             else:
@@ -329,6 +349,7 @@ def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True
             "known": True, "priced": priced, "usd": total if priced else None,
             "tokens": tokens, "by_model": entry["by_model"], "cost_by_model": cost_by_model,
             "unpriced": unpriced, "turns": entry["turns"],
+            "source": (sources.pop() if len(sources) == 1 else "mixed") if sources else None,
         }
     return out
 
@@ -394,6 +415,7 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
     # Cached tokens that the provider counts inside the prompt total.
     included = (sub("prompt_tokens_details", "cached_tokens") or sub("input_tokens_details", "cached_tokens")
                 or pick("cachedContentTokenCount"))
+    cost = usage.get("cost")
     thoughts = pick("thoughtsTokenCount")  # Gemini: separate from candidates, billed as output
     reasoning = (sub("completion_tokens_details", "reasoning_tokens")
                  or sub("output_tokens_details", "reasoning_tokens") or thoughts)
@@ -409,6 +431,8 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
             "cache_creation_tokens": pick("cache_creation_input_tokens"),
             "cache_1h_tokens": sub("cache_creation", "ephemeral_1h_input_tokens"),
             "reasoning_tokens": reasoning,
+            # OpenRouter puts the charge on every response (credits are USD).
+            "reported_cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
         }, agent_name=agent_name)
     except Exception:
         pass

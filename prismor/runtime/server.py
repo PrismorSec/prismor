@@ -1486,11 +1486,12 @@ class _DashboardServer(ThreadingHTTPServer):
 
 
 def _warm_dashboard_reads() -> None:
-    """Pay the one-off costs before anyone opens a page: the read index, and
-    the parse of recent shell commands the Files page lists."""
-    from prismor.runtime import devlog
+    """Pay the one-off costs before anyone opens a page: the read index, the
+    parse of recent shell commands the Files page lists, and a price refresh
+    (hooks never fetch prices, so nothing else keeps the cache current)."""
+    from prismor.runtime import devlog, pricing
     from prismor.runtime.store import ensure_read_indexes
-    for step in (ensure_read_indexes, lambda: devlog.files("")):
+    for step in (ensure_read_indexes, lambda: devlog.files(""), lambda: pricing.price_for("", fetch=True)):
         try:
             step()
         except Exception:

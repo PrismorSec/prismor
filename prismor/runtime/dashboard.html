@@ -2251,6 +2251,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tok-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-bottom: 20px; }
   .tok-stats .kpi-big { font-size: 24px; margin: 10px 0 6px; }
   .tok-sub-title { margin: 18px 0 8px; }
+  .tok-src { color: var(--muted); font-size: 11px; }
   .sess-cost { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4px; }
   @media (max-width: 720px) { .tok-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; } }
   .kpi-big { font-size: 32px; font-weight: 500; letter-spacing: -.02em; color: var(--ink); margin: 16px 0 12px; line-height: 1; font-variant-numeric: tabular-nums; }
@@ -3008,7 +3009,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="card-title">Tokens &amp; cost</div>
     <div style="font-size: 12px;color:var(--gray-500);margin:-8px 0 16px" id="tokSub">Loading…</div>
     <div class="tok-stats">
-      <div><div class="kpi-label" title="List price of the tokens below, at the rates Prismor knows for each model. Not your invoice: plans and discounts are not applied.">Est. cost <i class="help">?</i></div><div id="tokUsd" class="kpi-big">-</div><div class="kpi-sub" id="tokUnpriced"></div></div>
+      <div><div class="kpi-label" title="What the provider reported charging (OpenRouter returns it on every response); otherwise the list price: OpenRouter's rate for calls through OpenRouter, the provider's for direct calls. Prices refresh every 12 hours. Not your invoice: plans and discounts are not applied.">Est. cost <i class="help">?</i></div><div id="tokUsd" class="kpi-big">-</div><div class="kpi-sub" id="tokUnpriced"></div></div>
       <div><div class="kpi-label" title="Input, output, cache read and cache write, summed.">Tokens <i class="help">?</i></div><div id="tokTotal" class="kpi-big">-</div><div class="kpi-sub" id="tokTurns"></div></div>
       <div><div class="kpi-label" title="Share of input served from the prompt cache. Cache reads cost about a tenth of fresh input.">Cache hit rate <i class="help">?</i></div><div id="tokCache" class="kpi-big">-</div><div class="kpi-sub" id="tokCacheSub"></div></div>
       <div><div class="kpi-label">Output</div><div id="tokOut" class="kpi-big">-</div><div class="kpi-sub" id="tokIn"></div></div>
@@ -6511,7 +6512,7 @@ async function loadSessionCost(sessionId){
   const t = c.tokens || {}, total = (t.input||0) + (t.output||0) + (t.cache_read||0) + (t.cache_5m||0) + (t.cache_1h||0);
   const el = document.createElement('span');
   el.className = 'sess-cost';
-  el.title = 'Estimated at list prices from this session\'s transcript, subagents included.' +
+  el.title = 'From this session\'s transcript, subagents included. Priced from: ' + (TOK_SOURCE[c.source] || 'list prices') + '.' +
     ((c.unpriced||[]).length ? ' Not priced: ' + c.unpriced.join(', ') : '');
   el.textContent = (c.usd === null ? 'cost unknown' : fmtUsd(c.usd)) + ' · ' + fmtTok(total) + ' tokens · ' +
     fmtNum(c.turns || 0) + ' turn' + (c.turns === 1 ? '' : 's');
@@ -7638,6 +7639,9 @@ function fmtUsd(v){
   return '$' + v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
 }
 let _tokAll = false;
+const TOK_SOURCE = {reported: 'charged, as reported by the provider', openrouter: 'OpenRouter price',
+  litellm: 'provider list price', override: 'your pricing.json', snapshot: 'built-in price snapshot (prices not fetched yet)',
+  mixed: 'reported and list prices'};
 async function loadTokens(){
   const set = (id, html) => { document.getElementById(id).innerHTML = html; };
   try{
@@ -7650,7 +7654,7 @@ async function loadTokens(){
     const unp = d.unpriced || [];
     set('tokUnpriced', unp.length
       ? '<span title="No price known, so not in the total: ' + safeAttr(unp.join(', ')) + '">' + unp.length + ' model' + (unp.length === 1 ? '' : 's') + ' not priced</span>'
-      : 'at list prices');
+      : (models.some(m => m.source === 'reported') ? 'reported and list prices' : 'at list prices'));
     set('tokTotal', fmtTok(d.totalTokens));
     set('tokTurns', fmtNum(d.turns || 0) + ' model turn' + ((d.turns || 0) === 1 ? '' : 's'));
     const inputSide = (d.inputTokens || 0) + (d.cacheReadTokens || 0) + (d.cacheCreationTokens || 0);
@@ -7665,7 +7669,8 @@ async function loadTokens(){
       '<td class="right">' + fmtTok(m.output) + '</td>' +
       '<td class="right">' + fmtTok(m.cache_read) + '</td>' +
       '<td class="right">' + fmtTok((m.cache_5m || 0) + (m.cache_1h || 0)) + '</td>' +
-      '<td class="right">' + (m.usd === null ? '<span title="No price known for this model">–</span>' : fmtUsd(m.usd)) + '</td></tr>').join('')
+      '<td class="right">' + (m.usd === null ? '<span title="No price known for this model">–</span>'
+        : '<span title="' + safeAttr(TOK_SOURCE[m.source] || '') + '">' + fmtUsd(m.usd) + (m.source === 'reported' ? ' <small class="tok-src">reported</small>' : '') + '</span>') + '</td></tr>').join('')
       + moreRow(models.length, all.length, 7, '_tokAll=!_tokAll;loadTokens()', _tokAll)
       : '<tr><td colspan="7" class="empty">No model usage recorded in this window.</td></tr>');
     const off = (d.topOffenders || []).slice(0, OVERVIEW_ROWS);

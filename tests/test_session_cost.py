@@ -180,3 +180,77 @@ def test_token_stats_unknown_cost_is_none(home):
                              cache_read_tokens=0, cache_creation_tokens=0)
     stats = token_usage.token_stats(None, hours=24)
     assert stats["usd"] is None and stats["unpriced"] == ["mystery-model-9"]
+
+
+OPENROUTER_FEED = {"data": [
+    {"id": "moonshotai/kimi-z1", "canonical_slug": "moonshotai/kimi-z1-20261001",
+     "pricing": {"prompt": "0.000002", "completion": "0.00001", "input_cache_read": "0.0000002"}},
+    {"id": "anthropic/claude-zeta-2.5",
+     "pricing": {"prompt": "0.000001", "completion": "0.000005", "input_cache_read": "0.0000001",
+                 "input_cache_write": "0.00000125", "input_cache_write_1h": "0.000002",
+                 "overrides": [{"min_prompt_tokens": 100000, "prompt": "0.000002", "completion": "0.00001"}]}},
+    {"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}},
+]}
+
+
+def _feeds(home, litellm=None, openrouter=None):
+    h = home / "home"
+    h.mkdir(exist_ok=True)
+    if litellm is not None:
+        (h / "pricing-cache.json").write_text(json.dumps(litellm))
+    if openrouter is not None:
+        (h / "openrouter-cache.json").write_text(json.dumps(pricing._reduce_openrouter(openrouter)))
+    pricing._table.cache_clear()
+
+
+def test_openrouter_feed_reduces_to_rates():
+    rates = pricing._reduce_openrouter(OPENROUTER_FEED)
+    assert "openrouter/auto" not in rates                      # -1: price varies per route
+    kimi = rates["moonshotai/kimi-z1"]
+    assert (kimi["input"], kimi["output"], kimi["cache_read"]) == (2.0, 10.0, 0.2)
+    assert rates["moonshotai/kimi-z1-20261001"] is kimi
+    zeta = rates["anthropic/claude-zeta-2.5"]
+    assert zeta["cache_1h"] == 2.0 and zeta["long_context_threshold"] == 99_999
+    assert zeta["input_long_context"] == 2.0 and zeta["source"] == "openrouter"
+
+
+def test_route_picks_the_price_list(home):
+    # LiteLLM lists kimi at the direct provider's price; OpenRouter at what it charges.
+    _feeds(home, litellm={"kimi-z1": {"input": 2.7, "output": 13.5, "cache_read": 0.3, "cache_write": 0}},
+           openrouter=OPENROUTER_FEED)
+    assert pricing.price_for("moonshotai/kimi-z1")["source"] == "openrouter"   # through OpenRouter
+    assert pricing.price_for("kimi-z1")["input"] == 2.7                       # direct
+    assert pricing.price_for("kimi-z1")["source"] == "litellm"
+    assert pricing.price_for("claude-zeta-2.5")["source"] == "openrouter"    # LiteLLM lacks it: filled in
+    (home / "home" / "pricing.json").write_text(json.dumps({"moonshotai/kimi-z1": {
+        "input": 1.0, "output": 1.0, "cache_read": 0, "cache_write": 0}}))
+    pricing._table.cache_clear()
+    assert pricing.price_for("moonshotai/kimi-z1")["source"] == "override"   # yours always wins
+
+
+def test_price_table_reloads_after_ttl(home, monkeypatch):
+    _feeds(home, litellm={"model-q": {"input": 1.0, "output": 1.0, "cache_read": 0, "cache_write": 0}})
+    assert pricing.price_for("model-q")["input"] == 1.0
+    (home / "home" / "pricing-cache.json").write_text(json.dumps(
+        {"model-q": {"input": 3.0, "output": 1.0, "cache_read": 0, "cache_write": 0}}))
+    assert pricing.price_for("model-q")["input"] == 1.0                      # same window: cached
+    now = pricing.time.time()
+    monkeypatch.setattr(pricing.time, "time", lambda: now + pricing.PRICING_TTL_SECONDS)
+    assert pricing.price_for("model-q")["input"] == 3.0                      # next window: reloaded
+
+
+def test_reported_cost_wins_over_list_price(home):
+    from datetime import datetime, timezone
+    _feeds(home, openrouter=OPENROUTER_FEED)
+    ws = home / "ws"
+    ws.mkdir()
+    now = datetime.now(timezone.utc).isoformat()
+    for mid, usage in (("r1", {"prompt_tokens": 1000, "completion_tokens": 100, "cost": 0.5}),
+                       ("r2", {"prompt_tokens": 1000, "completion_tokens": 100})):
+        token_usage.record_llm_usage(workspace=ws, session_id="s6", agent="prismor-proxy",
+                                     model="moonshotai/kimi-z1", usage=usage, message_id=mid, ts=now)
+    cost = token_usage.session_cost(ws, "s6")
+    assert cost["usd"] == pytest.approx(0.5 + (1000 * 2 + 100 * 10) / 1e6)
+    assert cost["source"] == "mixed"
+    model = token_usage.token_stats(None, hours=1)["byModel"][0]
+    assert model["source"] == "mixed" and model["usd"] == pytest.approx(cost["usd"])

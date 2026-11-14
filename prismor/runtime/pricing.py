@@ -6,7 +6,11 @@ rate (defaults to 2x input when absent). Unknown model -> ``None`` (never $0) so
 
 Rates refresh from LiteLLM's public price file at most once per 12 hours
 (cached at ``$PRISMOR_HOME/pricing-cache.json``; set ``PRISMOR_PRICING_OFFLINE=1``
-to never fetch). Override or extend with ``$PRISMOR_HOME/pricing.json``
+to never fetch). OpenRouter's model list is a second feed (``openrouter-cache.json``):
+its rates price a provider-prefixed id (``moonshotai/kimi-k3``), the form
+OpenRouter traffic carries, at what OpenRouter charges, and fill in models the
+LiteLLM file does not list yet. Direct provider traffic keeps LiteLLM's list
+price. Every rate carries ``source`` so a cost can say where it came from. Override or extend with ``$PRISMOR_HOME/pricing.json``
 ({model: {input, output, cache_read, cache_write, cache_1h}}, USD per 1M).
 Long-context tiers: ``long_context_threshold`` plus ``<bucket>_long_context``
 rates price a whole request when its input (cache reads and writes included)
@@ -24,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 PRICING_URL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 PRICING_TTL_SECONDS = 12 * 3600
 PRICING_TIMEOUT_SECONDS = 5
 
@@ -114,15 +119,56 @@ def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
     return out
 
 
+_OR_FIELDS = {"prompt": "input", "completion": "output", "input_cache_read": "cache_read",
+              "input_cache_write": "cache_write", "input_cache_write_1h": "cache_1h"}
+
+
+def _reduce_openrouter(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """OpenRouter /api/v1/models (USD per token, as strings) -> per-1M rates
+    keyed by the lowercased ``vendor/model`` id and its dated canonical slug.
+    A ``min_prompt_tokens`` override is the long-context tier."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for model in (raw or {}).get("data") or []:
+        pricing = (model or {}).get("pricing") or {}
+
+        def per_m(block: Dict[str, Any], field: str) -> Optional[float]:
+            try:
+                value = float(block.get(field))
+            except (TypeError, ValueError):
+                return None
+            return round(value * 1_000_000, 6) if value >= 0 else None  # -1: varies per route
+
+        rate: Dict[str, Any] = {ours: per_m(pricing, theirs) for theirs, ours in _OR_FIELDS.items()}
+        if rate["input"] is None or rate["output"] is None:
+            continue
+        rate = {k: (v or 0.0) for k, v in rate.items() if v is not None or k in ("cache_read", "cache_write")}
+        for tier in pricing.get("overrides") or []:
+            if isinstance(tier, dict) and tier.get("min_prompt_tokens"):
+                rate["long_context_threshold"] = int(tier["min_prompt_tokens"]) - 1  # request_cost uses ">"
+                for theirs, ours in _OR_FIELDS.items():
+                    if per_m(tier, theirs) is not None:
+                        rate[ours + "_long_context"] = per_m(tier, theirs)
+                break
+        rate["source"] = "openrouter"
+        for key in (model.get("id"), model.get("canonical_slug")):
+            if key and "/" in key:
+                out.setdefault(str(key).lower(), rate)
+    return out
+
+
 def _fetch_litellm(cache: Path) -> Dict[str, Dict[str, float]]:
+    return _fetch_feed(PRICING_URL, cache, _reduce_litellm)
+
+
+def _fetch_feed(url: str, cache: Path, reduce: Any) -> Dict[str, Dict[str, Any]]:
     """Cached fetch: reuse the cache while it is younger than the TTL, refetch
     otherwise, and keep serving a stale cache when the network is down."""
     fresh = cache.is_file() and time.time() - cache.stat().st_mtime < PRICING_TTL_SECONDS
     if not fresh and not os.environ.get("PRISMOR_PRICING_OFFLINE"):
         try:
             import urllib.request
-            with urllib.request.urlopen(PRICING_URL, timeout=PRICING_TIMEOUT_SECONDS) as resp:  # fixed or operator-configured URL  # nosec B310
-                table = _reduce_litellm(json.loads(resp.read().decode("utf-8")))
+            with urllib.request.urlopen(url, timeout=PRICING_TIMEOUT_SECONDS) as resp:  # fixed URL  # nosec B310
+                table = reduce(json.loads(resp.read().decode("utf-8")))
             cache.parent.mkdir(parents=True, exist_ok=True)
             cache.write_text(json.dumps(table), encoding="utf-8")
             return table
@@ -134,32 +180,53 @@ def _fetch_litellm(cache: Path) -> Dict[str, Dict[str, float]]:
         return {}
 
 
-@lru_cache(maxsize=2)
-def _table(fetch: bool = True) -> Dict[str, Dict[str, float]]:
-    """static snapshot < LiteLLM feed (12h cache) < $PRISMOR_HOME/pricing.json
+def _table(fetch: bool = True) -> Dict[str, Dict[str, Any]]:
+    """The price table, rebuilt once per TTL window: a long-running process
+    (the dashboard) used to keep the first table it loaded until restart."""
+    return _load_table(fetch, int(time.time() // PRICING_TTL_SECONDS))
 
-    ``fetch=False`` reads the cache but never hits the network: for hook paths,
-    where a tool call must not wait on a price refresh."""
-    table = dict(PRICES)
+
+@lru_cache(maxsize=4)
+def _load_table(fetch: bool, _window: int) -> Dict[str, Dict[str, Any]]:
+    """snapshot < OpenRouter fill-ins < LiteLLM feed < OpenRouter vendor/model ids
+    < $PRISMOR_HOME/pricing.json. Both feeds are cached for 12h.
+
+    ``fetch=False`` reads the caches but never hits the network: for hook
+    paths, where a tool call must not wait on a price refresh."""
+    table: Dict[str, Dict[str, Any]] = {k: {**v, "source": "snapshot"} for k, v in PRICES.items()}
     try:
         from prismor.runtime.store import prismor_home
         home = prismor_home()
     except Exception:
         return table
-    cache = home / "pricing-cache.json"
-    if fetch:
-        table.update(_fetch_litellm(cache))
-    else:
+
+    def feed(url: str, name: str, reduce: Any) -> Dict[str, Dict[str, Any]]:
+        cache = home / name
+        if fetch:
+            return _fetch_feed(url, cache, reduce)
         try:
-            table.update(json.loads(cache.read_text(encoding="utf-8")))
+            return json.loads(cache.read_text(encoding="utf-8"))
         except Exception:
-            pass
+            return {}
+
+    openrouter = feed(OPENROUTER_URL, "openrouter-cache.json", _reduce_openrouter)
+    for key, rate in openrouter.items():  # models LiteLLM does not list yet
+        table.setdefault(normalize_model(key), rate)
+    table.update({k: {"source": "litellm", **v} for k, v in
+                  feed(PRICING_URL, "pricing-cache.json", _reduce_litellm).items()})
+    table.update(openrouter)              # vendor/model ids: what OpenRouter charges
     try:
         override = json.loads((home / "pricing.json").read_text(encoding="utf-8"))
-        table.update({normalize_model(str(k)): v for k, v in override.items() if isinstance(v, dict)})
+        for k, v in override.items():
+            if isinstance(v, dict):  # both forms, so an override also beats a vendor/model rate
+                for key in {str(k).lower(), normalize_model(str(k))}:
+                    table[key] = {**v, "source": "override"}
     except Exception:
         pass
     return table
+
+
+_table.cache_clear = _load_table.cache_clear  # type: ignore[attr-defined]  # tests reset prices
 
 
 def normalize_model(model: str) -> str:
@@ -181,9 +248,10 @@ _DATE = re.compile(r"\d{4}-\d{2}-\d{2}")    # gpt-4o-2024-08-06
 
 def price_for(model: str, fetch: bool = True) -> Optional[Dict[str, float]]:
     table = _table(fetch)
-    exact = (model or "").lower().split("/")[-1]
+    full = (model or "").lower()
+    exact = full.split("/")[-1]
     m = normalize_model(model or "")
-    for key in (exact, m):
+    for key in (full, exact, m):
         if key in table:
             return table[key]
     # Prefix fallback only at a "-" boundary and only for a same-model suffix
