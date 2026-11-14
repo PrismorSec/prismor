@@ -3619,6 +3619,34 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
     return out
 
 
+def get_window_token_requests(hours: int, workspace: Optional[Path] = None) -> Dict[str, List[Dict[str, int]]]:
+    """{model: [per-request buckets]} for turns in the last ``hours``, so each
+    request can be priced at its own long-context tier."""
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return {}
+    sql = ("SELECT model, COALESCE(input_tokens,0) as input, COALESCE(output_tokens,0) as output,"
+           "       COALESCE(cache_read_tokens,0) as cache_read,"
+           "       COALESCE(cache_creation_tokens,0) - COALESCE(cache_1h_tokens,0) as cache_5m,"
+           "       COALESCE(cache_1h_tokens,0) as cache_1h"
+           "  FROM token_usage WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)")
+    args: List[Any] = [f"-{hours} hours"]
+    if workspace:
+        sql += " AND workspace_path IN (?, ?)"
+        args += [canonical_workspace_path(workspace), str(workspace)]
+    out: Dict[str, List[Dict[str, int]]] = {}
+    try:
+        for r in conn.execute(sql, args):
+            req = {k: r[k] for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
+            if any(req.values()):
+                out.setdefault(r["model"] or "unknown", []).append(req)
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return out
+
+
 def get_active_sessions(hours: int) -> List[tuple]:
     """(session_id, workspace_path) for sessions updated in the last ``hours``."""
     conn = _connect_ro(prismor_home() / "prismor.db")

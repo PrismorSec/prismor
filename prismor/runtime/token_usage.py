@@ -275,7 +275,23 @@ def token_stats(workspace: Optional[Path] = None, hours: int = 24) -> Dict[str, 
     the totals run 10-20% behind the transcripts and miss subagents entirely."""
     for sid, ws in store.get_active_sessions(hours):
         backfill_session(Path(ws) if ws else (workspace or Path.cwd()), sid)
-    return store.get_token_stats(workspace, hours=hours)
+    stats = store.get_token_stats(workspace, hours=hours)
+    by_model, total, unpriced = [], 0.0, []
+    for model, requests in store.get_window_token_requests(hours, workspace).items():
+        rate = price_for(model)
+        usd = None if rate is None else sum(request_cost(r, rate) for r in requests)
+        if usd is None:
+            unpriced.append(model)
+        else:
+            total += usd
+        sums = {k: sum(r[k] for r in requests) for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
+        by_model.append({"model": model, "turns": len(requests), "usd": usd, **sums})
+    by_model.sort(key=lambda m: -(m["usd"] or 0))
+    # None, not $0, when nothing could be priced: "unknown" must not read as free.
+    stats.update(byModel=by_model, unpriced=unpriced,
+                 usd=total if len(unpriced) < len(by_model) else None,
+                 turns=sum(m["turns"] for m in by_model))
+    return stats
 
 
 def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True) -> Dict[str, Dict[str, Any]]:

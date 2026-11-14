@@ -2248,6 +2248,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .kpi-strip > div { padding: 28px 28px 30px; border-left: 1px solid var(--hairline); min-width: 0; }
   .kpi-strip > div:first-child { border-left: none; padding-left: 0; }
+  .tok-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; margin-bottom: 20px; }
+  .tok-stats .kpi-big { font-size: 24px; margin: 10px 0 6px; }
+  .tok-sub-title { margin: 18px 0 8px; }
+  .sess-cost { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; margin-left: 4px; }
+  @media (max-width: 720px) { .tok-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; } }
   .kpi-big { font-size: 32px; font-weight: 500; letter-spacing: -.02em; color: var(--ink); margin: 16px 0 12px; line-height: 1; font-variant-numeric: tabular-nums; }
   .kpi-sub, .kpi-strip .kpi-delta { font-size: 13px; color: var(--muted); margin-top: 0; }
   .kpi-strip .kpi-delta .up { color: var(--bad); } .kpi-strip .kpi-delta .down { color: var(--ok); }
@@ -2995,6 +3000,30 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
           <tr><th>Session</th><th>Agent</th><th>Status</th><th>Last Active</th></tr>
         </thead>
         <tbody id="ovSessBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card" id="tokCard">
+    <div class="card-title">Tokens &amp; cost</div>
+    <div style="font-size: 12px;color:var(--gray-500);margin:-8px 0 16px" id="tokSub">Loading…</div>
+    <div class="tok-stats">
+      <div><div class="kpi-label" title="List price of the tokens below, at the rates Prismor knows for each model. Not your invoice: plans and discounts are not applied.">Est. cost <i class="help">?</i></div><div id="tokUsd" class="kpi-big">-</div><div class="kpi-sub" id="tokUnpriced"></div></div>
+      <div><div class="kpi-label" title="Input, output, cache read and cache write, summed.">Tokens <i class="help">?</i></div><div id="tokTotal" class="kpi-big">-</div><div class="kpi-sub" id="tokTurns"></div></div>
+      <div><div class="kpi-label" title="Share of input served from the prompt cache. Cache reads cost about a tenth of fresh input.">Cache hit rate <i class="help">?</i></div><div id="tokCache" class="kpi-big">-</div><div class="kpi-sub" id="tokCacheSub"></div></div>
+      <div><div class="kpi-label">Output</div><div id="tokOut" class="kpi-big">-</div><div class="kpi-sub" id="tokIn"></div></div>
+    </div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Model</th><th class="right">Turns</th><th class="right">Input</th><th class="right">Output</th><th class="right">Cache read</th><th class="right">Cache write</th><th class="right">Est. cost</th></tr></thead>
+        <tbody id="tokModelBody"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <div class="kpi-label tok-sub-title" title="Approximate: characters of tool output divided by four. Works for every agent, including ones Prismor cannot read real usage for.">Largest tool outputs · approx. <i class="help">?</i></div>
+    <div style="overflow-x:auto">
+      <table>
+        <thead><tr><th>Tool</th><th>Target</th><th class="right">~Tokens</th></tr></thead>
+        <tbody id="tokOffBody"></tbody>
       </table>
     </div>
   </div>
@@ -6440,6 +6469,7 @@ async function openSessionView(sessionId, workspace, isBack){
     _sessionViewState.data = data;
     renderSessionView(data);
     renderSessionExtensions();
+    loadSessionCost(sessionId);
   } catch(e){
     document.getElementById('sessFlowCanvas').innerHTML = '<div class="flow-empty" style="color:#b91c1c">Failed to load session: '+safe(e.message)+'</div>';
   }
@@ -6473,6 +6503,19 @@ function renderSessionView(data){
   const interesting = trail.map((e,i)=>({i,v:flowVerdict(e)})).filter(o=>o.v!=='allow');
   if (interesting.length) selectFlowNode(interesting[interesting.length-1].i);
   else renderNodePanelDefault(data);
+}
+async function loadSessionCost(sessionId){
+  let c;
+  try { c = await apiFetch('/api/tokens?session=' + encodeURIComponent(sessionId), {timeoutMs: 30000}); } catch (e) { return; }
+  if (_sessionViewState.sessionId !== sessionId || !c || !c.known) return;
+  const t = c.tokens || {}, total = (t.input||0) + (t.output||0) + (t.cache_read||0) + (t.cache_5m||0) + (t.cache_1h||0);
+  const el = document.createElement('span');
+  el.className = 'sess-cost';
+  el.title = 'Estimated at list prices from this session\'s transcript, subagents included.' +
+    ((c.unpriced||[]).length ? ' Not priced: ' + c.unpriced.join(', ') : '');
+  el.textContent = (c.usd === null ? 'cost unknown' : fmtUsd(c.usd)) + ' · ' + fmtTok(total) + ' tokens · ' +
+    fmtNum(c.turns || 0) + ' turn' + (c.turns === 1 ? '' : 's');
+  document.getElementById('sessFlowMeta').appendChild(el);
 }
 async function sessViewAction(action){
   const sid = _sessionViewState.sessionId, ws = _sessionViewState.workspace;
@@ -7582,6 +7625,60 @@ async function loadStats(){
 // ── Top network calls ─────────────────────────────────────────────────────
 // Private destinations are hidden by default: a local dev server outranks real
 // egress on volume, and egress is what this card is for.
+// ── Tokens & cost ─────────────────────────────────────────────────────────
+function fmtTok(n){
+  n = n || 0;
+  if (n >= 1e9) return (n/1e9).toFixed(2).replace(/\.?0+$/,'') + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M';
+  return fmtNum(n);
+}
+function fmtUsd(v){
+  if (v === null || v === undefined) return '–';
+  if (v > 0 && v < 0.01) return '<$0.01';
+  return '$' + v.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+}
+let _tokAll = false;
+async function loadTokens(){
+  const set = (id, html) => { document.getElementById(id).innerHTML = html; };
+  try{
+    const days = document.getElementById('globalDays').value;
+    const d = await apiFetch('/api/tokens?days=' + days, {timeoutMs: 60000});
+    const all = d.byModel || [], models = _tokAll ? all : all.slice(0, OVERVIEW_ROWS);
+    set('tokSub', 'Real usage from Claude Code and Codex transcripts and calls through <code>prismor proxy</code>. ' +
+      'Other agents show only the tool-output estimate below.');
+    set('tokUsd', fmtUsd(d.usd));
+    const unp = d.unpriced || [];
+    set('tokUnpriced', unp.length
+      ? '<span title="No price known, so not in the total: ' + safeAttr(unp.join(', ')) + '">' + unp.length + ' model' + (unp.length === 1 ? '' : 's') + ' not priced</span>'
+      : 'at list prices');
+    set('tokTotal', fmtTok(d.totalTokens));
+    set('tokTurns', fmtNum(d.turns || 0) + ' model turn' + ((d.turns || 0) === 1 ? '' : 's'));
+    const inputSide = (d.inputTokens || 0) + (d.cacheReadTokens || 0) + (d.cacheCreationTokens || 0);
+    set('tokCache', inputSide ? (d.cacheHitRate || 0).toFixed(1) + '%' : '–');
+    set('tokCacheSub', fmtTok(d.cacheReadTokens) + ' read · ' + fmtTok(d.cacheCreationTokens) + ' written');
+    set('tokOut', fmtTok(d.outputTokens));
+    set('tokIn', fmtTok(d.inputTokens) + ' fresh input');
+    set('tokModelBody', models.length ? models.map(m =>
+      '<tr><td><code>' + safe(m.model) + '</code></td>' +
+      '<td class="right">' + fmtNum(m.turns) + '</td>' +
+      '<td class="right">' + fmtTok(m.input) + '</td>' +
+      '<td class="right">' + fmtTok(m.output) + '</td>' +
+      '<td class="right">' + fmtTok(m.cache_read) + '</td>' +
+      '<td class="right">' + fmtTok((m.cache_5m || 0) + (m.cache_1h || 0)) + '</td>' +
+      '<td class="right">' + (m.usd === null ? '<span title="No price known for this model">–</span>' : fmtUsd(m.usd)) + '</td></tr>').join('')
+      + moreRow(models.length, all.length, 7, '_tokAll=!_tokAll;loadTokens()', _tokAll)
+      : '<tr><td colspan="7" class="empty">No model usage recorded in this window.</td></tr>');
+    const off = (d.topOffenders || []).slice(0, OVERVIEW_ROWS);
+    set('tokOffBody', off.length ? off.map(o =>
+      '<tr><td>' + safe(o.tool) + '</td><td><code title="' + safeAttr(o.label) + '">' + safe(shortId(o.label, 60)) + '</code></td>' +
+      '<td class="right">' + fmtTok(o.approxTokens) + '</td></tr>').join('')
+      : '<tr><td colspan="3" class="empty">No tool output recorded in this window.</td></tr>');
+  }catch(e){
+    set('tokSub', 'Failed to load: ' + safe(e.message));
+    set('tokModelBody', '<tr><td colspan="7" class="empty">–</td></tr>');
+  }
+}
+
 let _netCache = null, _netLocal = false;
 async function loadNetworkCalls(){
   try{
@@ -7675,7 +7772,7 @@ async function loadSupplyChain(){
 }
 document.getElementById('globalDays').addEventListener('change',function(){
   _depDays = +this.value || 7;
-  loadStats(); loadSupplyChain(); loadNetworkCalls();
+  loadStats(); loadSupplyChain(); loadNetworkCalls(); loadTokens();
   // Every list follows the same window, so the numbers agree with each other.
   sessState.page = 1; findState.page = 1; evtState.page = 1;
   loadSessions(); loadSessionControl(); loadFindings(); loadEvents(); loadFiles(); loadFriction();
@@ -8861,6 +8958,7 @@ const _bootTasks = [
   loadSupplyChain().then(()   => _loadTick('Supply chain loaded')),
   _afterStats(() => loadFriction()),
   _afterStats(() => loadNetworkCalls()).then(() => _loadTick('Network calls loaded')),
+  _afterStats(() => loadTokens()),
   loadAgents().then(()        => _loadTick('Agents loaded')),
   loadWorkspaces()
     .then(() => Promise.allSettled([loadSessionControl(), loadPolicy()]))
@@ -8883,7 +8981,7 @@ setInterval(() => {
   const pg = document.querySelector('.page.active')?.id || '';
   loadStats(); loadRuntime();
   if (pg === 'page-overview') {
-    loadSessions(); loadSupplyChain(); loadNetworkCalls();
+    loadSessions(); loadSupplyChain(); loadNetworkCalls(); loadTokens();
     if (findState.page===1 && !findState.agent && !findState.severity && !findState.category && !findState.q) loadFindings();
     if (evtState.page===1 && !evtState.verdict && !evtState.agent) loadEvents();
   }

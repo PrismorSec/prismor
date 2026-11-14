@@ -164,4 +164,19 @@ def test_token_stats_backfills_active_sessions(home, monkeypatch):
     monkeypatch.setattr(token_usage.store, "get_active_sessions", lambda hours: [("s4", str(ws))])
     monkeypatch.setattr(token_usage, "find_transcript", lambda sid: transcript)
 
-    assert token_usage.token_stats(None, hours=24)["outputTokens"] == 7
+    stats = token_usage.token_stats(None, hours=24)
+    assert stats["outputTokens"] == 7
+    assert stats["turns"] == 2 and stats["byModel"][0]["model"] == "claude-sonnet-5"
+    assert stats["usd"] == pytest.approx((2 * 2 + 7 * 10) / 1e6)   # sonnet-5: in $2, out $10 per 1M
+
+
+def test_token_stats_unknown_cost_is_none(home):
+    from prismor.runtime import store
+    from datetime import datetime, timezone
+    ws = home / "ws"
+    ws.mkdir()
+    store.record_token_usage(workspace=ws, session_id="s5", ts=datetime.now(timezone.utc).isoformat(),
+                             message_id="u1", model="mystery-model-9", input_tokens=5, output_tokens=5,
+                             cache_read_tokens=0, cache_creation_tokens=0)
+    stats = token_usage.token_stats(None, hours=24)
+    assert stats["usd"] is None and stats["unpriced"] == ["mystery-model-9"]
