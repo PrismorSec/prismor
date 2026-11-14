@@ -112,12 +112,13 @@ def _install_redacted_views(conn: sqlite3.Connection, redact: Any) -> None:
         "SELECT name FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
     for name in tables:
         cols = []
-        for _, col, ctype, *_ in conn.execute(f'PRAGMA main.table_info("{name}")'):
+        qn = '"' + name.replace('"', '""') + '"'
+        for _, col, ctype, *_ in conn.execute(f"PRAGMA main.table_info({qn})"):  # nosec B608 - quoted identifier from sqlite_master
             qc = '"' + col.replace('"', '""') + '"'
             text = "INT" not in (ctype or "").upper() and "REAL" not in (ctype or "").upper()
             cols.append(f"_prismor_redact({qc}) AS {qc}" if text and not _KEY_COLUMN_RE.match(col) else qc)
-        qn = '"' + name.replace('"', '""') + '"'
-        conn.execute(f"CREATE TEMP VIEW {qn} AS SELECT {', '.join(cols)} FROM main.{qn}")
+        # Identifiers come from sqlite_master/table_info and are double-quote escaped.
+        conn.execute(f"CREATE TEMP VIEW {qn} AS SELECT {', '.join(cols)} FROM main.{qn}")  # nosec B608
     conn.execute("PRAGMA query_only = 1")
     wrapped = frozenset(tables)
 

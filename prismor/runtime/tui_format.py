@@ -34,7 +34,7 @@ WHT  = "\033[97m"
 # C0 controls except \t and \n, DEL, C1 controls, and bidi embeddings /
 # overrides / isolates. Any of these in agent- or tool-sourced text can repaint
 # or reorder what a human reads in a terminal.
-_UNSAFE_CHARS_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f‪-‮⁦-⁩]")
+_UNSAFE_CHARS_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 
 def _escape_char(m: "re.Match[str]") -> str:

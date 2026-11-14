@@ -248,8 +248,11 @@ def test_escaped_placeholder_not_substituted():
     res = run_hook(_DECLOAK, bash_payload('echo "@@SECRET\\:CANARY@@"'))
     dec = (res or {}).get("hookSpecificOutput", {}).get("permissionDecision")
     wrapped = (res or {}).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
+    # The wrapper %q-quotes the command, so check what it runs, not its text.
+    out, _ = execute_wrapped('echo "@@SECRET\\:CANARY@@"')
     check("escaped placeholder is not substituted",
-          dec != "deny" and "@@SECRET\\:CANARY@@" in wrapped and _CANARY not in wrapped,
+          dec != "deny" and _CANARY not in wrapped and "@@SECRET\\:CANARY@@" in out
+          and _CANARY not in out,
           str(res))
 
 
@@ -260,7 +263,7 @@ def test_escaped_unregistered_placeholder_not_denied():
     dec = (res or {}).get("hookSpecificOutput", {}).get("permissionDecision")
     wrapped = (res or {}).get("hookSpecificOutput", {}).get("updatedInput", {}).get("command", "")
     check("escaped unregistered placeholder is not denied",
-          dec != "deny" and "@@SECRET\\:NOPE@@" in wrapped,
+          dec != "deny" and "NOPE@@" in wrapped,
           str(res))
 
 
