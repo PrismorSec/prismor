@@ -562,13 +562,17 @@ For a step-by-step walkthrough of the console side, from adding a server to
 an agent calling it, see [MCP Hub](mcp-hub.md).
 
 ```
-<your org's endpoint>/mcp/<key>
+POST <your org's endpoint>/mcp
+Authorization: Bearer <key>
 ```
 
-The console shows the URL once, as a ready-to-run Claude Code command
-(`claude mcp add --transport http prismor <url>`) or as the `.mcp.json` block any
-MCP client reads. The key in the URL *is* the credential: anyone with it can call
-the endpoint's tools, so store it like a secret.
+The console shows the key once, as a ready-to-run Claude Code command
+(`claude mcp add --transport http prismor <endpoint>/mcp --header "Authorization: Bearer <key>"`)
+or as the `.mcp.json` block any MCP client reads. The key *is* the credential:
+anyone with it can call the endpoint's tools, so store it like a secret. It goes
+in a header so it stays out of access logs, shell history and screenshots of
+the URL. Older URLs with the key in the path (`<endpoint>/mcp/<key>`) keep
+working, for clients that can't send headers.
 
 - **Servers.** Remote (HTTPS) servers are called from Prismor's side, and `npx` /
   `uvx` servers run there too, so nothing runs on the laptop. A server that needs

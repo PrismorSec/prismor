@@ -1,8 +1,11 @@
 """AWS Lambda entrypoint for Prismor-hosted MCP endpoints (one function per org).
 
-Serves ``POST /mcp/<key>`` (MCP streamable HTTP, JSON responses) behind a Lambda
-Function URL. The key in the path is a real Prismor agent key: an endpoint
-("Spin up MCP instance") or one person's grant on it. Each request:
+Serves ``POST /mcp`` with ``Authorization: Bearer <key>`` (MCP streamable HTTP,
+JSON responses) behind a Lambda Function URL. ``POST /mcp/<key>``, the key in
+the path, still works for URLs handed out before the header form; a header
+keeps the key out of access logs, shell history and screenshots. The key is a
+real Prismor agent key: an endpoint ("Spin up MCP instance") or one person's
+grant on it. Each request:
 
 1. resolves the key with the control plane (``GET /api/mcp/fleet/resolve``),
    which returns the endpoint's registry servers, with their secrets, and the
@@ -356,14 +359,26 @@ def _parse(event: Dict[str, Any]) -> Tuple[str, str, bytes]:
     return method, path, body
 
 
+def _bearer(event: Dict[str, Any]) -> str:
+    """The key from ``Authorization: Bearer <key>`` (header names in any case)."""
+    for k, v in (event.get("headers") or {}).items():
+        if str(k).lower() == "authorization":
+            scheme, _, token = str(v).strip().partition(" ")
+            return token.strip() if scheme.lower() == "bearer" else ""
+    return ""
+
+
 def handler(event: Dict[str, Any], context: Any = None) -> Dict[str, Any]:
     method, path, body = _parse(event)
     parts = [p for p in path.split("/") if p]
     if parts == ["health"] and method == "GET":
         return _reply(200, {"ok": True, "version": VERSION})
-    if len(parts) != 2 or parts[0] != "mcp" or not parts[1]:
-        return _reply(404, {"error": "prismor hosted MCP: POST /mcp/<key>"})
-    key = parts[1]
+    if not parts or parts[0] != "mcp" or len(parts) > 2:
+        return _reply(404, {"error": "prismor hosted MCP: POST /mcp with Authorization: Bearer <key>"})
+    key = parts[1] if len(parts) == 2 else _bearer(event)
+    if not key:
+        return _reply(401, {"error": "send the endpoint key as Authorization: Bearer <key>"},
+                      {"WWW-Authenticate": "Bearer"})
     if method == "DELETE":  # a client ending its MCP session; the gateway outlives it
         return _reply(204)
     if method != "POST":

@@ -132,26 +132,35 @@ their own tool rules apply. Then click **Create**.
 
 ![Creating docs-research with the cfdocs and deepwiki servers](mcp-hub/spin-up.jpg)
 
-The URL is shown once, as a Claude Code command or an `.mcp.json` block. The
-key in the URL is the credential, so store it like a secret.
+The key is shown once, as a Claude Code command or an `.mcp.json` block. The
+key is the credential, so store it like a secret. It is sent as an
+`Authorization` header, so it stays out of the URL.
 
 ![docs-research is live: the claude mcp add command, with the key masked here](mcp-hub/endpoint-url.jpg)
 
 Connect an agent:
 
 ```bash
-claude mcp add --transport http prismor https://<your-endpoint>/mcp/<key>
+claude mcp add --transport http prismor https://<your-endpoint>/mcp \
+  --header "Authorization: Bearer <key>"
 ```
 
-Any other MCP client takes the same URL:
+Any other MCP client takes the same URL and header:
 
 ```json
 {
   "mcpServers": {
-    "prismor": { "type": "http", "url": "https://<your-endpoint>/mcp/<key>" }
+    "prismor": {
+      "type": "http",
+      "url": "https://<your-endpoint>/mcp",
+      "headers": { "Authorization": "Bearer <key>" }
+    }
   }
 }
 ```
+
+A client that can't send headers can use the older form with the key in the
+path, `https://<your-endpoint>/mcp/<key>`.
 
 The agent now sees one connector with every tool from the endpoint's servers:
 `cfdocs__search_cloudflare_documentation`, `deepwiki__ask_wiki_question`, and
