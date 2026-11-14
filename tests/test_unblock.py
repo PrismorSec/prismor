@@ -156,6 +156,23 @@ class TestSubsystemSteps(unittest.TestCase):
         )
         self.assertIn("prismor scope clear sess-9", joined)
 
+    def test_scoped_agent_hint_says_where_the_scope_came_from(self):
+        """A hand-edited scope was not synthesized and no prompt widens it (#784)."""
+        synthesized = "\n".join(
+            unblock.unblock_steps(_finding(ruleId="scoped-agent", scopeOrigin="llm"), session_id="s")
+        )
+        self.assertIn("synthesized from your prompts", synthesized)
+        self.assertIn("new prompt usually widens it", synthesized)
+
+        operator = "\n".join(
+            unblock.unblock_steps(_finding(ruleId="scoped-agent", scopeOrigin="operator"), session_id="s")
+        )
+        self.assertNotIn("synthesized", operator)
+        self.assertNotIn("usually widens it", operator)
+        self.assertIn("edited by hand", operator)
+        self.assertIn("prismor scope edit s", operator)
+        self.assertIn("prismor scope clear s", operator)
+
     def test_iam_points_at_identity_not_policy(self):
         joined = "\n".join(unblock.unblock_steps(_finding(ruleId="iam"), workspace=Path("/w")))
         self.assertIn("iam.yaml", joined)
