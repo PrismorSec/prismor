@@ -34,3 +34,46 @@ def test_nothing_configured_is_still_bootstrap():
 def test_credentialed_orgs():
     assert credentialed_orgs(CONFIG) == ["org_acme"]
     assert credentialed_orgs({"orgs": {"a": {"api_key": "  "}}}) == []
+
+
+# ── browser gate on the live server ─────────────────────────────────────────
+import http.client  # noqa: E402
+import threading  # noqa: E402
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+import pytest  # noqa: E402
+
+from prismor.runtime.inference_hook_server import InferenceHookHandler  # noqa: E402
+
+
+@pytest.fixture
+def server(tmp_path, monkeypatch):
+    monkeypatch.setattr(InferenceHookHandler, "workspace", tmp_path)
+    monkeypatch.setattr(InferenceHookHandler, "file_config", {})
+    monkeypatch.setattr(InferenceHookHandler, "cli_overrides", {})
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), InferenceHookHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield srv.server_address[1]
+    srv.shutdown()
+
+
+def _post(port, headers):
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    body = json.dumps({"type": "prompt", "request_id": "r", "tenant_id": "", "messages": []})
+    c.request("POST", "/v1/inference-hook", body=body, headers={"Content-Type": "text/plain", **headers})
+    r = c.getresponse()
+    return r.status
+
+
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://evil.example"},
+    {"Origin": "null"},
+    {"Host": "rebind.evil.example"},
+    {"Sec-Fetch-Site": "cross-site"},
+])
+def test_browser_requests_are_refused(server, headers):
+    assert _post(server, headers) == 403
+
+
+def test_webhook_without_origin_still_served(server):
+    assert _post(server, {}) != 403

@@ -77,6 +77,12 @@ def test_legacy_policy_without_signed_block_still_loads(signer):
     assert signer("version: '1.0'\nrules: []\n") is not None
 
 
+def test_unbound_policy_is_refused_once_a_bound_one_was_applied(signer):
+    assert signer(_doc(int(time.time()))) is not None
+    legacy_paused = "version: '1.0'\nsettings:\n  device_pause:\n    state: paused\n"
+    assert signer(legacy_paused) is None
+
+
 def test_cache_files_are_self_protected():
     from pathlib import Path
     text = (Path(rp.__file__).parent.parent / "default_policy.yaml").read_text()

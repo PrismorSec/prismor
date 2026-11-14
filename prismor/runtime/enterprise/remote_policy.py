@@ -726,6 +726,11 @@ def _signed_binding_ok(parsed: Dict[str, Any]) -> bool:
     """
     signed = parsed.get("_signed")
     if signed is None:
+        # Once this device has applied a bound policy, an unbound one can only
+        # be an older replay (the console always binds now): refuse it.
+        if _hwm_path().exists():
+            sys.stderr.write("[prismor] remote policy carries no device binding but a bound one was applied — ignoring\n")
+            return False
         return True
     if not isinstance(signed, dict):
         return False

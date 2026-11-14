@@ -45,6 +45,7 @@ from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Dict, List, Optional, Tuple
 
+from prismor.runtime.http_gate import browser_gate
 from prismor.runtime.inference_hook import (
     AGENT_ID,
     ChannelConfig,
@@ -212,6 +213,31 @@ class InferenceHookHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A002
         pass  # per-request logging belongs in telemetry, not stderr
+
+    def _any_credential(self) -> bool:
+        if credentialed_orgs(self.file_config) or (self.cli_overrides or {}).get("api_key"):
+            return True
+        try:
+            cfg = _env_overrides(resolve_config("", file_config=self.file_config, workspace=self.workspace))
+        except Exception:
+            return False
+        return bool(cfg.is_signed or cfg.api_key)
+
+    def parse_request(self) -> bool:
+        # The dashboard's browser gate: a web page the user has open must not
+        # post frames (forged verdicts, receipts) or read verdicts back. The
+        # webhook sender is not a browser, so it sends no Origin. With a signing
+        # secret configured, callers prove themselves and may arrive through a
+        # tunnel under another Host, so the rebinding check applies only while
+        # the server is still unauthenticated (bootstrap).
+        if not super().parse_request():
+            return False
+        refused = browser_gate(self, check_host=not self._any_credential())
+        if refused is None:
+            return True
+        self.close_connection = True
+        self._send_json({"error": refused[1]}, status=refused[0])
+        return False
 
     # ── plumbing ────────────────────────────────────────────────────────────
 
