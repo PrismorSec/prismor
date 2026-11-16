@@ -66,7 +66,9 @@ def _normalize_remote(url: str) -> Optional[str]:
     if url.endswith(".git"):
         url = url[:-4]
     # git@github.com:acme/repo  ·  https://github.com/acme/repo  ·  ssh://git@host/acme/repo
-    m = re.match(r"(?:git@|https?://|ssh://(?:git@)?)([^/:]+)[:/](.+)", url)
+    # Userinfo (https://user:TOKEN@host/...) is dropped: this value leaves the
+    # machine as `repo`, and must never carry a credential.
+    m = re.match(r"(?:(?:https?|ssh|git)://(?:[^@/]+@)?|[^@/:]+@)([^/:@]+)(?::\d+(?=/))?[:/](.+)", url)
     if m:
         return f"{m.group(1).lower()}/{m.group(2).lower()}"
     return None

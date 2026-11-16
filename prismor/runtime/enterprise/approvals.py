@@ -216,8 +216,8 @@ def enqueue_step_up(
     timeout: float = 2.0,
     tool: str = "",
     agent_name: str = "",
-) -> Optional[str]:
-    """Post an approval request and return immediately with its id (or None).
+) -> "ApprovalOutcome":
+    """Post an approval request and return immediately with its outcome.
 
     The fire-and-forget half of :func:`await_step_up`, for callers that cannot
     hold the action open while a human decides. The hosted inference-hook
@@ -225,15 +225,17 @@ def enqueue_step_up(
     budget, so a STEP_UP is answered ``deny`` *now* and the request is queued
     for the approver to resolve out-of-band (the user retries once granted).
 
-    Never raises and never blocks beyond ``timeout``. Returns None when
-    approvals are off, the box is not enrolled, or the post fails — the caller
-    must still fail closed on its own.
+    The retry re-posts the same fingerprint, and the console answers it with
+    the approval already granted: the outcome is truthy only then. A
+    ``redacted`` approval is not truthy — this path cannot strip values from
+    the call. Never raises and never blocks beyond ``timeout``; approvals off,
+    not enrolled, or a failed post all give a falsy outcome with no id.
     """
     if not finding or not enabled():
-        return None
+        return ApprovalOutcome(False, status="disabled")
     ident = _identity.load_identity()
     if not ident or _identity.revoked_backoff_active():
-        return None  # no control plane to approve through → fail closed
+        return ApprovalOutcome(False, status="not_enrolled")  # no control plane → fail closed
 
     tool = str(tool or finding.get("toolName") or (event or {}).get("type") or "tool")
     body = {
@@ -250,17 +252,14 @@ def enqueue_step_up(
     }
     created = _post_request(ident, body, timeout=timeout)
     approval_id = str(created.get("id")) if created and created.get("id") else None
+    approved = bool(approval_id) and str(created.get("status") or "").lower() == _APPROVED \
+        and _decision_mode(created) != "redacted"
+    status = "approved" if approved else "queued" if approval_id else "request_failed"
     try:
-        _audit_outcome(
-            body,
-            status="queued" if approval_id else "request_failed",
-            approval_id=approval_id,
-            agent=agent,
-            session_id=session_id,
-        )
+        _audit_outcome(body, status=status, approval_id=approval_id, agent=agent, session_id=session_id)
     except Exception:
         pass
-    return approval_id
+    return ApprovalOutcome(approved, approval_id=approval_id, status=status)
 
 
 def await_step_up(

@@ -734,10 +734,15 @@ def _signed_binding_ok(parsed: Dict[str, Any]) -> bool:
         return True
     if not isinstance(signed, dict):
         return False
-    ident = _identity.load_identity() or {}
+    # A system install's non-admin users see only the public identity, and a
+    # $PRISMOR_AGENT_KEY identity carries no ids at all (the console binds them
+    # server-side from the key). Compare only ids this side actually knows; the
+    # issued_at high-water mark below still blocks replays of older policy.
+    ident = _identity.load_identity() or _identity.keyless_identity() or {}
     for field in ("device_id", "org_id"):
         want = signed.get(field)
-        if want is not None and str(want) != str(ident.get(field)):
+        have = ident.get(field)
+        if want is not None and have is not None and str(want) != str(have):
             sys.stderr.write(f"[prismor] remote policy is bound to another {field} — ignoring\n")
             return False
     now = time.time()
