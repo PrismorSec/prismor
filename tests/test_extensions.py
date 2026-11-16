@@ -734,3 +734,19 @@ def test_console_reviews_are_ignored_outside_a_managed_workspace(ws, monkeypatch
         {"kind": "skill", "name": "vendor-ai", "sha256": skill["sha256"]}]}}})
     monkeypatch.setattr(workspace_scope, "is_managed", lambda w_: False)
     assert next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")["status"] != "approved"
+
+
+def test_skills_approve_clears_the_dashboard_review_flag_until_the_skill_changes(ws):
+    # #922: `prismor skills approve` wrote only the skills baseline, so the
+    # dashboard kept showing the reviewed skill as unreviewed.
+    from prismor.runtime.skills_audit import approve_skill
+    ext.sync(ws)
+    skill = Path.home() / ".claude" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(SKILL)
+    row = lambda: next(r for r in ext.overview(ws)["rows"] if r["kind"] == "skill")
+    assert row()["needs_review"]
+    approve_skill(ws, skill)
+    assert not row()["needs_review"]
+    skill.write_text(SKILL + "\nnew line\n")
+    assert row()["needs_review"]
