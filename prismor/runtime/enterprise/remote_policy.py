@@ -501,7 +501,7 @@ def _current_pause_sig() -> str:
         if not isinstance(pause, dict) or not pause:
             return ""
         import hashlib
-        blob = json.dumps(pause, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(pause, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -560,7 +560,7 @@ def _current_self_edit_sig() -> str:
         if not isinstance(rec, dict) or not rec:
             return ""
         import hashlib
-        blob = json.dumps(rec, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(rec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -587,7 +587,7 @@ def _current_egress_sig() -> str:
                 return ""
             egress = {"egress_allowlist": sorted(str(x) for x in legacy)}
         import hashlib
-        blob = json.dumps(egress, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(egress, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -657,7 +657,7 @@ def _current_tool_tags_sig() -> str:
         if not isinstance(tags, dict) or not tags:
             return ""
         import hashlib
-        blob = json.dumps(tags, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(tags, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""

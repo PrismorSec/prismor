@@ -822,7 +822,12 @@ def upload_telemetry(
             )
             return
         _spool.append(batch)
-        if exc.code >= 500:
+        # Over quota (402), too large (413) and rate-limited (429) fail the same
+        # way on the next call: back off like a 5xx instead of re-posting the
+        # spool on every tool call.
+        # ponytail: a 413 batch re-sends whole after backoff; split it if a
+        # proxy body limit (not the 500-event cap) ever triggers this.
+        if exc.code >= 500 or exc.code in (402, 413, 429):
             _spool.note_upload_failure(now)
         raise
     except (urllib.error.URLError, OSError):
