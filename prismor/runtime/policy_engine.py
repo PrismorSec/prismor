@@ -1331,13 +1331,14 @@ class AllowlistEntry:
 # `cloak run` executes everything after it.
 # Unquoted: no glob/brace/tilde chars, or the shell expands the pattern into file args.
 _GREP_WORD = r"[^\s\-;&|`$()<>'\"\\*?\[{~][^\s;&|`$()<>'\"\\*?\[{]*"
+# A tail that only narrows what the command printed: no file, no other command.
+_SAFE_TAIL = (r"(?:\s+2>&1)?(?:\s*\|\s*(?:(?:head|tail)(?:\s+-(?:n\s*)?\d+)?"
+              rf"|grep(?:\s+-[cEFhinovwx]+)*\s+(?:{_GREP_WORD}|'{_GREP_WORD}'|\"{_GREP_WORD}\")))?\s*$")
 _PRISMOR_STATUS_CMD = re.compile(
     r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
     r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
     r"|\s+cloak\s+(?:list|(?:[a-z]+\s+)?(?:--help|-h))|\s+query\s+--schema"
-    r"|\s+(?:--?(?:version|help)|-h))?"
-    r"(?:\s+2>&1)?(?:\s*\|\s*(?:(?:head|tail)(?:\s+-(?:n\s*)?\d+)?"
-    rf"|grep(?:\s+-[cEFhinovwx]+)*\s+(?:{_GREP_WORD}|'{_GREP_WORD}'|\"{_GREP_WORD}\")))?\s*$"
+    r"|\s+(?:--?(?:version|help)|-h))?" + _SAFE_TAIL
 )
 # Commands joined by `;`, `&&` or `||` are exempt only when every one of them is.
 _CHAIN_SEP = re.compile(r";|&&|\|\|")
@@ -1395,7 +1396,8 @@ def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
 # replaces vault values") keyword-scores as credential exfiltration.
 _AGENT_MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory/[^/]+$|/\.codex/memories/[^/]+$")
 _PLAIN_READ_CMD = re.compile(r"^\s*(?:cat|head|tail|less|bat|sed\s+-n\s+\S+)\b((?:\s+(?:-\S+|[^\s;&|`$()<>]+))+)\s*$")
-_GH_VIEW_CMD = re.compile(r"^\s*gh\s+(?:issue|pr)\s+view\b[^;&|`$()<>\n]*$")
+# `| head` / `| grep x` only trims the same issue text, so it keeps the cap (#882).
+_GH_VIEW_CMD = re.compile(r"^\s*gh\s+(?:issue|pr)\s+view\b[^;&|`$()<>\n]*?" + _SAFE_TAIL)
 # Something the text could actually send data TO. Issue and PR bodies about
 # the guard quote attack phrases; without a target they are not an attack.
 _EXFIL_TARGET = re.compile(
