@@ -898,12 +898,36 @@ _ARGV_RUNNERS = _STDOUT_EXECUTORS | frozenset({
     "nohup", "timeout", "nice", "time", "script", "su", "chroot", "docker", "podman",
     "kubectl", "nsenter", "find", "parallel", "watch", "busybox", "expect", "tclsh",
     "awk", "gawk", "make", "npx", "uvx", "pipx", "py",
+    # Run a command named in an option: git -c core.pager= / --upload-pack=,
+    # rsync -e, tar --to-command, scp/sftp -o ProxyCommand, zip -TT.
+    "git", "rsync", "tar", "scp", "sftp", "zip",
 })
 _SUBPROCESS_CALLS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
 _SUBPROCESS_VALUES = frozenset({
     "PIPE", "DEVNULL", "STDOUT", "CalledProcessError", "TimeoutExpired",
     "CompletedProcess", "SubprocessError",
 })
+
+
+def _prismor_module_argv(elts) -> bool:
+    """`[sys.executable, "-m", "prismor.<module>", ...]`: the replay's most
+    common harness shape, feeding a hook payload on stdin. Prismor's own CLI
+    does not run its arguments; any other module or a script path stays live."""
+    import ast
+    if len(elts) < 4:
+        return False
+    a, b, c, d = elts[:4]
+    return (isinstance(a, ast.Attribute) and a.attr == "executable"
+            and isinstance(a.value, ast.Name) and a.value.id == "sys"
+            and isinstance(b, ast.Constant) and b.value == "-m"
+            and isinstance(c, ast.Constant) and c.value in _PRISMOR_CLI_MODULES
+            and isinstance(d, ast.Constant) and d.value in _SCREEN_ONLY_SUBCOMMANDS)
+
+
+# Only subcommands that screen a call and never run one (sandbox, exec-hook,
+# mcp-gateway, proxy do run commands, so they stay live).
+_PRISMOR_CLI_MODULES = frozenset({"prismor.runtime.cli", "prismor.runtime.immunity_cli"})
+_SCREEN_ONLY_SUBCOMMANDS = frozenset({"hook-dispatch", "check", "semantic-check"})
 
 
 def _argv_only_subprocess(body: str, code: str) -> bool:
@@ -940,12 +964,15 @@ def _argv_only_subprocess(body: str, code: str) -> bool:
         if f.attr not in _SUBPROCESS_CALLS or not node.args:
             return False
         argv = node.args[0]
-        if not (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts
-                and isinstance(argv.elts[0], ast.Constant) and isinstance(argv.elts[0].value, str)):
+        if not (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts):
             return False
-        prog = argv.elts[0].value.rsplit("/", 1)[-1]
-        if prog in _ARGV_RUNNERS or _PYTHON_BIN.match(prog):
-            return False
+        if not _prismor_module_argv(argv.elts):
+            first = argv.elts[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                return False
+            prog = first.value.rsplit("/", 1)[-1]
+            if prog in _ARGV_RUNNERS or _PYTHON_BIN.match(prog):
+                return False
         for kw in node.keywords:
             if kw.arg is None or kw.arg == "executable":
                 return False

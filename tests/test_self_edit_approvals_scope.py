@@ -24,6 +24,9 @@ def _home(tmp_path, monkeypatch):
     f"prismor approvals list --all --json > /tmp/x/{NAME}",
     f"python3 /tmp/x/extract.py /tmp/x/{NAME}",
     f"jq '.[] | .status' /var/tmp/audit/{NAME} | sort | uniq -c",
+    # The replayed shape: the scratch dir is a variable the command sets.
+    f"S=/private/tmp/x/fps; mkdir -p $S; prismor approvals list --all --json > $S/{NAME}",
+    f"S=/tmp/x; W=${{S}}/w; python3 e.py $W/{NAME}",
 ])
 def test_scratch_copy_is_inert(cmd):
     assert not _live({"type": "shell", "command": cmd})
@@ -39,6 +42,7 @@ def test_scratch_read_is_inert():
     f"cp /tmp/x/{NAME} $PRISMOR_HOME/",
     f"echo x > {NAME}",                      # relative: cwd may be the home
     f"echo x > $H/{NAME}",                   # unresolved variable
+    f"S=/tmp/x; S=$HOME; echo x > $S/{NAME}",  # reassigned: ambiguous
     f"ln -s /tmp/x/{NAME} /tmp/y/approvals.lock && cat .prismor/x",
 ])
 def test_real_queue_stays_live(cmd):
