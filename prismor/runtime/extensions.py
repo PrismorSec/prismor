@@ -760,6 +760,30 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True,
             if row["kind"] == "skill" and row.get("path"):
                 from prismor.runtime.skills_audit import approve_skill
                 approve_skill(workspace, Path(row["path"]))
+    # `prismor skills approve` writes only the skills baseline; honor it here
+    # too, or the dashboard keeps calling a reviewed skill unreviewed (#922).
+    # The file is re-checked against that baseline, so a later edit still counts.
+    from prismor.runtime import skills_audit as _sa
+    skill_ok = {}
+    for k, v in _sa._load_baseline(workspace).items():
+        if isinstance(v, dict) and v.get("approved"):
+            skill_ok[os.path.realpath(k)] = v
+    for row in rows:
+        b = skill_ok.get(os.path.realpath(row.get("path") or "")) if row["kind"] == "skill" else None
+        if not b or row.get("status") == "approved":
+            continue
+        p = Path(row["path"])
+        try:
+            same = b.get("sha256") == _sa._sha256(p) and b.get("tree_sha256", "") in ("", _sa._tree_sha256(p))
+        except OSError:
+            same = False
+        if not same:
+            continue
+        row["status"] = "approved"
+        if record:
+            entry = items.setdefault(row["id"], {"first_seen": now})
+            entry.update({"sha256": row["sha256"], "approved": True, "approved_at": b.get("approved_at") or now})
+            entry.pop("reported_sha", None)
     for m in moved.values():
         # One record per install or update; what came with it rides in the detail.
         _audit(m["event"], m["row"], session_id, previous_sha256=m.get("previous_sha256"),
