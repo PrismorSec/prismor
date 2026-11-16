@@ -995,7 +995,11 @@ def evaluate_turn(
                     f"(rule {blocking.get('ruleId')})\n"
                 )
         if action in ("step_up", "defer") and config.enqueue_approvals:
-            verdict.approval_id = _enqueue(blocking, session_id=sid)
+            outcome = _enqueue(blocking, session_id=sid)
+            verdict.approval_id = outcome.approval_id if outcome else None
+            if outcome:  # the user's retry, and an approver already said yes
+                verdict.allow = True
+                verdict.reason = None
 
     if config.mode == "observe" and not verdict.allow:
         # Shadow: report what we would have done, let the request through.
@@ -1024,7 +1028,7 @@ def _map_action(action: str, config: ChannelConfig) -> str:
     return "deny"  # block, and anything unrecognized: enforce means stop
 
 
-def _enqueue(finding: Dict[str, Any], *, session_id: str) -> Optional[str]:
+def _enqueue(finding: Dict[str, Any], *, session_id: str) -> Any:
     """Queue a step_up/defer for out-of-band approval. Best-effort by design:
     the turn is already denied, so a failed enqueue costs the user a retry, not
     their safety."""
