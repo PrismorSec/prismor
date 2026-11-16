@@ -886,9 +886,75 @@ def _python_data_body(command: str, h: Heredoc) -> Optional[List[Tuple[int, int]
         if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
             return None
     parsed = _python_tokens(body)
-    if parsed is None or _PY_EXEC.search(parsed[1]):
+    if parsed is None or (_PY_EXEC.search(parsed[1]) and not _argv_only_subprocess(body, parsed[1])):
         return None
     return parsed[0]
+
+
+# argv[0] values that run their arguments (or stdin) as code or as another
+# command, so an argv list starting with one is as live as shell=True.
+_ARGV_RUNNERS = _STDOUT_EXECUTORS | frozenset({
+    "env", "node", "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "osascript",
+    "nohup", "timeout", "nice", "time", "script", "su", "chroot", "docker", "podman",
+    "kubectl", "nsenter", "find", "parallel", "watch", "busybox", "expect", "tclsh",
+    "awk", "gawk", "make", "npx", "uvx", "pipx", "py",
+})
+_SUBPROCESS_CALLS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+_SUBPROCESS_VALUES = frozenset({
+    "PIPE", "DEVNULL", "STDOUT", "CalledProcessError", "TimeoutExpired",
+    "CompletedProcess", "SubprocessError",
+})
+
+
+def _argv_only_subprocess(body: str, code: str) -> bool:
+    """Issue #931: a test harness that feeds attack strings to a hook as DATA,
+    `subprocess.run(["prismor", "check", c], input=...)`. True only when
+    `subprocess` is the sole exec primitive and every use of it is a direct
+    `subprocess.<run|call|...>([<literal non-runner>, ...])` with no shell=,
+    executable= or **kwargs, and the module is imported plainly (no alias, no
+    `from subprocess import`). Anything else -- shell=True, a bash/ssh/python
+    argv, a non-literal argv, os.system, eval -- keeps the body live."""
+    if _PY_EXEC.search(re.sub(r"\bsubprocess\b", " ", code)):
+        return False
+    import ast
+    try:
+        tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return False
+    ok_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            return False
+        if isinstance(node, ast.Import):
+            if any(a.name == "subprocess" and a.asname for a in node.names):
+                return False
+        if (isinstance(node, ast.Attribute) and node.attr in _SUBPROCESS_VALUES
+                and isinstance(node.value, ast.Name) and node.value.id == "subprocess"):
+            ok_names.add(id(node.value))
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                and f.value.id == "subprocess"):
+            continue
+        if f.attr not in _SUBPROCESS_CALLS or not node.args:
+            return False
+        argv = node.args[0]
+        if not (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts
+                and isinstance(argv.elts[0], ast.Constant) and isinstance(argv.elts[0].value, str)):
+            return False
+        prog = argv.elts[0].value.rsplit("/", 1)[-1]
+        if prog in _ARGV_RUNNERS or _PYTHON_BIN.match(prog):
+            return False
+        for kw in node.keywords:
+            if kw.arg is None or kw.arg == "executable":
+                return False
+            if kw.arg == "shell" and not (isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                return False
+        ok_names.add(id(f.value))
+    # Every other reference to the module (`f = subprocess.run`) is unchecked.
+    return all(id(n) in ok_names for n in ast.walk(tree)
+               if isinstance(n, ast.Name) and n.id == "subprocess")
 
 
 def data_heredoc_spans(command: str) -> List[Tuple[int, int]]:

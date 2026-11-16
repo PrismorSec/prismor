@@ -85,6 +85,7 @@ prismor_value_is_cloaked() {
 prismor_scrubbable() {
   local v="$1" n=${#1}
   (( n >= 8 )) || return 1
+  [[ "$v" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] && return 1  # bare origin (#930)
   (( n >= 16 )) && return 0
   [[ "$v" == *[[:digit:]]* ]] && return 0
   [[ "$v" == *[![:alnum:]]* ]] && return 0
