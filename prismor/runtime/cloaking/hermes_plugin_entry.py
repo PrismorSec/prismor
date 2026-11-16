@@ -168,8 +168,8 @@ def _is_scrubbable_secret(value: str) -> bool:
     ordinary text and is skipped. Mirrors is_scrubbable_secret() in runtime.py.
     """
     n = len(value or "")
-    if n < 8:
-        return False
+    if n < 8 or re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?", value):
+        return False  # a bare origin is config, not a credential (#930)
     if n >= 16:
         return True
     return (

@@ -245,6 +245,33 @@ def _throwaway_config_match(command: str, match_text: str, workspace: Optional[P
     return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
 
 
+_APPROVALS_NAME = re.compile(r"approvals\.(?:json|lock|tmp)", re.IGNORECASE)
+_PATH_TOKEN_STOP = " \t\n;&|<>\"'`()="
+
+
+def _foreign_approvals_path(text: str, start: int, end: int) -> bool:
+    """prismor-self-edit on a file merely NAMED approvals.json (issue #928):
+    `prismor approvals list --json > /tmp/x/approvals.json` is a scratch copy,
+    not the queue. Inert only for an absolute path that resolves outside
+    PRISMOR_HOME, and only when the text never names the home at all, so
+    `cp /tmp/x/approvals.json ~/.prismor/` stays live."""
+    if not _APPROVALS_NAME.fullmatch(text[start:end]):
+        return False
+    from prismor.runtime.store import prismor_home
+    from prismor.runtime.paths import is_within
+    home = prismor_home()
+    lowered = text.lower()
+    if ".prismor" in lowered or "prismor_home" in lowered or str(home).lower() in lowered:
+        return False
+    i = start
+    while i > 0 and text[i - 1] not in _PATH_TOKEN_STOP:
+        i -= 1
+    token = text[i:end]
+    if "$" in token or not token.startswith("/"):
+        return False  # relative, ~ or a variable: could be the home
+    return not is_within(token, home)
+
+
 _IPV4 = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 _SSH_FAMILY = frozenset({"ssh", "scp", "sftp", "rsync"})
 
@@ -2488,6 +2515,10 @@ class PolicyEngine:
                             text, text[m.start():m.end()], self.workspace
                         ):
                             return True
+                        if rule.id == "prismor-self-edit" and _foreign_approvals_path(
+                            text, m.start(), m.end()
+                        ):
+                            return True
                         if rule.id == "raw-ip-outbound" and _configured_ssh_ip_match(
                             text[m.start():m.end()]
                         ):
@@ -2581,6 +2612,12 @@ class PolicyEngine:
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False
+            elif event_type in ("file_read", "file_write") and rule.id == "prismor-self-edit":
+                _p = str(event.get("path") or "")
+                _hits = list(rule.patterns.finditer(_p))
+                context_inert = bool(_hits) and all(
+                    _foreign_approvals_path(_p, h.start(), h.end()) for h in _hits
+                )
             elif event_type == "file_write" and rule.id in _CONFIG_GUARD_RULE_IDS:
                 _wpath = str(event.get("path") or "")
                 context_inert = _throwaway_config_path(_wpath, {}, self.workspace)

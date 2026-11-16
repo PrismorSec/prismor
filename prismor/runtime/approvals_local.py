@@ -147,6 +147,10 @@ def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
                 "summary": summary[:4000],
+                # Which pattern fired and on what text (#929), so an audit can
+                # tell a tag-rule false positive from a real catch.
+                "pattern": str(finding.get("pattern") or "")[:500],
+                "evidence": str(finding.get("evidence") or "")[:500],
             }
             state["requests"][rid] = rec
         rec["attempts"] = int(rec.get("attempts", 0)) + 1
@@ -226,6 +230,31 @@ def list_requests(include_done: bool = False) -> List[Dict[str, Any]]:
     return sorted(recs, key=lambda r: float(r.get("created", 0)), reverse=True)
 
 
+def stats(since_days: Optional[float] = None) -> Dict[str, Any]:
+    """Audit numbers for the queue (#929): counts by status, rule and agent,
+    the share that expired unanswered, and the median minutes to a decision.
+    ponytail: only the newest _KEEP records survive pruning, so a long window
+    on a busy machine undercounts; move to the session store if that matters."""
+    import statistics
+    from collections import Counter
+    recs = list_requests(include_done=True)
+    if since_days is not None:
+        cutoff = time.time() - since_days * 86400
+        recs = [r for r in recs if float(r.get("created", 0)) >= cutoff]
+    n = len(recs)
+    status = Counter(r.get("status", "") for r in recs)
+    waits = [(float(r["decided_at"]) - float(r.get("created", 0))) / 60
+             for r in recs if r.get("decided_at") and r.get("status") in ("approved", "denied", "used")]
+    return {
+        "total": n,
+        "by_status": dict(status.most_common()),
+        "by_rule": dict(Counter(r.get("rule", "") for r in recs).most_common()),
+        "by_agent": dict(Counter(r.get("agent", "") for r in recs).most_common()),
+        "expired_share": round(status.get("expired", 0) / n, 3) if n else 0.0,
+        "median_minutes_to_decide": round(statistics.median(waits), 1) if waits else None,
+    }
+
+
 def wait_seconds(agent: str) -> int:
     if agent not in _HOLD_AGENTS:
         return 0
@@ -267,6 +296,12 @@ def _demo() -> None:
     r3 = request(fp, agent="codex", session_id="s", finding={}, summary="")
     assert resolve(fp) and not resolve(fp)  # ran another way: closed once
     assert all(r["id"] != r3["id"] for r in list_requests())
+    r4 = request("fp4", agent="claude", session_id="s",
+                 finding={"ruleId": "t", "pattern": "p", "evidence": "e"}, summary="x")
+    assert (r4["pattern"], r4["evidence"]) == ("p", "e")
+    s = stats()
+    assert s["total"] == 4 and s["by_status"]["pending"] == 1 and s["by_rule"]["r"] == 1
+    assert s["median_minutes_to_decide"] is not None and stats(since_days=0)["total"] == 0
     print("ok")
 
 

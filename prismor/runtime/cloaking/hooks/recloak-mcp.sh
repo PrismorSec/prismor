@@ -41,6 +41,7 @@ _pairs() {
       # word ("ses", "false") is config, and masking it mangled every
       # "session" and boolean in browser/MCP output.
       my $n = length $real;
+      next if $real =~ m{\A[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?\z};  # bare origin (#930)
       next unless $n >= 16 || ($n >= 8 && ($real =~ /[[:digit:]]|[^[:alnum:]]/ || ($real =~ /[[:lower:]]/ && $real =~ /[[:upper:]]/)));
       (my $name = $f) =~ s{.*/}{};
       my $ph = "\@\@SECRET:$name\@\@";

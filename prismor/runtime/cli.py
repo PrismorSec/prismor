@@ -5075,7 +5075,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     approvals_p = subparsers.add_parser(
         "approvals", help="List blocked actions waiting for you; approve or deny one, once")
-    approvals_p.add_argument("action", nargs="?", choices=["list", "approve", "deny"], default="list")
+    approvals_p.add_argument("action", nargs="?", choices=["list", "approve", "deny", "stats"], default="list")
+    approvals_p.add_argument("--since", default="all", help="With stats: window such as 30d, 12h (default: all kept)")
     approvals_p.add_argument("id", nargs="?", help="Request id from the block message")
     approvals_p.add_argument("--all", action="store_true", help="With list: include decided and used requests")
     approvals_p.add_argument("--json", action="store_true", help="Machine-readable output")
@@ -6984,7 +6985,8 @@ def _warn_unscrubbable(name: str, value: str) -> None:
         sys.stderr.write(
             f"warning: @@SECRET:{name}@@ is too short or simple to be scrubbed: Prismor will NOT mask "
             "its raw value in tool output or block reads of it. Use 16+ characters, or 8+ with a "
-            "digit, symbol or mixed case.\n")
+            "digit, symbol or mixed case. A bare URL (scheme://host[:port]) is config, not a "
+            "secret, and is never masked: register only the credential part.\n")
 
 
 def _approvals_cmd(args: Any) -> int:
@@ -7009,6 +7011,19 @@ def _approvals_cmd(args: Any) -> int:
         pending = [r for r in recs if r["status"] == "pending"]
         if pending:
             print(f"\nApprove one: prismor approvals approve {pending[0]['id']}")
+        return 0
+
+    if args.action == "stats":
+        s = _appr.stats(_parse_since(args.since))
+        if args.json:
+            print(json.dumps(s, indent=2))
+            return 0
+        print(f"{s['total']} requests   expired unanswered: {s['expired_share']:.0%}   "
+              f"median time to decide: {s['median_minutes_to_decide'] if s['median_minutes_to_decide'] is not None else '-'} min")
+        for label, key in (("Status", "by_status"), ("Rule", "by_rule"), ("Agent", "by_agent")):
+            print(f"\n{label}:")
+            for k, v in list(s[key].items())[:10]:
+                print(safe_text(f"  {v:>5}  {k or '-'}"))
         return 0
 
     if not args.id:

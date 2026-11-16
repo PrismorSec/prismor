@@ -144,6 +144,11 @@ def decloak_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
 # output. Keep this in sync with the Bash `_prismor_scrubbable` helper in
 # cloaking/hooks/*.sh.
 _MIN_SCRUB_LEN = 8
+# A bare origin (`http://localhost:3000`, `https://app.example.com/`) is config,
+# not a credential: no userinfo, path or query that could carry a token. Masking
+# it blocked reads of every test and doc that used the same base URL (#930).
+# A URL with a path stays eligible: webhook URLs hold their token there.
+_BARE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?")
 
 
 def is_scrubbable_secret(value: str) -> bool:
@@ -159,7 +164,7 @@ def is_scrubbable_secret(value: str) -> bool:
     """
     v = value or ""
     n = len(v)
-    if n < _MIN_SCRUB_LEN:
+    if n < _MIN_SCRUB_LEN or _BARE_URL.fullmatch(v):
         return False
     if n >= 16:
         return True
