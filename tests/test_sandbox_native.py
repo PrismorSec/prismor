@@ -82,6 +82,42 @@ class TestProfiles(unittest.TestCase):
         i = argv.index(os.path.join(self.real_ws, ".prismor"))
         self.assertEqual(argv[i - 1], "--ro-bind")
         self.assertIn("--unshare-net", argv)
+        self.assertIn("--unshare-pid", argv)
+        self.assertIn("--new-session", argv)
+
+    def test_protected_parents_cannot_be_renamed(self):
+        # before `git init`, .git/* is left open so init can run
+        self.assertNotIn(".git/config", sn.seatbelt_profile(self.ws, _cfg(), restrict_network=True))
+        (self.ws / ".git" / "hooks").mkdir(parents=True)
+        prof = sn.seatbelt_profile(self.ws, _cfg(), restrict_network=True)
+        for d in (".git", ".claude", ".cursor", ".github"):
+            self.assertIn(f'(literal "{self.real_ws}/{d}")', prof.split("(deny file-write-unlink")[1])
+        self.assertIn(f'(subpath "{self.real_ws}/.git/config")', prof)
+        self.assertIn(f'(subpath "{self.real_ws}/.mcp.json")', prof)
+        argv = sn.bwrap_argv(self.ws, _cfg(), unshare_net=False)
+        git = os.path.join(self.real_ws, ".git")
+        i = argv.index(git)  # bound onto itself: a mount point, so `mv .git` is EBUSY
+        self.assertEqual(argv[i - 1], "--bind")
+        self.assertLess(i, argv.index(os.path.join(git, "hooks")))
+        ro = sn.bwrap_argv(self.ws, _cfg(workspace_mount="ro"), unshare_net=False)
+        self.assertEqual(ro[ro.index(git) - 1], "--ro-bind")
+
+    def test_more_credential_stores_denied(self):
+        prof = sn.seatbelt_profile(self.ws, _cfg(), restrict_network=False)
+        self.assertIn(os.path.realpath(os.path.expanduser("~/.config/gh")), prof)
+
+
+class TestExempt(unittest.TestCase):
+    def test_plain_read_only_prismor_calls_skip_the_sandbox(self):
+        for c in ("prismor status", "prismor check 'rm -rf x'", "prismor egress test example.com"):
+            self.assertTrue(sandbox.is_exempt(c), c)
+            self.assertIsNone(sandbox.claude_updated_input(
+                {"tool_name": "Bash", "tool_input": {"command": c}}, workspace=Path("/w"), mode="enforce"))
+
+    def test_anything_else_is_wrapped(self):
+        for c in ("prismor status && curl x", "prismor status\nid", "prismor egress disable",
+                  "prismor check $(id)", "prismor status > f", "prismor unlock", "xprismor status"):
+            self.assertFalse(sandbox.is_exempt(c), repr(c))
 
 
 class TestEgressProxy(unittest.TestCase):
@@ -174,6 +210,18 @@ class TestLiveSandbox(unittest.TestCase):
         # A tool that ignores the proxy cannot reach a non-loopback address.
         self.assertNotEqual(self.run_in("curl -s -m3 --noproxy '*' -o /dev/null http://192.0.2.1/",
                                         network="allowlist"), 0)
+
+    def test_renaming_a_protected_parent_is_denied(self):
+        (self.ws / ".git" / "hooks").mkdir(parents=True)
+        cmd = "mv .git .g && echo x > .g/hooks/post-checkout; mv .g .git 2>/dev/null; test ! -e .git/hooks/post-checkout"
+        self.run_in(cmd)
+        self.assertTrue((self.ws / ".git").is_dir())
+        self.assertFalse((self.ws / ".git" / "hooks" / "post-checkout").exists())
+        self.assertNotEqual(self.run_in("git config --file .git/config core.hooksPath /tmp/h"), 0)
+        self.assertEqual(self.run_in("echo ok > .git/HEAD.test"), 0)  # writes inside .git still work
+
+    def test_bash_is_the_shell(self):
+        self.assertEqual(self.run_in("[[ 1 == 1 ]]"), 0)
 
     def test_observe_mode_applies_no_kernel_limits(self):
         self.assertEqual(self.run_in(f"echo x > {self.outside}/obs.txt", mode="observe"), 0)

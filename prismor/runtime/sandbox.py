@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -201,6 +202,20 @@ def hook_update_command(*, command: str, workspace: Path, mode: str,
     return f"{py} -m prismor.runtime.immunity_cli sandbox --workspace {ws} run --mode {mode_arg}{extra} --encoded {encoded}"
 
 
+# Read-only prismor subcommands run on the host, not in the sandbox: they need
+# ~/.prismor (read-only inside) and the setup tells agents to run them. Only a
+# single plain invocation qualifies — any shell operator, substitution or
+# redirect sends the whole command through the sandbox.
+_EXEMPT_PRISMOR = re.compile(
+    r"[ \t]*prismor[ \t]+(?:status|check|query|doctor|trail|deps|help|version|--version|--help"
+    r"|egress[ \t]+(?:show|test|report))(?:[ \t][^;&|`$<>()\r\n\\]*)?\Z"
+)
+
+
+def is_exempt(command: str) -> bool:
+    return bool(_EXEMPT_PRISMOR.match(command))
+
+
 def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str,
                          agent: str = "", session_id: str = "") -> Optional[Dict[str, Any]]:
     """Return Claude hook JSON that rewrites Bash input into sandbox execution."""
@@ -210,7 +225,7 @@ def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str,
     if not isinstance(tool_input, dict):
         return None
     command = str(tool_input.get("command") or "")
-    if not command:
+    if not command or is_exempt(command):
         return None
     new_input = dict(tool_input)
     new_input["command"] = hook_update_command(command=command, workspace=workspace, mode=mode,
