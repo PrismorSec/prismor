@@ -1433,6 +1433,8 @@ rules:
       - '(^|/)hook-dispatch\.py$'
       # A system install keeps the machine's selection in /etc/prismor.
       - '(^|/)etc/prismor/policy\.yaml$'
+      # Installed policy packs (written only by `prismor policy pack`).
+      - '(^|/)(\.prismor|etc/prismor)/packs/'
       - '(^|[/\\])programdata[/\\]prismor[/\\]policy\.yaml$'
       - '(^|/)library/application support/prismor/policy\.yaml$'
     action: block
@@ -1470,7 +1472,7 @@ rules:
       # statement boundary the anchor above can see.
       - '\beval\s+[''"]?\s*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout)\b'
       - '\bProxyCommand\b[^\n]*\b(prismor|immunity)(@\S+)?[ \t]+(allow|pause|pause-hard|resume|uninstall|uninstall-hooks|unlock|lock)\b'
-      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init|pack[ \t]+(?:add|update|remove))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+egress[ \t]+(allow|deny|rm|mode|default|enable|disable)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # The same CLI reached as a module or a script path.
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
@@ -1542,6 +1544,8 @@ rules:
       # here (e.g. one carrying device_pause: paused) would be accepted.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
       - '(^|/)\.prismor/remote-policy(\.yaml|\.yaml\.sig|\.meta\.json|\.hwm\.json)$'
+      # Installed policy packs and their hash lockfile (policy_packs.py).
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)(?:\.prismor|etc/prismor)/packs/'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'

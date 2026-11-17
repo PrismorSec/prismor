@@ -41,7 +41,7 @@ except ImportError:
 _DEFAULT_POLICY_PATH = Path(__file__).parent / "default_policy.yaml"
 
 # Internal layer names (rule ``_layer``) -> what telemetry and the console call them.
-_LAYER_NAMES = {"default": "builtin", "user": "local", "project": "project",
+_LAYER_NAMES = {"default": "builtin", "pack": "pack", "user": "local", "project": "project",
                 "remote": "org", "exemption": "repo_exemption"}
 
 # Layers a developer (or an agent on their machine) can write. On a rule the
@@ -458,6 +458,42 @@ def is_floor_protected_rule(
         default_rule is not None
         and default_rule.get("category") in _CORE_BLOCK_CATEGORIES
     )
+
+
+# What a policy pack may set on a rule that already exists: tightening only.
+_PACK_TIGHTEN_KEYS = frozenset({"id", "mode", "severity", "add_patterns"})
+
+
+def pack_rule_problem(rule: Any, existing: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why a policy-pack rule entry must be rejected, or None when it is fine.
+
+    A pack may define a new rule (a complete definition under an unused id) or
+    tighten a built-in one: ``mode: enforce``, a higher ``severity``, extra
+    ``add_patterns``. It may never redefine, disable or loosen a built-in, and
+    never touch the safety floor or self-protection rules at all.
+    """
+    if not isinstance(rule, dict) or not rule.get("id"):
+        return "rule entry needs an id"
+    rid = str(rule["id"])
+    if existing is None:
+        missing = [k for k in ("severity", "category", "title", "event_types") if k not in rule]
+        if "patterns" not in rule and not rule.get("when"):
+            missing.append("patterns")
+        return f"new rule '{rid}' is incomplete (missing {', '.join(missing)})" if missing else None
+    if existing.get("_layer") == "pack":
+        return f"rule '{rid}' is already defined by policy pack '{existing.get('_pack')}'"
+    if rid in _SELF_PROTECTION_RULE_IDS or is_floor_protected_rule(rid, existing):
+        return f"rule '{rid}' is a floor/self-protection rule; packs cannot change it"
+    extra = sorted(set(rule) - _PACK_TIGHTEN_KEYS)
+    if extra:
+        return (f"rule id '{rid}' collides with a built-in rule (a pack may only set "
+                f"mode: enforce, a higher severity and add_patterns on it; got {', '.join(extra)})")
+    if "mode" in rule and str(rule["mode"]).lower() != "enforce":
+        return f"rule '{rid}': a pack may only raise mode to enforce"
+    if "severity" in rule and (_SEVERITY_RANK.get(str(rule["severity"]).lower(), -1)
+                               <= _SEVERITY_RANK.get(str(existing.get("severity", "")).lower(), -1)):
+        return f"rule '{rid}': a pack may only raise severity (built-in is {existing.get('severity')})"
+    return None
 
 
 def is_self_protection_rule(rule_id: str) -> bool:
@@ -1527,6 +1563,8 @@ class PolicyEngine:
         self.taint_override: Optional[Any] = None
         self.remote_policy_meta: Dict[str, Any] = {}
         self._default_mode_explicit: bool = False
+        self.pack_errors: List[str] = []
+        self.packs_loaded: List[str] = []
         # True when this policy names its blocking set rule by rule
         # (settings.selection: explicit, written by `prismor setup`) and that
         # choice is locally authoritative. See _resolve_mode.
@@ -1880,6 +1918,39 @@ class PolicyEngine:
             override_settings["conditions"] = {**settings["conditions"], **override_settings["conditions"]}
         settings.update(override_settings)
 
+    def _apply_packs(self, rules_by_id: Dict[str, Dict[str, Any]]) -> None:
+        try:
+            from prismor.runtime import policy_packs
+            packs, self.pack_errors = policy_packs.load_all()
+        except Exception as exc:  # a broken pack store must never break enforcement
+            self.pack_errors = [f"policy packs could not be loaded: {exc}"]
+            return
+        for name, raw in packs:
+            if name not in self.packs_loaded:
+                self.packs_loaded.append(name)
+            for rule in raw.get("rules") or []:
+                existing = rules_by_id.get(str(rule.get("id", ""))) if isinstance(rule, dict) else None
+                problem = pack_rule_problem(rule, existing)
+                if problem:
+                    msg = f"policy pack '{name}': {problem} (ignored)"
+                    self.pack_errors.append(msg)
+                    sys.stderr.write(f"[prismor] {msg}\n")
+                    continue
+                if existing is None:
+                    rules_by_id[rule["id"]] = {**rule, "_layer": "pack", "_pack": name,
+                                               **({"_mode_layer": "pack"} if "mode" in rule else {})}
+                    continue
+                merged = dict(existing)
+                if "mode" in rule:
+                    merged["mode"], merged["_mode_layer"] = "enforce", "pack"
+                if "severity" in rule:
+                    merged["severity"] = str(rule["severity"]).upper()
+                adds = list(dict.fromkeys([*(existing.get("add_patterns") or []),
+                                           *(rule.get("add_patterns") or [])]))
+                if adds:
+                    merged["add_patterns"] = adds
+                rules_by_id[rule["id"]] = merged
+
     def _drop_local_loosening(self, local: Dict[str, Any], org: Dict[str, Any]) -> Dict[str, Any]:
         """The rule as the org layer should see it: what it was before any local
         layer touched it, plus only the local changes that tighten it.
@@ -1922,6 +1993,12 @@ class PolicyEngine:
             rules_by_id[rule["id"]] = rule
 
         allowlist_raw: List[Dict[str, Any]] = list(default_raw.get("allowlists", []) or [])
+        # Policy packs (`prismor policy pack add`): above the defaults, below
+        # every local layer. Add or tighten only; see pack_rule_problem.
+        self.pack_errors: List[str] = []
+        self.packs_loaded: List[str] = []
+        if policy_path is None:
+            self._apply_packs(rules_by_id)
         # Merges build new dicts rather than mutating these, so a shallow copy
         # is the rules as shipped (see _drop_local_loosening).
         self._pre_local = dict(rules_by_id)

@@ -33,6 +33,8 @@ BLOCKED_COMMANDS = [
     "prismor allow secret-exfiltration --off --yes",
     "prismor allow destructive-command --pattern 'rm -rf /'",
     "prismor policy edit",
+    "prismor policy pack add acme/policies@v1",
+    "prismor policy pack remove acme-baseline",
     "prismor unlock",
     "prismor lock",
     "prismor pause",
@@ -119,6 +121,7 @@ ALLOWED_COMMANDS = [
     "prismor sessions --findings-only",
     "prismor deps",
     "prismor policy show",
+    "prismor policy pack list",
     # Asking is not editing: the request only lands in the console for an
     # admin to decide, so the agent may file it on the user's behalf.
     "prismor egress request www.linkedin.com --reason 'research task'",

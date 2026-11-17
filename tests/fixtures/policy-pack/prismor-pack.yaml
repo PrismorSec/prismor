@@ -1,0 +1,4 @@
+name: acme-baseline
+version: 1.0.0
+description: Example pack used by the test suite (adds one rule, tightens one).
+min_prismor: 1.0.0
