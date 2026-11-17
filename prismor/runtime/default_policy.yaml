@@ -292,7 +292,10 @@ settings:
   #
   # Benchmarked on 826 cases (OWASP LLM01-LLM10, Agentic T02-T04,
   # MITRE-ATLAS, nested-file injection): F1 0.697 -> 0.822, semantic-attack
-  # recall 8% -> 72%, LLM invoked on 1.8% of events.
+  # recall 8% -> 72%, LLM invoked on 1.8% of events. Measured outside the
+  # repo with the LLM judge; that corpus is not checked in. The in-repo
+  # benchmark of the deterministic layers is scripts/bench_policy.py
+  # (results: tests/fixtures/corpus/baseline.json, docs/residual-risk.md).
   semantic_guard:
     enabled: true            # heuristic pre-screen on every screened event
     mode: auto               # one of: auto | heuristic | hybrid | api

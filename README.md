@@ -335,7 +335,7 @@ Three modules from [Capabilities](#capabilities), with setup, output, and result
 
 ### Hybrid Semantic Prompt-Injection Defense<a name="hybrid-semantic-prompt-injection-defense" />
 
-Regex rules catch known injection shapes. The semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to an LLM judge that owns the verdict either way — it confirms paraphrased attacks the regex only half-saw and clears benign text that tripped an authority-claim signal. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex.
+Regex rules catch known injection shapes. The semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to an LLM judge that owns the verdict either way — it confirms paraphrased attacks the regex only half-saw and clears benign text that tripped an authority-claim signal. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex. (Measured outside the repo with the LLM judge; that corpus is not checked in. `python3 scripts/bench_policy.py` reproduces the deterministic layers on the in-repo corpus; see [docs/residual-risk.md](docs/residual-risk.md).)
 
 ![Semantic Guard Results](assets/semantic-guard-results.png)
 
