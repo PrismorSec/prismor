@@ -7755,12 +7755,24 @@ def analyze_session_incremental(
     next to the session log, so a hook call costs O(new events) instead of
     O(session) (#477). Cross-event state lives in the on-disk taint store, not
     the engine, so this matches a full replay. A missing or out-of-step sidecar
-    falls back to a full analysis."""
+    falls back to a full analysis.
+
+    A sidecar AHEAD of ``events`` is not out of step: concurrent hooks in one
+    session (parallel subagents share it) each append, then read, then take
+    this lock, so one can find a later call already analysed past its view.
+    That view's findings are the sidecar's, cut to its length. Replaying the
+    whole session here instead cost ~20s on a 1.5k-event session, under the
+    lock, and every other hook in the session queued behind it."""
     from prismor.runtime.store import locked_json_update, session_log_path
     sidecar = session_log_path(workspace, session_id).with_suffix(".analysis.json")
     with locked_json_update(sidecar) as state:
         done = state.get("events")
         prior = state.get("findings")
+        if isinstance(done, int) and done > len(events) > 0 and isinstance(prior, list):
+            seen = [f for f in prior if isinstance(f, dict)
+                    and isinstance(f.get("eventIndex"), int) and f["eventIndex"] < len(events)]
+            return analyze_events(events, repo_root=repo_root, workspace=workspace,
+                                  session_id=session_id, start=len(events), prior_findings=seen)
         if not (isinstance(done, int) and 0 < done <= len(events) and isinstance(prior, list)):
             done, prior = 0, []
         analysis = analyze_events(events, repo_root=repo_root, workspace=workspace,
