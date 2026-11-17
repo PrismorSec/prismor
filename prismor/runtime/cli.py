@@ -4458,6 +4458,15 @@ def build_parser() -> argparse.ArgumentParser:
     trail_verify.add_argument("--json", action="store_true", help="Machine-readable report")
     trail_show = trail_sub.add_parser("show", help="Render recent trail records")
     trail_show.add_argument("--last", type=int, default=20, help="Number of records (default 20)")
+    trail_export = trail_sub.add_parser(
+        "export", help="Write a signed evidence pack of decisions (or --verify one)")
+    trail_export.add_argument("--session", help="Only this session id")
+    trail_export.add_argument("--from", dest="since", help="ISO timestamp, inclusive")
+    trail_export.add_argument("--to", dest="until", help="ISO timestamp, inclusive")
+    trail_export.add_argument("--out", default="evidence-pack", help="Pack directory (default evidence-pack/)")
+    trail_export.add_argument("--verify", metavar="PACK", help="Verify an existing pack offline")
+    trail_export.add_argument("--pubkey", help="Pin --verify to this base64 raw Ed25519 public key")
+    trail_export.add_argument("--json", action="store_true", help="Machine-readable report")
     trail_checkpoint = trail_sub.add_parser(
         "checkpoint", help="Emit a signed chain-head checkpoint for external anchoring")
     trail_checkpoint.add_argument("--out", help="Write the checkpoint JSON to FILE (default stdout)")
@@ -6111,6 +6120,30 @@ def _run_trail(args) -> None:
     from prismor.runtime.enterprise import audit_trail as _audit
 
     sub = getattr(args, "trail_command", None)
+
+    if sub == "export":
+        from prismor.runtime.enterprise import evidence_pack as _pack
+        if args.verify:
+            rep = _pack.verify_pack(Path(args.verify), pubkey_b64=args.pubkey)
+            if args.json:
+                print(json.dumps(rep, indent=2))
+            else:
+                print(f"{'✓' if rep['ok'] else '✗'} evidence pack {args.verify}: "
+                      f"{rep.get('decisions')} decisions, {rep.get('records')} records"
+                      f"{'' if rep.get('signed') else ' (unsigned)'}")
+                for err in rep["errors"]:
+                    print(f"  ✗ {err}")
+            raise SystemExit(0 if rep["ok"] else 1)
+        man = _pack.export(Path(args.out), session=args.session, since=args.since, until=args.until)
+        if args.json:
+            print(json.dumps(man, indent=2))
+        else:
+            print(f"✓ wrote {man['decisions']} decisions to {args.out}/ "
+                  f"({'signed' if man.get('signature') else 'unsigned: pip install prismor[signing]'})")
+            if man["missing_authority"]:
+                print(f"  ⚠ {len(man['missing_authority'])} authority snapshot(s) not found on this device")
+            print(f"  verify: prismor trail export --verify {args.out}")
+        return
 
     if sub == "verify":
         report = _audit.verify_trail(pubkey_b64=getattr(args, "pubkey", None))
