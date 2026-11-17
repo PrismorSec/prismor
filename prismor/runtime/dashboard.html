@@ -31,7 +31,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 .doc-row.sel{background:var(--gray-100)}
 .doc-row-title{font-size:13px;font-weight:600}
 .doc-row-name{font:12px var(--font-mono);color:var(--gray-500);margin-top:2px}
-.doc-group{font-size: 11px;font-weight: 600;text-transform:uppercase;letter-spacing: .06em;color:var(--gray-500);margin:14px 10px 4px}
+.doc-group{font-size: 11px;font-weight: 600;text-transform: none;letter-spacing: 0;color:var(--gray-500);margin:14px 10px 4px}
 .doc-group:first-child{margin-top:0}
 .doc-row-hit em{font-style:normal;font-weight:600;color:var(--gray-700)}
 .doc-hit{background:var(--amber);border-radius:4px}
@@ -201,7 +201,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     border-radius: 8px; padding: 20px;
   }
   .card-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    font-size: 11px; text-transform: none; letter-spacing: 0;
     color: var(--gray-400); margin-bottom: 12px;
   }
 
@@ -218,7 +218,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sev-card.high     .sev-count { color: var(--tone-danger-fg); }
   .sev-card.medium   .sev-count { color: #d97706; }
   .sev-card.low      .sev-count { color: #0284c7; }
-  .sev-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  .sev-label { font-size: 11px; text-transform: none; letter-spacing: 0;
                color: var(--gray-400); margin-bottom: 6px; }
 
   /* Tables */
@@ -395,7 +395,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .drawer-status { font-size: 12px; color: var(--gray-400); padding: 6px 0 0; width: 100%; }
   .drawer-section { margin-bottom: 18px; }
   .drawer-section-title {
-    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    font-size: 11px; text-transform: none; letter-spacing: 0;
     color: var(--gray-400); margin-bottom: 8px;
   }
   .drawer-block-item {
@@ -490,7 +490,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .section h2 {
     font-size: 11px; font-weight: 600; color: var(--gray-700);
-    text-transform: uppercase; letter-spacing: .06em;
+    text-transform: none; letter-spacing: 0;
   }
   .section .rule { flex: 1; height: 1px; background: var(--gray-200); }
   .section .hint { font-size: 11px; color: var(--gray-400); }
@@ -512,7 +512,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .trigger-kind {
     display: inline-block; padding: 1px 6px; border-radius: 4px;
     font-size: 11px; background: var(--gray-100); color: var(--gray-600);
-    text-transform: uppercase; letter-spacing: .06em; margin-right: 6px;
+    text-transform: none; letter-spacing: 0; margin-right: 6px;
   }
   .trigger-detail {
     margin-top: 6px; padding: 6px 8px;
@@ -541,12 +541,12 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .tool-tag-badge {
     display:inline-block; margin-right:8px; padding:1px 6px; border-radius:999px;
-    font-size: 11px; font-weight:600; letter-spacing:.02em;
+    font-size: 11px; font-weight:600; letter-spacing: 0;
     background:#eef2ff; color:#4338ca; vertical-align:middle;
   }
   .hook-pill {
     display:inline-block; padding:0 5px; border-radius:999px; font-size: 11px; font-weight:600;
-    letter-spacing:.02em; background:var(--gray-100); color:var(--gray-500); vertical-align:middle;
+    letter-spacing: 0; background:var(--gray-100); color:var(--gray-500); vertical-align:middle;
   }
 
   /* ── Policy Control tab ── */
@@ -591,23 +591,23 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .rule-title { font-size:12px; color:var(--gray-500); margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .rule-lock {
     display:inline-flex; align-items:center; gap:4px; padding:2px 7px; border-radius:999px;
-    font-size: 11px; font-weight: 600; letter-spacing:.02em; border:1px solid #e5e7eb;
+    font-size: 11px; font-weight: 600; letter-spacing: 0; border:1px solid #e5e7eb;
     color:#475569; background:#f8fafc;
   }
   .rule-lock .icon { width:10px; height:10px; }
   /* What a rule does when it fires: stop the call, or record it. */
   .rule-verdict {
     display:inline-flex; align-items:center; padding:2px 7px; border-radius:999px;
-    font-size: 11px; font-weight: 600; letter-spacing:.02em; border:1px solid transparent;
+    font-size: 11px; font-weight: 600; letter-spacing: 0; border:1px solid transparent;
   }
   .rule-verdict.blocks  { color:#b91c1c; background:#fef2f2; border-color:#fecaca; }
   .rule-verdict.reports { color:#92400e; background:#fffbeb; border-color:#fde68a; }
   .rules-head {
-    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform:uppercase;
+    font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none;
     color:var(--gray-500); margin:0 0 6px 2px;
   }
   .rule-sev {
-    font-size: 11px; font-weight: 600; letter-spacing:.04em; padding:2px 7px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0; padding:2px 7px;
     border-radius:4px; white-space:nowrap;
   }
   .rule-sev.CRITICAL { background:#fde8e8; color:#c81e1e; }
@@ -819,44 +819,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     .page { padding: 12px; }
   }
 
-  /* ── Loading screen ── */
-  #loadingScreen {
-    position: fixed; inset: 0; z-index: 999;
-    background: #f9fafb;
-    display: flex; align-items: center; justify-content: center;
-    transition: opacity 0.4s ease;
-  }
-  #loadingScreen.fade-out { opacity: 0; pointer-events: none; }
-  #loadingCard {
-    display: flex; flex-direction: column; align-items: center; gap: 14px;
-    padding: 48px 56px; background: #fff;
-    border: 1px solid var(--gray-200); border-radius: 8px;
-    box-shadow: 0 4px 24px rgba(0,0,0,.06);
-    min-width: 280px;
-  }
-  #loadingLogo {
-    width: 52px; height: 52px; object-fit: contain;
-    animation: loadingPulse 1.8s ease-in-out infinite;
-  }
-  @keyframes loadingPulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50%       { opacity: 0.65; transform: scale(0.94); }
-  }
-  #loadingTitle {
-    font-size: 14px; font-weight: 600; color: var(--gray-900); letter-spacing: -0.01em;
-  }
-  #loadingBar {
-    width: 180px; height: 3px; background: var(--gray-100); border-radius: 999px; overflow: hidden;
-  }
-  #loadingFill {
-    height: 100%; width: 0%; border-radius: 999px;
-    background: var(--ink);
-    transition: width 0.3s ease;
-  }
-  #loadingLabel {
-    font-size: 12px; color: var(--gray-400);
-  }
-
   /* Scoped rules inline editor */
   .scope-edit-section { margin-bottom: 20px; }
   .scope-edit-header {
@@ -917,7 +879,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     font-family: inherit; font-size: 11px; font-weight: 600; cursor: pointer;
     padding: 2px 9px; border-radius: 999px; border: 1px solid transparent;
     display: inline-flex; align-items: center; gap: 5px;
-    text-transform: uppercase; letter-spacing: .06em; background: none;
+    text-transform: none; letter-spacing: 0; background: none;
   }
   .mode-chip .badge-dot { background: currentColor; }
   .mode-chip.observe { background: #eff6ff; color: #1d4ed8; border-color: #bfdbfe; }
@@ -1091,7 +1053,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     flex:1; min-width:120px; padding:14px 16px; border:1px solid var(--gray-200);
     border-radius:8px; background:var(--surface);
   }
-  .agent-stat-label { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-400); font-weight:600; }
+  .agent-stat-label { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-400); font-weight:600; }
   .agent-stat-value { font-size:24px; font-weight: 600; color:var(--gray-900); margin-top:4px; }
   .agent-stat-value.accent { color:var(--pink-600); }
   .agent-name.link { cursor:pointer; }
@@ -1118,7 +1080,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:16px; }
   .ext-stat { background:var(--surface); border:1px solid var(--gray-200); border-radius:8px; padding:12px 14px; }
   .ext-stat b { display:block; color:var(--gray-900); font-size:20px; font-weight: 600; line-height:1.1; }
-  .ext-stat span { font-size: 11px; color:var(--gray-500); text-transform:uppercase; letter-spacing: .06em; }
+  .ext-stat span { font-size: 11px; color:var(--gray-500); text-transform: none; letter-spacing: 0; }
   .ext-stat em { font-style:normal; font-size: 12px; font-weight:600; color:#b45309; margin-left:6px; }
   .ext-views { display:inline-flex; gap:4px; padding:5px; margin-bottom:16px; border:1px solid var(--gray-200); border-radius:8px; background:var(--gray-100); }
   .ext-view { font-size:14px; font-weight:600; padding:11px 22px; border-radius:8px; border:0; background:none; color:var(--gray-500); cursor:pointer; }
@@ -1162,11 +1124,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-head { display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; min-width:0; }
   .ext-name { color:var(--gray-900); font-weight:600; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .ext-origin { font-size: 12px; color:var(--gray-400); font-family:var(--mono,ui-monospace,monospace); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; flex:1; }
-  .ext-badge { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform:uppercase; border-radius:4px; padding:2px 6px; flex:none; }
+  .ext-badge { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; border-radius:4px; padding:2px 6px; flex:none; }
   .ext-badge.new, .ext-badge.changed { background:rgba(245,158,11,.18); color:#d97706; }
   .ext-badge.approved { background:rgba(34,197,94,.16); color:#16a34a; }
   .ext-badge.unchanged { background:var(--gray-100); color:var(--gray-500); }
-  .ext-kind { font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); border:1px solid var(--gray-200); border-radius:4px; padding:1px 5px; flex:none; }
+  .ext-kind { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color:var(--gray-500); border:1px solid var(--gray-200); border-radius:4px; padding:1px 5px; flex:none; }
   .ext-cap { font-size: 12px; font-weight:600; border-radius:999px; padding:1px 8px; background:var(--gray-100); color:var(--gray-500); flex:none; }
   .ext-cap.remote_instructions, .ext-cap.network { background:rgba(239,68,68,.15); color:#ef4444; }
   .ext-cap.runs_code, .ext-cap.declares_hooks { background:rgba(249,115,22,.15); color:#f97316; }
@@ -1224,7 +1186,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-sum b { color:var(--gray-900); font-weight:600; }
   .sess-dot { width:8px; height:8px; border-radius:50%; background:var(--gray-300); align-self:center; flex:none; }
   .sess-dot.ok { background:#22c55e; } .sess-dot.warn { background: var(--sev-medium); } .sess-dot.bad { background:#ef4444; }
-  .sess-sub { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform:uppercase; color:var(--gray-500); margin:12px 0 6px; }
+  .sess-sub { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color:var(--gray-500); margin:12px 0 6px; }
   .used-row { display:flex; align-items:center; gap:10px; width:100%; padding:6px 4px; background:none; border:0; border-radius:6px; font:inherit; color:var(--gray-800); text-align:left; cursor:pointer; }
   .used-row:hover { background:var(--gray-100); }
   .used-row .used-text { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1248,7 +1210,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .dev-note { font-size:13px; color:var(--gray-600); background:var(--gray-50); border-radius:6px; padding:8px 10px; margin:8px 0; }
   .sess-ext-hooks summary { cursor:pointer; color:var(--gray-500); font-weight:600; padding:4px 2px 8px; }
   .sess-ext-hooks > summary.sess-hook-src { color:inherit; font-weight:inherit; padding:7px 4px; }
-  .sess-ran-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform:uppercase; color:var(--gray-400); }
+  .sess-ran-title { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color:var(--gray-400); }
   .sess-ran-group { display:inline-flex; flex-wrap:wrap; align-items:center; gap:2px; }
   .sess-ran-group em { font-style:normal; color:var(--gray-500); margin-right:2px; }
   .sess-ran-docs { font-weight:600; color:var(--gray-600); margin-left:6px; }
@@ -1269,7 +1231,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     border:1px solid var(--gray-200); border-radius:8px; background:var(--surface);
   }
   .session-hero-main { flex:1; min-width:200px; }
-  .session-hero-title { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-400); font-weight: 600; }
+  .session-hero-title { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-400); font-weight: 600; }
   .session-hero-id { font-family:var(--font-mono); font-size:14px; font-weight:600; color:var(--gray-900); margin-top:3px; word-break:break-all; }
   .session-hero-meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:8px; }
 
@@ -1277,7 +1239,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   /* Long values (commands, prompts, regexes, hooks) get the full panel width
      under their label instead of a 60% column beside it. */
   .drawer-rule-row.stack { flex-direction:column; gap:4px; }
-  .drawer-rule-row.stack > .drawer-rule-label { min-width:0; font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; }
+  .drawer-rule-row.stack > .drawer-rule-label { min-width:0; font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; }
   .drawer-rule-row.stack > div { width:100%; }
   .drawer-code { font-family:var(--font-code); font-size: 12px; line-height:1.5; color:var(--gray-800); background:var(--surface);
     border:1px solid var(--gray-200); border-radius:6px; padding:6px 8px; max-height:180px; overflow:auto;
@@ -1298,7 +1260,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     border:1px solid var(--gray-300); border-radius:6px; padding:4px 9px; cursor:pointer; }
   .tree-btn:hover { background:var(--gray-50); }
   .artifacts { margin-top:14px; }
-  .artifacts h4 { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); margin:0 0 8px; }
+  .artifacts h4 { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); margin:0 0 8px; }
   .art-phase { text-transform:none; letter-spacing:0; font-weight:600; color:var(--gray-400); }
   .art-row { margin-bottom:9px; }
   .art-label { font-size: 11px; font-weight:600; color:var(--gray-500); margin-bottom:2px; }
@@ -1344,7 +1306,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background:none; border:0; padding:6px 8px; border-radius:8px; cursor:pointer; color:inherit; }
   .tree-row:hover { background:var(--gray-50); }
   .tree-row.turn { padding:7px 8px; }
-  .tree-row.lane .tree-lane-label { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); }
+  .tree-row.lane .tree-lane-label { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); }
   .tree-caret { width:12px; flex:none; color:var(--gray-400); transition:transform .12s ease; }
   .tree-row.collapsed .tree-caret { transform:rotate(-90deg); }
   .tree-turn-label { font-weight: 600; color:var(--gray-800); }
@@ -1382,7 +1344,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .hook-chip.pre-block { background:rgba(220,38,38,.08); color:#dc2626; border:1px dashed rgba(220,38,38,.45); }
   .hook-chip.pre-warn { background:rgba(217,119,6,.10); color:#d97706; border:1px dashed rgba(217,119,6,.45); }
   .hook-runs { margin-top:4px; }
-  .hook-phase { font-size: 11px; font-weight: 600; color:var(--gray-500); margin:8px 0 3px; text-transform:uppercase; letter-spacing: .06em; }
+  .hook-phase { font-size: 11px; font-weight: 600; color:var(--gray-500); margin:8px 0 3px; text-transform: none; letter-spacing: 0; }
   .hook-run { font-size: 12px; margin-bottom:5px; }
   .hook-run > summary { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:2px 8px; align-items:center; cursor:pointer; list-style:none; }
   .hook-run > summary::-webkit-details-marker { display:none; }
@@ -1428,10 +1390,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .flow-node.branch:hover { transform:translateX(64px) translateY(-2px); }
 
   .flow-node-top { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
-  .flow-node-chip { font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); background:var(--gray-100); border-radius:6px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .flow-node-chip { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color:var(--gray-500); background:var(--gray-100); border-radius:6px; padding:2px 6px; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .flow-node-action { font-family:var(--font-mono); font-size: 12px; color:var(--gray-800); line-height:1.4; max-height:44px; overflow:hidden; word-break:break-all; }
   .flow-node-foot { display:flex; align-items:center; justify-content:space-between; margin-top:7px; }
-  .flow-node-verdict { font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; padding:2px 7px; border-radius:999px; }
+  .flow-node-verdict { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; padding:2px 7px; border-radius:999px; }
   .flow-node-verdict.allow { background:#dcfce7; color:#15803d; }
   .flow-node-verdict.warn  { background:#fef3c7; color:#b45309; }
   .flow-node-verdict.block { background:#fee2e2; color:#b91c1c; }
@@ -1447,7 +1409,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .flow-endpoint.start .dot { background:var(--gray-900); }
   .flow-endpoint.end   .dot { background:var(--green-500); }
-  .flow-endpoint .lbl { font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-400); }
+  .flow-endpoint .lbl { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; color:var(--gray-400); }
   .flow-endpoint .icon { width:18px; height:18px; }
 
   .flow-empty { padding:40px 20px; text-align:center; color:var(--gray-400); font-size:12px; }
@@ -1455,11 +1417,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   /* node detail side panel */
   .node-panel { border:1px solid var(--gray-200); border-radius:8px; background:var(--surface); padding:16px 18px; position:sticky; top:16px; }
   .node-panel-empty { color:var(--gray-400); font-size:12px; text-align:center; padding:24px 8px; }
-  .node-panel h4 { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-400); font-weight: 600; margin:0 0 10px; }
+  .node-panel h4 { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-400); font-weight: 600; margin:0 0 10px; }
   .node-actions { margin-top:14px; padding-top:14px; border-top:1px solid var(--gray-100); }
   .na-tool { font-family:var(--font-mono); font-size: 12px; background:var(--gray-100); border-radius:6px; padding:1px 7px; color:var(--gray-800); text-transform:none; letter-spacing:0; }
   .na-row { display:flex; align-items:center; gap:6px; margin-bottom:8px; flex-wrap:wrap; }
-  .na-label { font-size: 11px; font-weight: 600; text-transform:uppercase; letter-spacing: .06em; width:42px; flex-shrink:0; }
+  .na-label { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; width:42px; flex-shrink:0; }
   .na-label.na-deny { color:#b91c1c; }
   .na-label.na-allow { color:#15803d; }
   .na-btn { font-size: 12px; font-weight:600; padding:5px 10px; border-radius:6px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700); cursor:pointer; transition:all .12s; }
@@ -1500,7 +1462,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .tab-nav-footer .theme-toggle { flex: 1; justify-content: center; }
   html[data-theme="dark"] body,
-  html[data-theme="dark"] #loadingScreen { background: var(--app-bg); }
   html[data-theme="dark"] .event-row:hover,
   html[data-theme="dark"] .finding-row:hover td,
   html[data-theme="dark"] .clickable-row:hover td,
@@ -1641,7 +1602,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   /* ── Material tabs ── */
   .tab-nav { border-bottom: 1px solid rgba(16,24,40,.08); }
   .tab-btn {
-    text-transform: uppercase; letter-spacing: .06em; font-size: 11px; font-weight: 600;
+    text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 600;
     border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0;
   }
   .tab-btn:hover { color: var(--gray-900); background: rgba(16,24,40,.045); }
@@ -1650,7 +1611,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   /* ── Contained primary buttons ── */
   .btn-primary, .upgrade-btn {
     background: var(--gray-900); color: #fff; border: none;
-    border-radius: var(--md-radius-sm); text-transform: uppercase; letter-spacing: .06em;
+    border-radius: var(--md-radius-sm); text-transform: none; letter-spacing: 0;
     font-weight: 600; box-shadow: var(--md-e1);
     transition: box-shadow .15s, background .15s, transform .04s;
   }
@@ -1660,8 +1621,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   /* ── Text / outlined buttons ── */
   .btn-ghost, .fbtn, .view-back, .inline-link-btn, .sess-act-btn, .scope-edit-btn {
-    border-radius: var(--md-radius-sm); text-transform: uppercase;
-    letter-spacing: .06em; font-weight: 600; transition: background .15s, border-color .15s, box-shadow .15s;
+    border-radius: var(--md-radius-sm); text-transform: none;
+    letter-spacing: 0; font-weight: 600; transition: background .15s, border-color .15s, box-shadow .15s;
   }
   .btn-ghost:hover, .fbtn:hover, .view-back:hover, .sess-act-btn:hover { background: rgba(16,24,40,.05); }
   .fbtn.active { background: var(--md-primary-soft); color: var(--md-primary); border-color: transparent; }
@@ -1777,7 +1738,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   #breadcrumbLabel { font-size: 13px; font-weight: 600; color: var(--gray-900); }
 
   /* dense rows, uppercase headers, full-row hover to match the reference table */
-  th { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; padding: 0 18px 10px 0; }
+  th { text-transform: none; letter-spacing: 0; font-size: 11px; padding: 0 18px 10px 0; }
   td { padding: 11px 18px 11px 0; }
   tbody tr:hover td { background: rgba(255,255,255,.035); }
   .sess-checkbox { width: 28px; accent-color: var(--md-primary); cursor: pointer; }
@@ -1860,7 +1821,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-warn { color:#b45309; font-weight:600; }
   .sess-hook-src { display:grid; grid-template-columns:minmax(0,1.4fr) 48px 48px 64px minmax(0,2fr) 90px; align-items:center; gap:10px; padding:7px 4px; cursor:pointer; list-style:none; border-bottom:1px solid var(--gray-100); }
   .sess-hook-src::-webkit-details-marker { display:none; }
-  .sess-hook-cols { cursor:default; font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); padding-bottom:5px; }
+  .sess-hook-cols { cursor:default; font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); padding-bottom:5px; }
   .sess-hook-name { font-weight:600; color:var(--gray-800); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .sess-hook-name::before { content:'\25B8'; display:inline-block; width:14px; color:var(--gray-400); transition:transform .15s; }
   .sess-ext-hooks[open] .sess-hook-name::before { transform:rotate(90deg); }
@@ -2133,7 +2094,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     background: var(--surface); border-right: 1px solid var(--hairline);
   }
   .nav-group {
-    font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase;
+    font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
     color: var(--muted); padding: 18px 12px 6px;
   }
   .tab-nav .tab-btn {
@@ -2179,7 +2140,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-stat small { display: block; font-size: 12px; color: var(--gray-500); margin-top: 4px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   .ext-kinds { display:flex; flex-wrap:wrap; }
   .ext-item { display:grid; grid-template-columns:minmax(0,2.4fr) 96px 70px 70px minmax(0,1fr) 80px 48px; align-items:center; gap:10px; padding:9px 12px; cursor:pointer; }
-  .ext-item.hdr { cursor:default; font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); background:none; border:0; padding-top:0; padding-bottom:4px; }
+  .ext-item.hdr { cursor:default; font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); background:none; border:0; padding-top:0; padding-bottom:4px; }
   .ext-item .ext-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .ext-item .num { font-variant-numeric:tabular-nums; text-align:right; }
   .hook-item { grid-template-columns:minmax(170px,3fr) 124px 48px 60px 64px 64px 96px 112px 48px; }
@@ -2194,7 +2155,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .hook-sess { margin:-4px 0 8px 18px; padding:6px 10px; border-left:2px solid var(--gray-200); }
   .hook-sess-row { display:grid; grid-template-columns:80px minmax(0,1fr) 56px 70px 56px 110px; gap:10px; padding:5px 4px; font-size: 12px; cursor:pointer; border-radius:4px; }
   .hook-sess-row:hover:not(.hdr) { background:var(--gray-100); }
-  .hook-sess-row.hdr { cursor:default; font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); }
+  .hook-sess-row.hdr { cursor:default; font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); }
   .hook-sess-row > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hook-cmd { margin-top:6px; font-size:12px; color:var(--gray-500); overflow-wrap:anywhere; }
   @media (max-width:720px) { .hook-item { grid-template-columns:minmax(0,1fr) 56px 64px 48px; } }
@@ -2206,10 +2167,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ext-chart .ext-y { display:flex; flex-direction:column; justify-content:space-between; text-align:right; height:90px; margin:6px 0 2px; }
   .ext-chart .ext-x { grid-column:2; display:flex; justify-content:space-between; }
   .extd-kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:14px; }
-  .extd-kpis div { border:1px solid var(--gray-200); border-radius:8px; padding:8px 12px; font-size: 11px; color:var(--gray-500); text-transform:uppercase; letter-spacing: .06em; }
+  .extd-kpis div { border:1px solid var(--gray-200); border-radius:8px; padding:8px 12px; font-size: 11px; color:var(--gray-500); text-transform: none; letter-spacing: 0; }
   .extd-kpis b { display:block; font-size:16px; color:var(--gray-900); text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums; }
   .extd-break { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin:14px 0; }
-  .extd-break h4 { font-size: 11px; text-transform:uppercase; letter-spacing: .06em; color:var(--gray-500); margin:0 0 6px; font-weight:600; }
+  .extd-break h4 { font-size: 11px; text-transform: none; letter-spacing: 0; color:var(--gray-500); margin:0 0 6px; font-weight:600; }
   .extd-bar { display:grid; grid-template-columns:minmax(0,1fr) 44px; gap:8px; font-size:13px; padding:2px 0; }
   .extd-bar span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; background:linear-gradient(90deg,var(--md-primary-soft,#e8eefc) var(--w),transparent var(--w)); border-radius:4px; padding:1px 6px; }
   .extd-bar em { font-style:normal; text-align:right; font-variant-numeric:tabular-nums; color:var(--gray-500); }
@@ -2230,7 +2191,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
   .ring-pct { font-size: 32px; font-weight: 600; letter-spacing: -.02em; color: var(--ink); line-height: 1; font-variant-numeric: tabular-nums; }
   .ring-pct small { font-size: 20px; font-weight: 500; margin-left: 1px; }
-  .ring-cap { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 8px; }
+  .ring-cap { font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted); margin-top: 8px; }
   .ring-legend { display: grid; gap: 14px; font-size: 14px; color: var(--ink-2); min-width: 210px; }
   .ring-legend > div { display: flex; align-items: center; gap: 10px; }
   .ring-legend b { margin-left: auto; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
@@ -2241,7 +2202,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .strip-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; }
   /* Global time window: lives in the top bar so every tab shares one control. */
   .topbar-days { font-size: 13px; padding: 6px 10px; border-radius: 6px; }
-  .kpi-label { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .kpi-label { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--muted); }
   .kpi-strip {
     display: grid; grid-template-columns: repeat(4, 1fr);
     border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin-bottom: 40px;
@@ -2259,7 +2220,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .kpi-strip .kpi-delta .up { color: var(--bad); } .kpi-strip .kpi-delta .down { color: var(--ok); }
 
   /* the five-step strip */
-  .steps-label { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 14px; }
+  .steps-label { font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--muted); margin-bottom: 14px; }
   .steps {
     display: grid; grid-template-columns: repeat(5, 1fr); background: var(--surface);
     border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; margin-bottom: 36px;
@@ -2287,10 +2248,10 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .card { padding: 20px 22px; }
   .card-title { font-size: 14px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; margin-bottom: 14px; }
   .section { margin: 36px 0 14px 0; }
-  .section h2 { font-size: 12px; font-weight: 500; letter-spacing: .14em; color: var(--muted); }
+  .section h2 { font-size: 12px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
   .section .rule { display: none; }
   .section .hint { font-size: 12px; color: var(--muted); }
-  th { font-size: 12px; letter-spacing: .1em; color: var(--muted); border-bottom-color: var(--hairline); }
+  th { font-size: 12px; letter-spacing: 0; color: var(--muted); border-bottom-color: var(--hairline); }
   td { font-size: 13px; color: var(--ink-2); border-bottom-color: var(--gray-100); }
   tbody tr:hover td { background: var(--gray-50); }
   .kpi-value { color: var(--ink); }
@@ -2315,7 +2276,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   html[data-theme="dark"] .prismor-cta-text strong { color: #0e1116; }
   html[data-theme="dark"] .prismor-cta-text span { color: rgba(14,17,22,.7); }
   html[data-theme="dark"] .prismor-cta-btn { background: #0e1116; color: var(--ink); }
-  #loadingScreen { background: var(--app-bg); }
 
   /* policy page */
   .pc-agent-note { font-size: 13px; color: var(--gray-600); line-height: 1.5; margin: 4px 0 14px; }
@@ -2356,7 +2316,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   html[data-theme="dark"] .upgrade-btn.rt-paused { color: #fbbf24; border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
   .cl-body { padding: 8px 28px 22px; font-size: 13px; line-height: 1.55; color: var(--gray-700); max-height: 55vh; overflow-y: auto; }
   .cl-body h2 { font-size: 14px; margin: 18px 0 6px; color: var(--ink); }
-  .cl-body h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 0 4px; }
+  .cl-body h3 { font-size: 11px; text-transform: none; letter-spacing: 0; color: var(--muted); margin: 12px 0 4px; }
   .cl-body ul { padding-left: 18px; }
   .cl-body li { margin: 4px 0; }
   .cl-out { white-space: pre-wrap; font-size: 12px; background: var(--gray-100); border-radius: 6px; padding: 10px; margin: 0 28px 16px; max-height: 160px; overflow: auto; }
@@ -2364,7 +2324,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .policy-scope-btn { font-size: 13px; padding: 10px 12px; border-radius: 0; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .policy-scope-btn.active { background: none; box-shadow: none; color: var(--ink); border-bottom-color: var(--ink); }
   .policy-scope-sep {
-    font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+    font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted);
     margin-left: 22px; padding-right: 6px; border-left: 1px solid var(--hairline); padding-left: 18px;
   }
   .rules-legend { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; font-size: 13px; color: var(--ink-2); margin: 2px 0 14px; }
@@ -2397,22 +2357,12 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   /* mcp servers */
   .mcp-summary { margin-bottom: 28px; }
-  .mcp-card { margin-bottom: 8px; padding-top: 10px; padding-bottom: 10px; }
-  .mcp-card > summary { list-style: none; cursor: pointer; margin-bottom: 0; }
-  .mcp-card > summary::-webkit-details-marker { display: none; }
-  .mcp-card > summary::before { content: "\25B8"; color: var(--muted); font-size: 12px; transition: transform .12s; }
-  .mcp-card[open] > summary::before { transform: rotate(90deg); }
-  .mcp-card[open] > summary { margin-bottom: 10px; }
   .mcp-brief { display: inline-flex; gap: 12px; font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
   .mcp-head-right { display: inline-flex; align-items: center; gap: 10px; }
-  .mcp-card .tp-btns { display: inline-flex; align-items: center; gap: 8px; }
-  .mcp-card-direct { border-color: #efdcae; }
   .mcp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
   .mcp-pane-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .mcp-cols, .mcp-row { display: grid; grid-template-columns: minmax(0, 1fr) 84px 110px 96px 150px; align-items: center; gap: 12px; }
-  .mcp-cols { padding: 0 17px 6px 37px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-  .mcp-card > summary.mcp-row::before { position: absolute; margin-left: -18px; }
-  .mcp-card > summary.mcp-row { position: relative; padding-left: 18px; flex-wrap: nowrap; }
+  .mcp-cols { padding: 0 17px 6px 37px; font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted); }
   .mcp-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
   .mcp-id { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; min-width: 0; }
   .mcp-sub { flex-basis: 100%; }
@@ -2446,7 +2396,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .mcp-kind-seen { color: #3f5470; background: #eef2f6; }
   .mcp-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--ink-2); margin: 4px 0; min-width: 0; }
   .mcp-meta code { font-family: var(--font-mono); font-size: 12px; background: var(--gray-100); border-radius: 4px; padding: 2px 6px; max-width: 60ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mcp-meta-k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .mcp-meta-k { font-size: 11px; letter-spacing: 0; text-transform: none; color: var(--muted); }
   .mcp-meta-src { color: var(--muted); font-size: 12px; }
   .mcp-muted { color: var(--muted); }
   .mcp-usage { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--hairline); border-bottom: 1px solid var(--hairline); margin: 14px 0; }
@@ -2692,7 +2642,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .card, .drawer-event-card, .rt-bar, .prec-table, .tp-grid, .agent-ctrl-card, .banner, .chart-card { border-radius: var(--r-card); }
 
   /* Small caps labels: one recipe */
-  .kpi-label, .steps-label, .ring-cap, .policy-scope-sep, th { font-size: 11px; font-weight: 500; letter-spacing: .06em; }
+  .kpi-label, .steps-label, .ring-cap, .policy-scope-sep, th { font-size: 11px; font-weight: 500; letter-spacing: 0; }
 
   /* Tablets and small laptops: the top bar holds up to nine controls, which
      ran off the right edge below ~1100px. Labels go first, then it scrolls. */
@@ -2761,6 +2711,451 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     .prec-summary { flex-basis: 100%; order: 1; }
     .prec-toggle { margin-left: auto; }
   }
+
+  /* ═══ Consistency layer (Bifrost review, 2026-11) ═══════════════════════
+     Every page opens with the same header: a title and one sentence. Detail
+     pages carry their trail in the top bar. Links styled as buttons are not
+     underlined. One filter bar height and one empty/loading look. */
+  .page > .section:first-child { display: block; margin: 0 0 20px; }
+  .page > .section:first-child h2 {
+    font-size: 18px; font-weight: 600; color: var(--ink); text-transform: none; letter-spacing: 0; line-height: 1.3;
+  }
+  .page > .section:first-child .rule { display: none; }
+  .page > .section:first-child .hint {
+    display: block; margin-top: 4px; font-size: 13px; line-height: 1.5; color: var(--muted); max-width: 760px;
+  }
+  .page > .section:first-child .hint code { font-size: 12px; }
+  #breadcrumbSub .crumbs { font-size: 14px; gap: 6px; }
+  #breadcrumbSub .crumbs a { color: var(--muted); }
+  #breadcrumbSub .crumbs > :last-child { color: var(--ink); font-weight: 500; }
+  .view-topbar:not(:has(.crumbs)) { display: none; }
+  a.upgrade-btn, a.btn-primary, a.btn-ghost, a.btn-line { text-decoration: none; }
+  .sess-filters { flex-wrap: nowrap; }
+  .sess-filters .finput { flex: 1 1 220px; min-width: 160px; width: auto; }
+  .sess-filters .fsel { flex: 0 1 auto; min-width: 0; }
+  @media (max-width: 1100px) { .sess-filters { flex-wrap: wrap; } }
+  .empty, .flow-empty, .node-panel-empty { padding: 32px 16px; text-align: center; font-size: 13px; color: var(--muted); }
+  /* A selected filter chip looks the same on every page: outlined, not filled. */
+  html .ext-filter.on { background: transparent; color: var(--ink); border-color: var(--btn-outline); box-shadow: none; }
+  html .ext-filter.on:hover { background: var(--gray-100); }
+  /* Row titles are plain text that underlines on hover, as on Sessions. */
+  .ext-name { text-decoration: none; }
+  .ext-row:hover .ext-name, .ext-name:hover { text-decoration: underline; }
+
+  /* ═══ Saas UI layer ═════════════════════════════════════════════════════
+     The look of Saas UI (saas-ui.dev, MIT) without React: its neutral
+     OKLCH greys (base seed oklch(.5 .012 260)), hairline borders drawn as
+     ink at 10% alpha, Inter/system type at 13px, 28/32px controls, sentence
+     case labels, a quiet sidebar on the page background and the content in
+     one bordered "inset" panel. Values are the preset's light/dark formulas
+     evaluated at contrast 0. Appended last so it wins on source order. */
+  :root {
+    --sui-bg: oklch(0.985 0.0024 260);
+    --sui-surface: oklch(0.995 0.0024 260);
+    --sui-inset: oklch(0.965 0.0042 260);
+    --sui-fg: oklch(0.18 0.0036 260);
+    --sui-fg-emph: oklch(0.26 0.0048 260);
+    --sui-fg-muted: oklch(0.42 0.0066 260);
+    --sui-fg-subtle: oklch(0.52 0.006 260);
+    --sui-border: oklch(0.18 0.0036 260 / 0.10);
+    --sui-border-muted: oklch(0.18 0.0036 260 / 0.055);
+    --sui-border-emph: oklch(0.18 0.0036 260 / 0.16);
+    --sui-hover: oklch(0.18 0.0036 260 / 0.05);
+    --sui-selected: oklch(0.18 0.0036 260 / 0.075);
+    --sui-shadow-xs: 0 1px 2px oklch(0 0 0 / .05), 0 0 1px oklch(0 0 0 / .05);
+    --sui-shadow-sm: 0 2px 4px oklch(0 0 0 / .05), 0 0 2px oklch(0 0 0 / .05);
+    --sui-shadow-overlay: 0 8px 16px oklch(0 0 0 / .05), 0 0 4px oklch(0 0 0 / .05), 0 0 1px oklch(0 0 0 / .8);
+
+    --ink: var(--sui-fg); --ink-2: var(--sui-fg-emph); --muted: var(--sui-fg-muted);
+    --hairline: var(--sui-border); --hairline-strong: var(--sui-border-emph);
+    --gray-50: oklch(0.975 0.003 260); --gray-100: var(--sui-inset); --gray-200: var(--sui-border);
+    --gray-300: var(--sui-border-emph); --gray-400: var(--sui-fg-subtle); --gray-500: var(--sui-fg-muted);
+    --gray-600: var(--sui-fg-emph); --gray-700: var(--sui-fg-emph); --gray-800: var(--sui-fg); --gray-900: var(--sui-fg);
+    --app-bg: var(--sui-bg); --surface: var(--sui-surface); --surface-muted: var(--sui-inset); --surface-strong: var(--sui-surface);
+    --accent: var(--sui-fg); --md-primary: var(--sui-fg); --md-primary-soft: var(--sui-selected);
+    --btn-outline: var(--sui-border-emph);
+    --md-e1: none; --md-e2: var(--sui-shadow-xs); --md-e3: var(--sui-shadow-overlay);
+    --tone-neutral-bg: var(--sui-inset); --tone-neutral-fg: var(--sui-fg-emph);
+    --tone-danger-bg: oklch(0.577 0.245 27.3 / .09); --tone-danger-fg: oklch(0.44 0.16 27.3);
+    --tone-warn-bg: oklch(0.769 0.188 70 / .14);    --tone-warn-fg: oklch(0.44 0.11 60);
+    --tone-info-bg: oklch(0.623 0.214 259 / .09);   --tone-info-fg: oklch(0.44 0.139 259);
+    --tone-ok-bg: oklch(0.627 0.194 149 / .10);     --tone-ok-fg: oklch(0.44 0.126 149);
+    --font-ui: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --font-code: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    --sidebar-w: 232px; --topbar-h: 52px;
+    --r-ctl: 6px; --r-card: 8px;
+  }
+  html[data-theme="dark"] {
+    --sui-bg: oklch(0.14 0.0024 260);
+    --sui-surface: oklch(0.17 0.0036 260);
+    --sui-elevated: oklch(0.2 0.0054 260);
+    --sui-inset: oklch(0.11 0.0036 260);
+    --sui-fg: oklch(0.94 0.0036 260);
+    --sui-fg-emph: oklch(0.84 0.0048 260);
+    --sui-fg-muted: oklch(0.72 0.0066 260);
+    --sui-fg-subtle: oklch(0.6 0.006 260);
+    --sui-border: oklch(0.94 0.0036 260 / 0.12);
+    --sui-border-muted: oklch(0.94 0.0036 260 / 0.066);
+    --sui-border-emph: oklch(0.94 0.0036 260 / 0.18);
+    --sui-hover: oklch(0.94 0.0036 260 / 0.06);
+    --sui-selected: oklch(0.94 0.0036 260 / 0.09);
+    --sui-shadow-xs: 0 1px 1px oklch(0 0 0 / .3), inset 0 0 1px oklch(1 0 0 / .05);
+    --sui-shadow-sm: 0 2px 4px oklch(0 0 0 / .3), inset 0 0 1px oklch(1 0 0 / .05);
+    --sui-shadow-overlay: 0 8px 16px oklch(0 0 0 / .2), 0 0 3px oklch(0 0 0 / .2), 0 0 1px oklch(1 0 0 / .5);
+    --gray-50: oklch(0.155 0.003 260); --gray-100: oklch(0.2 0.0054 260);
+    --surface-strong: var(--sui-elevated); --surface-muted: oklch(0.155 0.003 260);
+    --tone-neutral-bg: oklch(0.94 0.0036 260 / .08);
+    --tone-danger-bg: oklch(0.577 0.245 27.3 / .16); --tone-danger-fg: oklch(0.8 0.1 27.3);
+    --tone-warn-bg: oklch(0.769 0.188 70 / .16);    --tone-warn-fg: oklch(0.84 0.11 75);
+    --tone-info-bg: oklch(0.623 0.214 259 / .16);   --tone-info-fg: oklch(0.8 0.09 259);
+    --tone-ok-bg: oklch(0.627 0.194 149 / .16);     --tone-ok-fg: oklch(0.8 0.1 149);
+  }
+  html, body { background: var(--sui-bg); }
+  body { font-family: var(--font-ui); font-size: 13px; line-height: 1.5; color: var(--ink-2);
+         -webkit-font-smoothing: antialiased; font-feature-settings: "cv11", "ss01"; }
+  ::selection { background: oklch(0.18 0.0036 260 / .12); }
+  pre, code, .yaml-editor, .doc-body pre, .doc-cmd { font-family: var(--font-code); }
+
+  /* Shell: top bar and sidebar sit on the page background; the page is one
+     bordered panel beside them (Saas UI AppShell, "inset" variant). */
+  .topbar, .tab-nav, html[data-theme="dark"] .topbar, html[data-theme="dark"] .tab-nav {
+    background: var(--sui-bg); border: 0; box-shadow: none;
+  }
+  .topbar { height: var(--topbar-h); padding: 0 16px; }
+  .topbar-brand .sidebar-brand-name { font-size: 15px; }
+  .tab-nav { padding: 4px 12px 16px; gap: 1px; }
+  .nav-group { font-size: 12px; font-weight: 500; color: var(--sui-fg-subtle); padding: 16px 8px 4px; }
+  .tab-nav .tab-btn {
+    min-height: 30px; padding: 5px 8px; gap: 10px; border-radius: var(--r-ctl);
+    font-size: 13px; font-weight: 500; color: var(--sui-fg-muted); border: 0;
+  }
+  .tab-nav .tab-btn .icon { width: 16px; height: 16px; color: var(--sui-fg-subtle); }
+  .tab-nav .tab-btn:hover { background: var(--sui-hover); color: var(--sui-fg); }
+  .tab-nav .tab-btn.active, html[data-theme="dark"] .tab-nav .tab-btn.active {
+    background: var(--sui-selected); color: var(--sui-fg); font-weight: 500; border-radius: var(--r-ctl);
+  }
+  .tab-nav .tab-btn.active .icon { color: var(--sui-fg); }
+  .tab-sub { font-size: 11px; color: var(--sui-fg-subtle); }
+  .tab-count { font: 12px var(--font-ui); color: var(--sui-fg-subtle); }
+  @media (min-width: 901px) {
+    .page.active {
+      background: var(--sui-surface); border: 1px solid var(--sui-border); box-shadow: var(--sui-shadow-xs);
+      border-radius: 10px; margin-right: 8px; margin-bottom: 8px;
+      min-height: calc(100vh - var(--topbar-h) - 8px); padding: 24px 32px 40px;
+    }
+    #page-session.page.active, #page-docs.page.active { height: calc(100vh - var(--topbar-h) - 8px); }
+  }
+
+  /* Surfaces inside the panel: outline cards, no drop shadows. */
+  .card, .agent-hero, .agent-stat, .agent-ctrl-card, .session-hero, .node-panel, .flow-card,
+  .chart-card, .ext-stat, .rt-bar, .prec-table, .tp-grid, .drawer-event-card {
+    background: var(--sui-surface); border: 1px solid var(--sui-border); box-shadow: none; border-radius: var(--r-card);
+  }
+  .card:hover, .agent-stat:hover { box-shadow: none; }
+  html[data-theme="dark"] .card, html[data-theme="dark"] .ext-stat { background: var(--sui-surface); }
+  .banner, .banner-info, .banner-enterprise, .banner-warn {
+    background: var(--sui-inset); border: 1px solid var(--sui-border); border-radius: var(--r-card); color: var(--ink-2);
+  }
+  .banner-warn { background: var(--tone-warn-bg); }
+  .sess-drawer, .up-modal, .up-modal-overlay > div { box-shadow: var(--sui-shadow-overlay); border: 0; }
+
+  /* Labels: sentence case, medium, muted. */
+  .card-title, .kpi-label, .sev-label, .steps-label, .ring-cap, th, .section h2, .doc-group, .agent-stat-label, .ext-stat span {
+    font-size: 12px; font-weight: 500; color: var(--sui-fg-muted);
+  }
+  .page > .section:first-child h2 { font-size: 20px; font-weight: 600; color: var(--sui-fg); letter-spacing: -0.01em; }
+  .page > .section:first-child .hint { color: var(--sui-fg-muted); }
+
+  /* Tables: line variant. */
+  th { font-weight: 500; padding: 0 16px 8px 0; border-bottom: 1px solid var(--sui-border); }
+  td { padding: 9px 16px 9px 0; border-bottom: 1px solid var(--sui-border-muted); color: var(--ink-2); }
+  tbody tr:hover td, html[data-theme="dark"] tbody tr:hover td { background: var(--sui-hover); }
+
+  /* Buttons: solid (primary), surface (default), ghost. */
+  .hero h1, .attn-title { font-size: 30px; letter-spacing: -0.02em; line-height: 1.15; }
+  .hero, #page-overview .hero { padding-top: 4px; }
+  .btn-primary, html[data-theme="dark"] .btn-primary, .prismor-cta-btn, .btn-ok {
+    background: var(--sui-fg); color: var(--sui-bg); border: 0; box-shadow: var(--sui-shadow-sm); border-radius: var(--r-ctl);
+  }
+  .btn-primary:hover, html[data-theme="dark"] .btn-primary:hover, .btn-ok:hover { background: oklch(from var(--sui-fg) l c h / .9); box-shadow: var(--sui-shadow-sm); }
+  .upgrade-btn, .theme-toggle, .btn-line, .pg-btn, .view-back, .fbtn, .sess-act-btn, .ext-filter, .ext-approve,
+  html[data-theme="dark"] .upgrade-btn, html[data-theme="dark"] .pg-btn {
+    background: var(--sui-surface); color: var(--ink-2); border: 1px solid var(--sui-border-emph);
+    box-shadow: none; border-radius: var(--r-ctl); font-weight: 500;
+  }
+  .upgrade-btn:hover, .theme-toggle:hover, .btn-line:hover, .pg-btn:not(:disabled):hover, .view-back:hover,
+  .fbtn:hover, .sess-act-btn:hover, .ext-filter:hover, .ext-approve:hover {
+    background: var(--sui-inset); color: var(--sui-fg); box-shadow: none;
+  }
+  .btn-ghost, .inline-link-btn, .sess-act-btn.expand { background: transparent; border-color: transparent; color: var(--sui-fg-muted); }
+  .btn-ghost:hover, .inline-link-btn:hover, .sess-act-btn.expand:hover { background: var(--sui-hover); color: var(--sui-fg); }
+  html .fbtn.active, html .ext-filter.on, html .rules-filters .fbtn.active, .pg-num.cur, html[data-theme="dark"] .pg-num.cur {
+    background: var(--sui-selected); color: var(--sui-fg); border-color: var(--sui-border-emph); box-shadow: none;
+  }
+
+  /* Inputs and selects: surface bg, emphasized hairline, focus ring in ink. */
+  .fsel, .finput, .agent-switch, .rules-search, .topbar-days, #docsSearch, #filesSearch, .tool-add-select, .docs-search {
+    background-color: var(--sui-surface); border: 1px solid var(--sui-border-emph); color: var(--sui-fg); box-shadow: none;
+  }
+  .fsel:hover, .finput:hover, .agent-switch:hover, .rules-search:hover { border-color: oklch(from var(--sui-fg) l c h / .28); }
+  .fsel:focus, .finput:focus, .agent-switch:focus, .rules-search:focus, .yaml-editor:focus {
+    border-color: var(--sui-fg); box-shadow: 0 0 0 1px var(--sui-fg);
+  }
+  .yaml-editor { background: var(--sui-inset); border: 1px solid var(--sui-border); }
+
+  /* Badges: subtle variant, full radius, 1px inset ring. */
+  .badge, .agent-pill, .src-pill, .status-pill, .scoped-tag, .adv-pill, .sugg-pill, .trigger-kind,
+  .event-sess-link, .tool-tag-badge, .hook-pill, .rule-verdict, .rule-lock, .ext-badge, .ext-cap, .ext-kind,
+  .flow-node-chip, .flow-node-verdict {
+    font-size: 12px; height: 20px; padding: 0 7px;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 14%, transparent);
+  }
+
+  /* Tabs: line variant. Segmented control: inset track, raised selection. */
+  .ext-kinds .ext-view, .policy-scope-btn, .pc-sub-btn { color: var(--sui-fg-muted); }
+  .ext-kinds .ext-view.on, .policy-scope-btn.active { color: var(--sui-fg); border-bottom-color: var(--sui-fg); }
+  .ext-views:not(.ext-kinds) { background: var(--sui-inset); border: 1px solid var(--sui-border-muted); }
+  .ext-views:not(.ext-kinds) .ext-view.on { background: var(--sui-surface); color: var(--sui-fg); box-shadow: var(--sui-shadow-xs); }
+
+  /* Switch: checked track in ink, like Saas UI's gray palette. */
+  .rule-toggle input:checked + .rule-track { background: var(--sui-fg); }
+  .rule-track { background: var(--sui-border-emph); }
+  .rule-track::before { background: var(--sui-surface); box-shadow: var(--sui-shadow-xs); }
+  html[data-theme="dark"] .rule-toggle input:checked + .rule-track::before { background: var(--sui-bg); }
+
+  /* Focus: 1px offset ring, as in the preset. */
+  button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
+    outline: 1px solid var(--sui-fg); outline-offset: 1px;
+  }
+
+  /* MCP tab (after Bifrost's MCP catalog): toolbar, table, side panel. */
+  .mcp-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0 12px; }
+  .mcp-toolbar .finput { width: 260px; }
+  .mcp-kinds { display: flex; gap: 6px; flex-wrap: wrap; }
+  .mcp-kinds small, .mcp-tool-views small, .mcp-section-h small { color: var(--sui-fg-subtle); font-weight: 400; margin-left: 2px; }
+  .mcp-table-card { padding: 4px 16px 8px; }
+  .mcp-table td { vertical-align: middle; }
+  .mcp-table tr.clickable-row { cursor: pointer; }
+  .mcp-table tr.sel td { background: var(--sui-selected); }
+  .mcp-table .mcp-who { display: inline-flex; align-items: center; gap: 10px; }
+  .mcp-table .mcp-name { font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--sui-fg); }
+  .mcp-table .mcp-blocked { font-size: 11px; color: var(--tone-danger-fg); }
+  .mcp-avatar { width: 24px; height: 24px; border-radius: var(--r-ctl); background: var(--sui-inset); color: var(--sui-fg-muted);
+    box-shadow: inset 0 0 0 1px var(--sui-border); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex: none; }
+  .tone { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap;
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, currentColor 14%, transparent); background: var(--tone-neutral-bg); color: var(--tone-neutral-fg); }
+  .tone.t-ok { background: var(--tone-ok-bg); color: var(--tone-ok-fg); }
+  .tone.t-info { background: var(--tone-info-bg); color: var(--tone-info-fg); }
+  .tone.t-warn { background: var(--tone-warn-bg); color: var(--tone-warn-fg); }
+  .tone.t-danger { background: var(--tone-danger-bg); color: var(--tone-danger-fg); }
+  .tone.t-outline { background: transparent; color: var(--sui-fg-muted); font-size: 12px; box-shadow: inset 0 0 0 1px var(--sui-border-emph); }
+  .mcp-drawer { width: 600px; right: -640px; }
+  .mcp-drawer.open { right: 0; }
+  .mcp-drawer-head { align-items: center; gap: 12px; padding: 14px 16px; }
+  .mcp-drawer-head .mcp-avatar { width: 32px; height: 32px; font-size: 14px; }
+  .mcp-drawer-title { font-size: 15px; font-weight: 600; color: var(--sui-fg); overflow-wrap: anywhere; }
+  .mcp-drawer-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; font-size: 12px; }
+  .mcp-drawer-nav { margin-left: auto; display: inline-flex; gap: 2px; flex: none; align-self: flex-start; }
+  .mcp-drawer-nav .sess-drawer-close { margin-left: 0; }
+  .mcp-drawer-nav .sess-drawer-close:disabled { opacity: .35; cursor: default; }
+  #mcpDrawerBody > .banner { margin-bottom: 14px; }
+  .mcp-stats { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--sui-border); border-radius: var(--r-card); margin-bottom: 18px; }
+  .mcp-stats > div { padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .mcp-stats > div + div { border-left: 1px solid var(--sui-border); }
+  .mcp-stats span { font-size: 12px; color: var(--sui-fg-muted); }
+  .mcp-stats b { font-size: 16px; font-weight: 600; color: var(--sui-fg); }
+  .mcp-stats small { font-size: 11px; color: var(--sui-fg-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-stats small a { color: var(--sui-fg); text-decoration: underline; text-underline-offset: 2px; }
+  .mcp-section-h { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--sui-fg); margin: 18px 0 8px; }
+  .mcp-section-h .mcp-tool-views { margin-left: auto; }
+  .mcp-kv { border: 1px solid var(--sui-border); border-radius: var(--r-card); }
+  .mcp-kv-row { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  .mcp-kv-row + .mcp-kv-row { border-top: 1px solid var(--sui-border); }
+  .mcp-kv-top { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sui-fg); }
+  .mcp-mono, .mcp-cmd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .mcp-mono code, .mcp-cmd code { flex: 1; min-width: 0; font: 12.5px var(--font-ui); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-cmd { margin-top: 6px; padding: 6px 6px 6px 10px; border-radius: var(--r-ctl); background: var(--sui-inset); border: 1px solid var(--sui-border); }
+  .mcp-copy { flex: none; height: 22px; padding: 0 8px; font-size: 11px; font-weight: 500; border-radius: var(--r-ctl); cursor: pointer;
+    background: var(--sui-surface); color: var(--sui-fg-muted); border: 1px solid var(--sui-border-emph); }
+  .mcp-copy:hover { color: var(--sui-fg); background: var(--sui-inset); }
+  .mcp-mode { display: flex; align-items: center; gap: 12px; }
+  .mcp-tools { border: 1px solid var(--sui-border); border-radius: var(--r-card); }
+  .mcp-tool { display: flex; align-items: center; gap: 12px; padding: 8px 12px; }
+  .mcp-tool + .mcp-tool { border-top: 1px solid var(--sui-border-muted); }
+  .mcp-tool-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .mcp-tool-main code { font: 500 13px var(--font-ui); color: var(--sui-fg); overflow-wrap: anywhere; }
+  .mcp-tool.off .mcp-tool-main code { color: var(--sui-fg-subtle); text-decoration: line-through; }
+  .mcp-tool .tp-stats { display: flex; gap: 8px; margin: 0; justify-content: flex-start; font-size: 11px; color: var(--sui-fg-muted); }
+  .mcp-tool .tp-blocked { color: var(--tone-danger-fg); }
+  .seg { display: inline-flex; flex: none; padding: 2px; gap: 2px; border-radius: var(--r-ctl); background: var(--sui-inset); border: 1px solid var(--sui-border-muted); }
+  .seg button { height: 22px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--sui-fg-muted);
+    font: 500 12px var(--font-ui); cursor: pointer; }
+  .seg button:hover:not(.on):not(:disabled) { color: var(--sui-fg); }
+  .seg button.on { background: var(--sui-surface); color: var(--sui-fg); box-shadow: var(--sui-shadow-xs); cursor: default; }
+  .seg button.on.ask { color: var(--tone-warn-fg); }
+  .seg button.on.off { color: var(--tone-danger-fg); }
+  .seg button:disabled:not(.on) { opacity: .5; cursor: default; }
+  .tp-toggle.on { background: var(--sui-fg); border-color: var(--sui-fg); }
+  @media (max-width: 720px) { .mcp-stats { grid-template-columns: repeat(2, 1fr); } .mcp-stats > div:nth-child(3) { border-left: 0; } .mcp-table th:nth-child(n+3):not(:last-child), .mcp-table td:nth-child(n+3):not(:last-child) { display: none; } }
+
+  /* ═══ Status layer ════════════════════════════════════════════════════
+     No tinted pills. A state reads as Chakra v3's Status (the base Saas UI
+     builds on): a 6px dot in the state's color, then the label in plain
+     text. A neutral tag is an outline badge with a 4px radius. Color lives
+     only in the dot, never in a background. */
+  :root {
+    --dot-danger: oklch(0.62 0.2 27); --dot-warn: oklch(0.76 0.15 75); --dot-ok: oklch(0.66 0.14 152);
+    --dot-info: oklch(0.62 0.14 255); --dot-gray: oklch(0.65 0.01 260);
+  }
+  :is(.status-pill, .sev-badge, .rule-sev, .rule-verdict, .ext-badge, .flow-node-verdict, .tone:not(.t-outline), .badge, .mode-chip) {
+    --dot: var(--dot-gray);
+    display: inline-flex !important; align-items: center; gap: 6px; height: auto !important; padding: 0 !important;
+    background: none !important; border: 0 !important; box-shadow: none !important; border-radius: 0 !important;
+    color: var(--sui-fg-muted) !important; font-size: 12px !important; font-weight: 500 !important;
+    text-transform: none !important; letter-spacing: 0 !important; white-space: nowrap;
+  }
+  :is(.status-pill, .sev-badge, .rule-sev, .rule-verdict, .ext-badge, .flow-node-verdict, .tone:not(.t-outline)):not(:has(.status-dot, .badge-dot))::before {
+    content: "" !important; display: inline-block !important; width: 6px !important; height: 6px !important; margin: 0 !important;
+    border-radius: 50% !important; background: var(--dot) !important; flex: none; transform: none !important;
+  }
+  :is(.status-pill, .badge, .mode-chip) :is(.status-dot, .badge-dot) {
+    width: 6px !important; height: 6px !important; border-radius: 50% !important; background: var(--dot) !important; box-shadow: none !important; animation: none;
+  }
+  :is(.sev-critical, .sev-high, .CRITICAL, .critical, .HIGH, .high, .rule-verdict.blocks, .status-blocked, .flow-node-verdict.block, .ext-badge.changed, .t-danger, .mode-chip.enforce) { --dot: var(--dot-danger); }
+  :is(.sev-medium, .MEDIUM, .medium, .ext-badge.new, .flow-node-verdict.warn, .status-paused, .t-warn) { --dot: var(--dot-warn); }
+  :is(.ext-badge.approved, .status-active, .flow-node-verdict.allow, .t-ok) { --dot: var(--dot-ok); }
+  :is(.status-scoped, .t-info, .mode-chip.observe, .rule-verdict.reports) { --dot: var(--dot-info); }
+  /* The topbar mode chip is a button: keep the outline, the state is the dot. */
+  #modeChip.mode-chip { height: 28px !important; padding: 0 10px !important; border: 1px solid var(--sui-border-emph) !important; border-radius: var(--r-ctl) !important;
+    background: var(--sui-surface) !important; color: var(--sui-fg) !important; }
+  .upgrade-btn.rt-paused, .upgrade-btn.rt-appr { background: var(--sui-surface) !important; color: var(--sui-fg) !important; border-color: var(--sui-border-emph) !important; }
+  .upgrade-btn.rt-paused::before, .upgrade-btn.rt-appr::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--dot-warn); display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .upgrade-btn.rt-paused:has(.rt-dot)::before { content: none; }
+  /* Neutral tags: outline badge. */
+  :is(.agent-pill, .src-pill, .scoped-tag, .adv-pill, .sugg-pill, .trigger-kind, .tool-tag-badge, .hook-pill, .rule-lock, .ext-cap, .ext-kind, .flow-node-chip, .tone.t-outline) {
+    display: inline-flex; align-items: center; height: 20px !important; padding: 0 6px !important; border-radius: 4px !important;
+    background: none !important; border: 0 !important; box-shadow: inset 0 0 0 1px var(--sui-border-emph) !important;
+    color: var(--sui-fg-muted) !important; font-size: 12px !important; font-weight: 500 !important; text-transform: none !important; letter-spacing: 0 !important;
+  }
+
+  /* Logs page (after Bifrost's log views). */
+  .logs-filterbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .logs-fbtn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 10px; border-radius: var(--r-ctl);
+    border: 1px dashed var(--sui-border-emph); background: transparent; color: var(--sui-fg-muted); font: 500 12.5px var(--font-ui); cursor: pointer; max-width: 280px; }
+  .logs-fbtn:hover { background: var(--sui-hover); color: var(--sui-fg); }
+  .logs-fbtn.on { border-style: solid; background: var(--sui-surface); color: var(--sui-fg); }
+  .logs-fbtn.open { border-style: solid; border-color: var(--sui-fg); color: var(--sui-fg); }
+  .logs-fval { padding-left: 6px; border-left: 1px solid var(--sui-border-emph); color: var(--sui-fg); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .logs-chev { width: 14px; height: 14px; flex: none; color: var(--sui-fg-subtle); }
+  .logs-fclear { margin-left: 4px; }
+  .logs-pop { position: fixed; z-index: 1200; width: 300px; display: flex; flex-direction: column; background: var(--sui-surface);
+    border: 1px solid var(--sui-border); border-radius: var(--r-card); box-shadow: 0 12px 32px -8px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.06); padding: 6px; }
+  .logs-pop[hidden] { display: none; }
+  .logs-pop-q { width: 100%; margin-bottom: 4px; }
+  .logs-pop-list { max-height: 300px; overflow: auto; }
+  .logs-pop-more { padding: 8px; font-size: 12px; color: var(--sui-fg-subtle); }
+  .logs-pop-foot { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--sui-fg-muted); padding: 0 6px; }
+  .logs-pop-foot:not(:empty) { border-top: 1px solid var(--sui-border-muted); padding-top: 6px; margin-top: 4px; }
+  .logs-opt { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; font-size: 13px; color: var(--sui-fg); cursor: pointer; min-width: 0; }
+  .logs-opt:hover { background: var(--sui-hover); }
+  .logs-opt input { accent-color: var(--sui-fg); margin: 0; flex: none; }
+  .logs-opt-v { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .logs-opt .tone { flex: 1; }
+  .logs-opt-n { color: var(--sui-fg-subtle); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .logs-also { margin-left: 8px; font-size: 12px; color: var(--sui-fg-muted) !important; }
+  .logs-main { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .logs-toolbar { display: flex; align-items: center; gap: 8px; }
+  .logs-toolbar .finput { flex: 1; min-width: 160px; }
+  .logs-toolbar .btn-line .icon { width: 14px; height: 14px; }
+  #logsLiveBtn.on { background: var(--sui-selected); border-color: var(--sui-border-emph); color: var(--sui-fg); }
+  .logs-live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--dot-ok); display: inline-block; margin-right: 6px; animation: logsPulse 1.6s ease-in-out infinite; }
+  @keyframes logsPulse { 50% { opacity: .35; } }
+  .logs-note { font-size: 12px; color: var(--sui-fg-subtle); white-space: nowrap; }
+  .logs-stats { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--sui-border); border-radius: var(--r-card); background: var(--sui-surface); }
+  .logs-stat { padding: 12px 16px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .logs-stat + .logs-stat { border-left: 1px solid var(--sui-border); }
+  .logs-stat span { font-size: 12px; color: var(--sui-fg-muted); }
+  .logs-stat b { font-size: 22px; font-weight: 600; color: var(--sui-fg); font-variant-numeric: tabular-nums; }
+  .logs-stat small { font-size: 11.5px; color: var(--sui-fg-subtle); }
+  .logs-chart-card { padding: 12px 16px; }
+  .logs-chart-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 500; color: var(--sui-fg); margin-bottom: 8px; }
+  .logs-legend { display: flex; gap: 12px; font-size: 12px; font-weight: 400; color: var(--sui-fg-muted); }
+  .logs-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  .logs-chart-box { height: 140px; position: relative; }
+  .logs-table-card { padding: 0; overflow-x: auto; }
+  .logs-table { width: 100%; min-width: 860px; table-layout: fixed; }
+  .logs-table th:nth-child(1) { width: 14px; } .logs-table th:nth-child(2) { width: 132px; } .logs-table th:nth-child(4) { width: 110px; }
+  .logs-table th:nth-child(5) { width: 120px; } .logs-table th:nth-child(6) { width: 84px; } .logs-table th:nth-child(7) { width: 84px; }
+  .logs-table th { padding-left: 10px; }
+  .logs-table td { vertical-align: top; padding: 10px; }
+  .logs-table tr.clickable-row { cursor: pointer; }
+  .logs-table tr.sel td { background: var(--sui-selected); }
+  .logs-table td.logs-bar-col { padding: 10px 0 10px 10px; }
+  .logs-bar { display: block; width: 3px; height: 36px; border-radius: 2px; background: var(--sui-border-emph); }
+  .logs-bar.s-blocked { background: var(--dot-danger); } .logs-bar.s-flagged { background: var(--dot-warn); } .logs-bar.s-asked { background: var(--dot-info); }
+  .logs-time { font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--sui-fg); white-space: nowrap; }
+  .logs-time small { display: block; font-size: 11px; color: var(--sui-fg-subtle); margin-top: 2px; }
+  .logs-call { min-width: 0; }
+  .logs-call code { font: 500 13px var(--font-ui); color: var(--sui-fg); }
+  .logs-detail { font: 12.5px var(--font-ui); color: var(--sui-fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .logs-outcome { display: flex; align-items: center; gap: 8px; margin-top: 4px; min-width: 0; }
+  .logs-why { font-size: 12px; color: var(--sui-fg-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .logs-foot { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-top: 1px solid var(--sui-border); font-size: 12px; color: var(--sui-fg-muted); }
+  .logs-pager { display: inline-flex; align-items: center; gap: 8px; }
+  .logs-pager .btn-line { height: 26px; min-width: 26px; padding: 0 8px; }
+  .logs-kv { flex-direction: row !important; align-items: center; gap: 12px !important; padding: 8px 12px !important; }
+  .logs-k { width: 84px; flex: none; font-size: 12px; color: var(--sui-fg-muted); }
+  .logs-kv .mcp-mono { flex: 1; }
+  .logs-kv .mcp-mono code { white-space: normal; overflow-wrap: anywhere; font-family: var(--font-ui); font-size: 12.5px; }
+  .logs-kv a, .mcp-hint a { color: var(--sui-fg); text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--sui-border-emph); }
+  .logs-findings { display: flex; flex-direction: column; gap: 8px; }
+  .logs-finding { border: 1px solid var(--sui-border); border-radius: var(--r-card); padding: 10px 12px; }
+  .logs-finding-top { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--sui-fg); }
+  .logs-finding-top b { font-weight: 500; }
+  .logs-finding-meta { font-size: 12px; color: var(--sui-fg-muted); margin-top: 4px; }
+  .logs-pre { margin: 8px 0 0; padding: 10px; background: var(--sui-inset); border: 1px solid var(--sui-border-muted); border-radius: var(--r-ctl);
+    font: 12.5px/1.5 var(--font-ui); color: var(--sui-fg); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+  .logs-raw { max-height: 420px; font: 11.5px/1.5 var(--font-code); }
+  @media (max-width: 720px) { .logs-stats { grid-template-columns: repeat(2, 1fr); } .logs-stat:nth-child(3) { border-left: 0; }
+    .logs-table th:nth-child(n+4), .logs-table td:nth-child(n+4) { display: none; } }
+
+  /* Styled dropdowns (select.fsel): a trigger button and one shared menu. */
+  .sel-native { display: none !important; }
+  .sel-btn.fsel { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; cursor: pointer;
+    background-image: none !important; padding: 0 8px 0 10px !important; min-height: 28px; max-width: 100%; }
+  .sess-filters .sel-btn.fsel { min-height: 32px; }
+  .sel-btn .sel-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .sel-btn.placeholder .sel-label { color: var(--sui-fg-muted); }
+  .sel-btn .sel-chev { width: 14px; height: 14px; flex: none; color: var(--sui-fg-subtle); transition: transform .12s; }
+  .sel-btn.open { border-color: var(--sui-fg) !important; box-shadow: 0 0 0 1px var(--sui-fg); }
+  .sel-btn.open .sel-chev { transform: rotate(180deg); }
+  .sel-btn:disabled { opacity: .55; cursor: not-allowed; }
+  .sel-menu { position: fixed; z-index: 1300; display: flex; flex-direction: column; max-width: 360px; padding: 4px; outline: none;
+    background: var(--sui-surface); border: 1px solid var(--sui-border); border-radius: 10px;
+    box-shadow: 0 16px 40px -12px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.06); animation: selIn .1s ease-out; transform-origin: top; }
+  .sel-menu[hidden] { display: none; }
+  html[data-theme="dark"] .sel-menu { box-shadow: 0 16px 40px -12px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.04); }
+  @keyframes selIn { from { opacity: 0; transform: translateY(-3px) scale(.985); } }
+  .sel-search { display: flex; align-items: center; gap: 8px; padding: 4px 8px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--sui-border-muted); color: var(--sui-fg-subtle); }
+  .sel-search svg { width: 14px; height: 14px; flex: none; }
+  .sel-search input { flex: 1; min-width: 0; height: 24px; border: 0; outline: 0; background: transparent; color: var(--sui-fg); font: 13px var(--font-ui); }
+  .sel-search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+  .sel-list { max-height: 300px; overflow: auto; }
+  .sel-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 30px; padding: 0 8px; border-radius: 6px;
+    font-size: 13px; color: var(--sui-fg); cursor: pointer; white-space: nowrap; }
+  .sel-opt span { overflow: hidden; text-overflow: ellipsis; }
+  .sel-opt.act { background: var(--sui-hover); }
+  .sel-opt.on { font-weight: 500; }
+  .sel-opt[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+  .sel-check { width: 14px; height: 14px; flex: none; color: var(--sui-fg); }
+  .sel-none { padding: 10px 8px; font-size: 12.5px; color: var(--sui-fg-subtle); }
+  /* The Logs filter menu shares the same surface. */
+  .logs-pop { border-radius: 10px; box-shadow: 0 16px 40px -12px rgba(0,0,0,.22), 0 2px 8px rgba(0,0,0,.06); animation: selIn .1s ease-out; }
+  html[data-theme="dark"] .logs-pop { box-shadow: 0 16px 40px -12px rgba(0,0,0,.7), 0 0 0 1px rgba(255,255,255,.04); }
+  .logs-opt { height: 30px; padding: 0 8px; border-radius: 6px; }
+  .logs-opt input { appearance: none; -webkit-appearance: none; width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--sui-border-emph); background: var(--sui-surface); display: grid; place-content: center; cursor: pointer; }
+  .logs-opt input:checked { background: var(--sui-fg); border-color: var(--sui-fg); }
+  .logs-opt input:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--sui-surface); border-bottom: 2px solid var(--sui-surface); transform: translateY(-1px) rotate(-45deg); }
 </style>
 </head>
 <body>
@@ -2801,6 +3196,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21"/></symbol>
   <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
   <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
   <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
 </svg>
 
@@ -2809,6 +3205,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="nav-group">Run</div>
   <button class="tab-btn active" data-tab="overview" data-label="Overview"><svg class="icon"><use href="#i-home"/></svg><span>Overview</span></button>
   <button class="tab-btn" data-tab="sessions" data-label="Sessions"><svg class="icon"><use href="#i-radio"/></svg><span>Sessions</span><span class="tab-count" id="navSessions"></span></button>
+  <button class="tab-btn" data-tab="logs" data-label="Logs"><svg class="icon"><use href="#i-list"/></svg><span>Logs</span></button>
   <button class="tab-btn" data-tab="files" data-label="Files"><svg class="icon"><use href="#i-folder"/></svg><span>Files</span></button>
   <button class="tab-btn" data-tab="agents" data-label="Agents"><svg class="icon"><use href="#i-bot"/></svg><span>Agents</span><span class="tab-count" id="navAgents"></span></button>
   <div class="nav-group">Policy</div>
@@ -2837,7 +3234,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span class="breadcrumb-sep">/</span>
     <h1>Local</h1>
     <span class="breadcrumb-sep">/</span>
-    <span id="breadcrumbLabel">Overview</span>
+    <span id="breadcrumbLabel">Overview</span><span id="breadcrumbSub" hidden></span>
   </div>
   <div class="topbar-right">
     <select id="globalDays" class="fsel topbar-days" title="Time window, applied across the dashboard">
@@ -2864,7 +3261,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-files" class="page">
   <div class="section" style="margin-top:0"><h2>Files</h2><div class="rule"></div>
-    <span class="hint">every file an agent wrote, and the session that changed it</span>
+    <span class="hint">Every file an agent wrote, and the session that changed it.</span>
   </div>
   <div class="ext-layout files-layout">
     <div class="card">
@@ -2885,12 +3282,12 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div class="ext-views ext-kinds" id="extKinds"></div>
   <div id="mcpPane" style="display:none">
-    <div class="mcp-pane-head">
-      <span class="hint">Where each server is configured, and how its tools are handled. Open one to switch its tools.</span>
-      <button class="inline-link-btn" style="margin-left:auto" onclick="mcpExpandAll()">Expand all</button>
-      <button class="inline-link-btn" onclick="mcpExpandAll(false)">Collapse all</button>
-    </div>
     <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
+    <div class="mcp-toolbar">
+      <input id="mcpSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search servers or tools…" oninput="_mcpFilter.q=this.value;renderMcpServers()" />
+      <div id="mcpKinds" class="mcp-kinds"></div>
+      <button class="btn-line" style="margin-left:auto" onclick="openMcpGuide()">Govern more servers</button>
+    </div>
     <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
   </div>
   <div id="extSummary" class="ext-summary"></div>
@@ -2909,7 +3306,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <div id="page-docs" class="page">
   <div class="section"><h2>Docs</h2><div class="rule"></div>
-    <span class="hint">Docs shipped with this install</span>
+    <span class="hint">Docs shipped with this install.</span>
   </div>
   <div class="docs-search">
     <svg class="icon"><use href="#i-search"/></svg>
@@ -3233,24 +3630,15 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <div id="page-agents" class="page">
   <div class="section" style="margin-top:0">
-    <h2>Agent Control</h2><div class="rule"></div>
-    <span class="hint">kill switch, mode and IAM profile, per agent</span>
+    <h2>Agents</h2><div class="rule"></div>
+    <span class="hint">Kill switch, mode and IAM profile for each agent. <strong>Blocked</strong> stops the agent, <strong>Observe</strong> only logs, <strong>Enforce</strong> blocks. Saved to <code>.prismor/agents.yaml</code>.</span>
   </div>
 
-  <div class="banner banner-info">
-    <span class="banner-icon"><svg class="icon"><use href="#i-bot"/></svg></span>
-    <div class="banner-text">
-      <strong>Manage every agent from one place</strong>
-      <strong>Blocked</strong> = kill switch · <strong>Observe</strong> = log only ·
-      <strong>Enforce</strong> = block. Saved to <code>.prismor/agents.yaml</code>.
-    </div>
-  </div>
 
   <div class="card">
     <div class="bar" style="margin-bottom:14px">
       <span id="agentsCount" class="result-count"></span>
       <div class="bar-right">
-        <button class="fbtn" id="agentsRefresh">Refresh</button>
       </div>
     </div>
     <div style="overflow-x:auto">
@@ -3271,13 +3659,40 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <!-- ═══════════════════════════════════════════════════════════════ -->
 <!-- PAGE: SESSION CONTROL                                          -->
 <!-- ═══════════════════════════════════════════════════════════════ -->
+<div id="page-logs" class="page">
+  <div class="section">
+    <h2>Logs</h2><div class="rule"></div>
+    <p class="hint">Every tool call (with its result), prompt and stop your agents sent, and what Prismor did with it. Filter with the buttons above the chart; open a row for the full record.</p>
+  </div>
+  <div class="logs-layout">
+    <div class="logs-main">
+      <div class="logs-toolbar">
+        <button class="btn-line" onclick="loadLogs()" title="Load the newest events"><svg class="icon"><use href="#i-refresh"/></svg> Refresh</button>
+        <button class="btn-line" id="logsLiveBtn" onclick="setLogsLive(!_logs.live)" aria-pressed="false" title="Fetch new events every 5 seconds">Live</button>
+        <input id="logsSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search commands, paths, URLs, tools…" />
+        <span id="logsNote" class="logs-note"></span>
+      </div>
+      <div id="logsFilterBar" class="logs-filterbar" aria-label="Log filters"></div>
+      <div id="logsStats" class="logs-stats"></div>
+      <div class="card logs-chart-card">
+        <div class="logs-chart-head"><span>Volume</span><span id="logsLegend" class="logs-legend"></span></div>
+        <div class="logs-chart-box"><canvas id="logsChart"></canvas></div>
+      </div>
+      <div class="card logs-table-card">
+        <table class="logs-table"><thead><tr><th class="logs-bar-col"></th><th>Time</th><th>Call</th><th>Event</th><th>Server</th><th>Agent</th><th>Session</th></tr></thead>
+          <tbody id="logsBody"><tr><td colspan="7" class="empty">Loading logs…</td></tr></tbody></table>
+        <div class="logs-foot"><span id="logsCount"></span><span id="logsPager" class="logs-pager"></span></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div id="page-sessions" class="page">
   <div class="section" style="margin-top:0">
-    <h2>Live Sessions</h2><div class="rule"></div>
-    <span class="hint">pause, clear scope, or unblock a stuck agent</span>
+    <h2>Sessions</h2><div class="rule"></div>
+    <span class="hint">Every agent session on this device. Open one to see its calls, or pause, clear scope or unblock it.</span>
   </div>
 
-  <div id="enrollBannerSess"></div>
 
   <div class="bar sess-filters" id="sessFilters">
     <input id="sfSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search prompt or session id…" />
@@ -3309,7 +3724,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <div class="bar" style="margin-bottom:16px">
       <span id="scSessCount" class="result-count"></span>
       <div class="bar-right">
-        <button class="fbtn" id="scSessRefresh">Refresh</button>
         <label>Per page</label>
         <select id="scSessLimit" class="fsel">
           <option value="20" selected>20</option>
@@ -3514,7 +3928,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-policy" class="page">
   <div class="section" style="margin-top:0">
     <h2>Policy Control</h2><div class="rule"></div>
-    <span class="hint">human-only · live within 30 s</span>
+    <span class="hint">The rules every tool call is checked against. Only a person can change them; changes apply within 30 s.</span>
   </div>
 
   <!-- One question first: who does this apply to? Everything below follows it. -->
@@ -3765,7 +4179,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div id="page-fleet" class="page">
   <div class="section" style="margin-top:0">
     <h2>Fleet</h2><div class="rule"></div>
-    <span class="hint">org-wide visibility across every enrolled device</span>
+    <span class="hint">Org-wide view of every enrolled device.</span>
   </div>
 
   <div class="locked-hero" id="fleetEnrolled" hidden>
@@ -3885,16 +4299,18 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 </div>
 
 <!-- ═══ LOADING SCREEN ═══════════════════════════════════════════════════ -->
-<div id="loadingScreen">
-  <div id="loadingCard">
-    <img src="/static/prismor-logo.png" id="loadingLogo" alt="Prismor" />
-    <div id="loadingTitle">Prismor</div>
-    <div id="loadingBar"><div id="loadingFill"></div></div>
-    <div id="loadingLabel">Loading dashboard…</div>
-  </div>
-</div>
-
 <!-- ═══ SESSION DETAIL DRAWER ════════════════════════════════════════════ -->
+<div id="logsPop" class="logs-pop" hidden role="dialog" aria-label="Filter"></div>
+<div class="sess-drawer-overlay" id="logDrawerOverlay" onclick="closeLogDrawer()"></div>
+<div class="sess-drawer mcp-drawer" id="logDrawer" role="dialog" aria-label="Log event">
+  <div class="sess-drawer-header mcp-drawer-head" id="logDrawerHead"></div>
+  <div class="sess-drawer-body" id="logDrawerBody"></div>
+</div>
+<div class="sess-drawer-overlay" id="mcpDrawerOverlay" onclick="closeMcpDrawer()"></div>
+<div class="sess-drawer mcp-drawer" id="mcpDrawer" role="dialog" aria-label="MCP server">
+  <div class="sess-drawer-header mcp-drawer-head" id="mcpDrawerHead"></div>
+  <div class="sess-drawer-body" id="mcpDrawerBody"></div>
+</div>
 <div class="sess-drawer-overlay" id="sessDrawerOverlay" onclick="closeSessDrawer()"></div>
 <div class="sess-drawer" id="sessDrawer">
   <div class="sess-drawer-header">
@@ -4075,6 +4491,7 @@ function openPageHelp() {
 document.querySelectorAll('.tab-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     _backStack = [];
+    _slotCrumbs(null);
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
     document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
     btn.classList.add('active');
@@ -4112,6 +4529,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     }
     if (btn.dataset.tab === 'files') loadFiles();
     if (btn.dataset.tab === 'docs') loadDocs();
+    if (btn.dataset.tab === 'logs') { syncLogsHash(); loadLogs(); }
   });
 });
 
@@ -4865,7 +5283,7 @@ function renderExtensions() {
     return '<div class="ext-row' + (rev ? ' review' : '') + (_extOpen[r.id] ? ' open' : '') + '">' +
       '<div class="ext-head" onclick="_extOpen[\'' + safeJsArg(r.id) + '\']=!_extOpen[\'' + safeJsArg(r.id) + '\'];renderExtensions()">' +
         '<span class="ext-badge ' + safeAttr(r.needs_review && r.status === 'unchanged' ? 'new' : r.status) + '">' + safe(r.status === 'unchanged' ? (r.needs_review ? 'unreviewed' : 'seen') : r.status) + '</span>' +
-        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name" style="cursor:pointer;text-decoration:underline dotted" title="Open its page" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(r.id) + '\')">' + safe(r.name) + '</span>' +
+        '<span class="ext-kind">' + safe(r.kind) + '</span><span class="ext-name" style="cursor:pointer" title="Open its page" onclick="event.stopPropagation();openExtension(\'' + safeJsArg(r.id) + '\')">' + safe(r.name) + '</span>' +
         (r.capabilities || []).map(c => '<span class="ext-cap ' + safeAttr(c) + '">' + safe(c.replace(/_/g, ' ')) + '</span>').join('') +
         (r.never_used ? '<span class="ext-never">never used</span>' : (r.used_in || []).length ? '<span class="ext-quiet">' + r.used_in.length + ' session' + (r.used_in.length === 1 ? '' : 's') + '</span>' : '') +
         '<span class="ext-origin">' + safe(r.origin || '') + '</span>' +
@@ -5144,7 +5562,7 @@ function renderExtensionUsage(it) {
     '<div class="extd-break">' + (target ? '<div><h4>' + target[0] + '</h4>' + extTally(deps, target[1]) + '</div>' : '') +
       '<div><h4>By agent</h4>' + extTally(deps, r => r.agent) + '</div>' +
       '<div><h4>By project</h4>' + extTally(deps, r => r.workspace.split('/').pop() || r.workspace) + '</div></div>' +
-    '<h4 class="ext-quiet" style="font-size: 11px;text-transform:uppercase;letter-spacing:.06em;margin:4px 0 6px">Sessions</h4>' +
+    '<h4 class="ext-quiet" style="font-size: 11px;text-transform: none;letter-spacing: 0;margin:4px 0 6px">Sessions</h4>' +
     pg.rows.map(s => '<div class="ext-row"><div class="ext-use" onclick="navigateToSession(\'' + safeJsArg(s.session) + '\', \'' + safeJsArg(s.workspace) + '\')">' +
       agentLink(s.agent) + '<span class="ext-use-id">' + safe(String(s.session).slice(0, 8)) + '</span>' +
       '<span class="ext-quiet">' + s.calls + ' call' + (s.calls === 1 ? '' : 's') + '</span><span class="ext-origin">' + safe(s.workspace) + '</span>' +
@@ -5164,98 +5582,9 @@ async function loadMcpServers() {
     el.innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
   }
 }
-let _mcpServersCache = [];
-function renderMcpServers() {
-  const el = document.getElementById('mcpServersList');
-  const sum = document.getElementById('mcpSummary');
-  const servers = _mcpServersCache;
-  if (!servers.length) { el.innerHTML = mcpSetupHelp(); if (sum) sum.hidden = true; return; }
-  const governed = servers.filter(s => s.kind !== 'direct').length;
-  const idle = servers.filter(s => !((s.usage || {}).calls)).length;
-  const direct = servers.length - governed;
-  const calls = servers.reduce((n, s) => n + ((s.usage || {}).calls || 0), 0);
-  const blocked = servers.reduce((n, s) => n + ((s.usage || {}).blocked || 0), 0);
-  const tools = servers.reduce((n, s) => n + (s.tools || []).length, 0);
-  if (sum) {
-    sum.hidden = false;
-    sum.innerHTML =
-      '<div><div class="kpi-label">Servers</div><div class="kpi-big">' + servers.length + '</div><div class="kpi-sub">' + governed + ' screened · ' + direct + ' direct · ' + idle + ' idle this week</div></div>' +
-      '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>' +
-      '<div><div class="kpi-label">Calls · 7 days</div><div class="kpi-big">' + fmtNum(calls) + '</div><div class="kpi-sub">across every server below</div></div>' +
-      '<div><div class="kpi-label">Blocked · 7 days</div><div class="kpi-big">' + fmtNum(blocked) + '</div><div class="kpi-sub">' + (calls ? (Math.round(blocked / calls * 1000) / 10) + '% of calls' : 'no calls recorded') + '</div></div>';
-  }
-  const order = { mirror: 0, gateway: 1, remote: 2, seen: 3, direct: 4 };
-  // Mirror first, then whatever the agents actually use; idle servers sink.
-  const nCalls = s => (s.usage || {}).calls || 0;
-  const idleList = servers.filter(s => s.kind !== 'mirror' && !nCalls(s)).sort((a, b) => a.name.localeCompare(b.name));
-  const pg = clientPage('mcpPager', servers.filter(s => s.kind === 'mirror' || nCalls(s)).sort((a, b) => (order[a.kind] === 0) !== (order[b.kind] === 0) ? (order[a.kind] - order[b.kind]) : (nCalls(b) - nCalls(a)) || (order[a.kind] - order[b.kind]) || a.name.localeCompare(b.name)),
-    25, renderMcpServers, servers.length - idleList.length);
-  const card = s => s.kind === 'mirror' ? renderMirrorCard(s) : renderRemoteCard(s);
-  const head = '<div class="mcp-cols"><span>Server</span><span>Tools on</span><span>Calls · 7d</span><span>Last call</span><span></span></div>';
-  el.innerHTML = (pg.rows.length ? head + pg.rows.map(card).join('') + pg.html : '') +
-    (idleList.length ? '<details class="mcp-idle"' + (_mcpOpen['\u0000idle'] || !pg.rows.length ? ' open' : '') + ' ontoggle="_mcpOpen[\'\\u0000idle\']=this.open">' +
-      '<summary>' + idleList.length + ' idle server' + (idleList.length === 1 ? '' : 's') + ' <span class="mcp-muted">configured, no calls in the last 7 days</span></summary>' +
-      head + idleList.map(card).join('') + '</details>' : '');
-  pg.wire();
-}
-
-// Shared card chrome: kind chip, risk chip, where it is declared, week's usage.
-function mcpKindChip(s) {
-  if (s.kind === 'mirror') return '<span class="mcp-kind mcp-kind-mirror" title="Prismor serves the agent\'s built-in tools itself, so they are screened and redacted">mirror · built-ins</span>';
-  if (s.kind === 'direct') return '<span class="mcp-kind mcp-kind-direct" title="Declared in a config the agent reads directly; its calls never reach Prismor">direct · ungoverned</span>';
-  if (s.kind === 'gateway') return '<span class="mcp-kind mcp-kind-gw" title="Routed through prismor mcp-gateway: every call is screened before it runs and every result scanned before the model sees it">behind the gateway</span>';
-  if (s.kind === 'seen') return '<span class="mcp-kind mcp-kind-seen" title="No config Prismor scans declares it; the hooks saw the agent call it, so its calls are screened like any other tool">seen in calls · hook-screened</span>';
-  return '<span class="mcp-kind mcp-kind-gw" title="Its tools are in this workspace\'s policy scope; calls are screened by the hooks">in policy scope</span>';
-}
 function mcpRiskChip(s) {
   const r = s.risk || 'none';
   return r === 'none' ? '' : '<span class="rule-sev ' + r.toUpperCase() + '" title="Risk from the config scan">' + r.toLowerCase() + '</span>';
-}
-function mcpDeclaredMarkup(s) {
-  const decl = s.declared_in || [];
-  if (!decl.length) return '<div class="mcp-meta mcp-muted">Not in any scanned config' + (s.kind === 'mirror' ? ' \u00b7 served by the gateway' : (s.kind === 'seen' ? ' \u00b7 seen in calls only' : ' \u00b7 named by policy scope')) + '</div>';
-  return decl.map(d => {
-    const how = d.url ? '<code>' + safe(d.url) + '</code>' : (d.command ? '<code>' + safe(d.command) + '</code>' : '');
-    return '<div class="mcp-meta">' +
-      '<span class="mcp-meta-k">' + safe(d.transport || 'stdio') + '</span>' + how +
-      '<span class="mcp-meta-src" title="' + safeAttr(d.source) + '">' + safe(d.agent) + ' · ' + safe(d.source.split('/').slice(-2).join('/')) + (d.workspace_scoped ? ' · came with the repo' : '') + '</span>' +
-    '</div>';
-  }).join('');
-}
-function mcpUsageMarkup(s) {
-  const u = s.usage || {};
-  const cell = (k, v, sub) => '<div><div class="kpi-label">' + k + '</div><div class="mcp-num">' + v + '</div>' + (sub ? '<div class="kpi-sub">' + sub + '</div>' : '') + '</div>';
-  return '<div class="mcp-usage">' +
-    cell('Calls · 7d', fmtNum(u.calls || 0)) +
-    cell('Blocked', fmtNum(u.blocked || 0), u.calls ? (Math.round((u.blocked||0) / u.calls * 1000) / 10) + '%' : '') +
-    cell('Sessions', fmtNum(u.sessions || 0)) +
-    cell('Last call', u.last ? '<span title="' + safeAttr(u.lastAbs || '') + '">' + safe(u.last) + '</span>' : '<span class="mcp-muted">never</span>') +
-  '</div>';
-}
-function mcpFindingsMarkup(s) {
-  const f = s.findings || [];
-  if (!f.length) return '';
-  return '<ul class="mcp-findings">' + f.map(x => '<li>' + safe(x) + '</li>').join('') + '</ul>';
-}
-// Each server is one collapsed line (name, kind, tools on, week's calls);
-// opening it shows where it is declared, usage and the per-tool switches.
-// Open state survives re-renders (a toggle re-renders the whole list).
-let _mcpOpen = {};
-function mcpCard(s, cls, extra, body) {
-  const u = s.usage || {}, tools = s.tools || [];
-  const on = tools.filter(t => s.kind === 'mirror' ? t.enabled !== false : t.state !== 'deny').length;
-  return '<details class="card mcp-card' + (cls || '') + '"' + (_mcpOpen[s.name] ? ' open' : '') +
-      ' ontoggle="_mcpOpen[\'' + safeJsArg(s.name) + '\']=this.open">' +
-    '<summary class="mcp-head mcp-row">' +
-      '<span class="mcp-who"><span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span>' +
-        '<span class="mcp-id"><span class="mcp-name">' + safe(s.name) + '</span>' + mcpRiskChip(s) + '<span class="mcp-sub">' + mcpKindChip(s) + '</span></span></span>' +
-      '<span class="mcp-col mcp-tools">' + (tools.length ? on + '<small>/' + tools.length + '</small>' : '<span class="mcp-muted">none yet</span>') + '</span>' +
-      '<span class="mcp-col">' + fmtNum(u.calls || 0) + (u.blocked ? '<small class="mcp-blocked">' + fmtNum(u.blocked) + ' blocked</small>' : '') + '</span>' +
-      '<span class="mcp-col mcp-muted">' + safe(u.last || '—') + '</span>' +
-      '<span class="mcp-head-right">' + (u.sessions ? '<button class="inline-link-btn" title="Sessions that called this server" ' +
-        'onclick="event.preventDefault();mcpOpenSessions(\'' + safeJsArg(s.name) + '\')">' + fmtNum(u.sessions) + ' session' + (u.sessions === 1 ? '' : 's') + ' \u2192</button>' : '') +
-        (extra || '') + '</span></summary>' +
-    '<div class="mcp-body">' + body + '</div></details>';
 }
 // The extension page already lists an MCP server's sessions; open it there.
 async function mcpOpenSessions(name) {
@@ -5264,54 +5593,6 @@ async function mcpOpenSessions(name) {
   const it = extItems('mcp').find(x => x.name.toLowerCase() === name.toLowerCase());
   openExtension(it ? it.id : 'dep:mcp:' + name);
 }
-function mcpExpandAll(open) {
-  _mcpServersCache.forEach(s => { _mcpOpen[s.name] = open !== false; });
-  renderMcpServers();
-}
-
-// The mirror: front-of-house controls. A Governing / Pass-through switch (screen
-// and redact every mirrored call, or execute them exactly as the natives would
-// while still logging) and a per-tool on/off roster ("this tool I want, this
-// one I don't"), distinct from call-time allow/ask/deny. Pass-through keeps
-// serving the tools: the host's natives were denied by `prismor mirror on`, so a
-// mirror that went silent would leave the agent with no Bash/Read at all.
-// Handing the built-ins back to the agent is a config change + restart, and
-// that lives in the CLI (`prismor mirror off`), not behind a runtime switch.
-function renderMirrorCard(s) {
-  const override = s.override !== false;
-  const paused = !!s.paused;
-  const governing = override && !paused;
-  const ovBtn = '<button class="en-toggle ' + (override ? 'on' : 'off') + '" ' +
-    (paused ? 'disabled title="Prismor is paused: run prismor resume first" ' : '') +
-    'onclick="event.preventDefault();mcpOverrideSet(\'' + safeAttr(s.name) + '\',' + (override ? 'true' : 'false') + ')">' +
-    (paused ? 'Paused' : (override ? 'Governing' : 'Pass-through')) + '</button>';
-  const rows = (s.tools || []).map(t => {
-    const on = t.enabled !== false;
-    const toggle = '<button class="tp-toggle ' + (on ? 'on' : 'off') + '"' +
-      ' onclick="mcpToolEnable(\'' + safeAttr(s.name) + '\',\'' + safeAttr(t.name) + '\',' + (on ? 'true' : 'false') + ')">' +
-      '<span class="tp-knob"></span></button>';
-    return '<div class="tp-row' + (governing ? '' : ' tp-row-off') + '">' +
-      '<span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) + toggle + '</div>';
-  }).join('');
-  let hint;
-  if (paused) {
-    const until = s.paused_until ? ' until ' + safe(s.paused_until) : '';
-    hint = 'Prismor is <b>paused</b>' + until + ': the mirror passes every call through (logged, not blocked or redacted). ' +
-      'Resume from your terminal: <code>prismor resume</code>.';
-  } else if (override) {
-    hint = 'Governing: every mirrored call is policy-screened before it runs and its output redacted after. ' +
-      'Native tools are switched off in the host by <code>prismor mirror on</code>; ' +
-      '<code>prismor mirror off</code> hands them back (next session).';
-  } else {
-    hint = 'Pass-through: the mirror still serves the tools below but runs them exactly as the natives would ' +
-      '(logged, not blocked or redacted). Flip back to Governing here, or <code>prismor mirror passthrough off</code>.';
-  }
-  return mcpCard(s, '', ovBtn,
-    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) +
-    '<div class="mcp-hint">' + hint + '</div>' +
-    '<div class="tp-grid" style="margin-top:10px">' + rows + '</div>');
-}
-
 function mcpToolStats(t) {
   const c = t.calls || 0, bl = t.blocked || 0;
   return '<span class="tp-stats">' +
@@ -5320,27 +5601,197 @@ function mcpToolStats(t) {
     (t.last ? '<span class="mcp-muted">' + safe(t.last) + '</span>' : '') +
   '</span>';
 }
-function renderRemoteCard(s) {
-  const direct = s.kind === 'direct';
-  const rows = (s.tools || []).length ? (s.tools || []).map(t => {
-    const st = t.state || 'allow', on = st !== 'deny', tag = safeAttr(t.tag);
-    const ask = on ? '<button class="tp-btn tp-ask' + (st === 'ask' ? ' on' : '') + '" title="Require human approval (step-up) before each call" ' +
-        'onclick="mcpToolSet(\'' + tag + '\',\'' + (st === 'ask' ? 'allow' : 'ask') + '\')">Ask</button>' : '';
-    const toggle = '<button class="tp-toggle ' + (on ? 'on' : 'off') + '" title="' + (on ? 'On: click to turn off (blocked whenever called)' : 'Off: blocked in real time. Click to turn on') + '" ' +
-        'onclick="mcpToolSet(\'' + tag + '\',\'' + (on ? 'deny' : 'allow') + '\')"><span class="tp-knob"></span></button>';
-    return '<div class="tp-row' + (on ? '' : ' tp-row-off') + '"><span class="tp-tool">' + safe(t.name) + '</span>' + mcpToolStats(t) +
-      '<span class="tp-btns">' + ask + toggle + '</span></div>';
-  }).join('') : '<div class="tp-row mcp-muted" style="font-size:13px">' +
-      (direct ? 'Prismor never sees this server\'s calls, so there is nothing to govern here yet.'
-              : 'No tools seen or governed yet. They appear here the first time the agent calls one, or when you set a policy.') + '</div>';
-  const fix = direct
-    ? '<div class="banner banner-warn mcp-fix"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
-        '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config. Front it so every call is screened first:' +
-        '<pre class="doc-cmd">prismor mcp-gateway install --all</pre></div></div>'
-    : '';
-  return mcpCard(s, direct ? ' mcp-card-direct' : '', '',
-    mcpDeclaredMarkup(s) + mcpUsageMarkup(s) + mcpFindingsMarkup(s) + fix +
-    '<div class="tp-grid">' + rows + '</div>');
+let _mcpServersCache = [];
+// The MCP tab, after Bifrost's MCP catalog: one table of servers with a
+// search and a governance filter; a row opens a side panel with where the
+// server is configured, its week's numbers and one Allow / Ask / Off control
+// per tool. Up/Down (or j/k) step through servers without closing the panel.
+let _mcpFilter = { q: '', kind: 'all' };
+let _mcpSel = null;      // name of the server open in the panel
+let _mcpVisible = [];    // the filtered, sorted list the panel steps through
+let _mcpToolView = 'all';
+const MCP_KINDS = [
+  ['all', 'All', () => true],
+  ['direct', 'Ungoverned', s => s.kind === 'direct'],
+  ['gateway', 'Behind the gateway', s => s.kind === 'gateway' || s.kind === 'mirror'],
+  ['hooks', 'Hook-screened', s => s.kind === 'remote' || s.kind === 'seen'],
+  ['idle', 'Idle', s => s.kind !== 'mirror' && !((s.usage || {}).calls)],
+];
+function mcpGov(s) {
+  return {
+    mirror: ['ok', 'Mirror', 'Prismor serves the agent\'s built-in tools itself, so they are screened and redacted'],
+    gateway: ['ok', 'Gateway', 'Routed through prismor mcp-gateway: every call is screened before it runs and every result scanned before the model sees it'],
+    remote: ['info', 'Policy scope', 'Its tools are in this workspace\'s policy scope; calls are screened by the hooks'],
+    seen: ['info', 'Hook-screened', 'No config Prismor scans declares it; the hooks saw the agent call it, so its calls are screened like any other tool'],
+    direct: ['danger', 'Ungoverned', 'Declared in a config the agent reads directly; its calls never reach Prismor'],
+  }[s.kind] || ['neutral', s.kind, ''];
+}
+function mcpGovBadge(s) { const [t, l, title] = mcpGov(s); return '<span class="tone t-' + t + '" title="' + safeAttr(title) + '">' + safe(l) + '</span>'; }
+function mcpToolCounts(s) {
+  const tools = s.tools || [];
+  if (s.kind === 'mirror') return { total: tools.length, on: tools.filter(t => t.enabled !== false).length, ask: 0 };
+  return { total: tools.length, on: tools.filter(t => (t.state || 'allow') !== 'deny').length, ask: tools.filter(t => t.state === 'ask').length };
+}
+function mcpCopyBtn(text) { return '<button class="mcp-copy" title="Copy" data-copy="' + safeAttr(text) + '" onclick="event.stopPropagation();devCopy(this.dataset.copy,this)">Copy</button>'; }
+
+function renderMcpServers() {
+  const el = document.getElementById('mcpServersList');
+  const sum = document.getElementById('mcpSummary');
+  const bar = document.querySelector('#mcpPane .mcp-toolbar');
+  const servers = _mcpServersCache;
+  if (!servers.length) { el.innerHTML = mcpSetupHelp(); if (sum) sum.hidden = true; if (bar) bar.hidden = true; return; }
+  if (bar) bar.hidden = false;
+  const calls = servers.reduce((n, s) => n + ((s.usage || {}).calls || 0), 0);
+  const blocked = servers.reduce((n, s) => n + ((s.usage || {}).blocked || 0), 0);
+  const tools = servers.reduce((n, s) => n + (s.tools || []).length, 0);
+  const direct = servers.filter(s => s.kind === 'direct').length;
+  if (sum) {
+    sum.hidden = false;
+    sum.innerHTML =
+      '<div><div class="kpi-label">Servers</div><div class="kpi-big">' + servers.length + '</div><div class="kpi-sub">' + (servers.length - direct) + ' governed · ' + direct + ' ungoverned</div></div>' +
+      '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>' +
+      '<div><div class="kpi-label">Calls · 7 days</div><div class="kpi-big">' + fmtNum(calls) + '</div><div class="kpi-sub">across every server below</div></div>' +
+      '<div><div class="kpi-label">Blocked · 7 days</div><div class="kpi-big">' + fmtNum(blocked) + '</div><div class="kpi-sub">' + (calls ? (Math.round(blocked / calls * 1000) / 10) + '% of calls' : 'no calls recorded') + '</div></div>';
+  }
+  document.getElementById('mcpKinds').innerHTML = MCP_KINDS.map(([k, label, fn]) =>
+    '<button class="ext-filter' + (_mcpFilter.kind === k ? ' on' : '') + '" onclick="_mcpFilter.kind=\'' + k + '\';renderMcpServers()">' +
+      label + ' <small>' + servers.filter(fn).length + '</small></button>').join('');
+  const kindFn = (MCP_KINDS.find(k => k[0] === _mcpFilter.kind) || MCP_KINDS[0])[2];
+  const q = _mcpFilter.q.trim().toLowerCase();
+  const nCalls = s => (s.usage || {}).calls || 0;
+  _mcpVisible = servers.filter(kindFn)
+    .filter(s => !q || s.name.toLowerCase().includes(q) || (s.tools || []).some(t => t.name.toLowerCase().includes(q)))
+    .sort((a, b) => (b.kind === 'mirror') - (a.kind === 'mirror') || nCalls(b) - nCalls(a) || a.name.localeCompare(b.name));
+  if (!_mcpVisible.length) { el.innerHTML = '<div class="card empty">No MCP servers match this filter.</div>'; return; }
+  const pg = clientPage('mcpPager', _mcpVisible, 25, renderMcpServers, _mcpFilter.kind + '|' + q);
+  el.innerHTML = '<div class="card mcp-table-card"><table class="mcp-table"><thead><tr>' +
+      '<th>Server</th><th>Governance</th><th>Transport</th><th>Configured by</th><th class="right">Tools on</th><th class="right">Calls · 7d</th><th class="right">Last call</th>' +
+    '</tr></thead><tbody>' + pg.rows.map(s => {
+      const u = s.usage || {}, c = mcpToolCounts(s), decl = s.declared_in || [];
+      const transports = [...new Set(decl.map(d => d.transport || 'stdio'))];
+      const agents = [...new Set(decl.map(d => d.agent))];
+      return '<tr class="clickable-row' + (_mcpSel === s.name ? ' sel' : '') + '" onclick="openMcpServer(\'' + safeJsArg(s.name) + '\')">' +
+        '<td><span class="mcp-who"><span class="mcp-avatar">' + safe((s.name || '?')[0].toUpperCase()) + '</span><span class="mcp-name">' + safe(s.name) + '</span>' + mcpRiskChip(s) + '</span></td>' +
+        '<td>' + mcpGovBadge(s) + '</td>' +
+        '<td>' + (transports.length ? transports.map(t => '<span class="tone t-outline">' + safe(t) + '</span>').join(' ') : '<span class="mcp-muted">—</span>') + '</td>' +
+        '<td>' + (agents.length ? safe(agents.join(', ')) : '<span class="mcp-muted">' + (s.kind === 'seen' ? 'seen in calls' : '—') + '</span>') + '</td>' +
+        '<td class="right">' + (c.total ? c.on + '<span class="mcp-muted">/' + c.total + '</span>' + (c.ask ? ' <span class="tone t-warn" title="Ask before each call">' + c.ask + ' ask</span>' : '') : '<span class="mcp-muted">—</span>') + '</td>' +
+        '<td class="right">' + fmtNum(u.calls || 0) + (u.blocked ? '<div class="mcp-blocked">' + fmtNum(u.blocked) + ' blocked</div>' : '') + '</td>' +
+        '<td class="right mcp-muted">' + safe(u.last || '—') + '</td></tr>';
+    }).join('') + '</tbody></table>' + pg.html + '</div>';
+  pg.wire();
+  if (_mcpSel) renderMcpDrawer();
+}
+
+function openMcpServer(name) {
+  _mcpSel = name; _mcpToolView = 'all';
+  document.getElementById('mcpDrawerOverlay').classList.add('open');
+  document.getElementById('mcpDrawer').classList.add('open');
+  renderMcpDrawer();
+  document.querySelectorAll('.mcp-table tr.sel').forEach(r => r.classList.remove('sel'));
+  renderMcpServers();
+}
+function closeMcpDrawer() {
+  _mcpSel = null;
+  document.getElementById('mcpDrawerOverlay').classList.remove('open');
+  document.getElementById('mcpDrawer').classList.remove('open');
+  renderMcpServers();
+}
+function mcpStep(d) {
+  const i = _mcpVisible.findIndex(s => s.name === _mcpSel);
+  const next = _mcpVisible[i + d];
+  if (next) openMcpServer(next.name);
+}
+// Up/Down (or j/k) step through the open panel's list; Esc closes it.
+document.addEventListener('keydown', e => {
+  const nav = _mcpSel ? [mcpStep, closeMcpDrawer] : (typeof _logSel !== 'undefined' && _logSel) ? [logStep, closeLogDrawer] : null;
+  if (!nav || e.metaKey || e.ctrlKey || e.altKey || (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) return;
+  if (e.key === 'Escape') nav[1]();
+  else if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); nav[0](1); }
+  else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); nav[0](-1); }
+});
+
+function mcpToolSeg(s, t) {
+  if (s.kind === 'mirror') {
+    const on = t.enabled !== false, a = safeJsArg(s.name), n = safeJsArg(t.name);
+    return '<span class="seg">' +
+      '<button class="' + (on ? 'on' : '') + '" onclick="' + (on ? '' : 'mcpToolEnable(\'' + a + '\',\'' + n + '\',false)') + '">On</button>' +
+      '<button class="' + (on ? '' : 'on off') + '" onclick="' + (on ? 'mcpToolEnable(\'' + a + '\',\'' + n + '\',true)' : '') + '">Off</button></span>';
+  }
+  const st = t.state || 'allow', tag = safeJsArg(t.tag);
+  const b = (v, label, title) => '<button class="' + (st === v ? 'on' + (v === 'deny' ? ' off' : v === 'ask' ? ' ask' : '') : '') + '" title="' + title + '"' +
+    (st === v ? '' : ' onclick="mcpToolSet(\'' + tag + '\',\'' + v + '\')"') + '>' + label + '</button>';
+  return '<span class="seg">' + b('allow', 'Allow', 'Runs when policy allows it') + b('ask', 'Ask', 'A person approves each call first') + b('deny', 'Off', 'Blocked whenever it is called') + '</span>';
+}
+function renderMcpDrawer() {
+  const s = _mcpServersCache.find(x => x.name === _mcpSel);
+  const body = document.getElementById('mcpDrawerBody'), head = document.getElementById('mcpDrawerHead');
+  if (!s) { if (_mcpSel) closeMcpDrawer(); return; }
+  const i = _mcpVisible.findIndex(x => x.name === s.name);
+  const u = s.usage || {}, c = mcpToolCounts(s), decl = s.declared_in || [];
+  head.innerHTML = '<span class="mcp-avatar">' + safe(s.name[0].toUpperCase()) + '</span>' +
+    '<div style="min-width:0"><div class="mcp-drawer-title">' + safe(s.name) + '</div>' +
+    '<div class="mcp-drawer-sub">' + mcpGovBadge(s) + mcpRiskChip(s) + '<span class="mcp-muted">' + safe(mcpGov(s)[2]) + '</span></div></div>' +
+    '<span class="mcp-drawer-nav">' +
+      '<button class="sess-drawer-close" title="Previous server (↑ or k)" ' + (i > 0 ? 'onclick="mcpStep(-1)"' : 'disabled') + '>↑</button>' +
+      '<button class="sess-drawer-close" title="Next server (↓ or j)" ' + (i >= 0 && i < _mcpVisible.length - 1 ? 'onclick="mcpStep(1)"' : 'disabled') + '>↓</button>' +
+      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()">✕</button></span>';
+
+  let html = '';
+  if (s.kind === 'direct') {
+    const cmd = 'prismor mcp-gateway install --all';
+    html += '<div class="banner banner-warn"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
+      '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config, so Prismor never sees its calls. Put it behind the gateway so every call is screened first:' +
+      '<div class="mcp-cmd"><code>' + cmd + '</code>' + mcpCopyBtn(cmd) + '</div></div></div>';
+  }
+  if ((s.findings || []).length) {
+    html += '<div class="banner banner-warn"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
+      '<strong>Config scan findings</strong><ul class="mcp-findings">' + s.findings.map(f => '<li>' + safe(f) + '</li>').join('') + '</ul></div></div>';
+  }
+  html += '<div class="mcp-stats">' +
+    '<div><span>Tools</span><b>' + (c.total ? c.on + ' of ' + c.total : '—') + '</b><small>' + (s.kind === 'mirror' ? 'switched on' : (c.ask ? c.ask + ' ask first' : 'allowed')) + '</small></div>' +
+    '<div><span>Calls · 7d</span><b>' + fmtNum(u.calls || 0) + '</b><small>' + (u.blocked ? fmtNum(u.blocked) + ' blocked' : 'none blocked') + '</small></div>' +
+    '<div><span>Sessions</span><b>' + fmtNum(u.sessions || 0) + '</b><small>' + (u.sessions ? '<a href="#" onclick="mcpOpenSessions(\'' + safeJsArg(s.name) + '\');return false">See them →</a>' : 'none yet') + '</small></div>' +
+    '<div><span>Last call</span><b title="' + safeAttr(u.lastAbs || '') + '">' + safe(u.last || 'never') + '</b><small>' + (u.lastAbs ? safe(u.lastAbs) : '') + '</small></div></div>';
+
+  if (u.calls) html += '<div class="mcp-hint" style="margin:-8px 0 0"><a href="#" onclick="closeMcpDrawer();openLogs({server:\'' + safeJsArg(s.name) + '\'});return false">See its ' + fmtNum(u.calls) + ' calls in Logs →</a></div>';
+  html += '<div class="mcp-section-h">Configured in <small>' + decl.length + '</small></div>';
+  html += decl.length ? '<div class="mcp-kv">' + decl.map(d => {
+    const target = d.url || d.command || '';
+    return '<div class="mcp-kv-row"><div class="mcp-kv-top"><span class="tone t-outline">' + safe(d.transport || 'stdio') + '</span>' +
+        '<span>' + safe(d.agent) + '</span>' + (d.workspace_scoped ? '<span class="tone t-info" title="This config is checked into the repo">came with the repo</span>' : '') + '</div>' +
+      (target ? '<div class="mcp-mono"><code>' + safe(target) + '</code>' + mcpCopyBtn(target) + '</div>' : '') +
+      '<div class="mcp-mono mcp-muted"><code>' + safe(d.source) + '</code>' + mcpCopyBtn(d.source) + '</div></div>';
+  }).join('') + '</div>' : '<div class="mcp-hint" style="margin-top:0">' + (s.kind === 'mirror' ? 'Served by the Prismor gateway, not declared in a config.' : s.kind === 'seen' ? 'Not in any config Prismor scans. The hooks saw the agent call it.' : 'Named by policy scope, not declared in a scanned config.') + '</div>';
+
+  if (s.kind === 'mirror') {
+    const override = s.override !== false, paused = !!s.paused;
+    html += '<div class="mcp-section-h">Mode</div><div class="mcp-mode"><span class="seg">' +
+      '<button class="' + (override ? 'on' : '') + '"' + (paused || override ? ' disabled' : ' onclick="mcpOverrideSet(\'' + safeJsArg(s.name) + '\',false)"') + '>Governing</button>' +
+      '<button class="' + (override ? '' : 'on off') + '"' + (paused || !override ? ' disabled' : ' onclick="mcpOverrideSet(\'' + safeJsArg(s.name) + '\',true)"') + '>Pass-through</button></span>' +
+      '<span class="mcp-hint" style="margin:0">' + (paused ? 'Prismor is paused: calls pass through, logged only. Run <code>prismor resume</code>.' :
+        override ? 'Every mirrored call is screened before it runs and its output redacted after.' : 'Calls run as the native tools would: logged, not blocked or redacted.') + '</span></div>';
+  }
+
+  const tools = s.tools || [];
+  const stOf = t => s.kind === 'mirror' ? (t.enabled !== false ? 'allow' : 'deny') : (t.state || 'allow');
+  const views = s.kind === 'mirror' ? [['all', 'All'], ['allow', 'On'], ['deny', 'Off']] : [['all', 'All'], ['allow', 'Allowed'], ['ask', 'Ask'], ['deny', 'Off']];
+  html += '<div class="mcp-section-h">Tools <small>' + tools.length + '</small>' + (tools.length ? '<span class="ext-views mcp-tool-views">' + views.map(([k, l]) =>
+      '<button class="ext-view' + (_mcpToolView === k ? ' on' : '') + '" onclick="_mcpToolView=\'' + k + '\';renderMcpDrawer()">' + l + ' <small>' + (k === 'all' ? tools.length : tools.filter(t => stOf(t) === k).length) + '</small></button>').join('') + '</span>' : '') + '</div>';
+  const shown = tools.filter(t => _mcpToolView === 'all' || stOf(t) === _mcpToolView);
+  html += tools.length ? (shown.length ? '<div class="mcp-tools">' + shown.map(t =>
+      '<div class="mcp-tool' + (stOf(t) === 'deny' ? ' off' : '') + '"><div class="mcp-tool-main"><code>' + safe(t.name) + '</code>' + mcpToolStats(t) + '</div>' + mcpToolSeg(s, t) + '</div>').join('') + '</div>'
+      : '<div class="mcp-hint">No tools match this filter.</div>')
+    : '<div class="mcp-hint">' + (s.kind === 'direct' ? 'Prismor never sees this server\'s calls, so there is nothing to govern here yet.' : 'No tools seen or governed yet. They appear here the first time the agent calls one, or when you set a policy.') + '</div>';
+  body.innerHTML = html;
+}
+// "Govern more servers": the setup commands in the same panel.
+function openMcpGuide() {
+  _mcpSel = null;
+  document.getElementById('mcpDrawerHead').innerHTML = '<div class="mcp-drawer-title">Govern more servers</div><span class="mcp-drawer-nav"><button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()">✕</button></span>';
+  document.getElementById('mcpDrawerBody').innerHTML = mcpSetupHelp();
+  document.getElementById('mcpDrawerOverlay').classList.add('open');
+  document.getElementById('mcpDrawer').classList.add('open');
 }
 
 // Nothing is wired up yet. Say how to wire it, rather than showing an
@@ -5352,12 +5803,12 @@ function mcpSetupHelp() {
     '<div style="margin-bottom:16px">' +
       '<b style="font-size:13px">1 · Front your MCP servers with the gateway</b>' +
       '<div class="mcp-hint">Moves this workspace\'s <code>.mcp.json</code> servers behind <code>prismor mcp-gateway</code> (a <code>.bak</code> is kept). Every tool call is policy-screened before it runs and every result scanned for injection before the model sees it.</div>' +
-      '<pre class="doc-cmd">prismor mcp-gateway install        # this workspace\nprismor mcp-gateway install --all  # every MCP config on this machine\nprismor mcp-gateway uninstall      # restore the original .mcp.json</pre>' +
+      ['prismor mcp-gateway install', 'prismor mcp-gateway install --all', 'prismor mcp-gateway uninstall'].map(c => '<div class="mcp-cmd"><code>' + c + '</code>' + mcpCopyBtn(c) + '</div>').join('') +
     '</div>' +
     '<div style="margin-bottom:16px">' +
       '<b style="font-size:13px">2 · Mirror the agent\'s built-in tools</b>' +
       '<div class="mcp-hint">Serves Bash/Read/Write over MCP so the built-ins are screened and their output redacted too. Takes effect in the next session.</div>' +
-      '<pre class="doc-cmd">prismor mirror on\nprismor mirror status</pre>' +
+      ['prismor mirror on', 'prismor mirror status'].map(c => '<div class="mcp-cmd"><code>' + c + '</code>' + mcpCopyBtn(c) + '</div>').join('') +
     '</div>' +
     '<div class="mcp-hint">Configs Prismor will not guess at (Zed\'s <code>context_servers</code>, Codex\'s TOML) are reported and left untouched. Move those by hand. Full walkthrough: <a href="#" onclick="openDoc(\'mcp-gateway.md\');return false">MCP Gateway docs</a>.</div>' +
     '</div>';
@@ -5433,6 +5884,7 @@ async function refreshDashboard() {
       loadSessions(),
       loadSessionControl(),
       loadFindings(),
+      loadAgents(),
     ]);
     toast('Dashboard refreshed' + (result.latest_session ? ' · latest ' + shortId(result.latest_session, 18) : ''));
   } catch (e) {
@@ -6178,7 +6630,7 @@ function hashForView(st){
   if (st.view === 'session') return '#/session/' + encodeURIComponent(st.id);
   if (st.view === 'agent')   return '#/agent/'   + encodeURIComponent(st.name);
   if (st.view === 'extension') return '#/extension/' + encodeURIComponent(st.id);
-  return '#/' + (st.tab || 'sessions');
+  return '#/' + (st.tab || 'sessions') + (st.tab === 'logs' ? logsQuery() : '');
 }
 function recordView(st, replace){
   if (_restoringView) return;
@@ -6193,7 +6645,8 @@ function parseHash(){
   if (m) return m[1] === 'session' ? {view:'session', id:decodeURIComponent(m[2]), ws:''}
     : m[1] === 'extension' ? {view:'extension', id:decodeURIComponent(m[2])}
     : {view:'agent', name:decodeURIComponent(m[2])};
-  const t = /^#\/([a-z-]+)$/.exec(location.hash || '');
+  const t = /^#\/([a-z-]+)(?:\?(.*))?$/.exec(location.hash || '');
+  if (t && t[1] === 'logs') logsFromQuery(t[2] || '');
   if (t && t[1] === 'mcpservers') { _extTab = 'mcp'; return {view:'tab', tab:'extensions'}; }
   return t ? {view:'tab', tab:t[1]} : null;
 }
@@ -6220,7 +6673,18 @@ function goBack(){
   const parent={'page-extension':'extensions','page-agent':'agents'}[id]||'sessions';
   document.querySelector('.tab-btn[data-tab="'+parent+'"]')?.click();
 }
+// A sub-page's crumbs (Sessions / agent / Flow) live in the top bar while it
+// is open; the node is moved, not copied, so code that updates it by id still works.
+function _slotCrumbs(pageId){
+  const slot=document.getElementById('breadcrumbSub'), label=document.getElementById('breadcrumbLabel');
+  if (!slot || !label) return;
+  for (const c of [...slot.children]) (c._home||slot).appendChild(c);
+  const c=pageId ? document.querySelector('#'+pageId+' .view-topbar .crumbs') : null;
+  if (c){ c._home=c.parentNode; slot.appendChild(c); }
+  label.hidden=!!c; slot.hidden=!c;
+}
 function showSubPage(id){
+  _slotCrumbs(id);
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   document.getElementById(id)?.classList.add('active');
@@ -7782,6 +8246,7 @@ document.getElementById('globalDays').addEventListener('change',function(){
   sessState.page = 1; findState.page = 1; evtState.page = 1;
   loadSessions(); loadSessionControl(); loadFindings(); loadEvents(); loadFiles(); loadFriction();
   loadAgents(); ensureAllSessions(true);
+  if (document.getElementById('page-logs')?.classList.contains('active')) { _logs.page = 1; loadLogs(); }
   // Extensions is driven by the same window; refresh it if it has data.
   if (_depCache) { _depCache = null; loadDependencies().then(renderExtensions); }
   if (document.getElementById('page-extension')?.classList.contains('active') && _extViewId) openExtension(_extViewId, true);
@@ -7940,7 +8405,6 @@ async function agentToggle(name, cb) {
   agentSet(name, { enabled: enabling });
 }
 
-document.getElementById('agentsRefresh').addEventListener('click', loadAgents);
 
 // ══════════════════════════════════════════════════════════════════════════
 // SESSION CONTROL TAB
@@ -7970,7 +8434,7 @@ async function loadWorkspaces() {
 }
 
 function renderEnrollBanners(enrollment) {
-  const banners = ['enrollBanner', 'enrollBannerSess'];
+  const banners = ['enrollBanner'];
   banners.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -8154,7 +8618,6 @@ async function sessAction(sessId, action, workspace, idx) {
   }
 }
 
-document.getElementById('scSessRefresh').addEventListener('click', () => loadSessionControl());
 document.getElementById('scSessLimit').addEventListener('change', e => {
   _sessCtrlData.limit = parseInt(e.target.value, 10);
   _sessCtrlData.page = 1;
@@ -8931,56 +9394,296 @@ document.getElementById('projectPolicyEditor').addEventListener('input', e => _s
 applyTheme(currentTheme());
 initCharts();
 
-// Loading screen progress
-const _loadFill = document.getElementById('loadingFill');
-const _loadLabel = document.getElementById('loadingLabel');
-let _loadDone = 0;
-const _loadTotal = 7;
-function _loadTick(label) {
-  _loadDone++;
-  if (_loadFill) _loadFill.style.width = Math.min(100, Math.round(_loadDone / _loadTotal * 100)) + '%';
-  if (_loadLabel) _loadLabel.textContent = label;
-}
-function _dismissLoader() {
-  const el = document.getElementById('loadingScreen');
-  if (!el) return;
-  el.classList.add('fade-out');
-  setTimeout(() => el.remove(), 420);
-}
-
 // Pre-fetch everything in parallel, but never let one slow endpoint pin the
-// splash screen. Demo reliability matters more than waiting for every widget.
+// first paint: each widget fills in when its own data lands.
 // The server answers one heavy query at a time in practice (one Python
 // process), so the headline goes first and the tables below it follow: on a
 // large store asking for everything at once made the headline wait ~15 s.
-const _statsFirst = loadStats().then(() => _loadTick('Stats loaded'));
+const _statsFirst = loadStats();
 const _afterStats = f => _statsFirst.then(f, f);
 const _bootTasks = [
   _statsFirst,
-  loadSessions().then(()      => _loadTick('Sessions loaded')),
-  _afterStats(() => loadFindings()).then(() => _loadTick('Findings loaded')),
-  _afterStats(() => loadEvents()).then(() => _loadTick('Events loaded')),
-  loadSupplyChain().then(()   => _loadTick('Supply chain loaded')),
+  loadSessions(),
+  _afterStats(() => loadFindings()),
+  _afterStats(() => loadEvents()),
+  loadSupplyChain(),
   _afterStats(() => loadFriction()),
-  _afterStats(() => loadNetworkCalls()).then(() => _loadTick('Network calls loaded')),
+  _afterStats(() => loadNetworkCalls()),
   _afterStats(() => loadTokens()),
-  loadAgents().then(()        => _loadTick('Agents loaded')),
+  loadAgents(),
   loadWorkspaces()
-    .then(() => Promise.allSettled([loadSessionControl(), loadPolicy()]))
-    .then(()                  => _loadTick('Policy & controls loaded')),
+    .then(() => Promise.allSettled([loadSessionControl(), loadPolicy()])),
 ];
-setTimeout(_dismissLoader, 1800);
-Promise.allSettled(_bootTasks).then(() => {
-  _dismissLoader();
-  // A hash in the address bar is a view someone linked to or reloaded into.
-  // Restore it once the data it needs is loaded; otherwise stamp the current
-  // view so the first Back has somewhere to return to.
-  const wanted = parseHash();
-  if (wanted) applyViewState(wanted);
-  else recordView(currentViewState(), true);
-});
 // Background refresh: nothing while the tab is hidden, and only what the page
 // in front of you shows (plus the headline numbers behind the sidebar counts).
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOGS: every event, after Bifrost's log views. Facets on the left (counts
+// show what the other filters leave), outcome totals, a stacked volume chart,
+// a table and a side panel with the full record. Filters live in the URL.
+// ══════════════════════════════════════════════════════════════════════════
+const LOG_FACETS = [['status', 'Outcome'], ['type', 'Event type'], ['tool', 'Tool'], ['server', 'MCP server'], ['agent', 'Agent'], ['session', 'Session']];
+const LOG_STATUS = {
+  allowed: ['ok', 'Allowed', 'No rule matched; the call ran.'],
+  blocked: ['danger', 'Blocked', 'A rule in enforce mode stopped it.'],
+  asked: ['info', 'Asked', 'A person was asked to approve it first.'],
+  flagged: ['warn', 'Flagged', 'A rule matched but did not stop it (observe mode, or a warn or log rule).'],
+};
+const _logs = { f: { status: [], type: [], tool: [], server: [], agent: [], session: [] }, q: '', page: 1, data: null, live: false, timer: null };
+let _logsPop = null;   // {k, q}: the open filter dropdown
+let _logSel = null, _logsChart = null, _logsReq = 0;
+function logsQuery() {
+  const p = new URLSearchParams();
+  for (const [k] of LOG_FACETS) if (_logs.f[k].length) p.set(k, _logs.f[k].join(','));
+  if (_logs.q) p.set('q', _logs.q);
+  const q = p.toString();
+  return q ? '?' + q : '';
+}
+function logsFromQuery(q) {
+  const p = new URLSearchParams(q);
+  for (const [k] of LOG_FACETS) _logs.f[k] = (p.get(k) || '').split(',').filter(Boolean);
+  _logs.q = p.get('q') || ''; _logs.page = 1;
+  const inp = document.getElementById('logsSearch'); if (inp) inp.value = _logs.q;
+}
+function syncLogsHash() { try { history.replaceState(history.state, '', '#/logs' + logsQuery()); } catch (_) {} }
+function openLogs(f) {
+  for (const [k] of LOG_FACETS) _logs.f[k] = f && f[k] ? [f[k]] : [];
+  _logs.q = ''; _logs.page = 1;
+  document.getElementById('logsSearch').value = '';
+  document.querySelector('.tab-btn[data-tab="logs"]')?.click();
+}
+function logsSet(k, v, on) {
+  const a = _logs.f[k];
+  _logs.f[k] = on ? [...new Set([...a, v])] : a.filter(x => x !== v);
+  _logs.page = 1; syncLogsHash(); loadLogs();
+}
+function logsClear() {
+  for (const [k] of LOG_FACETS) _logs.f[k] = [];
+  _logs.q = ''; _logs.page = 1;
+  document.getElementById('logsSearch').value = '';
+  syncLogsHash(); loadLogs();
+}
+let _logsSearchT;
+document.getElementById('logsSearch').addEventListener('input', e => {
+  clearTimeout(_logsSearchT);
+  _logsSearchT = setTimeout(() => { _logs.q = e.target.value.trim(); _logs.page = 1; syncLogsHash(); loadLogs(); }, 300);
+});
+function setLogsLive(on) {
+  _logs.live = on;
+  const b = document.getElementById('logsLiveBtn');
+  b.classList.toggle('on', on); b.setAttribute('aria-pressed', on);
+  b.innerHTML = on ? '<span class="logs-live-dot"></span>Live' : 'Live';
+  clearInterval(_logs.timer);
+  if (on) {
+    _logs.page = 1; loadLogs(true);
+    _logs.timer = setInterval(() => {
+      if (!document.hidden && document.getElementById('page-logs').classList.contains('active')) loadLogs(true);
+    }, 5000);
+  }
+}
+async function loadLogs(silent) {
+  const days = Math.min(windowDays(), 30);
+  const p = new URLSearchParams(logsQuery().slice(1));
+  p.set('days', days); p.set('page', _logs.page); p.set('limit', 50);
+  const req = ++_logsReq;
+  if (!silent && !_logs.data) document.getElementById('logsBody').innerHTML = '<tr><td colspan="7" class="empty">Reading the event store… The first load after a restart takes a few seconds.</td></tr>';
+  try {
+    const d = await apiFetch('/api/logs?' + p, { timeoutMs: 60000 });
+    if (req !== _logsReq) return;
+    _logs.data = d; renderLogs();
+  } catch (e) {
+    if (req === _logsReq) document.getElementById('logsBody').innerHTML = '<tr><td colspan="7" class="empty">Could not load logs: ' + safe(e.message || String(e)) + '</td></tr>';
+  }
+}
+function logStatus(st) { const [t, l, title] = LOG_STATUS[st] || ['neutral', st, '']; return '<span class="tone t-' + t + '" title="' + safeAttr(title) + '">' + l + '</span>'; }
+function logLabel(k, v) {
+  if (k === 'status') return (LOG_STATUS[v] || [0, v])[1];
+  if (k === 'type') return v.replace(/_/g, ' ');
+  return v;
+}
+function renderLogs() {
+  const d = _logs.data; if (!d) return;
+  const daysPicked = windowDays();
+  document.getElementById('logsNote').textContent = daysPicked > 30 ? 'Logs cover the last 30 days.' : '';
+  renderLogsFilterBar();
+  if (_logsPop) renderLogsPopList();
+
+  // Totals.
+  const s = d.stats, rate = s.total ? Math.round((s.blocked / s.total) * 1000) / 10 : 0;
+  const stat = (k, v, sub) => '<div class="logs-stat"><span>' + k + '</span><b>' + v + '</b><small>' + sub + '</small></div>';
+  document.getElementById('logsStats').innerHTML =
+    stat('Events', fmtNum(s.total), fmtNum(s.sessions) + ' session' + (s.sessions === 1 ? '' : 's')) +
+    stat('Blocked', fmtNum(s.blocked), rate + '% of events') +
+    stat('Flagged', fmtNum(s.flagged), 'matched, not stopped') +
+    stat('Asked', fmtNum(s.asked), 'held for approval');
+
+  // Chart: stacked by outcome, colors from the status dots.
+  const css = getComputedStyle(document.documentElement);
+  const col = { allowed: css.getPropertyValue('--dot-gray').trim(), flagged: css.getPropertyValue('--dot-warn').trim(), asked: css.getPropertyValue('--dot-info').trim(), blocked: css.getPropertyValue('--dot-danger').trim() };
+  document.getElementById('logsLegend').innerHTML = ['allowed', 'flagged', 'asked', 'blocked'].map(k => '<span><i style="background:' + col[k] + '"></i>' + LOG_STATUS[k][1] + '</span>').join('');
+  const labels = d.histogram.map(b => { const t = new Date(b.t); return d.hourly ? t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : t.toLocaleDateString([], { month: 'short', day: 'numeric', timeZone: 'UTC' }); });
+  const sets = ['allowed', 'flagged', 'asked', 'blocked'].map(k => ({ label: LOG_STATUS[k][1], data: d.histogram.map(b => b[k]), backgroundColor: col[k], borderWidth: 0, borderRadius: 2, maxBarThickness: 28 }));
+  const grid = css.getPropertyValue('--sui-border').trim(), tick = css.getPropertyValue('--sui-fg-subtle').trim();
+  if (_logsChart) { _logsChart.data.labels = labels; sets.forEach((ds, i) => { _logsChart.data.datasets[i].data = ds.data; _logsChart.data.datasets[i].backgroundColor = ds.backgroundColor; }); _logsChart.update('none'); }
+  else if (window.Chart) _logsChart = new Chart(document.getElementById('logsChart'), {
+    type: 'bar', data: { labels, datasets: sets },
+    options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
+      scales: { x: { stacked: true, grid: { display: false }, ticks: { color: tick, maxRotation: 0, autoSkip: true, maxTicksLimit: 10, font: { size: 11 } } },
+                y: { stacked: true, beginAtZero: true, grid: { color: grid }, border: { display: false }, ticks: { color: tick, maxTicksLimit: 4, font: { size: 11 } } } } },
+  });
+
+  // Table.
+  const body = document.getElementById('logsBody');
+  body.innerHTML = !d.items.length ? '<tr><td colspan="7" class="empty">No events match these filters in the last ' + d.days + ' day' + (d.days === 1 ? '' : 's') + '.</td></tr>'
+    : d.items.map(it => {
+      const f = it.findings[0];
+      return '<tr class="clickable-row' + (_logSel === it.id ? ' sel' : '') + '" onclick="openLogEvent(\'' + safeJsArg(it.id) + '\')">' +
+        '<td class="logs-bar-col"><i class="logs-bar s-' + it.status + '"></i></td>' +
+        '<td class="logs-time"><span title="' + safeAttr(it.abs) + '">' + safe(fmtLogTime(it.ts)) + '</span><small>' + safe(it.rel) + '</small></td>' +
+        '<td class="logs-call"><code>' + safe(it.tool) + '</code>' + (it.detail ? '<div class="logs-detail">' + safe(it.detail) + '</div>' : '') +
+          '<div class="logs-outcome">' + logStatus(it.status) + (it.ms != null ? '<span class="logs-why" title="Call to result">' + fmtMs(it.ms) + '</span>' : '') + (f ? '<span class="logs-why">' + safe(f.title || f.category) + (it.findings.length > 1 ? ' +' + (it.findings.length - 1) : '') + '</span>' : '') + '</div></td>' +
+        '<td><span class="tone t-outline">' + safe((it.type || it.event || '').replace(/_/g, ' ')) + '</span></td>' +
+        '<td>' + (it.server ? safe(it.server) : '<span class="mcp-muted">—</span>') + '</td>' +
+        '<td>' + safe(it.agent || '—') + '</td>' +
+        '<td><span title="' + safeAttr(it.session) + '">' + safe(it.session.slice(0, 8)) + '</span></td></tr>';
+    }).join('');
+  const from = d.total ? (d.page - 1) * d.limit + 1 : 0, to = Math.min(d.total, d.page * d.limit);
+  document.getElementById('logsCount').textContent = fmtNum(from) + '–' + fmtNum(to) + ' of ' + fmtNum(d.total) + ' events';
+  document.getElementById('logsPager').innerHTML =
+    '<button class="btn-line" ' + (d.page > 1 ? 'onclick="_logs.page--;loadLogs()"' : 'disabled') + '>‹</button>' +
+    '<span>Page ' + d.page + ' of ' + fmtNum(d.pages) + '</span>' +
+    '<button class="btn-line" ' + (d.page < d.pages ? 'onclick="_logs.page++;loadLogs()"' : 'disabled') + '>›</button>';
+  if (_logSel && !_logSel.startsWith('…')) document.querySelectorAll('#logsBody tr').forEach(r => r.classList.toggle('sel', r.getAttribute('onclick').includes("'" + _logSel + "'")));
+}
+
+// Filter bar: one button per facet. Each opens a dropdown with a search box
+// and a checklist with counts (what the other filters leave).
+const LOG_CHEVRON = '<svg class="logs-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>';
+function logsOptLabel(k, v) {
+  if (k === 'session') { const it = (_logs.data?.items || []).find(x => x.session === v); return v.slice(0, 8) + (it && it.agent ? ' · ' + it.agent : ''); }
+  return logLabel(k, v);
+}
+function renderLogsFilterBar() {
+  const active = LOG_FACETS.some(([k]) => _logs.f[k].length) || _logs.q;
+  document.getElementById('logsFilterBar').innerHTML = LOG_FACETS.map(([k, label]) => {
+    const sel = _logs.f[k];
+    const val = !sel.length ? '' : sel.length === 1 ? logsOptLabel(k, sel[0]) : sel.length + ' selected';
+    return '<button class="logs-fbtn' + (sel.length ? ' on' : '') + (_logsPop && _logsPop.k === k ? ' open' : '') + '" data-k="' + k + '" ' +
+      'aria-haspopup="dialog" aria-expanded="' + !!(_logsPop && _logsPop.k === k) + '" onclick="toggleLogsPop(\'' + k + '\')">' +
+      '<span>' + label + '</span>' + (val ? '<span class="logs-fval" title="' + safeAttr(sel.join(', ')) + '">' + safe(val) + '</span>' : '') + LOG_CHEVRON + '</button>';
+  }).join('') + (active ? '<button class="inline-link-btn logs-fclear" onclick="logsClear()">Clear filters</button>' : '');
+}
+function toggleLogsPop(k) {
+  if (_logsPop && _logsPop.k === k) return closeLogsPop();
+  _logsPop = { k, q: '' };
+  const label = (LOG_FACETS.find(f => f[0] === k) || [k, k])[1];
+  const pop = document.getElementById('logsPop');
+  pop.innerHTML = '<input class="finput logs-pop-q" type="search" spellcheck="false" autocomplete="off" placeholder="Search ' + label.toLowerCase() + '…" ' +
+    'oninput="_logsPop.q=this.value;renderLogsPopList()"><div class="logs-pop-list" id="logsPopList"></div><div class="logs-pop-foot" id="logsPopFoot"></div>';
+  pop.hidden = false;
+  renderLogsFilterBar(); placeLogsPop(); renderLogsPopList();
+  pop.querySelector('input').focus();
+}
+function placeLogsPop() {
+  const btn = document.querySelector('.logs-fbtn[data-k="' + (_logsPop && _logsPop.k) + '"]'), pop = document.getElementById('logsPop');
+  if (!btn) return closeLogsPop();
+  const r = btn.getBoundingClientRect();
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8)) + 'px';
+}
+function closeLogsPop() {
+  if (!_logsPop) return;
+  _logsPop = null;
+  document.getElementById('logsPop').hidden = true;
+  renderLogsFilterBar();
+}
+function renderLogsPopList() {
+  if (!_logsPop || !_logs.data) return;
+  const k = _logsPop.k, sel = _logs.f[k], q = _logsPop.q.trim().toLowerCase();
+  let opts = (_logs.data.facets[k] || []).slice();
+  for (const v of sel) if (!opts.some(o => o.value === v)) opts.push({ value: v, count: 0 });
+  if (k === 'status') opts.sort((a, b) => Object.keys(LOG_STATUS).indexOf(a.value) - Object.keys(LOG_STATUS).indexOf(b.value));
+  else opts.sort((a, b) => sel.includes(b.value) - sel.includes(a.value) || b.count - a.count);
+  if (q) opts = opts.filter(o => o.value.toLowerCase().includes(q) || logsOptLabel(k, o.value).toLowerCase().includes(q));
+  const shown = opts.slice(0, 100);
+  document.getElementById('logsPopList').innerHTML = shown.length ? shown.map(o =>
+    '<label class="logs-opt" title="' + safeAttr(o.value) + '"><input type="checkbox"' + (sel.includes(o.value) ? ' checked' : '') +
+      ' onchange="logsSet(\'' + k + '\',\'' + safeJsArg(o.value) + '\',this.checked)">' +
+      (k === 'status' ? '<span class="tone t-' + (LOG_STATUS[o.value] || ['neutral'])[0] + '">' + logLabel(k, o.value) + '</span>'
+        : '<span class="logs-opt-v">' + safe(logsOptLabel(k, o.value)) + '</span>') +
+      '<span class="logs-opt-n">' + fmtNum(o.count) + '</span></label>').join('') +
+      (opts.length > shown.length ? '<div class="logs-pop-more">' + fmtNum(opts.length - shown.length) + ' more. Type to narrow the list.</div>' : '')
+    : '<div class="logs-pop-more">' + (q ? 'Nothing matches “' + safe(_logsPop.q) + '”.' : 'None in this window.') + '</div>';
+  document.getElementById('logsPopFoot').innerHTML = sel.length
+    ? '<span>' + sel.length + ' selected</span><button class="inline-link-btn" onclick="_logs.f[\'' + k + '\']=[];_logs.page=1;syncLogsHash();loadLogs()">Clear</button>' : '';
+}
+// Close on a click outside, Esc, or when the page scrolls under it.
+document.addEventListener('mousedown', e => {
+  if (_logsPop && !e.target.closest('#logsPop, .logs-fbtn')) closeLogsPop();
+});
+document.addEventListener('keydown', e => { if (_logsPop && e.key === 'Escape') { e.stopPropagation(); closeLogsPop(); } }, true);
+document.addEventListener('scroll', e => { if (_logsPop && !e.target.closest?.('#logsPop')) closeLogsPop(); }, true);
+window.addEventListener('resize', () => _logsPop && placeLogsPop());
+function fmtLogTime(ts) {
+  const t = new Date(ts); if (isNaN(t)) return ts;
+  return t.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+async function openLogEvent(id) {
+  _logSel = id;
+  document.getElementById('logDrawerOverlay').classList.add('open');
+  document.getElementById('logDrawer').classList.add('open');
+  document.querySelectorAll('#logsBody tr').forEach(r => r.classList.toggle('sel', r.getAttribute('onclick').includes("'" + id + "'")));
+  const it = (_logs.data?.items || []).find(x => x.id === id) || {};
+  const items = _logs.data?.items || [], i = items.findIndex(x => x.id === id);
+  document.getElementById('logDrawerHead').innerHTML =
+    '<div style="min-width:0"><div class="mcp-drawer-title">' + safe(it.tool || 'Event') + '</div>' +
+    '<div class="mcp-drawer-sub">' + (it.status ? logStatus(it.status) : '') + '<span class="mcp-muted">' + safe(it.abs || '') + '</span></div></div>' +
+    '<span class="mcp-drawer-nav">' +
+      '<button class="sess-drawer-close" title="Newer (↑ or k)" ' + (i > 0 ? 'onclick="logStep(-1)"' : 'disabled') + '>↑</button>' +
+      '<button class="sess-drawer-close" title="Older (↓ or j)" ' + (i >= 0 && i < items.length - 1 ? 'onclick="logStep(1)"' : 'disabled') + '>↓</button>' +
+      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeLogDrawer()">✕</button></span>';
+  const body = document.getElementById('logDrawerBody');
+  body.innerHTML = '<div class="mcp-hint">Loading the record…</div>';
+  let e;
+  try { e = await apiFetch('/api/logs/event?id=' + encodeURIComponent(id) + (it.post ? '&post=' + encodeURIComponent(it.post) : '')); } catch (err) { body.innerHTML = '<div class="mcp-hint">Could not load this event: ' + safe(err.message || String(err)) + '</div>'; return; }
+  if (_logSel !== id) return;
+  const row = (k, v, copy) => '<div class="mcp-kv-row logs-kv"><span class="logs-k">' + k + '</span><div class="mcp-mono"><code>' + v + '</code>' + (copy ? mcpCopyBtn(copy) : '') + '</div></div>';
+  const raw = JSON.stringify(e.raw, null, 2), res = e.result ? JSON.stringify(e.result.raw, null, 2) : '';
+  body.innerHTML =
+    '<div class="mcp-kv">' +
+      row('Outcome', LOG_STATUS[e.status] ? safe(LOG_STATUS[e.status][2]) : safe(e.status)) +
+      row('Time', safe(e.abs)) +
+      row('Session', '<a href="#" onclick="closeLogDrawer();openSessionView(\'' + safeJsArg(e.session) + '\',\'\');return false">' + safe(e.session) + '</a>' +
+        ' <a href="#" class="logs-also" onclick="closeLogDrawer();openLogs({session:\'' + safeJsArg(e.session) + '\'});return false">Only this session\'s logs</a>', e.session) +
+      row('Agent', safe(it.agent || (e.raw && e.raw.agent) || '—')) +
+      row('Event', safe((e.type || '').replace(/_/g, ' ') + ' · ' + (e.result ? 'call and result' : (e.event || '')))) +
+      (e.result && e.result.ms != null ? row('Duration', safe(fmtMs(e.result.ms)) + ' <span class="mcp-muted">from call to result</span>') : '') +
+      (it.server ? row('MCP server', safe(it.server)) : '') +
+      (it.detail ? row('Input', safe(it.detail), it.detail) : '') +
+    '</div>' +
+    '<div class="mcp-section-h">Rules that matched <small>' + e.findings.length + '</small></div>' +
+    (e.findings.length ? '<div class="logs-findings">' + e.findings.map(f =>
+      '<div class="logs-finding"><div class="logs-finding-top"><span class="sev-badge sev-' + safeAttr((f.severity || 'low').toLowerCase()) + '">' + safe((f.severity || '').toLowerCase()) + '</span>' +
+        '<b>' + safe(f.title || f.category) + '</b>' + (f.on === 'result' ? '<span class="tone t-outline" title="Matched the tool\'s output, not its input">on result</span>' : '') + '</div>' +
+        '<div class="logs-finding-meta">' + [f.category, f.rule && 'rule ' + f.rule, f.action && f.action + (f.mode ? ' in ' + f.mode + ' mode' : '')].filter(Boolean).map(safe).join(' · ') + '</div>' +
+        (f.evidence ? '<pre class="logs-pre">' + safe(f.evidence) + '</pre>' : '') + '</div>').join('') + '</div>'
+      : '<div class="mcp-hint" style="margin-top:0">None. Prismor saw this event and let it through.</div>') +
+    '<div class="mcp-section-h">' + (e.result ? 'Call record' : 'Record') + ' <span style="margin-left:auto">' + mcpCopyBtn(raw) + '</span></div>' +
+    '<pre class="logs-pre logs-raw">' + safe(raw) + '</pre>' +
+    (e.result ? '<div class="mcp-section-h">Result record <small>' + safe(e.result.abs) + '</small><span style="margin-left:auto">' + mcpCopyBtn(res) + '</span></div>' +
+      '<pre class="logs-pre logs-raw">' + safe(res) + '</pre>' : '');
+}
+function logStep(dd) {
+  const items = _logs.data?.items || [], i = items.findIndex(x => x.id === _logSel);
+  if (items[i + dd]) openLogEvent(items[i + dd].id);
+}
+function closeLogDrawer() {
+  _logSel = null;
+  document.getElementById('logDrawerOverlay').classList.remove('open');
+  document.getElementById('logDrawer').classList.remove('open');
+  document.querySelectorAll('#logsBody tr.sel').forEach(r => r.classList.remove('sel'));
+}
+
 setInterval(() => {
   if (document.hidden) return;
   const pg = document.querySelector('.page.active')?.id || '';
@@ -8993,7 +9696,131 @@ setInterval(() => {
   if (pg === 'page-sessions') { loadSessions(); loadSessionControl(); }
   if (pg === 'page-policy') loadPolicy();
   if (pg === 'page-agents' || pg === 'page-agent') loadAgents();
+  if (pg === 'page-logs' && !_logs.live && _logs.page === 1) loadLogs(true);
 }, 30000);
+
+// ══════════════════════════════════════════════════════════════════════════
+// Styled dropdowns. Every select.fsel gets a button and one shared menu. The
+// native <select> stays in the DOM, hidden: code that reads .value or listens
+// for 'change' keeps working, and setting .value from script updates the
+// button. Menus with more than 8 options get a search box. Up/Down, Enter,
+// Esc and typing work from the keyboard.
+// ══════════════════════════════════════════════════════════════════════════
+const SEL_CHEV = '<svg class="sel-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+const SEL_CHECK = '<svg class="sel-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5L20 7"/></svg>';
+const _selValue = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+let _selOpen = null;   // {s, btn, q, act}
+function syncSelBtn(s) {
+  const b = s._btn; if (!b) return;
+  const o = s.selectedOptions[0];
+  b.firstElementChild.textContent = o ? o.textContent : '';
+  b.disabled = s.disabled;
+  b.classList.toggle('placeholder', !s.value);
+}
+function enhanceSelect(s) {
+  if (s._btn || s.multiple || s.size > 1) return;
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = s.className + ' sel-btn';
+  if (s.title) b.title = s.title;
+  b.setAttribute('aria-haspopup', 'listbox');
+  b.setAttribute('aria-expanded', 'false');
+  b.innerHTML = '<span class="sel-label"></span>' + SEL_CHEV;
+  b.addEventListener('click', () => openSelMenu(s));
+  b.addEventListener('keydown', e => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); openSelMenu(s); } });
+  s._btn = b;
+  s.classList.add('sel-native');
+  s.tabIndex = -1;
+  s.insertAdjacentElement('afterend', b);
+  Object.defineProperty(s, 'value', { configurable: true, get() { return _selValue.get.call(s); }, set(v) { _selValue.set.call(s, v); syncSelBtn(s); } });
+  new MutationObserver(() => syncSelBtn(s)).observe(s, { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'selected'] });
+  s.addEventListener('change', () => syncSelBtn(s));
+  syncSelBtn(s);
+}
+function enhanceSelects(root) {
+  if (root.matches && root.matches('select.fsel')) enhanceSelect(root);
+  root.querySelectorAll && root.querySelectorAll('select.fsel').forEach(enhanceSelect);
+}
+function selMenuEl() {
+  let m = document.getElementById('selMenu');
+  if (!m) { m = document.createElement('div'); m.id = 'selMenu'; m.className = 'sel-menu'; m.hidden = true; document.body.appendChild(m); }
+  return m;
+}
+function openSelMenu(s) {
+  if (_selOpen && _selOpen.s === s) return closeSelMenu();
+  closeSelMenu();
+  if (typeof closeLogsPop === 'function') closeLogsPop();
+  const opts = [...s.options];
+  _selOpen = { s, btn: s._btn, q: '', act: Math.max(0, s.selectedIndex) };
+  const m = selMenuEl();
+  m.innerHTML = (opts.length > 8 ? '<div class="sel-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>' +
+      '<input type="search" spellcheck="false" autocomplete="off" placeholder="Search…" aria-label="Search options"></div>' : '') +
+    '<div class="sel-list" role="listbox"></div>';
+  m.hidden = false;
+  s._btn.setAttribute('aria-expanded', 'true'); s._btn.classList.add('open');
+  const inp = m.querySelector('input');
+  if (inp) inp.addEventListener('input', () => { _selOpen.q = inp.value.trim().toLowerCase(); _selOpen.act = 0; renderSelList(); });
+  m.querySelector('.sel-list').addEventListener('click', e => { const o = e.target.closest('.sel-opt'); if (o && !o.hasAttribute('aria-disabled')) pickSel(+o.dataset.i); });
+  m.querySelector('.sel-list').addEventListener('mousemove', e => {
+    const o = e.target.closest('.sel-opt'); if (!o || +o.dataset.i === _selOpen.act) return;
+    _selOpen.act = +o.dataset.i; m.querySelectorAll('.sel-opt.act').forEach(x => x.classList.remove('act')); o.classList.add('act');
+  });
+  const r = s._btn.getBoundingClientRect();
+  m.style.minWidth = Math.max(160, r.width) + 'px';
+  renderSelList();
+  const h = m.offsetHeight, below = innerHeight - r.bottom - 8;
+  m.style.left = Math.max(8, Math.min(r.left, innerWidth - m.offsetWidth - 8)) + 'px';
+  m.style.top = (h > below && r.top > below ? Math.max(8, r.top - h - 4) : r.bottom + 4) + 'px';
+  (inp || m).focus({ preventScroll: true });
+  m.querySelector('.sel-opt.act')?.scrollIntoView({ block: 'nearest' });
+}
+function renderSelList() {
+  if (!_selOpen) return;
+  const { s, q, act } = _selOpen, cur = s.selectedIndex;
+  const rows = [...s.options].map((o, i) => ({ o, i })).filter(x => !q || x.o.textContent.toLowerCase().includes(q));
+  if (rows.length && !rows.some(x => x.i === act)) _selOpen.act = rows[0].i;
+  selMenuEl().querySelector('.sel-list').innerHTML = rows.length ? rows.map(({ o, i }) =>
+    '<div class="sel-opt' + (i === cur ? ' on' : '') + (i === _selOpen.act ? ' act' : '') + '" role="option" data-i="' + i + '" aria-selected="' + (i === cur) + '"' +
+      (o.disabled ? ' aria-disabled="true"' : '') + '><span>' + safe(o.textContent) + '</span>' + (i === cur ? SEL_CHECK : '') + '</div>').join('')
+    : '<div class="sel-none">Nothing matches.</div>';
+}
+function pickSel(i) {
+  const s = _selOpen && _selOpen.s; if (!s) return;
+  closeSelMenu();
+  if (s.selectedIndex !== i) { s.selectedIndex = i; syncSelBtn(s); s.dispatchEvent(new Event('change', { bubbles: true })); }
+  s._btn.focus({ preventScroll: true });
+}
+function closeSelMenu() {
+  if (!_selOpen) return;
+  _selOpen.btn.setAttribute('aria-expanded', 'false'); _selOpen.btn.classList.remove('open');
+  _selOpen = null;
+  selMenuEl().hidden = true;
+}
+document.addEventListener('mousedown', e => { if (_selOpen && !e.target.closest('#selMenu, .sel-btn')) closeSelMenu(); });
+document.addEventListener('scroll', e => { if (_selOpen && !(e.target.closest && e.target.closest('#selMenu'))) closeSelMenu(); }, true);
+window.addEventListener('resize', closeSelMenu);
+document.addEventListener('keydown', e => {
+  if (!_selOpen) return;
+  const vis = [...document.querySelectorAll('#selMenu .sel-opt')].map(x => +x.dataset.i);
+  const move = d => { if (!vis.length) return; const k = Math.max(0, Math.min(vis.length - 1, vis.indexOf(_selOpen.act) + d)); _selOpen.act = vis[k];
+    document.querySelectorAll('#selMenu .sel-opt').forEach(x => x.classList.toggle('act', +x.dataset.i === _selOpen.act));
+    document.querySelector('#selMenu .sel-opt.act')?.scrollIntoView({ block: 'nearest' }); };
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); const b = _selOpen.btn; closeSelMenu(); b.focus({ preventScroll: true }); }
+  else if (e.key === 'ArrowDown') { e.preventDefault(); e.stopPropagation(); move(1); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); e.stopPropagation(); move(-1); }
+  else if (e.key === 'Enter' || (e.key === ' ' && !e.target.closest('input'))) { e.preventDefault(); e.stopPropagation(); if (vis.length) pickSel(_selOpen.act); }
+  else if (e.key === 'Tab') closeSelMenu();
+}, true);
+enhanceSelects(document);
+new MutationObserver(ms => ms.forEach(m => m.addedNodes.forEach(n => n.nodeType === 1 && enhanceSelects(n)))).observe(document.body, { childList: true, subtree: true });
+// A hash in the address bar is a view someone linked to or reloaded into:
+// open it now (each view loads its own data); otherwise stamp the current
+// view so the first Back has somewhere to return to.
+{
+  const wanted = parseHash();
+  if (wanted) applyViewState(wanted);
+  else recordView(currentViewState(), true);
+}
 </script>
 </body>
 </html>
