@@ -114,6 +114,7 @@ class TestProfile(unittest.TestCase):
         self.assertNotIn(os.path.realpath(self.home / ".npm"), p.writable)
         self.assertEqual(p.network, "none")
 
+    @unittest.skipIf(sys.platform == "win32", "Seatbelt profile paths are macOS-only")
     def test_protected_and_hidden(self):
         p = self._p(hide=[".env", "~/.ssh"])
         root = os.path.realpath(self.root)
@@ -197,6 +198,21 @@ class TestMacOSOnly(unittest.TestCase):
             self.assertNotIn("updatedInput", r.stdout, r.stderr)
 
 
+class TestUnconfinedOnWindows(unittest.TestCase):
+    def test_runs_through_git_bash_and_keeps_the_exit_code(self):
+        with mock.patch.object(sandbox.sys, "platform", "win32"), \
+             mock.patch.object(sandbox, "_windows_bash", return_value="C:/Git/bin/bash.exe"), \
+             mock.patch.object(sandbox.subprocess, "call", return_value=5) as call, \
+             mock.patch.object(sandbox.os, "execv") as execv:
+            self.assertEqual(sandbox._exec_unconfined("exit 5"), 5)
+        call.assert_called_once_with(["C:/Git/bin/bash.exe", "-c", "exit 5"])
+        execv.assert_not_called()
+
+    def test_wsl_launcher_is_not_used(self):
+        with mock.patch("shutil.which", return_value=r"C:\Windows\System32\bash.exe"):
+            self.assertIsNone(sandbox._windows_bash())
+
+
 class TestRewrite(unittest.TestCase):
     ROOT = Path("/tmp/work")
 
@@ -204,6 +220,7 @@ class TestRewrite(unittest.TestCase):
         payload = {"tool_name": "Bash", "tool_input": {"command": command, "description": "d", **extra}}
         return sandbox.claude_updated_input(payload, root=self.ROOT)
 
+    @unittest.skipIf(sys.platform == "win32", "the hook rewrite only runs on macOS; POSIX path")
     def test_wraps_as_a_readable_heredoc(self):
         out = self._wrap("npm install left-padder")["hookSpecificOutput"]["updatedInput"]
         self.assertEqual(out["description"], "d")
@@ -310,6 +327,7 @@ def _run_decloak(payload, env):
 
 
 @unittest.skipUnless(shutil.which("jq"), "decloak.sh needs jq")
+@unittest.skipIf(sys.platform == "win32", "decloak.sh hand-off is bash + macOS only")
 class TestDecloakWraps(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())

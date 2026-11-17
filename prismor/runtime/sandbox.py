@@ -310,11 +310,34 @@ def _note(text: str) -> None:
     sys.stderr.flush()
 
 
+def _windows_bash() -> Optional[str]:
+    """Git Bash, which runs agents' Bash commands on Windows. System32\\bash.exe is the WSL launcher."""
+    import shutil
+    bash = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") or shutil.which("bash")
+    if bash and "system32" not in bash.lower() and os.path.exists(bash):
+        return bash
+    git = shutil.which("git")  # ...\Git\cmd\git.exe -> ...\Git\bin\bash.exe
+    if git:
+        cand = os.path.join(os.path.dirname(os.path.dirname(git)), "bin", "bash.exe")
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def _exec_unconfined(command: str) -> int:
     if is_exempt(command):
-        argv = [sys.executable, "-m", _RUNNER_MODULE] + shlex.split(command)[1:]
+        argv: Optional[List[str]] = [sys.executable, "-m", _RUNNER_MODULE] + shlex.split(command)[1:]
+    elif sys.platform == "win32":
+        bash = _windows_bash()
+        argv = [bash, "-c", command] if bash else None
     else:
         argv = [_shell(), "-c", command]
+    if sys.platform == "win32":
+        # No POSIX shell path and no real exec here: os.execv spawns a child and
+        # exits without its exit code. Run it and pass the code through.
+        if argv is None:
+            return subprocess.call(command, shell=True)  # nosec B602 - the agent's own allowed command, as typed
+        return subprocess.call(argv)
     os.execv(argv[0], argv)
     return 127  # pragma: no cover - execv does not return
 
