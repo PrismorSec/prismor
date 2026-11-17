@@ -89,7 +89,15 @@ def approvals(monkeypatch):
     monkeypatch.delenv("PRISMOR_APPROVALS", raising=False)
     monkeypatch.setattr(approvals._identity, "load_identity", lambda: {"device_key": "k", "api_base": "https://cp.test"})
     monkeypatch.setattr(approvals._identity, "revoked_backoff_active", lambda: False)
-    monkeypatch.setattr(approvals, "_post_request", lambda ident, body, timeout: {"id": "a1", "status": "pending"})
+    reported = []
+
+    def _post(ident, body, timeout, path="/api/approvals"):
+        if path != "/api/approvals":
+            reported.append((path, body))
+            return {}
+        return {"id": "a1", "status": "pending"}
+    monkeypatch.setattr(approvals, "_post_request", _post)
+    approvals._reported = reported
     monkeypatch.setattr(approvals, "_get_status_ex",
                         lambda ident, aid, timeout: ("approved", "full", {"id": "u2", "email": "b@bank.test"}))
     monkeypatch.setattr(remote_policy, "check_and_refresh", lambda interval=None: False)
@@ -162,3 +170,18 @@ def test_step_up_decision_carries_a_working_recheck(tmp_path, monkeypatch):
     assert d.recheck(None).verdict == "step_up"
     after = d.recheck({"kind": "account", "id": "ACC-1", "attr": {"status": "restricted"}})
     assert after.verdict == "block" and after.rule_id == "t-restricted"
+
+
+def test_console_is_told_it_ran(approvals):
+    approvals.await_step_up(_step_up(lambda r: _now(True)))
+    assert approvals._reported == [("/api/approvals/a1", {"outcome": "executed"})]
+
+
+def test_console_is_told_the_refusal_with_rule_and_account(approvals):
+    res = {"kind": "account", "id": "ACC-3300", "attr": {"open_case": False}}
+    approvals.await_step_up(_step_up(lambda r: _now(False, "block", "nw-freeze-needs-open-case")), resource=res)
+    path, body = approvals._reported[-1]
+    assert path == "/api/approvals/a1"
+    assert body["outcome"] == "revoked_after_approval"
+    assert body["rule_id"] == "nw-freeze-needs-open-case"
+    assert body["resource"] == {"kind": "account", "id": "ACC-3300"}  # no attributes

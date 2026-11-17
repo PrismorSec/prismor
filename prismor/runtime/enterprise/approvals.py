@@ -92,12 +92,13 @@ def _headers(ident: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float,
+                  path: str = "/api/approvals") -> Optional[Dict[str, Any]]:
     import urllib.request
     import urllib.error
 
     base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
-    url = f"{base}/api/approvals"
+    url = f"{base}{path}"
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=_headers(ident), method="POST"
     )
@@ -107,6 +108,28 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def _report_outcome(ident: Dict[str, Any], approval_id: Optional[str], outcome: str,
+                    rules: Optional[list] = None, reason: Optional[str] = None,
+                    resource: Optional[Dict[str, Any]] = None) -> None:
+    """Tell the console what happened after the approval (``executed`` or a
+    refusal on re-check), so its history matches the signed trail
+    (prismor-web#510). Kind and id of the resource only, never attributes.
+    Best-effort: an old console answers 404/405 and nothing changes."""
+    if not approval_id:
+        return
+    body: Dict[str, Any] = {"outcome": outcome}
+    if rules:
+        body["rule_id"] = str(rules[0])
+    if reason:
+        body["reason"] = str(reason)[:500]
+    if isinstance(resource, dict) and (resource.get("kind") or resource.get("id")):
+        body["resource"] = {"kind": resource.get("kind"), "id": resource.get("id")}
+    try:
+        _post_request(ident, body, timeout=3.0, path=f"/api/approvals/{approval_id}")
+    except Exception:
+        pass
 
 
 def _decision_mode(data: Dict[str, Any]) -> str:
@@ -331,6 +354,8 @@ def await_step_up(
 
     def _record(status: str, approval_id: Optional[str] = None, reason: Optional[str] = None,
                 approver: Optional[Dict[str, Any]] = None, rules: Optional[list] = None) -> None:
+        if status == "revoked_after_approval":
+            _report_outcome(ident, approval_id, status, rules=rules, reason=reason, resource=resource)
         _audit_outcome(
             {**body, "reason": reason} if reason else body,
             status=status, approval_id=approval_id,
@@ -349,6 +374,7 @@ def await_step_up(
         _record("approved" if _mode != "redacted" else "approved_redacted", approval_id)
         if _revoked_since(decision, finding, resource, _record, approval_id):
             return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
+        _report_outcome(ident, approval_id, "executed")
         return ApprovalOutcome(True, redacted=_mode == "redacted", approval_id=approval_id, status="approved")
 
     deadline = _monotonic() + _timeout()
@@ -363,6 +389,7 @@ def await_step_up(
             _record("approved" if mode != "redacted" else "approved_redacted", approval_id, approver=approver)
             if _revoked_since(decision, finding, resource, _record, approval_id):
                 return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
+            _report_outcome(ident, approval_id, "executed")
             return ApprovalOutcome(True, redacted=mode == "redacted", approval_id=approval_id, status="approved")
         if status in _DECIDED:  # denied / expired
             _record(status, approval_id, approver=approver)
