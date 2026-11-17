@@ -110,7 +110,9 @@ _wire_adapters()
 # Environment keys this file owns: the agent's home plus every Prismor knob.
 # Restored around every test, so nothing a test sets can reach the next one.
 _ENV_PREFIX = "PRISMOR_"
-_ENV_EXTRA = ("HOME",)
+# USERPROFILE is what `Path.home()` reads on Windows; sandboxing HOME alone let
+# `install-hooks --scope global` write into the real ~/.claude/settings.json.
+_ENV_EXTRA = ("HOME", "USERPROFILE")
 
 
 def _tracked_env(env: Dict[str, str]) -> Dict[str, str]:
@@ -177,6 +179,8 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
     os.environ.update(_PRISTINE_ENV)
 
     os.environ["HOME"] = str(_sandbox_home)
+    if os.name == "nt":
+        os.environ["USERPROFILE"] = str(_sandbox_home)
     os.environ.pop("KUBECONFIG", None)  # the dev's kube context can't flip results
     os.environ["PRISMOR_HOME"] = str(tmp_path_factory.mktemp("prismor-home"))
 
