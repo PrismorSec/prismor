@@ -1365,9 +1365,14 @@ def evaluate_tool_call(
     if blocking is not None:
         _delegations.release(event, _scope)  # a refused launch uses no number
     _recheck = None
-    if str((blocking or {}).get("action") or "").lower() == "step_up":
+    if record:  # a decide-only re-check gets no re-check of its own
         import copy as _copy
-        _snapshot = _copy.deepcopy(event)
+        # A step-up waits minutes for a human: snapshot the event so a caller
+        # mutating it meanwhile can't change what is re-judged. An allow is
+        # re-checked at commit/in flight (inflight.py, #942); its event is
+        # built per call, so a reference is enough and keeps the hot path cheap.
+        _held = str((blocking or {}).get("action") or "").lower() == "step_up"
+        _snapshot = _copy.deepcopy(event) if _held else event
 
         def _recheck(resource_now: Optional[Dict[str, Any]] = None) -> Decision:
             # Decide-only: no event, delegation number, rate count or audit

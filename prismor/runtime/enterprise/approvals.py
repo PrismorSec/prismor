@@ -384,26 +384,14 @@ def _revoked_since(
     held only by the same step-up rule the human just approved -> run it.
     Anything else (a block, a different step-up) -> refuse, and record why.
     Fails closed if the re-check itself errors."""
-    recheck = getattr(decision, "recheck", None)
-    if recheck is None:
+    from prismor.runtime import inflight as _inflight
+    if getattr(decision, "recheck", None) is None:
         return False  # caller built its own Decision; nothing to re-run
-    try:
-        from prismor.runtime.enterprise import remote_policy as _rp
-        _rp.check_and_refresh(interval=0)
-    except Exception:
-        pass
-    try:
-        now = recheck(resource)
-    except Exception as exc:
-        record("revoked_after_approval", approval_id, f"re-check after approval failed: {exc}")
-        return True
-    if now.allow:
-        return False
-    same = (now.blocking or {}).get("ruleId") == finding.get("ruleId")
-    if same and str((now.blocking or {}).get("action") or "").lower() == "step_up":
+    now = _inflight.still_refused(decision, resource, refresh=0)
+    if now is None:
         return False
     # Name the rule that refused it, not the step-up rule the human approved.
-    refusing = (now.blocking or {}).get("ruleId") or getattr(now, "rule_id", None)
+    refusing = _inflight.refusing_rule(now)
     record("revoked_after_approval", approval_id,
            "approved, then refused on re-check: " + str(now.reason or refusing or "policy changed"),
            rules=[refusing] if refusing else None)

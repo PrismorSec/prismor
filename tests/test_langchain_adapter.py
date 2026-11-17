@@ -184,3 +184,33 @@ def test_agent_served_over_mcp_is_a_handoff(tmp_path):
     assert call("planner") == "claude ran"
     blocked = call("researcher")
     assert "Prismor blocked" in blocked and "researcher" in blocked and "claude" in blocked
+
+
+def test_async_tool_cancelled_when_authority_revoked(tmp_path, monkeypatch):
+    """#942: a running async tool is cancelled when a re-check now refuses it."""
+    import prismor_langchain as plc
+    from prismor.runtime import inflight
+    from prismor.runtime.runtime import Decision
+
+    state = {"allow": True}
+
+    def recheck(resource=None):
+        return Decision(allow=True) if state["allow"] else Decision(
+            allow=False, blocking={"action": "block", "ruleId": "org-paused"}, reason="agent paused")
+
+    monkeypatch.setattr(plc, "evaluate_tool_call", lambda **k: Decision(allow=True, recheck=recheck))
+    monkeypatch.setattr(inflight, "interval", lambda: 0.05)
+    ran_to_end = []
+
+    @tool
+    async def freeze_account(account: str) -> str:
+        """Freeze an account."""
+        state["allow"] = False  # the console pauses the agent while this runs
+        await asyncio.sleep(2)
+        ran_to_end.append(account)
+        return "frozen"
+
+    guarded = guard_tools([freeze_account], workspace=tmp_path, mode="enforce")
+    out = asyncio.run(guarded[0].ainvoke({"account": "ACC-1"}))
+    assert "cancelled_in_flight" in out and "agent paused" in out
+    assert not ran_to_end

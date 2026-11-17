@@ -385,6 +385,7 @@ class UpstreamStdio(Upstream):
         self._ensure_started()
         self._counter += 1
         req_id = f"gw-{self._counter}"
+        _note_call_id(req_id)
         pending = _PendingReply()
         self._pending[req_id] = pending
         try:
@@ -469,6 +470,18 @@ class _SessionExpired(Exception):
 #: per thread by Gateway._dispatch (hosted endpoints pass them in
 #: ``_inboundHeaders``). Read by UpstreamHttp for ``forwardHeaders``.
 _inbound = threading.local()
+
+from prismor.runtime.inflight import Refused as _InFlightRefused  # noqa: E402
+
+#: Set per worker thread by Gateway._call_upstream: request() appends the
+#: JSON-RPC id it sent, so a revoke can name it in notifications/cancelled.
+_call_ids = threading.local()
+
+
+def _note_call_id(req_id: str) -> None:
+    holder = getattr(_call_ids, "holder", None)
+    if holder is not None:
+        holder.append(req_id)
 
 
 def _too_big(spec: UpstreamSpec, what: str) -> UpstreamError:
@@ -660,6 +673,7 @@ class UpstreamHttp(Upstream):
         with self._lock:
             self._counter += 1
             req_id = f"gw-{self._counter}"
+        _note_call_id(req_id)
         msg = self._post({"jsonrpc": "2.0", "id": req_id,
                           "method": method, "params": params},
                          timeout=timeout, want_reply=True)
@@ -1349,9 +1363,14 @@ class Gateway:
                 self._reply(req_id, _blocked_result("Blocked by Prismor", repeat_decision.blocking))
                 return
 
-        result = route.upstream.request(
-            "tools/call", {"name": route.tool, "arguments": arguments},
-            timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
+        try:
+            result = self._call_upstream(route, name, arguments, decision,
+                                         watch=self.mode == "enforce" and not passthrough)
+        except _InFlightRefused as exc:
+            self._reply(req_id, _blocked_result("Blocked by Prismor", {
+                "severity": "high", "ruleId": exc.rule,
+                "title": f"stopped while running ({exc.status}): {exc.reason}"}))
+            return
 
         # The gateway holds the response, so its output can be *repaired*
         # rather than only refused: strip credential material before the model
@@ -1415,6 +1434,38 @@ class Gateway:
             return
 
         self._reply(req_id, result)
+
+    def _call_upstream(self, route: "_Route", name: str, arguments: Any,
+                       decision: Any, watch: bool) -> Dict[str, Any]:
+        """Forward a tools/call. When ``watch``, the call is re-checked on every
+        policy refresh while it runs; if the agent was paused or restricted
+        meanwhile, the upstream gets ``notifications/cancelled`` and the client
+        a refusal (#942)."""
+        timeout = route.upstream.spec.call_timeout or CALL_TIMEOUT
+        params = {"name": route.tool, "arguments": arguments}
+        if not watch or getattr(decision, "recheck", None) is None:
+            return route.upstream.request("tools/call", params, timeout=timeout)
+        from prismor.runtime import inflight as _inflight
+        ids: List[str] = []
+        inbound = getattr(_inbound, "headers", None)  # forwardHeaders, per thread
+
+        def _call() -> Dict[str, Any]:
+            _call_ids.holder = ids
+            _inbound.headers = inbound
+            try:
+                return route.upstream.request("tools/call", params, timeout=timeout)
+            finally:
+                _call_ids.holder = None
+                _inbound.headers = None
+
+        def _cancel() -> None:
+            for i in ids:
+                route.upstream.notify("notifications/cancelled",
+                                      {"requestId": i, "reason": "authority revoked by Prismor"})
+
+        return _inflight.wait_cancellable(
+            decision, _call, tool=name, agent=GATEWAY_AGENT,
+            session_id=self.session_id, on_cancel=_cancel)
 
     # ── resources and prompts ────────────────────────────────────────────
 
