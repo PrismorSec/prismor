@@ -1,87 +1,104 @@
-"""Docker-backed sandbox runner for Prismor shell commands.
+"""Prismor sandbox: run allowed shell commands under the OS's own sandbox.
 
-The sandbox is defense in depth: Prismor policy still decides whether a command
-is allowed, then this module constrains where the allowed command executes.
+The policy engine decides whether a command may run. The sandbox decides what
+that command, and every process it starts, can touch while it runs: which
+files it can write, which credential stores it can see, and where it can
+connect. The kernel enforces it — Seatbelt (``sandbox-exec``) on macOS,
+bubblewrap (``bwrap``) on Linux — so a package's postinstall script is held to
+the same limits as the command the agent typed.
+
+Nothing about how the agent is launched changes. Hook-dispatch rewrites each
+allowed shell call into ``prismor sandbox run``, with the original command on
+fd 3 so it never sits in a process's argv. Every limit comes from the same
+``.prismor/policy.yaml``: ``settings.sandbox`` for files and network mode,
+``settings.egress`` for which hosts the ``proxy`` network mode lets through.
 """
 from __future__ import annotations
 
-import base64
+import json
 import os
+import re
+import secrets
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
     "enabled": False,
-    "backend": "docker",
-    "mode": "observe",
-    "image": "python:3.12-slim",
-    "workdir": "/workspace",
-    "network": "none",
+    "mode": "enforce",
+    "network": "proxy",
     "workspace_mount": "rw",
-    "read_only_root": True,
-    "tmpfs": ["/tmp:noexec,nosuid,size=256m"],  # container tmpfs mount, not a host path  # nosec B108
-    "env_allowlist": ["NO_COLOR", "TERM"],
-    "resource_limits": {
-        "cpus": "1.0",
-        "memory": "1g",
-        "pids_limit": 256,
-        "timeout_seconds": 300,
-    },
+    "writable": [],
+    "hide": [],
+    "direct_ports": [22],
 }
 
-_VALID_NETWORKS = {"none", "bridge", "host", "allowlist"}
-_VALID_MOUNTS = {"ro", "rw"}
+_NETWORKS = ("none", "proxy", "open")
+# Docker-era network names, still found in compiled modes and older policies.
+_LEGACY_NETWORKS = {"allowlist": "proxy", "bridge": "open", "host": "open"}
+# Docker-only keys: accepted so old policies still load, otherwise ignored.
+LEGACY_KEYS = ("backend", "image", "workdir", "read_only_root", "tmpfs",
+               "env_allowlist", "resource_limits")
 
-# ── Privilege rings ───────────────────────────────────────────────────────
-#
-# A ring is a named bundle of (network, workspace_mount, resource_limits)
-# defaults — coarse, pre-reviewed profiles instead of hand-tuning every
-# field. Explicit config always wins: a workspace that sets `ring: "1"` and
-# also sets `network: "host"` gets "host", the ring only supplies defaults.
-#
-# "host" network is intentionally never a ring default — a ring that wants
-# it must be configured explicitly outside the presets, on purpose. cap-drop
-# ALL + no-new-privileges (see build_docker_argv) applies unconditionally
-# at every ring; rings tune the outer blast radius (network/mounts/limits),
-# not the process-capability floor.
-_RING_PRESETS: Dict[str, Dict[str, Any]] = {
-    "0": {  # read-only: inspect only, nothing can be written, no network
-        "network": "none",
-        "workspace_mount": "ro",
-        "resource_limits": {"cpus": "0.5", "memory": "512m", "pids_limit": 128, "timeout_seconds": 120},
-    },
-    "1": {  # default: workspace-write, still no network (matches the prior single-tier default)
-        "network": "none",
-        "workspace_mount": "rw",
-        "resource_limits": {"cpus": "1.0", "memory": "1g", "pids_limit": 256, "timeout_seconds": 300},
-    },
-    "2": {  # network-allowlisted: workspace-write + egress restricted to the policy allowlist
-        "network": "allowlist",
-        "workspace_mount": "rw",
-        "resource_limits": {"cpus": "2.0", "memory": "2g", "pids_limit": 512, "timeout_seconds": 600},
-    },
-    "3": {  # broadest: bridged network, still isolated from the host network stack
-        "network": "bridge",
-        "workspace_mount": "rw",
-        "resource_limits": {"cpus": "4.0", "memory": "4g", "pids_limit": 1024, "timeout_seconds": 1200},
-    },
+# A ring is a pre-reviewed (network, workspace_mount) pair. Explicit fields in
+# the config still win over the ring's defaults.
+_RING_PRESETS: Dict[str, Dict[str, str]] = {
+    "0": {"network": "none", "workspace_mount": "ro"},
+    "1": {"network": "none", "workspace_mount": "rw"},
+    "2": {"network": "proxy", "workspace_mount": "rw"},
+    "3": {"network": "open", "workspace_mount": "rw"},
 }
-
-_RING_LABELS: Dict[str, str] = {
-    "0": "read-only (no writes, no network)",
+_RING_LABELS = {
+    "0": "read-only, no network",
     "1": "workspace-write, no network",
-    "2": "workspace-write, allowlisted network",
-    "3": "workspace-write, bridged network",
+    "2": "workspace-write, network through the egress allowlist",
+    "3": "workspace-write, open network",
 }
 
+# Credential stores no normal build, test or install reads as a file.
+# `.env` and `~/.ssh` stay readable by default (dev servers and `git push`
+# need them); `settings.sandbox.hide` adds them back per workspace.
+_HIDDEN_HOME = (".aws", ".azure", ".config/gcloud", ".kube", ".docker", ".netrc",
+                ".pypirc", ".prismor/secrets", ".prismor/receipt_signing_key.pem",
+                ".prismor/pause.key", ".prismor/identity.json")
+# Writes here would run later outside the sandbox (git hooks, agent and editor
+# config, shell startup files) or change Prismor itself. Read-only even when
+# they sit inside a writable directory.
+_PROTECTED_ROOT = (".prismor", ".git/hooks", ".claude", ".codex", ".cursor", ".gemini",
+                   ".vscode", ".github/hooks", ".mcp.json")
+_PROTECTED_HOME = (".prismor", ".ssh", ".gnupg", ".claude", ".codex", ".cursor", ".gemini",
+                   ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile",
+                   ".profile", ".gitconfig", ".config/git", "Library/LaunchAgents",
+                   ".config/autostart", ".config/systemd")
+# Package-manager caches: installs and builds fail without them.
+_WRITABLE_HOME = (".cache", "Library/Caches", ".npm", ".yarn", ".pnpm-store", "Library/pnpm",
+                  ".local/share/pnpm", ".bun/install/cache", ".cargo/registry", ".cargo/git",
+                  "go/pkg/mod", ".gradle/caches", ".m2/repository")
+# A container daemon runs whatever it is asked to, outside any sandbox.
+_DAEMON_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "~/.docker/run/docker.sock",
+                   "~/.colima/default/docker.sock", "~/.orbstack/run/docker.sock")
+
+# Simple `prismor <cmd>` calls run unconfined (through this same install):
+# they read and write ~/.prismor, which the sandbox protects. `supplychain`
+# and `cloak run` start other programs, so they are not on this list.
+_EXEMPT_PRISMOR = frozenset({"status", "check", "query", "session", "doctor", "trail", "egress",
+                             "deps", "help", "version", "--version", "-V", "-h", "--help"})
+_PURE_CD = re.compile(r"\s*cd(?:\s+[^\s;&|<>`$(){}\\'\"*?]+)?\s*")
+_SHELLS = ("bash", "zsh", "sh", "dash", "ksh")
+_RUNNER_MODULE = "prismor.runtime.immunity_cli"
+_DELIM_RE = r"__PRISMOR_SANDBOX_[0-9a-f]{8}__"
+
+
+# ── config ─────────────────────────────────────────────────────────────────
 
 def ring_names() -> List[str]:
-    """Valid ring identifiers, in ascending privilege order."""
     return sorted(_RING_PRESETS, key=int)
 
 
@@ -90,247 +107,488 @@ def ring_label(ring: Optional[str]) -> Optional[str]:
 
 
 def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return sandbox config with safe defaults applied.
-
-    If ``raw["ring"]`` names a known privilege ring, that ring's preset
-    supplies the network/mount/resource_limits defaults before the rest of
-    ``raw`` is layered on top — so an explicit field in ``raw`` still wins
-    over the ring's default for that field.
-    """
-    raw = raw or {}
-    ring_value = raw.get("ring")
-    ring_key = str(ring_value) if ring_value is not None else None
-    base = DEFAULT_SANDBOX_CONFIG
-    if ring_key in _RING_PRESETS:
-        base = _deep_merge(DEFAULT_SANDBOX_CONFIG, _RING_PRESETS[ring_key])
-    else:
-        ring_key = None  # unknown ring value — ignore rather than silently misconfigure
-
-    cfg = _deep_merge(base, raw)
-    cfg["ring"] = ring_key
-    cfg["backend"] = str(cfg.get("backend") or "docker").lower()
-    cfg["mode"] = str(cfg.get("mode") or "observe").lower()
-    cfg["network"] = str(cfg.get("network") or "none").lower()
-    cfg["workspace_mount"] = str(cfg.get("workspace_mount") or "rw").lower()
-
-    if cfg["backend"] != "docker":
-        cfg["backend"] = "docker"
-    if cfg["mode"] not in {"observe", "enforce"}:
-        cfg["mode"] = "observe"
-    if cfg["network"] not in _VALID_NETWORKS:
-        cfg["network"] = "none"
-    if cfg["workspace_mount"] not in _VALID_MOUNTS:
-        cfg["workspace_mount"] = "rw"
-    if not isinstance(cfg.get("tmpfs"), list):
-        cfg["tmpfs"] = []
-    if not isinstance(cfg.get("env_allowlist"), list):
-        cfg["env_allowlist"] = []
-    if not isinstance(cfg.get("resource_limits"), dict):
-        cfg["resource_limits"] = {}
+    """``settings.sandbox`` with defaults, ring presets and legacy names applied."""
+    raw = dict(raw or {})
+    ring = str(raw["ring"]) if raw.get("ring") is not None else None
+    if ring not in _RING_PRESETS:
+        ring = None
+    cfg: Dict[str, Any] = {**DEFAULT_SANDBOX_CONFIG, **(_RING_PRESETS.get(ring or "", {}))}
+    cfg.update({k: v for k, v in raw.items() if k not in LEGACY_KEYS})
+    cfg["ring"] = ring
+    cfg["enabled"] = bool(cfg.get("enabled"))
+    cfg["mode"] = "observe" if str(cfg.get("mode")).lower() == "observe" else "enforce"
+    net = str(cfg.get("network") or "proxy").lower()
+    net = _LEGACY_NETWORKS.get(net, net)
+    cfg["network"] = net if net in _NETWORKS else "none"   # unknown: the strictest
+    cfg["workspace_mount"] = "ro" if str(cfg.get("workspace_mount")).lower() == "ro" else "rw"
+    for key in ("writable", "hide"):
+        cfg[key] = [str(p) for p in cfg.get(key) or [] if isinstance(p, (str, Path)) and str(p)]
+    ports = cfg.get("direct_ports")
+    cfg["direct_ports"] = [int(p) for p in (ports if isinstance(ports, list) else [])
+                           if str(p).isdigit() and 0 < int(p) < 65536]
+    cfg["legacy_keys"] = sorted(k for k in raw if k in LEGACY_KEYS)
     return cfg
 
 
-def docker_status() -> Dict[str, Any]:
-    """Return Docker CLI/server availability without mutating state."""
-    docker = shutil.which("docker")
-    status: Dict[str, Any] = {
-        "backend": "docker",
-        "cli_found": bool(docker),
-        "cli_path": docker,
-        "server_reachable": False,
-    }
-    if not docker:
-        status["error"] = "docker CLI not found"
-        return status
+def enforcing(cfg: Dict[str, Any]) -> bool:
+    return bool(cfg.get("enabled")) and cfg.get("mode") == "enforce"
+
+
+# ── profile ────────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Profile:
+    """What one sandboxed command may touch. Paths are real (symlinks resolved)."""
+    writable: Tuple[str, ...]
+    protected: Tuple[str, ...]   # never writable, even inside a writable path
+    hidden: Tuple[str, ...]      # neither readable nor writable
+    sockets: Tuple[str, ...]     # unix sockets the command may not connect to
+    network: str                 # none | proxy | open
+    direct_ports: Tuple[int, ...]
+
+
+def _real(path: Any) -> str:
+    return os.path.realpath(os.path.expanduser(str(path)))
+
+
+def _uniq(paths: Iterable[str]) -> Tuple[str, ...]:
+    return tuple(dict.fromkeys(p for p in paths if p and p != "/"))
+
+
+def _tmp_dirs() -> List[str]:
+    dirs = ["/private/tmp", "/private/var/folders"] if sys.platform == "darwin" else ["/tmp", "/var/tmp"]
+    if os.environ.get("TMPDIR"):
+        dirs.append(_real(os.environ["TMPDIR"]))
+    return dirs
+
+
+def _secrets_dir() -> str:
     try:
-        result = subprocess.run(
-            [docker, "info", "--format", "{{json .ServerVersion}}"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+        from prismor.runtime.cloaking.secrets_store import secrets_dir
+        return _real(secrets_dir())
+    except Exception:
+        return _real("~/.prismor/secrets")
+
+
+def build_profile(config: Dict[str, Any], root: Path, *, home: Optional[Path] = None) -> Profile:
+    cfg = effective_config(config)
+    home = Path(home or Path.home())
+    root_s = _real(root)
+
+    def _at(base: str, rel: str) -> str:
+        return _real(rel if rel.startswith(("/", "~")) else os.path.join(base, rel))
+
+    writable = _tmp_dirs()
+    if cfg["workspace_mount"] == "rw":
+        writable += [root_s] + [_real(home / p) for p in _WRITABLE_HOME]
+    writable += [_at(root_s, p) for p in cfg["writable"]]
+    protected = [_real(os.path.join(root_s, p)) for p in _PROTECTED_ROOT]
+    protected += [_real(home / p) for p in _PROTECTED_HOME]
+    hidden = [_real(home / p) for p in _HIDDEN_HOME] + [_secrets_dir()]
+    hidden += [_at(root_s, p) for p in cfg["hide"]]
+    sockets = [_real(s.replace("~", str(home), 1)) for s in _DAEMON_SOCKETS]
+    return Profile(writable=_uniq(writable), protected=_uniq(protected), hidden=_uniq(hidden),
+                   sockets=_uniq(sockets), network=cfg["network"],
+                   direct_ports=tuple(cfg["direct_ports"]))
+
+
+def _sb(path: str) -> str:
+    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def seatbelt_profile(p: Profile) -> str:
+    """The SBPL text for ``sandbox-exec -p``. Later rules override earlier ones."""
+    out = ["(version 1)", "(allow default)", "(deny file-write*)",
+           "(allow file-write* (subpath \"/dev\")" + "".join(f" (subpath {_sb(w)})" for w in p.writable) + ")"]
+    if p.protected:
+        out.append("(deny file-write*" + "".join(f" (subpath {_sb(x)})" for x in p.protected) + ")")
+    if p.hidden:
+        out.append("(deny file-read* file-write*" + "".join(f" (subpath {_sb(h)})" for h in p.hidden) + ")")
+    if p.network != "open":
+        out.append("(deny network*)")
+    if p.network == "proxy":
+        out += ['(allow network-outbound (remote ip "localhost:*"))',
+                '(allow network-bind network-inbound (local ip "*:*"))',
+                "(allow network-outbound (remote unix-socket))"]
+        out += [f'(allow network-outbound (remote tcp "*:{port}"))' for port in p.direct_ports]
+    if p.network != "none" and p.sockets:
+        out.append("(deny network-outbound"
+                   + "".join(f" (remote unix-socket (path-literal {_sb(s)}))" for s in p.sockets) + ")")
+    return "\n".join(out) + "\n"
+
+
+def bwrap_argv(p: Profile, bwrap: str = "bwrap") -> List[str]:
+    """bubblewrap options; later mounts sit on top of earlier ones."""
+    argv = [bwrap, "--die-with-parent", "--unshare-pid", "--ro-bind", "/", "/",
+            "--dev", "/dev", "--tmpfs", "/dev/shm", "--proc", "/proc"]
+    if p.network == "none":
+        argv.append("--unshare-net")
+    for w in p.writable:
+        if os.path.isdir(w):
+            argv += ["--bind", w, w]
+    for x in p.protected:
+        if os.path.exists(x):
+            argv += ["--ro-bind", x, x]
+    for h in p.hidden + p.sockets:
+        if os.path.isdir(h):
+            argv += ["--tmpfs", h]
+        elif os.path.exists(h):
+            argv += ["--ro-bind", "/dev/null", h]
+    return argv + ["--chdir", os.getcwd()]
+
+
+# ── engine ─────────────────────────────────────────────────────────────────
+
+def _probe(argv: List[str]) -> Optional[str]:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        status["error"] = str(exc)
-        return status
-    status["server_reachable"] = result.returncode == 0
-    if result.returncode == 0:
-        status["server_version"] = result.stdout.strip().strip('"')
-    else:
-        status["error"] = (result.stderr or result.stdout).strip()
-    return status
+        return str(exc)
+    return None if r.returncode == 0 else ((r.stderr or r.stdout).strip() or f"exit {r.returncode}")
 
 
-def encode_command(command: str) -> str:
-    return base64.urlsafe_b64encode(command.encode("utf-8")).decode("ascii")
+@lru_cache(maxsize=1)
+def backend_status() -> Dict[str, Any]:
+    """Which OS sandbox engine this host has, and whether it can start."""
+    if sys.platform == "darwin":
+        exe = "/usr/bin/sandbox-exec"
+        if not os.path.exists(exe):
+            return {"available": False, "engine": "seatbelt", "error": "sandbox-exec not found"}
+        err = _probe([exe, "-p", "(version 1)(allow default)", "/usr/bin/true"])
+        return {"available": err is None, "engine": "seatbelt", "path": exe, "error": err}
+    if sys.platform.startswith("linux"):
+        exe = shutil.which("bwrap")
+        if not exe:
+            return {"available": False, "engine": "bubblewrap",
+                    "error": "bwrap not found (install the bubblewrap package)"}
+        err = _probe([exe, "--ro-bind", "/", "/", "--dev", "/dev", "true"])
+        return {"available": err is None, "engine": "bubblewrap", "path": exe, "error": err}
+    return {"available": False, "engine": None, "error": f"no native sandbox on {sys.platform}"}
 
 
-def decode_command(encoded: str) -> str:
-    return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
-
-
-def hook_update_command(*, command: str, workspace: Path, mode: str) -> str:
-    """Build the safe host command used in Claude's updated Bash input."""
-    py = shlex.quote(sys.executable or "python3")
-    ws = shlex.quote(str(workspace))
-    encoded = shlex.quote(encode_command(command))
-    mode_arg = shlex.quote(mode)
-    return f"{py} -m prismor.runtime.immunity_cli sandbox --workspace {ws} run --mode {mode_arg} --encoded {encoded}"
-
-
-def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str) -> Optional[Dict[str, Any]]:
-    """Return Claude hook JSON that rewrites Bash input into sandbox execution."""
-    if payload.get("tool_name") != "Bash":
-        return None
-    tool_input = payload.get("tool_input")
-    if not isinstance(tool_input, dict):
-        return None
-    command = str(tool_input.get("command") or "")
-    if not command:
-        return None
-    new_input = dict(tool_input)
-    new_input["command"] = hook_update_command(command=command, workspace=workspace, mode=mode)
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "updatedInput": new_input,
-        }
-    }
-
-
-def build_docker_argv(command: str, *, workspace: Path, config: Dict[str, Any]) -> List[str]:
-    """Build a Docker argv list. The original command is never interpolated locally."""
-    cfg = effective_config(config)
-    docker = shutil.which("docker") or "docker"
-    limits = cfg.get("resource_limits") or {}
-    workspace = workspace.resolve()
-    workdir = str(cfg.get("workdir") or "/workspace")
-    image = str(cfg.get("image") or DEFAULT_SANDBOX_CONFIG["image"])
-    network = cfg.get("network") or "none"
-    if network == "allowlist":
-        # Docker cannot enforce domain allowlists by itself. Fail closed by
-        # using no network; hook-level egress findings still explain intent.
-        network = "none"
-
-    mount_spec = f"type=bind,src={workspace},dst={workdir}"
-    if cfg["workspace_mount"] == "ro":
-        mount_spec += ",readonly"
-
-    argv = [
-        docker,
-        "run",
-        "--rm",
-        "--network",
-        str(network),
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--workdir",
-        workdir,
-        "--mount",
-        mount_spec,
-    ]
-
-    if cfg.get("read_only_root", True):
-        argv.append("--read-only")
-    for entry in cfg.get("tmpfs") or []:
-        if entry:
-            argv.extend(["--tmpfs", str(entry)])
-
-    if hasattr(os, "getuid") and hasattr(os, "getgid"):
-        argv.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
-
-    if limits.get("cpus"):
-        argv.extend(["--cpus", str(limits["cpus"])])
-    if limits.get("memory"):
-        argv.extend(["--memory", str(limits["memory"])])
-    if limits.get("pids_limit"):
-        argv.extend(["--pids-limit", str(limits["pids_limit"])])
-
-    for name in cfg.get("env_allowlist") or []:
-        name = str(name)
-        if name in os.environ:
-            argv.extend(["--env", f"{name}={os.environ[name]}"])
-
-    argv.extend([image, "/bin/sh", "-lc", command])
-    return argv
-
-
-def run(command: str, *, workspace: Path, config: Dict[str, Any]) -> int:
-    """Run command inside the configured Docker sandbox."""
-    cfg = effective_config(config)
-    status = docker_status()
-    if not status.get("cli_found") or not status.get("server_reachable"):
-        sys.stderr.write(f"Prismor sandbox unavailable: {status.get('error') or 'Docker is not reachable'}\n")
-        return 127
-
-    argv = build_docker_argv(command, workspace=workspace, config=cfg)
-    timeout = cfg.get("resource_limits", {}).get("timeout_seconds", 300)
+def _inside_sandbox() -> bool:
+    """True when this process already runs under a Seatbelt sandbox (ours or an agent's)."""
+    if sys.platform != "darwin":
+        return False
     try:
-        proc = subprocess.run(argv, timeout=float(timeout) if timeout else None)
-        return int(proc.returncode)
-    except subprocess.TimeoutExpired:
-        sys.stderr.write(f"Prismor sandbox timed out after {timeout} second(s)\n")
-        return 124
-    except OSError as exc:
-        sys.stderr.write(f"Prismor sandbox failed: {exc}\n")
-        return 127
+        import ctypes
+        check = ctypes.CDLL("/usr/lib/libSystem.B.dylib").sandbox_check
+        check.restype = ctypes.c_int
+        check.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+        return check(os.getpid(), None, 0) == 1
+    except Exception:
+        return False
 
+
+def _shell() -> str:
+    sh = os.environ.get("SHELL") or ""
+    if os.path.basename(sh) in _SHELLS and os.access(sh, os.X_OK):
+        return sh
+    return "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
+
+
+def _command_fd(command: str) -> int:
+    """An inheritable fd holding ``command``: a pipe, or an unlinked temp file if large."""
+    data = command.encode("utf-8")
+    if len(data) <= 8192:
+        r, w = os.pipe()
+        os.write(w, data)
+        os.close(w)
+        fd = r
+    else:
+        fd, path = tempfile.mkstemp(prefix="prismor-sandbox-")
+        os.unlink(path)
+        os.write(fd, data)
+        os.lseek(fd, 0, os.SEEK_SET)
+    os.set_inheritable(fd, True)
+    return fd
+
+
+def _shim(fd: int) -> str:
+    # The command reaches the shell through a file descriptor, never argv, so
+    # a resolved secret is not visible to `ps` from inside the sandbox. The
+    # trailing newline lets a final heredoc delimiter or `\` line end cleanly.
+    return f'__prismor_c=$(/bin/cat <&{fd}); exec {fd}<&-; eval "$__prismor_c\n"'
+
+
+def is_exempt(command: str) -> bool:
+    """A bare `prismor <read-only subcommand>` — no shell syntax, no other program."""
+    text = command.strip()
+    if not text or any(c in text for c in "\n`$\\"):
+        return False
+    try:
+        lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        words = list(lex)
+    except ValueError:
+        return False
+    if any(w and all(c in "();<>|&" for c in w) for w in words):
+        return False
+    return bool(words) and words[0] == "prismor" and (len(words) == 1 or words[1] in _EXEMPT_PRISMOR)
+
+
+# ── run ────────────────────────────────────────────────────────────────────
+
+def _note(text: str) -> None:
+    sys.stderr.write(f"[prismor] sandbox: {text}\n")
+    sys.stderr.flush()
+
+
+def _exec_unconfined(command: str) -> int:
+    if is_exempt(command):
+        argv = [sys.executable, "-m", _RUNNER_MODULE] + shlex.split(command)[1:]
+    else:
+        argv = [_shell(), "-c", command]
+    os.execv(argv[0], argv)
+    return 127  # pragma: no cover - execv does not return
+
+
+def read_command_fd(fd: int = 3) -> str:
+    """The command the hook rewrite passed as a heredoc on ``fd``."""
+    try:
+        with os.fdopen(fd, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return ""
+    return text[:-1] if text.endswith("\n") else text
+
+
+def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
+        wait: bool = False) -> int:
+    """Run ``command`` under the sandbox ``config`` describes and return its exit code.
+
+    Without a proxy to keep alive this process becomes the sandbox (exec), unless
+    ``wait`` asks for the exit code back.
+    """
+    if is_exempt(command) or _inside_sandbox():
+        return _exec_unconfined(command)
+    status = backend_status()
+    if not status["available"]:
+        # Containment is a layer on top of policy. Every rule has already run on
+        # this command, so a missing engine means "not contained", not "not
+        # screened" — refusing here would stop every shell command on the host.
+        _note(f"not available here ({status.get('error')}); running unconfined. Policy still applies.")
+        return _exec_unconfined(command)
+
+    profile = build_profile(config, root)
+    if status["engine"] == "seatbelt":
+        argv = [status["path"], "-p", seatbelt_profile(profile)]
+    else:
+        argv = bwrap_argv(profile, status["path"])
+    fd = _command_fd(command)
+    argv += [_shell(), "-c", _shim(fd)]
+    env = dict(os.environ, PRISMOR_SANDBOX="1")
+
+    if profile.network != "proxy" and not wait:
+        os.execve(argv[0], argv, env)
+
+    proxy = None
+    if profile.network == "proxy":
+        from prismor.runtime.sandbox_proxy import EgressProxy
+        proxy = EgressProxy.for_engine(engine, log=_note)
+        env.update(proxy.env())
+    try:
+        child = subprocess.Popen(argv, env=env, pass_fds=(fd,))
+    except OSError as exc:
+        if proxy:
+            proxy.close()
+        _note(f"could not start ({exc}); running unconfined. Policy still applies.")
+        return _exec_unconfined(command)
+    os.close(fd)
+    signal.signal(signal.SIGINT, signal.SIG_IGN)   # the child handles ^C itself
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda s, _f: child.send_signal(s))
+    try:
+        return child.wait()
+    finally:
+        if proxy:
+            proxy.close()
+
+
+# ── hook rewrite ───────────────────────────────────────────────────────────
+
+def project_root(payload: Dict[str, Any], fallback: Path) -> Path:
+    """The git root above the agent's cwd (or the cwd), else ``fallback``."""
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    if not isinstance(cwd, str) or not cwd:
+        return Path(fallback)
+    here = Path(cwd)
+    for d in (here, *here.parents):
+        if (d / ".git").exists():
+            return d
+    return here
+
+
+def runner(root: Path) -> str:
+    """The shell words that start ``prismor sandbox run`` for ``root``."""
+    return (f"{shlex.quote(sys.executable)} -m {_RUNNER_MODULE} sandbox "
+            f"--workspace {shlex.quote(str(root))} run")
+
+
+def wrap_command(command: str, root: Path) -> str:
+    """``command`` as a heredoc on fd 3 of the sandbox runner. Readable, nothing encoded."""
+    delim = f"__PRISMOR_SANDBOX_{secrets.token_hex(4)}__"
+    while delim in command:
+        delim = f"__PRISMOR_SANDBOX_{secrets.token_hex(4)}__"
+    return f"{runner(root)} 3<<'{delim}'\n{command}\n{delim}"
+
+
+def unwrap_command(command: str) -> str:
+    """The agent's command, if ``command`` is this install's sandbox rewrite of it.
+
+    Only this interpreter's runner is recognised: a look-alike that starts a
+    different program comes back unchanged and is judged as written.
+    """
+    head = f"{shlex.quote(sys.executable)} -m {_RUNNER_MODULE} sandbox --workspace "
+    if not command or not command.startswith(head):
+        return command
+    m = re.match(r"(?:'[^']*'|[^\s'])+ run 3<<'(" + _DELIM_RE + r")'\n(.*)\n\1\s*\Z",
+                 command[len(head):], re.S)
+    return m.group(2) if m else command
+
+
+def claude_updated_input(payload: Dict[str, Any], *, root: Path) -> Optional[Dict[str, Any]]:
+    """Claude hook JSON that runs this Bash call under the sandbox."""
+    if payload.get("tool_name") != "Bash" or not isinstance(payload.get("tool_input"), dict):
+        return None
+    command = str(payload["tool_input"].get("command") or "")
+    if not command.strip() or _PURE_CD.fullmatch(command):
+        return None   # a bare `cd` touches nothing, and must change the tool shell's cwd
+    new_input = dict(payload["tool_input"], command=wrap_command(command, root))
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": new_input}}
+
+
+# ── cloak hand-off ─────────────────────────────────────────────────────────
+#
+# Claude Code runs PreToolUse hooks in parallel, and when two of them rewrite
+# the same call the one that finishes last wins. The cloak hook (decloak.sh)
+# rewrites every Bash call once a secret is registered, so a second rewrite
+# here would randomly drop either the sandbox or the output scrubbing. When
+# decloak.sh is installed it does the sandbox wrap too, from this index, and
+# puts the runner INSIDE its scrub wrapper: placeholders resolve and output is
+# scrubbed outside the sandbox, where the vault is readable.
+
+def _index_path() -> Path:
+    return Path(os.environ.get("PRISMOR_HOME") or Path.home() / ".prismor") / "sandbox" / "active.tsv"
+
+
+def _settings_files(project: str) -> List[Path]:
+    return [Path.home() / ".claude" / "settings.json",
+            Path(project) / ".claude" / "settings.json",
+            Path(project) / ".claude" / "settings.local.json"]
+
+
+def decloak_wraps(project: str) -> bool:
+    """Whether a decloak.sh that knows the sandbox index is installed for ``project``."""
+    for path in _settings_files(project):
+        try:
+            hooks = json.loads(path.read_text(encoding="utf-8")).get("hooks") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        for entry in hooks.get("PreToolUse") or []:
+            for hook in (entry or {}).get("hooks") or []:
+                cmd = str((hook or {}).get("command") or "")
+                if "decloak.sh" not in cmd:
+                    continue
+                script = cmd.strip().strip('"').strip("'")
+                try:
+                    if "sandbox/active.tsv" in Path(script).read_text(encoding="utf-8"):
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def set_index_entry(project: str, runner_cmd: Optional[str]) -> None:
+    """Record (or with None, drop) the runner decloak.sh should use for ``project``."""
+    if not project or any(c in project + (runner_cmd or "") for c in "\t\n"):
+        return
+    path = _index_path()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    keep = [ln for ln in lines if ln.split("\t", 1)[0] != project]
+    if runner_cmd:
+        keep.append(f"{project}\t{runner_cmd}")
+    if keep == lines:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text("".join(f"{ln}\n" for ln in keep), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def hand_off_to_decloak(root: Path, active: bool) -> bool:
+    """Keep the index in step with policy; True when decloak.sh will do the wrap."""
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or ""
+    owns = bool(active and project and decloak_wraps(project))
+    set_index_entry(project, runner(root) if owns else None)
+    return owns
+
+
+# ── CLI helpers ────────────────────────────────────────────────────────────
 
 def set_enabled(workspace: Path, enabled: bool) -> Path:
-    """Flip ``settings.sandbox.enabled`` in the workspace policy, in place.
+    """Flip ``settings.sandbox.enabled`` (and to enforce, on ``on``) in place.
 
-    Only the one field is touched, so the rest of the sandbox block a mode
-    compiled (ring, network, limits) survives an off/on round trip.
+    Only those fields are touched, so the ring, network and paths a mode or a
+    person chose survive an off/on round trip.
     """
-    from prismor.runtime.egress_cli import (
-        _load_policy_file, _policy_path, _save_policy_file,
-    )
+    from prismor.runtime.egress_cli import _load_policy_file, _policy_path, _save_policy_file
 
     data = _load_policy_file(workspace)
     settings = data.get("settings")
     if not isinstance(settings, dict):
-        settings = {}
-        data["settings"] = settings
+        settings = data["settings"] = {}
     block = settings.get("sandbox")
     if not isinstance(block, dict):
-        block = {}
-        settings["sandbox"] = block
+        block = settings["sandbox"] = {}
     block["enabled"] = bool(enabled)
+    if enabled:
+        block["mode"] = "enforce"
     _save_policy_file(workspace, data)
     return _policy_path(workspace)
 
 
-def status_report(config: Dict[str, Any]) -> Dict[str, Any]:
+def status_report(config: Dict[str, Any], *, egress_enabled: bool = False) -> Dict[str, Any]:
     cfg = effective_config(config)
+    engine = backend_status()
+    on = engine["available"]
+    net = cfg["network"]
+    if net == "open":
+        net_state = "open"
+    elif net == "proxy" and sys.platform.startswith("linux"):
+        net_state = "advisory"   # bwrap cannot yet reach the proxy with the network unshared
+    else:
+        net_state = "enforced" if on else "unavailable"
     return {
-        "enabled": bool(cfg.get("enabled")),
-        "mode": cfg.get("mode"),
-        "backend": cfg.get("backend"),
-        "image": cfg.get("image"),
-        "network": cfg.get("network"),
-        "workspace_mount": cfg.get("workspace_mount"),
-        "read_only_root": bool(cfg.get("read_only_root")),
-        "ring": cfg.get("ring"),
-        "ring_label": ring_label(cfg.get("ring")),
-        "resource_limits": cfg.get("resource_limits"),
-        "docker": docker_status(),
+        "enabled": cfg["enabled"],
+        "mode": cfg["mode"],
+        "ring": cfg["ring"],
+        "ring_label": ring_label(cfg["ring"]),
+        "network": net,
+        "workspace_mount": cfg["workspace_mount"],
+        "writable": cfg["writable"],
+        "hide": cfg["hide"],
+        "direct_ports": cfg["direct_ports"] if net == "proxy" else [],
+        "engine": engine,
+        "controls": {
+            "files": "enforced" if on else "unavailable",
+            "credentials": "enforced" if on else "unavailable",
+            "network": net_state,
+        },
+        "egress_allowlist": bool(egress_enabled),
+        "legacy_keys": cfg["legacy_keys"],
     }
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-    result: Dict[str, Any] = {}
-    for key, value in base.items():
-        if isinstance(value, dict):
-            result[key] = _deep_merge(value, {})
-        elif isinstance(value, list):
-            result[key] = list(value)
-        else:
-            result[key] = value
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+def describe(cfg: Dict[str, Any]) -> str:
+    """One line for `mode show` and `sandbox try`."""
+    cfg = effective_config(cfg)
+    writes = "tmp only" if cfg["workspace_mount"] == "ro" else "project, tmp, package caches"
+    net = {"none": "no network", "proxy": "network through the egress allowlist",
+           "open": "open network"}[cfg["network"]]
+    if cfg["network"] == "proxy" and sys.platform.startswith("linux"):
+        net += " (advisory on Linux)"
+    return f"writes: {writes} · credential stores hidden · {net}"

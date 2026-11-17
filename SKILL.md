@@ -399,7 +399,7 @@ pick the smallest tool that answers the question:
 | "Did my instruction files change?" | `prismor memory status` (see [integrity](#8-instruction-file-and-skill-integrity)) |
 | "What skills, plugins, hooks and MCP servers can steer my agent, and where did they come from?" | `prismor extensions list` (exits 1 on anything NEW or CHANGED); `prismor extensions why <id>` for one extension's origin and the sessions that used it |
 | "Full security posture, fix what you can" | `prismor audit --fix` |
-| "Run this command in a safe sandbox" | `prismor sandbox run <cmd>` (`sandbox status` first — it reports whether Docker is even available) |
+| "Run this command in a safe sandbox" | `prismor sandbox try -- <cmd>` (`prismor sandbox on` confines every allowed shell command; `sandbox status` shows what is confined) |
 | "Recurring blocked patterns I should accept?" | `prismor learn` |
 | "What did my agents do before Prismor was installed?" | `prismor analyze-history` (replays on-disk transcripts through the policy engine; add `--since 90d`) |
 | "What would break if I turn on enforce?" | `prismor analyze-history --no-persist` — what the current policy **would have blocked** across real history, per rule. For a whole posture, `prismor mode apply <id> --observe`. |

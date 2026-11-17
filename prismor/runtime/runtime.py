@@ -507,7 +507,8 @@ def evaluate_tool_call(
     _retype_adapter_file_call(event)
     if event.get("type") == "shell" and event.get("command"):
         from prismor.runtime.cloaking.runtime import unwrap_decloak
-        event["command"] = unwrap_decloak(str(event["command"]))
+        from prismor.runtime.sandbox import unwrap_command as _unwrap_sandbox
+        event["command"] = _unwrap_sandbox(unwrap_decloak(str(event["command"])))
 
     # A subagent runs on its parent's authority: the parent's per-agent
     # controls are applied on top of its own (see agents.inherit_control).

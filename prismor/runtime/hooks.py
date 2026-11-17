@@ -979,7 +979,8 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
     else:
         event = _normalize_cursor(payload, session_id, workspace)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
-        event["command"] = _strip_prismor_scrub_wrapper(event["command"])
+        from prismor.runtime.sandbox import unwrap_command as _unwrap_sandbox
+        event["command"] = _unwrap_sandbox(_strip_prismor_scrub_wrapper(event["command"]))
     if isinstance(event, dict):
         _attach_tool_result(event, payload)
     # Who sent a prompt: a person, another session's task brief, or a wrapper

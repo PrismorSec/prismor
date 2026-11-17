@@ -168,18 +168,11 @@
         },
         "sandbox": {
           "type": "object",
-          "description": "Docker-backed shell sandbox settings for constraining allowed Bash commands.",
+          "description": "Prismor sandbox: run allowed shell commands under the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). See docs/sandbox.md.",
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Whether hook-dispatch rewrites supported Bash tool calls through the sandbox runner."
-            },
-            "backend": {
-              "type": "string",
-              "enum": [
-                "docker"
-              ],
-              "description": "Sandbox backend. Docker is the v1 backend."
+              "description": "Whether hook-dispatch runs allowed shell calls through the sandbox."
             },
             "mode": {
               "type": "string",
@@ -187,25 +180,36 @@
                 "observe",
                 "enforce"
               ],
-              "description": "observe logs unavailable sandbox state; enforce fails closed when the sandbox is unavailable."
+              "description": "enforce confines commands; observe leaves them unconfined."
             },
-            "image": {
-              "type": "string",
-              "description": "Container image used for sandboxed shell execution."
-            },
-            "workdir": {
-              "type": "string",
-              "description": "Container working directory for the workspace mount."
+            "ring": {
+              "type": [
+                "string",
+                "integer"
+              ],
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3",
+                0,
+                1,
+                2,
+                3
+              ],
+              "description": "Preset: 0 read-only, no network; 1 workspace-write, no network; 2 workspace-write, network through the egress allowlist; 3 workspace-write, open network. Explicit fields win."
             },
             "network": {
               "type": "string",
               "enum": [
                 "none",
+                "proxy",
+                "open",
+                "allowlist",
                 "bridge",
-                "host",
-                "allowlist"
+                "host"
               ],
-              "description": "Docker network mode. allowlist currently fails closed to none because Docker cannot enforce domain allowlists by itself."
+              "description": "none: no network. proxy: HTTP(S) through a loopback proxy that applies settings.egress (enforced on macOS, advisory on Linux). open: not restricted. allowlist/bridge/host are older names for proxy/open/open."
             },
             "workspace_mount": {
               "type": "string",
@@ -213,44 +217,51 @@
                 "ro",
                 "rw"
               ],
-              "description": "Whether the workspace bind mount is read-only or read-write."
+              "description": "Whether commands may write the project directory."
+            },
+            "writable": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra paths commands may write (relative paths are from the project root)."
+            },
+            "hide": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra paths commands may not read, such as .env or ~/.ssh."
+            },
+            "direct_ports": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "description": "TCP ports reachable directly in proxy mode (default [22], for git over SSH)."
+            },
+            "backend": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
+            },
+            "image": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
+            },
+            "workdir": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "read_only_root": {
-              "type": "boolean",
-              "description": "Run the container with a read-only root filesystem."
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "tmpfs": {
-              "type": "array",
-              "description": "Docker --tmpfs entries for controlled writable scratch space.",
-              "items": {
-                "type": "string"
-              }
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "env_allowlist": {
-              "type": "array",
-              "description": "Host environment variable names allowed into the sandbox.",
-              "items": {
-                "type": "string"
-              }
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "resource_limits": {
-              "type": "object",
-              "description": "Docker resource limits.",
-              "properties": {
-                "cpus": {
-                  "type": "string"
-                },
-                "memory": {
-                  "type": "string"
-                },
-                "pids_limit": {
-                  "type": "integer"
-                },
-                "timeout_seconds": {
-                  "type": "integer"
-                }
-              },
-              "additionalProperties": false
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             }
           },
           "additionalProperties": false

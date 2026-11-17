@@ -867,6 +867,21 @@ class EgressPolicy:
                 return ("allow", entry)
         return ("allow" if self.default == "allow" else "off-allowlist", None)
 
+    def effective_mode(self, action: str, entry: Optional[EgressEntry], *,
+                       default_mode: str = "observe", device_mode: Optional[str] = None) -> str:
+        """``enforce`` or ``observe`` for a non-allow verdict.
+
+        Shared by the hook (:meth:`evaluate`) and the sandbox's egress proxy,
+        so a destination blocks in both places or in neither.
+        """
+        # Legacy egress_allowlist stays warn-only forever; a real egress
+        # block is an explicit opt-in through settings.egress.
+        if self.legacy or action == "warn":
+            return "observe"
+        mode = ((entry.mode if entry is not None and entry.mode else None)
+                or self.mode or device_mode or default_mode)
+        return "enforce" if str(mode).lower() == "enforce" else "observe"
+
     def evaluate(
         self,
         event: Dict[str, Any],
@@ -901,18 +916,7 @@ class EgressPolicy:
 
             explicit = entry is not None
             rule_id = RULE_EXPLICIT_DENY if explicit else RULE_OFF_ALLOWLIST
-            # Legacy egress_allowlist stays warn-only forever; a real egress
-            # block is an explicit opt-in through settings.egress.
-            if pol.legacy or action == "warn":
-                mode = "observe"
-            else:
-                mode = (
-                    (entry.mode if entry is not None and entry.mode else None)
-                    or pol.mode
-                    or device_mode
-                    or default_mode
-                )
-            mode = "enforce" if str(mode).lower() == "enforce" else "observe"
+            mode = pol.effective_mode(action, entry, default_mode=default_mode, device_mode=device_mode)
 
             if explicit:
                 title = f"Outbound connection to denied destination: {dest.label()}"

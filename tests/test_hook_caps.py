@@ -214,7 +214,9 @@ def test_modify_verdict_per_agent(agent, tmp_path):
     assert proc.returncode == 0, proc.stderr
     hso = out["hookSpecificOutput"]
     new_input = hso["tool_input"] if agent == "gemini" else hso["updatedInput"]
-    assert "sandbox" in new_input["command"] and "CAPS_MODIFY_MARKER" not in new_input["command"]
+    from prismor.runtime.sandbox import unwrap_command
+    assert " sandbox --workspace " in new_input["command"]
+    assert unwrap_command(new_input["command"]) == "echo CAPS_MODIFY_MARKER"
     if agent in ("codex", "qwen"):
         assert hso["permissionDecision"] == "allow" and hso["permissionDecisionReason"]
     else:
