@@ -168,7 +168,7 @@
         },
         "sandbox": {
           "type": "object",
-          "description": "Prismor sandbox: run allowed shell commands under the macOS sandbox (Seatbelt). See docs/sandbox.md.",
+          "description": "Prismor sandbox: run allowed shell commands under the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). See docs/sandbox.md.",
           "properties": {
             "enabled": {
               "type": "boolean",

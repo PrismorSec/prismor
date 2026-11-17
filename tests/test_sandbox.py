@@ -116,6 +116,7 @@ class TestProfile(unittest.TestCase):
 
     @unittest.skipIf(sys.platform == "win32", "Seatbelt profile paths are macOS-only")
     def test_protected_and_hidden(self):
+        (self.root / ".git").mkdir()
         p = self._p(hide=[".env", "~/.ssh"])
         root = os.path.realpath(self.root)
         for rel in (".prismor", ".git/hooks", ".claude", ".mcp.json"):
@@ -125,6 +126,15 @@ class TestProfile(unittest.TestCase):
             self.assertIn(os.path.realpath(self.home / rel), p.hidden)
         self.assertIn(os.path.join(root, ".env"), p.hidden)
         self.assertIn(os.path.realpath(os.path.expanduser("~/.ssh")), p.hidden)
+
+    def test_git_config_and_protected_parents_once_the_repo_exists(self):
+        root = os.path.realpath(self.root)
+        self.assertNotIn(os.path.join(root, ".git/config"), self._p().protected)  # git init still works
+        (self.root / ".git").mkdir()
+        p = self._p()
+        self.assertIn(os.path.join(root, ".git/config"), p.protected)
+        self.assertIn(os.path.join(root, ".git"), p.parents)
+        self.assertIn(f'(deny file-write-unlink (literal "{root}/.git")', sandbox.seatbelt_profile(p))
 
     def test_env_and_ssh_are_readable_by_default(self):
         p = self._p()
@@ -165,21 +175,21 @@ class TestProfile(unittest.TestCase):
         self.assertEqual(sandbox._sb('/a"b\\c'), '"/a\\"b\\\\c"')
 
 
-class TestMacOSOnly(unittest.TestCase):
+class TestUnsupportedPlatforms(unittest.TestCase):
     def test_other_platforms_are_unsupported_with_a_plain_reason(self):
         sandbox.backend_status.cache_clear()
         try:
-            with mock.patch.object(sandbox.sys, "platform", "linux"):
+            with mock.patch.object(sandbox.sys, "platform", "freebsd14"):
                 self.assertFalse(sandbox.supported())
                 status = sandbox.backend_status()
                 self.assertFalse(status["available"])
-                self.assertIn("macOS only", status["error"])
+                self.assertIn("macOS and Linux only", status["error"])
                 report = sandbox.status_report({"enabled": True})
                 self.assertEqual(set(report["controls"].values()), {"unavailable"})
         finally:
             sandbox.backend_status.cache_clear()
 
-    def test_hook_does_not_rewrite_off_macos(self):
+    def test_hook_does_not_rewrite_on_an_unsupported_os(self):
         with tempfile.TemporaryDirectory() as d:
             ws = Path(d)
             (ws / ".git").mkdir()
@@ -190,7 +200,7 @@ class TestMacOSOnly(unittest.TestCase):
             env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
             env.pop("PRISMOR_WORKSPACE", None)
             env.pop("CLAUDE_PROJECT_DIR", None)
-            shim = ("import sys; sys.platform = 'linux'; "
+            shim = ("import sys; sys.platform = 'freebsd14'; "
                     "sys.argv = ['prismor', 'hook-dispatch', '--agent', 'claude', '--mode', 'enforce']; "
                     "from prismor.runtime.cli import main; main()")
             r = subprocess.run([sys.executable, "-c", shim], input=json.dumps(payload), cwd=ws, env=env,
@@ -550,6 +560,14 @@ class TestConfinedRuns(unittest.TestCase):
             self.assertNotIn("TOKEN", r.stdout)
         r = _cli(self.ws, "try", "--", "cat README 2>/dev/null; echo readable", home=fake_home)
         self.assertIn("readable", r.stdout)
+
+    def test_a_protected_parent_cannot_be_renamed(self):
+        _policy(self.ws, "settings:\n  sandbox:\n    ring: \"1\"\n")
+        (self.ws / ".git" / "hooks").mkdir()
+        _cli(self.ws, "try", "--", "mv .git .g && echo x > .g/hooks/post-checkout; mv .g .git")
+        self.assertTrue((self.ws / ".git").is_dir())
+        self.assertFalse((self.ws / ".git" / "hooks" / "post-checkout").exists())
+        self.assertNotEqual(_cli(self.ws, "run", "--", "git config --file .git/config core.hooksPath /tmp/h").returncode, 0)
 
     def test_exit_code_passes_through(self):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"1\"\n")

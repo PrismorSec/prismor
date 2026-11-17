@@ -2758,7 +2758,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _prompt_out and _hook_claimed:
                 sys.stdout.write(json.dumps(_prompt_out) + "\n")
 
-        # Prismor sandbox (macOS): every rule, IAM and scoped check has passed on
+        # Prismor sandbox (macOS, Linux): every rule, IAM and scoped check has passed on
         # the original command by now. Wrap it so the OS confines it, and whatever
         # it starts, too. Where Seatbelt cannot start at run time the runner says
         # so and runs the command unconfined: "not contained", never "not
@@ -2790,7 +2790,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         engine = PolicyEngine(workspace=workspace)
         cfg = _sandbox.effective_config(getattr(engine, "sandbox_config", {}))
         subcmd = getattr(args, "sandbox_command", None) or "status"
-        _engine_names = {"seatbelt": "Seatbelt (macOS)"}
+        _engine_names = {"seatbelt": "Seatbelt (macOS)", "bubblewrap": "bubblewrap (Linux)"}
 
         if subcmd in ("run", "try"):
             # `run` is what the hook rewrite calls: the command arrives on fd 3
@@ -3423,15 +3423,28 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             from prismor.runtime.cloaking.sources import load_sources
             sources = load_sources()
+            from prismor.runtime.cloaking.runtime import is_scrubbable_secret
             print(f"Registered secrets at {secrets_dir()}:")
             print()
+            weak = 0
             for entry in secrets:
                 ts = datetime.fromtimestamp(entry["modified"]).strftime("%Y-%m-%d %H:%M")
                 tag = _color("[auto]", _DIM) + " " if entry["auto"] else ""
                 src = sources.get(entry["name"], {}).get("ref")
+                try:  # the value is checked in-process, never printed
+                    raw = (secrets_dir() / entry["name"]).read_text(encoding="utf-8", errors="replace").rstrip("\n")
+                except OSError:
+                    raw = None
+                masked = raw is None or is_scrubbable_secret(raw)
+                weak += not masked
                 print(f"  {tag}@@SECRET:{entry['name']}@@"
-                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})")
+                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})"
+                      + ("" if masked else "  " + _color("[not masked]", _YELLOW)))
             print()
+            if weak:
+                print(f"{weak} value(s) marked [not masked] look like config (too short, a common word, or a "
+                      "bare URL), so Prismor never masks them in output or blocks reads of them. "
+                      "Remove any that are not real secrets: prismor cloak remove <name>")
             return
 
         if sub == "sync":
@@ -4495,8 +4508,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
-        help="OS sandbox (Seatbelt, macOS) for allowed shell commands",
-        description="Run allowed shell commands under the macOS sandbox: writes held to the "
+        help="OS sandbox (Seatbelt on macOS, bubblewrap on Linux) for allowed shell commands",
+        description="Run allowed shell commands under the OS sandbox: writes held to the "
                     "project, credential stores hidden, network held to the egress allowlist.",
     )
     sandbox_parser.add_argument("--workspace", help="Workspace path")
@@ -6794,7 +6807,7 @@ allowlists:
 settings:
   # Optional OS sandbox for allowed shell commands (`prismor sandbox on`).
   # Prismor still judges the original command first; allowed commands then
-  # run under Seatbelt (macOS only for now). See docs/sandbox.md.
+  # run under Seatbelt (macOS) or bubblewrap (Linux). See docs/sandbox.md.
   # sandbox:
   #   enabled: true
   #   ring: "2"          # 0 read-only · 1 no network · 2 egress allowlist · 3 open network

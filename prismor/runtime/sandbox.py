@@ -3,9 +3,10 @@
 The policy engine decides whether a command may run. The sandbox decides what
 that command, and every process it starts, can touch while it runs: which
 files it can write, which credential stores it can see, and where it can
-connect. The kernel enforces it — Seatbelt (``sandbox-exec``), macOS only for
-now — so a package's postinstall script is held to the same limits as the
-command the agent typed. Elsewhere the runner says so and runs unconfined.
+connect. The kernel enforces it — Seatbelt (``sandbox-exec``) on macOS,
+bubblewrap on Linux (``sandbox_native``) — so a package's postinstall script is
+held to the same limits as the command the agent typed. Elsewhere the runner
+says so and runs unconfined.
 
 Nothing about how the agent is launched changes. Hook-dispatch rewrites each
 allowed shell call into ``prismor sandbox run``, with the original command on
@@ -28,6 +29,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from prismor.runtime.sandbox_native import _parents
 
 DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
     "enabled": False,
@@ -70,7 +73,8 @@ _HIDDEN_HOME = (".aws", ".azure", ".config/gcloud", ".kube", ".docker", ".netrc"
 # Writes here would run later outside the sandbox (git hooks, agent and editor
 # config, shell startup files) or change Prismor itself. Read-only even when
 # they sit inside a writable directory.
-_PROTECTED_ROOT = (".prismor", ".git/hooks", ".claude", ".codex", ".cursor", ".gemini",
+# .git/config: core.hooksPath / core.fsmonitor move hook execution out of .git/hooks.
+_PROTECTED_ROOT = (".prismor", ".git/hooks", ".git/config", ".claude", ".codex", ".cursor", ".gemini",
                    ".vscode", ".github/hooks", ".mcp.json")
 _PROTECTED_HOME = (".prismor", ".ssh", ".gnupg", ".claude", ".codex", ".cursor", ".gemini",
                    ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile",
@@ -133,8 +137,8 @@ def enforcing(cfg: Dict[str, Any]) -> bool:
 
 
 def supported() -> bool:
-    """macOS only for now: elsewhere the hook does not rewrite at all."""
-    return sys.platform == "darwin"
+    """macOS (Seatbelt) and Linux (bubblewrap): elsewhere the hook does not rewrite at all."""
+    return sys.platform == "darwin" or sys.platform.startswith("linux")
 
 
 # ── profile ────────────────────────────────────────────────────────────────
@@ -148,6 +152,7 @@ class Profile:
     sockets: Tuple[str, ...]     # unix sockets the command may not connect to
     network: str                 # none | proxy | open
     direct_ports: Tuple[int, ...]
+    parents: Tuple[str, ...] = ()  # dirs above a protected path: no rename or rmdir
 
 
 def _real(path: Any) -> str:
@@ -185,14 +190,23 @@ def build_profile(config: Dict[str, Any], root: Path, *, home: Optional[Path] = 
     if cfg["workspace_mount"] == "rw":
         writable += [root_s] + [_real(home / p) for p in _WRITABLE_HOME]
     writable += [_at(root_s, p) for p in cfg["writable"]]
-    protected = [_real(os.path.join(root_s, p)) for p in _PROTECTED_ROOT]
+    rels = _protected_rels(root_s)
+    protected = [_real(os.path.join(root_s, p)) for p in rels]
     protected += [_real(home / p) for p in _PROTECTED_HOME]
     hidden = [_real(home / p) for p in _HIDDEN_HOME] + [_secrets_dir()]
     hidden += [_at(root_s, p) for p in cfg["hide"]]
     sockets = [_real(s.replace("~", str(home), 1)) for s in _DAEMON_SOCKETS]
     return Profile(writable=_uniq(writable), protected=_uniq(protected), hidden=_uniq(hidden),
                    sockets=_uniq(sockets), network=cfg["network"],
-                   direct_ports=tuple(cfg["direct_ports"]))
+                   direct_ports=tuple(cfg["direct_ports"]),
+                   parents=_uniq(_real(d) for d in _parents(root_s, rels)))
+
+
+def _protected_rels(root_s: str) -> List[str]:
+    # ponytail: before `git init`, .git/* is left open so init can write it; a
+    # repo created inside the run can carry hooks. Guard it at init when that matters.
+    has_git = os.path.isdir(os.path.join(root_s, ".git"))
+    return [r for r in _PROTECTED_ROOT if has_git or not r.startswith(".git/")]
 
 
 def _sb(path: str) -> str:
@@ -205,6 +219,10 @@ def seatbelt_profile(p: Profile) -> str:
            "(allow file-write* (subpath \"/dev\")" + "".join(f" (subpath {_sb(w)})" for w in p.writable) + ")"]
     if p.protected:
         out.append("(deny file-write*" + "".join(f" (subpath {_sb(x)})" for x in p.protected) + ")")
+    if p.parents:
+        # `mv .git .g; edit .g/hooks; mv .g .git` moves a protected path away
+        # from the name above. unlink covers rename and rmdir of the dir node.
+        out.append("(deny file-write-unlink" + "".join(f" (literal {_sb(x)})" for x in p.parents) + ")")
     if p.hidden:
         out.append("(deny file-read* file-write*" + "".join(f" (subpath {_sb(h)})" for h in p.hidden) + ")")
     if p.network != "open":
@@ -230,7 +248,12 @@ def backend_status() -> Dict[str, Any]:
     """Whether Seatbelt can start here."""
     if not supported():
         return {"available": False, "engine": None,
-                "error": f"macOS only, this host runs {sys.platform}"}
+                "error": f"macOS and Linux only, this host runs {sys.platform}"}
+    if sys.platform != "darwin":
+        from prismor.runtime import sandbox_native
+        st = sandbox_native.status()
+        return {"available": bool(st.get("ready")), "engine": "bubblewrap",
+                "path": st.get("path"), "error": st.get("error")}
     if not os.path.exists(_SANDBOX_EXEC):
         return {"available": False, "engine": "seatbelt", "error": "sandbox-exec not found"}
     try:
@@ -369,6 +392,8 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
         _note(f"not available here ({status.get('error')}); running unconfined. Policy still applies.")
         return _exec_unconfined(command)
 
+    if sys.platform != "darwin":
+        return _run_bwrap(command, root, config)
     profile = build_profile(config, root)
     fd = _command_fd(command)
     argv = [status["path"], "-p", seatbelt_profile(profile), _shell(), "-c", _shim(fd)]
@@ -398,6 +423,34 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
     finally:
         if proxy:
             proxy.close()
+
+
+_BWRAP_NETWORK = {"none": "none", "proxy": "allowlist", "open": "bridge"}
+
+
+def _run_bwrap(command: str, root: Path, config: Dict[str, Any]) -> int:
+    """Linux: the same limits, enforced by bubblewrap in ``sandbox_native``.
+
+    ponytail: egress is screened by sandbox_native's per-host policy check, not
+    the egress allowlist the macOS proxy reads, and ``direct_ports`` have no
+    effect (the network namespace has loopback only). Unify the proxies when
+    the two need to agree host for host.
+    """
+    from prismor.runtime import sandbox_native
+    cfg = effective_config(config)
+    root_s = _real(root)
+
+    def _at(rel: str) -> str:
+        return _real(rel if rel.startswith(("/", "~")) else os.path.join(root_s, rel))
+
+    native = {"mode": cfg["mode"], "workspace_mount": cfg["workspace_mount"],
+              "protect": _protected_rels(root_s),
+              "network": _BWRAP_NETWORK[cfg["network"]],
+              "allow_write": [_at(p) for p in cfg["writable"]],
+              # daemon sockets: a bind of /dev/null over one stops connect()
+              "deny_read": ([_real(Path.home() / p) for p in _HIDDEN_HOME] + [_secrets_dir()]
+                            + [_real(s) for s in _DAEMON_SOCKETS] + [_at(p) for p in cfg["hide"]])}
+    return sandbox_native.run(command, workspace=root, cfg=native)
 
 
 # ── hook rewrite ───────────────────────────────────────────────────────────

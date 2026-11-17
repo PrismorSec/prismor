@@ -1,6 +1,6 @@
 # Prismor Sandbox
 
-Prismor's policy engine decides whether a shell command may run. The sandbox decides what that command, and every process it starts, can touch while it runs. It uses the sandbox macOS already ships, Seatbelt. Commands keep using your real toolchain (`npm`, `.venv`, `cargo`, `git`), and each one starts about 10 ms slower. It's macOS only for now (see [Platforms](#platforms)).
+Prismor's policy engine decides whether a shell command may run. The sandbox decides what that command, and every process it starts, can touch while it runs. It uses the sandbox the OS already ships: Seatbelt on macOS, bubblewrap on Linux. Commands keep using your real toolchain (`npm`, `.venv`, `cargo`, `git`), and each one starts about 10 ms slower. Windows is not supported yet (see [Platforms](#platforms)).
 
 ```bash
 prismor sandbox on
@@ -155,9 +155,18 @@ Placeholders resolve, and output is scrubbed, outside the sandbox, where the vau
 
 ## Platforms
 
-The sandbox runs on macOS only, where everything above is enforced by Seatbelt. On Linux and Windows, `prismor sandbox on` still saves the setting, but the hook leaves commands as they are, and `prismor sandbox status` and `prismor audit` say the sandbox can't start here. Policy screening, egress, and cloaking work as before.
+On macOS, everything above is enforced by Seatbelt.
 
-If Seatbelt can't start on a Mac, for example because the agent already runs inside its own sandbox, the runner says so on stderr and runs the command unconfined. Policy screening still applies, because blocking every shell command over a missing engine is how teams end up uninstalling security tools.
+On Linux, bubblewrap (`apt install bubblewrap`) enforces the same file and credential limits, with these differences:
+
+- **Network.** Ring 2 runs the command in its own network namespace with loopback only. A bridge carries the proxy into it, and each new host is screened as a Prismor `network` event, so it shows in the session trail. `direct_ports` has no effect.
+- **More credential stores are hidden by default.** For example, `~/.ssh`, `~/.gnupg`, `~/.npmrc` and `~/.config/gh` cannot be read.
+- **Protected paths must exist.** bubblewrap can only make an existing path read-only.
+- **Ubuntu 23.10 and later** block unprivileged user namespaces by default (`kernel.apparmor_restrict_unprivileged_userns=1`). bubblewrap cannot start until an admin adds an AppArmor profile for it. `prismor sandbox check` says so.
+
+On Windows, `prismor sandbox on` still saves the setting, but the hook leaves commands as they are, and `prismor sandbox status` and `prismor audit` say the sandbox can't start here. Policy screening, egress and cloaking work as before.
+
+If the engine can't start, for example because the agent already runs inside its own sandbox, the runner says so on stderr and runs the command unconfined. Policy screening still applies, because blocking every shell command over a missing engine is how teams end up uninstalling security tools.
 
 ## Agents
 
