@@ -14,6 +14,9 @@ Read endpoints:
     GET /api/sessions      → paginated sessions  (?page&limit&sort&dir)
     GET /api/findings      → paginated findings  (?page&limit&agent&severity&category&q)
     GET /api/events        → paginated events    (?page&limit&verdict&agent)
+    GET /api/logs          → every event, filtered (?days&status&type&tool&server&agent&session&q&page&limit)
+                             with facet counts, outcome totals and a volume histogram (logs.py)
+    GET /api/logs/event    → one call in full, with its result and findings (?id=<ws>:<event id>&post=<ws>:<result id>)
     GET /api/supply-chain  → supply chain enforcement stats
     GET /api/workspaces    → registered workspaces + enrollment status
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
@@ -921,6 +924,22 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(data)
             return
 
+        if path == "/api/logs":
+            try:
+                from prismor.runtime.logs import query_logs
+                self._send_json(query_logs(
+                    {k: qstr(k) for k in ("status", "type", "tool", "server", "agent", "session", "q")},
+                    page=qint("page", 1), limit=qint("limit", 50), days=qint("days", 7)))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/logs/event":
+            from prismor.runtime.logs import get_log_event
+            data = get_log_event(qstr("id"), qstr("post"))
+            self._send_json(data, status=404 if "error" in data else 200)
+            return
+
         if path == "/api/docs":
             root = _docs_dir()
             if root is None:
@@ -1509,6 +1528,8 @@ def run_server(
 
     url = f"http://{host}:{port}" + (f"/?token={_SERVER_TOKEN}" if _SERVER_TOKEN else "")
     print(f"[prismor] dashboard → {url}  (Ctrl-C to stop)  state → {prismor_home()}", flush=True)
+    from prismor.runtime.logs import warm as _warm_logs
+    threading.Thread(target=_warm_logs, daemon=True).start()
     if open_browser:
         import webbrowser
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
