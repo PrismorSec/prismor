@@ -541,10 +541,9 @@ def _review_lines(finding: Dict[str, Any], session_id: Optional[str], enrolled: 
         return []
     return [
         "",
-        "If this block looks wrong (a false positive):",
-        f'  Agent: run  prismor report-fp {event_id} --reason "<why it is safe>"',
-        f"  Then give the user this link to mark it true or false positive: {url}",
-        "  Do not retry the call another way while you wait.",
+        f'Looks like a false positive? Agent: run `prismor report-fp {event_id} --reason "<why it is safe>"`,',
+        f"then give the user this link to confirm or reject it: {url}",
+        "Do not work around the block while you wait.",
     ]
 
 

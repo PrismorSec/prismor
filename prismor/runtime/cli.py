@@ -1040,13 +1040,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         res = _fp.report(args.event_id, args.reason)
         if not res.get("ok"):
             print(f"Report failed: {res.get('error')}")
+            if res.get("status") == 404:
+                # Warned/observed records ride the spool (up to ~60s); a report
+                # sent right after the call can beat its own event there.
+                print("If the block just happened, the event may not have reached the console yet. Try again in a minute.")
             raise SystemExit(1)
         if res.get("reported"):
-            print(f"Reported {args.event_id} as a likely false positive. Nothing is unblocked yet.")
+            print(f"Reported {args.event_id} as a likely false positive. Nothing is unblocked until a reviewer agrees.")
         else:
-            print(f"{args.event_id} is already labeled {res.get('label')} by a reviewer; not reopened.")
+            label = str(res.get("label") or "").replace("_", " ")
+            print(f"A reviewer already marked {args.event_id} {label}; the report was not filed.")
         if res.get("url"):
-            print(f"Ask the user to review it and mark it true or false positive: {res['url']}")
+            print(f"Give the user this link to confirm or reject it: {res['url']}")
         return
 
     # ── exempt: request an admin exemption for THIS repo ───────────────

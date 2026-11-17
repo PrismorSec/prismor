@@ -92,9 +92,9 @@ decision, so `prismor learn --console` pulls those labels first.
 1. A block prints its event id and a console link:
 
    ```text
-   If this block looks wrong (a false positive):
-     Agent: run  prismor report-fp evt_… --reason "<why it is safe>"
-     Then give the user this link to mark it true or false positive: https://…/admin/sessions/…?event=evt_…
+   Looks like a false positive? Agent: run `prismor report-fp evt_… --reason "<why it is safe>"`,
+   then give the user this link to confirm or reject it: https://…/admin/sessions/…?event=evt_…
+   Do not work around the block while you wait.
    ```
 
 2. The agent runs `prismor report-fp <event-id> --reason "…"` and gives the
@@ -102,8 +102,9 @@ decision, so `prismor learn --console` pulls those labels first.
    *Reported by agent* queue. Nothing is unblocked, and no learner reads it.
    The agent that was blocked is the last party that should decide the block
    was wrong. A prompt injection could make it say so.
-3. An admin labels the event **true positive** or **false positive** on the
-   console's review page.
+3. An admin opens the link and marks the event **True positive** or **False
+   positive** under *Verdict*. The same control is on the review page, which
+   also has a *Reported by agent* filter.
 4. `prismor learn --console` pulls the labels on this device's events and joins
    them to the local command by event id. The command never leaves a redacted
    device, so only the device can turn a label into a rule.
