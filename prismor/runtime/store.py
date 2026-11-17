@@ -645,7 +645,8 @@ def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]
 # SQLite can't ADD COLUMN NOT NULL without a default, and fresh DBs already get
 # the constraint via CREATE TABLE.
 _EXPECTED_COLUMNS: Dict[str, List[tuple]] = {
-    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0"), ("reported_cost_usd", "REAL")],
+    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0"), ("reported_cost_usd", "REAL"),
+                    ("agent", "TEXT"), ("subject", "TEXT"), ("latency_ms", "INTEGER")],
     "sessions": [
         ("session_id", "TEXT"), ("agent", "TEXT"), ("agent_name", "TEXT"),
         ("source", "TEXT"), ("workspace_path", "TEXT"), ("repo_url", "TEXT"),
@@ -873,7 +874,10 @@ def initialize_database(workspace: Path) -> Path:
                 cache_read_tokens INTEGER,
                 cache_creation_tokens INTEGER,
                 cache_1h_tokens INTEGER DEFAULT 0,
-                reported_cost_usd REAL
+                reported_cost_usd REAL,
+                agent TEXT,
+                subject TEXT,
+                latency_ms INTEGER
             );
             CREATE TABLE IF NOT EXISTS tool_output_size (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3507,10 +3511,13 @@ _TOKEN_UPSERT = """
     INSERT INTO token_usage (
         message_id, session_id, workspace_path, ts, model,
         input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
-        reported_cost_usd
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        reported_cost_usd, agent, subject, latency_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(message_id) DO UPDATE SET
         reported_cost_usd = COALESCE(excluded.reported_cost_usd, reported_cost_usd),
+        agent = COALESCE(agent, excluded.agent),
+        subject = COALESCE(subject, excluded.subject),
+        latency_ms = COALESCE(latency_ms, excluded.latency_ms),
         input_tokens = MAX(COALESCE(input_tokens, 0), excluded.input_tokens),
         output_tokens = MAX(COALESCE(output_tokens, 0), excluded.output_tokens),
         cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), excluded.cache_read_tokens),
@@ -3545,7 +3552,8 @@ def record_token_usages(workspace: Path, session_id: str, rows: List[Dict[str, A
                 r["message_id"], session_id, ws, r.get("ts") or "", r.get("model") or "",
                 r.get("input_tokens") or 0, r.get("output_tokens") or 0, r.get("cache_read_tokens") or 0,
                 r.get("cache_creation_tokens") or 0, r.get("cache_1h_tokens") or 0,
-                r.get("reported_cost_usd"),
+                r.get("reported_cost_usd"), r.get("agent") or None, r.get("subject") or None,
+                r.get("latency_ms"),
             )).rowcount > 0 for r in rows]
             connection.commit()
             return changed

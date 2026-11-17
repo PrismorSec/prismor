@@ -963,6 +963,15 @@ class Screen:
         the same exemption the runtime gives the hook lane (#885).
         """
         blocking = getattr(decision, "blocking", None) if decision is not None else None
+        if blocking is None and self.mode == "enforce" and decision is not None:
+            # The LLM request is a "prompt" event, never pre-action, so the
+            # runtime does not block it; a model or spend finding still must,
+            # before the request reaches the provider.
+            from prismor.runtime.contract import strongest
+            return strongest([
+                f for f in (getattr(decision, "findings", None) or [])
+                if f.get("category") == "spend_limit"
+                and str(f.get("mode", "observe")).lower() == "enforce"])
         if blocking is None or self.mode == "enforce":
             return blocking
 
@@ -1466,6 +1475,9 @@ class StreamScreen:
                 model=self.model,
                 usage=self._usage,
                 message_id=self._usage_id or str(uuid.uuid4()),
+                subject=_subject_id(self.subject),
+                latency_ms=(int(1000 * (time.monotonic() - self.t0))
+                            if getattr(self, "t0", None) is not None else None),
             )
         except Exception:
             pass
@@ -2563,7 +2575,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if blocked:
             body = _strip_blocked_calls(provider, body, blocked)
         _mask_in_place(body, self.screen.redact)
-        _meter(self.screen, body, model, getattr(self, "_session_id", ""))
+        _meter(self.screen, body, model, getattr(self, "_session_id", ""),
+               subject=subject, t0=getattr(self, "_t0", None))
         return json.dumps(body).encode()
 
     def _relay_stream(self, resp: Any, provider: str, model: str,
@@ -2592,6 +2605,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                               getattr(self, "_session_id", ""),
                               spoken=getattr(self, "_spoken", False))
         stream.strip_usage = getattr(self, "_usage_injected", False)
+        stream.t0 = getattr(self, "_t0", None)
         try:
             if is_eventstream(urlsplit(self.path).path):
                 for out in _eventstream_relay(stream, resp):
@@ -2940,7 +2954,8 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
     return body
 
 
-def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "") -> None:
+def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "",
+           subject: Optional[str] = None, t0: Optional[float] = None) -> None:
     """Record token usage against the session. Best-effort, never fatal.
 
     ``session_id`` is this request's conversation, not the proxy's process
@@ -2963,9 +2978,22 @@ def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "
             model=model,
             usage=usage,
             message_id=str(body.get("id") or body.get("responseId") or uuid.uuid4()),
+            subject=_subject_id(subject),
+            latency_ms=int(1000 * (time.monotonic() - t0)) if t0 is not None else None,
         )
     except Exception:
         pass
+
+
+def _subject_id(subject: Optional[str]) -> str:
+    """The user id a virtual key's subject resolves to (for per-user budgets)."""
+    if not subject:
+        return ""
+    try:
+        from prismor.runtime.principal import resolve_subject
+        return str(getattr(resolve_subject(subject), "user_id", "") or "")
+    except Exception:
+        return ""
 
 
 # ── entry point ──────────────────────────────────────────────────────────────

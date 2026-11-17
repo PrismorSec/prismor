@@ -16,6 +16,7 @@ Read endpoints:
     GET /api/events        → paginated events    (?page&limit&verdict&agent)
     GET /api/logs          → every event, filtered (?days&status&type&tool&server&agent&session&q&page&limit)
                              with facet counts, outcome totals and a volume histogram (logs.py)
+    GET /api/spend         → spend today / this month, per model, budgets (?days)
     GET /api/logs/event    → one call in full, with its result and findings (?id=<ws>:<event id>&post=<ws>:<result id>)
     GET /api/supply-chain  → supply chain enforcement stats
     GET /api/workspaces    → registered workspaces + enrollment status
@@ -930,6 +931,16 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(query_logs(
                     {k: qstr(k) for k in ("status", "type", "tool", "server", "agent", "session", "q")},
                     page=qint("page", 1), limit=qint("limit", 50), days=qint("days", 7)))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/spend":
+            try:
+                from prismor.runtime import budgets
+                from prismor.runtime.policy_engine import PolicyEngine
+                engine = PolicyEngine(workspace=self._resolve_workspace({}) or Path.cwd())
+                self._send_json(budgets.summary(engine.spend_budgets, days=qint("days", 30)))
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
             return

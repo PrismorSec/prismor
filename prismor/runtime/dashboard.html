@@ -3077,6 +3077,18 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .logs-stat span { font-size: 12px; color: var(--sui-fg-muted); }
   .logs-stat b { font-size: 22px; font-weight: 600; color: var(--sui-fg); font-variant-numeric: tabular-nums; }
   .logs-stat small { font-size: 11.5px; color: var(--sui-fg-subtle); }
+  .logs-spend { padding: 0; overflow-x: auto; }
+  .logs-spend-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid var(--sui-border); font-size: 13px; color: var(--sui-fg-muted); }
+  .logs-spend-head b { font-weight: 500; color: var(--sui-fg); }
+  .logs-spend-head .logs-spend-title { font-weight: 500; color: var(--sui-fg); margin-right: auto; }
+  .logs-budget { display: grid; grid-template-columns: minmax(140px, 1fr) 2fr auto; align-items: center; gap: 12px; padding: 8px 16px; font-size: 12.5px; color: var(--sui-fg-muted); border-bottom: 1px solid var(--sui-border-muted); }
+  .logs-budget b { font-weight: 500; color: var(--sui-fg); }
+  .logs-meter { height: 6px; border-radius: 3px; background: var(--sui-inset); overflow: hidden; }
+  .logs-meter i { display: block; height: 100%; background: var(--dot-gray); }
+  .logs-meter i.warn { background: var(--dot-warn); } .logs-meter i.over { background: var(--dot-danger); }
+  .logs-spend table { width: 100%; min-width: 520px; }
+  .logs-spend th, .logs-spend td { padding: 8px 16px; font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
+  .logs-spend th:first-child, .logs-spend td:first-child { text-align: left; }
   .logs-chart-card { padding: 12px 16px; }
   .logs-chart-head { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 500; color: var(--sui-fg); margin-bottom: 8px; }
   .logs-legend { display: flex; gap: 12px; font-size: 12px; font-weight: 400; color: var(--sui-fg-muted); }
@@ -3674,6 +3686,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       </div>
       <div id="logsFilterBar" class="logs-filterbar" aria-label="Log filters"></div>
       <div id="logsStats" class="logs-stats"></div>
+      <div id="logsSpend" class="card logs-spend" hidden></div>
       <div class="card logs-chart-card">
         <div class="logs-chart-head"><span>Volume</span><span id="logsLegend" class="logs-legend"></span></div>
         <div class="logs-chart-box"><canvas id="logsChart"></canvas></div>
@@ -9481,7 +9494,35 @@ function setLogsLive(on) {
     }, 5000);
   }
 }
+async function loadLogsSpend() {
+  const el = document.getElementById('logsSpend');
+  let d;
+  try { d = await apiFetch('/api/spend?days=' + Math.min(windowDays(), 30)); } catch (e) { el.hidden = true; return; }
+  if (!d || (!d.models.length && !d.budgets.length && !d.error)) { el.hidden = true; return; }
+  const per = p => p ? ' per ' + ({ daily: 'day', weekly: 'week', monthly: 'month' }[p] || p) : '';
+  const meter = (used, limit) => {
+    const pct = limit ? Math.min(100, used / limit * 100) : 100;
+    return '<div class="logs-meter"><i class="' + (pct >= 100 ? 'over' : pct >= 75 ? 'warn' : '') + '" style="width:' + pct + '%"></i></div>';
+  };
+  const budgetRows = d.budgets.map(b => {
+    const name = '<b>' + safe(b.scope + (b.match ? ' ' + b.match : '')) + '</b> ' + fmtUsd(b.limit) + per(b.period);
+    if (b.used != null) return '<div class="logs-budget"><span>' + name + '</span>' + meter(b.used, b.limit) + '<span>' + fmtUsd(b.used) + ' used</span></div>';
+    const top = (b.top || [])[0];
+    const who = top ? safe(String(top.seat || top.session).slice(0, 18)) : '';
+    return '<div class="logs-budget"><span>' + name + '</span>' + meter(top ? top.used : 0, b.limit) +
+      '<span>' + (top ? 'highest: ' + who + ', ' + fmtUsd(top.used) : 'no spend yet') + '</span></div>';
+  }).join('');
+  const rows = d.models.map(m => '<tr><td>' + safe(m.model) + (m.unpriced ? ' <span class="hint" title="No list price; counted at $5 / $25 per million tokens">(estimated)</span>' : '') +
+    '</td><td>' + fmtNum(m.requests) + '</td><td>' + fmtNum(m.tokens) + '</td><td>' + fmtUsd(m.usd) +
+    '</td><td>' + (m.latency_ms == null ? '—' : fmtNum(m.latency_ms) + ' ms') + '</td></tr>').join('');
+  el.innerHTML = '<div class="logs-spend-head"><span class="logs-spend-title">Spend</span><span>Today <b>' + fmtUsd(d.today) +
+    '</b></span><span>This month <b>' + fmtUsd(d.month) + '</b></span></div>' +
+    (d.error ? '<div class="logs-budget"><span>' + safe(d.error) + '</span></div>' : '') + budgetRows +
+    (rows ? '<table><thead><tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Cost</th><th>Median latency</th></tr></thead><tbody>' + rows + '</tbody></table>' : '');
+  el.hidden = false;
+}
 async function loadLogs(silent) {
+  if (!silent) loadLogsSpend();
   const days = Math.min(windowDays(), 30);
   const p = new URLSearchParams(logsQuery().slice(1));
   p.set('days', days); p.set('page', _logs.page); p.set('limit', 50);

@@ -180,7 +180,9 @@ def _record_many(workspace: Path, session_id: str, agent: str, rows: List[Dict[s
     gateway lane emits) so the control plane can show tokens and spend per
     session. It rides the heartbeat's next flush, never a request of its own."""
     reasoning = [int(r.get("reasoning_tokens") or 0) for r in rows]
-    rows = [{k: v for k, v in r.items() if k != "reasoning_tokens"} for r in rows]  # not a store column
+    # not a store column; `agent` attributes the turn for per-agent budgets
+    rows = [{**{k: v for k, v in r.items() if k != "reasoning_tokens"},
+             "agent": r.get("agent") or agent_name or agent} for r in rows]
     changed = store.record_token_usages(workspace, session_id, rows)
     for row, r_tokens, new in zip(rows, reasoning, changed):
         if new:
@@ -377,7 +379,8 @@ def _output_size(event: Dict[str, Any]) -> int:
 
 def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
                      model: str, usage: Dict[str, Any], message_id: str,
-                     ts: str = "", agent_name: str = "") -> None:
+                     ts: str = "", agent_name: str = "", subject: str = "",
+                     latency_ms: Optional[int] = None) -> None:
     """Record a provider ``usage`` block seen on the proxy lane.
 
     Normalizes the providers' differing field names so the LLM lane populates
@@ -433,6 +436,8 @@ def record_llm_usage(*, workspace: Path, session_id: str, agent: str,
             "reasoning_tokens": reasoning,
             # OpenRouter puts the charge on every response (credits are USD).
             "reported_cost_usd": float(cost) if isinstance(cost, (int, float)) and not isinstance(cost, bool) else None,
+            "subject": subject or None,
+            "latency_ms": latency_ms,
         }, agent_name=agent_name)
     except Exception:
         pass

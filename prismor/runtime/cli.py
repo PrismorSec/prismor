@@ -1569,6 +1569,42 @@ def main(argv: Optional[List[str]] = None) -> None:
         _print_surfaces(workspace)
         return
 
+    if args.command == "spend":
+        from prismor.runtime import budgets
+        if args.spend_command != "status":
+            parser.parse_args(["spend", "--help"])
+            return
+        engine = PolicyEngine(workspace=workspace)
+        report = budgets.status(engine.spend_budgets, agent=args.agent or "")
+        report["models"] = engine.models
+        report["workspace"] = str(workspace.resolve())
+        report["modes"] = {r.id: engine._resolve_mode(r) if r.enabled else "disabled" for r in engine.rules
+                           if r.category == "spend_limit"}
+        if engine.spend_error:
+            report["error"] = engine.spend_error
+        if args.json:
+            emit(report, as_json=True)
+            return
+        if not report["configured"] and report["models"] is None and not report["error"]:
+            print("Spend budgets and allowed models: not configured")
+            return
+        print(f"Workspace: {report['workspace']}")
+        print(f"Modes: {json.dumps(report['modes'], sort_keys=True)}")
+        if report["error"]:
+            print(f"Unavailable: {report['error']}")
+        if report["models"] is not None:
+            print(f"Models: allow {report['models'].get('allow', 'any')}, deny {report['models'].get('deny', [])}")
+        for b in report["budgets"]:
+            per = f" per {b['period'][:-2].replace('dai', 'day')}" if b["period"] else ""
+            head = f"{b['scope']}{' ' + b['match'] if b['match'] else ''}: ${b['limit']:.2f}{per}"
+            if "used" in b:
+                print(f"  {head}, ${b['used']:.2f} used")
+            else:
+                print(f"  {head}")
+                for t in b.get("top") or []:
+                    print(f"    {t.get('session') or t.get('seat')}: ${t['used']:.2f}")
+        return
+
     if args.command == "rate":
         from prismor.runtime import ratelimit
         if args.rate_command != "status":
@@ -4616,6 +4652,13 @@ def build_parser() -> argparse.ArgumentParser:
     rate_status = rate_subs.add_parser("status", help="Read current rate-limit usage without consuming quota")
     rate_status.add_argument("--workspace", help="Workspace path")
     rate_status.add_argument("--json", action="store_true", help="Output raw JSON")
+
+    spend_parser = subparsers.add_parser("spend", help="Inspect spend budgets and allowed models")
+    spend_subs = spend_parser.add_subparsers(dest="spend_command")
+    spend_status = spend_subs.add_parser("status", help="Show each budget and what this device has spent")
+    spend_status.add_argument("--workspace", help="Workspace path")
+    spend_status.add_argument("--agent", help="Agent name for a per-agent budget")
+    spend_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
     # ── status ─────────────────────────────────────────────────────────
     status_parser = subparsers.add_parser(
