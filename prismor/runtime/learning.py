@@ -68,6 +68,18 @@ CREATE TABLE IF NOT EXISTS staged_executions (
     detected_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_staged_session ON staged_executions(session_id);
+
+-- Human verdicts from the org console on events this device sent, keyed by
+-- the event id the runtime minted (findings.enrichment_json.eventId). Unlike
+-- dismissals these are decisions a person made, so they outrank them.
+CREATE TABLE IF NOT EXISTS console_labels (
+    event_id TEXT PRIMARY KEY,
+    rule_id TEXT,
+    tool_name TEXT,
+    label TEXT NOT NULL,
+    labeled_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_console_labels_rule ON console_labels(rule_id);
 """
 
 
@@ -762,10 +774,78 @@ _FIXTURE_SESSIONS_SQL = """
 """
 
 
-def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
-    """Find rules that have been dismissed more than threshold times.
+# ── Console labels (human verdicts) ────────────────────────────────────────
 
-    Returns a list of dicts with rule_id, dismissal_count, and recommendation.
+def save_console_labels(workspace: Path, labels: List[Dict[str, Any]]) -> int:
+    """Store labels from ``GET /api/devices/labels``. A relabel on the console
+    arrives as a newer row for the same event and replaces the old one."""
+    rows = [
+        (str(l["eventId"]), l.get("ruleId"), l.get("toolName"), str(l["label"]), str(l.get("at") or ""))
+        for l in labels
+        if isinstance(l, dict) and l.get("eventId") and l.get("label")
+    ]
+    if not rows:
+        return 0
+    db_path = initialize_database(workspace)
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        conn.executemany(
+            "INSERT OR REPLACE INTO console_labels (event_id, rule_id, tool_name, label, labeled_at) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
+
+
+def console_labels_cursor(workspace: Path) -> Optional[str]:
+    """The newest label time already stored: the `since` for the next pull."""
+    db_path = get_db_path(workspace)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        row = conn.execute("SELECT MAX(labeled_at) FROM console_labels").fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and row[0] else None
+
+
+def _console_verdicts(conn: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """Per rule: human TP and FP counts, plus the local evidence of the FPs
+    (joined by event id; the console of a redacted org never had it)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    rows = conn.execute(
+        """
+        SELECT c.rule_id, c.label, f.evidence
+        FROM console_labels c
+        LEFT JOIN findings f ON json_extract(f.enrichment_json, '$.eventId') = c.event_id
+        WHERE c.rule_id IS NOT NULL AND c.label IN ('true_positive', 'false_positive')
+        """
+    ).fetchall()
+    for rule_id, label, evidence in rows:
+        r = out.setdefault(rule_id, {"tp": 0, "fp": 0, "fp_evidence": []})
+        if label == "true_positive":
+            r["tp"] += 1
+        else:
+            r["fp"] += 1
+            if evidence and len(r["fp_evidence"]) < 3:
+                r["fp_evidence"].append(evidence)
+    return out
+
+
+def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
+    """Find rules that are likely too noisy.
+
+    Two sources. A rule a human marked false positive on the console is
+    reported from the first label: that is a decision, not a guess. A rule
+    dismissed ``threshold`` times locally is reported as before. A rule with
+    any human true-positive label is pinned: it is still listed, but the
+    recommendation is to keep it and narrow it, never to lower or allow it.
+
     Self-test sessions (see ``_FIXTURE_SESSIONS_SQL``) are excluded.
     """
     db_path = get_db_path(workspace)
@@ -775,6 +855,10 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     conn = sqlite3.connect(db_path)
     try:
         initialize_learning_tables(conn)
+        try:
+            verdicts = _console_verdicts(conn)
+        except sqlite3.Error:
+            verdicts = {}  # no findings table yet, or a SQLite without JSON1
         rows = conn.execute(
             f"""
             SELECT rule_id, COUNT(*) as cnt,
@@ -794,20 +878,43 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     finally:
         conn.close()
 
+    dismissed = {rule_id: (count, reasons, evidences) for rule_id, count, reasons, evidences in rows}
     results = []
-    for rule_id, count, reasons, evidences in rows:
-        sample_evidence = (evidences or "").split("|||")[:3]
+    for rule_id in list(dismissed) + [r for r in verdicts if r not in dismissed]:
+        count, reasons, evidences = dismissed.get(rule_id, (0, None, None))
+        v = verdicts.get(rule_id, {"tp": 0, "fp": 0, "fp_evidence": []})
+        if not v["fp"] and rule_id not in dismissed:
+            continue  # only true positives: nothing to tune
+        sample_evidence = v["fp_evidence"] or (evidences or "").split("|||")[:3]
+        if v["tp"]:
+            recommendation = (
+                f"Rule '{rule_id}' has {v['tp']} confirmed true positive(s) "
+                f"and {v['fp']} confirmed false positive(s). Keep it: narrow its "
+                "pattern to skip the false-positive shape, do not lower or allow it."
+            )
+        elif v["fp"]:
+            recommendation = (
+                f"Rule '{rule_id}' was marked false positive {v['fp']} time(s) by a "
+                "reviewer on the console. Add a narrow allowlist entry for that shape."
+            )
+        else:
+            recommendation = (
+                f"Rule '{rule_id}' has been dismissed {count} times. "
+                "Consider lowering severity or adding an allowlist entry."
+            )
         results.append({
             "rule_id": rule_id,
             "dismissal_count": count,
+            "confirmed_fp": v["fp"],
+            "confirmed_tp": v["tp"],
+            "pinned": bool(v["tp"]),
             "reasons": reasons,
             "sample_evidence": sample_evidence,
-            "recommendation": (
-                f"Rule '{rule_id}' has been dismissed {count} times. "
-                "Consider lowering severity or adding an allowlist entry."
-            ),
+            "recommendation": recommendation,
         })
 
+    # Human-confirmed first, then by local dismissals.
+    results.sort(key=lambda r: (-r["confirmed_fp"], -r["dismissal_count"]))
     return results
 
 

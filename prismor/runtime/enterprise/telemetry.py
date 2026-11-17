@@ -252,7 +252,7 @@ def build_record(
         # Stable client-generated id → the control plane uses it as the row PK
         # with skip-duplicates, so a retried upload (network blip, pooler
         # connection reset mid-insert) can never create a duplicate event.
-        "event_id": _event_id(),
+        "event_id": finding.get("eventId") or _event_id(),
         # Replayed records (chatgpt_logs) say when the action happened.
         "ts": event.get("occurred_at") or _now_iso(),
         "session_id": extra.get("session_id"),
