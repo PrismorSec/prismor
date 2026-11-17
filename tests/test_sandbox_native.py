@@ -3,6 +3,9 @@
 import http.server
 import os
 import shutil
+import socket
+import socketserver
+import struct
 import sys
 import tempfile
 import threading
@@ -28,6 +31,27 @@ def _local_server():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Quiet)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
+
+
+class _Echo(socketserver.BaseRequestHandler):
+    def handle(self):
+        self.request.sendall(self.request.recv(1024))
+
+
+def _echo_server():
+    srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Echo)
+    srv.daemon_threads = True
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def _socks(proxy_port, host, port, cmd=1):
+    s = socket.create_connection(("127.0.0.1", proxy_port), timeout=5)
+    s.sendall(b"\x05\x01\x00")
+    assert s.recv(2) == b"\x05\x00"
+    h = host.encode()
+    s.sendall(bytes([5, cmd, 0, 3, len(h)]) + h + struct.pack("!H", port))
+    return s, s.recv(10)
 
 
 def _cfg(**kw):
@@ -82,6 +106,43 @@ class TestProfiles(unittest.TestCase):
         i = argv.index(os.path.join(self.real_ws, ".prismor"))
         self.assertEqual(argv[i - 1], "--ro-bind")
         self.assertIn("--unshare-net", argv)
+        self.assertIn("--unshare-pid", argv)
+
+
+class TestMissingProtected(unittest.TestCase):
+    def setUp(self):
+        self.ws = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, self.ws, True)
+
+    def test_git_hooks_watched_only_when_git_existed(self):
+        self.assertNotIn(str(self.ws / ".git/hooks"), sn.missing_protected(self.ws))
+        (self.ws / ".git").mkdir()
+        self.assertIn(str(self.ws / ".git/hooks"), sn.missing_protected(self.ws))
+        (self.ws / ".prismor").mkdir()
+        self.assertNotIn(str(self.ws / ".prismor"), sn.missing_protected(self.ws))
+
+    def test_revert_removes_created_and_skips_symlinked_parent(self):
+        watch = sn.missing_protected(self.ws)
+        (self.ws / ".prismor").mkdir()
+        (self.ws / ".prismor" / "policy.yaml").write_text("x", encoding="utf-8")
+        elsewhere = Path(os.path.realpath(tempfile.mkdtemp()))
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        (elsewhere / "settings.json").write_text("{}", encoding="utf-8")
+        (self.ws / ".claude").symlink_to(elsewhere)
+        self.assertEqual(sn.revert_created(watch), [str(self.ws / ".prismor")])
+        self.assertFalse((self.ws / ".prismor").exists())
+        self.assertTrue((elsewhere / "settings.json").exists())
+
+    def test_report_is_observe_mode_with_sandbox_finding(self):
+        with mock.patch("prismor.runtime.runtime.evaluate_tool_call") as ev, \
+                mock.patch("prismor.runtime.store.read_session_events", return_value=[{}, {}]), \
+                mock.patch("prismor.runtime.store.persist_runtime_findings") as persist:
+            sn.report_reverted(["/w/.prismor"], workspace=Path("/w"), agent="claude",
+                               session_id="s-1", command="evil")
+        self.assertEqual(ev.call_args.kwargs["mode"], "observe")
+        self.assertEqual(ev.call_args.kwargs["event"]["path"], "/w/.prismor")
+        finding = persist.call_args.args[2][0]
+        self.assertEqual((finding["ruleId"], persist.call_args.args[3]), ("sandbox-protected-write", 1))
 
 
 class TestEgressProxy(unittest.TestCase):
@@ -104,6 +165,38 @@ class TestEgressProxy(unittest.TestCase):
             opener.open(f"http://127.0.0.1:{other.server_address[1]}/", timeout=5)
         self.assertEqual(err.exception.code, 403)
         self.assertEqual([p for _, p in seen], [ok.server_address[1], other.server_address[1]])
+
+    def test_socks5_connect_is_screened_per_host(self):
+        ok, other = _echo_server(), _echo_server()
+        for srv in (ok, other):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        seen = []
+
+        def decide(host, port, scheme):
+            seen.append((host, port, scheme))
+            return port == ok.server_address[1]
+
+        proxy = sn.EgressProxy(decide)
+        self.addCleanup(proxy.close)
+        s, reply = _socks(proxy.address[1], "localhost", ok.server_address[1])
+        self.assertEqual(reply[:2], b"\x05\x00")
+        s.sendall(b"ping")
+        self.assertEqual(s.recv(4), b"ping")
+        s.close()
+        s, reply = _socks(proxy.address[1], "localhost", other.server_address[1])
+        self.assertEqual(reply[:2], b"\x05\x02")  # not allowed by ruleset
+        s.close()
+        s, reply = _socks(proxy.address[1], "localhost", ok.server_address[1], cmd=2)
+        self.assertEqual(reply[:2], b"\x05\x07")  # BIND unsupported, never screened
+        s.close()
+        self.assertEqual(seen, [("localhost", ok.server_address[1], "https"),
+                                ("localhost", other.server_address[1], "https")])
+
+    def test_child_env_points_all_proxy_at_socks(self):
+        env = sn._proxy_env(4242)
+        self.assertEqual(env["ALL_PROXY"], "socks5h://127.0.0.1:4242")
+        self.assertEqual(env["all_proxy"], env["ALL_PROXY"])
 
     def test_decider_fails_closed_in_enforce_when_evaluator_breaks(self):
         with mock.patch("prismor.runtime.runtime.evaluate_tool_call", side_effect=RuntimeError("x")):
@@ -174,6 +267,22 @@ class TestLiveSandbox(unittest.TestCase):
         # A tool that ignores the proxy cannot reach a non-loopback address.
         self.assertNotEqual(self.run_in("curl -s -m3 --noproxy '*' -o /dev/null http://192.0.2.1/",
                                         network="allowlist"), 0)
+
+    def test_missing_protected_path_cannot_be_created(self):
+        shutil.rmtree(self.ws / ".prismor")
+        with mock.patch.object(sn, "report_reverted") as rep:
+            self.run_in("mkdir -p .prismor && echo x > .prismor/policy.yaml")
+        self.assertFalse((self.ws / ".prismor").exists())
+        if sn.status()["engine"] == "bubblewrap":
+            self.assertEqual(rep.call_args.args[0], [os.path.join(os.path.realpath(self.ws), ".prismor")])
+
+    @unittest.skipUnless(shutil.which("git"), "git not installed")
+    def test_git_init_keeps_hooks_dir(self):
+        if sn.status()["engine"] != "bubblewrap":
+            self.skipTest("Seatbelt denies .git/hooks writes by path")
+        self.assertEqual(self.run_in("git init -q . && git -c user.email=a@b -c user.name=a "
+                                     "commit -q --allow-empty -m x"), 0)
+        self.assertTrue((self.ws / ".git" / "hooks").is_dir())
 
     def test_observe_mode_applies_no_kernel_limits(self):
         self.assertEqual(self.run_in(f"echo x > {self.outside}/obs.txt", mode="observe"), 0)
