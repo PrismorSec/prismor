@@ -3701,6 +3701,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         if args.policy_command == "edit":
             _policy_edit(workspace)
             return
+        if args.policy_command == "pack":
+            raise SystemExit(_policy_pack(args))
         if args.policy_command == "test":
             _policy_test(workspace, test_file=getattr(args, "file", None),
                          policy_file=getattr(args, "policy", None),
@@ -3710,13 +3712,14 @@ def main(argv: Optional[List[str]] = None) -> None:
         # No action given → print usage instead of the cryptic
         # "Unsupported command: policy" (the command IS supported; it needs an action).
         sys.stderr.write(
-            "Usage: prismor policy {init|validate|show|export|edit|test}\n"
+            "Usage: prismor policy {init|validate|show|export|edit|test|pack}\n"
             "  init      Write a starter .prismor/policy.yaml\n"
             "  validate  Check a policy file against the schema + floor\n"
             "  show      Print the effective policy for this workspace\n"
             "  export    Print the effective policy as JSON (for non-Python consumers)\n"
             "  edit      Open the policy in $EDITOR\n"
             "  test      Run policy-tests.yaml against the engine\n"
+            "  pack      Add, update or remove shared policy packs from GitHub\n"
         )
         raise SystemExit(2)
 
@@ -4879,6 +4882,22 @@ def build_parser() -> argparse.ArgumentParser:
     policy_test.add_argument("--filter", help="Only run tests whose name matches this pattern (* and ? wildcards; matrix rows are named 'test [principal]')")
     policy_test.add_argument("--json", action="store_true", help="Print results as JSON")
     policy_test.add_argument("--workspace", help="Workspace path")
+
+    policy_pack = policy_sub.add_parser("pack", help="Shared policy packs fetched from GitHub, pinned to a commit")
+    pack_sub = policy_pack.add_subparsers(dest="pack_command")
+    pack_add = pack_sub.add_parser("add", help="Install a pack from <owner>/<repo>[@<ref>]")
+    pack_add.add_argument("spec", help="<owner>/<repo>[@<tag|branch|sha>]")
+    pack_add.add_argument("--path", default="", help="Directory inside the repo that holds prismor-pack.yaml")
+    pack_add.add_argument("--key", help="Ed25519 public key (PEM) to verify SHA256SUMS.sig with; pinned for updates")
+    pack_add.add_argument("--require-signature", action="store_true", help="Refuse the pack unless it is signed by --key")
+    pack_sub.add_parser("list", help="List installed packs")
+    pack_update = pack_sub.add_parser("update", help="Re-resolve a pack's ref and show the rule-id diff before applying")
+    pack_update.add_argument("name", nargs="?", help="Pack name (default: every pack)")
+    pack_update.add_argument("--yes", action="store_true", help="Apply without asking")
+    pack_remove = pack_sub.add_parser("remove", help="Uninstall a pack")
+    pack_remove.add_argument("name")
+    pack_show = pack_sub.add_parser("show", help="Show a pack's lock entry and rules")
+    pack_show.add_argument("name")
 
     # ── mode (governance mode templates → policy.yaml) ─────────────────
     mode_parser = subparsers.add_parser(
@@ -6343,6 +6362,8 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add("fail", "policy", f"project policy is invalid, {_kept}: {_perr}")
         else:
             add("ok", "policy", f"{n_rules} rules loaded (default mode: {mode})")
+        for _pack_err in getattr(engine, "pack_errors", []) or []:
+            add("warn", "policy pack", _pack_err)
         from prismor.runtime.sinks import run_sink_hook
         for _lines in run_sink_hook("doctor", list(getattr(engine, "outputs", []) or [])):
             for _state, _check, _msg in _lines or []:
@@ -7308,6 +7329,15 @@ def _policy_show(workspace: Path) -> None:
     else:
         print(f"Project policy: (none — using defaults only)")
     print()
+    # Precedence, lowest first. A later layer wins on settings; packs and
+    # local layers can never weaken the floor, and the org layer is applied last.
+    print("Layers (lowest to highest): built-in defaults -> policy packs (add/tighten only)"
+          " -> user/system -> project -> org (signed) -> repo exemption")
+    if engine.packs_loaded or engine.pack_errors:
+        print(f"Policy packs: {', '.join(engine.packs_loaded) or '(none loaded)'}")
+        for err in engine.pack_errors:
+            print(_color(f"  warning: {err}", _YELLOW))
+    print()
 
     if engine.mcp_tool_repeat_limits or engine.mcp_tool_repeat_limits_error:
         print(f"MCP identical-call limits ({engine.mcp_tool_repeat_limits_source}, per session, rolling 60s):")
@@ -7329,6 +7359,90 @@ def _policy_show(workspace: Path) -> None:
         for al in engine.allowlists:
             targets = ", ".join(al.rule_ids) if "*" not in al.rule_ids else "all rules"
             print(f"  {al.id}: {targets}" + (f"  — {al.reason}" if al.reason else ""))
+
+
+def _policy_pack(args) -> int:
+    """`prismor policy pack {add|list|update|remove|show}`. Agents reach these
+    only inside an unlock window (prismor-self-edit)."""
+    from prismor.runtime import policy_packs as pp
+    cmd = getattr(args, "pack_command", None)
+    lock = pp.read_lock()["packs"]
+    try:
+        if cmd == "add":
+            p = pp.prepare(args.spec, subdir=args.path, key_path=args.key,
+                           require_signature=args.require_signature)
+            if p["name"] in lock:
+                sys.stderr.write(f"error: pack '{p['name']}' is installed; use `prismor policy pack update {p['name']}`\n")
+                return 1
+            e = pp.commit(p)
+            print(f"Added pack {e['name']} {e['version']} from {e['repo']}@{e['sha'][:12]}"
+                  f" ({len(p['rule_ids'])} rules, {'signed' if e['signed'] else 'unsigned'})")
+            return 0
+        if cmd == "list":
+            if not lock:
+                print("No policy packs installed.")
+            _, errors = pp.load_all()
+            for name, e in sorted(lock.items()):
+                bad = any(f"'{name}'" in err for err in errors)
+                state = "TAMPERED" if bad else ("signed" if e.get("signed") else "unsigned")
+                print(f"  {name} {e.get('version')}  {e.get('repo')}@{str(e.get('sha'))[:12]}  [{state}]")
+            return 0
+        if cmd == "show":
+            e = lock.get(args.name)
+            if e is None:
+                sys.stderr.write(f"error: no pack named '{args.name}'\n")
+                return 1
+            for k in ("repo", "ref", "path", "sha", "version", "description", "fetched_at", "signed"):
+                print(f"{k + ':':13}{e.get(k)}")
+            print("files:")
+            for f, h in sorted((e.get("files") or {}).items()):
+                print(f"  {h}  {f}")
+            print("rules:        " + (", ".join(pp.rule_ids(args.name)) or "(none loadable)"))
+            return 0
+        if cmd == "remove":
+            if not pp.remove(args.name):
+                sys.stderr.write(f"error: no pack named '{args.name}'\n")
+                return 1
+            print(f"Removed pack {args.name}")
+            return 0
+        if cmd == "update":
+            names = [args.name] if args.name else sorted(lock)
+            for name in names:
+                e = lock.get(name)
+                if e is None:
+                    sys.stderr.write(f"error: no pack named '{name}'\n")
+                    return 1
+                spec = e["repo"] + (f"@{e['ref']}" if e.get("ref") else "")
+                p = pp.prepare(spec, subdir=e.get("path") or "", pinned_key=e.get("key_pem"),
+                               require_signature=bool(e.get("require_signature")))
+                if p["name"] != name:
+                    sys.stderr.write(f"error: {spec} now ships pack '{p['name']}', not '{name}'\n")
+                    return 1
+                old, new = set(pp.rule_ids(name)), set(p["rule_ids"])
+                print(f"{name}: {str(e['sha'])[:12]} -> {p['sha'][:12]}")
+                for rid in sorted(new - old):
+                    print(f"  + {rid}")
+                for rid in sorted(old - new):
+                    print(f"  - {rid}")
+                if p["sha"] == e["sha"] and old == new:
+                    print("  (up to date)")
+                    continue
+                if not args.yes:
+                    try:
+                        answer = input("Apply? [y/N] ")
+                    except EOFError:
+                        answer = ""
+                    if answer.strip().lower() not in ("y", "yes"):
+                        print("  skipped")
+                        continue
+                pp.commit(p)
+                print("  applied")
+            return 0
+    except (pp.PackError, OSError) as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    sys.stderr.write("Usage: prismor policy pack {add|list|update|remove|show}\n")
+    return 2
 
 
 def _policy_export(workspace: Path, output: Optional[str] = None) -> None:
