@@ -2771,8 +2771,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 and event.get("type") == "shell"
                 and _sandbox_cfg.get("enabled")
             ):
-                _sandbox_status = _sandbox.docker_status()
-                _sandbox_ready = bool(_sandbox_status.get("cli_found") and _sandbox_status.get("server_reachable"))
+                from prismor.runtime.hooks import payload_session_id as _hooks_sid
+                _sandbox_status = _sandbox.backend_status(_sandbox_cfg)
+                _sandbox_ready = bool(_sandbox_status.get("ready"))
+                _sandbox_label = "Docker" if _sandbox_cfg.get("backend") == "docker" else "The native sandbox"
                 if not _sandbox_ready:
                     # Containment is a layer on top of policy, not the policy.
                     # Every rule, egress check and tag rule has already run
@@ -2782,10 +2784,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                     # shell command the moment Docker stopped, which is how a
                     # team ends up uninstalling Prismor to get through the
                     # afternoon. Skip the sandbox, say so loudly, keep screening.
-                    reason = _sandbox_status.get("error") or "Docker is not reachable"
+                    reason = _sandbox_status.get("error") or "backend is not reachable"
                     sys.stderr.write(
                         _color("[prismor] ", _YELLOW)
-                        + f"NOTE: Docker is not available ({reason}) — the sandbox "
+                        + f"NOTE: {_sandbox_label} is not available ({reason}) — the sandbox "
                           f"is skipped for this call. Policy still applies.\n"
                     )
                 else:
@@ -2793,7 +2795,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                         payload=_hook_caps.transform_payload(args.agent, payload, event),
                         workspace=workspace,
                         mode=str(_sandbox_cfg.get("mode", "observe")),
-                    ), reason="Prismor sandbox: run inside the Docker sandbox")
+                        agent=str(args.agent or ""),
+                        session_id=str(_hooks_sid(args.agent, payload, workspace) or ""),
+                    ), reason=f"Prismor sandbox: run inside the {_sandbox_cfg.get('backend')} sandbox")
                     if update:
                         sys.stdout.write(json.dumps(update) + "\n")
         except SystemExit:
@@ -2825,11 +2829,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Network:', _GREEN)}      {report['network']}")
             if report.get("ring") is not None:
                 print(f"  {_color('Ring:', _GREEN)}        {report['ring']} ({report.get('ring_label')})")
-            docker = report["docker"]
-            if docker.get("cli_found") and docker.get("server_reachable"):
-                print(f"  {_color('Docker:', _GREEN)}       available ({docker.get('server_version', 'unknown')})")
+            bst = report["backend_status"]
+            if report["backend"] == "docker":
+                label = f"available ({bst.get('server_version', 'unknown')})"
             else:
-                print(f"  {_color('Docker:', _YELLOW)}       unavailable — {docker.get('error') or 'not reachable'}")
+                label = f"available ({bst.get('engine')})"
+            if bst.get("ready"):
+                print(f"  {_color('Ready:', _GREEN)}        {label}")
+            else:
+                print(f"  {_color('Ready:', _YELLOW)}        unavailable — {bst.get('error') or 'not reachable'}")
             print()
             return
 
@@ -2837,18 +2845,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
-            path = _sandbox.set_enabled(workspace, want)
+            backend = getattr(args, "backend", None) if want else None
+            path = _sandbox.set_enabled(workspace, want, backend=backend)
             state = _color("on", _GREEN) if want else _color("off", _YELLOW)
             print(f"sandbox {state}  ({path})")
             if want:
-                report = _sandbox.status_report(
-                    {**cfg, "enabled": True}
-                )
-                docker = report["docker"]
-                if not (docker.get("cli_found") and docker.get("server_reachable")):
+                bst = _sandbox.backend_status({**cfg, **({"backend": backend} if backend else {})})
+                if not bst.get("ready"):
                     print(_color(
-                        "Docker is not reachable here — commands will run "
-                        "unsandboxed until it is.", _YELLOW))
+                        f"The sandbox backend is not ready here ({bst.get('error')}) — "
+                        "commands will run unsandboxed until it is.", _YELLOW))
             else:
                 print(_color(
                     "commands now run on the host. Policy screening, egress "
@@ -2863,12 +2869,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "  Run a command in the sandbox:   prismor sandbox run -- <command>\n"
                     "  Pre-check it against policy:    prismor check '<command>'\n")
                 raise SystemExit(2)
-            report = _sandbox.status_report(cfg)
-            ready = report["docker"].get("cli_found") and report["docker"].get("server_reachable")
-            if ready:
-                print(_color("PASS", _GREEN) + "  Docker sandbox backend is available")
+            bst = _sandbox.backend_status(cfg)
+            if bst.get("ready"):
+                print(_color("PASS", _GREEN) + f"  {cfg['backend']} sandbox backend is available")
                 return
-            print(_color("FAIL", _RED) + f"  Docker sandbox backend unavailable: {report['docker'].get('error')}")
+            print(_color("FAIL", _RED) + f"  {cfg['backend']} sandbox backend unavailable: {bst.get('error')}")
             raise SystemExit(1)
 
         if subcmd == "run":
@@ -2890,7 +2895,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 raise SystemExit(1)
             if getattr(args, "mode", None):
                 cfg["mode"] = args.mode
-            exit_code = _sandbox.run(cmd, workspace=workspace, config=cfg)
+            exit_code = _sandbox.run(cmd, workspace=workspace, config=cfg,
+                                     agent=getattr(args, "agent", None) or "",
+                                     session_id=getattr(args, "session", None) or "")
             raise SystemExit(exit_code)
 
         raise SystemExit(f"Unsupported sandbox command: {subcmd}")
@@ -4499,22 +4506,24 @@ def build_parser() -> argparse.ArgumentParser:
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
-        help="Docker-backed sandbox for allowed shell commands",
-        description="Docker-backed sandbox for allowed shell commands",
+        help="Sandbox for allowed shell commands (Docker or native)",
+        description="Sandbox for allowed shell commands (Docker or native)",
     )
     sandbox_parser.add_argument("--workspace", help="Workspace path")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_command")
 
-    sandbox_status = sandbox_sub.add_parser("status", help="Show sandbox configuration and Docker readiness")
+    sandbox_status = sandbox_sub.add_parser("status", help="Show sandbox configuration and backend readiness")
     sandbox_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
-    sandbox_check = sandbox_sub.add_parser("check", help="Check whether the Docker sandbox backend is available")
+    sandbox_check = sandbox_sub.add_parser("check", help="Check whether the configured sandbox backend is available")
     # Accepted only to answer it: `sandbox check "cmd"` reads naturally, and
     # argparse's reply to a stray argument was the whole top-level usage.
     sandbox_check.add_argument("stray", nargs="*", help=argparse.SUPPRESS)
 
     sandbox_on = sandbox_sub.add_parser("on", help="Turn the sandbox on for this workspace")
     sandbox_on.add_argument("--workspace", help="Workspace path")
+    sandbox_on.add_argument("--backend", choices=["docker", "native"],
+                            help="docker (container) or native (Seatbelt on macOS, bubblewrap on Linux)")
 
     sandbox_off = sandbox_sub.add_parser("off", help="Turn the sandbox off — commands run on the host")
     sandbox_off.add_argument("--workspace", help="Workspace path")
@@ -4525,6 +4534,8 @@ def build_parser() -> argparse.ArgumentParser:
     sandbox_run.add_argument("--encoded", help="Base64url-encoded command string (used by hooks)")
     sandbox_run.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --")
     sandbox_run.add_argument("--command-string", help=argparse.SUPPRESS)
+    sandbox_run.add_argument("--agent", help=argparse.SUPPRESS)
+    sandbox_run.add_argument("--session", help=argparse.SUPPRESS)
 
     rate_parser = subparsers.add_parser("rate", help="Inspect per-identity rolling-minute quotas")
     rate_subs = rate_parser.add_subparsers(dest="rate_command")
