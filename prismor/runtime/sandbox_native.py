@@ -44,7 +44,9 @@ from urllib.parse import urlsplit
 SECRET_PATHS = [
     "~/.ssh", "~/.aws", "~/.gnupg", "~/.azure", "~/.kube", "~/.config/gcloud",
     "~/.docker/config.json", "~/.netrc", "~/.git-credentials", "~/.npmrc",
-    "~/.pypirc", "~/.prismor/secrets",
+    "~/.pypirc", "~/.prismor/secrets", "~/.config/gh", "~/.config/hub", "~/.config/op",
+    "~/.claude/.credentials.json", "~/.vault-token", "~/.terraform.d/credentials.tfrc.json",
+    "~/.cargo/credentials.toml", "~/.config/containers/auth.json",
 ]
 # Writable in enforce mode besides the workspace and temp dirs.
 CACHE_PATHS = ["~/.cache", "~/Library/Caches", "~/.npm", "~/.cargo/registry", "~/.gradle/caches"]
@@ -54,11 +56,43 @@ CACHE_PATHS = ["~/.cache", "~/Library/Caches", "~/.npm", "~/.cargo/registry", "~
 PROTECTED_IN_WORKSPACE = [
     ".prismor", ".git/hooks", ".claude/settings.json", ".claude/settings.local.json",
     ".codex", ".cursor/hooks.json", ".github/hooks",
+    # core.hooksPath / core.fsmonitor in .git/config moves hook execution to an
+    # unprotected dir; .mcp.json and .claude/hooks start code in the next session.
+    ".git/config", ".mcp.json", ".claude/hooks",
 ]
+
+
+def _parents(ws: str, rel_paths: List[str]) -> List[str]:
+    """Dirs between the workspace and each protected path (``.git``, ``.claude``).
+
+    Renaming one of them moves the protected path away from the name the
+    profile guards (``mv .git .g; edit .g/hooks; mv .g .git``), so they may
+    not be renamed or removed themselves. Writes inside them stay allowed.
+    """
+    out: List[str] = []
+    for rel in rel_paths:
+        parts = rel.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            out.append(os.path.join(ws, *parts[:i]))
+    return list(dict.fromkeys(out))
 
 
 def _real(p: str) -> str:
     return os.path.realpath(os.path.expanduser(p))
+
+
+def _userns_hint() -> str:
+    """Ubuntu 23.10+ blocks unprivileged user namespaces unless AppArmor allows bwrap."""
+    try:
+        restricted = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        return ""
+    if not restricted:
+        return ""
+    return ("; AppArmor blocks unprivileged user namespaces here "
+            "(kernel.apparmor_restrict_unprivileged_userns=1). An admin must add an AppArmor "
+            "profile that grants `userns` to /usr/bin/bwrap (see Ubuntu's notes on unprivileged "
+            "user namespace restrictions)")
 
 
 def status() -> Dict[str, Any]:
@@ -79,7 +113,7 @@ def status() -> Dict[str, Any]:
             return {"backend": "native", "engine": "bubblewrap", "ready": False, "error": str(exc)}
         if probe.returncode != 0:
             return {"backend": "native", "engine": "bubblewrap", "ready": False,
-                    "error": (probe.stderr or "bwrap failed").strip()}
+                    "error": (probe.stderr or "bwrap failed").strip() + _userns_hint()}
         return {"backend": "native", "engine": "bubblewrap", "ready": True}
     return {"backend": "native", "engine": None, "ready": False,
             "error": f"no native sandbox on {system}"}
@@ -95,9 +129,15 @@ def _paths(workspace: Path, cfg: Dict[str, Any]) -> Dict[str, List[str]]:
     writable = [] if cfg.get("workspace_mount") == "ro" else [ws]
     writable += [_real("/tmp"), _real(tempfile.gettempdir())]  # nosec B108 - granting the sandbox the host temp dirs, not creating a temp file
     writable += [_real(p) for p in CACHE_PATHS + list(cfg.get("allow_write") or [])]
-    protected = [os.path.join(ws, rel) for rel in PROTECTED_IN_WORKSPACE]
+    # ponytail: no .git yet means a command may `git init` here, which has to
+    # write .git/config and .git/hooks, so .git/* is guarded only once the repo
+    # exists. A repo created inside the run can carry hooks; pre-creating the
+    # guard would need git's own init, add when that matters.
+    rels = [r for r in PROTECTED_IN_WORKSPACE
+            if not r.startswith(".git/") or os.path.isdir(os.path.join(ws, ".git"))]
+    protected = [os.path.join(ws, rel) for rel in rels]
     return {"ws": [ws], "deny_read": deny_read, "writable": list(dict.fromkeys(writable)),
-            "protected": protected}
+            "protected": protected, "parents": _parents(ws, rels)}
 
 
 def _sb(path: str) -> str:
@@ -113,6 +153,9 @@ def seatbelt_profile(workspace: Path, cfg: Dict[str, Any], *, restrict_network: 
              + ' (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper")'
              + ' (regex #"^/dev/tty") (subpath "/dev/fd"))']
     lines.append("(deny file-write* " + " ".join(f"(subpath {_sb(x)})" for x in p["protected"]) + ")")
+    # unlink covers rename and rmdir of the dir node (.git, .claude, ...);
+    # creating it (git init) and writing inside it stay allowed.
+    lines.append("(deny file-write-unlink " + " ".join(f"(literal {_sb(x)})" for x in p["parents"]) + ")")
     if p["deny_read"]:
         lines.append("(deny file-read* " + " ".join(f"(subpath {_sb(x)})" for x in p["deny_read"]) + ")")
     if restrict_network:
@@ -127,13 +170,19 @@ def seatbelt_profile(workspace: Path, cfg: Dict[str, Any], *, restrict_network: 
 def bwrap_argv(workspace: Path, cfg: Dict[str, Any], *, unshare_net: bool,
                extra_binds: List[str] = ()) -> List[str]:
     p = _paths(workspace, cfg)
-    # Own pid namespace: the command cannot signal the `sandbox run` parent
-    # and skip the post-run protected-path check.
-    argv = [shutil.which("bwrap") or "bwrap", "--die-with-parent", "--unshare-pid",
+    # --unshare-pid: no /proc/<pid>/environ of the user's other processes, no
+    # signals to them. --new-session: no TIOCSTI typing into the agent's tty.
+    argv = [shutil.which("bwrap") or "bwrap", "--die-with-parent", "--new-session", "--unshare-pid",
             "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
     for w in p["writable"] + list(extra_binds):
         if os.path.exists(w):
             argv += ["--bind", w, w]
+    # A mount point cannot be renamed (EBUSY), so binding .git/.claude onto
+    # themselves stops `mv .git .g` from moving the ro-bound hooks aside.
+    bind = "--ro-bind" if cfg.get("workspace_mount") == "ro" else "--bind"
+    for d in p["parents"]:
+        if os.path.isdir(d):
+            argv += [bind, d, d]
     # bwrap can only re-mount paths that exist; missing ones are handled by
     # missing_protected() / revert_created() around the run.
     for x in p["protected"]:
@@ -450,7 +499,9 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
     timeout = (cfg.get("resource_limits") or {}).get("timeout_seconds") or None
     decide = make_decider(workspace=workspace, agent=agent, session_id=session_id,
                           mode=mode, command=command)
-    shell = ["/bin/sh", "-c", command]
+    # Agents' Bash tools run bash; /bin/sh is dash on Debian/Ubuntu, where
+    # `[[ ]]` and `source` fail.
+    shell = [shutil.which("bash") or "/bin/sh", "-c", command]
     env = dict(os.environ)
     proxy: Optional[EgressProxy] = None
     watch = missing_protected(workspace) if enforce and st["engine"] == "bubblewrap" else []

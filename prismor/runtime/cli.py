@@ -2825,7 +2825,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Enabled:', _GREEN)}      {report['enabled']}")
             print(f"  {_color('Mode:', _GREEN)}         {report['mode']}")
             print(f"  {_color('Backend:', _GREEN)}      {report['backend']}")
-            print(f"  {_color('Image:', _GREEN)}        {report['image']}")
+            if report['backend'] == "docker":
+                print(f"  {_color('Image:', _GREEN)}        {report['image']}")
             print(f"  {_color('Network:', _GREEN)}      {report['network']}")
             if report.get("ring") is not None:
                 print(f"  {_color('Ring:', _GREEN)}        {report['ring']} ({report.get('ring_label')})")
@@ -2855,6 +2856,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(_color(
                         f"The sandbox backend is not ready here ({bst.get('error')}) — "
                         "commands will run unsandboxed until it is.", _YELLOW))
+                if _sandbox.effective_config(cfg).get("mode") != "enforce":
+                    print(_color(
+                        "mode is observe: commands are wrapped but get no file or network "
+                        "limits. Set settings.sandbox.mode: enforce to apply them.", _DIM))
             else:
                 print(_color(
                     "commands now run on the host. Policy screening, egress "
@@ -2889,7 +2894,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 pieces = getattr(args, "sandbox_args", None) or []
                 if pieces and pieces[0] == "--":
                     pieces = pieces[1:]
-                cmd = " ".join(pieces)
+                # One argument is a whole command string; several are argv words.
+                import shlex as _shlex
+                cmd = pieces[0] if len(pieces) == 1 else _shlex.join(pieces)
             if not cmd:
                 sys.stderr.write("error: command required (use `prismor sandbox run -- <cmd>`)\n")
                 raise SystemExit(1)
