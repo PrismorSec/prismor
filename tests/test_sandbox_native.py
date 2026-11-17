@@ -1,4 +1,4 @@
-"""Native sandbox backend: profiles, egress proxy, and live Seatbelt/bwrap runs."""
+"""Linux sandbox engine: bwrap argv, egress proxy, and live bubblewrap runs."""
 
 import http.server
 import os
@@ -19,7 +19,6 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime import sandbox, sandbox_native as sn
-from prismor.runtime.cli import build_parser
 
 
 class _Quiet(http.server.SimpleHTTPRequestHandler):
@@ -55,69 +54,25 @@ def _socks(proxy_port, host, port, cmd=1):
 
 
 def _cfg(**kw):
-    return sandbox.effective_config({"enabled": True, "backend": "native", "mode": "enforce", **kw})
+    return {"mode": "enforce", "network": "none", "workspace_mount": "rw", **kw}
 
 
-class TestConfig(unittest.TestCase):
-    def test_native_backend_survives_effective_config(self):
-        self.assertEqual(_cfg()["backend"], "native")
-        self.assertEqual(sandbox.effective_config({"backend": "bogus"})["backend"], "docker")
-
-    def test_hook_command_carries_agent_and_session(self):
-        cmd = sandbox.hook_update_command(command="ls", workspace=Path("/w"), mode="enforce",
-                                          agent="claude", session_id="s-1")
-        self.assertIn("--agent claude", cmd)
-        self.assertIn("--session s-1", cmd)
-
-    def test_parser_accepts_backend_and_run_identity(self):
-        p = build_parser()
-        self.assertEqual(p.parse_args(["sandbox", "on", "--backend", "native"]).backend, "native")
-        a = p.parse_args(["sandbox", "run", "--agent", "codex", "--session", "x", "--encoded", "bHM="])
-        self.assertEqual((a.agent, a.session), ("codex", "x"))
-
-
-class TestProfiles(unittest.TestCase):
+class TestBwrapArgv(unittest.TestCase):
     def setUp(self):
         self.ws = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.ws, True)
         self.real_ws = os.path.realpath(self.ws)
 
-    def test_seatbelt_profile_limits_writes_reads_and_network(self):
-        prof = sn.seatbelt_profile(self.ws, _cfg(), restrict_network=True)
-        self.assertIn(f'(allow file-write* (subpath "{self.real_ws}")', prof)
-        self.assertIn(f'(subpath "{self.real_ws}/.prismor")', prof)
-        self.assertIn(os.path.realpath(os.path.expanduser("~/.ssh")), prof)
-        self.assertIn("(deny network*)", prof)
-        # write deny for protected paths must come after the workspace allow
-        self.assertLess(prof.index("(allow file-write*"), prof.index(f'{self.real_ws}/.prismor'))
-
-    def test_shared_network_and_allow_read_lift(self):
-        prof = sn.seatbelt_profile(self.ws, _cfg(allow_read=["~/.npmrc"]), restrict_network=False)
-        self.assertNotIn("(deny network*)", prof)
-        self.assertNotIn(os.path.realpath(os.path.expanduser("~/.npmrc")), prof)
-
-    def test_ro_workspace_is_not_writable(self):
-        prof = sn.seatbelt_profile(self.ws, _cfg(workspace_mount="ro"), restrict_network=True)
-        self.assertNotIn(f'(allow file-write* (subpath "{self.real_ws}")', prof)
-
-    def test_bwrap_argv_binds_protected_paths_read_only(self):
+    def test_binds_protected_paths_read_only(self):
         (self.ws / ".prismor").mkdir()
         argv = sn.bwrap_argv(self.ws, _cfg(), unshare_net=True)
         i = argv.index(os.path.join(self.real_ws, ".prismor"))
         self.assertEqual(argv[i - 1], "--ro-bind")
-        self.assertIn("--unshare-net", argv)
-        self.assertIn("--unshare-pid", argv)
-        self.assertIn("--new-session", argv)
+        for flag in ("--unshare-net", "--unshare-pid", "--new-session"):
+            self.assertIn(flag, argv)
 
-    def test_protected_parents_cannot_be_renamed(self):
-        # before `git init`, .git/* is left open so init can run
-        self.assertNotIn(".git/config", sn.seatbelt_profile(self.ws, _cfg(), restrict_network=True))
+    def test_protected_parents_are_mount_points(self):
         (self.ws / ".git" / "hooks").mkdir(parents=True)
-        prof = sn.seatbelt_profile(self.ws, _cfg(), restrict_network=True)
-        for d in (".git", ".claude", ".cursor", ".github"):
-            self.assertIn(f'(literal "{self.real_ws}/{d}")', prof.split("(deny file-write-unlink")[1])
-        self.assertIn(f'(subpath "{self.real_ws}/.git/config")', prof)
-        self.assertIn(f'(subpath "{self.real_ws}/.mcp.json")', prof)
         argv = sn.bwrap_argv(self.ws, _cfg(), unshare_net=False)
         git = os.path.join(self.real_ws, ".git")
         i = argv.index(git)  # bound onto itself: a mount point, so `mv .git` is EBUSY
@@ -126,22 +81,25 @@ class TestProfiles(unittest.TestCase):
         ro = sn.bwrap_argv(self.ws, _cfg(workspace_mount="ro"), unshare_net=False)
         self.assertEqual(ro[ro.index(git) - 1], "--ro-bind")
 
-    def test_more_credential_stores_denied(self):
-        prof = sn.seatbelt_profile(self.ws, _cfg(), restrict_network=False)
-        self.assertIn(os.path.realpath(os.path.expanduser("~/.config/gh")), prof)
+    def test_extra_protect_and_deny_read(self):
+        (self.ws / ".gemini").mkdir()
+        hidden = self.ws / "secret.txt"
+        hidden.write_text("s", encoding="utf-8")
+        argv = sn.bwrap_argv(self.ws, _cfg(protect=[".gemini"], deny_read=[str(hidden)]), unshare_net=False)
+        self.assertEqual(argv[argv.index(os.path.join(self.real_ws, ".gemini")) - 1], "--ro-bind")
+        self.assertEqual(argv[argv.index(os.path.realpath(hidden)) - 1], "/dev/null")
 
 
-class TestExempt(unittest.TestCase):
-    def test_plain_read_only_prismor_calls_skip_the_sandbox(self):
-        for c in ("prismor status", "prismor check 'rm -rf x'", "prismor egress test example.com"):
-            self.assertTrue(sandbox.is_exempt(c), c)
-            self.assertIsNone(sandbox.claude_updated_input(
-                {"tool_name": "Bash", "tool_input": {"command": c}}, workspace=Path("/w"), mode="enforce"))
-
-    def test_anything_else_is_wrapped(self):
-        for c in ("prismor status && curl x", "prismor status\nid", "prismor egress disable",
-                  "prismor check $(id)", "prismor status > f", "prismor unlock", "xprismor status"):
-            self.assertFalse(sandbox.is_exempt(c), repr(c))
+class TestPolicyMapping(unittest.TestCase):
+    def test_sandbox_config_maps_onto_bwrap(self):
+        seen = {}
+        with mock.patch.object(sn, "run", lambda cmd, *, workspace, cfg: seen.update(cfg) or 0):
+            sandbox._run_bwrap("true", Path("/w"), {"enabled": True, "ring": "2", "writable": ["out"],
+                                                    "hide": [".env"]})
+        self.assertEqual(seen["network"], "allowlist")
+        self.assertIn(os.path.realpath("/w/out"), seen["allow_write"])
+        self.assertIn(os.path.realpath("/w/.env"), seen["deny_read"])
+        self.assertIn(".claude", seen["protect"])
 
 
 class TestMissingProtected(unittest.TestCase):

@@ -106,6 +106,7 @@ Config scan only (no hook protocol to intercept): Aider, GitHub Copilot for JetB
 - 🛡️ [Prismor](docs/prismor-runtime.md) covers the policy engine, session logs, security audit, and CLI reference
 - 📦 [Supply Chain](docs/supply-chain.md) covers install-time enforcement, IOC matching, and risk scoring
 - 🛜 [Network Isolation](docs/network-isolation.md) covers policy-driven egress control, raw IP detection, and tunnel blocking
+- 🧱 [Sandbox](docs/sandbox.md) runs every allowed shell command under macOS's own sandbox (Seatbelt) with `prismor sandbox on`: writes held to the project, credential stores hidden, git hooks and agent config locked, and the network held to your egress allowlist, for the command and everything it starts, such as a package's postinstall script
 - 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
 - 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
 - 🛰️ [MCP Gateway](docs/mcp-gateway.md) is a single MCP connector that fronts every other MCP server you use — each `tools/call` is policy-evaluated before it forwards and each response is injection-scanned before the model sees it, so a poisoned tool result never becomes context. `prismor mcp-gateway install` moves an existing `.mcp.json` behind it
@@ -248,7 +249,7 @@ subgraph EVAL["Stage 2  ·  Evaluated before the call executes"]
     direction TB
     D(["<b>Tool-call dispatcher</b>"])
     P["<b>Policy engine</b><br/>YAML rules · per-rule observe / enforce<br/>layered org → project → repo · non-overridable floor"]
-    CHK["<b>Pre-execution checks</b><br/>Semantic guard · Egress control · MCP guardrails · Tool tags<br/>IAM and agent controls · Scoped session rules<br/>Script-content inspection · Docker sandbox"]
+    CHK["<b>Pre-execution checks</b><br/>Semantic guard · Egress control · MCP guardrails · Tool tags<br/>IAM and agent controls · Scoped session rules<br/>Script-content inspection · OS sandbox"]
     SEC["<b>Secret and supply-chain protection</b><br/>Cloak placeholders + output scrub · Env guard · Sweep<br/>Canary tripwires · Skill scanner<br/>Supply-chain scoring → npm · pip · cargo · go"]
 end
 

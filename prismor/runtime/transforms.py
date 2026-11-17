@@ -16,7 +16,7 @@ denies.
 Two transforms ship today; both generalize behavior that already existed as
 one-off paths:
 
-  - ``sandbox`` — wrap a Bash command into the Docker sandbox runner
+  - ``sandbox`` — wrap a Bash command into the Prismor sandbox runner
     (reuses :func:`prismor.runtime.sandbox.claude_updated_input`).
   - ``cloak``   — secret substitution; applied out-of-band by the decloak hook,
     so the inline rewrite is a no-op placeholder registered for policy symmetry.
@@ -82,11 +82,11 @@ def apply_transform(
 
 @register("sandbox")
 def _sandbox_transform(*, payload, workspace, mode):
-    """Rewrite a Bash command to run inside the Docker sandbox."""
+    """Rewrite a Bash command to run under the Prismor sandbox."""
     from prismor.runtime import sandbox as _sandbox
 
     return _sandbox.claude_updated_input(
-        payload=payload, workspace=Path(workspace), mode=mode
+        payload, root=_sandbox.project_root(payload, Path(workspace))
     )
 
 

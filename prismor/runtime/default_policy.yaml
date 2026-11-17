@@ -128,29 +128,14 @@ settings:
   # moving these entries to `egress.allow` with `default: deny`.
   egress_allowlist: []
 
-  # Docker-backed shell sandboxing. Disabled by default so existing installs
-  # do not change behavior until an operator opts in. When enabled for Claude
-  # Code, Prismor evaluates the original Bash command first, then rewrites the
-  # allowed command to run through `immunity sandbox run`.
+  # OS sandbox for allowed shell commands (Seatbelt, macOS only for now). Off
+  # by default so existing installs do not change behavior until an
+  # operator runs `prismor sandbox on`. Prismor judges the original command
+  # first; allowed commands then run confined. See docs/sandbox.md.
   sandbox:
     enabled: false
-    backend: docker
-    mode: observe
-    image: python:3.12-slim
-    workdir: /workspace
-    network: none
-    workspace_mount: rw
-    read_only_root: true
-    tmpfs:
-      - /tmp:noexec,nosuid,size=256m
-    env_allowlist:
-      - NO_COLOR
-      - TERM
-    resource_limits:
-      cpus: "1.0"
-      memory: 1g
-      pids_limit: 256
-      timeout_seconds: 300
+    mode: enforce
+    ring: "2"     # workspace-write, network through settings.egress
 
   # Action for MCP remote-transport static findings raised by `prismor scan`:
   # cleartext transport (http://), raw-IP endpoints, endpoints not on the

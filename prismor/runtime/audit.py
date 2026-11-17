@@ -8,7 +8,7 @@ Performs a single-shot check across all Prismor subsystems:
   5. Feed signature        — Ed25519 signature verification
   6. Egress allowlist      — is network lockdown configured?
   7. Network isolation     — are network rules enabled?
-  8. Sandbox readiness     — is Docker sandboxing configured and available?
+  8. Sandbox readiness     — is the OS sandbox on, and can it start here?
 
 Each check returns findings with a severity, a human-readable message,
 and an optional auto-fix function for ``prismor audit --fix``.
@@ -501,7 +501,7 @@ def _check_network_rules(workspace: Path) -> List[AuditFinding]:
 
 
 def _check_sandbox(workspace: Path) -> List[AuditFinding]:
-    """Check Docker sandbox configuration and backend readiness."""
+    """Check the Prismor sandbox's configuration and whether its OS engine can start."""
     findings: List[AuditFinding] = []
 
     try:
@@ -517,69 +517,30 @@ def _check_sandbox(workspace: Path) -> List[AuditFinding]:
     engine = PolicyEngine(workspace=workspace)
     cfg = sandbox_mod.effective_config(getattr(engine, "sandbox_config", {}))
 
+    def _add(severity: str, message: str) -> None:
+        findings.append(AuditFinding(severity=severity, category="sandbox", message=message))
+
     if not cfg.get("enabled"):
-        findings.append(AuditFinding(
-            severity="LOW",
-            category="sandbox",
-            message="Docker sandboxing is disabled — Bash commands run on the host after policy checks",
-        ))
+        _add("LOW", "Prismor sandbox is off — allowed shell commands run unconfined (prismor sandbox on)")
         return findings
 
-    status = sandbox_mod.docker_status()
-    if not status.get("cli_found"):
-        findings.append(AuditFinding(
-            severity="HIGH" if cfg.get("mode") == "enforce" else "MEDIUM",
-            category="sandbox",
-            message="Docker sandboxing is enabled but the docker CLI was not found",
-        ))
-    elif not status.get("server_reachable"):
-        findings.append(AuditFinding(
-            severity="HIGH" if cfg.get("mode") == "enforce" else "MEDIUM",
-            category="sandbox",
-            message=f"Docker sandboxing is enabled but Docker is not reachable: {status.get('error') or 'unknown error'}",
-        ))
+    status = sandbox_mod.backend_status()
+    if not status.get("available"):
+        _add("HIGH" if cfg.get("mode") == "enforce" else "MEDIUM",
+             f"Prismor sandbox is on but cannot start here: {status.get('error') or 'unknown error'}")
+    elif cfg.get("mode") != "enforce":
+        _add("MEDIUM", "Prismor sandbox is in observe mode — commands are not confined")
     else:
-        findings.append(AuditFinding(
-            severity="PASS",
-            category="sandbox",
-            message=f"Docker sandbox backend available (image: {cfg.get('image')})",
-        ))
+        _add("PASS", f"Prismor sandbox enforcing ({status.get('engine')})")
 
-    if cfg.get("network") in {"host", "bridge"}:
-        findings.append(AuditFinding(
-            severity="MEDIUM",
-            category="sandbox",
-            message=f"Sandbox network mode is {cfg.get('network')} — use 'none' for strongest exfiltration protection",
-        ))
+    network = cfg.get("network")
+    if network == "open":
+        _add("MEDIUM", "Sandbox network is open — use ring 2 to hold commands to the egress allowlist")
+    elif network == "proxy" and not getattr(engine.egress, "enabled", False):
+        _add("LOW", "Sandbox network goes through the proxy, but the egress allowlist is off "
+                    "(prismor egress enable)")
     else:
-        findings.append(AuditFinding(
-            severity="PASS",
-            category="sandbox",
-            message="Sandbox network is disabled by default",
-        ))
-
-    if not cfg.get("read_only_root", True):
-        findings.append(AuditFinding(
-            severity="MEDIUM",
-            category="sandbox",
-            message="Sandbox read_only_root is disabled",
-        ))
-
-    limits = cfg.get("resource_limits") or {}
-    missing_limits = [name for name in ("cpus", "memory", "pids_limit", "timeout_seconds") if not limits.get(name)]
-    if missing_limits:
-        findings.append(AuditFinding(
-            severity="MEDIUM",
-            category="sandbox",
-            message=f"Sandbox resource limits missing: {', '.join(missing_limits)}",
-        ))
-    else:
-        findings.append(AuditFinding(
-            severity="PASS",
-            category="sandbox",
-            message="Sandbox resource limits configured",
-        ))
-
+        _add("PASS", f"Sandbox network: {network}")
     return findings
 
 

@@ -1,4 +1,6 @@
-"""Native (no Docker) sandbox backend: Seatbelt on macOS, bubblewrap on Linux.
+"""Linux sandbox engine: bubblewrap, plus a policy-screened egress proxy.
+
+``sandbox.run`` calls this on Linux; macOS uses Seatbelt in ``sandbox.py``.
 
 Hooks see the command an agent asks for, not what that command does once it
 runs: the files ``npm install`` scripts touch, the hosts a test suite dials.
@@ -97,10 +99,6 @@ def _userns_hint() -> str:
 
 def status() -> Dict[str, Any]:
     system = platform.system()
-    if system == "Darwin":
-        exe = shutil.which("sandbox-exec") or ("/usr/bin/sandbox-exec" if os.path.exists("/usr/bin/sandbox-exec") else None)
-        return {"backend": "native", "engine": "seatbelt", "ready": bool(exe),
-                **({} if exe else {"error": "sandbox-exec not found"})}
     if system == "Linux":
         exe = shutil.which("bwrap")
         if not exe:
@@ -114,7 +112,7 @@ def status() -> Dict[str, Any]:
         if probe.returncode != 0:
             return {"backend": "native", "engine": "bubblewrap", "ready": False,
                     "error": (probe.stderr or "bwrap failed").strip() + _userns_hint()}
-        return {"backend": "native", "engine": "bubblewrap", "ready": True}
+        return {"backend": "native", "engine": "bubblewrap", "ready": True, "path": exe}
     return {"backend": "native", "engine": None, "ready": False,
             "error": f"no native sandbox on {system}"}
 
@@ -133,38 +131,11 @@ def _paths(workspace: Path, cfg: Dict[str, Any]) -> Dict[str, List[str]]:
     # write .git/config and .git/hooks, so .git/* is guarded only once the repo
     # exists. A repo created inside the run can carry hooks; pre-creating the
     # guard would need git's own init, add when that matters.
-    rels = [r for r in PROTECTED_IN_WORKSPACE
+    rels = [r for r in list(dict.fromkeys(PROTECTED_IN_WORKSPACE + list(cfg.get("protect") or [])))
             if not r.startswith(".git/") or os.path.isdir(os.path.join(ws, ".git"))]
     protected = [os.path.join(ws, rel) for rel in rels]
     return {"ws": [ws], "deny_read": deny_read, "writable": list(dict.fromkeys(writable)),
             "protected": protected, "parents": _parents(ws, rels)}
-
-
-def _sb(path: str) -> str:
-    return '"' + path.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def seatbelt_profile(workspace: Path, cfg: Dict[str, Any], *, restrict_network: bool) -> str:
-    """SBPL profile. Later rules win, so each deny/allow narrows the one above."""
-    p = _paths(workspace, cfg)
-    lines = ["(version 1)", "(allow default)",
-             "(deny file-write*)",
-             "(allow file-write* " + " ".join(f"(subpath {_sb(w)})" for w in p["writable"])
-             + ' (literal "/dev/null") (literal "/dev/zero") (literal "/dev/dtracehelper")'
-             + ' (regex #"^/dev/tty") (subpath "/dev/fd"))']
-    lines.append("(deny file-write* " + " ".join(f"(subpath {_sb(x)})" for x in p["protected"]) + ")")
-    # unlink covers rename and rmdir of the dir node (.git, .claude, ...);
-    # creating it (git init) and writing inside it stay allowed.
-    lines.append("(deny file-write-unlink " + " ".join(f"(literal {_sb(x)})" for x in p["parents"]) + ")")
-    if p["deny_read"]:
-        lines.append("(deny file-read* " + " ".join(f"(subpath {_sb(x)})" for x in p["deny_read"]) + ")")
-    if restrict_network:
-        # Loopback only: the proxy, local dev servers, test fixtures. No unix
-        # sockets either — docker.sock or an ssh-agent socket is a way out.
-        lines += ["(deny network*)",
-                  '(allow network* (remote ip "localhost:*"))',
-                  '(allow network* (local ip "localhost:*"))']
-    return "\n".join(lines) + "\n"
 
 
 def bwrap_argv(workspace: Path, cfg: Dict[str, Any], *, unshare_net: bool,
@@ -507,35 +478,24 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
     watch = missing_protected(workspace) if enforce and st["engine"] == "bubblewrap" else []
     tmp = tempfile.mkdtemp(prefix="prismor-sbx-")
     try:
-        if st["engine"] == "seatbelt":
+        if restrict and use_proxy:
+            # Own network namespace: only loopback exists, so a bridge inside
+            # the sandbox carries 127.0.0.1:<port> to the proxy's unix socket.
+            sock_path = os.path.join(tmp, "egress.sock")
+            proxy = EgressProxy(decide, unix_path=sock_path)
+            port = 3128
+            env.update(_proxy_env(port))
+            pkg_root = str(Path(__file__).resolve().parents[2])
+            env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            inner = [sys.executable, "-m", "prismor.runtime.sandbox_native", "bridge",
+                     sock_path, str(port), "--"] + shell
+        else:
             if use_proxy:
                 proxy = EgressProxy(decide)
                 env.update(_proxy_env(proxy.address[1]))
-            if enforce:
-                prof = Path(tmp) / "profile.sb"
-                prof.write_text(seatbelt_profile(workspace, cfg, restrict_network=restrict), encoding="utf-8")
-                argv = ["/usr/bin/sandbox-exec", "-f", str(prof)] + shell
-            else:
-                argv = shell
-        else:
-            if restrict and use_proxy:
-                # Own network namespace: only loopback exists, so a bridge inside
-                # the sandbox carries 127.0.0.1:<port> to the proxy's unix socket.
-                sock_path = os.path.join(tmp, "egress.sock")
-                proxy = EgressProxy(decide, unix_path=sock_path)
-                port = 3128
-                env.update(_proxy_env(port))
-                pkg_root = str(Path(__file__).resolve().parents[2])
-                env["PYTHONPATH"] = pkg_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
-                inner = [sys.executable, "-m", "prismor.runtime.sandbox_native", "bridge",
-                         sock_path, str(port), "--"] + shell
-            else:
-                if use_proxy:
-                    proxy = EgressProxy(decide)
-                    env.update(_proxy_env(proxy.address[1]))
-                inner = shell
-            argv = (bwrap_argv(workspace, cfg, unshare_net=restrict, extra_binds=[tmp]) + inner
-                    if enforce else inner)
+            inner = shell
+        argv = (bwrap_argv(workspace, cfg, unshare_net=restrict, extra_binds=[tmp]) + inner
+                if enforce else inner)
         proc = subprocess.run(argv, cwd=str(workspace), env=env,
                               timeout=float(timeout) if timeout else None)
         return int(proc.returncode)

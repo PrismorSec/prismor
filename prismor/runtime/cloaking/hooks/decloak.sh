@@ -78,6 +78,37 @@ if [[ -n "$placeholders" ]]; then
   done <<< "$placeholders"
 fi
 
+# ── 1b. Prismor sandbox ─────────────────────────────────────────────────────
+# Claude Code runs PreToolUse hooks in parallel and keeps whichever rewrite
+# finishes last, so hook-dispatch cannot also rewrite this call. When
+# `prismor sandbox` is on for this project, hook-dispatch records its runner in
+# sandbox/active.tsv and this hook does the wrap instead. The runner goes
+# INSIDE the scrub wrapper below: placeholders resolve and output is scrubbed
+# outside the sandbox, where the vault is readable. The command rides a quoted
+# heredoc on fd 3, so decloak-exec.sh substitutes into it and no argv holds a
+# secret. A bare `cd` is left alone: it touches nothing.
+sandboxed=0
+sbx_index="${PRISMOR_HOME:-$HOME/.prismor}/sandbox/active.tsv"
+if [[ -n "${CLAUDE_PROJECT_DIR:-}" && -f "$sbx_index" ]]; then
+  sbx_runner=""
+  while IFS=$'\t' read -r sbx_key sbx_cmd; do
+    [[ "$sbx_key" == "$CLAUDE_PROJECT_DIR" ]] && { sbx_runner="$sbx_cmd"; break; }
+  done < "$sbx_index"
+  pure_cd=""
+  case "$cmd" in
+    *[\;\&\|\<\>\`\$\(\)\{\}\\\'\"\*\?$'\n']*) ;;
+    cd|"cd "*) pure_cd=1 ;;
+  esac
+  if [[ -n "$sbx_runner" && -z "$pure_cd" ]]; then
+    sbx_delim="__PRISMOR_SANDBOX_$(printf '%04x%04x' "$RANDOM" "$RANDOM")__"
+    while [[ "$cmd" == *"$sbx_delim"* ]]; do
+      sbx_delim="__PRISMOR_SANDBOX_$(printf '%04x%04x' "$RANDOM" "$RANDOM")__"
+    done
+    cmd="$sbx_runner 3<<'$sbx_delim'"$'\n'"$cmd"$'\n'"$sbx_delim"
+    sandboxed=1
+  fi
+fi
+
 # ── 2. Decide whether to wrap the command for output scrubbing ──────────────
 # Scrub whenever there is at least one registered secret to protect, OR a
 # placeholder substitution injected a real value into the command. If the
@@ -90,6 +121,9 @@ for _f in "$SECRETS_DIR"/*; do
 done
 
 if [[ "$have_secrets" -eq 0 && -z "$placeholders" ]]; then
+  [[ "$sandboxed" -eq 1 ]] || exit 0
+  new_input="$(printf '%s' "$input" | jq --arg c "$cmd" '.tool_input | .command = $c')"
+  jq -n --argjson ni "$new_input" '{hookSpecificOutput:{hookEventName:"PreToolUse",updatedInput:$ni}}'
   exit 0
 fi
 

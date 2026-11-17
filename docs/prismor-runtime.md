@@ -45,7 +45,7 @@ Commit the policy file to share rules across your team. CI picks it up automatic
 | `block`        | Deny the action — the default enforcement outcome.                                                                                                  |
 | `warn` / `log` | Surface the finding; the action still proceeds.                                                                                                     |
 | `step_up`      | Require inline human approval — Claude and Copilot emit an "ask" prompt. Surfaces without an approval prompt fail closed to `block`.                 |
-| `modify`       | Rewrite the tool input via a named `transform:` (e.g. `transform: sandbox` runs the command in the Docker sandbox). Surfaces that can't rewrite input fail closed to `block`. |
+| `modify`       | Rewrite the tool input via a named `transform:` (e.g. `transform: sandbox` runs the command under the [Prismor sandbox](sandbox.md)). Surfaces that can't rewrite input fail closed to `block`. |
 
 | `instruct`     | Allow the action and send the rule's `guidance:` to the agent before the tool runs. Never blocks. |
 

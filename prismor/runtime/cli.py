@@ -2783,46 +2783,24 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _prompt_out and _hook_claimed:
                 sys.stdout.write(json.dumps(_prompt_out) + "\n")
 
-        # Docker sandboxing is applied after policy/IAM/scoped checks have had a
-        # chance to deny the original command. Where the agent's PreToolUse can
-        # rewrite input (hook_caps) the shell call is rewritten into the
-        # sandbox; other agents keep normal policy enforcement.
+        # Prismor sandbox (macOS, Linux): every rule, IAM and scoped check has passed on
+        # the original command by now. Wrap it so the OS confines it, and whatever
+        # it starts, too. Where Seatbelt cannot start at run time the runner says
+        # so and runs the command unconfined: "not contained", never "not
+        # screened". On Claude with the cloak hook installed, decloak.sh does the
+        # wrap (sandbox.hand_off_to_decloak): two hooks rewriting one call race.
         try:
-            from prismor.runtime import sandbox as _sandbox
-            _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-            if (
-                _hook_caps.supports_rewrite(args.agent)
-                and _hook_event == "PreToolUse"
-                and event.get("type") == "shell"
-                and _sandbox_cfg.get("enabled")
-            ):
-                from prismor.runtime.hooks import payload_session_id as _hooks_sid
-                _sandbox_status = _sandbox.backend_status(_sandbox_cfg)
-                _sandbox_ready = bool(_sandbox_status.get("ready"))
-                _sandbox_label = "Docker" if _sandbox_cfg.get("backend") == "docker" else "The native sandbox"
-                if not _sandbox_ready:
-                    # Containment is a layer on top of policy, not the policy.
-                    # Every rule, egress check and tag rule has already run
-                    # against this command by the time we get here, so a missing
-                    # runtime means "not contained", not "not screened".
-                    # Blocking instead — which is what this did — bricked every
-                    # shell command the moment Docker stopped, which is how a
-                    # team ends up uninstalling Prismor to get through the
-                    # afternoon. Skip the sandbox, say so loudly, keep screening.
-                    reason = _sandbox_status.get("error") or "backend is not reachable"
-                    sys.stderr.write(
-                        _color("[prismor] ", _YELLOW)
-                        + f"NOTE: {_sandbox_label} is not available ({reason}) — the sandbox "
-                          f"is skipped for this call. Policy still applies.\n"
-                    )
-                else:
+            if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
+                from prismor.runtime import sandbox as _sandbox
+                _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
+                _sandbox_on = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
+                _sandbox_root = _sandbox.project_root(payload, workspace)
+                _decloak_wraps = (args.agent == "claude"
+                                  and _sandbox.hand_off_to_decloak(_sandbox_root, _sandbox_on))
+                if _sandbox_on and not _decloak_wraps and _hook_caps.supports_rewrite(args.agent):
                     update = _hook_caps.rewrite_output(args.agent, _sandbox.claude_updated_input(
-                        payload=_hook_caps.transform_payload(args.agent, payload, event),
-                        workspace=workspace,
-                        mode=str(_sandbox_cfg.get("mode", "observe")),
-                        agent=str(args.agent or ""),
-                        session_id=str(_hooks_sid(args.agent, payload, workspace) or ""),
-                    ), reason=f"Prismor sandbox: run inside the {_sandbox_cfg.get('backend')} sandbox")
+                        _hook_caps.transform_payload(args.agent, payload, event), root=_sandbox_root,
+                    ), reason="Prismor sandbox: run under the OS sandbox")
                     if update:
                         if _pre_out:
                             # One JSON object per hook call: carry the guidance
@@ -2847,33 +2825,77 @@ def main(argv: Optional[List[str]] = None) -> None:
         engine = PolicyEngine(workspace=workspace)
         cfg = _sandbox.effective_config(getattr(engine, "sandbox_config", {}))
         subcmd = getattr(args, "sandbox_command", None) or "status"
+        _engine_names = {"seatbelt": "Seatbelt (macOS)", "bubblewrap": "bubblewrap (Linux)"}
+
+        if subcmd in ("run", "try"):
+            # `run` is what the hook rewrite calls: the command arrives on fd 3
+            # as a heredoc. People pass it after `--` instead.
+            pieces = list(getattr(args, "sandbox_args", None) or [])
+            if pieces[:1] == ["--"]:
+                pieces = pieces[1:]
+            if pieces:
+                import shlex
+                cmd = pieces[0] if len(pieces) == 1 else shlex.join(pieces)
+            else:
+                cmd = _sandbox.read_command_fd()
+            if not cmd.strip():
+                sys.stderr.write(f"error: command required (prismor sandbox {subcmd} -- <command>)\n")
+                raise SystemExit(2)
+            if subcmd == "try":
+                _st = _sandbox.backend_status()
+                sys.stderr.write(_color("[prismor] sandbox ", _BOLD)
+                                 + f"{_engine_names.get(_st['engine'], 'unavailable')}: "
+                                 + _sandbox.describe(cfg) + "\n")
+            exit_code = _sandbox.run(cmd, root=workspace, config=cfg, engine=engine,
+                                     wait=subcmd == "try")
+            if subcmd == "try" and exit_code != 0:
+                sys.stderr.write(_color("[prismor] ", _YELLOW) + f"exited {exit_code} inside the sandbox. "
+                                 "An \"Operation not permitted\" above means it touched a path the "
+                                 "sandbox does not allow: add it to settings.sandbox.writable, or "
+                                 "see docs/sandbox.md for rings.\n")
+            raise SystemExit(exit_code)
+
+        report = _sandbox.status_report(cfg, egress_enabled=bool(getattr(engine.egress, "enabled", False)))
+        engine_st = report["engine"]
+        engine_name = _engine_names.get(engine_st.get("engine"), "none")
 
         if subcmd == "status":
-            report = _sandbox.status_report(cfg)
             if getattr(args, "json", False):
                 print(json.dumps(report, indent=2))
                 return
+            ctl = report["controls"]
+            colour = {"enforced": _GREEN, "open": _YELLOW, "unavailable": _RED}
+            on = (f"on ({report['mode']})" if report["enabled"] else "off")
             print()
             print(f"  {_color('PRISMOR', _BOLD)}  sandbox status")
             print(f"  {_color('─' * 50, _DIM)}")
             print()
-            print(f"  {_color('Enabled:', _GREEN)}      {report['enabled']}")
-            print(f"  {_color('Mode:', _GREEN)}         {report['mode']}")
-            print(f"  {_color('Backend:', _GREEN)}      {report['backend']}")
-            if report['backend'] == "docker":
-                print(f"  {_color('Image:', _GREEN)}        {report['image']}")
-            print(f"  {_color('Network:', _GREEN)}      {report['network']}")
+            print(f"  {_color('Sandbox:', _GREEN)}      {on}")
+            if engine_st["available"]:
+                print(f"  {_color('Engine:', _GREEN)}       {engine_name}")
+            else:
+                print(f"  {_color('Engine:', _RED)}       unavailable — {engine_st.get('error')}")
             if report.get("ring") is not None:
-                print(f"  {_color('Ring:', _GREEN)}        {report['ring']} ({report.get('ring_label')})")
-            bst = report["backend_status"]
-            if report["backend"] == "docker":
-                label = f"available ({bst.get('server_version', 'unknown')})"
+                print(f"  {_color('Ring:', _GREEN)}         {report['ring']} ({report['ring_label']})")
+            writes = ("tmp only" if report["workspace_mount"] == "ro"
+                      else "project, tmp, package caches")
+            extra = f" + {', '.join(report['writable'])}" if report["writable"] else ""
+            print(f"  {_color('Files:', colour[ctl['files']])}        {ctl['files']} — writes: {writes}{extra}")
+            hidden = f" + {', '.join(report['hide'])}" if report["hide"] else ""
+            print(f"  {_color('Credentials:', colour[ctl['credentials']])}  {ctl['credentials']} — "
+                  f"cloud, registry and Prismor key stores hidden{hidden}")
+            net = report["network"]
+            if net == "proxy":
+                allow = "egress allowlist on" if report["egress_allowlist"] else (
+                    "egress allowlist off, so HTTP(S) reaches any host")
+                ports = ", ".join(str(p) for p in report["direct_ports"])
+                net_line = f"HTTP(S) through the proxy ({allow})" + (f"; direct ports {ports}" if ports else "")
             else:
-                label = f"available ({bst.get('engine')})"
-            if bst.get("ready"):
-                print(f"  {_color('Ready:', _GREEN)}        {label}")
-            else:
-                print(f"  {_color('Ready:', _YELLOW)}        unavailable — {bst.get('error') or 'not reachable'}")
+                net_line = {"none": "no network", "open": "open, not restricted"}[net]
+            print(f"  {_color('Network:', colour[ctl['network']])}      {ctl['network']} — {net_line}")
+            if report["legacy_keys"]:
+                print(_color(f"  Ignored:      {', '.join(report['legacy_keys'])} "
+                             "(Docker-only settings, no longer used)", _DIM))
             print()
             return
 
@@ -2881,66 +2903,39 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
-            backend = getattr(args, "backend", None) if want else None
-            path = _sandbox.set_enabled(workspace, want, backend=backend)
+            path = _sandbox.set_enabled(workspace, want)
+            # The hook keeps this in step on every call; doing it here too makes
+            # the next command sandboxed rather than the one after.
+            _sandbox.set_index_entry(str(workspace), _sandbox.runner(workspace)
+                                     if want and _sandbox.decloak_wraps(str(workspace)) else None)
             state = _color("on", _GREEN) if want else _color("off", _YELLOW)
             print(f"sandbox {state}  ({path})")
-            if want:
-                bst = _sandbox.backend_status({**cfg, **({"backend": backend} if backend else {})})
-                if not bst.get("ready"):
-                    print(_color(
-                        f"The sandbox backend is not ready here ({bst.get('error')}) — "
-                        "commands will run unsandboxed until it is.", _YELLOW))
-                if _sandbox.effective_config(cfg).get("mode") != "enforce":
-                    print(_color(
-                        "mode is observe: commands are wrapped but get no file or network "
-                        "limits. Set settings.sandbox.mode: enforce to apply them.", _DIM))
+            if not want:
+                print(_color("commands now run unconfined. Policy screening, egress "
+                             "and cloaking are unaffected.", _DIM))
+            elif not engine_st["available"]:
+                print(_color(f"the sandbox cannot start here ({engine_st.get('error')}): commands "
+                             "run unconfined. Policy still applies.", _YELLOW))
             else:
-                print(_color(
-                    "commands now run on the host. Policy screening, egress "
-                    "and cloaking are unaffected.", _DIM))
+                print(f"  {engine_name} · {_sandbox.describe({**cfg, 'enabled': True})}")
+                if report["network"] == "proxy" and not report["egress_allowlist"]:
+                    print(_color("  egress allowlist is off, so HTTP(S) may reach any host. To hold "
+                                 "commands to an allowlist: prismor egress enable", _DIM))
             _org_managed_hint(workspace)
             return
 
         if subcmd == "check":
             if getattr(args, "stray", None):
                 sys.stderr.write(
-                    "prismor sandbox check takes no command: it checks that Docker is ready.\n"
-                    "  Run a command in the sandbox:   prismor sandbox run -- <command>\n"
+                    "prismor sandbox check takes no command: it checks that the OS sandbox can start.\n"
+                    "  Run a command in the sandbox:   prismor sandbox try -- <command>\n"
                     "  Pre-check it against policy:    prismor check '<command>'\n")
                 raise SystemExit(2)
-            bst = _sandbox.backend_status(cfg)
-            if bst.get("ready"):
-                print(_color("PASS", _GREEN) + f"  {cfg['backend']} sandbox backend is available")
+            if engine_st["available"]:
+                print(_color("PASS", _GREEN) + f"  {engine_name} is available")
                 return
-            print(_color("FAIL", _RED) + f"  {cfg['backend']} sandbox backend unavailable: {bst.get('error')}")
+            print(_color("FAIL", _RED) + f"  no native sandbox: {engine_st.get('error')}")
             raise SystemExit(1)
-
-        if subcmd == "run":
-            cmd = getattr(args, "command_string", None)
-            encoded = getattr(args, "encoded", None)
-            if encoded:
-                try:
-                    cmd = _sandbox.decode_command(encoded)
-                except Exception as exc:
-                    sys.stderr.write(f"error: invalid encoded command: {exc}\n")
-                    raise SystemExit(1)
-            elif not cmd:
-                pieces = getattr(args, "sandbox_args", None) or []
-                if pieces and pieces[0] == "--":
-                    pieces = pieces[1:]
-                # One argument is a whole command string; several are argv words.
-                import shlex as _shlex
-                cmd = pieces[0] if len(pieces) == 1 else _shlex.join(pieces)
-            if not cmd:
-                sys.stderr.write("error: command required (use `prismor sandbox run -- <cmd>`)\n")
-                raise SystemExit(1)
-            if getattr(args, "mode", None):
-                cfg["mode"] = args.mode
-            exit_code = _sandbox.run(cmd, workspace=workspace, config=cfg,
-                                     agent=getattr(args, "agent", None) or "",
-                                     session_id=getattr(args, "session", None) or "")
-            raise SystemExit(exit_code)
 
         raise SystemExit(f"Unsupported sandbox command: {subcmd}")
 
@@ -3803,15 +3798,15 @@ def main(argv: Optional[List[str]] = None) -> None:
                           f"{total} rules would block without it.")
                 else:
                     print(f"  Rules     {blocking} of {total} block")
-                # Apply-time degradation cannot see a runtime that went away
+                # Apply-time degradation cannot see an engine that went away
                 # afterwards, so check the live host too. Commands still run and
-                # are still screened — what is missing is container isolation,
-                # and that is what this line has to say, precisely.
+                # are still screened — what is missing is OS containment, and
+                # that is what this line has to say, precisely.
                 if not previewing:
                     problem = sandbox_preflight(mode)
                     if problem is not None:
                         print(_color("  Sandbox", _YELLOW) +
-                              f"   skipped — Docker is not available ({problem})")
+                              f"   skipped — no native sandbox here ({problem})")
                         print("            commands run unsandboxed; rules, egress "
                               "and tag rules still apply")
                 print(f"  Policy    {workspace / '.prismor' / 'policy.yaml'}")
@@ -4551,36 +4546,32 @@ def build_parser() -> argparse.ArgumentParser:
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
-        help="Sandbox for allowed shell commands (Docker or native)",
-        description="Sandbox for allowed shell commands (Docker or native)",
+        help="OS sandbox (Seatbelt on macOS, bubblewrap on Linux) for allowed shell commands",
+        description="Run allowed shell commands under the OS sandbox: writes held to the "
+                    "project, credential stores hidden, network held to the egress allowlist.",
     )
     sandbox_parser.add_argument("--workspace", help="Workspace path")
     sandbox_sub = sandbox_parser.add_subparsers(dest="sandbox_command")
 
-    sandbox_status = sandbox_sub.add_parser("status", help="Show sandbox configuration and backend readiness")
+    sandbox_status = sandbox_sub.add_parser("status", help="Show what the sandbox allows and whether it can start here")
     sandbox_status.add_argument("--json", action="store_true", help="Output raw JSON")
 
-    sandbox_check = sandbox_sub.add_parser("check", help="Check whether the configured sandbox backend is available")
+    sandbox_check = sandbox_sub.add_parser("check", help="Check whether the OS sandbox can start on this host")
     # Accepted only to answer it: `sandbox check "cmd"` reads naturally, and
     # argparse's reply to a stray argument was the whole top-level usage.
     sandbox_check.add_argument("stray", nargs="*", help=argparse.SUPPRESS)
 
     sandbox_on = sandbox_sub.add_parser("on", help="Turn the sandbox on for this workspace")
     sandbox_on.add_argument("--workspace", help="Workspace path")
-    sandbox_on.add_argument("--backend", choices=["docker", "native"],
-                            help="docker (container) or native (Seatbelt on macOS, bubblewrap on Linux)")
 
-    sandbox_off = sandbox_sub.add_parser("off", help="Turn the sandbox off — commands run on the host")
+    sandbox_off = sandbox_sub.add_parser("off", help="Turn the sandbox off — commands run unconfined")
     sandbox_off.add_argument("--workspace", help="Workspace path")
 
+    sandbox_try = sandbox_sub.add_parser("try", help="Run one command in the sandbox and explain a failure")
+    sandbox_try.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --")
 
-    sandbox_run = sandbox_sub.add_parser("run", help="Run a command inside the configured sandbox")
-    sandbox_run.add_argument("--mode", choices=["observe", "enforce"], help="Override sandbox mode for this run")
-    sandbox_run.add_argument("--encoded", help="Base64url-encoded command string (used by hooks)")
-    sandbox_run.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --")
-    sandbox_run.add_argument("--command-string", help=argparse.SUPPRESS)
-    sandbox_run.add_argument("--agent", help=argparse.SUPPRESS)
-    sandbox_run.add_argument("--session", help=argparse.SUPPRESS)
+    sandbox_run = sandbox_sub.add_parser("run", help="Run a command in the sandbox (what the hook rewrite calls)")
+    sandbox_run.add_argument("sandbox_args", nargs=argparse.REMAINDER, help="Command after --, or on fd 3")
 
     rate_parser = subparsers.add_parser("rate", help="Inspect per-identity rolling-minute quotas")
     rate_subs = rate_parser.add_subparsers(dest="rate_command")
@@ -6870,14 +6861,14 @@ allowlists:
   #   reason: ".env in this project only has non-sensitive defaults"
 
 settings:
-  # Optional Docker-backed sandbox for Claude Bash tool calls. Prismor still
-  # evaluates the original command first; allowed commands are rewritten to
-  # `prismor sandbox run`.
+  # Optional OS sandbox for allowed shell commands (`prismor sandbox on`).
+  # Prismor still judges the original command first; allowed commands then
+  # run under Seatbelt (macOS) or bubblewrap (Linux). See docs/sandbox.md.
   # sandbox:
   #   enabled: true
-  #   mode: enforce
-  #   network: none
-  #   image: python:3.12-slim
+  #   ring: "2"          # 0 read-only · 1 no network · 2 egress allowlist · 3 open network
+  #   writable: []       # extra paths commands may write
+  #   hide: [.env]       # extra paths commands may not read
 '''
     target.write_text(starter, encoding="utf-8")
     print(f"Created {target}")

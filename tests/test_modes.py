@@ -34,20 +34,20 @@ def _unmanaged():
     )
 
 
-_DOCKER_OK = {"cli_found": True, "server_reachable": True, "server_version": "27.0"}
+_ENGINE_OK = {"available": True, "engine": "seatbelt", "error": None}
 
 
-def _docker_ready():
-    """Decorator: this test assumes a host with a working container runtime.
+def _engine_ready():
+    """Decorator: this test assumes a host with a working sandbox engine.
 
     Applied at class level so a suite that is about policy compilation does not
-    silently become a test of whether the developer has Docker installed —
+    silently become a test of whether the developer's host has one —
     without it, `apply_mode` degrades the sandbox axis and the compiled output
     differs from what these tests are asserting. Uses ``new=`` so no mock
     argument is injected into the test methods.
     """
     return mock.patch(
-        "prismor.runtime.sandbox.docker_status", new=lambda: dict(_DOCKER_OK)
+        "prismor.runtime.sandbox.backend_status", new=lambda: dict(_ENGINE_OK)
     )
 
 
@@ -179,7 +179,7 @@ class TestCompile(unittest.TestCase):
         self.assertNotIn("selection", raw["settings"])
 
 
-@_docker_ready()
+@_engine_ready()
 class TestEngineEffect(unittest.TestCase):
     """The compile is only worth anything if the engine reads it back."""
 
@@ -386,7 +386,7 @@ class TestEngineEffect(unittest.TestCase):
         self.assertIn("Write", cfg["global_ask_tools"])
 
 
-@_docker_ready()
+@_engine_ready()
 class TestApply(unittest.TestCase):
     def test_refuses_to_clobber_a_hand_written_policy(self):
         ws = _workspace()
@@ -422,14 +422,14 @@ class TestApply(unittest.TestCase):
         self.assertIsNone(modes.active_mode(_workspace()))
 
 
-def _docker(available):
+def _engine(available):
     return mock.patch(
-        "prismor.runtime.sandbox.docker_status",
+        "prismor.runtime.sandbox.backend_status",
         return_value=(
-            {"cli_found": True, "server_reachable": True, "server_version": "27.0"}
+            {"available": True, "engine": "seatbelt", "error": None}
             if available else
-            {"cli_found": False, "server_reachable": False,
-             "error": "docker CLI not found"}
+            {"available": False, "engine": None,
+             "error": "no native sandbox on testos"}
         ),
     )
 
@@ -448,21 +448,21 @@ def _sandboxed(mode_id="dev-safe"):
 
 
 class TestSandboxPreflight(unittest.TestCase):
-    """A host with no container runtime loses containment, not the posture.
+    """A host with no sandbox engine loses containment, not the posture.
     These pin that the sandbox axis degrades on its own, that the rest of the
     mode still lands, and that the check is not over-applied to modes which
     never needed a runtime."""
 
     def test_dev_safe_applies_with_a_degraded_sandbox_without_a_runtime(self):
         ws = _workspace()
-        with _docker(False), _unmanaged(), _sandboxed():
+        with _engine(False), _unmanaged(), _sandboxed():
             path, notes = modes.apply_mode(ws, "dev-safe")
         self.assertTrue(path.exists())
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
         sandbox = (written.get("settings") or {}).get("sandbox") or {}
         self.assertEqual(sandbox.get("mode"), "observe")
         self.assertTrue(any(n.startswith("NOTE:") for n in notes), notes)
-        self.assertTrue(any("Docker is not available" in n for n in notes), notes)
+        self.assertTrue(any("no native sandbox here" in n for n in notes), notes)
         # Degrading containment must not quietly degrade anything else.
         self.assertNotIn("mode_observe", written.get("settings") or {})
         enforcing = [r for r in written.get("rules") or []
@@ -474,9 +474,9 @@ class TestSandboxPreflight(unittest.TestCase):
     def test_a_degraded_install_does_not_report_itself_as_drift(self):
         """The written policy legitimately differs from the catalogue mode when
         the sandbox was skipped. Without the provenance stamp `mode show`
-        called every Docker-less install hand-edited the moment it was made."""
+        called every engine-less install hand-edited the moment it was made."""
         ws = _workspace()
-        with _docker(False), _unmanaged(), _sandboxed():
+        with _engine(False), _unmanaged(), _sandboxed():
             modes.apply_mode(ws, "dev-safe")
             self.assertTrue(modes.is_sandbox_skipped_build(ws))
             self.assertFalse(modes.has_drifted(ws))
@@ -484,9 +484,9 @@ class TestSandboxPreflight(unittest.TestCase):
     def test_degrading_is_not_gated_on_force(self):
         """`force` means "overwrite a foreign policy", never "skip the runtime
         check" — conflating them is what let setup write an enforcing sandbox
-        onto a host with no Docker."""
+        onto a host with no sandbox engine."""
         ws = _workspace()
-        with _docker(False), _unmanaged(), _sandboxed():
+        with _engine(False), _unmanaged(), _sandboxed():
             path, _ = modes.apply_mode(ws, "dev-safe", force=True)
         written = yaml.safe_load(path.read_text(encoding="utf-8"))
         self.assertEqual(
@@ -495,20 +495,20 @@ class TestSandboxPreflight(unittest.TestCase):
         )
 
     def test_dev_safe_applies_when_a_runtime_is_present(self):
-        with _docker(True), _unmanaged():
+        with _engine(True), _unmanaged():
             path, _ = modes.apply_mode(_workspace(), "dev-safe")
         self.assertTrue(path.exists())
 
     def test_observe_build_needs_no_runtime(self):
         """--observe compiles the sandbox to observe, so there is nothing to
         enforce and nothing to require."""
-        with _docker(False), _unmanaged():
+        with _engine(False), _unmanaged():
             path, _ = modes.apply_mode(_workspace(), "dev-safe", observe=True)
         self.assertTrue(path.exists())
 
     def test_trusted_workspace_is_unaffected(self):
         """Its sandbox observes, so a missing runtime degrades to a warning."""
-        with _docker(False), _unmanaged():
+        with _engine(False), _unmanaged():
             path, _ = modes.apply_mode(_workspace(), "trusted-workspace")
         self.assertTrue(path.exists())
         self.assertIsNone(modes.sandbox_preflight(modes.get_mode("trusted-workspace")))
@@ -516,26 +516,26 @@ class TestSandboxPreflight(unittest.TestCase):
     def test_regulated_airgap_is_unaffected(self):
         """It enforces a sandbox but denies Bash, so no shell event ever reaches
         the sandbox gate. Refusing to apply it here would be a false positive."""
-        with _docker(False), _unmanaged():
+        with _engine(False), _unmanaged():
             path, _ = modes.apply_mode(_workspace(), "regulated-airgap")
         self.assertTrue(path.exists())
         self.assertIsNone(modes.sandbox_preflight(modes.get_mode("regulated-airgap")))
 
-    def test_needs_container_runtime_requires_all_three_conditions(self):
+    def test_needs_sandbox_engine_requires_all_three_conditions(self):
         catalogue = modes.get_mode("dev-safe")
         base = {**catalogue,
                 "sandbox": {**catalogue["sandbox"], "enabled": True}}
-        self.assertTrue(modes.needs_container_runtime(base))
+        self.assertTrue(modes.needs_sandbox_engine(base))
         off = {**base, "sandbox": {**base["sandbox"], "enabled": False}}
-        self.assertFalse(modes.needs_container_runtime(off))
+        self.assertFalse(modes.needs_sandbox_engine(off))
         observing = {**base, "sandbox": {**base["sandbox"], "mode": "observe"}}
-        self.assertFalse(modes.needs_container_runtime(observing))
+        self.assertFalse(modes.needs_sandbox_engine(observing))
         no_shell = {**base, "tools": {"deny": ["Bash"]}}
-        self.assertFalse(modes.needs_container_runtime(no_shell))
+        self.assertFalse(modes.needs_sandbox_engine(no_shell))
 
     def test_containment_is_opt_in_except_where_it_is_the_posture(self):
         """Adopting a governance mode must not silently start routing every
-        shell command through Docker. regulated-airgap is the one exception:
+        shell command through the sandbox. regulated-airgap is the one exception:
         containment is what that mode *is*."""
         for mode_id in ALL_MODES:
             sandbox = modes.get_mode(mode_id).get("sandbox") or {}
@@ -553,10 +553,10 @@ class TestSandboxPreflight(unittest.TestCase):
         trace after adoption."""
         for mode_id in ALL_MODES:
             mode = modes.get_mode(mode_id)
-            if not modes.needs_container_runtime(mode):
+            if not modes.needs_sandbox_engine(mode):
                 continue
             friction = " ".join(mode.get("friction") or []).lower()
-            self.assertIn("docker", friction, mode_id)
+            self.assertIn("sandbox", friction, mode_id)
 
 
 class TestCoverage(unittest.TestCase):
@@ -599,7 +599,7 @@ BENIGN_CORPUS = [
 ]
 
 
-@_docker_ready()
+@_engine_ready()
 class TestMeasuredFriction(unittest.TestCase):
     """`friction_index` is an assertion about developer experience. Measure it."""
 
