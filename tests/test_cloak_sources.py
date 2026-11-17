@@ -256,7 +256,7 @@ def test_agentcore_bad_reference():
 
 def test_unsupported_scheme_and_bad_name_fetch_nothing(op):
     with pytest.raises(SourceError, match="unsupported reference"):
-        sources.add_from_ref("K", "vault://x")
+        sources.add_from_ref("K", "keepass://x")
     with pytest.raises(ValueError):
         sources.add_from_ref("../escape", "op://v/i/f")
     assert op["calls"] == []

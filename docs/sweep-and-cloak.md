@@ -56,8 +56,9 @@ prismor cloak run -- <command>               # Codex-safe decloak + execute + sc
 
 ### From a secret manager
 
-If the secret already lives in 1Password, Okta Privileged Access or AWS
-AgentCore Identity, fetch it from there instead of pasting it. The value is
+If the secret already lives in 1Password, Okta Privileged Access, AWS
+AgentCore Identity, HashiCorp Vault or OpenBao, Infisical or AWS Secrets
+Manager, fetch it from there instead of pasting it. The value is
 written to the vault like any other secret, so every hook works unchanged;
 only the reference is kept, in `$PRISMOR_HOME/secret-sources.json`.
 
@@ -65,6 +66,9 @@ only the reference is kept, in `$PRISMOR_HOME/secret-sources.json`.
 prismor cloak add openai --from-ref op://Engineering/OpenAI/credential
 prismor cloak add stripe --from-ref 'okta-pam://acme/<resource_group>/<project>/<secret_id>#api_key'
 prismor cloak add github --from-ref agentcore://us-east-1/dev-cli/github
+prismor cloak add db --from-ref 'vault://secret/apps/web#db_password'
+prismor cloak add sentry --from-ref infisical://<project_id>/prod/SENTRY_DSN
+prismor cloak add stripe-live --from-ref 'aws-sm://eu-west-1/prod/stripe#secret_key'
 prismor cloak list                           # shows where each one came from
 prismor cloak sync                           # fetch them all again after a rotation
 ```
@@ -74,6 +78,9 @@ prismor cloak sync                           # fetch them all again after a rota
 | `op://vault/item[/section]/field[?attribute=…]` | `op read -n` | The 1Password CLI, signed in through the desktop app, or `OP_SERVICE_ACCOUNT_TOKEN` / Connect in the environment. |
 | `okta-pam://team/resource_group/project/secret_id[#field]` | Service token, then plain-text reveal | `PRISMOR_OKTA_PAM_URL` (`https://<org>.pam.okta.com`), and a service user's `PRISMOR_OKTA_PAM_KEY_ID` / `PRISMOR_OKTA_PAM_KEY_SECRET`. The user needs a role and security policy that allow plain-text reveal. `#field` picks one key of a multi-field secret. |
 | `agentcore://region/workload_identity/api_key_provider` | `GetWorkloadAccessToken`, then `GetResourceApiKey` | `boto3`, AWS credentials allowed `bedrock-agentcore:GetWorkloadAccessToken` and `GetResourceApiKey`, and a workload identity you created (one linked to Runtime or Gateway cannot be used from a laptop). |
+| `vault://mount/path[#field]`, `openbao://mount/path[#field]` | KV v2 read, then KV v1 if that path is not KV v2 | `VAULT_ADDR` and `VAULT_TOKEN` (or the token `vault login` writes to `~/.vault-token`); `VAULT_NAMESPACE` for Enterprise namespaces. `openbao://` reads `BAO_ADDR` / `BAO_TOKEN` first. The address must be `https://`, or `http://` to localhost. `#field` picks one key; a secret with one key needs none. |
+| `infisical://project_id/environment[/folder…]/NAME` | Universal Auth login, then `GET /api/v3/secrets/raw` | A machine identity's `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID` / `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`, or an access token in `INFISICAL_TOKEN`. `INFISICAL_API_URL` for a self-hosted instance (default `https://app.infisical.com`). |
+| `aws-sm://region/secret_id[#field]` | `GetSecretValue` | `boto3` and AWS credentials allowed `secretsmanager:GetSecretValue` (and `kms:Decrypt` for a customer-managed key). `#field` picks one key of a JSON secret; a plain-string secret is used as is. Binary secrets are not supported. |
 
 A fetch that takes longer than `PRISMOR_SECRET_SOURCE_TIMEOUT` seconds
 (default 20, e.g. a locked 1Password app) fails without writing anything.

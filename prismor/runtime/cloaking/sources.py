@@ -18,6 +18,17 @@ Supported references:
   agentcore://<region>/<workload_identity>/<api_key_provider>
       AWS Bedrock AgentCore Identity token vault (an API key credential
       provider), with the caller's AWS credentials. Needs boto3.
+  vault://<mount>/<path>[#field]   (openbao://… for OpenBao)
+      HashiCorp Vault or OpenBao, KV v2 or v1 (detected). VAULT_ADDR and
+      VAULT_TOKEN (or ~/.vault-token); BAO_ADDR / BAO_TOKEN for openbao://.
+      VAULT_NAMESPACE is sent when set. https, or http only to localhost.
+  infisical://<project_id>/<environment>[/<folder>...]/<SECRET_NAME>
+      Infisical. INFISICAL_TOKEN, or a machine identity's
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID / _CLIENT_SECRET. INFISICAL_API_URL
+      for a self-hosted instance (default https://app.infisical.com).
+  aws-sm://<region>/<secret_id>[#field]
+      AWS Secrets Manager, with the caller's AWS credentials. Needs boto3.
+      #field picks a key of a JSON secret.
 
 The reference file is guarded like the vault's other config by
 ``prismor-self-edit``: whoever edits it chooses which real secret a
@@ -33,7 +44,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode, urlsplit
 
 from prismor.runtime.cloaking.secrets_store import _validate_name, add_secret
 
@@ -41,11 +52,17 @@ from prismor.runtime.cloaking.secrets_store import _validate_name, add_secret
 #: prompt; past this the fetch fails rather than hang the terminal.
 TIMEOUT = float(os.environ.get("PRISMOR_SECRET_SOURCE_TIMEOUT", "20"))
 
-SCHEMES = ("op://", "okta-pam://", "agentcore://")
+SCHEMES = ("op://", "okta-pam://", "agentcore://", "vault://", "openbao://", "infisical://", "aws-sm://")
 
 
 class SourceError(Exception):
     """A reference that could not be fetched. The message never holds the value."""
+
+
+class _HTTPStatus(SourceError):
+    def __init__(self, message: str, code: int) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def sources_file() -> Path:
@@ -93,18 +110,22 @@ def _fetch_1password(ref: str) -> str:
     return proc.stdout
 
 
-def _post_json(url: str, body: Dict[str, object], token: str = "") -> Dict[str, object]:
+def _post_json(url: str, body: Optional[Dict[str, object]], token: str = "",
+               headers: Optional[Dict[str, str]] = None) -> Dict[str, object]:
+    """POST ``body`` as JSON, or GET when ``body`` is None."""
     from prismor.runtime.http_ua import user_agent
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+    req = urllib.request.Request(url, data=None if body is None else json.dumps(body).encode(),
+                                 method="GET" if body is None else "POST",
                                  headers={"Content-Type": "application/json", "Accept": "application/json",
                                           "User-Agent": user_agent(),
-                                          **({"Authorization": f"Bearer {token}"} if token else {})})
+                                          **({"Authorization": f"Bearer {token}"} if token else {}),
+                                          **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # nosec B310 - https URL from config
             return json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         # Only the status: an error body could echo request fields.
-        raise SourceError(f"{url.split('?')[0]} returned HTTP {exc.code}")
+        raise _HTTPStatus(f"{url.split('?')[0]} returned HTTP {exc.code}", exc.code)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise SourceError(f"could not reach {url.split('/v1/')[0]}: {getattr(exc, 'reason', exc)}")
     except ValueError:
@@ -129,13 +150,7 @@ def _fetch_okta_pam(ref: str) -> str:
     values = out.get("plain_text")
     if not isinstance(values, dict) or not values:
         raise SourceError("Okta Privileged Access returned no plain-text secret (is plain-text reveal allowed for this user?)")
-    if field:
-        if field not in values:
-            raise SourceError(f"secret has no field {field!r} (fields: {', '.join(sorted(values))})")
-        return str(values[field])
-    if len(values) > 1:
-        raise SourceError(f"secret has several fields, pick one with #field ({', '.join(sorted(values))})")
-    return str(next(iter(values.values())))
+    return _pick(values, field)
 
 
 def _fetch_agentcore(ref: str) -> str:
@@ -163,6 +178,134 @@ def _fetch_agentcore(ref: str) -> str:
         raise SourceError(f"AWS credentials: {exc}")
 
 
+def _pick(values: Dict[str, object], field: str) -> str:
+    if field:
+        if field not in values:
+            raise SourceError(f"secret has no field {field!r} (fields: {', '.join(sorted(values))})")
+        return str(values[field])
+    if len(values) > 1:
+        raise SourceError(f"secret has several fields, pick one with #field ({', '.join(sorted(values))})")
+    return str(next(iter(values.values())))
+
+
+def _safe_base(url: str, var: str) -> str:
+    """https, or plain http only to this machine: a token must not cross a network in clear."""
+    url = url.strip().rstrip("/")
+    parts = urlsplit(url)
+    if parts.scheme == "https" and parts.hostname:
+        return url
+    if parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"):
+        return url
+    raise SourceError(f"set {var} to an https:// address (http:// only for localhost)")
+
+
+def _fetch_vault(ref: str) -> str:
+    bao = ref.startswith("openbao://")
+    body, _, field = ref.split("://", 1)[1].partition("#")
+    parts = [p for p in body.strip("/").split("/") if p]
+    if len(parts) < 2:
+        raise SourceError("vault reference must be vault://<mount>/<path>[#field]")
+    mount, path = quote(parts[0], safe=""), "/".join(quote(p, safe="") for p in parts[1:])
+    env = (lambda b, v: os.environ.get(b) or os.environ.get(v, "")) if bao else (lambda b, v: os.environ.get(v, ""))
+    addr_var = "BAO_ADDR" if bao else "VAULT_ADDR"
+    if not env("BAO_ADDR", "VAULT_ADDR"):
+        raise SourceError(f"set {addr_var} to your {'OpenBao' if bao else 'Vault'} address")
+    base = _safe_base(env("BAO_ADDR", "VAULT_ADDR"), addr_var)
+    token = env("BAO_TOKEN", "VAULT_TOKEN")
+    if not token:
+        try:  # what `vault login` / `bao login` leave behind
+            token = (Path.home() / ".vault-token").read_text(encoding="utf-8").strip()
+        except OSError:
+            token = ""
+    if not token:
+        raise SourceError(f"set {'BAO_TOKEN' if bao else 'VAULT_TOKEN'} (or run `{'bao' if bao else 'vault'} login`)")
+    headers = {"X-Vault-Token": token}
+    if env("BAO_NAMESPACE", "VAULT_NAMESPACE"):
+        headers["X-Vault-Namespace"] = env("BAO_NAMESPACE", "VAULT_NAMESPACE")
+    first = None
+    try:  # KV v2 keeps the value under data.data
+        out = _post_json(f"{base}/v1/{mount}/data/{path}", None, headers=headers)
+        data = out.get("data")
+        values = data.get("data") if isinstance(data, dict) else None
+    except _HTTPStatus as exc:
+        if exc.code not in (403, 404):
+            raise
+        first, values = exc, None
+    if not isinstance(values, dict):  # KV v1 (or a v2 path the token cannot read)
+        try:
+            out = _post_json(f"{base}/v1/{mount}/{path}", None, headers=headers)
+        except _HTTPStatus:
+            raise first or SourceError("the secret was not found") from None  # v2 error says more
+        values = out.get("data")
+    if not isinstance(values, dict) or not values:
+        raise SourceError("the secret has no data (deleted, or not a KV secret)")
+    return _pick(values, field)
+
+
+def _fetch_infisical(ref: str) -> str:
+    parts = [p for p in ref[len("infisical://"):].strip("/").split("/") if p]
+    if len(parts) < 3:
+        raise SourceError("infisical reference must be infisical://<project_id>/<environment>[/<folder>...]/<SECRET_NAME>")
+    project, environment, name = parts[0], parts[1], parts[-1]
+    folder = "/" + "/".join(parts[2:-1])
+    base = _safe_base(os.environ.get("INFISICAL_API_URL") or "https://app.infisical.com", "INFISICAL_API_URL")
+    if base.endswith("/api"):
+        base = base[:-4]
+    token = os.environ.get("INFISICAL_TOKEN", "")
+    if not token:
+        cid = os.environ.get("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID", "")
+        secret = os.environ.get("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET", "")
+        if not cid or not secret:
+            raise SourceError("set INFISICAL_TOKEN, or INFISICAL_UNIVERSAL_AUTH_CLIENT_ID and "
+                              "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET (a machine identity)")
+        token = _post_json(f"{base}/api/v1/auth/universal-auth/login",
+                           {"clientId": cid, "clientSecret": secret}).get("accessToken") or ""
+        if not isinstance(token, str) or not token:
+            raise SourceError("Infisical returned no access token")
+    query = urlencode({"workspaceId": project, "environment": environment, "secretPath": folder})
+    out = _post_json(f"{base}/api/v3/secrets/raw/{quote(name, safe='')}?{query}", None, token)
+    secret_obj = out.get("secret")
+    value = secret_obj.get("secretValue") if isinstance(secret_obj, dict) else None
+    if not isinstance(value, str):
+        raise SourceError("Infisical returned no secret value")
+    return value
+
+
+def _fetch_aws_sm(ref: str) -> str:
+    body, _, field = ref[len("aws-sm://"):].partition("#")
+    region, _, secret_id = body.strip("/").partition("/")
+    if not region or not secret_id:
+        raise SourceError("aws-sm reference must be aws-sm://<region>/<secret_id>[#field]")
+    try:
+        import boto3
+        from botocore.config import Config
+        from botocore.exceptions import BotoCoreError, ClientError
+    except ImportError:
+        raise SourceError("aws-sm references need boto3 (pip install boto3)")
+    # AWS_ENDPOINT_URL_SECRETS_MANAGER (boto3's own variable) points it elsewhere.
+    client = boto3.client("secretsmanager", region_name=region,
+                          config=Config(connect_timeout=5, read_timeout=TIMEOUT, retries={"max_attempts": 2}))
+    try:
+        out = client.get_secret_value(SecretId=secret_id)
+    except ClientError as exc:
+        err = exc.response.get("Error", {})
+        raise SourceError(f"Secrets Manager {err.get('Code', 'error')}: {err.get('Message', '')[:200]}".rstrip())
+    except BotoCoreError as exc:
+        raise SourceError(f"AWS credentials: {exc}")
+    value = out.get("SecretString")
+    if value is None:
+        raise SourceError("binary secrets are not supported; store the value as a string")
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and parsed:
+        return _pick(parsed, field)
+    if field:
+        raise SourceError(f"#{field} needs a JSON secret; this one is a plain string")
+    return value
+
+
 def fetch(ref: str) -> str:
     """The value a reference points at. Raises SourceError; never logs the value."""
     ref = check_ref(ref)
@@ -170,6 +313,12 @@ def fetch(ref: str) -> str:
         value = _fetch_1password(ref)
     elif ref.startswith("okta-pam://"):
         value = _fetch_okta_pam(ref)
+    elif ref.startswith(("vault://", "openbao://")):
+        value = _fetch_vault(ref)
+    elif ref.startswith("infisical://"):
+        value = _fetch_infisical(ref)
+    elif ref.startswith("aws-sm://"):
+        value = _fetch_aws_sm(ref)
     else:
         value = _fetch_agentcore(ref)
     if not value:
