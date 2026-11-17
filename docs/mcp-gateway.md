@@ -536,6 +536,11 @@ call event. They feed tool-tag classification *below* the explicit org map:
 an admin's tag always wins over a server's self-declaration. See
 [Tool Tags](tool-tags.md).
 
+A server can declare a [contract](tool-contracts.md) the same way, under
+`_meta.prismor.contract`: what the tool's result does to the session label and
+what a call requires of it. It is validated like a policy contract, applies
+only to the tool it is declared on, and ranks below the org's own contracts.
+
 ## Governing tools (admins)
 
 Beyond blocking a whole server, an admin can turn off **individual tools** —

@@ -768,6 +768,10 @@ class _Route:
     # _meta.tags, or annotations["prismor/tags"]) — consumed by trifecta
     # classification below the explicit org map (admin always wins).
     meta_tags: List[str] = field(default_factory=list)
+    # The contract the server declares on the tool (_meta.prismor.contract):
+    # what its result does to the session label and what a call requires of
+    # it. Same tier as meta_tags -- below the org's explicit contracts.
+    meta_contract: List[Dict[str, Any]] = field(default_factory=list)
 
 
 _META_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]*$")
@@ -804,6 +808,30 @@ def _extract_meta_tags(tool: Dict[str, Any]) -> List[str]:
             out.append(tag)
         if len(out) >= _META_TAG_CAP:
             break
+    return out
+
+
+def _extract_meta_contract(tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pull a self-declared contract off an upstream tool definition.
+
+    Untrusted input, so it is parsed by the same validator a policy contract
+    goes through and dropped whole on any error. What survives can only
+    restrict: a contract has no field that widens a session label.
+    """
+    meta = tool.get("_meta")
+    pris = meta.get("prismor") if isinstance(meta, dict) else None
+    raw = pris.get("contract") if isinstance(pris, dict) else None
+    items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    out: List[Dict[str, Any]] = []
+    from prismor.runtime import contracts
+    for item in items[:_META_TAG_CAP]:
+        if not isinstance(item, dict):
+            continue
+        # A server speaks for its own tool only: any `tool` selector is dropped.
+        item = {k: v for k, v in item.items() if k != "tool"}
+        contract, errors = contracts.parse_contract(item, "_meta", tool=str(tool.get("name") or ""))
+        if contract is not None and not errors:
+            out.append(item)
     return out
 
 
@@ -1150,7 +1178,8 @@ class Gateway:
                     up.spec.name, str(override.get("name") or original), local=up.spec.local)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
-                                         meta_tags=_extract_meta_tags(tool))
+                                         meta_tags=_extract_meta_tags(tool),
+                                         meta_contract=_extract_meta_contract(tool))
                 # Pin before the per-caller filter: trust on first use is per
                 # server, so a tool hidden from this caller is still part of the
                 # server's first listing.
@@ -1964,6 +1993,8 @@ class Gateway:
             # Server-declared tags ride on the event; trifecta consumes them
             # as a classification tier below the explicit org map.
             metadata["meta_tags"] = list(route.meta_tags)
+        if route.meta_contract:
+            metadata["meta_contract"] = list(route.meta_contract)
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": self.session_id,
@@ -2020,6 +2051,11 @@ class Gateway:
     def _build_result_event(self, route: _Route, result: Any,
                             arguments: Any = None) -> Dict[str, Any]:
         base = self._event_base(route, "PostToolUse")
+        if isinstance(arguments, dict):
+            # A contract's argument selectors decide what this RESULT does to
+            # the session label. Under its own key rather than `kwargs`, which
+            # `when:` rules read and which result events have never carried.
+            base["metadata"]["call_args"] = arguments
         if route.upstream.spec.local:
             from prismor.runtime import mirror
             shaped = mirror.shape_result_event(

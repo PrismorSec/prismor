@@ -214,6 +214,16 @@ def check_allowed(
         if not confirmed:
             return "This would allow one case through a tag rule. Re-run with --yes to confirm."
         return None
+    if rule is None and rule_id.startswith("tool-contract:"):
+        import re as _re
+        if not _re.fullmatch(r"tool-contract:[0-9a-f]{10}", rule_id):
+            return (f"No tool contract named '{rule_id}'. The id is in the block "
+                    "message; list contracts with: prismor tags contracts")
+        if scope != "pattern":
+            return "Tool contracts only support a scoped --pattern exception, not --off or --observe."
+        if not confirmed:
+            return "This would allow one call through a tool contract. Re-run with --yes to confirm."
+        return None
     if rule is None and rule_id == "tool-category-crossover":
         return (
             f"{rule_id} is a tag-sequence rule (settings.tool_tags), not a policy "

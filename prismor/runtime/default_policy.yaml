@@ -186,6 +186,26 @@ settings:
                             # Declaring one REPLACES the defaults above, so
                             # `[untrusted_content, critical_action]` here blocks
                             # on the sequence alone, without the influence check.
+    # Per-tool contracts (docs/tool-contracts.md). A contract says what a
+    # tool's RESULT does to the session label (`delta`, `effects`) and what a
+    # CALL requires of it (`requires`). The label is an audience (who may see
+    # what the session has read; starts `public`) and a trust level (trusted >
+    # internal > untrusted). It only ever narrows. Honors `mode` above.
+    contracts: []           # e.g.
+                            #   - tool: mcp__github__get_file_contents(owner:acme, repo:billing*)
+                            #     delta: { audience: [org:acme] }
+                            #   - tool: mcp__github__create_issue
+                            #     requires: { audience_contains: [public], trust: internal }
+                            #     effects: [egress]
+                            #   - tool: mcp__gmail__send_email
+                            #     requires: { audience_contains: [$to] }
+    principals: {}          # static map, principal -> members:
+                            #   org:acme: [team:billing, "*@acme.com"]
+    contract_packs: {}      # what the built-in packs cannot see for themselves:
+                            #   github: { private: ["acme/*"] }
+                            #   slack:  { connect_channels: ["C0EXT*"] }
+    contract_defaults_enabled: true # built-in GitHub / Slack packs (deltas only)
+    meta_contracts_enabled: true    # honor _meta.prismor.contract from MCP servers
     # Tags a call can carry, beyond the ones an org defines:
     #   untrusted_content    content authored outside the trust boundary
     #   critical_action      irreversible or externally visible

@@ -489,6 +489,185 @@
                 },
                 "minItems": 2
               }
+            },
+            "contracts_enabled": {
+              "type": "boolean"
+            },
+            "contract_defaults_enabled": {
+              "type": "boolean",
+              "description": "Apply the built-in contract packs (GitHub, Slack) to tools no policy or server contract names."
+            },
+            "meta_contracts_enabled": {
+              "type": "boolean",
+              "description": "Honor contracts MCP servers self-declare in _meta.prismor.contract."
+            },
+            "contracts": {
+              "type": "array",
+              "description": "Per-tool contracts: what a tool's result does to the session label (delta, effects) and what a call requires of it (requires).",
+              "items": {
+                "type": "object",
+                "required": [
+                  "tool"
+                ],
+                "additionalProperties": false,
+                "anyOf": [
+                  {
+                    "required": [
+                      "delta"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requires"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "effects"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name or glob, optionally narrowed by argument selectors: name(arg:glob, arg:glob)."
+                  },
+                  "args": {
+                    "type": "object",
+                    "description": "Argument selectors as a map, for patterns the inline form cannot hold (commas, parentheses).",
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "delta": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "audience": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                        }
+                      },
+                      "trust": {
+                        "type": "string",
+                        "enum": [
+                          "internal",
+                          "untrusted"
+                        ]
+                      }
+                    }
+                  },
+                  "requires": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "audience_contains": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                        }
+                      },
+                      "trust": {
+                        "type": "string",
+                        "enum": [
+                          "trusted",
+                          "internal",
+                          "untrusted"
+                        ]
+                      },
+                      "effects": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                        }
+                      },
+                      "no_effects": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                        }
+                      }
+                    }
+                  },
+                  "effects": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                    }
+                  }
+                }
+              }
+            },
+            "principals": {
+              "type": "object",
+              "description": "Static principal map: principal -> the principals (or address globs) inside it.",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                    }
+                  }
+                ]
+              }
+            },
+            "contract_packs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "github": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "private": {
+                      "description": "owner/repo globs that are private: a list, or a map of glob -> audience.",
+                      "type": [
+                        "array",
+                        "object"
+                      ]
+                    }
+                  }
+                },
+                "slack": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "connect_channels": {
+                      "description": "Channel ids or names (globs) that are Slack Connect channels.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         },

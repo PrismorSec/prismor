@@ -198,7 +198,7 @@ _EVASION_THRESHOLD = 0.6
 # or as the prefix of a finding id (`staged-exec-0`, `tag-rule:x-12`).
 _STATEFUL_RULES = (
     "staged-execution", "staged-exec", "evasion-detection", "evasion",
-    "tag-rule", "tool-category-crossover", "cross-agent-flow",
+    "tag-rule", "tool-contract", "tool-category-crossover", "cross-agent-flow",
     "taint-escalation", "memory-self-reinforcement", "scoped-agent",
     "agent-tool-deny", "agent-disabled", "identity-unverified", "iam",
 )

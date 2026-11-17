@@ -3716,6 +3716,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         if tc == "lint":
             tags_cli.tags_lint(workspace, getattr(args, "file", None))
             return
+        if tc == "contracts":
+            tags_cli.tags_contracts(workspace)
+            return
+        if tc == "label":
+            tags_cli.tags_label(workspace, getattr(args, "session", None))
+            return
+        if tc == "coverage":
+            tags_cli.tags_coverage(workspace, last=args.last, as_json=args.json)
+            return
         if tc == "test":
             tags_cli.tags_test(workspace, session=args.session, last=args.last,
                                extra_rules=args.rule,
@@ -5078,7 +5087,22 @@ def build_parser() -> argparse.ArgumentParser:
     tags_edit_p = tags_sub.add_parser("edit", help="Interactive wizard: tag tools + author rules")
     tags_edit_p.add_argument("--workspace", help="Workspace path")
 
-    tags_lint_p = tags_sub.add_parser("lint", help="Validate rule expressions in a policy file")
+    tags_contracts_p = tags_sub.add_parser(
+        "contracts", help="List tool contracts (what a result does to the session, what a call requires)")
+    tags_contracts_p.add_argument("--workspace", help="Workspace path")
+
+    tags_label_p = tags_sub.add_parser(
+        "label", help="Show a session's label (audience + trust) and the calls that narrowed it")
+    tags_label_p.add_argument("session", nargs="?", help="Session id (default: the most recent)")
+    tags_label_p.add_argument("--workspace", help="Workspace path")
+
+    tags_cov_p = tags_sub.add_parser(
+        "coverage", help="Per MCP server: tools with a contract, with tags only, with neither")
+    tags_cov_p.add_argument("--last", type=int, default=50, help="How many recent sessions to scan")
+    tags_cov_p.add_argument("--json", action="store_true", help="Print the report as JSON")
+    tags_cov_p.add_argument("--workspace", help="Workspace path")
+
+    tags_lint_p = tags_sub.add_parser("lint", help="Validate rule expressions and contracts in a policy file")
     tags_lint_p.add_argument("file", nargs="?", help="Policy file (default: .prismor/policy.yaml)")
     tags_lint_p.add_argument("--workspace", help="Workspace path")
 
@@ -6986,6 +7010,10 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: 
             print(f"         expected: {r['expected']}"
                   + (f" (rule={r['expected_rule']})" if r.get('expected_rule') else ""))
             print(f"         got:      {r['got']}  matched_rules={r['matched_rules']}")
+            for s in r.get("steps") or []:
+                if s["status"] != "ok":
+                    print(f"         step {s['step']} ({s['tool']}): expected {s['expected']}, "
+                          f"got {s['got']}" + (f" — {s['reason']}" if s.get("reason") else ""))
 
     print()
     color = _GREEN if result["failed"] == 0 else _RED
@@ -7346,9 +7374,10 @@ def _allow_cmd(args, workspace: Path) -> int:
         return 0
 
     pattern = args.pattern
-    if rule_id.startswith("tag-rule:"):
+    _whole_call = rule_id.startswith(("tag-rule:", "tool-contract:"))
+    if _whole_call:
         if not pattern:
-            print("Tag-rule exceptions require --pattern with the complete command or call arguments.")
+            print("Tag-rule and tool-contract exceptions require --pattern with the complete command or call arguments.")
             return 2
         try:
             call = json.loads(pattern)
@@ -7385,7 +7414,7 @@ def _allow_cmd(args, workspace: Path) -> int:
     window = f" until {entry['expires']}" if entry.get("expires") else ""
     print(f"Added {entry['id']}{window} — {rule_id} will not block what matches:")
     print(f"  {pattern}")
-    if rule_id.startswith("tag-rule:"):
+    if _whole_call:
         print("\nRetry the approved call in the same session. Other policy rules still apply.")
     else:
         print("\nCheck it:   prismor check '<your command>'")
