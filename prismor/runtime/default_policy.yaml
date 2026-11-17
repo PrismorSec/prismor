@@ -13,6 +13,10 @@ settings:
   # Optional identical MCP calls per session in a rolling 60 seconds.
   # mcp_tool_repeat_limits: {jobs: {get_status: 12}}
   # Select mcp-repeat-limit-exceeded and mcp-repeat-limit-unavailable to enforce.
+  # Optional allowed models and spend caps (per session, agent, user, device).
+  # models: {allow: ["claude-sonnet-*"], deny: ["*opus*"]}
+  # spend_budgets: [{scope: session, usd: 5}, {scope: user, usd: 200, period: monthly}]
+  # Select model-not-allowed and spend-budget-exceeded in enforce mode to block.
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
@@ -508,6 +512,32 @@ rules:
     category: rate_limit
     title: Rate-limit accounting unavailable
     event_types: [rate_limit]
+    when: "rate.error != null"
+    action: block
+
+  # settings.models / settings.spend_budgets (see docs/spend-budgets.md).
+  # Like the rate limit, select these in enforce mode to block.
+  - id: model-not-allowed
+    severity: HIGH
+    category: spend_limit
+    title: Model not on the allowed list
+    event_types: [model_policy]
+    when: "rate.allowed == false"
+    action: block
+
+  - id: spend-budget-exceeded
+    severity: HIGH
+    category: spend_limit
+    title: Spend budget reached
+    event_types: [spend_budget]
+    when: "rate.error == null and rate.used >= rate.limit"
+    action: block
+
+  - id: spend-budget-unavailable
+    severity: HIGH
+    category: spend_limit
+    title: Spend accounting unavailable
+    event_types: [spend_budget, model_policy]
     when: "rate.error != null"
     action: block
 

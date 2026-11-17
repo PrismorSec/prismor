@@ -809,6 +809,59 @@ def evaluate_tool_call(
                     sys.stderr.write(f"[prismor] quota-owner exemption error: {exc}\n")
             else:
                 findings.extend(_rate_findings)
+    # Allowed models and spend budgets (budgets.py). Like the rate gate this
+    # runs once per live action, never on replay. The proxy's LLM request is
+    # its "prompt" event, so it is checked before the request goes upstream.
+    _gate_type = str(event.get("type") or "")
+    if (rate_accounting
+            and (engine.models is not None or engine.spend_budgets or engine.spend_error)
+            and ((_is_pre_action(str(event.get("agent_event") or ""))
+                  and event.get("agent_event") != "PreCheck"
+                  and _gate_type not in {"memory", "skill_manifest", "rate_limit", "mcp_repeat"})
+                 or (_gate_type == "prompt" and meta.get("tool_name") == "llm_request"))):
+        from prismor.runtime import budgets as _budgets
+        _surface = str(meta.get("surface") or "")
+        # A virtual key's subject is set by the proxy operator, not the caller.
+        _user = (str(getattr(subject, "user_id", "") or "")
+                 if is_verified(subject, _surface) or _surface == "llm-proxy" else "")
+        _gate_reports = []
+        try:
+            if engine.spend_error:
+                _gate_reports.append(("spend_budget", {
+                    "error": engine.spend_error, "used": 0, "limit": 0}))
+            else:
+                _model = str(meta.get("model") or "") or (
+                    _budgets.session_model(session_id) if engine.models is not None else "")
+                _mr = _budgets.model_report(engine.models, _model)
+                if _mr:
+                    _gate_reports.append(("model_policy", _mr))
+                _br = _budgets.budget_report(engine.spend_budgets, session_id=session_id,
+                                             agent=_agent_name, user=_user)
+                if _br:
+                    _gate_reports.append(("spend_budget", _br))
+        except Exception as exc:  # never let accounting crash the hook
+            _gate_reports.append(("spend_budget", {
+                "error": f"spend check failed: {exc}", "used": 0, "limit": 0}))
+        for _gtype, _report in _gate_reports:
+            _gate_event = {"type": _gtype, "agent_event": "PreToolUse",
+                           "content": json.dumps(_report, sort_keys=True, default=str)}
+            for _f in engine.evaluate(_gate_event, _session_seq, session_id=session_id,
+                                      subject=subject, rate_context=_report, trace=_trace):
+                _f["spend"] = _report
+                if _report.get("error"):
+                    _f["evidence"] = str(_report["error"])
+                elif _gtype == "model_policy":
+                    _f["evidence"] = f"model {_report['model']} {_report['reason']}"
+                else:
+                    _per = f" this {_report['period'][:-2].replace('dai', 'day')}" if _report.get("period") else ""
+                    _usd = lambda v: f"${v:.2f}" if v >= 0.01 or v == 0 else f"${v:.4f}"  # noqa: E731
+                    _f["evidence"] = (f"{_report['scope']} {_report['seat']}: {_usd(_report['used'])} of "
+                                      f"{_usd(_report['limit'])}{_per}")
+                _f["reason"] = f"{_f.get('title') or 'Spend limit'}: {_f['evidence']}"  # proxy refusal text
+                _f["remediation"] = ("Inspect `prismor spend status`; ask the operator to raise the "
+                                     "budget or allow the model.")
+                findings.append(_f)
+
     # A multi-file patch is one event with one `path`; every other file it
     # touches gets the path rules too. Content is dropped so the content rules,
     # already run above, do not fire twice.

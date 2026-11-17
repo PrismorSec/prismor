@@ -69,6 +69,8 @@ TYPE_FIELD: Dict[str, str] = {
     # Runtime-generated accounting context; supplied metadata cannot trigger it.
     "rate_limit": "content",
     "mcp_repeat": "content",
+    "spend_budget": "content",
+    "model_policy": "content",
 }
 
 EVENT_TYPES: Tuple[str, ...] = tuple(TYPE_FIELD)

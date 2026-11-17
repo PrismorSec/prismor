@@ -326,6 +326,8 @@ _LINE_FIELDS = frozenset({"command", "path", "url"})
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
     "rate_limit": ["content"],
     "mcp_repeat": ["content"],
+    "spend_budget": ["content"],
+    "model_policy": ["content"],
     "shell": ["command"],
     "file_read": ["path"],
     "file_write": ["path"],
@@ -1545,6 +1547,11 @@ class PolicyEngine:
         # file is enforced in its place (see _load_last_good).
         self.project_policy_fallback: bool = False
         self.rate_limit: Optional[Dict[str, int]] = None
+        # settings.models / settings.spend_budgets (see budgets.py); an
+        # invalid value is dropped and reported through spend_error.
+        self.models: Optional[Dict[str, Any]] = None
+        self.spend_budgets: Optional[List[Dict[str, Any]]] = None
+        self.spend_error: Optional[str] = None
         self.mcp_tool_repeat_limits: Dict[str, Dict[str, int]] = {}
         self.mcp_tool_repeat_limits_error: Optional[str] = None
         self.mcp_tool_repeat_limits_source = "default"
@@ -2136,6 +2143,18 @@ class PolicyEngine:
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
         self.rate_limit = settings.get("rate_limit")
+        from prismor.runtime import budgets as _budgets
+        _spend_errors: List[str] = []
+        for _key, _check in (("models", _budgets.validate_models),
+                             ("spend_budgets", _budgets.validate_budgets)):
+            if settings.get(_key) is None:
+                continue
+            _errs = _check(settings[_key])
+            if _errs:
+                _spend_errors.extend(_errs)
+            else:
+                setattr(self, _key, settings[_key])
+        self.spend_error = "; ".join(_spend_errors) or None
         self.mcp_tool_repeat_limits = settings.get("mcp_tool_repeat_limits", {})
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
@@ -5788,6 +5807,12 @@ def validate_policy(path: Path) -> List[str]:
     if "rate_limit" in (raw.get("settings") or {}):
         from prismor.runtime.ratelimit import validate_settings
         errors.extend(validate_settings(raw["settings"]["rate_limit"]))
+
+    from prismor.runtime import budgets as _budgets
+    for _key, _check in (("models", _budgets.validate_models),
+                         ("spend_budgets", _budgets.validate_budgets)):
+        if (raw.get("settings") or {}).get(_key) is not None:
+            errors.extend(_check(raw["settings"][_key]))
 
     named, cond_errors = compile_named_conditions((raw.get("settings") or {}).get("conditions"))
     errors.extend(cond_errors)

@@ -247,6 +247,74 @@ capacity or ask the operator to review policy; changing session ids does not
 reset quota. The internal `rate_limit` policy event and `rate.*` conditions are
 populated by the live gate; supplied event metadata cannot manufacture them.
 
+## Allowed models and spend budgets
+
+Two optional settings cap what agents may use and spend. Configure a workspace
+policy:
+
+```yaml
+version: "1.0"
+settings:
+  models:
+    allow: ["claude-sonnet-*", "gpt-5*"]   # absent = every model
+    deny: ["*opus*"]                       # deny wins over allow
+  spend_budgets:
+    - {scope: session, usd: 5}                               # each session
+    - {scope: agent, usd: 50, period: daily}                 # each agent
+    - {scope: agent, usd: 10, period: daily, match: ci-bot}  # one agent
+    - {scope: user, usd: 200, period: monthly}               # each user
+    - {scope: device, usd: 500, period: monthly}             # this machine
+rules:
+  - id: model-not-allowed
+    mode: enforce
+  - id: spend-budget-exceeded
+    mode: enforce
+  - id: spend-budget-unavailable
+    mode: enforce
+```
+
+Model globs match the model id as sent and its normalized name
+(`anthropic/claude-sonnet-4-5` and `claude-sonnet-4-5[1m]` both match
+`claude-sonnet-*`).
+
+A budget is per seat, not a shared pool: `scope: user` gives every user their
+own cap. `period` is `daily`, `weekly` (from Monday) or `monthly` (the default).
+Periods reset at 00:00 UTC. A session budget covers the whole session. `usd: 0`
+blocks every call. When several budgets apply, the one closest to its cap is
+reported.
+
+| Scope | Counts the spend of |
+| --- | --- |
+| `session` | The current session. |
+| `agent` | The agent name (for example `claude-code`, or the proxy's `--agent-name`). |
+| `user` | The verified user, or the proxy virtual key's `subject`. With neither, the device's spend. |
+| `device` | Every agent on this machine (`$PRISMOR_HOME/prismor.db`). |
+
+Spend comes from the same token store as `prismor sessions` cost. A
+provider-reported cost is used first, then the list price. A model with no
+known price is counted at $5 / $25 per million input/output tokens, so it is
+never free.
+
+Where each check runs:
+
+- **LLM proxy.** It checks each request before the request goes to the
+  provider. In enforce mode the proxy refuses the request (403) with the reason.
+- **Hooks.** They check before each tool call and each prompt. A turn is priced
+  only when it ends, so a budget that a turn crosses blocks the next call, not
+  the turn itself. Hooks do not see the model on each call, so the model check
+  uses the model that the session's last turn used.
+
+```bash
+prismor spend status
+prismor spend status --workspace /path/to/project --agent ci-bot --json
+```
+
+Status lists each budget with this device's spend and the rule modes. The
+dashboard Logs page shows spend today and this month, each budget's use, and
+per model the requests, tokens, cost and median latency (proxy calls only).
+An invalid `models` or `spend_budgets` value is dropped. It then reports
+`spend-budget-unavailable` and does not pass calls without a check.
+
 ## Semantic Guard
 
 The regex rules above catch injection attempts that match known patterns. The semantic guard adds a second layer for paraphrased, social-engineered, and in-content injections.

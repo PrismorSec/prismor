@@ -43,6 +43,30 @@
           },
           "description": "Optional exact server -> tool -> identical calls allowed per session in a rolling 60 seconds. Enforcement follows mcp-repeat-limit-exceeded and mcp-repeat-limit-unavailable."
         },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "deny": {"type": "array", "items": {"type": "string", "minLength": 1}}
+          },
+          "description": "Allowed models. Globs match the model id as sent and its normalized name. Deny wins; with no allow list, every model that is not denied is allowed. Enforcement follows the model-not-allowed rule's mode."
+        },
+        "spend_budgets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["scope", "usd"],
+            "properties": {
+              "scope": {"enum": ["session", "agent", "user", "device"]},
+              "usd": {"type": "number", "minimum": 0},
+              "period": {"enum": ["daily", "weekly", "monthly"], "default": "monthly"},
+              "match": {"type": "string", "minLength": 1, "description": "One agent or user (scope agent or user only); absent = each one."}
+            }
+          },
+          "description": "Per-seat USD caps. Periods reset on UTC calendar boundaries; a session budget covers the whole session. Enforcement follows the spend-budget-exceeded rule's mode."
+        },
         "rate_limit": {
           "type": "object",
           "additionalProperties": false,
@@ -893,6 +917,8 @@
               "ui_action",
               "rate_limit",
               "mcp_repeat",
+              "spend_budget",
+              "model_policy",
               "mcp"
             ]
           },
