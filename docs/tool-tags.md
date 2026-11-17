@@ -186,7 +186,8 @@ rules:
   - "untrusted_content then critical_action -> warn"      # the sequence itself
 ```
 
-Replayed over 426 real development sessions with provenance active, the
+Replayed over 426 real development sessions with provenance active (a replay
+of private session logs, not checked in to this repo), the
 shipped defaults block **none** and warn on 4. The same corpus under the old
 rule blocked 213. Widening the replay's idea of a critical action well past
 what the engine actually tags -- counting every `git push`, `psql`, `rm -rf`
@@ -196,7 +197,8 @@ contain the phrase "git push origin" before the agent pushed its own branch.
 Against a suite of twelve cross-agent attacks (SQL through a note, a dropper,
 exfiltration, an authorized_keys append, a remote hijack, a three-hop chain, a
 subagent acting on its parent's read) and ten benign lookalikes, the defaults
-deny 8 attacks and 0 benign runs: precision 1.00, recall 0.67, FPR 0.00. The
+deny 8 attacks and 0 benign runs: precision 1.00, recall 0.67, FPR 0.00
+(measured outside the repo; that suite is not checked in). The
 four it does not deny are actions no rule tags critical at all -- see the
 limits below.
 
