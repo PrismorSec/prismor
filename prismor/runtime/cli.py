@@ -5264,7 +5264,10 @@ def build_parser() -> argparse.ArgumentParser:
     t_add.add_argument("--from-ref", dest="ref", metavar="REF",
                        help="Fetch the value from a secret manager: op://vault/item/field (1Password), "
                             "okta-pam://team/resource_group/project/secret_id[#field] (Okta Privileged Access), "
-                            "agentcore://region/workload/provider (AWS AgentCore Identity). "
+                            "agentcore://region/workload/provider (AWS AgentCore Identity), "
+                            "vault://mount/path[#field] or openbao://… (HashiCorp Vault / OpenBao KV), "
+                            "infisical://project_id/env[/folder]/NAME (Infisical), "
+                            "aws-sm://region/secret_id[#field] (AWS Secrets Manager). "
                             "Only the reference is kept; `prismor cloak sync` fetches it again")
 
     cloak_sub.add_parser("list", help="List registered placeholder names (never values)")
