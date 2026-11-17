@@ -84,7 +84,7 @@ def _paths(workspace: Path, cfg: Dict[str, Any]) -> Dict[str, List[str]]:
     deny_read = [p for p in (_real(x) for x in SECRET_PATHS + list(cfg.get("deny_read") or []))
                  if p not in lifted]
     writable = [] if cfg.get("workspace_mount") == "ro" else [ws]
-    writable += [_real("/tmp"), _real(tempfile.gettempdir())]
+    writable += [_real("/tmp"), _real(tempfile.gettempdir())]  # nosec B108 - granting the sandbox the host temp dirs, not creating a temp file
     writable += [_real(p) for p in CACHE_PATHS + list(cfg.get("allow_write") or [])]
     protected = [os.path.join(ws, rel) for rel in PROTECTED_IN_WORKSPACE]
     return {"ws": [ws], "deny_read": deny_read, "writable": list(dict.fromkeys(writable)),
@@ -328,7 +328,7 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
                 env.update(_proxy_env(proxy.address[1]))
             if enforce:
                 prof = Path(tmp) / "profile.sb"
-                prof.write_text(seatbelt_profile(workspace, cfg, restrict_network=restrict))
+                prof.write_text(seatbelt_profile(workspace, cfg, restrict_network=restrict), encoding="utf-8")
                 argv = ["/usr/bin/sandbox-exec", "-f", str(prof)] + shell
             else:
                 argv = shell

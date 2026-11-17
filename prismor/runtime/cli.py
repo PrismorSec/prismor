@@ -3430,7 +3430,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 tag = _color("[auto]", _DIM) + " " if entry["auto"] else ""
                 src = sources.get(entry["name"], {}).get("ref")
                 try:  # the value is checked in-process, never printed
-                    raw = (secrets_dir() / entry["name"]).read_text(errors="replace").rstrip("\n")
+                    raw = (secrets_dir() / entry["name"]).read_text(encoding="utf-8", errors="replace").rstrip("\n")
                 except OSError:
                     raw = None
                 masked = raw is None or is_scrubbable_secret(raw)
