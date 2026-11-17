@@ -13,6 +13,9 @@ A tool call is judged before it runs. Two later points matter too:
 
 Both record the refusing rule and policy version on the signed trail.
 
+Both also send the refusal to the console: a block on the session and,
+when ``approval_id`` is given, the approval's real outcome.
+
 ``resource`` may be a dict or a zero-arg callable returning the current
 state, so a re-check judges the account as it is now, not as it was at the
 allow. Limits: a sync Python function cannot be stopped mid-run (we stop
@@ -90,7 +93,11 @@ def refusing_rule(now: Any) -> Optional[str]:
 
 
 def _record(status: str, now: Any, *, tool: str, agent: str, session_id: str,
-            resource: Optional[Dict[str, Any]]) -> Refused:
+            resource: Optional[Dict[str, Any]], decision: Any = None,
+            approval_id: Optional[str] = None) -> Refused:
+    """Record a refusal after the allow: the signed trail, the console's
+    session (as a block with the refusing rule) and, for an approved call,
+    the approval's outcome, which replaces the earlier ``executed``."""
     rule = refusing_rule(now)
     reason = str(now.reason or rule or "policy changed")
     try:
@@ -99,14 +106,31 @@ def _record(status: str, now: Any, *, tool: str, agent: str, session_id: str,
             _audit.append_approval_record(
                 status=status, tool=tool, agent=agent, session_id=session_id,
                 resource=resource, rules=[rule] if rule else [],
-                reason=f"{status.replace('_', ' ')}: {reason}")
+                reason=f"{status.replace('_', ' ')}: {reason}", approval_id=approval_id)
     except Exception:
         pass
+    report = getattr(decision, "on_refused", None)
+    if callable(report):
+        try:
+            report(status, now)
+        except Exception:
+            pass
+    if approval_id:
+        try:
+            from prismor.runtime.enterprise import approvals as _approvals
+            from prismor.runtime.enterprise import identity as _identity
+            ident = _identity.load_identity()
+            if ident:
+                _approvals._report_outcome(ident, approval_id, status, rules=[rule] if rule else None,
+                                           reason=reason, resource=resource)
+        except Exception:
+            pass
     return Refused(status, reason, rule)
 
 
 def recheck_before_commit(decision: Any, *, resource: Resource = None, tool: str = "",
-                          agent: str = "", session_id: str = "") -> None:
+                          agent: str = "", session_id: str = "",
+                          approval_id: Optional[str] = None) -> None:
     """Call as the last step before the tool's effect. Raises :class:`Refused`
     (``revoked_before_commit``) when the call is no longer allowed. Forces a
     policy fetch, so a pause set in the console since the allow is seen."""
@@ -114,12 +138,14 @@ def recheck_before_commit(decision: Any, *, resource: Resource = None, tool: str
     now = still_refused(decision, res, refresh=0)
     if now is not None:
         raise _record("revoked_before_commit", now, tool=tool, agent=agent,
-                      session_id=session_id, resource=res)
+                      session_id=session_id, resource=res, decision=decision,
+                      approval_id=approval_id)
 
 
 async def run_cancellable(decision: Any, awaitable: Any, *, resource: Resource = None,
                           tool: str = "", agent: str = "", session_id: str = "",
-                          every: Optional[float] = None) -> Any:
+                          every: Optional[float] = None,
+                          approval_id: Optional[str] = None) -> Any:
     """Await ``awaitable`` as a task, re-checking every ``every`` seconds (the
     policy refresh interval by default). Cancels the task and raises
     :class:`Refused` (``cancelled_in_flight``) when a re-check refuses."""
@@ -136,7 +162,8 @@ async def run_cancellable(decision: Any, awaitable: Any, *, resource: Resource =
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 raise _record("cancelled_in_flight", now, tool=tool, agent=agent,
-                              session_id=session_id, resource=res)
+                              session_id=session_id, resource=res, decision=decision,
+                              approval_id=approval_id)
     finally:
         if not task.done():  # our own caller was cancelled
             task.cancel()
@@ -145,7 +172,8 @@ async def run_cancellable(decision: Any, awaitable: Any, *, resource: Resource =
 def wait_cancellable(decision: Any, fn: Callable[[], Any], *, resource: Resource = None,
                      tool: str = "", agent: str = "", session_id: str = "",
                      every: Optional[float] = None,
-                     on_cancel: Optional[Callable[[], None]] = None) -> Any:
+                     on_cancel: Optional[Callable[[], None]] = None,
+                     approval_id: Optional[str] = None) -> Any:
     """Run blocking ``fn`` in a daemon thread and wait for it, re-checking every
     ``every`` seconds. On refusal, calls ``on_cancel`` (e.g. send MCP
     ``notifications/cancelled``), stops waiting and raises :class:`Refused`.
@@ -175,4 +203,5 @@ def wait_cancellable(decision: Any, fn: Callable[[], Any], *, resource: Resource
                 except Exception:
                     pass
             raise _record("cancelled_in_flight", now, tool=tool, agent=agent,
-                          session_id=session_id, resource=res)
+                          session_id=session_id, resource=res, decision=decision,
+                          approval_id=approval_id)

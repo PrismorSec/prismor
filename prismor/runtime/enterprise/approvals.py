@@ -375,6 +375,13 @@ def await_step_up(
             "provenance": finding.get("provenance"),
         }
 
+    # Which account/record the call acts on (kind + id only, never attributes),
+    # so the approver sees it and the console can search and show it on every
+    # row, not only after a refusal.
+    if isinstance(resource, dict) and (resource.get("kind") or resource.get("id")):
+        body.setdefault("params", {})["resource"] = {
+            "kind": resource.get("kind"), "id": resource.get("id")}
+
     # How long this agent will poll before failing closed, so the console stops
     # offering an approve that can no longer change anything.
     body["wait_seconds"] = round(_timeout())
