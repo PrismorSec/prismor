@@ -59,6 +59,11 @@ def run():
     sys.stdin = io.StringIO(data)
     sys.path.insert(0, ROOT)
     try:
+        if os.environ.get("PRISMOR_HOOKD") == "1":  # opt-in warm server (prismor/runtime/hookd.py)
+            from prismor.runtime.hookd import run_client
+            code = run_client()
+            if code is not None:
+                return code
         from prismor.runtime.immunity_cli import main
         return main()
     except Exception as exc:  # SystemExit (the normal exit path) is not an Exception

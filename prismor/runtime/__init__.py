@@ -2,8 +2,17 @@
 
 __version__ = "1.75.0"
 
-from prismor.runtime.semantic_guard import SemanticGuard, SemanticRisk
-from prismor.runtime.semantic_guard_v2 import SemanticGuardV2, HybridRisk
+# Loaded on first use: every hook process imports this package, and the two
+# guard modules cost ~25ms there before any work starts.
+_LAZY = {"SemanticGuard": "semantic_guard", "SemanticRisk": "semantic_guard",
+         "SemanticGuardV2": "semantic_guard_v2", "HybridRisk": "semantic_guard_v2"}
+
+
+def __getattr__(name):
+    if name in _LAZY:
+        import importlib
+        return getattr(importlib.import_module(f"{__name__}.{_LAZY[name]}"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "__version__",

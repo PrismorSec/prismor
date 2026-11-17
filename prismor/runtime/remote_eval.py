@@ -24,8 +24,6 @@ import json
 import os
 import sys
 import threading
-import urllib.error
-import urllib.request
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Optional
 
@@ -133,6 +131,9 @@ def evaluate_remote(
         timeout = float(os.environ.get("PRISMOR_EVAL_TIMEOUT") or 5)
     except ValueError:
         timeout = 5.0
+    import urllib.error
+    import urllib.request  # here, not at module top: every hook imports this module
+
     req = urllib.request.Request(f"{url}/v1/evaluate", method="POST", headers=headers,
                                  data=json.dumps(body, default=str).encode("utf-8"))
     try:

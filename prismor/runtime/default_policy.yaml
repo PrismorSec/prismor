@@ -1511,6 +1511,10 @@ rules:
       # The HMAC key a pause marker is signed with: reading it is the first
       # half of forging a pause that silences every other rule.
       - '\bpause\.key\b'
+      # The warm hook server's key and socket (hookd.py): a process holding
+      # both could answer hook calls in Prismor's place.
+      - '\bhookd\.key\b'
+      - '\bhookd-[0-9a-f]{12}\.sock\b'
       # Ships the whole decision to another server (remote_eval.py).
       - '\bPRISMOR_EVAL_URL='
       # Approving a held MCP tool definition is the human's review of it; an

@@ -3924,13 +3924,10 @@ class PolicyEngine:
         findings: List[Dict[str, Any]] = []
         try:
             from supplychain.ecosystems.detector import detect_install
-            from supplychain.scoring.engine import RiskScorer, load_allowlist
         except Exception:
             return findings
 
-        allowlist = load_allowlist(self.workspace) if self.workspace else set()
-        scorer = RiskScorer(allowlist=allowlist)
-
+        scorer = None  # built on the first install: the scorer pulls in urllib, ~13ms per shell call
         checked = 0
         for argv in _iter_install_argvs(command):
             if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
@@ -3941,6 +3938,12 @@ class PolicyEngine:
                 continue
             if install_event is None or not install_event.packages:
                 continue
+            if scorer is None:
+                try:
+                    from supplychain.scoring.engine import RiskScorer, load_allowlist
+                except Exception:
+                    return findings
+                scorer = RiskScorer(allowlist=load_allowlist(self.workspace) if self.workspace else set())
 
             for spec in install_event.packages:
                 if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
