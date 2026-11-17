@@ -1165,6 +1165,8 @@ def persist_runtime_findings(
                     # blocked row saying only that some rule said no.
                     "pattern": finding.get("pattern"),
                     "when": finding.get("when"),
+                    # Same id as the console's event row (see runtime.py).
+                    "eventId": finding.get("eventId"),
                     "source": "runtime",
                 }),
             ))

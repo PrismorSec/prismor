@@ -489,7 +489,7 @@ def format_unblock(
         from prismor.runtime.enterprise import identity as _ident
         if enrolled and _ident.load_identity() is not None:
             lines.append('  Or ask your org for an exception: prismor exempt request --reason "<why>"')
-        return "\n".join(lines)
+        return "\n".join(lines + _review_lines(finding, session_id, enrolled))
     steps = unblock_steps(
         finding,
         workspace=workspace,
@@ -498,7 +498,7 @@ def format_unblock(
         enrolled=enrolled,
     )
     if not steps:
-        return ""
+        return "\n".join(_review_lines(finding, session_id, enrolled)).lstrip("\n")
     # An unlock window only lets the agent edit LOCAL policy, which cannot lift
     # a block the org's egress policy owns — offering it there is a dead end,
     # and the one step that works (a request) is open to the agent too.
@@ -519,7 +519,32 @@ def format_unblock(
     return "\n".join(
         [header] + steps
         + ([] if is_egress else _delegate_steps(rule_id, workspace))
+        + _review_lines(finding, session_id, enrolled)
     )
+
+
+def _review_lines(finding: Dict[str, Any], session_id: Optional[str], enrolled: bool) -> List[str]:
+    """If the block looks wrong: report it and hand the user the console link.
+
+    The report only asks; a reviewer's label is what teaches `prismor learn`.
+    Enrolled devices only, since the event lives on the org console.
+    """
+    event_id = finding.get("eventId")
+    if not enrolled or not event_id:
+        return []
+    try:
+        from prismor.runtime.enterprise import fp_report as _fp
+        url = _fp.review_url(event_id, session_id)
+    except Exception:
+        url = None
+    if not url:
+        return []
+    return [
+        "",
+        f'Looks like a false positive? Agent: run `prismor report-fp {event_id} --reason "<why it is safe>"`,',
+        f"then give the user this link to confirm or reject it: {url}",
+        "Do not work around the block while you wait.",
+    ]
 
 
 def _delegate_steps(rule_id: str, workspace: Optional[Path]) -> List[str]:

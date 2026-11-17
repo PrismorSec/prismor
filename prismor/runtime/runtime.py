@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -1154,6 +1155,14 @@ def evaluate_tool_call(
 
     _eval_ms = int((time.perf_counter() - _guard_t0) * 1000)
     perf.lap("scoped_iam_learning")
+
+    # One id per finding, minted before it is stored or shipped: the console row
+    # uses it as its primary key, the local store keeps it in enrichment, and
+    # the block message links to it. That shared id is how an agent's report and
+    # a human's label on the console find their way back to this command.
+    for _f in findings:
+        if isinstance(_f, dict) and not _f.get("eventId"):
+            _f["eventId"] = "evt_" + uuid.uuid4().hex
 
     # Long-lived surfaces persist their events themselves (persist=False).
     # Stateful rate decisions cannot be reconstructed from that history, so

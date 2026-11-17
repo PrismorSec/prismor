@@ -1034,6 +1034,26 @@ def main(argv: Optional[List[str]] = None) -> None:
                                  args.endpoint, args.provider)
         return
 
+    # ── report-fp: ask a human to review a block as a false positive ───
+    if args.command == "report-fp":
+        from prismor.runtime.enterprise import fp_report as _fp
+        res = _fp.report(args.event_id, args.reason)
+        if not res.get("ok"):
+            print(f"Report failed: {res.get('error')}")
+            if res.get("status") == 404:
+                # Warned/observed records ride the spool (up to ~60s); a report
+                # sent right after the call can beat its own event there.
+                print("If the block just happened, the event may not have reached the console yet. Try again in a minute.")
+            raise SystemExit(1)
+        if res.get("reported"):
+            print(f"Reported {args.event_id} as a likely false positive. Nothing is unblocked until a reviewer agrees.")
+        else:
+            label = str(res.get("label") or "").replace("_", " ")
+            print(f"A reviewer already marked {args.event_id} {label}; the report was not filed.")
+        if res.get("url"):
+            print(f"Give the user this link to confirm or reject it: {res['url']}")
+        return
+
     # ── exempt: request an admin exemption for THIS repo ───────────────
     if args.command == "exempt":
         from prismor.runtime.enterprise import identity as _identity, workspace_scope as _scope
@@ -4008,6 +4028,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"Use {_color('prismor learn --apply ID', _BOLD)} to accept a rule.")
             return
 
+        # Human verdicts from the console first: they outrank local dismissals.
+        if getattr(args, "console", False):
+            from prismor.runtime.enterprise import fp_report as _fp
+            pulled = _fp.pull_labels(workspace)
+            if pulled.get("ok"):
+                sys.stderr.write(f"[prismor] pulled {pulled['saved']} label(s) from the console\n")
+            else:
+                sys.stderr.write(f"[prismor] could not pull console labels: {pulled.get('error')}\n")
+
         # Run full learning analysis
         candidates = mine_patterns(workspace, min_support=args.min_support)
         false_pos = track_false_positives(workspace, threshold=args.fp_threshold)
@@ -5323,6 +5352,15 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Reject a candidate rule")
     learn_parser.add_argument("--candidates", action="store_true",
                               help="List pending candidate rules")
+    learn_parser.add_argument("--console", action="store_true",
+                              help="First pull the reviewers' true/false-positive labels from the org console")
+
+    rfp = subparsers.add_parser(
+        "report-fp",
+        help="Report a block as a likely false positive, for a human to review on the console",
+    )
+    rfp.add_argument("event_id", help="The event id from the block message (evt_...)")
+    rfp.add_argument("--reason", required=True, help="Why you think the block was wrong")
 
     # ── iam ──────────────────────────────────────────────────────────────
     iam_parser = subparsers.add_parser(

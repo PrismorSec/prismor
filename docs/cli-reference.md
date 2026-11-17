@@ -117,6 +117,7 @@ prismor
     ├─ system-sync            System install: pull org policy, upload every user's telemetry (timer)
     ├─ workspace <action>     Show/set whether this workspace is org-managed or personal
     ├─ exempt <action>        Request an admin exemption for this repo
+    ├─ report-fp <event-id>   Ask a reviewer to check a block as a false positive
     └─ logout                 Un-enroll (remove device identity + cached policy)
 ```
 
@@ -586,6 +587,7 @@ Deep dives: [IAM](iam.md) · [Scoped Agent](scoped-agent.md) · [Canary](canary.
 | `prismor learn --candidates` | — | List pending candidate rules. |
 | `prismor learn --apply <id>` | — | Accept a candidate into project policy. |
 | `prismor learn --reject <id>` | — | Reject a candidate. |
+| `prismor learn --console` | — | First pull reviewers' true/false-positive labels from the org console. |
 
 Deep dive: [Learning](learning.md).
 
@@ -600,6 +602,7 @@ Deep dive: [Learning](learning.md).
 | `prismor system-sync` | `--quiet` | System installs only (admin): pull the org policy and upload every user's spooled telemetry with the machine's device key. Run every minute by the timer the system installer sets up; you rarely run it by hand. See [System install](system-install.md#the-device-key-and-system-sync). |
 | `prismor workspace [managed\|personal\|auto]` | — | With no argument, shows whether this workspace is org-managed (org policy + telemetry) or personal (local-only). Pass `managed`/`personal`/`auto` to set it. Org-claimed repos can't be downgraded, and `personal` is ignored entirely when the org policy sets `allow_personal_workspaces: false`. |
 | `prismor exempt request` | `--reason` | Ask an org admin to relax specific non-floor rules for this repo; served back in the signed policy. |
+| `prismor report-fp <event-id>` | `--reason` | Report a block as a likely false positive. Only asks: a reviewer labels it on the console, nothing is unblocked. |
 | `prismor logout` | — | Un-enroll: removes the device identity and cached remote policy. Local protection stays on. |
 
 Deep dive: [Connecting to the platform](connecting-to-the-platform.md) · [Policy layers & exemptions](policy-layers-and-exemptions.md).
