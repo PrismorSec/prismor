@@ -47,7 +47,48 @@ Commit the policy file to share rules across your team. CI picks it up automatic
 | `step_up`      | Require inline human approval — Claude and Copilot emit an "ask" prompt. Surfaces without an approval prompt fail closed to `block`.                 |
 | `modify`       | Rewrite the tool input via a named `transform:` (e.g. `transform: sandbox` runs the command in the Docker sandbox). Surfaces that can't rewrite input fail closed to `block`. |
 
+| `instruct`     | Allow the action and send the rule's `guidance:` to the agent before the tool runs. Never blocks. |
+
 Any verdict a surface cannot honor fails closed to a block, never a silent allow. `defer` is reserved (accepted by the validator, not yet emitted).
+
+### Telling the agent what to do instead
+
+`guidance:` is optional text on any rule. When the rule blocks, it is added to the reason the agent sees as `Instead: <guidance>`, so the agent can retry the safe way. The retry is checked against your policy like any other call.
+
+```yaml
+rules:
+  - id: no-force-push
+    severity: HIGH
+    category: change_control
+    title: Force push
+    event_types: [shell]
+    fields: [command]
+    patterns: ['\bgit\s+push\b.*\s--force\b(?!-with-lease)']
+    action: block
+    guidance: "use `git push --force-with-lease` so you cannot overwrite work you have not seen"
+
+  - id: prefer-trash
+    severity: LOW
+    category: hygiene
+    title: rm -r in the project
+    event_types: [shell]
+    fields: [command]
+    patterns: ['\brm\s+-[a-zA-Z]*r']
+    action: instruct
+    guidance: "next time, use `trash <path>` so the files can be restored"
+```
+
+An `instruct` rule needs `guidance:`. Its findings always resolve to observe, so it never blocks, and it cannot soften a block: if another rule blocks or asks for approval on the same call, that verdict wins and no guidance is sent. Telemetry records the finding as observed, with the text in a `guidance` field.
+
+Where the guidance goes:
+
+- Claude Code: `hookSpecificOutput.additionalContext` on PreToolUse. The call still goes through the normal permission prompt.
+- Other agents: their PreToolUse hook output has no verified way to add context. The call is allowed and the guidance is written to the hook's stderr log line.
+- SDK adapters, the MCP gateway and the proxy: the call is allowed; the guidance is on the finding only.
+
+Several default rules carry `guidance:` (for example `destructive-command`, `remote-execution`, `lockfile-deletion`). Overriding a rule by id in your project policy can replace that text.
+
+A rule cannot rewrite the command into a safer one by itself. Use `action: modify` with a named `transform:` for that.
 
 ### Custom guardrails for MCP tools
 

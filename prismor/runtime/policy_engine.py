@@ -1047,7 +1047,7 @@ class CompiledRule:
     __slots__ = (
         "id", "severity", "category", "title", "event_types", "declared_types",
         "fields", "_patterns", "_joined", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
-        "transform",
+        "transform", "guidance",
         "severity_on_write", "severity_on_manifest",
         "pattern_groups", "condition", "layer", "mode_layer", "when", "match_all", "flags",
     )
@@ -1096,6 +1096,9 @@ class CompiledRule:
         # Named transform for action: modify (R4 MODIFY). Empty for other
         # actions; the hook dispatcher rewrites tool input via this name.
         self.transform: str = raw.get("transform", "")
+        # What the agent should do instead: appended to a block's reason, and
+        # the whole message of an `instruct` rule (allowed, sent as context).
+        self.guidance: str = str(raw.get("guidance") or "")
         self.enabled: bool = raw.get("enabled", True)
         # Per-rule observe/enforce override. None = inherit settings.default_mode
         # (which itself defaults to "observe"). enforce = this rule blocks on a
@@ -1600,6 +1603,10 @@ class PolicyEngine:
         note = " (floor waived: settings.selection is explicit)" if floor_waived else ""
         if rule.when_invalid:
             return "observe", "when: does not parse — reports only until it is fixed"
+        if rule.action == "instruct":
+            # Ahead of device mode: an enforce override must not turn advice
+            # into a block (an unknown action on an enforce finding blocks).
+            return "observe", "action: instruct — allows the call and sends guidance; never blocks"
         if self.device_mode:
             return self.device_mode, f"device mode override{note}"
         if rule.mode:
@@ -2669,6 +2676,8 @@ class PolicyEngine:
                 # position. should_block() never blocks on such a finding.
                 "contextInert": context_inert,
             }
+            if rule.guidance:
+                finding["guidance"] = rule.guidance
 
             # Only present when the rule matched an ASCII-folded copy rather
             # than the raw text — i.e. the payload was deliberately obfuscated.
@@ -3887,6 +3896,7 @@ class PolicyEngine:
                     "ruleId": rule.id,
                     "action": "warn" if advisory else rule.action,
                     "transform": rule.transform,
+                    **({"guidance": rule.guidance} if rule.guidance else {}),
                     "subject": subject_dict,
                     "source": "execution_target",
                     # Where the dangerous content actually lives, so a reviewer
@@ -5774,8 +5784,12 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(f"{prefix}.condition: {e}")
 
         action = rule.get("action", "")
-        if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
-            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, or defer)")
+        if action and action not in ("block", "warn", "log", "modify", "step_up", "defer", "instruct"):
+            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, defer, or instruct)")
+        if "guidance" in rule and not (isinstance(rule["guidance"], str) and rule["guidance"].strip()):
+            errors.append(f"{prefix}.guidance: must be a non-empty string")
+        elif action == "instruct" and "guidance" not in rule:
+            errors.append(f"{prefix}: action 'instruct' needs a guidance string")
 
     for i, entry in enumerate(raw.get("allowlists", []) or []):
         prefix = f"allowlists[{i}]"
@@ -5899,6 +5913,7 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
                     if name != "patterns"
                 },
                 "when": rule.when.source if rule.when else None,
+                **({"guidance": rule.guidance} if rule.guidance else {}),
             }
             for rule in sorted(engine.rules, key=lambda r: r.id)
         ],

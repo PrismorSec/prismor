@@ -935,9 +935,15 @@
             "log",
             "step_up",
             "modify",
-            "defer"
+            "defer",
+            "instruct"
           ],
-          "description": "Authorization verdict when this rule fires as an enforce finding on a pre-action event. block = deny; step_up = require inline human approval (maps to an 'ask' prompt on Claude/Copilot; other surfaces fail closed); modify = rewrite the tool input via `transform`; defer = escalate to the semantic evaluator. warn/log are non-blocking (observe). Whether a rule blocks at all is still gated by `mode`/`default_mode`."
+          "description": "Authorization verdict when this rule fires as an enforce finding on a pre-action event. block = deny; step_up = require inline human approval (maps to an 'ask' prompt on Claude/Copilot; other surfaces fail closed); modify = rewrite the tool input via `transform`; defer = escalate to the semantic evaluator. warn/log are non-blocking (observe). instruct = allow the call and send `guidance` to the agent as context; never blocks. Whether a rule blocks at all is still gated by `mode`/`default_mode`."
+        },
+        "guidance": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the agent should do instead. Appended to the reason of a block; the message an `instruct` rule sends."
         },
         "transform": {
           "type": "string",

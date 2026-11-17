@@ -357,6 +357,10 @@ def build_record(
         record["data_subject"] = finding.get("dataSubject")
     if finding.get("destTrust"):
         record["dest_trust"] = finding.get("destTrust")
+    # The rule's `guidance:` (what the agent was told to do instead). Static
+    # policy text like matched_pattern, so it survives redaction.
+    if finding.get("guidance"):
+        record["guidance"] = str(finding["guidance"])[:500]
     # An enforced transform (pii_ner_redact, cloak, memory_redact) rewrote the
     # call before it ran: that is a redaction even without the explicit flag.
     if finding.get("redactionApplied") or (
