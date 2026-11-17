@@ -587,6 +587,7 @@ rules:
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)shutdown\b'
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)reboot\b'
       - 'launchctl\s+unload\b'
+    guidance: "delete the specific path you mean (or move it with `trash`/`mv` to a scratch dir); never a root, system or home directory."
     action: block
 
   # ── HIGH (warn): Recursive delete of a directory under the home dir ──
@@ -610,6 +611,7 @@ rules:
       # cache folders and AppData\Local\Temp are skipped, as for rm -rf.
       - '(?:^|[\s;&|("''])(?:remove-item|ri|rm|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?(?:~|\$home|\$env:userprofile|[a-z]:\\users\\[^\\\s"'';|&]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"'';|&]+'
       - '(?:^|[\s;&|("''])(?:rmdir|rd|del|erase)\s+(?=(?:[^\n&|]*\s)?/s\b)[^\n&|]*?["'']?(?:%userprofile%|[a-z]:\\users\\[^\\\s"''&|]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"''&|]+'
+    guidance: "delete only the exact project or build directory you need, or move it aside with `trash`/`mv` so it can be restored."
     action: warn
 
   # ── CRITICAL: Secret exfiltration ─────────────────────────────────────
@@ -803,6 +805,7 @@ rules:
       # curl and wget are aliases of Invoke-WebRequest there.
       - '\b(?:iwr|irm|curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b[^|;\n]*\|\s*(?:iex|Invoke-Expression)\b'
       - '\b(?:iex|Invoke-Expression)\b[^\n]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b'
+    guidance: "download the script to a file, read it, then run it (`curl -fsSLo install.sh <url>`, inspect, `bash install.sh`)."
     action: block
 
   # ── HIGH: Sensitive file access ───────────────────────────────────────
@@ -1893,6 +1896,7 @@ rules:
       - '\bNODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0\b'
       - '\bPYTHONHTTPSVERIFY\s*=\s*0\b'
       - '\bpip3?\s+install\b[^\n]*\s--trusted-host\b'
+    guidance: "keep certificate checks on; point the tool at the right CA bundle (e.g. `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`) instead."
     action: warn
 
   # ── CRITICAL: Claude Code credential access ───────────────────────
@@ -1999,6 +2003,7 @@ rules:
       - '\bgit\s+push\b(?=(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s(?:--force(?:-with-lease(?:=\S*)?|-if-includes)?|-[a-zA-Z]*f[a-zA-Z]*)(?=\s|$|[;&|)]))(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*[\s:+](?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
       - '\bgit\s+push\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s\+(?:[^\s:;&|]*:)?(?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
       - '\bgit\s+push(?=[^\n;&|]*\s--force(?!-with-lease|-if-includes)\b)(?:\s+-[\w-]+)*(?:\s+(?!-)[\w.-]+)?(?:\s+-[\w-]+)*(?:\s+\d?>\S*)*\s*(?:$|[;&|)])'
+    guidance: "push to a feature branch and open a pull request; do not force-push a protected branch or repoint a remote."
     action: warn
 
   # ── HIGH: Package manager registry poisoning ─────────────────────
@@ -2108,6 +2113,7 @@ rules:
     patterns:
       - '\b(vim?|nano|emacs|code|subl|sed|awk|perl)\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
       - '\b(echo|cat|printf)\b[^\n]*>\s*[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    guidance: "change the manifest and let the package manager regenerate the lockfile."
     action: warn
 
   # ── HIGH: Lockfile deletion ──────────────────────────────────────
@@ -2119,6 +2125,7 @@ rules:
     fields: [command]
     patterns:
       - '\brm\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    guidance: "let the package manager update the lockfile (`npm install <pkg>`, `uv lock`, `cargo update -p <crate>`) instead of deleting it."
     action: block
 
   # ── HIGH: Dependency confusion indicators ────────────────────────
@@ -2423,6 +2430,7 @@ rules:
       # `+main`, `:main` (deletion). ponytail: a bare `git push` while checked
       # out on main is invisible to a regex; needs the hook to read the branch.
       - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?git(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+push\b[^\n;&|]*?[\s:+](?:refs/heads/)?(?:main|master)(?=\s|$|[;&|)])'
+    guidance: "push to a feature branch (`git push -u origin HEAD:<branch>`) and open a pull request."
     action: warn
 
   - id: terraform-state-change

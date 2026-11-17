@@ -2468,6 +2468,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 reason += f"\n{_shown_evidence(blocking)}"
             if blocking.get("remediation"):
                 reason += f"\nRecommended fix: {blocking['remediation']}"
+            if blocking.get("guidance"):
+                reason += f"\nInstead: {blocking['guidance']}"
 
             # Narrowest-first unblock steps, so a false positive costs one
             # allowlist entry rather than an uninstall.
@@ -2656,6 +2658,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     _ag_reason = _block_header(blocking)
                     if blocking.get("remediation"):
                         _ag_reason += f"Recommended fix: {blocking['remediation']}\n"
+                    if blocking.get("guidance"):
+                        _ag_reason += f"Instead: {blocking['guidance']}\n"
                     if unblock_text:
                         _ag_reason += f"\n{unblock_text}\n"
                     sys.stdout.write(json.dumps({"decision": "deny", "reason": safe_text(_ag_reason.strip())}) + "\n")
@@ -2691,6 +2695,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                         sys.stderr.write(f"{safe_text(blocking['evidence'])}\n")
                     if blocking.get("remediation"):
                         sys.stderr.write(f"Recommended fix: {safe_text(blocking['remediation'])}\n")
+                    if blocking.get("guidance"):
+                        sys.stderr.write(f"Instead: {safe_text(blocking['guidance'])}\n")
                     if unblock_text:
                         sys.stderr.write(f"\n{unblock_text}\n")
                     raise SystemExit(0 if _codex_json else 2)
@@ -2702,6 +2708,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _line = _color("[prismor] ", _YELLOW) + safe_text(f"[{_f['severity']}] {_f['title']}")
                 if _f.get("remediation"):
                     _line += safe_text(f" → {_f['remediation']}")
+                if _f.get("guidance") and _f.get("action") != "instruct":
+                    _line += safe_text(f" (instead: {_f['guidance']})")
                 sys.stderr.write(_line + "\n")
             # Record for learning. Nobody decided anything here: observe mode
             # surfaced the finding and the call ran. The reason says so, so a
@@ -2716,6 +2724,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
             except Exception:
                 pass  # best-effort, don't break the hook
+
+        # `instruct` rules: the call runs, and the rule's guidance goes to the
+        # model as PreToolUse context. Here, after the block path, so it only
+        # reaches a call that is actually going ahead. Agents whose PreToolUse
+        # cannot carry context get a log line; the call is allowed either way.
+        _pre_out = None
+        if _hook_event == "PreToolUse" and not _paused and _hook_claimed:
+            _steer = list(dict.fromkeys(
+                f"{f['guidance']} (Prismor rule: {f.get('ruleId') or 'unknown'})"
+                for f in current_findings
+                if f.get("action") == "instruct" and f.get("guidance") and not f.get("contextInert")))
+            if _steer:
+                _steer_text = safe_text("GUIDANCE (Prismor): " + "\n".join(_steer))
+                _pre_out = _hook_caps.context_output(args.agent, "PreToolUse", _steer_text)
+                if _pre_out is None:
+                    sys.stderr.write(f"[prismor] guidance not delivered ({args.agent} cannot add "
+                                     f"context before a tool runs): {_steer_text}\n")
 
         # Prompt guardrails: operator-written rules added to the model's context.
         # Here, after the block path, so a prompt that was refused does not
@@ -2799,11 +2824,21 @@ def main(argv: Optional[List[str]] = None) -> None:
                         session_id=str(_hooks_sid(args.agent, payload, workspace) or ""),
                     ), reason=f"Prismor sandbox: run inside the {_sandbox_cfg.get('backend')} sandbox")
                     if update:
+                        if _pre_out:
+                            # One JSON object per hook call: carry the guidance
+                            # in the rewrite's hookSpecificOutput.
+                            update = dict(update)
+                            update["hookSpecificOutput"] = {
+                                **(update.get("hookSpecificOutput") or {}),
+                                **(_pre_out.get("hookSpecificOutput") or {})}
+                            _pre_out = None
                         sys.stdout.write(json.dumps(update) + "\n")
         except SystemExit:
             raise
         except Exception as _sandbox_exc:
             sys.stderr.write(f"[prismor] sandbox error: {_sandbox_exc}\n")
+        if _pre_out:
+            sys.stdout.write(json.dumps(_pre_out) + "\n")
         return
 
     # ── sandbox ────────────────────────────────────────────────────────

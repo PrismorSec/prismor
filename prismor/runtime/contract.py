@@ -96,6 +96,11 @@ BLOCK = "block"
 STEP_UP = "step_up"
 DEFER = "defer"
 MODIFY = "modify"
+#: Rule action, not a verdict: the call is allowed and the rule's ``guidance``
+#: goes to the agent as context. Its findings always resolve to observe
+#: (PolicyEngine.explain_mode), so they never govern a decision and can never
+#: outrank or soften a block from another finding.
+INSTRUCT = "instruct"
 
 #: Verdicts a rule may carry as its ``action``. ``warn``/``log`` are reporting
 #: actions: they produce findings but never a blocking decision, so they are
