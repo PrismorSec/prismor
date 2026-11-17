@@ -57,8 +57,11 @@ def _save_cache(session_id: str, cache: Dict[str, str]) -> None:
         pass
 
 
-def _fingerprint(session_id: str, finding: Dict[str, Any]) -> str:
-    """Stable key for one logical deferred action within a session."""
+def _fingerprint(session_id: str, finding: Dict[str, Any], event: Optional[Dict[str, Any]] = None) -> str:
+    """Stable key for one logical deferred action within a session. The call
+    itself is part of it, so one call's ALLOW never covers a different call
+    that trips the same rule."""
+    from prismor.runtime.enterprise.approvals import call_key
     tool = str(finding.get("toolName") or finding.get("tool") or "")
     marker = str(
         finding.get("evidence_hash")
@@ -67,7 +70,7 @@ def _fingerprint(session_id: str, finding: Dict[str, Any]) -> str:
         or finding.get("ruleId")
         or ""
     )
-    raw = f"{session_id}\x1f{tool}\x1f{marker}".encode("utf-8")
+    raw = f"{session_id}\x1f{tool}\x1f{marker}\x1f{call_key(event)}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
 
 
@@ -98,7 +101,7 @@ def resolve_defer(
     Cache hit → cached verdict. Miss → run the deeper evaluator, cache it, return.
     Never raises; fails closed to DENY on any error.
     """
-    fp = _fingerprint(session_id, finding)
+    fp = _fingerprint(session_id, finding, event)
     cache = _load_cache(session_id)
     cached = cache.get(fp)
     if cached in (_ALLOW, _DENY):

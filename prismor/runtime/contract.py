@@ -169,6 +169,10 @@ class Decision:
     # checked against current policy and state before the tool runs.
     # In-process only; never on the wire.
     recheck: Optional[Callable[..., "Decision"]] = field(default=None, repr=False, compare=False)
+    # Set on a ``step_up`` decision: what this call does (event + resource id,
+    # see ``approvals.call_key``), so its approval is never reused for another
+    # call of the same tool. In-process only; never on the wire.
+    call_key: Optional[str] = field(default=None, repr=False, compare=False)
 
     @property
     def verdict(self) -> str:

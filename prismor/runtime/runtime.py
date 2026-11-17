@@ -1404,7 +1404,16 @@ def evaluate_tool_call(
         engine=engine,
         explain=_explain,
         recheck=_recheck,
+        call_key=_step_up_call_key(blocking, event, resource),
     )
+
+
+def _step_up_call_key(blocking: Optional[Dict[str, Any]], event: Any, resource: Any) -> Optional[str]:
+    """Only held calls need one; skip the hash on the allow path."""
+    if str((blocking or {}).get("action") or "").lower() != "step_up":
+        return None
+    from prismor.runtime.enterprise.approvals import call_key
+    return call_key(event, resource) or None
 
 
 def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") -> None:

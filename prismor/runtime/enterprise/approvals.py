@@ -76,10 +76,33 @@ def step_up_finding(decision: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _fingerprint(session_id: str, tool: str, evidence_hash: str) -> str:
+# Per-attempt fields: a retry of the same call differs only in these.
+_VOLATILE_EVENT_KEYS = ("ts", "metadata", "session_id")
+
+
+def call_key(event: Optional[Dict[str, Any]], resource: Optional[Dict[str, Any]] = None) -> str:
+    """What one call does: its event minus per-attempt fields, plus the kind
+    and id of the resource it acts on (not its attributes, which change while
+    an approval waits). An approval or a deferred verdict covers only calls
+    with the same key, never another command or account in the same session."""
+    view = {k: v for k, v in event.items() if k not in _VOLATILE_EVENT_KEYS} if isinstance(event, dict) else {}
+    meta = event.get("metadata") if isinstance(event, dict) else None
+    if isinstance(meta, dict) and meta.get("tool_name"):
+        view["_tool"] = meta["tool_name"]
+    if isinstance(resource, dict) and (resource.get("kind") or resource.get("id")):
+        view["_resource"] = [resource.get("kind"), resource.get("id")]
+    if not view:
+        return ""
+    return hashlib.sha256(json.dumps(view, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:32]
+
+
+def _fingerprint(session_id: str, tool: str, evidence_hash: str, key: str = "") -> str:
     """Stable id for one logical action, so repeated attempts of the same call
-    coalesce onto one approval request instead of spamming the queue."""
-    raw = f"{session_id}\x1f{tool}\x1f{evidence_hash}".encode("utf-8")
+    coalesce onto one approval request instead of spamming the queue. ``key``
+    (:func:`call_key`) keeps two different calls of one tool apart: runtime
+    findings carry no evidence hash, so without it every held call of a tool
+    in a session reused the first approval."""
+    raw = f"{session_id}\x1f{tool}\x1f{evidence_hash}\x1f{key}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
 
 
@@ -265,6 +288,7 @@ def enqueue_step_up(
         "fingerprint": _fingerprint(
             session_id, tool,
             str(finding.get("evidence_hash") or finding.get("evidenceHash") or ""),
+            call_key(event),
         ),
         "tool": tool,
         "reason": str(finding.get("title") or "policy step-up"),
@@ -326,7 +350,10 @@ def await_step_up(
 
     tool = str(tool or finding.get("toolName") or (event or {}).get("type") or "tool")
     body = {
-        "fingerprint": _fingerprint(session_id, tool, str(finding.get("evidence_hash") or finding.get("evidenceHash") or "")),
+        "fingerprint": _fingerprint(
+            session_id, tool, str(finding.get("evidence_hash") or finding.get("evidenceHash") or ""),
+            getattr(decision, "call_key", None) or call_key(event, resource),
+        ),
         "tool": tool,
         "reason": str(finding.get("title") or "policy step-up"),
         "rule_id": finding.get("ruleId"),
