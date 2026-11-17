@@ -20,6 +20,11 @@ Two things make this hold up outside a demo:
   write to each other, so an agent acting on another agent's output inherits
   what that agent had read. See [Cross-agent flow](#cross-agent-flow).
 
+Tags describe a tool, not the arguments it was called with, and they have no
+notion of who may see what a session has read. For "after reading the private
+repo, no public issue" see [Tool Contracts](tool-contracts.md), which build on
+the same tiers, mode and provenance.
+
 ## How a tool gets its tags (precedence)
 
 | Tier | Source | Who controls it |
@@ -339,7 +344,10 @@ $ prismor tags rules                 # active rules (DSL + legacy + default)
 $ prismor tags rules add "untrusted_content then egress.offlist -> block"
 $ prismor tags rules rm 0
 $ prismor tags edit                  # interactive wizard (option 6 turns tool_tags on)
-$ prismor tags lint                  # validate expressions + warn on broad blocking sequences
+$ prismor tags lint                  # validate expressions + contracts, warn on broad blocking sequences
+$ prismor tags contracts             # tool contracts (see tool-contracts.md)
+$ prismor tags label [SESSION]       # a session's label and what narrowed it
+$ prismor tags coverage              # per MCP server: contract / tags only / neither
 ```
 
 Tags and rules do nothing while `tool_tags.enabled` is false (the shipped

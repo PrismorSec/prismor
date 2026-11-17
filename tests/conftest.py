@@ -110,7 +110,9 @@ _wire_adapters()
 # Environment keys this file owns: the agent's home plus every Prismor knob.
 # Restored around every test, so nothing a test sets can reach the next one.
 _ENV_PREFIX = "PRISMOR_"
-_ENV_EXTRA = ("HOME",)
+# USERPROFILE is what `Path.home()` reads on Windows; sandboxing HOME alone let
+# `install-hooks --scope global` write into the real ~/.claude/settings.json.
+_ENV_EXTRA = ("HOME", "USERPROFILE")
 
 
 def _tracked_env(env: Dict[str, str]) -> Dict[str, str]:
@@ -125,6 +127,62 @@ _MODULE_ENV: Dict[str, Dict[str, Any]] = {}
 
 def pytest_configure(config: pytest.Config) -> None:
     _PRISTINE_ENV.update(_tracked_env(os.environ))
+    _snapshot_real_agent_configs()
+
+
+# The developer's own agent configs. A test that installs hooks at global scope
+# and escapes the home sandbox writes into these, and the hook it leaves points
+# at a pytest temp dir that is deleted afterwards -- after which every tool call
+# in the developer's next agent session fails. Snapshotted before any test
+# runs; a test that changes one fails by name and the file is put back.
+_REAL_AGENT_CONFIGS = (
+    ".claude/settings.json", ".claude/settings.local.json", ".codex/hooks.json",
+    ".codex/config.toml", ".cursor/hooks.json", ".gemini/settings.json",
+    ".qwen/settings.json", ".copilot/hooks.json",
+)
+_REAL_CONFIG_SNAPSHOT: Dict[Path, Optional[bytes]] = {}
+
+
+def _real_home_dirs() -> Set[Path]:
+    homes = set()
+    for key in ("HOME", "USERPROFILE"):
+        if os.environ.get(key):
+            homes.add(Path(os.environ[key]))
+    try:
+        homes.add(Path.home())
+    except RuntimeError:
+        pass
+    return homes
+
+
+def _read_or_none(path: Path) -> Optional[bytes]:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _snapshot_real_agent_configs() -> None:
+    for home in _real_home_dirs():
+        for rel in _REAL_AGENT_CONFIGS:
+            path = home / rel
+            _REAL_CONFIG_SNAPSHOT[path] = _read_or_none(path)
+
+
+def _restore_changed_real_configs() -> List[str]:
+    changed = []
+    for path, before in _REAL_CONFIG_SNAPSHOT.items():
+        if _read_or_none(path) == before:
+            continue
+        changed.append(str(path))
+        try:
+            if before is None:
+                path.unlink()
+            else:
+                path.write_bytes(before)
+        except OSError:
+            pass
+    return changed
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -177,6 +235,8 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
     os.environ.update(_PRISTINE_ENV)
 
     os.environ["HOME"] = str(_sandbox_home)
+    if os.name == "nt":
+        os.environ["USERPROFILE"] = str(_sandbox_home)
     os.environ.pop("KUBECONFIG", None)  # the dev's kube context can't flip results
     os.environ["PRISMOR_HOME"] = str(tmp_path_factory.mktemp("prismor-home"))
 
@@ -196,6 +256,11 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
     finally:
         os.environ.clear()
         os.environ.update(saved)
+        leaked = _restore_changed_real_configs()
+        if leaked:
+            pytest.fail(
+                "test wrote outside its sandbox into the real agent config "
+                f"{', '.join(leaked)} (restored)", pytrace=False)
 
 
 # module-attribute leak guard

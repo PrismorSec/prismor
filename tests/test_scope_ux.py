@@ -32,6 +32,7 @@ def home(tmp_path, monkeypatch):
     ph.mkdir()
     monkeypatch.setenv("PRISMOR_HOME", str(ph))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     return ph
 
@@ -202,6 +203,9 @@ def test_hook_dispatch_resolves_workspace_from_payload_cwd(home, tmp_path):
 
 
 def test_scope_flag_accepts_both_spellings(home, tmp_path):
+    # Checked before installing: on a host without pty the test used to fail
+    # between install and uninstall and leave global hooks behind.
+    pytest.importorskip("pty")
     ws = tmp_path / "ws"; ws.mkdir()
     assert _cli("install-hooks", "--agent", "claude", "--scope", "global", cwd=ws).returncode == 0
     # uninstall-hooks refuses a non-tty. This call is the human at a terminal.

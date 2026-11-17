@@ -64,7 +64,7 @@ prismor
 │
 ├─ Policy & scoping
 │   ├─ policy <action>        init · validate · show · export · edit · test
-│   ├─ tags <action>          list · set · rm · rules · provenance · edit · lint · test
+│   ├─ tags <action>          list · set · rm · rules · contracts · label · coverage · provenance · edit · lint · test
 │   ├─ scope <action>         Session-scoped, task-specific rules
 │   ├─ iam <action>           Named agent identities / permission profiles
 │   ├─ egress <action>        show · report · test · allow · deny · mode · request — network egress policy
@@ -417,7 +417,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor policy export` | `--json`, `--output PATH`, `--workspace` | Print the effective merged policy as stable, sorted JSON — patterns already resolved and disabled rules dropped — for non-Python consumers and for committing/diffing. |
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
-| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
+| `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. A case with `steps:` runs several calls in one session, for [tool contracts](tool-contracts.md#testing-contracts-in-ci) and tag rules. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
 | `prismor sandbox <status\|check\|on\|off\|try\|run>` | `--workspace` | OS sandbox (Seatbelt on macOS, bubblewrap on Linux) for allowed shell commands: show what is confined, check the engine, turn it on or off for this workspace, or run one command confined. See [Prismor Sandbox](sandbox.md). |
 | `prismor egress show` | `--workspace` | Effective network egress policy, its mode, and which layer (default / project / org) set it. See [Network Isolation](network-isolation.md). |
 | `prismor egress report` | `--last N`, `--fail-on-block`, `--workspace` | Every destination recorded sessions actually contacted, with the verdict the current policy gives it. The on-ramp before flipping to enforce; `--fail-on-block` gates CI. |
@@ -433,11 +433,14 @@ outside all of this, the same as every other Prismor control.
 | `prismor acp -- <agent command…>` | `--mode <enforce\|observe>` (default enforce), `--workspace`, `--no-audit` | Stdio proxy for Agent Client Protocol editors (Zed, JetBrains, CodeCompanion, agent-shell). Put it in front of the agent in the editor's `agent_servers` entry. It screens `terminal/create`, `fs/*` and `session/request_permission` before the editor carries them out, redacts and scans what comes back, resolves `@@SECRET:…@@` placeholders, and turns `step_up` into the editor's own permission prompt. Tools the agent runs in-process are audited after the fact but can only be enforced by its native hooks. See [ACP proxy](acp.md). |
 | `prismor egress migrate` | `--workspace` | Convert a legacy warn-only `settings.egress_allowlist` into an enforceable `settings.egress`. |
 | `prismor egress request <host>` | `--reason` (required), `--workspace` | Enrolled devices: ask your org's admins to allow a host. Lands in the console under Policy → Requests; approving adds it to the egress allowlist of the policy governing your device. See [Network Isolation](network-isolation.md#when-your-agent-is-blocked-request-access). |
-| `prismor tags list` | `--last N`, `--workspace` | Tools seen in recent sessions + resolved tags + which tier resolved them (explicit / `_meta` / default / inference). See [Tool Tags](tool-tags.md). |
+| `prismor tags list` | `--last N`, `--workspace` | Tools seen in recent sessions + resolved tags + which tier resolved them (explicit / `_meta` / default / inference), and a `CONTRACT` column for tools a [contract](tool-contracts.md) governs. See [Tool Tags](tool-tags.md). |
 | `prismor tags set <tool> <tag>...` | `--workspace` | Tag a tool or glob in `.prismor/policy.yaml` (`tags rm` removes). |
 | `prismor tags rules [add\|rm]` | `--workspace` | List, add, or remove tag-rule expressions, e.g. `"untrusted_content then critical_action -> block"`. Adds are parse-checked with caret diagnostics. |
 | `prismor tags edit` | `--workspace` | Interactive wizard: tag tools, author rules, flip mode. |
-| `prismor tags lint [file]` | `--workspace` | Validate every rule expression in a policy file. Exit `1` on errors. |
+| `prismor tags lint [file]` | `--workspace` | Validate every rule expression and [tool contract](tool-contracts.md) in a policy file (unknown fields, a `delta` that tries to widen the label). Exit `1` on errors; warns on a contract whose selector matches no tool seen on this machine. |
+| `prismor tags contracts` | `--workspace` | List the tool contracts in the effective policy with the id a block names (`tool-contract:<id>`), and the `principals` map. |
+| `prismor tags label [session]` | `--workspace` | A session's label (audience, trust, effects) and every call that narrowed it. Defaults to the most recent session. |
+| `prismor tags coverage` | `--last N`, `--json`, `--workspace` | Per MCP server (from `discover`, gateway listings and recorded sessions): how many tools have a contract, only tags, or neither. |
 | `prismor tags test` | `--session <id>`, `--last N`, `--rule "<expr>"`, `--fail-on-hit` | Dry-run tag rules against recorded session logs: prints WOULD BLOCK / WOULD WARN per call, touches no enforcement state. `--rule` adds what-if candidates. |
 
 ### eval-server
