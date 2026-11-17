@@ -70,6 +70,24 @@ def test_argv_list_harness_is_data():
     assert not _live(_harness(ARGV_DATA), "destructive-command")
 
 
+def test_sys_executable_prismor_hook_is_data():
+    call = ('subprocess.run([sys.executable, "-m", "prismor.runtime.cli", "hook-dispatch", '
+            '"--agent", "claude"], input=json.dumps({"command": c}), capture_output=True)')
+    cmd = _harness(call).replace("import json, subprocess", "import json, subprocess, sys")
+    assert not _live(cmd, "destructive-command")
+
+
+@pytest.mark.parametrize("argv", [
+    '[sys.executable, "-m", "prismor.runtime.cli", "sandbox", c]',
+    '[sys.executable, "-m", "other.mod", "check", c]',
+    '[sys.executable, "run.py", c]',
+    '[sys.executable, "-c", c]',
+])
+def test_sys_executable_other_stays_live(argv):
+    cmd = _harness(f"subprocess.run({argv})").replace("import json, subprocess", "import json, subprocess, sys")
+    assert _live(cmd, "destructive-command")
+
+
 @pytest.mark.parametrize("call", [
     "subprocess.run(c, shell=True)",
     'subprocess.run(["bash", "-c", c])',
@@ -77,6 +95,8 @@ def test_argv_list_harness_is_data():
     'subprocess.run(["ssh", "host", c])',
     'subprocess.run(["python3", "-c", c])',
     'subprocess.run(["env", "sh", "-c", c])',
+    'subprocess.run(["git", "-c", "core.pager=" + c, "log"])',
+    'subprocess.run(["rsync", "-e", c, "a", "b"])',
     'subprocess.run([c])',
     "subprocess.run(argv)",
     'subprocess.run(["prismor", c], executable="/bin/sh")',

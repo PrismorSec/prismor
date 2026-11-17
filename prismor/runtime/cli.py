@@ -3414,15 +3414,28 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             from prismor.runtime.cloaking.sources import load_sources
             sources = load_sources()
+            from prismor.runtime.cloaking.runtime import is_scrubbable_secret
             print(f"Registered secrets at {secrets_dir()}:")
             print()
+            weak = 0
             for entry in secrets:
                 ts = datetime.fromtimestamp(entry["modified"]).strftime("%Y-%m-%d %H:%M")
                 tag = _color("[auto]", _DIM) + " " if entry["auto"] else ""
                 src = sources.get(entry["name"], {}).get("ref")
+                try:  # the value is checked in-process, never printed
+                    raw = (secrets_dir() / entry["name"]).read_text(errors="replace").rstrip("\n")
+                except OSError:
+                    raw = None
+                masked = raw is None or is_scrubbable_secret(raw)
+                weak += not masked
                 print(f"  {tag}@@SECRET:{entry['name']}@@"
-                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})")
+                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})"
+                      + ("" if masked else "  " + _color("[not masked]", _YELLOW)))
             print()
+            if weak:
+                print(f"{weak} value(s) marked [not masked] look like config (too short, a common word, or a "
+                      "bare URL), so Prismor never masks them in output or blocks reads of them. "
+                      "Remove any that are not real secrets: prismor cloak remove <name>")
             return
 
         if sub == "sync":

@@ -211,12 +211,7 @@ def _throwaway_config_path(path: str, assignments: Dict[str, str], workspace: Op
     rather than one that governs this agent: not under the workspace, this
     PRISMOR_HOME or $HOME. Only on positive evidence: any variable the same
     command does not assign keeps the path unresolved, and so guarded."""
-    def expand(m: "re.Match[str]") -> str:
-        name = m.group(1) or m.group(2)
-        return assignments.get(name, m.group(0))
-
-    for _ in range(3):  # `S=/tmp/x; W=$S/ws` -- one level of indirection each pass
-        path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", expand, path)
+    path = _expand_assigned(path, assignments)
     if "$" in path or "`" in path or not path.startswith("/"):
         return False
     real = os.path.normpath(path)
@@ -234,6 +229,22 @@ def _throwaway_config_match(command: str, match_text: str, workspace: Optional[P
     paths = _GUARDED_CONFIG_PATH.findall(match_text)
     if not paths:
         return False
+    assignments = _shell_assignments(command)
+    return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
+
+
+def _expand_assigned(path: str, assignments: Dict[str, str]) -> str:
+    """Substitute `$X`/`${X}` the same command assigned; others stay as-is."""
+    def expand(m: "re.Match[str]") -> str:
+        return assignments.get(m.group(1) or m.group(2), m.group(0))
+    for _ in range(3):  # `S=/tmp/x; W=$S/ws` -- one level of indirection each pass
+        path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", expand, path)
+    return path
+
+
+def _shell_assignments(command: str) -> Dict[str, str]:
+    """Variables a command assigns exactly once (a reassigned one is ambiguous:
+    which value a use sees depends on order, so it stays unresolved)."""
     assignments: Dict[str, str] = {}
     reassigned: Set[str] = set()
     for k, v in _SHELL_ASSIGNMENT.findall(command):
@@ -242,7 +253,7 @@ def _throwaway_config_match(command: str, match_text: str, workspace: Optional[P
         assignments[k] = v[1:-1] if v[:1] in "\"'" else v
     for k in reassigned:
         del assignments[k]
-    return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
+    return assignments
 
 
 _APPROVALS_NAME = re.compile(r"approvals\.(?:json|lock|tmp)", re.IGNORECASE)
@@ -266,9 +277,10 @@ def _foreign_approvals_path(text: str, start: int, end: int) -> bool:
     i = start
     while i > 0 and text[i - 1] not in _PATH_TOKEN_STOP:
         i -= 1
-    token = text[i:end]
-    if "$" in token or not token.startswith("/"):
-        return False  # relative, ~ or a variable: could be the home
+    # `S=/tmp/x; ... > $S/approvals.json` is how agents write scratch paths.
+    token = _expand_assigned(text[i:end], _shell_assignments(text))
+    if "$" in token or "`" in token or not token.startswith("/"):
+        return False  # relative, ~ or an unknown variable: could be the home
     return not is_within(token, home)
 
 
