@@ -32,6 +32,7 @@ from typing import Any, Callable, List, Optional, Sequence, Union
 
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
+from prismor.runtime import inflight as _inflight
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
 __all__ = [
@@ -225,18 +226,15 @@ def prismor_guard_tool(
                             return _RunWith(
                                 _approvals.redact_approved_payload(args, workspace=ws),
                                 _approvals.redact_approved_payload(kwargs, workspace=ws),
-                            )
-                        return None  # approved → allowed
+                            ), decision
+                        return None, decision  # approved → allowed
                 except Exception:
                     pass
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
-            denial = f"⛔ Prismor blocked this tool call: {reason}"
-            # A content_and_artifact tool (every langchain-mcp-adapters tool)
-            # must return (content, artifact), or LangChain raises on the denial.
-            return (denial, None) if getattr(tool, "response_format", None) == "content_and_artifact" else denial
-        return None  # allowed
+            return _denial_value(reason), decision
+        return None, decision  # allowed
 
     # The Decision's own PolicyEngine, parked by _decide for _redact to reuse
     # rather than rebuild. A list because the guarded callables are re-entrant
@@ -254,11 +252,28 @@ def prismor_guard_tool(
         """
         return redact_tool_result(result, workspace=ws, engine=_engine[0])
 
+    def _denial_value(reason: str) -> Any:
+        denial = f"⛔ Prismor blocked this tool call: {reason}"
+        # A content_and_artifact tool (every langchain-mcp-adapters tool)
+        # must return (content, artifact), or LangChain raises on the denial.
+        return (denial, None) if getattr(tool, "response_format", None) == "content_and_artifact" else denial
+
+    async def _run(decision: Any, awaitable: Any) -> Any:
+        # Async tools run as a task that is cancelled if a policy refresh
+        # (pause, subject control, restriction) would now refuse it (#942).
+        try:
+            return _redact(await _inflight.run_cancellable(
+                decision, awaitable, tool=tool_name, agent=agent, session_id=sid))
+        except _inflight.Refused as exc:
+            if raise_on_block:
+                raise PrismorBlocked(f"{exc.status}: {exc.reason}", decision)
+            return _denial_value(f"{exc.status}: {exc.reason}")
+
     original_func = getattr(tool, "func", None)
     if callable(original_func):
         @functools.wraps(original_func)
         def guarded_func(*args: Any, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
+            denial, _ = _decide(args, kwargs)
             if isinstance(denial, _RunWith):
                 return _redact(original_func(*denial.args, **denial.kwargs))
             if denial is not None:
@@ -275,12 +290,12 @@ def prismor_guard_tool(
             # servicing other tools/streams instead of sleeping with it.
             import asyncio
 
-            denial = await asyncio.to_thread(_decide, args, kwargs)
+            denial, decision = await asyncio.to_thread(_decide, args, kwargs)
             if isinstance(denial, _RunWith):
-                return _redact(await original_coro(*denial.args, **denial.kwargs))
+                return await _run(decision, original_coro(*denial.args, **denial.kwargs))
             if denial is not None:
                 return denial
-            return _redact(await original_coro(*args, **kwargs))
+            return await _run(decision, original_coro(*args, **kwargs))
         tool.coroutine = guarded_coro
 
     # A BaseTool subclass (ShellTool, the file-management and Requests tools)
@@ -292,7 +307,7 @@ def prismor_guard_tool(
             impl = getattr(tool, attr, None)
             if not callable(impl):
                 continue
-            object.__setattr__(tool, attr, _guard_impl(impl, is_async, _decide, _redact))
+            object.__setattr__(tool, attr, _guard_impl(impl, is_async, _decide, _redact, _run))
             wrapped = True
     if wrapped:
         object.__setattr__(tool, "__prismor_guarded__", True)
@@ -303,7 +318,8 @@ def prismor_guard_tool(
 _LC_PLUMBING = ("run_manager", "config", "callbacks")
 
 
-def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callable) -> Callable:
+def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callable,
+                run: Callable) -> Callable:
     def _split(kwargs: dict) -> tuple:
         extra = {k: kwargs.pop(k) for k in _LC_PLUMBING if k in kwargs}
         return kwargs, extra
@@ -312,7 +328,7 @@ def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callab
         @functools.wraps(impl)
         def guarded(*args: Any, **kwargs: Any) -> Any:
             kwargs, extra = _split(kwargs)
-            denial = decide(args, kwargs)
+            denial, _ = decide(args, kwargs)
             if isinstance(denial, _RunWith):
                 return redact(impl(*denial.args, **denial.kwargs, **extra))
             if denial is not None:
@@ -325,12 +341,12 @@ def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callab
         import asyncio
 
         kwargs, extra = _split(kwargs)
-        denial = await asyncio.to_thread(decide, args, kwargs)
+        denial, decision = await asyncio.to_thread(decide, args, kwargs)
         if isinstance(denial, _RunWith):
-            return redact(await impl(*denial.args, **denial.kwargs, **extra))
+            return await run(decision, impl(*denial.args, **denial.kwargs, **extra))
         if denial is not None:
             return denial
-        return redact(await impl(*args, **kwargs, **extra))
+        return await run(decision, impl(*args, **kwargs, **extra))
     return guarded_async
 
 

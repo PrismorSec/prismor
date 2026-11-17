@@ -92,12 +92,13 @@ def _headers(ident: Dict[str, Any]) -> Dict[str, str]:
     }
 
 
-def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float,
+                  path: str = "/api/approvals") -> Optional[Dict[str, Any]]:
     import urllib.request
     import urllib.error
 
     base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
-    url = f"{base}/api/approvals"
+    url = f"{base}{path}"
     req = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=_headers(ident), method="POST"
     )
@@ -107,6 +108,28 @@ def _post_request(ident: Dict[str, Any], body: Dict[str, Any], timeout: float) -
             return json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, OSError, ValueError):
         return None
+
+
+def _report_outcome(ident: Dict[str, Any], approval_id: Optional[str], outcome: str,
+                    rules: Optional[list] = None, reason: Optional[str] = None,
+                    resource: Optional[Dict[str, Any]] = None) -> None:
+    """Tell the console what happened after the approval (``executed`` or a
+    refusal on re-check), so its history matches the signed trail
+    (prismor-web#510). Kind and id of the resource only, never attributes.
+    Best-effort: an old console answers 404/405 and nothing changes."""
+    if not approval_id:
+        return
+    body: Dict[str, Any] = {"outcome": outcome}
+    if rules:
+        body["rule_id"] = str(rules[0])
+    if reason:
+        body["reason"] = str(reason)[:500]
+    if isinstance(resource, dict) and (resource.get("kind") or resource.get("id")):
+        body["resource"] = {"kind": resource.get("kind"), "id": resource.get("id")}
+    try:
+        _post_request(ident, body, timeout=3.0, path=f"/api/approvals/{approval_id}")
+    except Exception:
+        pass
 
 
 def _decision_mode(data: Dict[str, Any]) -> str:
@@ -331,6 +354,8 @@ def await_step_up(
 
     def _record(status: str, approval_id: Optional[str] = None, reason: Optional[str] = None,
                 approver: Optional[Dict[str, Any]] = None, rules: Optional[list] = None) -> None:
+        if status == "revoked_after_approval":
+            _report_outcome(ident, approval_id, status, rules=rules, reason=reason, resource=resource)
         _audit_outcome(
             {**body, "reason": reason} if reason else body,
             status=status, approval_id=approval_id,
@@ -349,6 +374,7 @@ def await_step_up(
         _record("approved" if _mode != "redacted" else "approved_redacted", approval_id)
         if _revoked_since(decision, finding, resource, _record, approval_id):
             return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
+        _report_outcome(ident, approval_id, "executed")
         return ApprovalOutcome(True, redacted=_mode == "redacted", approval_id=approval_id, status="approved")
 
     deadline = _monotonic() + _timeout()
@@ -363,6 +389,7 @@ def await_step_up(
             _record("approved" if mode != "redacted" else "approved_redacted", approval_id, approver=approver)
             if _revoked_since(decision, finding, resource, _record, approval_id):
                 return ApprovalOutcome(False, approval_id=approval_id, status="revoked_after_approval")
+            _report_outcome(ident, approval_id, "executed")
             return ApprovalOutcome(True, redacted=mode == "redacted", approval_id=approval_id, status="approved")
         if status in _DECIDED:  # denied / expired
             _record(status, approval_id, approver=approver)
@@ -384,26 +411,14 @@ def _revoked_since(
     held only by the same step-up rule the human just approved -> run it.
     Anything else (a block, a different step-up) -> refuse, and record why.
     Fails closed if the re-check itself errors."""
-    recheck = getattr(decision, "recheck", None)
-    if recheck is None:
+    from prismor.runtime import inflight as _inflight
+    if getattr(decision, "recheck", None) is None:
         return False  # caller built its own Decision; nothing to re-run
-    try:
-        from prismor.runtime.enterprise import remote_policy as _rp
-        _rp.check_and_refresh(interval=0)
-    except Exception:
-        pass
-    try:
-        now = recheck(resource)
-    except Exception as exc:
-        record("revoked_after_approval", approval_id, f"re-check after approval failed: {exc}")
-        return True
-    if now.allow:
-        return False
-    same = (now.blocking or {}).get("ruleId") == finding.get("ruleId")
-    if same and str((now.blocking or {}).get("action") or "").lower() == "step_up":
+    now = _inflight.still_refused(decision, resource, refresh=0)
+    if now is None:
         return False
     # Name the rule that refused it, not the step-up rule the human approved.
-    refusing = (now.blocking or {}).get("ruleId") or getattr(now, "rule_id", None)
+    refusing = _inflight.refusing_rule(now)
     record("revoked_after_approval", approval_id,
            "approved, then refused on re-check: " + str(now.reason or refusing or "policy changed"),
            rules=[refusing] if refusing else None)
