@@ -163,16 +163,38 @@ class TestProfile(unittest.TestCase):
     def test_seatbelt_escapes_quotes_in_paths(self):
         self.assertEqual(sandbox._sb('/a"b\\c'), '"/a\\"b\\\\c"')
 
-    def test_bwrap_argv(self):
-        (self.home / ".aws").mkdir()
-        (self.home / ".netrc").write_text("x")
-        argv = sandbox.bwrap_argv(self._p(network="none"))
-        self.assertIn("--unshare-net", argv)
-        self.assertEqual(argv[argv.index(os.path.realpath(self.home / ".aws")) - 1], "--tmpfs")
-        i = argv.index(os.path.realpath(self.home / ".netrc"))
-        self.assertEqual(argv[i - 2:i], ["--ro-bind", "/dev/null"])
-        self.assertNotIn("--unshare-net", sandbox.bwrap_argv(self._p(network="proxy")))
-        self.assertNotIn(str(self.home / ".kube"), argv)   # absent paths are not mounted
+
+class TestMacOSOnly(unittest.TestCase):
+    def test_other_platforms_are_unsupported_with_a_plain_reason(self):
+        sandbox.backend_status.cache_clear()
+        try:
+            with mock.patch.object(sandbox.sys, "platform", "linux"):
+                self.assertFalse(sandbox.supported())
+                status = sandbox.backend_status()
+                self.assertFalse(status["available"])
+                self.assertIn("macOS only", status["error"])
+                report = sandbox.status_report({"enabled": True})
+                self.assertEqual(set(report["controls"].values()), {"unavailable"})
+        finally:
+            sandbox.backend_status.cache_clear()
+
+    def test_hook_does_not_rewrite_off_macos(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / ".git").mkdir()
+            _policy(ws, "settings:\n  sandbox:\n    enabled: true\n")
+            payload = {"session_id": "s-linux", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                       "tool_use_id": "tu-linux", "cwd": str(ws),
+                       "tool_input": {"command": "echo hi", "description": "d"}}
+            env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
+            env.pop("PRISMOR_WORKSPACE", None)
+            env.pop("CLAUDE_PROJECT_DIR", None)
+            shim = ("import sys; sys.platform = 'linux'; "
+                    "sys.argv = ['prismor', 'hook-dispatch', '--agent', 'claude', '--mode', 'enforce']; "
+                    "from prismor.runtime.cli import main; main()")
+            r = subprocess.run([sys.executable, "-c", shim], input=json.dumps(payload), cwd=ws, env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertNotIn("updatedInput", r.stdout, r.stderr)
 
 
 class TestRewrite(unittest.TestCase):
@@ -457,7 +479,7 @@ class TestCli(unittest.TestCase):
                                        egress_enabled=True)
         self.assertEqual(report["network"], "proxy")
         self.assertEqual(report["legacy_keys"], ["image"])
-        self.assertIn(report["controls"]["network"], ("enforced", "advisory", "unavailable"))
+        self.assertIn(report["controls"]["network"], ("enforced", "unavailable"))
 
 
 def _cli(ws: Path, *args, home: Path = None):
@@ -515,13 +537,6 @@ class TestConfinedRuns(unittest.TestCase):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"1\"\n")
         self.assertEqual(_cli(self.ws, "run", "--", "exit 7").returncode, 7)
 
-    @unittest.skipUnless(sys.platform.startswith("linux"), "macOS refuses setuid ps inside Seatbelt")
-    def test_the_shell_argv_holds_no_command(self):
-        _policy(self.ws, "settings:\n  sandbox:\n    ring: \"1\"\n")
-        r = _cli(self.ws, "run", "--", "tr '\\0' ' ' < /proc/$$/cmdline  # MARK-not-in-argv")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("MARK-not-in-argv", r.stdout)
-
     def test_the_hook_rewrite_runs_as_is(self):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"1\"\n")
         rewritten = sandbox.wrap_command("echo \"$PRISMOR_SANDBOX\" from-heredoc", self.ws)
@@ -551,7 +566,6 @@ class TestConfinedRuns(unittest.TestCase):
         r = _cli(self.ws, "try", "--", f"curl -s -m 3 http://127.0.0.1:{port}/")
         self.assertNotEqual(r.returncode, 0)
 
-    @unittest.skipUnless(sys.platform == "darwin", "proxy mode is enforced on macOS only")
     def test_proxy_ring_allows_loopback_and_blocks_off_list_hosts(self):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"2\"\n"
                          "  egress:\n    enabled: true\n    mode: enforce\n    default: deny\n")

@@ -168,7 +168,7 @@
         },
         "sandbox": {
           "type": "object",
-          "description": "Prismor sandbox: run allowed shell commands under the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). See docs/sandbox.md.",
+          "description": "Prismor sandbox: run allowed shell commands under the macOS sandbox (Seatbelt). See docs/sandbox.md.",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -209,7 +209,7 @@
                 "bridge",
                 "host"
               ],
-              "description": "none: no network. proxy: HTTP(S) through a loopback proxy that applies settings.egress (enforced on macOS, advisory on Linux). open: not restricted. allowlist/bridge/host are older names for proxy/open/open."
+              "description": "none: no network. proxy: HTTP(S) through a loopback proxy that applies settings.egress. open: not restricted. allowlist/bridge/host are older names for proxy/open/open."
             },
             "workspace_mount": {
               "type": "string",

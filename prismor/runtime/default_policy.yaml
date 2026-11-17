@@ -128,8 +128,8 @@ settings:
   # moving these entries to `egress.allow` with `default: deny`.
   egress_allowlist: []
 
-  # OS sandbox for allowed shell commands (Seatbelt on macOS, bubblewrap on
-  # Linux). Off by default so existing installs do not change behavior until an
+  # OS sandbox for allowed shell commands (Seatbelt, macOS only for now). Off
+  # by default so existing installs do not change behavior until an
   # operator runs `prismor sandbox on`. Prismor judges the original command
   # first; allowed commands then run confined. See docs/sandbox.md.
   sandbox:

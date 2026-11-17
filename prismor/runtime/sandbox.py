@@ -3,9 +3,9 @@
 The policy engine decides whether a command may run. The sandbox decides what
 that command, and every process it starts, can touch while it runs: which
 files it can write, which credential stores it can see, and where it can
-connect. The kernel enforces it — Seatbelt (``sandbox-exec``) on macOS,
-bubblewrap (``bwrap``) on Linux — so a package's postinstall script is held to
-the same limits as the command the agent typed.
+connect. The kernel enforces it — Seatbelt (``sandbox-exec``), macOS only for
+now — so a package's postinstall script is held to the same limits as the
+command the agent typed. Elsewhere the runner says so and runs unconfined.
 
 Nothing about how the agent is launched changes. Hook-dispatch rewrites each
 allowed shell call into ``prismor sandbox run``, with the original command on
@@ -20,7 +20,6 @@ import os
 import re
 import secrets
 import shlex
-import shutil
 import signal
 import subprocess
 import sys
@@ -75,14 +74,13 @@ _PROTECTED_ROOT = (".prismor", ".git/hooks", ".claude", ".codex", ".cursor", ".g
                    ".vscode", ".github/hooks", ".mcp.json")
 _PROTECTED_HOME = (".prismor", ".ssh", ".gnupg", ".claude", ".codex", ".cursor", ".gemini",
                    ".zshrc", ".zshenv", ".zprofile", ".zlogin", ".bashrc", ".bash_profile",
-                   ".profile", ".gitconfig", ".config/git", "Library/LaunchAgents",
-                   ".config/autostart", ".config/systemd")
+                   ".profile", ".gitconfig", ".config/git", "Library/LaunchAgents")
 # Package-manager caches: installs and builds fail without them.
 _WRITABLE_HOME = (".cache", "Library/Caches", ".npm", ".yarn", ".pnpm-store", "Library/pnpm",
-                  ".local/share/pnpm", ".bun/install/cache", ".cargo/registry", ".cargo/git",
+                  ".bun/install/cache", ".cargo/registry", ".cargo/git",
                   "go/pkg/mod", ".gradle/caches", ".m2/repository")
 # A container daemon runs whatever it is asked to, outside any sandbox.
-_DAEMON_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock", "~/.docker/run/docker.sock",
+_DAEMON_SOCKETS = ("/var/run/docker.sock", "~/.docker/run/docker.sock",
                    "~/.colima/default/docker.sock", "~/.orbstack/run/docker.sock")
 
 # Simple `prismor <cmd>` calls run unconfined (through this same install):
@@ -134,6 +132,11 @@ def enforcing(cfg: Dict[str, Any]) -> bool:
     return bool(cfg.get("enabled")) and cfg.get("mode") == "enforce"
 
 
+def supported() -> bool:
+    """macOS only for now: elsewhere the hook does not rewrite at all."""
+    return sys.platform == "darwin"
+
+
 # ── profile ────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -156,7 +159,7 @@ def _uniq(paths: Iterable[str]) -> Tuple[str, ...]:
 
 
 def _tmp_dirs() -> List[str]:
-    dirs = ["/private/tmp", "/private/var/folders"] if sys.platform == "darwin" else ["/tmp", "/var/tmp"]
+    dirs = ["/private/tmp", "/private/var/folders"]
     if os.environ.get("TMPDIR"):
         dirs.append(_real(os.environ["TMPDIR"]))
     return dirs
@@ -217,58 +220,31 @@ def seatbelt_profile(p: Profile) -> str:
     return "\n".join(out) + "\n"
 
 
-def bwrap_argv(p: Profile, bwrap: str = "bwrap") -> List[str]:
-    """bubblewrap options; later mounts sit on top of earlier ones."""
-    argv = [bwrap, "--die-with-parent", "--unshare-pid", "--ro-bind", "/", "/",
-            "--dev", "/dev", "--tmpfs", "/dev/shm", "--proc", "/proc"]
-    if p.network == "none":
-        argv.append("--unshare-net")
-    for w in p.writable:
-        if os.path.isdir(w):
-            argv += ["--bind", w, w]
-    for x in p.protected:
-        if os.path.exists(x):
-            argv += ["--ro-bind", x, x]
-    for h in p.hidden + p.sockets:
-        if os.path.isdir(h):
-            argv += ["--tmpfs", h]
-        elif os.path.exists(h):
-            argv += ["--ro-bind", "/dev/null", h]
-    return argv + ["--chdir", os.getcwd()]
-
-
 # ── engine ─────────────────────────────────────────────────────────────────
 
-def _probe(argv: List[str]) -> Optional[str]:
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return str(exc)
-    return None if r.returncode == 0 else ((r.stderr or r.stdout).strip() or f"exit {r.returncode}")
+_SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 
 @lru_cache(maxsize=1)
 def backend_status() -> Dict[str, Any]:
-    """Which OS sandbox engine this host has, and whether it can start."""
-    if sys.platform == "darwin":
-        exe = "/usr/bin/sandbox-exec"
-        if not os.path.exists(exe):
-            return {"available": False, "engine": "seatbelt", "error": "sandbox-exec not found"}
-        err = _probe([exe, "-p", "(version 1)(allow default)", "/usr/bin/true"])
-        return {"available": err is None, "engine": "seatbelt", "path": exe, "error": err}
-    if sys.platform.startswith("linux"):
-        exe = shutil.which("bwrap")
-        if not exe:
-            return {"available": False, "engine": "bubblewrap",
-                    "error": "bwrap not found (install the bubblewrap package)"}
-        err = _probe([exe, "--ro-bind", "/", "/", "--dev", "/dev", "true"])
-        return {"available": err is None, "engine": "bubblewrap", "path": exe, "error": err}
-    return {"available": False, "engine": None, "error": f"no native sandbox on {sys.platform}"}
+    """Whether Seatbelt can start here."""
+    if not supported():
+        return {"available": False, "engine": None,
+                "error": f"macOS only, this host runs {sys.platform}"}
+    if not os.path.exists(_SANDBOX_EXEC):
+        return {"available": False, "engine": "seatbelt", "error": "sandbox-exec not found"}
+    try:
+        r = subprocess.run([_SANDBOX_EXEC, "-p", "(version 1)(allow default)", "/usr/bin/true"],
+                           capture_output=True, text=True, timeout=5, check=False)
+        err = None if r.returncode == 0 else ((r.stderr or r.stdout).strip() or f"exit {r.returncode}")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        err = str(exc)
+    return {"available": err is None, "engine": "seatbelt", "path": _SANDBOX_EXEC, "error": err}
 
 
 def _inside_sandbox() -> bool:
     """True when this process already runs under a Seatbelt sandbox (ours or an agent's)."""
-    if sys.platform != "darwin":
+    if not supported():
         return False
     try:
         import ctypes
@@ -371,12 +347,8 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
         return _exec_unconfined(command)
 
     profile = build_profile(config, root)
-    if status["engine"] == "seatbelt":
-        argv = [status["path"], "-p", seatbelt_profile(profile)]
-    else:
-        argv = bwrap_argv(profile, status["path"])
     fd = _command_fd(command)
-    argv += [_shell(), "-c", _shim(fd)]
+    argv = [status["path"], "-p", seatbelt_profile(profile), _shell(), "-c", _shim(fd)]
     env = dict(os.environ, PRISMOR_SANDBOX="1")
 
     if profile.network != "proxy" and not wait:
@@ -556,12 +528,7 @@ def status_report(config: Dict[str, Any], *, egress_enabled: bool = False) -> Di
     engine = backend_status()
     on = engine["available"]
     net = cfg["network"]
-    if net == "open":
-        net_state = "open"
-    elif net == "proxy" and sys.platform.startswith("linux"):
-        net_state = "advisory"   # bwrap cannot yet reach the proxy with the network unshared
-    else:
-        net_state = "enforced" if on else "unavailable"
+    net_state = "open" if net == "open" else ("enforced" if on else "unavailable")
     return {
         "enabled": cfg["enabled"],
         "mode": cfg["mode"],
@@ -589,6 +556,4 @@ def describe(cfg: Dict[str, Any]) -> str:
     writes = "tmp only" if cfg["workspace_mount"] == "ro" else "project, tmp, package caches"
     net = {"none": "no network", "proxy": "network through the egress allowlist",
            "open": "open network"}[cfg["network"]]
-    if cfg["network"] == "proxy" and sys.platform.startswith("linux"):
-        net += " (advisory on Linux)"
     return f"writes: {writes} · credential stores hidden · {net}"

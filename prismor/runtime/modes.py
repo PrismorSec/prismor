@@ -229,8 +229,7 @@ def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
 # without breaking them.
 SANDBOX_SKIPPED_NOTE = (
     "NOTE: no native sandbox here ({reason}) — the sandbox is skipped. "
-    "Rules, egress and tag rules still enforce; install bubblewrap (Linux) and "
-    "re-apply for OS containment."
+    "Rules, egress and tag rules still enforce; OS containment needs macOS."
 )
 
 

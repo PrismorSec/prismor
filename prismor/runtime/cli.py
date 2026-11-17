@@ -2758,9 +2758,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _prompt_out and _hook_claimed:
                 sys.stdout.write(json.dumps(_prompt_out) + "\n")
 
-        # Prismor sandbox: every rule, IAM and scoped check has passed on the
-        # original command by now. Wrap it so the OS confines it, and whatever it
-        # starts, too. Where the engine is missing at run time the runner says
+        # Prismor sandbox (macOS): every rule, IAM and scoped check has passed on
+        # the original command by now. Wrap it so the OS confines it, and whatever
+        # it starts, too. Where Seatbelt cannot start at run time the runner says
         # so and runs the command unconfined: "not contained", never "not
         # screened". On Claude with the cloak hook installed, decloak.sh does the
         # wrap (sandbox.hand_off_to_decloak): two hooks rewriting one call race.
@@ -2768,7 +2768,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-                _sandbox_on = _sandbox.enforcing(_sandbox_cfg)
+                _sandbox_on = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
                 _sandbox_root = _sandbox.project_root(payload, workspace)
                 _decloak_wraps = (args.agent == "claude"
                                   and _sandbox.hand_off_to_decloak(_sandbox_root, _sandbox_on))
@@ -2790,7 +2790,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         engine = PolicyEngine(workspace=workspace)
         cfg = _sandbox.effective_config(getattr(engine, "sandbox_config", {}))
         subcmd = getattr(args, "sandbox_command", None) or "status"
-        _engine_names = {"seatbelt": "Seatbelt (macOS)", "bubblewrap": "bubblewrap (Linux)"}
+        _engine_names = {"seatbelt": "Seatbelt (macOS)"}
 
         if subcmd in ("run", "try"):
             # `run` is what the hook rewrite calls: the command arrives on fd 3
@@ -2829,7 +2829,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(json.dumps(report, indent=2))
                 return
             ctl = report["controls"]
-            colour = {"enforced": _GREEN, "advisory": _YELLOW, "open": _YELLOW, "unavailable": _RED}
+            colour = {"enforced": _GREEN, "open": _YELLOW, "unavailable": _RED}
             on = (f"on ({report['mode']})" if report["enabled"] else "off")
             print()
             print(f"  {_color('PRISMOR', _BOLD)}  sandbox status")
@@ -2879,8 +2879,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(_color("commands now run unconfined. Policy screening, egress "
                              "and cloaking are unaffected.", _DIM))
             elif not engine_st["available"]:
-                print(_color(f"no native sandbox here ({engine_st.get('error')}): commands run "
-                             "unconfined until there is. Policy still applies.", _YELLOW))
+                print(_color(f"the sandbox cannot start here ({engine_st.get('error')}): commands "
+                             "run unconfined. Policy still applies.", _YELLOW))
             else:
                 print(f"  {engine_name} · {_sandbox.describe({**cfg, 'enabled': True})}")
                 if report["network"] == "proxy" and not report["egress_allowlist"]:
@@ -4495,8 +4495,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ── sandbox ────────────────────────────────────────────────────────
     sandbox_parser = subparsers.add_parser(
         "sandbox",
-        help="OS sandbox (Seatbelt / bubblewrap) for allowed shell commands",
-        description="Run allowed shell commands under the OS sandbox: writes held to the "
+        help="OS sandbox (Seatbelt, macOS) for allowed shell commands",
+        description="Run allowed shell commands under the macOS sandbox: writes held to the "
                     "project, credential stores hidden, network held to the egress allowlist.",
     )
     sandbox_parser.add_argument("--workspace", help="Workspace path")
@@ -6794,7 +6794,7 @@ allowlists:
 settings:
   # Optional OS sandbox for allowed shell commands (`prismor sandbox on`).
   # Prismor still judges the original command first; allowed commands then
-  # run under Seatbelt (macOS) or bubblewrap (Linux). See docs/sandbox.md.
+  # run under Seatbelt (macOS only for now). See docs/sandbox.md.
   # sandbox:
   #   enabled: true
   #   ring: "2"          # 0 read-only · 1 no network · 2 egress allowlist · 3 open network

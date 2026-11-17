@@ -1,6 +1,6 @@
 # Prismor Sandbox
 
-Prismor's policy engine decides whether a shell command may run. The sandbox decides what that command, and every process it starts, can touch while it runs. It uses the sandbox your OS already has: Seatbelt on macOS and bubblewrap on Linux. Commands keep using your real toolchain (`npm`, `.venv`, `cargo`, `git`), and each one starts about 10 ms slower.
+Prismor's policy engine decides whether a shell command may run. The sandbox decides what that command, and every process it starts, can touch while it runs. It uses the sandbox macOS already ships, Seatbelt. Commands keep using your real toolchain (`npm`, `.venv`, `cargo`, `git`), and each one starts about 10 ms slower. It's macOS only for now (see [Platforms](#platforms)).
 
 ```bash
 prismor sandbox on
@@ -28,7 +28,7 @@ Prismor judges what the agent asks to run. An allowed `npm install` is harmless 
         │  the command rides fd 3, never a process's argv
         ▼
  ┌───────────────────────────────────────────────────────────────┐
- │ 2 · OS sandbox (Seatbelt / bubblewrap), built from policy.yaml│
+ │ 2 · macOS sandbox (Seatbelt), built from policy.yaml          │
  │     write   project, tmp, package caches                      │
  │     locked  .git/hooks .prismor .claude .vscode .mcp.json ... │
  │     hidden  ~/.aws ~/.kube ~/.docker ~/.netrc vault ...       │
@@ -68,7 +68,7 @@ $ prismor sandbox try -- npm test
 [prismor] exited 1 inside the sandbox. An "Operation not permitted" above means it touched a path the sandbox does not allow: add it to settings.sandbox.writable, or see docs/sandbox.md for rings.
 ```
 
-Run your usual build, test and dev commands through `try`. Once they pass, run `prismor sandbox on`. Seatbelt and bubblewrap have no "log what you would block" mode, so `try` is how you preview the sandbox.
+Run your usual build, test and dev commands through `try`. Once they pass, run `prismor sandbox on`. Seatbelt has no "log what you would block" mode, so `try` is how you preview the sandbox.
 
 ## Check what it's doing
 
@@ -155,14 +155,9 @@ Placeholders resolve, and output is scrubbed, outside the sandbox, where the vau
 
 ## Platforms
 
-| | macOS (Seatbelt) | Linux (bubblewrap) | Windows |
-|---|---|---|---|
-| Files and locked paths | enforced | enforced (for paths that exist) | not available |
-| Hidden credential stores | enforced | enforced | not available |
-| Network `none` | enforced | enforced | not available |
-| Network `proxy` (ring 2) | enforced | advisory: clients that honor `HTTPS_PROXY` are checked, others go direct | not available |
+The sandbox runs on macOS only, where everything above is enforced by Seatbelt. On Linux and Windows, `prismor sandbox on` still saves the setting, but the hook leaves commands as they are, and `prismor sandbox status` and `prismor audit` say the sandbox can't start here. Policy screening, egress, and cloaking work as before.
 
-Linux needs `bwrap` (`apt install bubblewrap`). Where no engine is available, the runner says so on stderr and runs the command unconfined. Policy screening still applies, because blocking every shell command over a missing engine is how teams end up uninstalling security tools.
+If Seatbelt can't start on a Mac, for example because the agent already runs inside its own sandbox, the runner says so on stderr and runs the command unconfined. Policy screening still applies, because blocking every shell command over a missing engine is how teams end up uninstalling security tools.
 
 ## Agents
 

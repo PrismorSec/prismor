@@ -417,7 +417,7 @@ outside all of this, the same as every other Prismor control.
 | `prismor policy edit` | `--workspace` | Interactive TUI to toggle rules on/off. |
 | `prismor policy validate <file>` | — | Static-validate a policy YAML file. |
 | `prismor policy test` | `--file` | Run declarative policy tests (falls back to the bundled OWASP LLM starter pack). Cases are `type: command`, `read`, `write`, or `tool` (with `tool`, `args`, `principal`, `resource` for [`when:` rules](attribute-conditions.md)); `fixtures:` and `expect: {principal: verdict}` matrices, `skip`. Flags: `--policy FILE`, `--filter PATTERN`, `--json`. |
-| `prismor sandbox <status\|check\|on\|off\|try\|run>` | `--workspace` | OS sandbox (Seatbelt / bubblewrap) for allowed shell commands: show what is confined, check the engine, turn it on or off for this workspace, or run one command confined. See [Prismor Sandbox](sandbox.md). |
+| `prismor sandbox <status\|check\|on\|off\|try\|run>` | `--workspace` | macOS sandbox (Seatbelt) for allowed shell commands: show what is confined, check the engine, turn it on or off for this workspace, or run one command confined. See [Prismor Sandbox](sandbox.md). |
 | `prismor egress show` | `--workspace` | Effective network egress policy, its mode, and which layer (default / project / org) set it. See [Network Isolation](network-isolation.md). |
 | `prismor egress report` | `--last N`, `--fail-on-block`, `--workspace` | Every destination recorded sessions actually contacted, with the verdict the current policy gives it. The on-ramp before flipping to enforce; `--fail-on-block` gates CI. |
 | `prismor egress test <target>...` | `--agent <name>`, `--workspace` | Dry-run a URL, host, or whole shell command against the policy. Exit `1` if anything would be blocked. |
