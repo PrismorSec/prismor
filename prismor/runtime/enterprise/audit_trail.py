@@ -66,6 +66,11 @@ _SUMMARY_CAP = 400
 CHECKPOINT_SCHEMA = "prismor.audit.checkpoint.v1"
 
 
+# ponytail: per-process map, so an approval recorded by another process has no
+# authority_hash; carry it on the Decision if that path ever matters.
+_LAST_AUTHORITY: Dict[str, str] = {}
+
+
 def enabled() -> bool:
     return os.environ.get("PRISMOR_AUDIT_TRAIL", "1").lower() not in (
         "0", "false", "no", "off",
@@ -277,6 +282,7 @@ def append_action_record(
     subject: Optional[Dict[str, Any]] = None,
     mode: str = "",
     eval_ms: Optional[int] = None,
+    authority_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Append one signed record for an evaluated tool call (any verdict).
 
@@ -322,7 +328,11 @@ def append_action_record(
              if f.get("ruleId") or f.get("rule_id")}
         ),
         "reason": _reason(findings, blocking),
+        # The scope the agent held when it acted (enterprise/authority.py).
+        "authority_hash": authority_hash,
     }
+    if authority_hash and session_id:
+        _LAST_AUTHORITY[session_id] = authority_hash
     return _append(record)
 
 
@@ -367,6 +377,8 @@ def append_approval_record(
         "severity": severity,
         "reason": reason or f"human approval {status}",
         **_policy_ref(),
+        # Same scope as the action it resolves: the session's last decision.
+        "authority_hash": _LAST_AUTHORITY.get(session_id) if session_id else None,
     }
     return _append(record)
 

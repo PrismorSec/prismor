@@ -1314,7 +1314,16 @@ def evaluate_tool_call(
     try:
         from prismor.runtime.enterprise import audit_trail as _audit
         if record and _audit.enabled():
+            _authority = None
+            try:
+                from prismor.runtime.enterprise import authority as _authz
+                _authority = _authz.store(_authz.snapshot(
+                    workspace=workspace, subject=subject, control=_control, engine=engine,
+                    session_id=session_id, parent_agent=_parent_agent))
+            except Exception as exc:
+                sys.stderr.write(f"[prismor] authority snapshot error: {exc}\n")
             _audit.append_action_record(
+                authority_hash=_authority,
                 event=event,
                 findings=findings,
                 blocking=blocking,

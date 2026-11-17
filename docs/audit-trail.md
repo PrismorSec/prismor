@@ -42,6 +42,7 @@ Without it, records are still hash-chained but unsigned.
 | `event_type`, `tool_name`, `input_summary`, `evidence_hash` | what: the (secret-scrubbed) inputs and sources invoked |
 | `agent_stated_intent` | the agent's own description of the action (e.g. the Bash `description` param) |
 | `verdict`, `rules`, `reason`, `mode`, `eval_ms` | why: the policy decision in human-readable terms |
+| `authority_hash` | what the agent was permitted at that moment (see below) |
 | `seq`, `prev_hash`, `hash`, `signature`, `signing_key_id` | the chain + signature |
 
 Extension lifecycle events get their own records too (`record_type: "extension"`):
@@ -74,6 +75,45 @@ prismor trail checkpoint          # signed chain head, for anchoring elsewhere
 here, and an anchored checkpoint is what tells them apart. `tampered` covers a
 hash mismatch, broken linkage, reset chain state, an invalid signature, or a
 record signed by a foreign key.
+
+## Authority scope
+
+The rules that fired say why a call was judged the way it was. They don't say
+what the agent was allowed to do at the time. Each record's `authority_hash`
+names a snapshot of that scope, stored once under
+`~/.prismor/audit/authority/<hash>.json`:
+
+| Field | |
+|---|---|
+| `iam_profile` | profile id + hash, allowed and denied tools |
+| `parent_iam_profiles`, `inherited_from` | a subagent's parent agent and the limits it carries down |
+| `agent_control` | kill switch, mode, per-agent denied / asked tools |
+| `scoped_rules` | the session scope, if one applied |
+| `subject_controls` | org pause and the user/team suspension or tool denies in effect |
+| `policy_version`, `policy_hash` | the signed org policy |
+
+The hash is part of the record hash, so the chain and signature cover it.
+Change the profile later and old records still resolve to what applied then.
+
+## Evidence pack
+
+```bash
+prismor trail export --session nw-1112-234824 --out pack/   # also --from / --to (ISO timestamps)
+prismor trail export --verify pack/                          # offline; add --pubkey B64 to pin the signer
+```
+
+| File | |
+|---|---|
+| `decisions.jsonl` | one object per decision: identity, subject, agent and subagent, action, resource, policy version, `authority_hash`, approval and approver, decision, enforcement outcome, refusing rule ([schema](schemas/decisions.schema.json)) |
+| `records.jsonl` | the signed trail records they came from |
+| `authority/<hash>.json` | each referenced snapshot |
+| `verify.json` | `trail verify` on the device and the chain head |
+| `timeline.md` | the session in order |
+| `manifest.json` | sha256 of every file, signed like `prismor attest` (RFC 8785 + Ed25519) |
+
+`--verify` fails if any file changed or is missing, a snapshot doesn't match
+its hash, a decision names a snapshot the pack doesn't have, or a record's own
+hash or signature doesn't check.
 
 ## Anchoring (what makes truncation provable)
 
