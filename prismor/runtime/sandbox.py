@@ -1,4 +1,4 @@
-"""Docker-backed sandbox runner for Prismor shell commands.
+"""Sandbox runner for Prismor shell commands (Docker, or native: Seatbelt/bwrap).
 
 The sandbox is defense in depth: Prismor policy still decides whether a command
 is allowed, then this module constrains where the allowed command executes.
@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -26,6 +27,10 @@ DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
     "read_only_root": True,
     "tmpfs": ["/tmp:noexec,nosuid,size=256m"],  # container tmpfs mount, not a host path  # nosec B108
     "env_allowlist": ["NO_COLOR", "TERM"],
+    # native backend only (sandbox_native.py)
+    "allow_write": [],
+    "deny_read": [],
+    "allow_read": [],
     "resource_limits": {
         "cpus": "1.0",
         "memory": "1g",
@@ -113,7 +118,7 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     cfg["network"] = str(cfg.get("network") or "none").lower()
     cfg["workspace_mount"] = str(cfg.get("workspace_mount") or "rw").lower()
 
-    if cfg["backend"] != "docker":
+    if cfg["backend"] not in ("docker", "native"):
         cfg["backend"] = "docker"
     if cfg["mode"] not in {"observe", "enforce"}:
         cfg["mode"] = "observe"
@@ -127,7 +132,20 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         cfg["env_allowlist"] = []
     if not isinstance(cfg.get("resource_limits"), dict):
         cfg["resource_limits"] = {}
+    for key in ("allow_write", "deny_read", "allow_read"):
+        if not isinstance(cfg.get(key), list):
+            cfg[key] = []
     return cfg
+
+
+def backend_status(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Readiness of the configured backend: ``{"ready": bool, "error"?: str, ...}``."""
+    if effective_config(config)["backend"] == "native":
+        from prismor.runtime import sandbox_native
+        return sandbox_native.status()
+    st = docker_status()
+    st["ready"] = bool(st.get("cli_found") and st.get("server_reachable"))
+    return st
 
 
 def docker_status() -> Dict[str, Any]:
@@ -169,16 +187,37 @@ def decode_command(encoded: str) -> str:
     return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
 
 
-def hook_update_command(*, command: str, workspace: Path, mode: str) -> str:
+def hook_update_command(*, command: str, workspace: Path, mode: str,
+                        agent: str = "", session_id: str = "") -> str:
     """Build the safe host command used in Claude's updated Bash input."""
     py = shlex.quote(sys.executable or "python3")
     ws = shlex.quote(str(workspace))
     encoded = shlex.quote(encode_command(command))
     mode_arg = shlex.quote(mode)
-    return f"{py} -m prismor.runtime.immunity_cli sandbox --workspace {ws} run --mode {mode_arg} --encoded {encoded}"
+    extra = ""
+    if agent:
+        extra += f" --agent {shlex.quote(agent)}"
+    if session_id:
+        extra += f" --session {shlex.quote(session_id)}"
+    return f"{py} -m prismor.runtime.immunity_cli sandbox --workspace {ws} run --mode {mode_arg}{extra} --encoded {encoded}"
 
 
-def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str) -> Optional[Dict[str, Any]]:
+# Read-only prismor subcommands run on the host, not in the sandbox: they need
+# ~/.prismor (read-only inside) and the setup tells agents to run them. Only a
+# single plain invocation qualifies — any shell operator, substitution or
+# redirect sends the whole command through the sandbox.
+_EXEMPT_PRISMOR = re.compile(
+    r"[ \t]*prismor[ \t]+(?:status|check|query|doctor|trail|deps|help|version|--version|--help"
+    r"|egress[ \t]+(?:show|test|report))(?:[ \t][^;&|`$<>()\r\n\\]*)?\Z"
+)
+
+
+def is_exempt(command: str) -> bool:
+    return bool(_EXEMPT_PRISMOR.match(command))
+
+
+def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str,
+                         agent: str = "", session_id: str = "") -> Optional[Dict[str, Any]]:
     """Return Claude hook JSON that rewrites Bash input into sandbox execution."""
     if payload.get("tool_name") != "Bash":
         return None
@@ -186,10 +225,11 @@ def claude_updated_input(payload: Dict[str, Any], *, workspace: Path, mode: str)
     if not isinstance(tool_input, dict):
         return None
     command = str(tool_input.get("command") or "")
-    if not command:
+    if not command or is_exempt(command):
         return None
     new_input = dict(tool_input)
-    new_input["command"] = hook_update_command(command=command, workspace=workspace, mode=mode)
+    new_input["command"] = hook_update_command(command=command, workspace=workspace, mode=mode,
+                                               agent=agent, session_id=session_id)
     return {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -257,9 +297,14 @@ def build_docker_argv(command: str, *, workspace: Path, config: Dict[str, Any]) 
     return argv
 
 
-def run(command: str, *, workspace: Path, config: Dict[str, Any]) -> int:
-    """Run command inside the configured Docker sandbox."""
+def run(command: str, *, workspace: Path, config: Dict[str, Any],
+        agent: str = "", session_id: str = "") -> int:
+    """Run command inside the configured sandbox."""
     cfg = effective_config(config)
+    if cfg["backend"] == "native":
+        from prismor.runtime import sandbox_native
+        return sandbox_native.run(command, workspace=workspace, cfg=cfg,
+                                  agent=agent, session_id=session_id)
     status = docker_status()
     if not status.get("cli_found") or not status.get("server_reachable"):
         sys.stderr.write(f"Prismor sandbox unavailable: {status.get('error') or 'Docker is not reachable'}\n")
@@ -278,7 +323,7 @@ def run(command: str, *, workspace: Path, config: Dict[str, Any]) -> int:
         return 127
 
 
-def set_enabled(workspace: Path, enabled: bool) -> Path:
+def set_enabled(workspace: Path, enabled: bool, backend: Optional[str] = None) -> Path:
     """Flip ``settings.sandbox.enabled`` in the workspace policy, in place.
 
     Only the one field is touched, so the rest of the sandbox block a mode
@@ -298,6 +343,8 @@ def set_enabled(workspace: Path, enabled: bool) -> Path:
         block = {}
         settings["sandbox"] = block
     block["enabled"] = bool(enabled)
+    if backend:
+        block["backend"] = backend
     _save_policy_file(workspace, data)
     return _policy_path(workspace)
 
@@ -315,7 +362,8 @@ def status_report(config: Dict[str, Any]) -> Dict[str, Any]:
         "ring": cfg.get("ring"),
         "ring_label": ring_label(cfg.get("ring")),
         "resource_limits": cfg.get("resource_limits"),
-        "docker": docker_status(),
+        "docker": docker_status() if cfg["backend"] == "docker" else None,
+        "backend_status": backend_status(cfg),
     }
 
 
