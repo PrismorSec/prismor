@@ -1304,6 +1304,7 @@ class Gateway:
         passthrough = self._passthrough(route)
 
         # Pre-call evaluation.
+        approval_id: Optional[str] = None  # set when a human approved this call
         decision = self._evaluate(self._build_call_event(route, arguments),
                                   deny_tools=self._selection_denies(route))
         if decision is not None:
@@ -1340,6 +1341,7 @@ class Gateway:
                     outcome = _approvals.await_step_up(
                         decision, event=None, agent=GATEWAY_AGENT, session_id=self.session_id, tool=name,
                     )
+                    approval_id = getattr(outcome, "approval_id", None)
                     if outcome:
                         if getattr(outcome, "redacted", False):
                             arguments = _approvals.redact_approved_payload(arguments, workspace=self.workspace)
@@ -1365,7 +1367,8 @@ class Gateway:
 
         try:
             result = self._call_upstream(route, name, arguments, decision,
-                                         watch=self.mode == "enforce" and not passthrough)
+                                         watch=self.mode == "enforce" and not passthrough,
+                                         approval_id=approval_id)
         except _InFlightRefused as exc:
             self._reply(req_id, _blocked_result("Blocked by Prismor", {
                 "severity": "high", "ruleId": exc.rule,
@@ -1436,7 +1439,8 @@ class Gateway:
         self._reply(req_id, result)
 
     def _call_upstream(self, route: "_Route", name: str, arguments: Any,
-                       decision: Any, watch: bool) -> Dict[str, Any]:
+                       decision: Any, watch: bool,
+                       approval_id: Optional[str] = None) -> Dict[str, Any]:
         """Forward a tools/call. When ``watch``, the call is re-checked on every
         policy refresh while it runs; if the agent was paused or restricted
         meanwhile, the upstream gets ``notifications/cancelled`` and the client
@@ -1465,7 +1469,7 @@ class Gateway:
 
         return _inflight.wait_cancellable(
             decision, _call, tool=name, agent=GATEWAY_AGENT,
-            session_id=self.session_id, on_cancel=_cancel)
+            session_id=self.session_id, on_cancel=_cancel, approval_id=approval_id)
 
     # ── resources and prompts ────────────────────────────────────────────
 

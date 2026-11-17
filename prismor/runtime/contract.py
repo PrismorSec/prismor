@@ -173,6 +173,10 @@ class Decision:
     # see ``approvals.call_key``), so its approval is never reused for another
     # call of the same tool. In-process only; never on the wire.
     call_key: Optional[str] = field(default=None, repr=False, compare=False)
+    # Called with (status, refusing Decision) when this call loses its
+    # authority after the allow (inflight.py): sends the refusal to the
+    # console like any block. In-process only; never on the wire.
+    on_refused: Optional[Callable[[str, Any], None]] = field(default=None, repr=False, compare=False)
 
     @property
     def verdict(self) -> str:

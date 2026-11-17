@@ -103,6 +103,50 @@ def test_recheck_error_fails_closed():
         inflight.recheck_before_commit(Decision(allow=True, recheck=boom))
 
 
+def test_refusal_after_allow_reaches_the_console(ws, monkeypatch):
+    """A call stopped after its allow is sent to the console as a block on its
+    session, with the refusing rule and the outcome (#942 follow-up)."""
+    from prismor.runtime import runtime as rt
+    sent = []
+    monkeypatch.setattr(rt, "_dispatch_telemetry", lambda **kw: sent.append(kw))
+    d = _decide(ws, "active")
+    sent.clear()  # the allow itself may ship under full capture
+    assert d.on_refused is not None
+    with pytest.raises(inflight.Refused):
+        inflight.recheck_before_commit(
+            d, resource={"kind": "account", "id": "ACC-1", "attr": {"status": "restricted"}},
+            tool="freeze_account", session_id="s1")
+    assert len(sent) == 1
+    f = sent[0]["findings"][0]
+    assert f["ruleId"] == "t-restricted" and f["action"] == "block"
+    assert f["enforcementOutcome"] == "revoked_before_commit"
+    assert f["title"].startswith("Stopped while running (revoked_before_commit)")
+    assert sent[0]["session_id"] == "s1" and sent[0]["mode"] == "enforce"
+
+
+def test_refusal_of_an_approved_call_replaces_its_outcome(monkeypatch, _quiet):
+    """An approved call stopped later reports its real outcome to the approval,
+    so the console does not keep showing "executed"."""
+    from prismor.runtime.enterprise import approvals, identity
+    calls = []
+    monkeypatch.setattr(identity, "load_identity", lambda: {"device_id": "d1"})
+    monkeypatch.setattr(approvals, "_report_outcome",
+                        lambda ident, aid, outcome, **kw: calls.append((aid, outcome, kw)))
+    state = {"allow": False, "rule": "agent-disabled"}
+    with pytest.raises(inflight.Refused):
+        inflight.recheck_before_commit(_gate(state), tool="freeze_account",
+                                       resource={"kind": "account", "id": "ACC-1"},
+                                       approval_id="ap_1")
+    assert calls == [("ap_1", "revoked_before_commit",
+                      {"rules": ["agent-disabled"], "reason": "agent-disabled fired",
+                       "resource": {"kind": "account", "id": "ACC-1"}})]
+    assert _quiet[-1]["approval_id"] == "ap_1"
+    calls.clear()
+    with pytest.raises(inflight.Refused):  # no approval id: no outcome report
+        inflight.recheck_before_commit(_gate(state))
+    assert calls == []
+
+
 # ── cancel in flight ─────────────────────────────────────────────────────────
 
 def test_async_tool_cancelled_after_pause(_quiet):

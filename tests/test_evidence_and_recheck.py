@@ -219,6 +219,19 @@ def test_one_approval_is_not_reused_for_another_account(approvals):
     assert posts[0]["fingerprint"] != posts[1]["fingerprint"]
 
 
+def test_request_names_the_account_but_not_its_attributes(approvals):
+    """The console shows and searches the account on every approval row."""
+    posts = []
+    real = approvals._post_request
+    approvals._post_request = lambda ident, body, timeout, path="/api/approvals": (
+        posts.append(body) if path == "/api/approvals" else None) or real(ident, body, timeout, path)
+    approvals.await_step_up(_step_up(lambda r: _now(True)), tool="freeze_account",
+                            resource={"kind": "account", "id": "ACC-3300", "attr": {"open_case": True}})
+    assert posts[0]["params"]["resource"] == {"kind": "account", "id": "ACC-3300"}
+    approvals.await_step_up(_step_up(lambda r: _now(True)), tool="freeze_account")
+    assert "params" not in posts[1]  # no resource: nothing added
+
+
 def test_step_up_decision_carries_its_call_key(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
     ws = tmp_path / "ws"

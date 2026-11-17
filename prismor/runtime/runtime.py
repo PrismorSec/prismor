@@ -1404,6 +1404,25 @@ def evaluate_tool_call(
                 identity_token=identity_token, deny_tools=deny_tools,
                 rate_accounting=False,
             )
+    _on_refused = None
+    if record:
+        def _on_refused(status: str, now: Any) -> None:
+            # A call stopped after its allow (cancelled_in_flight,
+            # revoked_before_commit) reaches the console as a block on the
+            # same session, with the refusing rule (#942 follow-up).
+            blk = dict((getattr(now, "blocking", None) or {}))
+            rule = blk.get("ruleId") or "recheck"
+            finding = dict(blk, ruleId=rule, action="block", mode="enforce",
+                           severity=blk.get("severity") or "high",
+                           title=f"Stopped while running ({status}): "
+                                 f"{getattr(now, 'reason', None) or blk.get('title') or rule}",
+                           enforcementOutcome=status)
+            _dispatch_telemetry(
+                engine=getattr(now, "engine", None) or engine, findings=[finding], event=event,
+                workspace=workspace, agent=agent,
+                agent_name=_agent_name if _agent_name != agent else None,
+                mode="enforce", session_id=session_id, subject=subject,
+            )
     return Decision(
         allow=blocking is None,
         findings=findings,
@@ -1414,6 +1433,7 @@ def evaluate_tool_call(
         explain=_explain,
         recheck=_recheck,
         call_key=_step_up_call_key(blocking, event, resource),
+        on_refused=_on_refused,
     )
 
 
