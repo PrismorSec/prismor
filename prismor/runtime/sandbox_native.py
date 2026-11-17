@@ -15,11 +15,20 @@ toolchain, inside an OS sandbox that every child process inherits:
 
 ``mode: observe`` keeps the proxy (visibility) but drops the kernel limits,
 so builds never break while a team decides what to enforce.
+
+The proxy speaks HTTP, CONNECT and SOCKS5 CONNECT on one port, so tools that
+honour ALL_PROXY are screened per host too. On Linux, bubblewrap can only
+mount over paths that exist, so a protected path missing before the run is
+checked afterwards: if the command created it, it is removed and recorded as
+a sandbox finding. Credential injection and pre-run workspace snapshots are
+not offered: the first needs TLS interception, the second is costly on large
+workspaces.
 """
 from __future__ import annotations
 
 import os
 import platform
+import struct
 import select
 import shutil
 import socket
@@ -174,9 +183,8 @@ def bwrap_argv(workspace: Path, cfg: Dict[str, Any], *, unshare_net: bool,
     for d in p["parents"]:
         if os.path.isdir(d):
             argv += [bind, d, d]
-    # ponytail: bwrap can only re-mount paths that exist, so a protected path
-    # missing on the host (no .prismor/ yet) is not covered. Landlock would
-    # cover it; add when a missing-path bypass matters.
+    # bwrap can only re-mount paths that exist; missing ones are handled by
+    # missing_protected() / revert_created() around the run.
     for x in p["protected"]:
         if os.path.exists(x):
             argv += ["--ro-bind", x, x]
@@ -189,6 +197,72 @@ def bwrap_argv(workspace: Path, cfg: Dict[str, Any], *, unshare_net: bool,
         argv.append("--unshare-net")
     argv += ["--chdir", p["ws"][0]]
     return argv
+
+
+def missing_protected(workspace: Path) -> List[str]:
+    """Protected paths absent before a Linux run; revert_created() checks them after.
+
+    ``.git/hooks`` only counts when ``.git`` already exists, so ``git init``
+    and ``git clone`` inside the sandbox keep their hooks dir.
+    """
+    ws = _real(str(workspace))
+    out = []
+    for rel in PROTECTED_IN_WORKSPACE:
+        x = os.path.join(ws, rel)
+        if os.path.lexists(x):
+            continue
+        if rel == ".git/hooks" and not os.path.isdir(os.path.join(ws, ".git")):
+            continue
+        out.append(x)
+    return out
+
+
+def revert_created(paths: List[str]) -> List[str]:
+    """Remove the protected paths a command created. Returns what was removed."""
+    removed = []
+    for x in paths:
+        # A parent the command swapped for a symlink would point the removal
+        # somewhere else; only touch paths that sit where they claim to.
+        if not os.path.lexists(x) or os.path.realpath(os.path.dirname(x)) != os.path.dirname(x):
+            continue
+        try:
+            if os.path.isdir(x) and not os.path.islink(x):
+                shutil.rmtree(x)
+            else:
+                os.unlink(x)
+            removed.append(x)
+        except OSError as exc:
+            sys.stderr.write(f"[prismor] sandbox could not remove {x}: {exc}\n")
+    return removed
+
+
+def report_reverted(paths: List[str], *, workspace: Path, agent: str, session_id: str,
+                    command: str) -> None:
+    """Record each reverted write as an observe-mode event plus a sandbox finding."""
+    from prismor.runtime.runtime import evaluate_tool_call
+    from prismor.runtime.store import persist_runtime_findings, read_session_events
+    for x in paths:
+        sys.stderr.write(f"[prismor] sandbox removed protected path the command created: {x}\n")
+        event = {"type": "file_write", "path": x, "agent": agent or "sandbox",
+                 "agent_event": "SandboxDenied",
+                 "metadata": {"tool_name": "sandbox_denial", "sandboxed_command": command[:500]}}
+        if session_id:
+            event["session_id"] = session_id
+        try:
+            evaluate_tool_call(event=event, workspace=workspace, agent=agent or "sandbox",
+                               agent_name=agent or "", mode="observe", session_id=session_id,
+                               flush_at_exit=False)
+            if session_id:
+                idx = max(len(read_session_events(workspace, session_id)) - 1, 0)
+                persist_runtime_findings(workspace, session_id, [{
+                    "id": f"{session_id}:sandbox-protected-write-{idx}",
+                    "severity": "HIGH", "category": "sandbox", "ruleId": "sandbox-protected-write",
+                    "action": "block", "mode": "enforce",
+                    "title": "Sandbox reverted a write to a protected path",
+                    "evidence": f"{x} (created by: {command[:200]})",
+                }], idx)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor] sandbox denial report failed: {exc}\n")
 
 
 # ── egress proxy ──────────────────────────────────────────────────────────
@@ -231,8 +305,63 @@ def _read_head(conn: socket.socket) -> Tuple[bytes, bytes]:
     return head, rest
 
 
+def _recv_exact(conn: socket.socket, n: int) -> bytes:
+    buf = b""
+    while len(buf) < n:
+        chunk = conn.recv(n - len(buf))
+        if not chunk:
+            raise OSError("short read")
+        buf += chunk
+    return buf
+
+
+def _handle_socks5(conn: socket.socket, decide: Decide) -> None:
+    """SOCKS5, no auth, CONNECT only (RFC 1928). Screened like HTTP CONNECT."""
+    try:
+        _, nmethods = _recv_exact(conn, 2)
+        if 0 not in _recv_exact(conn, nmethods):
+            conn.sendall(b"\x05\xff")
+            return
+        conn.sendall(b"\x05\x00")
+        _, cmd, _, atyp = _recv_exact(conn, 4)
+        if atyp == 1:
+            host = socket.inet_ntop(socket.AF_INET, _recv_exact(conn, 4))
+        elif atyp == 4:
+            host = socket.inet_ntop(socket.AF_INET6, _recv_exact(conn, 16))
+        elif atyp == 3:
+            host = _recv_exact(conn, _recv_exact(conn, 1)[0]).decode("idna")
+        else:
+            conn.sendall(b"\x05\x08\x00\x01" + bytes(6))
+            return
+        (port,) = struct.unpack("!H", _recv_exact(conn, 2))
+        if cmd != 1:  # BIND / UDP ASSOCIATE would bypass per-host screening
+            conn.sendall(b"\x05\x07\x00\x01" + bytes(6))
+            return
+        if not decide(host, port, "https"):
+            conn.sendall(b"\x05\x02\x00\x01" + bytes(6))
+            return
+        try:
+            upstream = socket.create_connection((host, port), timeout=30)
+        except OSError:
+            conn.sendall(b"\x05\x05\x00\x01" + bytes(6))
+            return
+        upstream.settimeout(None)
+        conn.sendall(b"\x05\x00\x00\x01" + bytes(6))
+        _pipe(conn, upstream)
+    except Exception:
+        pass
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
 def _handle(conn: socket.socket, decide: Decide) -> None:
     try:
+        if conn.recv(1, socket.MSG_PEEK) == b"\x05":
+            _handle_socks5(conn, decide)
+            return
         head, rest = _read_head(conn)
         first, _, headers = head.partition(b"\r\n")
         parts = first.decode("latin-1").split()
@@ -277,7 +406,7 @@ def _handle(conn: socket.socket, decide: Decide) -> None:
 
 
 class EgressProxy:
-    """HTTP/CONNECT proxy on 127.0.0.1 (macOS, shared-net Linux) or a unix socket."""
+    """HTTP/CONNECT/SOCKS5 proxy on 127.0.0.1 (macOS, shared-net Linux) or a unix socket."""
 
     def __init__(self, decide: Decide, unix_path: Optional[str] = None) -> None:
         self.decide = decide
@@ -347,7 +476,9 @@ def make_decider(*, workspace: Path, agent: str, session_id: str, mode: str,
 
 def _proxy_env(port: int) -> Dict[str, str]:
     url = f"http://127.0.0.1:{port}"
+    socks = f"socks5h://127.0.0.1:{port}"
     return {"http_proxy": url, "https_proxy": url, "HTTP_PROXY": url, "HTTPS_PROXY": url,
+            "all_proxy": socks, "ALL_PROXY": socks,
             "no_proxy": "localhost,127.0.0.1,::1", "NO_PROXY": "localhost,127.0.0.1,::1",
             "NODE_USE_ENV_PROXY": "1", "PRISMOR_SANDBOX": "native"}
 
@@ -373,6 +504,7 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
     shell = [shutil.which("bash") or "/bin/sh", "-c", command]
     env = dict(os.environ)
     proxy: Optional[EgressProxy] = None
+    watch = missing_protected(workspace) if enforce and st["engine"] == "bubblewrap" else []
     tmp = tempfile.mkdtemp(prefix="prismor-sbx-")
     try:
         if st["engine"] == "seatbelt":
@@ -417,6 +549,10 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
         if proxy:
             proxy.close()
         shutil.rmtree(tmp, ignore_errors=True)
+        reverted = revert_created(watch)
+        if reverted:
+            report_reverted(reverted, workspace=workspace, agent=agent,
+                            session_id=session_id, command=command)
 
 
 def _bridge(sock_path: str, port: int, cmd: List[str]) -> int:
