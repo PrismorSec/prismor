@@ -88,7 +88,7 @@ class TestCliExitCodes(unittest.TestCase):
     def test_sandbox_help(self):
         r = run_cli("sandbox", "--help")
         self.assertEqual(r.returncode, 0)
-        self.assertIn("Docker-backed sandbox", r.stdout)
+        self.assertIn("Sandbox for allowed shell commands", r.stdout)
 
 
 class TestCliCommandConsolidation(unittest.TestCase):

@@ -168,7 +168,7 @@
         },
         "sandbox": {
           "type": "object",
-          "description": "Docker-backed shell sandbox settings for constraining allowed Bash commands.",
+          "description": "Shell sandbox settings for constraining allowed Bash commands (Docker container, or native Seatbelt/bubblewrap).",
           "properties": {
             "enabled": {
               "type": "boolean",
@@ -177,9 +177,25 @@
             "backend": {
               "type": "string",
               "enum": [
-                "docker"
+                "docker",
+                "native"
               ],
-              "description": "Sandbox backend. Docker is the v1 backend."
+              "description": "docker runs the command in a container. native runs it on the host under Seatbelt (macOS) or bubblewrap (Linux), with an egress proxy that screens every host the command and its subprocesses contact."
+            },
+            "allow_write": {
+              "type": "array",
+              "description": "native: extra host paths a sandboxed command may write.",
+              "items": {"type": "string"}
+            },
+            "deny_read": {
+              "type": "array",
+              "description": "native: extra host paths a sandboxed command may not read.",
+              "items": {"type": "string"}
+            },
+            "allow_read": {
+              "type": "array",
+              "description": "native: lift a default credential-path read block (for example ~/.npmrc).",
+              "items": {"type": "string"}
             },
             "mode": {
               "type": "string",
@@ -205,7 +221,7 @@
                 "host",
                 "allowlist"
               ],
-              "description": "Docker network mode. allowlist currently fails closed to none because Docker cannot enforce domain allowlists by itself."
+              "description": "none: no network. allowlist: native routes traffic through the egress proxy and the kernel allows loopback only; Docker fails closed to none. bridge/host: network shared (native still records proxied hosts)."
             },
             "workspace_mount": {
               "type": "string",
