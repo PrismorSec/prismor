@@ -92,7 +92,7 @@ def _classify_source(raw: str) -> str:
         return "git"
     if raw.startswith(("http://", "https://")) and re.search(r"\.(tgz|tar\.gz|zip)($|\?)", raw):
         return "tarball"
-    if raw.startswith(("./", "../", "/")) or raw.startswith("file:"):
+    if raw in (".", "..") or raw.startswith(("./", "../", "/")) or raw.startswith("file:"):
         return "local"
     return "registry"
 
@@ -119,8 +119,8 @@ def _normalize_name(raw: str, ecosystem: str) -> str:
     elif ecosystem == "maven":
         # groupId:artifactId[:version[:packaging[:classifier]]] → groupId:artifactId
         return ":".join(raw.split(":")[:2])
-    # go: full module path is the name
-    return raw
+    # go: module path, without the @version / @latest query
+    return raw.split("@")[0]
 
 
 def _extract_version(raw: str, ecosystem: str) -> str:
@@ -141,6 +141,11 @@ def _extract_version(raw: str, ecosystem: str) -> str:
         # @scope/pkg@1.2.3  pkg@1.2.3  crate@1.2.3
         parts = raw.lstrip("@").split("@")
         version = parts[1] if len(parts) > 1 else ""
+        return version if re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?', version) else ""
+    if ecosystem == "go":
+        # module@v1.2.3 → 1.2.3 (OSV and the go proxy take it without the v)
+        version = raw.partition("@")[2]
+        version = version[1:] if version[:1] == "v" else version
         return version if re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?', version) else ""
     if ecosystem in ("gem", "composer", "maven"):
         if ecosystem == "gem":
@@ -265,8 +270,10 @@ def detect_install(argv: List[str]) -> Optional[InstallEvent]:
             packages = [PackageSpec(raw=p.raw, name=p.name, source="git") for p in packages]
         elif flag_version and len(packages) == 1 and not packages[0].version:
             p = packages[0]
-            packages = [PackageSpec(raw=p.raw, name=p.name, source=p.source,
-                                    version=_extract_version(f"{p.name}:{flag_version}", eco))]
+            version = _extract_version(f"{p.name}:{flag_version}", eco)
+            # An inexact -v (`~> 7.1`) stays on raw, so it reads as a range, not a bare name.
+            packages = [PackageSpec(raw=p.raw if version else f"{p.raw}:{flag_version}",
+                                    name=p.name, source=p.source, version=version)]
 
     return InstallEvent(
         ecosystem=eco,

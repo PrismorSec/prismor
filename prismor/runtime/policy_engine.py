@@ -3931,18 +3931,23 @@ class PolicyEngine:
         scorer: Any,
         index: int,
         session_id: str,
+        refuse: str = "",
     ) -> Optional[Dict[str, Any]]:
         """Score one package spec and build a finding dict, or None on an
-        "allow" verdict or lookup failure. Shared by the command-line and
-        manifest-write supply-chain checks below.
+        "allow" verdict. Shared by the command-line and manifest-write
+        supply-chain checks below. A check that fails blocks (unchecked is not
+        clean); ``refuse`` skips the lookup and blocks with that reason.
         """
         from supplychain.ecosystems.metadata import fetch_metadata
 
         try:
+            if refuse:
+                raise RuntimeError(refuse)
             meta = fetch_metadata(spec, ecosystem)
             verdict = scorer.score(spec, meta, install_event)
-        except Exception:
-            return None
+        except Exception as exc:
+            verdict = self._unchecked_verdict(spec, ecosystem, refuse or f"check failed ({exc})")
+            meta = verdict.meta
         if verdict.verdict == "allow":
             return None
 
@@ -3969,7 +3974,7 @@ class PolicyEngine:
             mimic = check_typosquat(spec.name, meta.ecosystem)
 
         _sv = None
-        if mimic is None:
+        if mimic is None and not refuse:
             try:
                 from supplychain.scoring.safe_version import recommend_safe_version
                 _sv = recommend_safe_version(spec.name, ecosystem, exclude_version=spec.version)
@@ -4015,6 +4020,16 @@ class PolicyEngine:
             # Ordinary vulnerable versions keep following the policy's mode.
             "mode": "enforce" if has_ioc else (self.device_mode or self.default_mode),
         }
+
+    @staticmethod
+    def _unchecked_verdict(spec: Any, ecosystem: str, why: str) -> Any:
+        """A block verdict for a package the install check could not run on."""
+        from supplychain.ecosystems.metadata import PackageMetadata
+        from supplychain.scoring.engine import PackageVerdict, Signal
+        meta = PackageMetadata(name=spec.name, ecosystem=ecosystem, version=None, age_days=None,
+                               maintainer_count=None, has_install_script=False, source=spec.source)
+        return PackageVerdict(spec=spec, meta=meta, score=0, verdict="block",
+                              signals=[Signal("unverified_check", 0, f"not checked: {why}")])
 
     def _check_execution_targets(
         self,
@@ -4112,8 +4127,6 @@ class PolicyEngine:
         scorer = None  # built on the first install: the scorer pulls in urllib, ~13ms per shell call
         checked = 0
         for argv in _iter_install_argvs(command):
-            if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                break
             try:
                 install_event = detect_install(argv)
             except Exception:
@@ -4126,16 +4139,25 @@ class PolicyEngine:
                 except Exception:
                     return findings
                 scorer = RiskScorer(allowlist=load_allowlist(self.workspace) if self.workspace else set())
+            findings.extend(self._score_specs(install_event.packages, install_event.ecosystem,
+                                              install_event, scorer, index, session_id, checked))
+            checked += len(install_event.packages)
+        return findings
 
-            for spec in install_event.packages:
-                if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                    break
-                checked += 1
-                finding = self._score_package(
-                    spec, install_event.ecosystem, install_event, scorer, index, session_id
-                )
-                if finding is not None:
-                    findings.append(finding)
+    def _score_specs(self, specs: List[Any], ecosystem: str, install_event: Any, scorer: Any,
+                     index: int, session_id: str, checked: int = 0) -> List[Dict[str, Any]]:
+        """Score up to the per-command cap, then refuse each remaining package:
+        an unchecked package is not a clean one."""
+        cap = _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND
+        findings: List[Dict[str, Any]] = []
+        for spec in specs:
+            checked += 1
+            refuse = (f"more than {cap} packages in one command, install them in smaller batches"
+                      if checked > cap else "")
+            finding = self._score_package(spec, ecosystem, install_event, scorer, index,
+                                          session_id, refuse=refuse)
+            if finding is not None:
+                findings.append(finding)
         return findings
 
     def _extract_manifest_pins(self, content: str, ecosystem: str) -> List[Tuple[str, str]]:
@@ -4189,24 +4211,14 @@ class PolicyEngine:
         except Exception:
             return findings
 
-        allowlist = load_allowlist(self.workspace) if self.workspace else set()
-        scorer = RiskScorer(allowlist=allowlist)
+        scorer = RiskScorer(allowlist=load_allowlist(self.workspace) if self.workspace else set())
         install_event = InstallEvent(ecosystem=ecosystem, argv=[], packages=[])
-
-        checked = 0
-        seen: set = set()
+        first: Dict[str, str] = {}  # a name pinned twice: the first pin counts
         for name, version in pins:
-            if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                break
-            if name in seen:
-                continue
-            seen.add(name)
-            checked += 1
-            spec = PackageSpec(raw=f"{name}@{version}", name=name, source="registry", version=version)
-            finding = self._score_package(spec, ecosystem, install_event, scorer, index, session_id)
-            if finding is not None:
-                findings.append(finding)
-        return findings
+            first.setdefault(name, version)
+        specs = [PackageSpec(raw=f"{name}@{version}", name=name, source="registry", version=version)
+                 for name, version in first.items()]
+        return self._score_specs(specs, ecosystem, install_event, scorer, index, session_id)
 
     def _check_transitive_postinstall(self, index: int, session_id: str) -> List[Dict[str, Any]]:
         """Scan the FULL resolved npm dependency tree (including

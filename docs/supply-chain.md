@@ -39,12 +39,12 @@ alias pip="prismor supplychain pip"
              +100 known malicious payload referenced: router_init.js
              +50  Bun runtime execution in install script
 
-  WARN   score  35  github:user/pkg
-             +35 git/GitHub dependency bypasses registry
+  BLOCK  score  35  github:user/pkg
+             +35 git/GitHub dependency bypasses registry, no version OSV can check
 
   ALLOW  score   0  express  age 5612d, 5 maintainers
 
-  Blocked: @tanstack/react-router
+  Blocked: @tanstack/react-router, github:user/pkg
   To override: add to supply_chain.allowlist in .prismor/policy.yaml
 ```
 
@@ -52,7 +52,7 @@ alias pip="prismor supplychain pip"
 
 ## Scoring
 
-Each package is scored additively. IOC matches bypass the threshold and force a block regardless of total score.
+Each package is scored additively. IOC matches, known vulnerabilities and versions that can't be checked bypass the threshold and force a block regardless of total score (see [Only CVE-free versions install](#only-cve-free-versions-install)).
 
 | Signal | Points |
 |---|---|
@@ -62,11 +62,13 @@ Each package is scored additively. IOC matches bypass the threshold and force a 
 | Bun runtime download in install script | +100 (force block) |
 | Credential env var access in install script (`AWS_SECRET`, `GITHUB_TOKEN`, etc.) | +50 |
 | Persistence write in install script (`.claude/settings.json`, `.vscode/tasks.json`) | +50 |
-| git / GitHub dependency bypasses registry | +35 |
-| tarball install bypasses registry | +25 |
-| Package published < 7 days ago | +25 |
+| Known vulnerability (OSV.dev) on the version being installed | +5 to +50 (force block) |
+| git / GitHub dependency bypasses registry | +35 (force block) |
+| tarball install bypasses registry | +25 (force block) |
+| Package published < 2 days ago | +50 |
+| Package published < 7 days ago | +35 |
 | Package published < 30 days ago | +15 |
-| Has postinstall/preinstall script | +20 |
+| Runs code at install: npm pre/postinstall script, or a PyPI release with no wheel | +20 |
 | Single maintainer | +10 |
 | Custom `--registry` flag | +10 |
 | Local path dependency | +10 |
@@ -74,9 +76,17 @@ Each package is scored additively. IOC matches bypass the threshold and force a 
 
 **Verdicts:** `< 30` allow · `30–59` warn · `≥ 60` block
 
+**Registry signals by ecosystem.** Package age, maintainer count and install
+scripts come from the npm registry (npm, pnpm, yarn, bun). PyPI gives age and
+whether a release ships a wheel; its maintainer count is a guess (1 when an
+author is listed). For cargo, go, gem, composer and maven only the latest
+version is read, so those installs are scored on OSV, the IOC list and
+typosquatting. Install scripts are read for the version being installed.
+
 **Known vulnerabilities (OSV.dev).** The version being installed is checked
 against OSV: +50 critical, +30 high, +15 medium, +5 low, at most three
-advisories. Without a pinned version, the registry's latest version is used
+advisories. Any one of them blocks; the points rank how bad the version is.
+Without a pinned version, the registry's latest version is used
 (npm, PyPI, crates.io, RubyGems, Packagist and the Go proxy). When no version
 can be resolved (Maven), only malicious-package advisories count, since every
 historical advisory would otherwise score a current, patched package 100/100.
@@ -85,11 +95,43 @@ historical advisory would otherwise score a current, patched package 100/100.
 list or an OSV/GitHub malware advisory (`MAL-*`, CWE-506 "is malware") is the
 safety floor, like `curl | bash`: the hook blocks it whatever `default_mode`
 says, including under `prismor setup --recommended`. Merely vulnerable
-versions follow the policy mode (a warning unless you enforce the rule).
+versions follow the policy mode: the hook stops them in enforce mode and
+records them in observe mode.
 
 `prismor deps` runs the same OSV lookup over the exact versions in your
 manifests and lockfiles (`--offline` skips it) and names the source of each
 match: OSV.dev, the signed advisory feed, or the bundled IOC list.
+
+---
+
+## Only CVE-free versions install
+
+The score ranks risk, but it does not decide alone whether a version is safe
+to install. An install goes through only when OSV.dev confirms the exact
+version being installed has no known vulnerability. Whatever the score, it
+blocks when:
+
+| Case | Example |
+|---|---|
+| The version has a known vulnerability, any severity | `npm install lodash@4.17.4` |
+| OSV could not be reached, so the version is unverified | network down |
+| The exact version is unknown | `express@^4`, `requests>=2`, `serde@1`, or a bare name while the registry is unreachable |
+| The source is a git repo or tarball URL | `npm install github:user/repo` (a local path such as `pip install .` installs) |
+| The agent's command names more packages than the hook checks (8) | split the install |
+
+A bare package name is checked at the version the registry calls latest, which
+is what the package manager installs. A blocked install suggests the newest
+clean version where the registry lists versions (npm, PyPI).
+
+`prismor supplychain` always stops a blocked install. The agent hook stops it
+in enforce mode and records it in observe mode. To let a package through
+anyway, add it to `supply_chain.allowlist` (it installs with a warning);
+`settings.supply_chain_install_check: false` turns the hook's check off.
+
+This covers packages named on the command line and versions pinned by a
+manifest edit. Not yet: transitive dependencies before install, and bare
+`npm install` / `pip install -r requirements.txt`, which install from the
+manifest or lockfile.
 
 ---
 

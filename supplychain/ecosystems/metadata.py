@@ -44,15 +44,15 @@ def fetch_metadata(spec: PackageSpec, ecosystem: str) -> PackageMetadata:
             has_install_script=False, source=spec.source,
         )
 
-    cache_key = f"{ecosystem}:{spec.name}"
+    cache_key = f"{ecosystem}:{spec.name}:{spec.version}"
     cached = _CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL:
         return cached[1]
 
     if ecosystem in ("npm", "pnpm", "yarn", "bun"):
-        meta = _fetch_npm(spec.name, ecosystem)
+        meta = _fetch_npm(spec.name, ecosystem, spec.version)
     elif ecosystem in ("pip", "uv"):
-        meta = _fetch_pypi(spec.name, ecosystem)
+        meta = _fetch_pypi(spec.name, ecosystem, spec.version)
     else:
         # Only the latest version is resolved here: without it the OSV lookup
         # has no version to filter by and would count every advisory the
@@ -122,7 +122,7 @@ def _age_days(date_str: str) -> Optional[int]:
         return None
 
 
-def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
+def _fetch_npm(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
     encoded = name.replace("/", "%2F")
     data = _http_get(f"https://registry.npmjs.org/{encoded}")
 
@@ -142,9 +142,10 @@ def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
     maintainers = data.get("maintainers") or []
     maintainer_count = len(maintainers) if maintainers else None
 
-    # Latest version's scripts
-    latest_version = (data.get("dist-tags") or {}).get("latest", "")
-    latest_data = (data.get("versions") or {}).get(latest_version) or {}
+    # Scripts of the version being installed: the pinned one, else latest
+    versions = data.get("versions") or {}
+    latest_version = version if version in versions else (data.get("dist-tags") or {}).get("latest", "")
+    latest_data = versions.get(latest_version) or {}
     scripts = latest_data.get("scripts") or {}
     lifecycle_keys = ("postinstall", "preinstall", "install")
     has_install_script = any(k in scripts for k in lifecycle_keys)
@@ -162,7 +163,7 @@ def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
     )
 
 
-def _fetch_pypi(name: str, ecosystem: str) -> PackageMetadata:
+def _fetch_pypi(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
     data = _http_get(f"https://pypi.org/pypi/{name}/json")
 
     if not data:
@@ -190,8 +191,14 @@ def _fetch_pypi(name: str, ecosystem: str) -> PackageMetadata:
     # PyPI doesn't expose maintainer count in JSON; treat as 1 if author present
     maintainer_count = 1 if info.get("author") else None
 
+    # No wheel for the version being installed: pip builds the sdist, which
+    # runs the package's setup.py / build backend on this machine.
+    target = version if version in releases else latest_version
+    files = releases.get(target) or []
+    sdist_only = bool(files) and not any(f.get("packagetype") == "bdist_wheel" for f in files)
+
     return PackageMetadata(
-        name=name, ecosystem=ecosystem, version=latest_version,
+        name=name, ecosystem=ecosystem, version=target,
         age_days=age, maintainer_count=maintainer_count,
-        has_install_script=False, source="registry",
+        has_install_script=sdist_only, source="registry",
     )
