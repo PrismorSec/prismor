@@ -40,6 +40,17 @@ class Matcher(unittest.TestCase):
         self.assertEqual(ev["stderr"], "exit 1")
 
 
+class View(unittest.TestCase):
+    def test_unmapped_tool_shows_its_own_input_not_the_envelope(self):
+        from prismor.runtime.hooks import normalize_payload
+        from prismor.runtime.store import event_artifacts
+        ev = normalize_payload(agent="claude", workspace=Path("/w"), payload={
+            "hook_event_name": "PreToolUse", "session_id": "s", "cwd": "/w", "tool_name": "ToolSearch",
+            "tool_input": {"query": "select:TaskStop"}})["event"]
+        self.assertIn('"cwd"', ev["response"])  # policy still screens the whole payload
+        self.assertEqual(event_artifacts(ev)["response"], '{"query": "select:TaskStop"}')
+
+
 class Dispatch(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp())
@@ -84,6 +95,19 @@ class Dispatch(unittest.TestCase):
         self.assertIn("<task-id>a942</task-id>", prompts[0]["prompt"])
         self.assertEqual([e["type"] for e in rows].count("assistant_response"), 2)
 
+    def test_notification_queued_mid_turn_is_recorded(self):
+        # Desktop app 2026-11-17: a notice that lands while a turn runs is a
+        # queued_command attachment, not a user row.
+        transcript = self._transcript([
+            {"type": "attachment", "timestamp": "2026-11-18T04:21:26+00:00",
+             "attachment": {"type": "queued_command", "prompt": NOTICE, "commandMode": "task-notification",
+                            "usage": {"totalTokens": 168742, "toolUses": 41, "durationMs": 378320}}}])
+        self._dispatch({"session_id": "sq", "hook_event_name": "Stop", "transcript_path": transcript,
+                        "last_assistant_message": "ok"})
+        prompts = [e for e in self._rows("sq") if e["type"] == "prompt"]
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0]["metadata"]["raw"]["task_usage"]["toolUses"], 41)
+
     def test_notification_seen_by_prompt_hook_is_not_recorded_again(self):
         transcript = self._transcript([
             {"type": "user", "message": {"role": "user", "content": NOTICE}}])
@@ -92,6 +116,16 @@ class Dispatch(unittest.TestCase):
         self._dispatch({"session_id": "sp", "hook_event_name": "Stop", "transcript_path": transcript,
                         "last_assistant_message": "ok"})
         self.assertEqual([e["type"] for e in self._rows("sp")].count("prompt"), 1)
+
+    def test_session_title_skips_injected_prompts(self):
+        self._dispatch({"session_id": "st", "hook_event_name": "UserPromptSubmit", "prompt": NOTICE})
+        self._dispatch({"session_id": "st", "hook_event_name": "UserPromptSubmit",
+                        "prompt": "<agent-message from=\"a1\">report</agent-message>"})
+        self._dispatch({"session_id": "st", "hook_event_name": "UserPromptSubmit", "prompt": "fix the login bug"})
+        code = ("import json; from pathlib import Path; from prismor.runtime import store; "
+                f"print(json.dumps(store._first_prompts(['st'], [Path({str(self.ws)!r})])))")
+        r = subprocess.run([sys.executable, "-c", code], text=True, capture_output=True, env=self.env, timeout=60)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1]), {"st": "fix the login bug"}, r.stderr)
 
     def test_failed_call_is_recorded(self):
         self._dispatch({"session_id": "sf", "hook_event_name": "PostToolUseFailure", "tool_name": "Bash",

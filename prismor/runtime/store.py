@@ -1448,6 +1448,15 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)
+    # An unmapped tool's `response` is the whole hook envelope (policy screens
+    # all of it); the view shows the tool's own output, else its input.
+    hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+    if meta.get("unmapped_tool") and hook:
+        body = hook.get("tool_response")
+        if body in (None, "", {}, []):
+            body = hook.get("tool_input")
+        if body not in (None, "", {}, []):
+            out["response"] = _clip(body if isinstance(body, str) else json.dumps(body, default=str))
     # A reply's `response` is what the model said, not what a tool returned.
     if raw.get("type") == "assistant_response" and "response" in out:
         out["reply"] = out.pop("response")
@@ -2264,9 +2273,13 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
             for sid in list(want):
                 for (text,) in conn.execute(
                     "SELECT substr(content_text, 1, 20000) FROM events WHERE session_id = ? "
-                    "AND type = 'prompt' ORDER BY id LIMIT 5",
+                    "AND type = 'prompt' ORDER BY id LIMIT 20",
                     (sid,),
                 ):
+                    # A finished background task or a subagent's hand-back is
+                    # a prompt row too; nobody typed it.
+                    if (text or "").lstrip().startswith(("<task-notification", "<agent-message")):
+                        continue
                     # An app wrapper (<system-reminder>…) can fill the first KBs;
                     # the title is what the person typed after it.
                     line = re.sub(r"<[^>]+>", " ", prompt_origin(text or "")[1])
