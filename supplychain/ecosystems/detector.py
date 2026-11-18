@@ -86,6 +86,16 @@ _VALUE_FLAGS = {
     "--config-file",
 }
 
+# pip / uv / poetry flags whose value is a path or version, never a package:
+# `uv pip install --python .venv/bin/python X` must not score the interpreter path.
+# Long forms only (plus uv's `-p`): short flags like `-f`/`-c` mean other things
+# under npm and friends, which share _VALUE_FLAGS.
+_PIP_VALUE_FLAGS = frozenset({
+    "--python", "-p", "--python-version", "--python-platform",
+    "--constraint", "--override", "--cache-dir", "--root", "--src",
+    "--platform", "--abi", "--implementation", "--target", "--prefix",
+})
+
 
 def _classify_source(raw: str) -> str:
     if raw.startswith(("git+", "git://", "github:", "gitlab:", "bitbucket:")):
@@ -218,6 +228,8 @@ def detect_install(argv: List[str]) -> Optional[InstallEvent]:
     # The newer ecosystems get only their own value flags: pip's `-r`/`-i`
     # mean something else to gem (`-r` is --remote and takes no value).
     value_flags = _ECO_VALUE_FLAGS.get(eco, _VALUE_FLAGS)
+    if eco in ("pip", "uv"):
+        value_flags = value_flags | _PIP_VALUE_FLAGS
     source_flags = _SOURCE_FLAGS if eco in _ECO_VALUE_FLAGS else {"--registry"}
 
     packages: List[PackageSpec] = []
