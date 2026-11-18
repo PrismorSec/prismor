@@ -52,7 +52,7 @@ def fetch_metadata(spec: PackageSpec, ecosystem: str) -> PackageMetadata:
             has_install_script=False, source=spec.source,
         )
 
-    cache_key = f"{ecosystem}:{spec.name}@{spec.version}"
+    cache_key = f"{ecosystem}:{spec.name}:{spec.version}"
     cached = _CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL:
         return cached[1]
@@ -244,9 +244,14 @@ def _fetch_pypi(name: str, ecosystem: str, requested: str = "") -> PackageMetada
     # PyPI doesn't expose maintainer count in JSON; treat as 1 if author present
     maintainer_count = 1 if info.get("author") else None
 
+    # No wheel for the version being installed: pip builds the sdist, which
+    # runs the package's setup.py / build backend on this machine.
+    files = releases.get(latest_version) or []
+    sdist_only = bool(files) and not any(f.get("packagetype") == "bdist_wheel" for f in files)
+
     return PackageMetadata(
         name=name, ecosystem=ecosystem, version=latest_version,
         age_days=age, maintainer_count=maintainer_count,
-        has_install_script=False, source="registry",
+        has_install_script=sdist_only, source="registry",
         version_age_days=version_age,
     )

@@ -8,7 +8,8 @@ version-blind matches in one move.
 Also surfaces malicious-package advisories (MAL-* IDs from the OSV
 malicious-packages corpus) that NVD does not track.
 
-Fails open: returns [] on any network or parse error.
+fetch_vulns returns None (not []) when OSV could not answer, and does not
+cache it, so the install check can block what it could not verify.
 """
 from __future__ import annotations
 
@@ -163,16 +164,17 @@ def fetch_vulns(
     package_name: str,
     ecosystem: str,
     version: str = "",
-) -> List[Dict[str, Any]]:
+) -> Optional[List[Dict[str, Any]]]:
     """Query OSV for vulnerabilities affecting `package_name` at `version`.
 
     Returns a list of {id, severity, title, malicious} dicts, already
     filtered to the right ecosystem and (when version is given) the
-    affected version range.
+    affected version range. None when OSV could not answer, so an
+    unchecked version is never mistaken for a clean one ([]).
     """
     osv_eco = _osv_ecosystem(ecosystem)
     if not osv_eco or not package_name:
-        return []
+        return None
 
     cache_key = f"{osv_eco}:{package_name}:{version}"
     cached = _cache_get(cache_key)
@@ -185,10 +187,11 @@ def fetch_vulns(
     if version:
         query["version"] = version
 
+    # OSV answers {} for a clean version; None is a failed request, which is
+    # not cached so the next install asks again.
     data = _post_json(OSV_QUERY_URL, query)
-    if not data:
-        _cache_set(cache_key, [])
-        return []
+    if data is None:
+        return None
 
     out: List[Dict[str, Any]] = []
     for vuln in data.get("vulns") or []:

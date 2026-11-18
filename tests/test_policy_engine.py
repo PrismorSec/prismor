@@ -514,6 +514,9 @@ class TestSupplyChainRules(unittest.TestCase):
             p.start()
         self.addCleanup(lambda: [p.stop() for p in self._net_patchers])
         self.engine = PolicyEngine()
+        # With the network faked down the install check blocks every install
+        # it cannot verify; these tests are about the regex rules alone.
+        self.engine.supply_chain_install_check = False
 
     # ── Package install interception ──────────────────────────────────
 
@@ -892,16 +895,16 @@ class TestSupplyChainAutomaticHookCheck(unittest.TestCase):
         self.assertIn("pkg-install-vulnerable-version", rule_ids)
 
     def test_package_cap_bounds_checked_count(self):
-        """A command listing more packages than the cap should still return
-        quickly and only score up to the cap, not hang scoring every one."""
-        from prismor.runtime.policy_engine import _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND
+        """A command listing more packages than the cap scores only up to the
+        cap, not hanging on every one, and refuses the rest: unchecked is not clean."""
+        from prismor.runtime.policy_engine import _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND as cap
         engine = PolicyEngine()
-        packages = " ".join(f"pkg{i}" for i in range(_SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND + 5))
-        with self._mock_osv([]):
+        packages = " ".join(f"pkg{i}@1.0.0" for i in range(cap + 5))
+        with self._mock_osv([]) as osv:
             findings = engine.check_command(f"npm install {packages}")
-        # All allow (no vulns mocked) -> no findings, but this must not
-        # raise or hang regardless of the package count.
-        self.assertEqual(findings, [])
+        self.assertEqual(osv.call_count, cap)
+        refused = [f["evidence"].split(" ")[0] for f in findings]
+        self.assertEqual(refused, [f"pkg{i}@1.0.0" for i in range(cap, cap + 5)])
 
 
 class TestTransitivePostinstallScan(unittest.TestCase):

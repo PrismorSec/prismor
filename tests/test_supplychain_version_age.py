@@ -68,9 +68,10 @@ def test_new_package_not_double_counted():
     assert "extreme_new_package" in _ids(v)
 
 
-def test_not_found_warns_unless_custom_registry():
+def test_not_found_blocks_and_says_so_unless_custom_registry():
+    # No version OSV can check, so it blocks like any unverifiable install.
     nf = _meta(version=None, age_days=None, maintainer_count=None, not_found=True)
-    assert _score(nf).verdict == "warn"
+    assert _score(nf).verdict == "block"
     assert "package_not_found" in _ids(_score(nf))
     assert "package_not_found" not in _ids(_score(nf, custom_registry="https://npm.corp"))
 

@@ -1,6 +1,7 @@
 """Risk scorer — maps package signals to a score and allow/warn/block verdict."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Literal, Optional, Set
@@ -27,6 +28,21 @@ class PackageVerdict:
     verdict: Literal["allow", "warn", "block"]
     signals: List[Signal] = field(default_factory=list)
     allowlisted: bool = False
+
+
+# Only a version OSV confirms has no known vulnerability installs: a known CVE
+# (osv_*), or a package OSV could not check (unverified_*, git, tarball), blocks.
+_UNCLEAN = ("osv_", "unverified_", "git_source", "tarball_source")
+# A version was asked for but not an exact one (express@^4, requests>=2,
+# serde@1): the package manager picks, so what OSV checked may not be what lands.
+_VERSION_QUERY_RE = re.compile(r"[@:=<>~^! ]")
+
+
+def _asks_for_range(spec: PackageSpec) -> bool:
+    if spec.version or not spec.raw.lower().startswith(spec.name.lower()):
+        return False
+    rest = spec.raw[len(spec.name):]
+    return rest != "@latest" and bool(_VERSION_QUERY_RE.search(rest))
 
 
 def load_allowlist(workspace: Path) -> Set[str]:
@@ -72,10 +88,12 @@ class RiskScorer:
             signals.append(Signal(id=id, points=points, description=desc))
 
         # ── Source-based (applies regardless of registry availability) ──
+        # git and tarball block (no registry version OSV can check); a local
+        # path is code already on disk, not pulled from anywhere.
         if meta.source == "git":
-            add("git_source", 35, "git/GitHub dependency bypasses registry")
+            add("git_source", 35, "git/GitHub dependency bypasses registry, no version OSV can check")
         elif meta.source == "tarball":
-            add("tarball_source", 25, "tarball install bypasses registry")
+            add("tarball_source", 25, "tarball install bypasses registry, no version OSV can check")
         elif meta.source == "local":
             add("local_source", 10, "local path dependency")
 
@@ -113,8 +131,9 @@ class RiskScorer:
             if meta.not_found and not event.custom_registry:
                 # The install will fail, but an agent that guessed a name will
                 # keep guessing; a name that does not exist yet is exactly what
-                # slopsquatters register. Warn (not block): private scoped
-                # packages also 404 without auth.
+                # slopsquatters register. It blocks anyway (no version OSV can
+                # check); private scoped packages that 404 without auth go
+                # through supply_chain.allowlist.
                 add("package_not_found", 30,
                     "not found on the public registry: check the name, it may be hallucinated")
             elif meta.maintainer_count is None:
@@ -123,13 +142,20 @@ class RiskScorer:
                 add("single_maintainer", 10, "single maintainer")
 
             if meta.has_install_script:
-                add("has_install_script", 20, "has postinstall/preinstall script")
+                add("has_install_script", 20,
+                    "no wheel: builds from source, setup code runs at install"
+                    if meta.ecosystem in ("pip", "uv") else "has postinstall/preinstall script")
 
             # ── Vulnerability scoring via OSV (version-aware) ────────────────
             # Prefer the user-pinned version; fall back to whatever the
             # registry reports as latest. OSV filters by version internally.
             lookup_version = spec.version or meta.version or ""
             vulns = fetch_vulns(spec.name, meta.ecosystem, lookup_version)
+            if not lookup_version or _asks_for_range(spec):
+                add("unverified_version", 0, "exact version unknown, pin one (pkg@1.2.3 / pkg==1.2.3)")
+            elif vulns is None:
+                add("unverified_osv", 0, "OSV unreachable, could not verify this version is CVE-free")
+            vulns = vulns or []
             if not lookup_version:
                 # No version to filter by: OSV returns every advisory the
                 # package ever had, so only malicious-package records (which
@@ -171,9 +197,10 @@ class RiskScorer:
 
         total = min(100, sum(s.points for s in signals))
 
-        # Force block if any IOC signal is present, regardless of threshold
+        # Force block on any IOC, known CVE or unverifiable version, regardless of threshold
         has_ioc = any(s.id.startswith("ioc_") for s in signals)
-        if has_ioc or total >= self.BLOCK_THRESHOLD:
+        unclean = any(s.id.startswith(_UNCLEAN) for s in signals)
+        if has_ioc or unclean or total >= self.BLOCK_THRESHOLD:
             verdict: Literal["allow", "warn", "block"] = "block"
         elif total >= self.WARN_THRESHOLD:
             verdict = "warn"
