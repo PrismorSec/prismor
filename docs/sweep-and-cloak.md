@@ -92,6 +92,37 @@ placeholder unlocks, so `prismor-self-edit` blocks an agent running
 `cloak add --from-ref` or editing `secret-sources.json`. An agent may run
 `prismor cloak sync`.
 
+### From your org console
+
+On an enrolled machine, an org admin can hold a secret in the console instead
+of asking each person to add it. In the console, go to **Secrets & PII → Org
+vault**, add the secret and pick who gets it: every device in the org, or
+selected people, devices and agent keys. The value is write-only: nobody can
+read it back from the console.
+
+The console seals the value to each device's own X25519 key
+(`$PRISMOR_HOME/seal_key.pem`, made on first sync) and signs the list with the
+policy key. The device checks the signature and that the list is for this
+device and org, opens each secret and writes it into the local vault. Agents
+use it as `@@SECRET:<name>@@` like any other vaulted secret.
+
+```bash
+prismor cloak sync     # also syncs the org vault on an enrolled machine
+prismor cloak list     # org secrets show "from org vault, v<N>"
+```
+
+You do not need to run `sync`: the policy check the hooks already make (about
+every 30 seconds while an agent works) notices a change and syncs. A rotation
+replaces the local copy on the next check. A deleted secret, or one whose access
+was removed, is deleted from the device on the next check. A process that
+already read the value keeps it, so rotate the key at its provider when it must
+stop working.
+
+If this machine already has its own secret with the same name, the local one
+wins. The console shows a conflict for that device until one of them is renamed.
+`cloak remove` on an org secret deletes the local copy, but the next sync
+brings it back unless an admin removes access in the console.
+
 ### Custom detection patterns
 
 Built-in patterns cover Stripe, GitHub, AWS, Google, Slack, GitLab, and JWTs.

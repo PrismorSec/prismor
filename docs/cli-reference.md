@@ -544,8 +544,8 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | `prismor cloak add <name>` | `--from-file` | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. |
 | `prismor cloak add --env-file .env` | — | Import every `KEY=VALUE` entry from a dotenv file as `@@SECRET:KEY@@`. |
 | `prismor cloak add <name> --from-ref <ref>` | — | Fetch the value from 1Password (`op://…`), Okta Privileged Access (`okta-pam://…`), AWS AgentCore Identity (`agentcore://…`), HashiCorp Vault or OpenBao (`vault://…`, `openbao://…`), Infisical (`infisical://…`) or AWS Secrets Manager (`aws-sm://…`) and vault it; only the reference is kept. Blocked for agents. See [Sweep and Cloak](sweep-and-cloak.md#from-a-secret-manager). |
-| `prismor cloak list` | — | List registered placeholder names (never values), with the source of any added with `--from-ref`. |
-| `prismor cloak sync [name…]` | — | Fetch `--from-ref` secrets again after a rotation. A source that can't be reached keeps its last value; exits 1 if any failed. |
+| `prismor cloak list` | — | List registered placeholder names (never values), with the source of any added with `--from-ref` or delivered by the org vault. |
+| `prismor cloak sync [name…]` | — | Fetch `--from-ref` secrets again after a rotation. On an enrolled machine, with no names, it also syncs the org vault (secrets an admin added in the console). A source that can't be reached keeps its last value; exits 1 if any failed. See [Sweep and Cloak](sweep-and-cloak.md#from-your-org-console). |
 | `prismor cloak remove <name>` | — | Delete a registered secret. |
 | `prismor cloak status` | `--scope` | Show whether cloaking hooks are installed + secret count. |
 | `prismor cloak run -- <command>` | — | Run a command with `@@SECRET:name@@` placeholders resolved locally and stdout/stderr scrubbed. Use this for Codex, whose hooks are block-only. |

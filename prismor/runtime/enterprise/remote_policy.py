@@ -204,6 +204,13 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         _spool.note_upload_failure(now)
         return False
 
+    # Org vault: its own signed endpoint, synced only when its signal moves.
+    # Runs before the policy pull so a slow vault never delays a policy change
+    # by more than its own short timeout.
+    if "secretsSig" in body:
+        from prismor.runtime.cloaking import managed as _managed
+        _managed.maybe_sync(body.get("secretsSig"))
+
     latest = body.get("version")
     version_changed = latest is not None and latest != cur
     # A different profile can become effective without bumping the version number
