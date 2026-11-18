@@ -291,9 +291,17 @@ def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict
         seen = set()
     out, fresh = [], []
     for row in _tail_rows(transcript):
-        if row.get("type") != "user" or row.get("isSidechain"):
+        if row.get("isSidechain"):
             continue
-        text = _row_text(row)
+        # Delivered between turns it is a user row; queued while a turn was
+        # running it is a queued_command attachment carrying the same text.
+        att = row.get("attachment") if isinstance(row.get("attachment"), dict) else {}
+        if row.get("type") == "user":
+            text = _row_text(row)
+        elif row.get("type") == "attachment" and att.get("type") == "queued_command":
+            text = str(att.get("prompt") or "")
+        else:
+            continue
         if not text.lstrip().startswith(_NOTICE_TAG):
             continue
         d = _digest(text)
@@ -303,6 +311,8 @@ def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict
         fresh.append(d)
         out.append({"hook_event_name": "UserPromptSubmit", "session_id": payload.get("session_id"),
                     "prompt": text, "timestamp": row.get("timestamp"), "cwd": payload.get("cwd"),
-                    "transcript_path": transcript, "delivered_by": "transcript"})
+                    "transcript_path": transcript, "delivered_by": "transcript",
+                    # tokens, tool uses and duration of the task, when the app sends them
+                    "task_usage": att.get("usage")})
     _mark(session_id, fresh)
     return out
