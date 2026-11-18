@@ -141,11 +141,14 @@ def record_write(
                 else {str(t) for t in entry.get("tags") or []}
             )
             entry["tags"] = sorted(_keep | set(tags))
-            _labels = [] if (_prior and _prior == session) else [
-                lab for lab in entry.get("labels") or [] if isinstance(lab, dict)
+            # Each label remembers its writer, so a rewrite replaces only that
+            # writer's own: dropping another's would widen what readers inherit.
+            _labels = [
+                lab for lab in entry.get("labels") or []
+                if isinstance(lab, dict) and lab.get("by") != session
             ]
-            if label and label not in _labels:
-                _labels.append(label)
+            if label:
+                _labels.append({**label, "by": session})
             if len(_labels) > _MAX_LABELS:
                 # Too many writers to keep apart, and dropping one would widen
                 # what the next reader inherits. Readable by no one instead.

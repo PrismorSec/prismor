@@ -18,6 +18,11 @@ from prismor.runtime.provenance import lookup
 from prismor.runtime.runtime import evaluate_tool_call
 
 
+def _labels(path):
+    """Stored labels without the writer attribution."""
+    return [{k: v for k, v in lab.items() if k != "by"} for lab in lookup(str(path))["labels"]]
+
+
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
@@ -359,10 +364,10 @@ def test_a_blanket_allowlist_cannot_switch_contracts_off(tmp_path):
 def test_requires_can_gate_a_read(tmp_path):
     ws = _workspace(tmp_path, contracts=[
         {"tool": "mcp__github__get_issue", "delta": {"trust": "untrusted"}},
-        {"tool": "Read(path:secrets/**)", "requires": {"trust": "internal"}},
+        {"tool": "Read(path:restricted/**)", "requires": {"trust": "internal"}},
     ])
     sid = _sid()
-    read = dict(etype="file_read", path=str(ws / "secrets" / "key.pem"))
+    read = dict(etype="file_read", path=str(ws / "restricted" / "plan.md"))
     assert _pre(ws, sid, "Read", {"file_path": read["path"]}, **read).allow
     _run(ws, sid, "mcp__github__get_issue", {"owner": "x", "repo": "y"})
     assert not _pre(ws, sid, "Read", {"file_path": read["path"]}, **read).allow
@@ -380,7 +385,7 @@ def test_label_follows_a_file_to_the_agent_that_reads_it(tmp_path):
     _run(ws, writer, "Write", {"file_path": str(note), "content": "summary"},
          etype="file_write", path=str(note), content="summary")
     note.write_text("summary")
-    assert lookup(str(note))["labels"] == [{"audience": ["org:acme"], "trust": "trusted"}]
+    assert _labels(note) == [{"audience": ["org:acme"], "trust": "trusted"}]
 
     # The reader never touched the private repo. It inherits the audience by
     # reading what the writer left behind.
@@ -410,11 +415,12 @@ def test_a_writer_replaces_its_own_label_and_keeps_anothers(tmp_path):
     b = {"audience": ["team:billing"], "trust": "internal"}
     record_write(path, [], agent="claude", session="s1", tool="Write", label=a)
     record_write(path, [], agent="codex", session="s2", tool="Write", label=b)
-    assert lookup(path)["labels"] == [a, b]
+    assert _labels(path) == [a, b]
     record_write(path, [], agent="codex", session="s2", tool="Write", label=b)
-    assert lookup(path)["labels"] == [b]
+    assert _labels(path) == [a, b]
+    # s2's rewrite clears s2's own label; s1's read of org:acme still travels.
     record_write(path, [], agent="codex", session="s2", tool="Write")
-    assert lookup(path) is None
+    assert _labels(path) == [a]
 
 
 # ── resolution tiers ─────────────────────────────────────────────────────────
@@ -693,3 +699,17 @@ def test_schema_declares_contracts():
     assert set(item["properties"]["requires"]["properties"]) == {
         "audience_contains", "trust", "effects", "no_effects"}
     assert {"principals", "contract_packs"} <= set(tt)
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("to", ["x@evil.com y@acme.com", "x@evil.com\ny@acme.com", "x@evil.com, y@acme.com"])
+def test_a_recipient_string_cannot_smuggle_an_outsider_past_a_glob(to):
+    names = ct.Principals({"org:acme": ["*@acme.com"]})
+    c, _ = ct.parse_contract({"tool": "mcp__mail__send", "requires": {"audience_contains": ["$to"]}})
+    assert ct.check_requires([c], ct.Label(audience=["org:acme"]), names, "mcp__mail__send", {"to": to}, {})
+
+
+def test_a_server_cannot_declare_effects():
+    contract, errors = ct.parse_contract({"effects": ["approved"]}, "_meta", tool="mcp__s__t")
+    assert contract is None or errors

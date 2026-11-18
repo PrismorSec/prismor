@@ -194,7 +194,9 @@ list. It cannot remove a contract, and it cannot change `principals`.
 
 The contract applies to the tool it is declared on (a `tool` key is ignored),
 goes through the same validation as a policy contract, and is dropped whole if
-any part of it is invalid. Disable the tier with `meta_contracts_enabled: false`.
+any part of it is invalid. A server may not declare `effects`: they satisfy
+`requires.effects`, so only policy can record them. Disable the tier with
+`meta_contracts_enabled: false`.
 
 ### Built-in packs
 

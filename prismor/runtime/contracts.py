@@ -312,21 +312,6 @@ class SessionLabel:
             pass
 
 
-class MemoryLabel(SessionLabel):
-    """In-memory label for dry runs; never touches the session's real file."""
-
-    def __init__(self, principals: Optional[Principals] = None) -> None:  # noqa: D401
-        self.principals = principals or Principals()
-        self._mem: Dict[str, Any] = {}
-
-    def _state(self) -> Dict[str, Any]:
-        return self._mem
-
-    def _commit(self, entry: Dict[str, Any]) -> None:
-        ents = self._mem.setdefault("entries", [])
-        if not any(e.get("index") == entry["index"] and e.get("key") == entry["key"] for e in ents):
-            ents.append(entry)
-
 
 def label_path(workspace: Path, session_id: str) -> Path:
     from prismor.runtime.store import get_data_dir
@@ -532,6 +517,10 @@ def parse_contract(raw: Any, source: str = "policy",
                              pattern=_EFFECT_RE, what="effect")
 
     effects = _str_list(raw.get("effects"), "effects", errors, pattern=_EFFECT_RE, what="effect")
+    if effects and source == "_meta":
+        # Effects satisfy `requires.effects`, so a server declaring them on a
+        # harmless tool could unlock another contract. Only policy may.
+        errors.append("effects: only policy may declare effects, not a server's _meta")
 
     if name is None:
         return None, errors
@@ -674,7 +663,9 @@ def bind(template: str, args: Dict[str, Any], event: Dict[str, Any]) -> Tuple[Li
             value = [p for p in re.split(r"[,;]", value) if p.strip()]
         if isinstance(value, (list, tuple)):
             vals = [_norm(v) for v in value if isinstance(v, (str, int, float)) and str(v).strip()]
-            if vals:
+            # `a@evil.com b@acme.com` is one string to us and two recipients
+            # downstream; a glob's `*` would match it. Unparseable = unbound.
+            if vals and all(_PRINCIPAL_RE.match(v) for v in vals):
                 return vals, []
         return [], [refs[0]]
     missing: List[str] = []
@@ -682,7 +673,8 @@ def bind(template: str, args: Dict[str, Any], event: Dict[str, Any]) -> Tuple[Li
     def _sub(m: "re.Match[str]") -> str:
         ref = m.group(1) or m.group(2)
         value = lookup_arg(args, event, ref)
-        if isinstance(value, bool) or not isinstance(value, (str, int, float)) or not str(value).strip():
+        if (isinstance(value, bool) or not isinstance(value, (str, int, float))
+                or not _PRINCIPAL_RE.match(str(value).strip())):
             missing.append(ref)
             return m.group(0)
         return str(value).strip()
@@ -859,18 +851,11 @@ def contracts_for_tool(tool_name: str, tt: Optional[Dict[str, Any]]) -> Tuple[Li
     if hit:
         return hit, "policy"
     if tt.get("contract_defaults_enabled", True):
-        parts = _mcp_parts(tool_name)
-        if parts:
-            server, tool = parts[0].casefold(), parts[1].casefold()
-            if ("github" in server and _GH_UGC_READ.search(tool)) or (
-                    "github" in server and _GH_READ.search(tool)
-                    and (tt.get("contract_packs") or {}).get("github")):
-                return [Contract(tool=tool_name, delta_trust=UNTRUSTED_TRUST,
-                                 source="builtin:github")], "builtin"
-            if "slack" in server and _SLACK_READ.search(tool) and (
-                    (tt.get("contract_packs") or {}).get("slack")):
-                return [Contract(tool=tool_name, delta_trust=UNTRUSTED_TRUST,
-                                 source="builtin:slack")], "builtin"
+        # No call, so no arguments: a pack answers with what it does for an
+        # unknown repo or channel.
+        hit = builtin_contracts(tool_name, {}, tt)
+        if hit:
+            return hit, "builtin"
     return [], "-"
 
 
