@@ -118,6 +118,11 @@ class UpstreamSpec:
     max_body_bytes: Optional[int] = None
     #: {"service", "region"}: sign every http(s) request with AWS SigV4.
     sigv4: Optional[Dict[str, str]] = None
+    #: Stdio only. False (default) starts the server with a minimal
+    #: environment (see stdio_env) plus its own ``env`` and the names in
+    #: ``"envPassthrough"``; ``"inheritEnv": true`` passes the full one.
+    inherit_env: bool = False
+    env_passthrough: List[str] = field(default_factory=list)
     #: Keep the upstream's Mcp-Session-Id and re-initialize once if it expires
     #: (HTTP 404). False never stores or sends one.
     managed_session: bool = True
@@ -240,8 +245,12 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
     else:
         raise GatewayConfigError(f"server '{name}' has neither a url nor a command")
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    passthrough = cfg.get("envPassthrough")
     return UpstreamSpec(name=name, command=argv, transport="stdio",
                         env={str(k): str(v) for k, v in (env or {}).items()},
+                        inherit_env=cfg.get("inheritEnv") is True,
+                        env_passthrough=[str(n) for n in passthrough]
+                        if isinstance(passthrough, list) else [],
                         pin=cfg.get("pin") is not False, **_tool_selection(cfg))
 
 
@@ -253,7 +262,11 @@ def parse_inline_server(value: str) -> UpstreamSpec:
     rest = rest.strip()
     if rest.startswith(("http://", "https://")):
         return UpstreamSpec(name=name.strip(), url=rest, transport="http")
-    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio")
+    # A command named on the CLI gets the full environment: the host passes
+    # that server's env to the gateway process, and there is no config
+    # entry to name envPassthrough in.
+    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio",
+                        inherit_env=True)
 
 
 # ── upstream clients ─────────────────────────────────────────────────────────
@@ -293,6 +306,40 @@ class Upstream:
         pass
 
 
+# Variables a stdio MCP server needs to start and reach the network (npx,
+# uvx, node, python, proxies, CA bundles), but no credentials. Everything
+# else in the gateway's environment (cloud keys, tokens) stays out unless
+# the entry names it in env / envPassthrough or sets inheritEnv.
+_STDIO_ENV_NAMES = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TZ", "TMPDIR",
+    "TEMP", "TMP", "PWD", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+    "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_CACHE_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    # Windows
+    "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "APPDATA",
+    "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "PROGRAMFILES",
+    "ProgramFiles", "PROGRAMDATA", "ProgramData", "NUMBER_OF_PROCESSORS",
+})
+_STDIO_ENV_PREFIXES = ("LC_", "XDG_", "npm_config_", "NPM_CONFIG_", "NVM_", "UV_",
+                       "PIP_INDEX", "PIP_EXTRA_INDEX", "PIP_CERT")
+
+
+def stdio_env(spec: "UpstreamSpec", base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Environment for a stdio upstream: allowlisted names from ``base``,
+    then passthrough names, then the entry's own env (which wins)."""
+    base = dict(os.environ if base is None else base)
+    if spec.inherit_env:
+        env = base
+    else:
+        keep = set(spec.env_passthrough)
+        env = {k: v for k, v in base.items()
+               if k in _STDIO_ENV_NAMES or k in keep or k.startswith(_STDIO_ENV_PREFIXES)}
+    env.update(spec.env)
+    return env
+
+
 class UpstreamStdio(Upstream):
     def __init__(self, spec: UpstreamSpec,
                  on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None):
@@ -306,8 +353,7 @@ class UpstreamStdio(Upstream):
     def _ensure_started(self) -> None:
         if self._proc is not None and self._proc.poll() is None:
             return
-        env = dict(os.environ)
-        env.update(self.spec.env)
+        env = stdio_env(self.spec)
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
             kwargs["start_new_session"] = True
@@ -2648,8 +2694,8 @@ def run_gateway(args, workspace: Path) -> int:
             specs.append(UpstreamSpec(name="upstream", url=value, transport="http"))
         else:
             argv = shlex.split(value)
-            specs.append(UpstreamSpec(name=_shim_name(argv),
-                                      command=argv, transport="stdio"))
+            specs.append(UpstreamSpec(name=_shim_name(argv), command=argv,
+                                      transport="stdio", inherit_env=True))
     for inline in getattr(args, "server", None) or []:
         specs.append(parse_inline_server(inline))
     if not specs:

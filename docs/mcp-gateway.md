@@ -231,6 +231,22 @@ Five more keys on a server entry:
   session and, when the server says it expired (HTTP 404), opens a new one and
   retries once.
 
+A local (stdio) server does not get the gateway's whole environment. It starts
+with the variables it needs to run (`PATH`, `HOME`, locale, temp dirs, proxy
+and CA-bundle settings, `npm_config_*`, `UV_*`), plus the entry's own `env`.
+Cloud keys and tokens in your shell stay out. Two keys change this:
+
+- `envPassthrough: ["GITHUB_TOKEN"]` also passes those variables from the
+  gateway's environment.
+- `inheritEnv: true` passes the full environment, as before this change.
+
+If a server that worked before now fails to authenticate, it was reading a
+token from your shell: name it in `envPassthrough` or move it into `env`.
+
+Servers named on the command line (`--upstream`, `--server`) keep the full
+environment: the host passes that server's `env` to the gateway process, and
+there is no config entry to set `envPassthrough` in.
+
 ## Signing in to OAuth servers
 
 Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API

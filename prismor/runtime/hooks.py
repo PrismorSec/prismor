@@ -3335,7 +3335,11 @@ _INVISIBLE_CONTROL_RE = _re.compile(
     "\ufeff\u00ad\u180e"  # BOM, soft hyphen, Mongolian vowel separator
     "\ufff0-\ufffb"    # unassigned + interlinear annotation controls
     "\u115f\u1160\u2800\u3164\uffa0"  # blank-rendering CJK/Braille fillers
+    "\U000e0000-\U000e007f"  # tag characters (ASCII smuggling)
     "]"
+    # Variation-selector runs encode hidden bytes; one alone is a normal emoji
+    # presentation selector, so only a run of four or more counts.
+    "|[\ufe00-\ufe0f\U000e0100-\U000e01ef]{4,}"
 )
 
 

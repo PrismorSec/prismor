@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,13 @@ class PackageMetadata:
     source: str                      # mirrors PackageSpec.source
     install_script_content: Optional[str] = None  # raw script string for IOC analysis
     fetch_error: Optional[str] = None
+    # Age of the version being installed. A hijacked release of an old
+    # package is days old even though the package is years old.
+    version_age_days: Optional[int] = None
+    not_found: bool = False          # registry answered 404: no such package
+    # The installed version has an install script and the release before it
+    # did not: the pattern of a hijacked publish (npm only).
+    install_script_added: bool = False
 
 
 # In-memory cache: key → (monotonic_ts, PackageMetadata)
@@ -67,7 +75,12 @@ def fetch_metadata(spec: PackageSpec, ecosystem: str) -> PackageMetadata:
     return meta
 
 
-def _http_get(url: str, timeout: int = 3) -> Optional[dict]:
+_NOT_FOUND: dict = {"__not_found__": True}
+
+
+def _http_get(url: str, timeout: int = 3, not_found=None) -> Optional[dict]:
+    """GET JSON. Returns None on any failure, or ``not_found`` on HTTP 404 so
+    callers can tell "no such package" from "registry unreachable"."""
     try:
         req = urllib.request.Request(
             url,
@@ -78,6 +91,8 @@ def _http_get(url: str, timeout: int = 3) -> Optional[dict]:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return not_found if exc.code == 404 else None
     except Exception:
         return None
 
@@ -122,10 +137,21 @@ def _age_days(date_str: str) -> Optional[int]:
         return None
 
 
-def _fetch_npm(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
-    encoded = name.replace("/", "%2F")
-    data = _http_get(f"https://registry.npmjs.org/{encoded}")
+def _not_found(name: str, ecosystem: str) -> PackageMetadata:
+    return PackageMetadata(
+        name=name, ecosystem=ecosystem, version=None,
+        age_days=None, maintainer_count=None,
+        has_install_script=False, source="registry",
+        fetch_error="not found in registry", not_found=True,
+    )
 
+
+def _fetch_npm(name: str, ecosystem: str, requested: str = "") -> PackageMetadata:
+    encoded = name.replace("/", "%2F")
+    data = _http_get(f"https://registry.npmjs.org/{encoded}", not_found=_NOT_FOUND)
+
+    if data is _NOT_FOUND:
+        return _not_found(name, ecosystem)
     if not data:
         return PackageMetadata(
             name=name, ecosystem=ecosystem, version=None,
@@ -142,13 +168,27 @@ def _fetch_npm(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
     maintainers = data.get("maintainers") or []
     maintainer_count = len(maintainers) if maintainers else None
 
-    # Scripts of the version being installed: the pinned one, else latest
+    # The version that will be installed: an exact pin if the registry has
+    # it, else latest (ranges resolve to latest in the common case).
     versions = data.get("versions") or {}
-    latest_version = version if version in versions else (data.get("dist-tags") or {}).get("latest", "")
+    tags = data.get("dist-tags") or {}
+    latest_version = tags.get("latest", "")
+    if requested in versions:
+        latest_version = requested
+    elif requested in tags:  # npm install pkg@next
+        latest_version = tags[requested]
     latest_data = versions.get(latest_version) or {}
+    version_age = _age_days(time_data.get(latest_version, ""))
     scripts = latest_data.get("scripts") or {}
     lifecycle_keys = ("postinstall", "preinstall", "install")
     has_install_script = any(k in scripts for k in lifecycle_keys)
+    # Previous release by publish time. ISO timestamps sort as strings.
+    published = time_data.get(latest_version, "")
+    earlier = [v for v in versions if v != latest_version and "" < time_data.get(v, "") < published]
+    prev = max(earlier, key=lambda v: time_data[v]) if earlier else None
+    prev_scripts = (versions.get(prev) or {}).get("scripts") or {} if prev else {}
+    install_script_added = bool(prev) and has_install_script and not any(
+        k in prev_scripts for k in lifecycle_keys)
 
     # Concatenate all lifecycle script strings for IOC pattern analysis
     install_script_content = " ".join(
@@ -160,12 +200,16 @@ def _fetch_npm(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
         age_days=age, maintainer_count=maintainer_count,
         has_install_script=has_install_script, source="registry",
         install_script_content=install_script_content,
+        version_age_days=version_age,
+        install_script_added=install_script_added,
     )
 
 
-def _fetch_pypi(name: str, ecosystem: str, version: str = "") -> PackageMetadata:
-    data = _http_get(f"https://pypi.org/pypi/{name}/json")
+def _fetch_pypi(name: str, ecosystem: str, requested: str = "") -> PackageMetadata:
+    data = _http_get(f"https://pypi.org/pypi/{name}/json", not_found=_NOT_FOUND)
 
+    if data is _NOT_FOUND:
+        return _not_found(name, ecosystem)
     if not data:
         return PackageMetadata(
             name=name, ecosystem=ecosystem, version=None,
@@ -188,17 +232,26 @@ def _fetch_pypi(name: str, ecosystem: str, version: str = "") -> PackageMetadata
 
     age = _age_days(min(all_upload_times)) if all_upload_times else None
 
+    if requested in releases:
+        latest_version = requested
+    version_uploads = [
+        f.get("upload_time_iso_8601") or f.get("upload_time")
+        for f in releases.get(latest_version) or []
+    ]
+    version_uploads = [u for u in version_uploads if u]
+    version_age = _age_days(min(version_uploads)) if version_uploads else None
+
     # PyPI doesn't expose maintainer count in JSON; treat as 1 if author present
     maintainer_count = 1 if info.get("author") else None
 
     # No wheel for the version being installed: pip builds the sdist, which
     # runs the package's setup.py / build backend on this machine.
-    target = version if version in releases else latest_version
-    files = releases.get(target) or []
+    files = releases.get(latest_version) or []
     sdist_only = bool(files) and not any(f.get("packagetype") == "bdist_wheel" for f in files)
 
     return PackageMetadata(
-        name=name, ecosystem=ecosystem, version=target,
+        name=name, ecosystem=ecosystem, version=latest_version,
         age_days=age, maintainer_count=maintainer_count,
         has_install_script=sdist_only, source="registry",
+        version_age_days=version_age,
     )

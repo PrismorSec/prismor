@@ -116,7 +116,27 @@ class RiskScorer:
                 elif meta.age_days < 30:
                     add("new_package", 15, f"published {meta.age_days}d ago")
 
-            if meta.maintainer_count is None:
+            # A brand-new release of an established package is the hijacked-
+            # maintainer pattern (a stolen token publishes x.y.z+1), but busy
+            # packages (SDKs, cloud clients) publish daily, so freshness alone
+            # is not scored. What a hijack adds is an install script the
+            # previous release did not have: that blocks with the
+            # install-script signal (40 + 20).
+            va = meta.version_age_days
+            if (va is not None and va < 7 and meta.age_days is not None
+                    and meta.age_days >= 30 and meta.install_script_added):
+                add("new_install_script", 40,
+                    f"version {meta.version} ({va}d old) adds an install script the previous release did not have")
+
+            if meta.not_found and not event.custom_registry:
+                # The install will fail, but an agent that guessed a name will
+                # keep guessing; a name that does not exist yet is exactly what
+                # slopsquatters register. It blocks anyway (no version OSV can
+                # check); private scoped packages that 404 without auth go
+                # through supply_chain.allowlist.
+                add("package_not_found", 30,
+                    "not found on the public registry: check the name, it may be hallucinated")
+            elif meta.maintainer_count is None:
                 add("no_maintainer_data", 8, "maintainer data unavailable")
             elif meta.maintainer_count == 1:
                 add("single_maintainer", 10, "single maintainer")
