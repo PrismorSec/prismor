@@ -209,6 +209,23 @@ def sync(timeout: float = 8) -> List[Dict[str, Any]]:
     parsed = _verify(_fetch(ident, key, timeout), ident)
     device_id = str(parsed.get("device_id"))
 
+    from prismor.runtime.cloaking import bindings
+    # Hosts an admin bound each secret to (signed with the rest). Checked for
+    # every entry before any is applied: a bad list changes nothing.
+    wanted_hosts: Dict[str, List[str]] = {}
+    for box in parsed["secrets"]:
+        raw = box.get("hosts") or []
+        if not isinstance(raw, list):
+            raise ManagedError(f"the org vault entry for {box.get('name')} has a bad hosts list")
+        try:
+            wanted_hosts[str(box.get("name", ""))] = [bindings.normalize_host(str(h)) for h in raw]
+        except ValueError as exc:
+            raise ManagedError(f"the org vault entry for {box.get('name')}: {exc}") from exc
+    try:
+        bound = bindings.load(secrets_dir())
+    except (OSError, ValueError) as exc:
+        raise ManagedError(f"can't read secret bindings: {exc}") from exc
+
     sources = load_sources()
     managed = {n for n, e in sources.items() if str(e.get("ref", "")).startswith(PREFIX)}
     out: List[Dict[str, Any]] = []
@@ -229,6 +246,11 @@ def sync(timeout: float = 8) -> List[Dict[str, Any]]:
             current = path.read_text(encoding="utf-8")
         except OSError:
             current = None
+        hosts = wanted_hosts.get(name) or []
+        if sorted(set(hosts)) != sorted(bound.get(name) or []):
+            # Before the value lands, so a newly bound secret is never on
+            # disk unbound.
+            bindings.save(secrets_dir(), name, hosts)
         if current == value and sources.get(name, {}).get("version") == str(version):
             out.append({"name": name, "version": version, "status": "unchanged"})
         else:
@@ -238,6 +260,8 @@ def sync(timeout: float = 8) -> List[Dict[str, Any]]:
     for name in sorted(managed - seen):
         remove_secret(name)
         sources.pop(name, None)
+        if name in bound:
+            bindings.save(secrets_dir(), name, None)
         out.append({"name": name, "status": "removed"})
     _save_sources(sources)
     _write_private(_state_path(), json.dumps({

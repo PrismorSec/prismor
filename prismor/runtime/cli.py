@@ -3474,6 +3474,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                 sys.stderr.write("error: cloak add requires either NAME or --env-file\n")
                 raise SystemExit(1)
             name = args.name
+            if args.hosts:
+                from prismor.runtime.cloaking import bindings
+                try:
+                    hosts = [bindings.normalize_host(h) for h in args.hosts]
+                except ValueError as exc:
+                    sys.stderr.write(f"error: {exc}\n")
+                    raise SystemExit(1)
+                _check_hosts_change(name, hosts)
             if args.ref:
                 from prismor.runtime.cloaking.sources import SourceError, add_from_ref
                 if args.value_file:
@@ -3486,6 +3494,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     raise SystemExit(1)
                 print(f"Registered @@SECRET:{name}@@ from {args.ref.split('://')[0]} at {path}")
                 print(f"  `prismor cloak sync {name}` fetches it again after a rotation.")
+                _save_hosts(name, args.hosts)
                 return
             if args.value_file:
                 value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
@@ -3505,6 +3514,34 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("The model can now reference this secret in tool calls as:")
             print(f"  {_color(f'@@SECRET:{name}@@', _CYAN)}")
             _warn_unscrubbable(name, value)
+            _save_hosts(name, args.hosts)
+            return
+
+        if sub == "hosts":
+            from prismor.runtime.cloaking import bindings
+            from prismor.runtime.cloaking.sources import load_sources
+            name = args.name
+            if not args.set_hosts and not args.any:
+                hosts = bindings.load(secrets_dir()).get(name)
+                print(f"@@SECRET:{name}@@ may be sent to: {', '.join(hosts)}" if hosts
+                      else f"@@SECRET:{name}@@ is not bound: any command may use it")
+                return
+            if not (secrets_dir() / name).is_file():
+                sys.stderr.write(f"error: no secret named {name!r}\n")
+                raise SystemExit(1)
+            if str(load_sources().get(name, {}).get("ref", "")).startswith("prismor://"):
+                sys.stderr.write(f"error: @@SECRET:{name}@@ comes from your org vault; its hosts are set "
+                                 "in the org console\n")
+                raise SystemExit(1)
+            try:
+                hosts = [] if args.any else [bindings.normalize_host(h) for h in args.set_hosts]
+            except ValueError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                raise SystemExit(1)
+            _check_hosts_change(name, hosts)
+            bindings.save(secrets_dir(), name, hosts)
+            print(f"@@SECRET:{name}@@ may be sent to: {', '.join(sorted(set(hosts)))}" if hosts
+                  else f"@@SECRET:{name}@@ is no longer bound: any command may use it")
             return
 
         if sub == "list":
@@ -3515,6 +3552,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.cloaking.sources import load_sources
             sources = load_sources()
             from prismor.runtime.cloaking.runtime import is_scrubbable_secret
+            from prismor.runtime.cloaking import bindings
+            try:
+                bound = bindings.load(secrets_dir())
+            except (OSError, ValueError):
+                bound = {}
             print(f"Registered secrets at {secrets_dir()}:")
             print()
             weak = 0
@@ -3530,8 +3572,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                     raw = None
                 masked = raw is None or is_scrubbable_secret(raw)
                 weak += not masked
+                hosts = bound.get(entry["name"])
                 print(f"  {tag}@@SECRET:{entry['name']}@@"
-                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''})"
+                      f"  ({entry['bytes']} bytes, updated {ts}{', from ' + src if src else ''}"
+                      f"{', only to ' + ', '.join(hosts) if hosts else ''})"
                       + ("" if masked else "  " + _color("[not masked]", _YELLOW)))
             print()
             if weak:
@@ -3575,6 +3619,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                       "unless an admin removes your access in the console.")
             removed = remove_secret(args.name)
             forget(args.name)
+            from prismor.runtime.cloaking import bindings
+            if args.name in bindings.load(secrets_dir()):
+                bindings.save(secrets_dir(), args.name, None)
             if removed:
                 print(f"Removed @@SECRET:{args.name}@@")
             else:
@@ -5332,6 +5379,16 @@ def build_parser() -> argparse.ArgumentParser:
                             "infisical://project_id/env[/folder]/NAME (Infisical), "
                             "aws-sm://region/secret_id[#field] (AWS Secrets Manager). "
                             "Only the reference is kept; `prismor cloak sync` fetches it again")
+    t_add.add_argument("--host", dest="hosts", action="append", metavar="HOST",
+                       help="Only send this secret to HOST (repeatable; *.example.com for subdomains). "
+                            "A bound secret is decloaked only into a curl/wget/http/xh call to these hosts")
+
+    t_hosts = cloak_sub.add_parser(
+        "hosts", help="Show or set the hosts a secret may be sent to (changing them needs a terminal)")
+    t_hosts.add_argument("name", help="Placeholder name")
+    t_hosts.add_argument("set_hosts", nargs="*", metavar="HOST",
+                         help="Replace the list with these hosts (*.example.com for subdomains)")
+    t_hosts.add_argument("--any", action="store_true", help="Remove the binding: any command may use it")
 
     cloak_sub.add_parser("list", help="List registered placeholder names (never values)")
     t_sync = cloak_sub.add_parser("sync", help="Fetch secrets added with --from-ref again (after a rotation)")
@@ -7202,6 +7259,36 @@ def _warn_unscrubbable(name: str, value: str) -> None:
             "its raw value in tool output or block reads of it. Use 16+ characters, or 8+ with a "
             "digit, symbol or mixed case. A bare URL (scheme://host[:port]) is config, not a "
             "secret, and is never masked: register only the credential part.\n")
+
+
+def _check_hosts_change(name: str, hosts: List[str]) -> None:
+    """Changing the hosts of an already-bound secret is a person's call.
+
+    Binding an unbound secret only narrows where it can go, so anyone may.
+    Widening or removing a binding would undo it, so it needs a terminal: an
+    agent's tool call has none (stderr is a pipe), and the default policy also
+    refuses `prismor cloak hosts NAME ...` from an agent. ponytail: a
+    terminal check, not an unlock password; `script` can fake one.
+    """
+    from prismor.runtime.cloaking import bindings
+    from prismor.runtime.cloaking.secrets_store import secrets_dir
+    try:
+        current = bindings.load(secrets_dir()).get(name)
+    except (OSError, ValueError):
+        current = None
+    if current and set(hosts) != set(current) and not sys.stderr.isatty():
+        sys.stderr.write(f"error: @@SECRET:{name}@@ is bound to {', '.join(current)}. Changing that "
+                         "needs a terminal: run it yourself, not through an agent.\n")
+        raise SystemExit(1)
+
+
+def _save_hosts(name: str, hosts: Optional[List[str]]) -> None:
+    if not hosts:
+        return
+    from prismor.runtime.cloaking import bindings
+    from prismor.runtime.cloaking.secrets_store import secrets_dir
+    bindings.save(secrets_dir(), name, hosts)
+    print(f"  Only sent to: {', '.join(sorted(set(bindings.normalize_host(h) for h in hosts)))}")
 
 
 def _approvals_cmd(args: Any) -> int:

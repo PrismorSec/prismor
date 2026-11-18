@@ -141,6 +141,8 @@ def install(
     # The plugin resolves shell placeholders through the same resolver as the
     # Claude hook; ship it beside the plugin so it works without prismor importable.
     shutil.copy2(Path(__file__).resolve().parent / "hooks" / "decloak-exec.sh", target_dir / "decloak-exec.sh")
+    # Its host-binding check: without it a bound secret is refused outright.
+    shutil.copy2(Path(__file__).resolve().parent / "bindings.py", target_dir / "bindings.py")
 
     _enable_plugin_in_config(_PLUGIN_NAME)
 
