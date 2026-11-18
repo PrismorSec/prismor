@@ -138,7 +138,15 @@ _sig(r"(attention|dear)\s+(prismor|claude|ai\s+assistant|security\s+monitor)", 0
 _sig(r"(pre.?approved|already\s+cleared|cleared\s+by)\s+.{0,40}(team|admin|security|prismor|prismor)", 0.65, "false_prior_approval")
 # "false positive" alone matched every bug report, commit and PR about the
 # guard. The framing is an attack only when it is used to get a check skipped.
-_sig(r"(false\s+positive.{0,80}\b(ignore|skip|bypass|disable|pause|turn\s+off)\b|ignore\s+(the\s+)?security\s+warning)", 0.65, "prismor_bypass_framing")
+# A verb with a third-party subject describes what people do ("false positives
+# make people disable the tool", from our own PR template) — not an order.
+# ponytail: a described actor anywhere in the gap ends the match, so "users
+# disable it ... so disable it" slips; other signals carry that case.
+_BYPASS_VERB = r"(?:ignore|skip|bypass|disable|pause|turn\s+off)"
+_DESCRIBED_ACTOR = (r"\b(?:people|users?|teams?|developers?|devs|engineers?|folks|everyone|"
+                    r"someone|they|that|which|who)\s+(?:(?:to|will|would|just|then|eventually|often|end\s+up)\s+)*")
+_sig(r"(false\s+positive(?:(?!" + _DESCRIBED_ACTOR + _BYPASS_VERB + r"\b).){0,80}?\b" + _BYPASS_VERB
+     + r"\b|ignore\s+(the\s+)?security\s+warning)", 0.65, "prismor_bypass_framing")
 # `hook` as a word: Prismor's own status line "Remove one: prismor
 # uninstall-hooks --agent ..." names a CLI subcommand, not a request.
 _sig(r"(delete|remove|disable)\s+.{0,40}(policy\.yaml|settings\.json|(?<![-\w])hooks?\b)", 0.80, "policy_deletion")
