@@ -190,8 +190,8 @@ class TestOSVScoring:
             )
             mock_fetch.assert_not_called()
 
-    def test_cve_verdict_warn_for_single_high(self):
-        """Single high CVE (30 pts) should trigger WARN (threshold=30)."""
+    def test_cve_verdict_block_for_single_high(self):
+        """Any known CVE on the version being installed blocks, whatever its points."""
         cves = [
             {
                 "id": "CVE-2023-999",
@@ -204,11 +204,11 @@ class TestOSVScoring:
         with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
-        assert verdict.verdict == "warn"
+        assert verdict.verdict == "block"
         assert verdict.score == 30
 
-    def test_cve_verdict_warn_for_critical(self):
-        """Critical CVE (50 pts) should trigger WARN (threshold=30, <60 for block)."""
+    def test_cve_verdict_block_for_critical(self):
+        """Critical CVE (50 pts) blocks though it is under the 60 threshold."""
         cves = [
             {
                 "id": "CVE-2023-999",
@@ -221,7 +221,7 @@ class TestOSVScoring:
         with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
-        assert verdict.verdict == "warn"
+        assert verdict.verdict == "block"
         assert verdict.score == 50
 
 

@@ -265,7 +265,7 @@ already opted into them by installing prismor.
 
 | Unsafe pattern | Use instead | Why |
 |---|---|---|
-| `npm install <pkg>` | `prismor supplychain npm install <pkg>` | Scores against IOC feed + age/maintainer signals before install runs. |
+| `npm install <pkg>` | `prismor supplychain npm install <pkg>` | Installs only a version OSV confirms has no known CVE; anything it can't verify (a range, a git URL, OSV unreachable) blocks too. Scores the IOC feed + age/maintainer signals as well. On a block, retry with the suggested version. |
 | `pip install <pkg>` | `prismor supplychain pip install <pkg>` | Same gate for PyPI. |
 | `pnpm add` / `yarn add` / `uv add` / `cargo add` / `go get` | `prismor supplychain <pm> …` | Same gate per ecosystem. |
 | Package-manager config without hardening | `prismor supplychain harden` | Writes npm `ignore-scripts`, `save-exact` and `audit` into `.npmrc`, the Yarn equivalents, pip `no-input` in `pip.conf`, and Cargo `[net]` retry / `git-fetch-with-cli`. Run `--dry-run` first to preview. |
