@@ -173,8 +173,8 @@ def bwrap_argv(workspace: Path, cfg: Dict[str, Any], *, unshare_net: bool,
 def missing_protected(workspace: Path) -> List[str]:
     """Protected paths absent before a Linux run; revert_created() checks them after.
 
-    ``.git/hooks`` only counts when ``.git`` already exists, so ``git init``
-    and ``git clone`` inside the sandbox keep their hooks dir.
+    Paths under ``.git`` only count when ``.git`` already exists, so ``git init``
+    and ``git clone`` inside the sandbox keep their hooks dir and config.
     """
     ws = _real(str(workspace))
     out = []
@@ -182,7 +182,7 @@ def missing_protected(workspace: Path) -> List[str]:
         x = os.path.join(ws, rel)
         if os.path.lexists(x):
             continue
-        if rel == ".git/hooks" and not os.path.isdir(os.path.join(ws, ".git")):
+        if rel.startswith(".git/") and not os.path.isdir(os.path.join(ws, ".git")):
             continue
         out.append(x)
     return out
@@ -408,8 +408,9 @@ class EgressProxy:
 
 
 def make_decider(*, workspace: Path, agent: str, session_id: str, mode: str,
-                 command: str) -> Decide:
-    """Screen each new host:port once per run as a Prismor ``network`` event."""
+                 command: str, egress: Optional[Callable[[str, int, str], Tuple[bool, str]]] = None) -> Decide:
+    """Screen each new host:port once per run: ``settings.egress`` first (``egress``,
+    from sandbox_proxy.egress_decider), then as a Prismor ``network`` event."""
     cache: Dict[Tuple[str, int], bool] = {}
     lock = threading.Lock()  # ponytail: one evaluation at a time; store writes are not thread-safe
 
@@ -418,6 +419,12 @@ def make_decider(*, workspace: Path, agent: str, session_id: str, mode: str,
         with lock:
             if key in cache:
                 return cache[key]
+            if egress is not None:
+                blocked, reason = egress(host, port, scheme)
+                if blocked:
+                    sys.stderr.write(f"[prismor] sandbox blocked {host}:{port} ({reason})\n")
+                    cache[key] = False
+                    return False
             from prismor.runtime.runtime import evaluate_tool_call
             default = 443 if scheme == "https" else 80
             url = f"{scheme}://{host}" + ("" if port == default else f":{port}")
@@ -451,13 +458,13 @@ def _proxy_env(port: int) -> Dict[str, str]:
     return {"http_proxy": url, "https_proxy": url, "HTTP_PROXY": url, "HTTPS_PROXY": url,
             "all_proxy": socks, "ALL_PROXY": socks,
             "no_proxy": "localhost,127.0.0.1,::1", "NO_PROXY": "localhost,127.0.0.1,::1",
-            "NODE_USE_ENV_PROXY": "1", "PRISMOR_SANDBOX": "native"}
+            "NODE_USE_ENV_PROXY": "1"}
 
 
 # ── run ───────────────────────────────────────────────────────────────────
 
 def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
-        session_id: str = "") -> int:
+        session_id: str = "", egress: Optional[Callable[[str, int, str], Tuple[bool, str]]] = None) -> int:
     st = status()
     if not st["ready"]:
         sys.stderr.write(f"Prismor sandbox unavailable: {st.get('error')}\n")
@@ -469,11 +476,12 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
     use_proxy = network != "none"
     timeout = (cfg.get("resource_limits") or {}).get("timeout_seconds") or None
     decide = make_decider(workspace=workspace, agent=agent, session_id=session_id,
-                          mode=mode, command=command)
+                          mode=mode, command=command, egress=egress)
     # Agents' Bash tools run bash; /bin/sh is dash on Debian/Ubuntu, where
     # `[[ ]]` and `source` fail.
     shell = [shutil.which("bash") or "/bin/sh", "-c", command]
-    env = dict(os.environ)
+    # Same marker as the macOS engine, on every run (not only proxied ones).
+    env = dict(os.environ, PRISMOR_SANDBOX="1")
     proxy: Optional[EgressProxy] = None
     watch = missing_protected(workspace) if enforce and st["engine"] == "bubblewrap" else []
     tmp = tempfile.mkdtemp(prefix="prismor-sbx-")
@@ -498,13 +506,13 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
                 if enforce else inner)
         proc = subprocess.run(argv, cwd=str(workspace), env=env,
                               timeout=float(timeout) if timeout else None)
-        return int(proc.returncode)
+        rc = int(proc.returncode)
     except subprocess.TimeoutExpired:
         sys.stderr.write(f"Prismor sandbox timed out after {timeout} second(s)\n")
-        return 124
+        rc = 124
     except OSError as exc:
         sys.stderr.write(f"Prismor sandbox failed: {exc}\n")
-        return 127
+        rc = 127
     finally:
         if proxy:
             proxy.close()
@@ -513,6 +521,9 @@ def run(command: str, *, workspace: Path, cfg: Dict[str, Any], agent: str = "",
         if reverted:
             report_reverted(reverted, workspace=workspace, agent=agent,
                             session_id=session_id, command=command)
+    # A protected write was undone, so the command did not do what it reported.
+    # Fail like the macOS engine, where the write itself is denied.
+    return 1 if reverted and rc == 0 else rc
 
 
 def _bridge(sock_path: str, port: int, cmd: List[str]) -> int:
