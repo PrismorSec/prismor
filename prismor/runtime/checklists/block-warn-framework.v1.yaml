@@ -1,0 +1,250 @@
+# Block/Warn Decision Framework for High-FP-Risk Operations
+# Issue: https://github.com/PrismorSec/prismor/issues/184
+#
+# This framework provides a structured decision matrix for operations that are
+# security-relevant but carry high false-positive risk when naively blocked.
+# Each vector is assessed against OWASP Agentic AI threat categories, the
+# operational context in which it's routinely used, and the recommended action
+# with explicit rationale.
+#
+# A vector marked `warn` may still be blocked downstream via a project-level
+# .prismor/policy.yaml override or an org-wide signed policy that reclassifies
+# it — this file documents the recommended posture and the reasoning behind it.
+#
+# ADVISORY, NOT ENFORCED: this matrix is a decision aid for humans configuring
+# a policy. The recommended `default_action` is NOT wired into the default
+# policy engine — unless a project explicitly reclassifies a vector, the
+# actions here are documentation of intent, not runtime behavior. Do not read
+# "block" here as "Prismor blocks this today"; confirm against
+# prismor/runtime/default_policy.yaml for what is actually enforced.
+#
+# Schema:
+#   id              stable identifier, referenced in PRs and policy overrides
+#   vector          shell pattern / command family
+#   category        mapped Prismor block category
+#   owasp           OWASP Agentic threat mapping (T02=Tool Misuse, T03=Privilege Compromise)
+#   risk            inherent security risk (critical | high | medium | low)
+#   fp_risk         false-positive risk in routine dev/ops workflows
+#   fp_examples     concrete legitimate use-cases that would break if blocked
+#   default_action  recommended default: warn | block | log
+#   rationale       why this action was chosen over the alternatives
+#   mitigation      compensating control, exception path, or defense-in-depth
+#                   for the chosen action
+
+# NOTE: the top-level key is `decision_framework`, not `framework`, so that
+# compliance.coverage() does not load this as a compliance-control pack
+# (those live in this same directory and are keyed on `framework:`).
+
+decision_framework: block-warn-decision-matrix
+title: "Block/Warn Decision Framework for High-FP-Risk Operations"
+version: "1.0"
+vectors:
+
+  - id: BWF-001
+    vector: "git reset --hard, git clean -fdx"
+    category: destructive_command
+    owasp: [T02]
+    risk: high
+    fp_risk: high
+    fp_examples:
+      - "Resetting a feature branch to main before rebase"
+      - "Cleaning build artifacts before a fresh compile"
+      - "CI pipeline discarding dirty working trees"
+    default_action: warn
+    rationale: >
+      Irreversible working-tree loss is real, but these are ubiquitous,
+      intentional dev operations. A block would break nearly every git-based
+      workflow. The existing destructive-command rule already catches `rm -rf`
+      patterns; extending it to git reset/clean would produce a flood of
+      false positives with no practical security gain — an agent that can run
+      `git reset --hard` can already run `rm -rf .` via other means.
+    mitigation: >
+      Projects concerned about agent-driven git history loss can (a) scope
+      agents to a dedicated working copy, (b) rely on remote push as a
+      backstop (force-push protection on the remote), or (c) override this
+      to `block` in .prismor/policy.yaml if the agent's role is read-only.
+
+  - id: BWF-002
+    vector: "sudo su, sudo -i, sudo -s"
+    category: privilege_escalation
+    owasp: [T03]
+    risk: critical
+    fp_risk: low
+    fp_examples:
+      - "A human explicitly directing the agent to run a one-off command as root"
+      - "Root diagnostics that cannot run under scoped sudo"
+    default_action: block
+    rationale: >
+      This vector is specifically the interactive root shell (`sudo su`,
+      `sudo -i`, `sudo -s`), not `sudo <command>` for a single task. An
+      interactive root shell defeats per-command audit and grants the agent an
+      unprompted root session whose inner commands escape per-tool-call
+      attribution — a textbook privilege-compromise (T03) with little
+      legitimate automation need. Routine scoped sudo (`sudo apt install`,
+      service restarts) is a different, high-FP vector that is outside this
+      vector and NOT blocked here; the boundary is drawn at opening a root
+      shell, not at scoped sudo invocations. Existing rules already block the
+      specific dangerous sudo targets (`sudo rm -rf`, `visudo`,
+      `/etc/sudoers` edits, `usermod -aG sudo`).
+    mitigation: >
+      Agents that legitimately need root for a task should invoke scoped
+      `sudo <command>` (outside this vector; not classified by the default
+      policy) rather than an interactive shell. Enforce `deny_tools: [Bash]`
+      on the IAM profile, or require `action: step_up` for any
+      interactive-shell request.
+
+  - id: BWF-003
+    vector: "find ... -delete"
+    category: destructive_command
+    owasp: [T02]
+    risk: medium
+    fp_risk: high
+    fp_examples:
+      - "Cleaning stale .pyc files: find . -name '*.pyc' -delete"
+      - "Removing old log files from a dev directory"
+      - "CI cache cleanup before a fresh build"
+    default_action: warn
+    rationale: >
+      `find -delete` is the Unix-native way to batch-delete files matching a
+      pattern. Blocking it would push agents toward equivalent but harder-to-
+      detect patterns (`find ... -exec rm {} \;`, `find ... | xargs rm`). The
+      existing destructive-command rule covers genuinely dangerous broad-stroke
+      deletions (`rm -rf /`, `rm -rf ./*`, `find / -delete`). Scoping the
+      block to the root path (`find / -delete`) while warning on narrower scopes
+      strikes the right balance. A blanket block creates a whack-a-mole with
+      equivalent shell constructions.
+    mitigation: >
+      Augment the destructive-command rule to block `find` with a filesystem
+      root target (`find / -delete`, `find /* -delete`) while warning on
+      project-scoped `find -delete`. This is implementable as a
+      regex refinement in default_policy.yaml.
+
+  - id: BWF-004
+    vector: "truncate -s 0 <file>"
+    category: destructive_command
+    owasp: [T02]
+    risk: medium
+    fp_risk: medium
+    fp_examples:
+      - "Zeroing a debug log before re-running a test"
+      - "Clearing a scratch file in a data-processing pipeline"
+      - "Truncating a growing nohup.out during development"
+    default_action: warn
+    rationale: >
+      `truncate -s 0` is data loss, but the file must be named explicitly and
+      the operation is visible in audit. It's used legitimately on logs,
+      scratch files, and temporary outputs. Blocking it would push agents toward
+      equivalent patterns (`:> file`, `cat /dev/null > file`, `dd if=/dev/null
+      of=file`) with identical effect but different signatures. The existing
+      destructive-command rule already catches truncation of config files
+      (`.claude/settings.json`, `.prismor/policy.yaml`). Extending this to
+      arbitrary files with a warn posture is appropriate.
+    mitigation: >
+      The `agent-config-tampering` rule already blocks truncation (and
+      modification/deletion) of security-config files such as
+      `.claude/settings.json` and `.prismor/policy.yaml` — the critical case.
+      For general truncation, the signed audit trail provides a forensic
+      record if a truncation later proves to have been malicious.
+
+  - id: BWF-005
+    vector: "kubectl get secrets -o yaml, aws secretsmanager get-secret-value, vault read"
+    category: secret_access
+    owasp: [T02, T03]
+    risk: high
+    fp_risk: medium
+    fp_examples:
+      - "Rotating credentials as part of an automated pipeline"
+      - "Verifying a vault path after a write"
+    default_action: block
+    rationale: >
+      These commands dump live secret values into the agent's context window
+      and audit trail — a secret-access event that turns an authorized read
+      into a persistence risk (a leaked context later exfiltrates the secret).
+      The "authorized channel" framing is real but misses that the value
+      itself, not just the channel, is the asset. Prismor cloaking
+      placeholder-replaces registered secrets, so an agent should reference
+      enrolled secrets through the cloaked path rather than reading live
+      values. The existing secret-exfiltration rule catches selected
+      exfiltration patterns, and enforced default-deny egress materially
+      improves that coverage; this vector closes the remaining gap — reading
+      the secret in the first place. Explicit rotation or verification is a
+      step-up scenario, not a default.
+    mitigation: >
+      (a) Enroll the secret with Prismor cloaking so its value is
+      placeholder-replaced before reaching the model context — the primary
+      path for agents that need to reference secrets. (b) Require
+      `action: step_up` for explicit credential rotation or verification
+      tasks, accepting that approval alone does not scrub the returned value.
+      (c) Enforce default-deny egress screening as defense-in-depth for any
+      value that does surface.
+
+  - id: BWF-006
+    vector: "chmod 777, chmod -R o+w"
+    category: privilege_escalation
+    owasp: [T03]
+    risk: medium
+    fp_risk: medium
+    fp_examples:
+      - "Fixing permissions on a shared socket in a dev container"
+      - "Making a script executable during development"
+      - "Widening permissions on a build output directory"
+    default_action: warn
+    rationale: >
+      World-writable permissions are a security anti-pattern, but `chmod` is a
+      routine dev operation. The existing privilege-escalation rule blocks
+      `chmod +s` (setuid/setgid) which is the genuinely dangerous subset.
+      Blocking `chmod 777` would catch genuine misconfigurations but also break
+      legitimate permission fixes. A warn posture with audit trail visibility
+      is appropriate; projects can override to block if their security posture
+      prohibits world-writable files entirely.
+    mitigation: >
+      CI linting (shellcheck, hadolint) should catch `chmod 777` in
+      committed scripts and Dockerfiles — the policy layer handles what the
+      agent does at runtime.
+
+  - id: BWF-007
+    vector: "curl/wget to unknown hosts, nc/telnet to arbitrary ports"
+    category: remote_execution
+    owasp: [T02]
+    risk: high
+    fp_risk: low
+    fp_examples:
+      - "Fetching a public API endpoint the agent needs"
+      - "Checking connectivity to a service during debugging"
+    default_action: block
+    rationale: >
+      Unlike the warn-defaulted vectors above, outbound connections to
+      arbitrary hosts are the primary exfiltration channel and have no
+      legitimate unpack-and-go dev workflow that requires unfettered access.
+      The existing egress framework (`prismor egress enable`, allowlists)
+      already provides this control. The default posture should be: block
+      unknown destinations, allow known ones. This is NOT a high-FP vector in
+      routine development because agents predominantly contact well-known
+      services (GitHub, PyPI, npm, API providers) that can be pre-allowlisted.
+    mitigation: >
+      Unlike the destructive dev ops above (which warn), this vector defaults
+      to block. Use `prismor egress enable` with an allowlist, then observe
+      mode to discover which destinations the agent actually contacts before
+      flipping to enforce.
+
+  - id: BWF-008
+    vector: "docker run --privileged, docker run -v /:/host"
+    category: privilege_escalation
+    owasp: [T03]
+    risk: critical
+    fp_risk: low
+    fp_examples:
+      - "Running a system-level debugging container with full host access"
+      - "CI pipeline that needs Docker-in-Docker"
+    default_action: block
+    rationale: >
+      A privileged container or a container with the host root filesystem
+      mounted is effectively root on the host with no isolation boundary.
+      There are almost no routine dev workflows that require --privileged
+      from an AI agent context. Even Docker-in-Docker can be achieved with
+      the docker socket mount alone (-v /var/run/docker.sock) which is still
+      dangerous but more auditable. This should block by default.
+    mitigation: >
+      Use rootless Docker or Podman. If --privileged is genuinely needed,
+      create a dedicated IAM profile with explicit tool allowlisting and
+      require step-up approval via `action: step_up`.
