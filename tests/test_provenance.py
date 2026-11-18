@@ -601,6 +601,35 @@ def test_write_tags_accumulate(tmp_path, monkeypatch):
     assert entry["writer"]["session"] == "s2"
 
 
+def test_a_rewrite_clears_only_the_rewriters_own_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "h"))
+    f = str(tmp_path / "a.md")
+    record_write(f, ["untrusted_content"], agent="claude", session="s1", tool="Write")
+    record_write(f, ["private_data"], agent="codex", session="s2", tool="Write")
+    record_write(f, ["private_data"], agent="codex", session="s2", tool="Write")
+    assert lookup(f)["tags"] == ["private_data", "untrusted_content"]
+    record_write(f, [], agent="codex", session="s2", tool="Write")
+    assert lookup(f)["tags"] == ["untrusted_content"]
+    # The last writer reading back still inherits the other writer's tags.
+    assert "untrusted_content" in read_tags(lookup(f), "s2")
+    # A session's own rewrite still comes clean (the original reason for it).
+    g = str(tmp_path / "b.md")
+    record_write(g, ["untrusted_content"], agent="claude", session="s1", tool="Write")
+    record_write(g, [], agent="claude", session="s1", tool="Write")
+    assert lookup(g) is None
+
+
+def test_too_many_writers_fold_into_a_bucket_no_rewrite_clears(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "h"))
+    f = str(tmp_path / "a.md")
+    record_write(f, ["untrusted_content"], agent="a", session="s0", tool="Write")
+    for n in range(1, 30):
+        record_write(f, [f"t{n}"], agent="a", session=f"s{n}", tool="Write")
+    record_write(f, [], agent="a", session="s0", tool="Write")
+    assert "untrusted_content" in lookup(f)["tags"]
+    assert len(lookup(f)["tag_by"]) <= 20
+
+
 def test_resolve_is_stable_across_relative_and_absolute(tmp_path):
     assert resolve("sub/x.md", tmp_path) == resolve(str(tmp_path / "sub" / "x.md"))
 
