@@ -263,8 +263,8 @@ def _untrusted_client(prog: str, env: Dict[str, str]) -> Optional[str]:
         return f"{prog} is not installed"
     real = os.path.realpath(found)
     home = os.path.realpath(env.get("HOME") or os.path.expanduser("~"))
-    risky = [home, os.path.realpath(os.getcwd()), "/tmp", "/private/tmp", "/var/folders",
-             "/private/var/folders", os.path.realpath(env.get("TMPDIR") or "/tmp")]
+    risky = [home, os.path.realpath(os.getcwd()), "/tmp", "/private/tmp", "/var/folders",  # nosec B108 - deny-list of untrusted dirs, not temp use
+             "/private/var/folders", os.path.realpath(env.get("TMPDIR") or "/tmp")]  # nosec B108
     for prefix in risky:
         if prefix not in ("", "/") and (real == prefix or real.startswith(prefix.rstrip("/") + "/")):
             return f"{prog} resolves to {real}, a location an agent could have written"
