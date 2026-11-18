@@ -331,6 +331,8 @@ def fetch(ref: str) -> str:
 def add_from_ref(name: str, ref: str) -> Path:
     """Fetch ``ref`` into the vault as ``name`` and remember where it came from."""
     _validate_name(name)
+    if ref.strip().startswith("prismor://"):
+        raise SourceError("prismor:// secrets come from your org console; an admin adds them there")
     ref = check_ref(ref)
     path = add_secret(name, fetch(ref))
     data = load_sources()
@@ -352,6 +354,8 @@ def sync(names: Optional[List[str]] = None) -> List[Dict[str, str]]:
         if not entry:
             out.append({"name": name, "status": "unknown", "error": "not added with --from-ref"})
             continue
+        if str(entry.get("ref", "")).startswith("prismor://"):
+            continue  # the org vault; managed.sync() handles these
         try:
             value = fetch(entry["ref"])
         except SourceError as exc:

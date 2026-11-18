@@ -3522,6 +3522,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 ts = datetime.fromtimestamp(entry["modified"]).strftime("%Y-%m-%d %H:%M")
                 tag = _color("[auto]", _DIM) + " " if entry["auto"] else ""
                 src = sources.get(entry["name"], {}).get("ref")
+                if src and src.startswith("prismor://"):
+                    src = f"org vault, v{sources[entry['name']].get('version', '?')}"
                 try:  # the value is checked in-process, never printed
                     raw = (secrets_dir() / entry["name"]).read_text(encoding="utf-8", errors="replace").rstrip("\n")
                 except OSError:
@@ -3540,20 +3542,38 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if sub == "sync":
             from prismor.runtime.cloaking.sources import sync as sync_sources
+            from prismor.runtime.cloaking import managed
+            from prismor.runtime.enterprise.identity import load_identity
             results = sync_sources(args.names or None)
-            if not results:
-                print("No secrets were added with --from-ref.")
+            failed = any(r["status"] in ("error", "unknown") for r in results)
+            vault: list = []
+            if load_identity() and not args.names:
+                try:
+                    vault = managed.sync()
+                except managed.ManagedError as exc:
+                    print(f"  org vault: not synced: {exc}")
+                    failed = True
+            if not results and not vault and not failed:
+                print("No secrets were added with --from-ref or granted by your org console.")
                 return
             for r in results:
                 line = f"  @@SECRET:{r['name']}@@  {r['status']}"
                 print(line + (f": {r['error']}" if r.get("error") else ""))
-            if any(r["status"] in ("error", "unknown") for r in results):
+            for r in vault:
+                note = {"conflict": ": this machine has its own secret with this name, kept it",
+                        "removed": ": no longer granted by the org console, deleted"}.get(r["status"], "")
+                ver = f" v{r['version']}" if r.get("version") else ""
+                print(f"  @@SECRET:{r['name']}@@  {r['status']} (org vault{ver}){note}")
+            if failed:
                 raise SystemExit(1)
             return
 
         if sub == "remove":
+            from prismor.runtime.cloaking.sources import forget, load_sources
+            if str(load_sources().get(args.name, {}).get("ref", "")).startswith("prismor://"):
+                print(f"@@SECRET:{args.name}@@ comes from your org vault. It comes back on the next sync "
+                      "unless an admin removes your access in the console.")
             removed = remove_secret(args.name)
-            from prismor.runtime.cloaking.sources import forget
             forget(args.name)
             if removed:
                 print(f"Removed @@SECRET:{args.name}@@")
