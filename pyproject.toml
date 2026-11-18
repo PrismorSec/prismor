@@ -38,7 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8"]
+dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8",
+       # Runs only the tests a change can reach (pytest --testscope). .github/workflows/tests.yml
+       "testscope>=0.3; python_version >= '3.9'", "pytest-xdist"]
 # Kept so existing `pip install "prismor[signing]"` commands still resolve;
 # cryptography is now a core dependency.
 signing = ["cryptography>=41"]
