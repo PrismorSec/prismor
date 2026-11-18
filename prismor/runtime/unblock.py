@@ -359,6 +359,20 @@ def _subsystem_steps(
             f"3. Remove the exception: prismor allow --undo allow-{rule_id}",
         ]
 
+    if rule_id.startswith("tool-contract:"):
+        return [
+            "This is a tool contract (settings.tool_tags.contracts): the call "
+            "requires something of the session label that what this session has "
+            "read no longer allows. The label only narrows, so it cannot be reset "
+            "from inside the session.",
+            "1. See the label and the call that narrowed it: prismor tags label",
+            f"2. To let this one call through, in your own terminal: prismor allow {rule_id} "
+            "--pattern '<complete literal command or call>' --expires 30m --yes",
+            "   The label stays where it is and every other contract still applies.",
+            "3. Or do the work in a fresh session that has not read the restricted content.",
+            f"4. Remove the exception: prismor allow --undo allow-{rule_id}",
+        ]
+
     if rule_id == "tool-category-crossover":
         path = _policy_path(workspace)
         return [
@@ -442,7 +456,7 @@ def unblock_steps(
     if rule_id in _SELF_PROTECTION_RULE_IDS:
         return _self_protection_steps(rule_id, workspace)
 
-    if rule_id.startswith("tag-rule:") and org_managed:
+    if rule_id.startswith(("tag-rule:", "tool-contract:")) and org_managed:
         return [
             "This workspace is org-managed. Ask an admin for a scoped exception: "
             'prismor exempt request --reason "<why>"',

@@ -1099,6 +1099,10 @@ def _read_may_block(finding: Dict[str, Any]) -> bool:
     return (
         finding.get("category") in _READ_BLOCK_CATEGORIES
         or finding.get("ruleId") in _READ_BLOCK_RULES
+        # A contract's `requires` on a read (`Read(path:secrets/**)`) is the
+        # operator scoping what a session in a given state may read, the same
+        # explicit intent an IAM path rule carries.
+        or str(finding.get("ruleId") or "").startswith("tool-contract:")
     )
 
 

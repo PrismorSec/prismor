@@ -53,6 +53,7 @@ VIA_ARTIFACT = "via.artifact"
 
 _MAX_ENTRIES = 5000
 _MAX_READERS = 20
+_MAX_LABELS = 8
 
 
 def store_path() -> Path:
@@ -98,8 +99,15 @@ def record_write(
     tool: str,
     index: int = 0,
     cwd: Optional[Path] = None,
+    label: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Remember that ``session`` wrote ``path`` while holding ``tags``.
+
+    ``label`` is the writer's session label (``contracts.Label.carried``):
+    the audience and trust of what it had read. It follows the same rules the
+    tags do -- another writer's label stays alongside this one, and a session
+    rewriting its own file replaces what it said before -- so a note written
+    after reading ``team:billing`` carries that audience to whoever reads it.
 
     Tags accumulate across *different* writers: a file that once held untrusted
     content is not laundered by a second agent appending a line to it.
@@ -133,7 +141,23 @@ def record_write(
                 else {str(t) for t in entry.get("tags") or []}
             )
             entry["tags"] = sorted(_keep | set(tags))
-            if not entry["tags"]:
+            # Each label remembers its writer, so a rewrite replaces only that
+            # writer's own: dropping another's would widen what readers inherit.
+            _labels = [
+                lab for lab in entry.get("labels") or []
+                if isinstance(lab, dict) and lab.get("by") != session
+            ]
+            if label:
+                _labels.append({**label, "by": session})
+            if len(_labels) > _MAX_LABELS:
+                # Too many writers to keep apart, and dropping one would widen
+                # what the next reader inherits. Readable by no one instead.
+                _labels = [{"audience": [], "trust": "untrusted"}]
+            if _labels:
+                entry["labels"] = _labels
+            else:
+                entry.pop("labels", None)
+            if not entry["tags"] and not _labels:
                 # Nothing left to say about this file. Dropping it keeps an
                 # ordinary write from recording anything at all (the common
                 # case) and lets a same-session rewrite actually clear.
@@ -216,6 +240,15 @@ def record_read(
             state["artifacts"] = entries
     except Exception:
         pass
+
+
+def read_labels(entry: Dict[str, Any], session: str) -> List[Dict[str, Any]]:
+    """Session labels a reader inherits from an artifact's entry. Empty for
+    the session that wrote it, as with :func:`read_tags`."""
+    writer = entry.get("writer") or {}
+    if not writer or writer.get("session") == session:
+        return []
+    return [lab for lab in entry.get("labels") or [] if isinstance(lab, dict)]
 
 
 def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:

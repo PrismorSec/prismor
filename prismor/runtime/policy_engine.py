@@ -3366,6 +3366,10 @@ class PolicyEngine:
             and self.workspace is not None
             and not event.get("_script_line")
         ):
+            # What the contract layer below needs from the provenance scan, so
+            # the costly shell scan runs once for both.
+            _ct_io: Optional[tuple] = None
+            _ct_cfg: Dict[str, Any] = self.tool_tags
             try:
                 from prismor.runtime.trifecta import (
                     call_text, classify_tool_tags, egress_tags, GramStore,
@@ -3384,6 +3388,7 @@ class PolicyEngine:
                     self.tool_tags,
                     str(event.get("agent_name") or event.get("agent") or ""),
                 )
+                _ct_cfg = _tt_cfg
                 # Destination-derived tags let a tag rule reference where a call
                 # is going, not just which tool it is — the egress verdict for
                 # THIS event is already in `findings` by the time we get here.
@@ -3442,6 +3447,7 @@ class PolicyEngine:
                             )
                             for _rp in _prov_reads
                         )
+                    _ct_io = (_prov, _prov_known, list(_prov_reads), _prov_cwd)
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -3671,6 +3677,19 @@ class PolicyEngine:
                     and not (_done is not None and _tt_mode == "enforce")
                 ):
                     _carry = _prov.propagatable(set(_ledger.seen) | set(_tags))
+                    # The session label travels with the file too (#532), at
+                    # session granularity: audience is about what the session
+                    # has seen, and a paraphrase leaks as well as a quote does.
+                    _ct_carry = None
+                    try:
+                        from prismor.runtime import contracts as _ctw
+                        if _ctw.enabled(_tt_cfg):
+                            _ct_carry = _ctw.SessionLabel(
+                                self.workspace, session_id,
+                                _ctw.Principals(_tt_cfg.get("principals")),
+                            ).at(index).carried()
+                    except Exception:
+                        _ct_carry = None
                     # A session that read one page does not thereby poison
                     # every file it touches for the rest of its life -- it was
                     # marking config files it edited for its own reasons, and
@@ -3704,12 +3723,69 @@ class PolicyEngine:
                             (_prov_known.get(_prov.resolve(_wp, _prov_cwd)) or {})
                             .get("writer") or {}
                         ).get("session") == session_id
-                        if _wt or _mine:
+                        if _wt or _mine or _ct_carry:
                             _prov.record_write(
                                 _wp, _wt, agent=_tt_agent,
                                 session=session_id, tool=_tt_tool or event_type,
-                                index=index, cwd=_prov_cwd,
+                                index=index, cwd=_prov_cwd, label=_ct_carry,
                             )
+            except Exception:
+                pass
+
+            # ── Per-tool contracts (#532) ─────────────────────────────────
+            # A contract says what a tool's result does to the session label
+            # (`delta`, `effects`: applied once the call has succeeded) and
+            # what the label must satisfy for a call to run (`requires`:
+            # checked here, before it does). Detection lives in contracts.py;
+            # this is enforcement. Its own try block: a tag-layer failure
+            # above must not take the contract check down with it.
+            try:
+                from prismor.runtime import contracts as _ct
+                if _ct.enabled(_ct_cfg):
+                    _ct_tool = str((event.get("metadata") or {}).get("tool_name") or "")
+                    _ct_pre = _is_pre_action_event(event)
+                    _ct_hit, _ = _ct.resolve(event, _ct_cfg, self.workspace)
+                    _ct_inherit = []
+                    if _ct_io is not None and _ct_io[1]:
+                        for _rp in _ct_io[2]:
+                            _e = _ct_io[1].get(_ct_io[0].resolve(_rp, _ct_io[3])) if _rp else None
+                            _labs = _ct_io[0].read_labels(_e, session_id) if isinstance(_e, dict) else []
+                            if _labs:
+                                _ct_inherit.append((_rp, _labs, _e.get("writer") or {}))
+                    if _ct_hit or _ct_inherit:
+                        _ct_names = _ct.Principals(_ct_cfg.get("principals"))
+                        _ct_store = _ct.SessionLabel(self.workspace, session_id, _ct_names)
+                        _ct_args = _ct.call_args(event)
+                        _ct_mode = self.device_mode or str(_ct_cfg.get("mode", "observe")).lower()
+                        _ct_denied = False
+                        if _ct_pre and any(c.has_requires for c in _ct_hit):
+                            # One approved call goes through; the label stays
+                            # where it is, and every other contract still applies.
+                            _ct_call = _tag_rule_call_text(event)
+                            _ct_bad = _ct.check_requires(
+                                [c for c in _ct_hit if not self.allowlist_match(
+                                    f"{_ct.RULE_PREFIX}{c.contract_id}", _ct_call,
+                                    whole_call=True)],
+                                _ct_store.at(index), _ct_names, _ct_tool, _ct_args, event,
+                            )
+                            if _ct_bad:
+                                findings.append(_ct.finding_for(
+                                    _ct_bad, tool=_ct_tool, index=index,
+                                    session_id=session_id, mode=_ct_mode))
+                                _ct_denied = _ct_mode == "enforce"
+                        # The result is what changes the label, so it is applied
+                        # on the post event -- or on admission, for a surface
+                        # that never sees the result as an event of its own.
+                        if not _ct.is_failure(event) and (
+                            not _ct_pre or (_ct.result_unseen(event) and not _ct_denied)
+                        ):
+                            _ct.apply_result(
+                                _ct_store, _ct_hit, index=index, tool=_ct_tool,
+                                args=_ct_args, event=event)
+                            for _rp, _labs, _wr in _ct_inherit:
+                                _ct.inherit(
+                                    _ct_store, _labs, index=index, path=_rp, writer=_wr,
+                                    tool=_ct_tool or event_type, event=event)
             except Exception:
                 pass
 
@@ -4881,7 +4957,8 @@ def _floor_allowlist_rejected(rule_id: str, entry: "AllowlistEntry", rule: Optio
     # otherwise name agent-config-tampering and unhook itself (GHSA-v6vw-pfgj-4mg8).
     if rule_id in _SELF_PROTECTION_RULE_IDS:
         return True
-    protected =rule_id in _NON_OVERRIDABLE_RULE_IDS or rule_id.startswith("tag-rule:")
+    protected = (rule_id in _NON_OVERRIDABLE_RULE_IDS
+                 or rule_id.startswith(("tag-rule:", "tool-contract:")))
     if rule is not None and getattr(rule, "category", None) in _CORE_BLOCK_CATEGORIES:
         protected = True
     if not protected:
@@ -5943,6 +6020,8 @@ def validate_policy(path: Path) -> List[str]:
                     errors.append(f"{where}.incompatible[{i}]: needs at least 2 distinct tags")
 
         _lint_tag_block(tt, "settings.tool_tags")
+        from prismor.runtime import contracts as _contracts
+        errors.extend(_contracts.lint(tt, "settings.tool_tags"))
 
         agents = tt.get("agents")
         if agents is not None and not isinstance(agents, dict):
@@ -5957,6 +6036,7 @@ def validate_policy(path: Path) -> List[str]:
                 if mode is not None and str(mode).lower() not in ("observe", "enforce"):
                     errors.append(f"{where}.mode: must be observe or enforce")
                 _lint_tag_block(sub, where)
+                errors.extend(_contracts.lint(sub, where))
 
     return errors
 

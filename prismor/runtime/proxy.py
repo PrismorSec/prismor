@@ -811,6 +811,9 @@ class Screen:
         event = self._base("PreToolUse", subject, session_id)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": tool_name, "proposed": True})
+        if isinstance(arguments, dict):
+            # Structured arguments for contract selectors (`tool(arg:glob)`).
+            event["metadata"]["call_args"] = arguments
         try:
             from prismor.runtime import mirror
             shaped = mirror.shape_call_event(*_native_call(tool_name, arguments))

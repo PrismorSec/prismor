@@ -319,7 +319,9 @@ def tool_tags_for_agent(
         merged["tags"] = combined
 
     # Rules and legacy incompatible sets append; neither list can be shortened.
-    for key in ("rules", "incompatible"):
+    # Contracts append for the same reason: one more can only restrict. The
+    # `principals` map is NOT merged -- adding a member widens an audience.
+    for key in ("rules", "incompatible", "contracts"):
         extra = sub.get(key)
         if isinstance(extra, (list, tuple)) and extra:
             merged[key] = list(tt.get(key) or []) + list(extra)
