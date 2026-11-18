@@ -135,12 +135,21 @@ def record_write(
             entry = entries.get(key)
             if not isinstance(entry, dict):
                 entry = {"tags": [], "readers": []}
-            _prior = (entry.get("writer") or {}).get("session")
-            _keep: Set[str] = (
-                set() if (_prior and _prior == session)
-                else {str(t) for t in entry.get("tags") or []}
-            )
-            entry["tags"] = sorted(_keep | set(tags))
+            # Tags are kept per writer, so a rewrite replaces only the writer's
+            # own: clearing on "last writer rewrote" also dropped every other
+            # writer's tags (A untrusted, B appends twice -> clean). An entry
+            # from before `tag_by` existed is all its last writer's.
+            _by = _tag_by(entry)
+            _by.pop(session, None)
+            if tags:
+                _by[session] = sorted(set(tags))
+            if len(_by) > _MAX_READERS:
+                # Too many writers to keep apart: fold the oldest into one
+                # bucket no session owns, so no rewrite can clear it.
+                _old = [s for s in _by if s][:len(_by) - _MAX_READERS + 1]
+                _by[""] = sorted(set(_by.get("", [])).union(*(_by.pop(s) for s in _old)))
+            entry["tag_by"] = _by
+            entry["tags"] = sorted({t for ts in _by.values() for t in ts})
             # Each label remembers its writer, so a rewrite replaces only that
             # writer's own: dropping another's would widen what readers inherit.
             _labels = [
@@ -152,7 +161,7 @@ def record_write(
             if len(_labels) > _MAX_LABELS:
                 # Too many writers to keep apart, and dropping one would widen
                 # what the next reader inherits. Readable by no one instead.
-                _labels = [{"audience": [], "trust": "untrusted"}]
+                _labels = [{"audience": [], "trust": "untrusted", "by": ""}]
             if _labels:
                 entry["labels"] = _labels
             else:
@@ -242,13 +251,24 @@ def record_read(
         pass
 
 
+def _tag_by(entry: Dict[str, Any]) -> Dict[str, List[str]]:
+    """``{writer session: its tags}``; a pre-``tag_by`` entry is all its last
+    writer's."""
+    by = entry.get("tag_by")
+    if isinstance(by, dict):
+        return {str(s): [str(t) for t in ts or []] for s, ts in by.items()}
+    tags = [str(t) for t in entry.get("tags") or []]
+    return {str((entry.get("writer") or {}).get("session") or ""): tags} if tags else {}
+
+
 def read_labels(entry: Dict[str, Any], session: str) -> List[Dict[str, Any]]:
-    """Session labels a reader inherits from an artifact's entry. Empty for
-    the session that wrote it, as with :func:`read_tags`."""
+    """Session labels a reader inherits from an artifact's entry: every
+    writer's but its own, as with :func:`read_tags`."""
     writer = entry.get("writer") or {}
-    if not writer or writer.get("session") == session:
+    if not writer:
         return []
-    return [lab for lab in entry.get("labels") or [] if isinstance(lab, dict)]
+    return [lab for lab in entry.get("labels") or []
+            if isinstance(lab, dict) and lab.get("by", writer.get("session")) != session]
 
 
 def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
@@ -259,9 +279,13 @@ def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
     in its ledger.
     """
     writer = entry.get("writer") or {}
-    if not writer or writer.get("session") == session:
+    if not writer:
         return set()
-    tags = {str(t) for t in entry.get("tags") or []}
+    # Every writer's tags but the reader's own: being the last writer does not
+    # make another session's untrusted content in the file this session's.
+    tags = {t for s, ts in _tag_by(entry).items() if s != session for t in ts}
+    if writer.get("session") == session:
+        return tags | {VIA_ARTIFACT} if tags else set()
     tags.add(VIA_ARTIFACT)
     if writer.get("agent"):
         tags.add(f"from.{writer['agent']}")
