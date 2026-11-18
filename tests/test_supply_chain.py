@@ -635,3 +635,17 @@ class TestFetchVulnsBatch:
 
         mock_post.assert_not_called()
         assert result[("cached-pkg", "npm", "1.0.0")][0]["id"] == "GHSA-cached"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    # The interpreter path after --python / -p is not a package.
+    (["uv", "pip", "install", "--python", ".venv/bin/python", "testscope==0.3.1"], ["testscope"]),
+    (["uv", "pip", "install", "-p", "3.12", "requests"], ["requests"]),
+    (["uv", "pip", "install", "--python=.venv/bin/python", "requests"], ["requests"]),
+    (["pip", "install", "--constraint", "c.txt", "--target", "out", "flask"], ["flask"]),
+    # npm keeps its own meaning: `-f` is --force, so the package is still scored.
+    (["npm", "install", "-f", "lodash"], ["lodash"]),
+])
+def test_value_flags_are_not_scored_as_packages(argv, expected):
+    from supplychain.ecosystems.detector import detect_install
+    assert [p.name for p in detect_install(argv).packages] == expected
