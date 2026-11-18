@@ -64,8 +64,12 @@ Each package is scored additively. IOC matches bypass the threshold and force a 
 | Persistence write in install script (`.claude/settings.json`, `.vscode/tasks.json`) | +50 |
 | git / GitHub dependency bypasses registry | +35 |
 | tarball install bypasses registry | +25 |
-| Package published < 7 days ago | +25 |
+| Package published < 2 days ago | +50 |
+| Package published < 7 days ago | +35 |
 | Package published < 30 days ago | +15 |
+| Version being installed published < 2 days ago (package older than 30 days) | +30 |
+| Version being installed published < 7 days ago (package older than 30 days) | +10 |
+| Package not found on the public registry (no custom registry) | +30 |
 | Has postinstall/preinstall script | +20 |
 | Single maintainer | +10 |
 | Custom `--registry` flag | +10 |

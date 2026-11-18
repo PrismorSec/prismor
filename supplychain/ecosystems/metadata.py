@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -27,6 +28,10 @@ class PackageMetadata:
     source: str                      # mirrors PackageSpec.source
     install_script_content: Optional[str] = None  # raw script string for IOC analysis
     fetch_error: Optional[str] = None
+    # Age of the version being installed. A hijacked release of an old
+    # package is days old even though the package is years old.
+    version_age_days: Optional[int] = None
+    not_found: bool = False          # registry answered 404: no such package
 
 
 # In-memory cache: key → (monotonic_ts, PackageMetadata)
@@ -44,15 +49,15 @@ def fetch_metadata(spec: PackageSpec, ecosystem: str) -> PackageMetadata:
             has_install_script=False, source=spec.source,
         )
 
-    cache_key = f"{ecosystem}:{spec.name}"
+    cache_key = f"{ecosystem}:{spec.name}@{spec.version}"
     cached = _CACHE.get(cache_key)
     if cached and (time.monotonic() - cached[0]) < _CACHE_TTL:
         return cached[1]
 
     if ecosystem in ("npm", "pnpm", "yarn", "bun"):
-        meta = _fetch_npm(spec.name, ecosystem)
+        meta = _fetch_npm(spec.name, ecosystem, spec.version)
     elif ecosystem in ("pip", "uv"):
-        meta = _fetch_pypi(spec.name, ecosystem)
+        meta = _fetch_pypi(spec.name, ecosystem, spec.version)
     else:
         # Only the latest version is resolved here: without it the OSV lookup
         # has no version to filter by and would count every advisory the
@@ -67,7 +72,12 @@ def fetch_metadata(spec: PackageSpec, ecosystem: str) -> PackageMetadata:
     return meta
 
 
-def _http_get(url: str, timeout: int = 3) -> Optional[dict]:
+_NOT_FOUND: dict = {"__not_found__": True}
+
+
+def _http_get(url: str, timeout: int = 3, not_found=None) -> Optional[dict]:
+    """GET JSON. Returns None on any failure, or ``not_found`` on HTTP 404 so
+    callers can tell "no such package" from "registry unreachable"."""
     try:
         req = urllib.request.Request(
             url,
@@ -78,6 +88,8 @@ def _http_get(url: str, timeout: int = 3) -> Optional[dict]:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return not_found if exc.code == 404 else None
     except Exception:
         return None
 
@@ -122,10 +134,21 @@ def _age_days(date_str: str) -> Optional[int]:
         return None
 
 
-def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
-    encoded = name.replace("/", "%2F")
-    data = _http_get(f"https://registry.npmjs.org/{encoded}")
+def _not_found(name: str, ecosystem: str) -> PackageMetadata:
+    return PackageMetadata(
+        name=name, ecosystem=ecosystem, version=None,
+        age_days=None, maintainer_count=None,
+        has_install_script=False, source="registry",
+        fetch_error="not found in registry", not_found=True,
+    )
 
+
+def _fetch_npm(name: str, ecosystem: str, requested: str = "") -> PackageMetadata:
+    encoded = name.replace("/", "%2F")
+    data = _http_get(f"https://registry.npmjs.org/{encoded}", not_found=_NOT_FOUND)
+
+    if data is _NOT_FOUND:
+        return _not_found(name, ecosystem)
     if not data:
         return PackageMetadata(
             name=name, ecosystem=ecosystem, version=None,
@@ -142,9 +165,17 @@ def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
     maintainers = data.get("maintainers") or []
     maintainer_count = len(maintainers) if maintainers else None
 
-    # Latest version's scripts
-    latest_version = (data.get("dist-tags") or {}).get("latest", "")
-    latest_data = (data.get("versions") or {}).get(latest_version) or {}
+    # The version that will be installed: an exact pin if the registry has
+    # it, else latest (ranges resolve to latest in the common case).
+    versions = data.get("versions") or {}
+    tags = data.get("dist-tags") or {}
+    latest_version = tags.get("latest", "")
+    if requested in versions:
+        latest_version = requested
+    elif requested in tags:  # npm install pkg@next
+        latest_version = tags[requested]
+    latest_data = versions.get(latest_version) or {}
+    version_age = _age_days(time_data.get(latest_version, ""))
     scripts = latest_data.get("scripts") or {}
     lifecycle_keys = ("postinstall", "preinstall", "install")
     has_install_script = any(k in scripts for k in lifecycle_keys)
@@ -159,12 +190,15 @@ def _fetch_npm(name: str, ecosystem: str) -> PackageMetadata:
         age_days=age, maintainer_count=maintainer_count,
         has_install_script=has_install_script, source="registry",
         install_script_content=install_script_content,
+        version_age_days=version_age,
     )
 
 
-def _fetch_pypi(name: str, ecosystem: str) -> PackageMetadata:
-    data = _http_get(f"https://pypi.org/pypi/{name}/json")
+def _fetch_pypi(name: str, ecosystem: str, requested: str = "") -> PackageMetadata:
+    data = _http_get(f"https://pypi.org/pypi/{name}/json", not_found=_NOT_FOUND)
 
+    if data is _NOT_FOUND:
+        return _not_found(name, ecosystem)
     if not data:
         return PackageMetadata(
             name=name, ecosystem=ecosystem, version=None,
@@ -187,6 +221,15 @@ def _fetch_pypi(name: str, ecosystem: str) -> PackageMetadata:
 
     age = _age_days(min(all_upload_times)) if all_upload_times else None
 
+    if requested in releases:
+        latest_version = requested
+    version_uploads = [
+        f.get("upload_time_iso_8601") or f.get("upload_time")
+        for f in releases.get(latest_version) or []
+    ]
+    version_uploads = [u for u in version_uploads if u]
+    version_age = _age_days(min(version_uploads)) if version_uploads else None
+
     # PyPI doesn't expose maintainer count in JSON; treat as 1 if author present
     maintainer_count = 1 if info.get("author") else None
 
@@ -194,4 +237,5 @@ def _fetch_pypi(name: str, ecosystem: str) -> PackageMetadata:
         name=name, ecosystem=ecosystem, version=latest_version,
         age_days=age, maintainer_count=maintainer_count,
         has_install_script=False, source="registry",
+        version_age_days=version_age,
     )

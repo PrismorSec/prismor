@@ -3035,6 +3035,28 @@ class PolicyEngine:
                 })
                 break  # one finding per event is enough
 
+        # ── Hidden Unicode text (tag-character / variation-selector smuggling)
+        # Any field: tool results, prompts, file writes, skill and memory text.
+        # The fold above lets content rules match the decoded text; this
+        # finding fires even when the hidden wording matches no rule.
+        for _field, _val in field_values.items():
+            _hidden = _hidden_unicode_text(_val) if isinstance(_val, str) else None
+            if _hidden is not None:
+                finding_id = f"unicode-hidden-text-{index}"
+                prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                findings.append({
+                    "id": prefixed_id,
+                    "severity": "HIGH",
+                    "category": "prompt_injection",
+                    "title": "Content hides text in invisible Unicode (tag characters or variation selectors)",
+                    "evidence": _truncate(f"{_field}: hidden text {_hidden!r}" if _hidden
+                                          else f"{_field}: run of variation selectors"),
+                    "eventIndex": index,
+                    "ruleId": "unicode-hidden-text",
+                    "action": "warn",
+                })
+                break
+
         # ── Invisible-char check for skill content ─────────────────────────
         # Zero-width characters in a skill manifest have no legitimate use —
         # they are used to embed hidden instructions that survive rendering.
@@ -4665,7 +4687,8 @@ def _has_invisible_chars(text: str) -> bool:
     no ASCII co-presence required. Used for skill content where zero-width
     characters have no legitimate purpose and indicate hidden payload injection.
     """
-    return any(ord(ch) in _INVISIBLE_CODEPOINTS for ch in text)
+    return any(ord(ch) in _INVISIBLE_CODEPOINTS or 0xE0000 <= ord(ch) <= 0xE007F
+               for ch in text)
 
 
 def _has_suspicious_unicode(text: str) -> bool:
@@ -4752,6 +4775,39 @@ _CONFUSABLE_FOLD = {
     0x1160: None,  # HANGUL JUNGSEONG FILLER
     0x180E: None,  # MONGOLIAN VOWEL SEPARATOR
 }
+# Unicode tag characters (U+E0000-E007F). Invisible when rendered, but models
+# read U+E0041 as "A": "ASCII smuggling" hides a whole instruction in them.
+# Fold each to the ASCII it shadows so the injection rules see the text.
+_CONFUSABLE_FOLD.update({cp: chr(cp - 0xE0000) for cp in range(0xE0020, 0xE007F)})
+_CONFUSABLE_FOLD.update({0xE0000: None, 0xE0001: None, 0xE007F: None})
+# Variation selectors render as nothing on their own; a run of them can
+# encode arbitrary bytes ("emoji smuggling"). Match-only text drops them.
+_CONFUSABLE_FOLD.update({cp: None for cp in range(0xFE00, 0xFE10)})
+_CONFUSABLE_FOLD.update({cp: None for cp in range(0xE0100, 0xE01F0)})
+
+# Three or more tag characters in a row is hidden text, not a flag emoji
+# modifier: subdivision flags put 3-6 tags right after U+1F3F4, and the
+# lookbehind (U+1F3F4 or another tag) skips every start inside one. A payload
+# behind U+1F3F4 escapes this finding but is still folded for the rules. Four or more
+# variation selectors in a row never occur in real text.
+_HIDDEN_TEXT_RE = re.compile(
+    "(?<![\U0001F3F4\U000E0020-\U000E007E])[\U000E0020-\U000E007E]{3,}"
+    "|[\uFE00-\uFE0F\U000E0100-\U000E01EF]{4,}"
+)
+
+
+def _hidden_unicode_text(text: str) -> Optional[str]:
+    """Decoded preview of tag-character text hidden in ``text``, "" for a
+    variation-selector run, or None when there is none."""
+    if not text or max(text) < "\uFE00":
+        return None
+    m = _HIDDEN_TEXT_RE.search(text)
+    if not m:
+        return None
+    run = m.group(0)
+    if run[0] >= "\U000E0100" or run[0] <= "\uFE0F":
+        return ""
+    return "".join(chr(ord(c) - 0xE0000) for c in run)
 
 
 def _fold_confusables(text: str) -> str:
@@ -5505,6 +5561,10 @@ def _semantic_text(event: Dict[str, Any], field_values: Dict[str, str]) -> str:
     if str(event.get("type", "")) == "file_write" and not _instruction_file(field_values.get("path", "")):
         return ""
     text = field_values.get("combined_text", "").strip()
+    if text and max(text) >= "\U000E0000":
+        # Tag characters read as ASCII to the model but as nothing to the
+        # heuristics and judge: hand them the decoded text.
+        text = _fold_confusables(text).strip()
     return text if len(text) >= 12 else ""
 
 def _bool_field(event: Dict[str, Any], key: str) -> str:

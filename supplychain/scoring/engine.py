@@ -98,7 +98,26 @@ class RiskScorer:
                 elif meta.age_days < 30:
                     add("new_package", 15, f"published {meta.age_days}d ago")
 
-            if meta.maintainer_count is None:
+            # A brand-new release of an established package is the hijacked-
+            # maintainer pattern (a stolen token publishes x.y.z+1). Package
+            # age alone misses it, so score the installed version too. Kept
+            # at WARN alone (a dependency cooldown), and blocks with an install
+            # script plus a single maintainer (30 + 20 + 10).
+            va = meta.version_age_days
+            if va is not None and meta.age_days is not None and meta.age_days >= 30:
+                if va < 2:
+                    add("very_new_version", 30, f"version {meta.version} published {va}d ago")
+                elif va < 7:
+                    add("new_version", 10, f"version {meta.version} published {va}d ago")
+
+            if meta.not_found and not event.custom_registry:
+                # The install will fail, but an agent that guessed a name will
+                # keep guessing; a name that does not exist yet is exactly what
+                # slopsquatters register. Warn (not block): private scoped
+                # packages also 404 without auth.
+                add("package_not_found", 30,
+                    "not found on the public registry: check the name, it may be hallucinated")
+            elif meta.maintainer_count is None:
                 add("no_maintainer_data", 8, "maintainer data unavailable")
             elif meta.maintainer_count == 1:
                 add("single_maintainer", 10, "single maintainer")
