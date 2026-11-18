@@ -35,27 +35,36 @@ def _ids(v):
     return {s.id for s in v.signals}
 
 
-def test_fresh_release_of_old_package_warns():
-    v = _score(_meta(version_age_days=0))
-    assert "very_new_version" in _ids(v)
-    assert v.verdict == "warn"
-
-
-def test_fresh_release_with_install_script_single_maintainer_blocks():
-    # The hijacked-maintainer pattern: old package, new version, new postinstall.
-    v = _score(_meta(version_age_days=0, has_install_script=True, maintainer_count=1))
-    assert v.verdict == "block"
-
-
-def test_old_release_of_old_package_is_clean():
-    v = _score(_meta(version_age_days=400))
-    assert not _ids(v) & {"very_new_version", "new_version"}
+def test_fresh_release_of_old_package_alone_is_clean():
+    # SDKs and cloud clients publish daily: freshness alone must not warn.
+    v = _score(_meta(version_age_days=0, maintainer_count=1))
     assert v.verdict == "allow"
 
 
+def test_fresh_release_that_adds_install_script_blocks():
+    # The hijacked-maintainer pattern: old package, new version, new postinstall.
+    v = _score(_meta(version_age_days=1, has_install_script=True, install_script_added=True,
+                     maintainer_count=5))
+    assert "new_install_script" in _ids(v)
+    assert v.verdict == "block"
+
+
+def test_fresh_release_keeping_existing_install_script_does_not_block():
+    # esbuild-style: the script has always been there.
+    v = _score(_meta(version_age_days=0, has_install_script=True, maintainer_count=1))
+    assert "new_install_script" not in _ids(v)
+    assert v.verdict != "block"
+
+
+def test_old_release_that_added_script_long_ago_is_not_flagged():
+    v = _score(_meta(version_age_days=400, has_install_script=True, install_script_added=True))
+    assert "new_install_script" not in _ids(v)
+
+
 def test_new_package_not_double_counted():
-    v = _score(_meta(age_days=1, version_age_days=1))
-    assert "very_new_version" not in _ids(v)
+    v = _score(_meta(age_days=1, version_age_days=1, has_install_script=True,
+                     install_script_added=True))
+    assert "new_install_script" not in _ids(v)
     assert "extreme_new_package" in _ids(v)
 
 
@@ -88,6 +97,19 @@ def test_npm_fetch_uses_requested_version():
     # Scripts come from the pinned version, not from latest.
     assert pinned.version == "1.0.0" and pinned.has_install_script
     assert tagged.version == "2.0.0" and tagged.version_age_days >= 299
+    assert not latest.install_script_added
+
+
+def test_npm_fetch_detects_install_script_added():
+    doc = {**NPM_DOC, "versions": {"1.0.0": {}, "2.0.0": {},
+                                   "2.0.1": {"scripts": {"postinstall": "node x.js"}}}}
+    kept = {**NPM_DOC, "versions": {"1.0.0": {}, "2.0.0": {"scripts": {"install": "a"}},
+                                    "2.0.1": {"scripts": {"postinstall": "node x.js"}}}}
+    with patch.object(md, "_http_get", return_value=doc):
+        assert md._fetch_npm("pkg", "npm").install_script_added
+        assert not md._fetch_npm("pkg", "npm", "1.0.0").install_script_added  # first release
+    with patch.object(md, "_http_get", return_value=kept):
+        assert not md._fetch_npm("pkg", "npm").install_script_added
 
 
 def test_pypi_fetch_uses_requested_version():

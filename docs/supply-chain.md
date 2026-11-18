@@ -67,8 +67,7 @@ Each package is scored additively. IOC matches bypass the threshold and force a 
 | Package published < 2 days ago | +50 |
 | Package published < 7 days ago | +35 |
 | Package published < 30 days ago | +15 |
-| Version being installed published < 2 days ago (package older than 30 days) | +30 |
-| Version being installed published < 7 days ago (package older than 30 days) | +10 |
+| Version being installed is < 7 days old and adds an install script the previous release did not have (package older than 30 days, npm) | +40 |
 | Package not found on the public registry (no custom registry) | +30 |
 | Has postinstall/preinstall script | +20 |
 | Single maintainer | +10 |

@@ -32,6 +32,9 @@ class PackageMetadata:
     # package is days old even though the package is years old.
     version_age_days: Optional[int] = None
     not_found: bool = False          # registry answered 404: no such package
+    # The installed version has an install script and the release before it
+    # did not: the pattern of a hijacked publish (npm only).
+    install_script_added: bool = False
 
 
 # In-memory cache: key → (monotonic_ts, PackageMetadata)
@@ -179,6 +182,13 @@ def _fetch_npm(name: str, ecosystem: str, requested: str = "") -> PackageMetadat
     scripts = latest_data.get("scripts") or {}
     lifecycle_keys = ("postinstall", "preinstall", "install")
     has_install_script = any(k in scripts for k in lifecycle_keys)
+    # Previous release by publish time. ISO timestamps sort as strings.
+    published = time_data.get(latest_version, "")
+    earlier = [v for v in versions if v != latest_version and "" < time_data.get(v, "") < published]
+    prev = max(earlier, key=lambda v: time_data[v]) if earlier else None
+    prev_scripts = (versions.get(prev) or {}).get("scripts") or {} if prev else {}
+    install_script_added = bool(prev) and has_install_script and not any(
+        k in prev_scripts for k in lifecycle_keys)
 
     # Concatenate all lifecycle script strings for IOC pattern analysis
     install_script_content = " ".join(
@@ -191,6 +201,7 @@ def _fetch_npm(name: str, ecosystem: str, requested: str = "") -> PackageMetadat
         has_install_script=has_install_script, source="registry",
         install_script_content=install_script_content,
         version_age_days=version_age,
+        install_script_added=install_script_added,
     )
 
 

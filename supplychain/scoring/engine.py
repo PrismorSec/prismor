@@ -99,16 +99,16 @@ class RiskScorer:
                     add("new_package", 15, f"published {meta.age_days}d ago")
 
             # A brand-new release of an established package is the hijacked-
-            # maintainer pattern (a stolen token publishes x.y.z+1). Package
-            # age alone misses it, so score the installed version too. Kept
-            # at WARN alone (a dependency cooldown), and blocks with an install
-            # script plus a single maintainer (30 + 20 + 10).
+            # maintainer pattern (a stolen token publishes x.y.z+1), but busy
+            # packages (SDKs, cloud clients) publish daily, so freshness alone
+            # is not scored. What a hijack adds is an install script the
+            # previous release did not have: that blocks with the
+            # install-script signal (40 + 20).
             va = meta.version_age_days
-            if va is not None and meta.age_days is not None and meta.age_days >= 30:
-                if va < 2:
-                    add("very_new_version", 30, f"version {meta.version} published {va}d ago")
-                elif va < 7:
-                    add("new_version", 10, f"version {meta.version} published {va}d ago")
+            if (va is not None and va < 7 and meta.age_days is not None
+                    and meta.age_days >= 30 and meta.install_script_added):
+                add("new_install_script", 40,
+                    f"version {meta.version} ({va}d old) adds an install script the previous release did not have")
 
             if meta.not_found and not event.custom_registry:
                 # The install will fail, but an agent that guessed a name will

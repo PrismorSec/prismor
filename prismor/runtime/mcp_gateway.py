@@ -262,7 +262,11 @@ def parse_inline_server(value: str) -> UpstreamSpec:
     rest = rest.strip()
     if rest.startswith(("http://", "https://")):
         return UpstreamSpec(name=name.strip(), url=rest, transport="http")
-    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio")
+    # A command named on the CLI gets the full environment: the host passes
+    # that server's env to the gateway process, and there is no config
+    # entry to name envPassthrough in.
+    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio",
+                        inherit_env=True)
 
 
 # ── upstream clients ─────────────────────────────────────────────────────────
@@ -2690,8 +2694,8 @@ def run_gateway(args, workspace: Path) -> int:
             specs.append(UpstreamSpec(name="upstream", url=value, transport="http"))
         else:
             argv = shlex.split(value)
-            specs.append(UpstreamSpec(name=_shim_name(argv),
-                                      command=argv, transport="stdio"))
+            specs.append(UpstreamSpec(name=_shim_name(argv), command=argv,
+                                      transport="stdio", inherit_env=True))
     for inline in getattr(args, "server", None) or []:
         specs.append(parse_inline_server(inline))
     if not specs:

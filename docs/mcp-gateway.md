@@ -243,6 +243,10 @@ Cloud keys and tokens in your shell stay out. Two keys change this:
 If a server that worked before now fails to authenticate, it was reading a
 token from your shell: name it in `envPassthrough` or move it into `env`.
 
+Servers named on the command line (`--upstream`, `--server`) keep the full
+environment: the host passes that server's `env` to the gateway process, and
+there is no config entry to set `envPassthrough` in.
+
 ## Signing in to OAuth servers
 
 Many remote MCP servers (Linear, Stripe, Neon, PostHog, Atlassian) take no API
