@@ -61,6 +61,10 @@ This merges the hook entries into `.claude/settings.json` (preserving any Prismo
 | `UserPromptSubmit` | — | `userprompt-guard.sh` | Soft-block + auto-cloak pasted secrets |
 | `Stop` (opt) | — | `sweep-on-stop.sh` | Dry-run sweep for residue (off by default) |
 
+For `Read`, `Edit` and `MultiEdit`, each registered value is matched as one
+literal string, including embedded newlines. A shared header or an isolated
+line from a multiline value does not count as the complete secret.
+
 `secret-guard.sh` is registered *before* `decloak.sh` so it scans the model's
 original input; it is also order-independent because it skips any value already
 present in the vault (see below).
