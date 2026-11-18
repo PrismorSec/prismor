@@ -606,7 +606,7 @@ class TestConfinedRuns(unittest.TestCase):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"2\"\n"
                          "  egress:\n    enabled: true\n    mode: enforce\n    default: deny\n")
         port = self._listener()
-        r = _cli(self.ws, "try", "--", f"nc -z -G 3 127.0.0.1 {port}")
+        r = _cli(self.ws, "try", "--", f"nc -z -w 3 127.0.0.1 {port}")
         self.assertEqual(r.returncode, 0, r.stderr)
         r = _cli(self.ws, "try", "--", "curl -s -m 10 -o /dev/null https://blocked.invalid/")
         self.assertNotEqual(r.returncode, 0)
