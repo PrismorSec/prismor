@@ -1445,10 +1445,14 @@ def _strip_powershell_wrapper(command: str) -> str:
     return command
 
 
+# The background-task tools (Monitor, TaskOutput/TaskStop, SendMessage,
+# Workflow, Cron*/ScheduleWakeup) start, read, steer and stop work that runs
+# after the turn; without them a Monitor's shell script was never screened and
+# a background task appeared only when it finished.
 # `Skill` is how Claude loads a skill. Without it a skill invocation never
 # reaches the hook: per-skill denies cannot fire, and nothing records which
 # third-party instructions a session was running under.
-_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|mcp__.*"
+_CLAUDE_TOOL_MATCHER = "Task|Agent|Skill|Bash|PowerShell|Read|Grep|Glob|Edit|MultiEdit|Write|NotebookEdit|WebFetch|WebSearch|Monitor|TaskOutput|TaskStop|BashOutput|KillShell|SendMessage|Workflow|ToolSearch|SubagentHandback|CronCreate|CronDelete|ScheduleWakeup|RemoteTrigger|mcp__.*"
 
 
 def _merge_claude(config: Dict[str, Any], command: str, workspace: Path, pin_workspace: bool = True) -> Dict[str, Any]:
@@ -3655,9 +3659,10 @@ def _normalize_claude(payload: Dict[str, Any], session_id: str, workspace: Path)
             "description": tool_input.get("description", ""),
             "prompt": tool_input.get("prompt", ""),
         }
-    if tool_name in {"Bash", "PowerShell"}:
+    if tool_name in {"Bash", "PowerShell", "Monitor"}:
         # PowerShell is Claude Code's shell tool on Windows; same {command} input.
-        return {**base, "type": "shell", "command": tool_input.get("command", ""), "description": tool_input.get("description", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr", "")}
+        # Monitor runs its {command} as a long-lived background shell script.
+        return {**base, "type": "shell", "command": tool_input.get("command", ""), "description": tool_input.get("description", ""), "stdout": payload.get("stdout", ""), "stderr": payload.get("stderr") or payload.get("error", "")}
     if tool_name == "NotebookEdit":
         return {**base, "type": "file_write", "path": tool_input.get("notebook_path", ""),
                 "content": tool_input.get("new_source", "")}

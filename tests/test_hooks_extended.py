@@ -1550,15 +1550,15 @@ class TestUnmappedToolSignal(unittest.TestCase):
         )["event"]
 
     def test_unmapped_tool_is_flagged(self):
-        # Monitor has no branch in _normalize_claude.
+        # Workflow has no branch in _normalize_claude.
         event = self._event("claude", {
             "hook_event_name": "PreToolUse",
             "session_id": "c-1",
-            "tool_name": "Monitor",
-            "tool_input": {"command": "tail -f log"},
+            "tool_name": "Workflow",
+            "tool_input": {"script": "export const meta = {}"},
         })
         self.assertEqual(event["type"], "tool_result")
-        self.assertEqual(event["metadata"]["unmapped_tool"], "Monitor")
+        self.assertEqual(event["metadata"]["unmapped_tool"], "Workflow")
 
     def test_mapped_tool_is_not_flagged(self):
         event = self._event("claude", {

@@ -93,7 +93,7 @@ class TestBwrapArgv(unittest.TestCase):
 class TestPolicyMapping(unittest.TestCase):
     def test_sandbox_config_maps_onto_bwrap(self):
         seen = {}
-        with mock.patch.object(sn, "run", lambda cmd, *, workspace, cfg: seen.update(cfg) or 0):
+        with mock.patch.object(sn, "run", lambda cmd, *, workspace, cfg, egress=None: seen.update(cfg) or 0):
             sandbox._run_bwrap("true", Path("/w"), {"enabled": True, "ring": "2", "writable": ["out"],
                                                     "hide": [".env"]})
         self.assertEqual(seen["network"], "allowlist")
@@ -109,8 +109,10 @@ class TestMissingProtected(unittest.TestCase):
 
     def test_git_hooks_watched_only_when_git_existed(self):
         self.assertNotIn(str(self.ws / ".git/hooks"), sn.missing_protected(self.ws))
+        self.assertNotIn(str(self.ws / ".git/config"), sn.missing_protected(self.ws))  # git init keeps it
         (self.ws / ".git").mkdir()
         self.assertIn(str(self.ws / ".git/hooks"), sn.missing_protected(self.ws))
+        self.assertIn(str(self.ws / ".git/config"), sn.missing_protected(self.ws))
         (self.ws / ".prismor").mkdir()
         self.assertNotIn(str(self.ws / ".prismor"), sn.missing_protected(self.ws))
 
@@ -191,6 +193,16 @@ class TestEgressProxy(unittest.TestCase):
         self.assertEqual(env["ALL_PROXY"], "socks5h://127.0.0.1:4242")
         self.assertEqual(env["all_proxy"], env["ALL_PROXY"])
 
+    def test_decider_checks_settings_egress_first(self):
+        egress = lambda host, port, scheme: (host == "bad.example", "not on the egress allowlist")
+        with mock.patch("prismor.runtime.runtime.evaluate_tool_call") as ev:
+            ev.return_value = mock.Mock(allow=True)
+            d = sn.make_decider(workspace=Path("."), agent="t", session_id="", mode="enforce",
+                                command="c", egress=egress)
+            self.assertFalse(d("bad.example", 443, "https"))
+            self.assertTrue(d("good.example", 443, "https"))
+            self.assertEqual(ev.call_count, 1)   # a host egress blocks never reaches the policy check
+
     def test_decider_fails_closed_in_enforce_when_evaluator_breaks(self):
         with mock.patch("prismor.runtime.runtime.evaluate_tool_call", side_effect=RuntimeError("x")):
             d = sn.make_decider(workspace=Path("."), agent="t", session_id="", mode="enforce", command="c")
@@ -230,6 +242,10 @@ class TestLiveSandbox(unittest.TestCase):
 
     def run_in(self, cmd, **cfg):
         return sn.run(cmd, workspace=self.ws, cfg=_cfg(**cfg))
+
+    def test_sandbox_marker_is_set_on_every_run(self):
+        for network in ("none", "allowlist"):
+            self.assertEqual(self.run_in('test "$PRISMOR_SANDBOX" = 1', network=network), 0, network)
 
     def test_workspace_write_allowed(self):
         self.assertEqual(self.run_in("echo hi > ok.txt"), 0)

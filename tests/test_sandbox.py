@@ -605,12 +605,16 @@ class TestConfinedRuns(unittest.TestCase):
     def test_proxy_ring_allows_loopback_and_blocks_off_list_hosts(self):
         _policy(self.ws, "settings:\n  sandbox:\n    ring: \"2\"\n"
                          "  egress:\n    enabled: true\n    mode: enforce\n    default: deny\n")
-        port = self._listener()
-        r = _cli(self.ws, "try", "--", f"nc -z -G 3 127.0.0.1 {port}")
-        self.assertEqual(r.returncode, 0, r.stderr)
+        if sys.platform == "darwin":
+            # Linux runs the command in its own network namespace, so the host's
+            # loopback is out of reach there (sandbox._run_bwrap).
+            port = self._listener()
+            r = _cli(self.ws, "try", "--", f"nc -z -w 3 127.0.0.1 {port}")
+            self.assertEqual(r.returncode, 0, r.stderr)
         r = _cli(self.ws, "try", "--", "curl -s -m 10 -o /dev/null https://blocked.invalid/")
         self.assertNotEqual(r.returncode, 0)
-        self.assertIn("blocked blocked.invalid:443", r.stderr)
+        # macOS proxy: "blocked host:port (reason)"; Linux: "blocked connection to host:port"
+        self.assertRegex(r.stderr, r"blocked (connection to )?blocked\.invalid:443")
         r = _cli(self.ws, "try", "--", "curl -s -m 5 --noproxy '*' -o /dev/null https://example.com/")
         self.assertNotEqual(r.returncode, 0)   # going around the proxy is refused by the kernel
 

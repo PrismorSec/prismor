@@ -224,3 +224,85 @@ def reply_event(agent: str, payload: Dict[str, Any], session_id: str) -> Dict[st
     if reasoning:
         event["reasoning"] = reasoning[:_REASONING_LIMIT]
     return event
+
+
+# ── Background-task notifications ───────────────────────────────────────────
+# A finished background agent, shell or Monitor reaches the model as a
+# ``<task-notification>`` user turn. The Claude CLI sends it through
+# UserPromptSubmit, but the desktop app queues it straight into the
+# transcript and no hook fires, so it is read back from the transcript at the
+# next Stop. Each one is recorded once: the hash of its text is kept per
+# session, and a notification that did come through UserPromptSubmit is
+# marked there so the Stop scan skips it.
+# ponytail: tail window, so a notification more than _TAIL_BYTES before a
+# Stop is missed; a read offset per session lifts that.
+
+_NOTICE_TAG = "<task-notification"
+
+
+def _row_text(row: Dict[str, Any]) -> str:
+    content = (row.get("message") or {}).get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(b.get("text") or "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text")
+    return ""
+
+
+def _seen_path(session_id: str) -> Path:
+    from prismor.runtime.subagents import _ledger
+    return _ledger(session_id).with_suffix(".notified")
+
+
+def _digest(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(text.strip().encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def _mark(session_id: str, digests: Iterable[str]) -> None:
+    digests = list(digests)
+    if not digests:
+        return
+    try:
+        path = _seen_path(session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("".join(d + "\n" for d in digests))
+    except OSError:
+        pass
+
+
+def mark_notification(session_id: str, prompt: str) -> None:
+    """A notification that arrived through UserPromptSubmit is already recorded."""
+    if session_id and str(prompt or "").lstrip().startswith(_NOTICE_TAG):
+        _mark(session_id, [_digest(prompt)])
+
+
+def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict[str, Any]]:
+    """UserPromptSubmit-shaped payloads for the notifications in the transcript
+    that no hook has recorded yet, oldest first. Marks them as recorded."""
+    transcript = str(payload.get("transcript_path") or "")
+    if not (transcript and session_id):
+        return []
+    try:
+        seen = set(_seen_path(session_id).read_text(encoding="utf-8").split())
+    except OSError:
+        seen = set()
+    out, fresh = [], []
+    for row in _tail_rows(transcript):
+        if row.get("type") != "user" or row.get("isSidechain"):
+            continue
+        text = _row_text(row)
+        if not text.lstrip().startswith(_NOTICE_TAG):
+            continue
+        d = _digest(text)
+        if d in seen:
+            continue
+        seen.add(d)
+        fresh.append(d)
+        out.append({"hook_event_name": "UserPromptSubmit", "session_id": payload.get("session_id"),
+                    "prompt": text, "timestamp": row.get("timestamp"), "cwd": payload.get("cwd"),
+                    "transcript_path": transcript, "delivered_by": "transcript"})
+    _mark(session_id, fresh)
+    return out

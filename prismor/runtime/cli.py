@@ -1927,6 +1927,17 @@ def main(argv: Optional[List[str]] = None) -> None:
             try:
                 from prismor.runtime.hooks import payload_session_id
                 _sid = payload_session_id(args.agent, payload, workspace)
+                # Background-task notifications the desktop app queued without
+                # a UserPromptSubmit hook: recorded before the turn's reply.
+                if args.agent == "claude":
+                    for _notice in _replies.pending_notifications(payload, _sid):
+                        try:
+                            evaluate_tool_call(
+                                event=normalize_payload(agent=args.agent, payload=_notice, workspace=workspace)["event"],
+                                workspace=workspace, agent=args.agent, mode="observe",
+                                session_id=_sid, flush_at_exit=False)
+                        except Exception:
+                            pass
                 evaluate_tool_call(event=_replies.reply_event(args.agent, payload, _sid),
                                    workspace=workspace, agent=args.agent, mode="observe",
                                    session_id=_sid, flush_at_exit=False)
@@ -1955,13 +1966,23 @@ def main(argv: Optional[List[str]] = None) -> None:
                 pass
             return
 
-        # The call already failed: nothing to screen, only a retry loop to name.
+        # The call already failed: nothing to block, but a retry loop to name,
+        # and the failure itself is recorded (observe) so the trail does not
+        # show a call that started and never ended. Its error text is screened
+        # like any other tool output.
         if payload.get("hook_event_name") == "PostToolUseFailure":
             try:
                 from prismor.runtime.devlog import on_failure
                 _loop = on_failure(payload)
                 if _loop:
                     print(json.dumps(_loop))
+            except Exception:
+                pass
+            try:
+                if _claim_hook_call(payload, args.agent):
+                    _failed = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)["event"]
+                    evaluate_tool_call(event=_failed, workspace=workspace, agent=args.agent, mode="observe",
+                                       session_id=str(_failed.get("session_id") or ""), flush_at_exit=False)
             except Exception:
                 pass
             sys.exit(0)
@@ -1996,6 +2017,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         # this event under Claude's name ("AfterTool" -> "PostToolUse").
         from prismor.runtime import hook_caps as _hook_caps
         _hook_event = _hook_caps.canonical_event(args.agent, _agent_event)
+        if _agent_event == "UserPromptSubmit" and args.agent == "claude":
+            try:  # recorded here, so the Stop transcript scan skips it
+                _replies.mark_notification(str(event.get("session_id") or ""), str(event.get("prompt") or ""))
+            except Exception:
+                pass
         _perf.lap("normalize")
 
         # Locally paused? Enforcement is suspended but observe-mode screening/
