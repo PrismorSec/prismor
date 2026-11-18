@@ -71,6 +71,12 @@ def test_health_check_recognises_the_wrapped_launcher(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(hooks.Path, "home", lambda: home)
     monkeypatch.setattr(hooks, "_IS_WINDOWS", True)
+    # Codex runs no hooks unless [features] hooks is on, and the health check
+    # then reports a failure with no mode. Do not depend on the machine's own
+    # $CODEX_HOME for that.
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    (home / ".codex").mkdir()
+    (home / ".codex" / "config.toml").write_text("[features]\nhooks = true\n")
     command = hooks._dispatcher_command(repo_root=REPO, workspace=tmp_path, agent="codex",
                                         mode="enforce", pin_workspace=False)
     path = hooks._config_path("codex", "global", tmp_path)

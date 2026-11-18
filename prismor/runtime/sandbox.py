@@ -393,7 +393,7 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
         return _exec_unconfined(command)
 
     if sys.platform != "darwin":
-        return _run_bwrap(command, root, config)
+        return _run_bwrap(command, root, config, engine)
     profile = build_profile(config, root)
     fd = _command_fd(command)
     argv = [status["path"], "-p", seatbelt_profile(profile), _shell(), "-c", _shim(fd)]
@@ -428,15 +428,16 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
 _BWRAP_NETWORK = {"none": "none", "proxy": "allowlist", "open": "bridge"}
 
 
-def _run_bwrap(command: str, root: Path, config: Dict[str, Any]) -> int:
+def _run_bwrap(command: str, root: Path, config: Dict[str, Any], engine: Any = None) -> int:
     """Linux: the same limits, enforced by bubblewrap in ``sandbox_native``.
 
-    ponytail: egress is screened by sandbox_native's per-host policy check, not
-    the egress allowlist the macOS proxy reads, and ``direct_ports`` have no
-    effect (the network namespace has loopback only). Unify the proxies when
-    the two need to agree host for host.
+    Egress is checked against ``settings.egress`` first, as on macOS, then by
+    sandbox_native's per-host policy check. ponytail: ``direct_ports`` have no
+    effect, and host loopback is out of reach (the network namespace has its
+    own loopback only).
     """
     from prismor.runtime import sandbox_native
+    from prismor.runtime.sandbox_proxy import egress_decider
     cfg = effective_config(config)
     root_s = _real(root)
 
@@ -450,7 +451,8 @@ def _run_bwrap(command: str, root: Path, config: Dict[str, Any]) -> int:
               # daemon sockets: a bind of /dev/null over one stops connect()
               "deny_read": ([_real(Path.home() / p) for p in _HIDDEN_HOME] + [_secrets_dir()]
                             + [_real(s) for s in _DAEMON_SOCKETS] + [_at(p) for p in cfg["hide"]])}
-    return sandbox_native.run(command, workspace=root, cfg=native)
+    return sandbox_native.run(command, workspace=root, cfg=native,
+                              egress=egress_decider(engine, _note) if engine is not None else None)
 
 
 # ── hook rewrite ───────────────────────────────────────────────────────────

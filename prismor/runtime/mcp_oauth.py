@@ -577,6 +577,10 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"<h3>This is not the sign-in Prismor is waiting for.</h3>")
             return
         cls.result = q
+        # Finish the wait before replying: once the browser has the page, the
+        # login is over, and a second redirect must already see done.
+        if cls.done is not None:
+            cls.done.set()
         ok = "code" in q
         body = ("<h3>Signed in. You can close this tab and return to the terminal.</h3>" if ok
                 else "<h3>Sign-in failed: " + _html_escape(q.get("error_description") or q.get("error") or "no code")
@@ -585,8 +589,6 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
-        if type(self).done is not None:
-            type(self).done.set()
 
     def log_message(self, *args):  # silence the default access log
         pass
