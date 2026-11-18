@@ -69,9 +69,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh" 2>/dev/null \
 # prefix of another, replacing the short one first would leave the long one's
 # tail in the output.
 shopt -s nullglob
-names=() reals=()
+LC_COLLATE=C  # glob order must match encoded.py's sorted() for the cache header
+names=() reals=() all_names=""
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
+  all_names+=" $(basename "$secret_file")"
   real="$(cat "$secret_file")"
   _prismor_scrubbable "$real" || continue
   names+=("$(basename "$secret_file")") reals+=("$real")
@@ -82,5 +84,40 @@ while read -r _ i; do
   data="${data//"$real"/@@SECRET:${name}@@}"
   prismor_cloak_event output redacted "${PRISMOR_CLOAK_SESSION:-}" "$name" "" Bash
 done < <(for i in "${!reals[@]}"; do printf '%d %d\n' "${#reals[i]}" "$i"; done | sort -rn)
+
+# Encoded forms (base64 at each offset, hex, URL-encoded, reversed): otherwise
+# `printf %s @@SECRET:X@@ | base64` prints the value in a form the loop above
+# misses. encoded.py writes them to a 0600 cache inside the vault; it is
+# rebuilt only when the set of names changed or a secret file is newer, so an
+# unchanged vault costs no fork. No python3, or a failed rebuild: exact-match
+# scrubbing above still ran.
+cache="$SECRETS_DIR/.meta/encoded"
+if (( ${#reals[@]} )); then
+  stale=0
+  if [[ ! -f "$cache" ]]; then
+    stale=1
+  else
+    IFS= read -r header < "$cache" || header=""
+    [[ "$header" == "#names$all_names" ]] || stale=1
+    for secret_file in "$SECRETS_DIR"/*; do
+      [[ -f "$secret_file" && "$secret_file" -nt "$cache" ]] && { stale=1; break; }
+    done
+  fi
+  if (( stale )); then
+    _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _py="$(cat "$SECRETS_DIR/.meta/python" 2>/dev/null)"; [[ -x "$_py" ]] || _py=python3
+    "$_py" -I "$_here/../encoded.py" "$SECRETS_DIR" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$cache" ]]; then
+    {
+      IFS= read -r _header
+      while IFS=$'\t' read -r name variant; do
+        [[ -n "$variant" && "$data" == *"$variant"* ]] || continue
+        data="${data//"$variant"/@@SECRET:${name}@@}"
+        prismor_cloak_event output redacted "${PRISMOR_CLOAK_SESSION:-}" "$name" "" Bash
+      done
+    } < "$cache"
+  fi
+fi
 
 printf '%s' "$data"

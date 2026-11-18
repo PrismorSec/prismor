@@ -1537,6 +1537,12 @@ rules:
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      # Which hosts a secret may be sent to is the same kind of call
+      # (cloaking/bindings.py): an agent widening it would undo the binding.
+      # `prismor cloak hosts NAME` with nothing after it only shows them.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+hosts[ \t]+\S+[ \t]+[^;&|\n\s]'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+cloak[ \t]+hosts[ \t]+\S+[ \t]+[^;&|\n\s]'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+hosts\b'
       # The unlock credential and grant. Reads matter as much as writes: the
       # credential file is what an offline guess would need, and the grant file
       # is what a forged window would be written to.

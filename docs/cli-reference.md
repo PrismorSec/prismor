@@ -544,7 +544,8 @@ Full policy model, rule schema, and the default rule list: [Prismor](prismor-run
 | Command | Key flags | Description |
 |---|---|---|
 | `prismor cloak install` | `--scope`, `--no-userprompt-guard`, `--no-secret-guard`, `--no-read-guard`, `--no-env-guard`, `--sweep-on-stop` | Install cloaking hooks so real secrets stay out of model context. `--no-read-guard` skips the hook that denies reading files containing a registered secret; `--no-env-guard` skips the one that denies reading `.env`-style files not yet imported with `prismor cloak add --env-file`. |
-| `prismor cloak add <name>` | `--from-file` | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. |
+| `prismor cloak add <name>` | `--from-file`, `--host <host>` (repeat) | Register a secret under a placeholder. Value read from stdin / hidden prompt — never argv. `--host` binds it: it then resolves only into curl/wget/http/xh calls to those hosts. See [Sweep and Cloak](sweep-and-cloak.md#bind-a-secret-to-its-hosts). |
+| `prismor cloak hosts <name> [host…]` | `--any` | Show or change the hosts a secret is bound to; `--any` removes the binding. A change needs a terminal; blocked for agents. Org vault secrets get their hosts from the console. |
 | `prismor cloak add --env-file .env` | — | Import every `KEY=VALUE` entry from a dotenv file as `@@SECRET:KEY@@`. |
 | `prismor cloak add <name> --from-ref <ref>` | — | Fetch the value from 1Password (`op://…`), Okta Privileged Access (`okta-pam://…`), AWS AgentCore Identity (`agentcore://…`), HashiCorp Vault or OpenBao (`vault://…`, `openbao://…`), Infisical (`infisical://…`) or AWS Secrets Manager (`aws-sm://…`) and vault it; only the reference is kept. Blocked for agents. See [Sweep and Cloak](sweep-and-cloak.md#from-a-secret-manager). |
 | `prismor cloak list` | — | List registered placeholder names (never values), with the source of any added with `--from-ref` or delivered by the org vault. |

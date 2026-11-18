@@ -123,6 +123,43 @@ wins. The console shows a conflict for that device until one of them is renamed.
 `cloak remove` on an org secret deletes the local copy, but the next sync
 brings it back unless an admin removes access in the console.
 
+### Bind a secret to its hosts
+
+The scrubber removes the value from output, also in base64, hex, URL-encoded
+and reversed form. A custom encoding (XOR, the value split into parts) still
+gets past it. To stop a deliberate leak, bind the secret to the hosts it is
+for:
+
+```bash
+prismor cloak add STRIPE_API_KEY --host api.stripe.com
+prismor cloak hosts STRIPE_API_KEY api.stripe.com '*.stripe.com'   # change
+prismor cloak hosts STRIPE_API_KEY --any                           # remove the binding
+prismor cloak list   # shows "only to api.stripe.com"
+```
+
+A bound secret is resolved only into a `curl`, `wget`, `http` or `xh` call
+whose URLs all go to one of its hosts. Prismor refuses any other use before
+it resolves the value: `echo`, `base64`, a pipe into another program, a
+redirect to a file, an env var, a proxy, `--resolve`/`--connect-to`, a curl
+config file, or a client binary in your home, the working folder or a temp
+folder. The same check runs for `prismor cloak run`.
+
+Changing or removing a binding needs a terminal, and agents are blocked from
+`prismor cloak hosts`, so an agent can not widen its own access.
+
+For an org vault secret, the admin sets the hosts in the console (**Only send
+it to**). The device applies them on the next sync. `cloak hosts` refuses org
+vault secrets.
+
+Limits:
+
+- A bound secret can not be used in an env var, a shell script or an SDK app.
+  Leave secrets for those unbound.
+- A client binary in a folder your user can write outside your home (for
+  example a Homebrew prefix) is trusted.
+- Devices on a runtime older than this feature ignore the hosts of org vault
+  secrets.
+
 ### Custom detection patterns
 
 Built-in patterns cover Stripe, GitHub, AWS, Google, Slack, GitLab, and JWTs.
@@ -160,6 +197,8 @@ the tool-call guard.
 | Secret in a pasted prompt | ✅ auto-vaulted, prompt re-sanitized |
 | Raw secret in a command / file write / MCP arg | ✅ denied + vaulted |
 | Model using a placeholder | ✅ resolved locally, output scrubbed |
+| Model re-encoding a resolved value (base64, hex, reversed) | ✅ scrubbed in those forms |
+| Model sending a value off with a custom encoding or to another host | ✅ **only for a secret bound to its hosts** |
 | Agent directly reading a vault file | ✅ **only with the enforce-mode monitor** |
 | Secret with no recognizable shape (hand-typed, freshly generated) | ⚠️ may not match a pattern |
 | Model narrating a value it already saw | ❌ use `/clear` |

@@ -26,7 +26,9 @@ prismor_cloak_event() {
   local file size
   file="$(prismor_cloak_ledger_file)"
   # ponytail: hard 1 MB cap; drops new lines while nothing drains (no enrolled sink).
-  size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+  # `< "$file"` fails before a trailing 2>/dev/null applies, so on the first
+  # event the error landed in the command's output: test for the file first.
+  size=0; [[ -f "$file" ]] && size="$(wc -c < "$file" 2>/dev/null || echo 0)"
   (( ${size//[[:space:]]/} < 1048576 )) || return 0
   mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
   # One short line per append, so concurrent hooks do not interleave.

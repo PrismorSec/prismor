@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from prismor.runtime.cloaking.encoded import variants
 from prismor.runtime.cloaking.secrets_store import secrets_dir
 
 # Escape form: a backslash before the colon (``@@SECRET\:name@@``) is not a
@@ -178,9 +179,14 @@ def scrub_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
     """Replace registered raw secret values with placeholders."""
     secrets = _read_secret_map() if secrets is None else secrets
     out = text
-    for name, value in sorted(secrets.items(), key=lambda item: len(item[1]), reverse=True):
-        if is_scrubbable_secret(value):
-            out = out.replace(value, f"@@SECRET:{name}@@")
+    eligible = [(n, v) for n, v in secrets.items() if is_scrubbable_secret(v)]
+    for name, value in sorted(eligible, key=lambda item: len(item[1]), reverse=True):
+        out = out.replace(value, f"@@SECRET:{name}@@")
+    # Then its base64 / hex / URL-encoded / reversed forms (encoded.py).
+    encoded = [(v, n) for n, value in eligible for v in variants(value)]
+    for variant, name in sorted(encoded, key=lambda item: len(item[0]), reverse=True):
+        if variant in out:
+            out = out.replace(variant, f"@@SECRET:{name}@@")
     return out
 
 
@@ -337,6 +343,19 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
             f"To write the literal placeholder syntax instead of resolving it, "
             f"escape the colon: @@SECRET\\:{name}@@"
         ) from exc
+
+    from prismor.runtime.cloaking import bindings
+    bound = bindings.load(secrets_dir())
+    if bound:
+        names_in_env = {n for v in env_updates.values() for n in placeholder_names(v)}
+        if names_in_env & bound.keys():
+            sys.stderr.write("error: prismor cloak run refused: a secret bound to its hosts "
+                             "can't go into an environment variable\n")
+            return 2
+        why = bindings.check_argv(command_args, bound, {**os.environ, **env_updates})
+        if why:
+            sys.stderr.write(f"error: prismor cloak run refused: {why}\n")
+            return 2
 
     env = os.environ.copy()
     env.update(resolved_env)

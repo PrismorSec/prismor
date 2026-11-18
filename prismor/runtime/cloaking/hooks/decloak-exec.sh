@@ -21,6 +21,25 @@ SECRETS_DIR="${PRISMOR_SECRETS_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/secrets}"
 cmd="${PRISMOR_CLOAK_CMD:-}"
 [[ -n "$cmd" ]] || exit 0
 
+# Secrets bound to hosts (bindings.py) resolve only into a curl/wget/http/xh
+# call to those hosts. Every shell path resolves here (Claude Code hook, MCP
+# mirror, ACP proxy, Hermes), so this is the one gate. The interpreter is the
+# one Prismor recorded when the binding was saved, inside the vault: a
+# `python3` an agent planted on PATH could otherwise just exit 0. Anything
+# missing fails closed.
+if [[ -f "$SECRETS_DIR/.meta/hosts.json" && "$cmd" == *"@@SECRET:"* ]]; then
+  _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _chk="$_here/bindings.py"; [[ -f "$_chk" ]] || _chk="$_here/../bindings.py"
+  _py="$(cat "$SECRETS_DIR/.meta/python" 2>/dev/null)"
+  if [[ ! -f "$_chk" || ! -x "$_py" ]]; then
+    echo "prismor cloak refused: secrets are bound to hosts, but the binding check can't run (reinstall with prismor cloak install)" >&2
+    exit 126
+  fi
+  PRISMOR_CLOAK_CMD="$cmd" "$_py" -I "$_chk" "$SECRETS_DIR" || exit 126
+  # A `curl` function exported into the environment would run instead of curl.
+  unset -f curl wget http https xh xhs 2>/dev/null
+fi
+
 # The secret value never enters the text that `eval` parses (#457). Each
 # placeholder becomes a reference to a shell variable, written in the form
 # that expands to exactly the value in the quoting context it sits in:
