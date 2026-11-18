@@ -336,6 +336,7 @@ def check_command(command: str, bound: Dict[str, List[str]],
     text = re.sub(r"(?<=\s)\d+(?=[<>])", "", text)
     lex = shlex.shlex(text, posix=True, punctuation_chars=True)
     lex.whitespace_split = True
+    lex.commenters = ""
     try:
         tokens = list(lex)
     except ValueError as exc:
