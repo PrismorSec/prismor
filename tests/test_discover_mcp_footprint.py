@@ -201,3 +201,16 @@ def test_fix_and_prune_run_as_one_plan(monkeypatch, tmp_path):
     monkeypatch.setattr(discover_cli, "run_fix", lambda rep, **kw: calls.append(kw["kinds"]))
     discover_cli.discover_mcp(tmp_path, fix=True, prune=True, repo_root=tmp_path)
     assert calls == [("mcp", "mcp_unused")]
+
+
+def test_report_upload_carries_footprint(monkeypatch):
+    from dataclasses import asdict
+    _fake(monkeypatch, used=0, total=40)
+    monkeypatch.setattr(discover, "_fix_index", lambda report: {})
+    report = {"mcp": [asdict(_record())], "agents": [], "credentials": [], "summary": {}}
+    payload = discover.report_payload(discover._with_footprint(report))
+    f = payload["findings"][0]
+    assert (f["running"], f["rss_mb"], f["sessions_used"], f["sessions_total"], f["rarely_used"]) == (5, 15, 0, 40, True)
+    # An unmeasured report still uploads, with nulls.
+    f = discover.report_payload(report)["findings"][0]
+    assert f["rss_mb"] is None and f["rarely_used"] is False

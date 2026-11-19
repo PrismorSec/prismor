@@ -1385,6 +1385,12 @@ def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
             "coverable": True,
             "risk": server.get("risk") or "none",
             "reasons": server.get("findings") or [],
+            # Memory footprint (see add_footprint). null = not measured.
+            "running": server.get("running"),
+            "rss_mb": server.get("rss_mb"),
+            "sessions_used": server.get("sessions_used"),
+            "sessions_total": server.get("sessions_total"),
+            "rarely_used": bool(server.get("rarely_used")),
             **_fix_for("mcp", name),
         })
     for cred in report.get("credentials") or []:
@@ -1421,6 +1427,18 @@ def report_payload(report: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _with_footprint(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Measure the MCP footprint for an upload. Every reporter goes through
+    ``send_report``, so measuring here covers them all; ``build_report`` stays
+    cheap for the interactive ``prismor discover``. Best-effort."""
+    try:
+        recs = [McpRecord(**m) for m in report.get("mcp") or []]
+        add_footprint(recs)
+        return {**report, "mcp": [asdict(r) for r in recs]}
+    except Exception:
+        return report
+
+
 def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
     """POST an inventory to the control plane. Returns True on success.
 
@@ -1437,7 +1455,7 @@ def send_report(report: Dict[str, Any], *, timeout: int = 5) -> bool:
         import urllib.request
         request = urllib.request.Request(
             f"{base}/api/discovery/report",
-            data=json.dumps(report_payload(report)).encode("utf-8"),
+            data=json.dumps(report_payload(_with_footprint(report))).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {ident.get('device_key')}",
