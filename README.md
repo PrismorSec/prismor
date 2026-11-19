@@ -69,36 +69,6 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 
 ---
 
-## Supported Agents<a name="supported-agents" />
-
-<!-- BEGIN GENERATED: agent-coverage (scripts/gen_integration_matrix.py) -->
-
-| Agent | Interception | Blocks before the call | MCP mirror verified |
-|---|---|---|---|
-| Claude Code | native hooks | ✅ | ✅ |
-| Codex (OpenAI) | native hooks | ✅ | ✅ |
-| Continue CLI | native hooks | ✅ |  |
-| Crush (Charmbracelet) | native hooks | ✅ |  |
-| Cursor | native hooks | ✅ |  |
-| Gemini CLI (Google) | native hooks | ✅ |  |
-| GitHub Copilot CLI | native hooks | ✅ |  |
-| Google Antigravity | native hooks | ✅ |  |
-| Goose (Agentic AI Foundation) | native hooks | ✅ |  |
-| Grok Build (xAI) | native hooks | ✅ |  |
-| Hermes Agent (Nous Research) | plugin | ✅ |  |
-| Kiro CLI (AWS) | native hooks | ✅ |  |
-| OpenClaw | plugin | ✅ |  |
-| OpenCode | plugin | ✅ | ✅ |
-| OpenHands | native hooks | ✅ |  |
-| Qwen Code (Alibaba) | native hooks | ✅ |  |
-| Windsurf (Codeium Cascade) | native hooks | ✅ |  |
-
-Config scan only (no hook protocol to intercept): Aider, GitHub Copilot for JetBrains, JetBrains AI Assistant, Junie, Kilocode, Roo Code, Trae / Trae CN (ByteDance), Warp (Agent Mode). Next up: Amazon Q Developer CLI (AWS), Amp (Sourcegraph spinoff), Auggie CLI (Augment Code), Devin CLI (Cognition AI), Factory Droid, Kimi Code (Moonshot AI), Pi Coding Agent. Full matrix, frameworks and SDKs: [AGENT_INTEGRATIONS.md](AGENT_INTEGRATIONS.md) and [governance surfaces](docs/governance-surfaces.md).
-
-<!-- END GENERATED: agent-coverage -->
-
----
-
 ## Capabilities<a name="capabilities" />
 
 ![Prismor Architecture](assets/immunity-highlevel.png)
