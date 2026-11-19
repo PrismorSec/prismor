@@ -1,7 +1,17 @@
 # Shadow-agent discovery
 
 `prismor discover` still inventories agents, MCP servers, and provider keys
-and prints the legacy report. The surfaces below add a unified inventory
+and prints the legacy report.
+
+`prismor discover mcp` also shows, for each server, how many copies are
+running and their resident memory (stdio servers, from `ps`), and for Claude
+Code servers how many sessions in the last 7 days called one of its tools
+(from the local store). An agent starts its own copy of every server in its
+user-level config for each session, so a server that runs in 3 or more
+copies but was called in fewer than 1 in 10 of at least 10 sessions is
+flagged: declare it only in the projects that use it.
+
+The surfaces below add a unified inventory
 (`prismor.inventory.v1`, one JSON object per line).
 
 | Command | What it reads |

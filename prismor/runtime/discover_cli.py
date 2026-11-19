@@ -107,6 +107,37 @@ def _print_mcp(servers: List[Dict[str, Any]]) -> None:
     print()
 
 
+def _mb(mb: int) -> str:
+    return f"{mb / 1024:.1f} GB" if mb >= 1024 else f"{mb} MB"
+
+
+def _print_footprint(servers: List[Dict[str, Any]]) -> None:
+    """One table: what each local MCP server costs right now, and whether
+    anyone used it this week."""
+    rows = [s for s in servers if s.get("running")]
+    if not rows:
+        return
+    rows.sort(key=lambda s: -(s.get("rss_mb") or 0))
+    width = max(len(s["name"]) for s in rows) + 2
+    print(f"  {_c('RUNNING NOW', _BOLD)}  {_c('copies and memory from ps · use from the last 7 days of sessions', _DIM)}")
+    print(_c(f"    {'SERVER':<{width}}{'COPIES':>7}{'MEMORY':>10}   {'USED IN':<15}CONFIG", _DIM))
+    for s in rows:
+        used = (f"{s['sessions_used']} of {s['sessions_total']}" if s.get("sessions_total") else "-")
+        mark = _c("● ", _YELLOW) if s.get("rarely_used") else "  "
+        print(f"  {mark}{s['name']:<{width}}{s['running']:>7}{_mb(s.get('rss_mb') or 0):>10}   "
+              f"{used:<15}{_c(_home_relative(s['source']), _DIM)}")
+    idle = [s for s in rows if s.get("rarely_used")]
+    if idle:
+        copies = sum(s["running"] for s in idle)
+        mem = sum(s.get("rss_mb") or 0 for s in idle)
+        print()
+        print(f"    {_c('●', _YELLOW)} {len(idle)} servers start in every session but are rarely used: "
+              f"{copies} copies, {_mb(mem)}.")
+        print(_c("      Remove them from the user-level config and add them to the .mcp.json "
+                 "of the projects that use them.", _DIM))
+    print()
+
+
 def _print_credentials(creds: List[Dict[str, Any]]) -> None:
     print(f"  {_c('PROVIDER KEYS', _BOLD)}")
     if not creds:
@@ -334,12 +365,15 @@ def discover_mcp(workspace: Path, *, as_json: bool = False,
                  fix: bool = False, assume_yes: bool = False,
                  repo_root: Optional[Path] = None, mode: str = "observe") -> None:
     """MCP servers declared anywhere, and whether they route through the gateway."""
-    records = [asdict(m) for m in _discover.discover_mcp(workspace)]
+    found = _discover.discover_mcp(workspace)
+    _discover.add_footprint(found)
+    records = [asdict(m) for m in found]
     if as_json:
         print(json.dumps({"mcp": records}, indent=2))
         return
     print()
     _print_mcp(records)
+    _print_footprint(records)
     if fix:
         run_fix({"mcp": records}, workspace=workspace,
                 repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,

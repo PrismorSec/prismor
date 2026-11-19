@@ -84,6 +84,16 @@ class McpRecord:
     workspace_scoped: bool = False
     risk: str = "none"
     findings: List[str] = field(default_factory=list)
+    #: Filled by ``add_footprint`` (``discover mcp`` only): live copies of a
+    #: stdio server, their resident memory, and how many agent sessions in the
+    #: last 7 days called one of its tools. None = not measured.
+    running: Optional[int] = None
+    rss_mb: Optional[int] = None
+    sessions_used: Optional[int] = None
+    sessions_total: Optional[int] = None
+    #: User-level server running in many copies but rarely called: every
+    #: session starts it, few use it. Move it to the projects that use it.
+    rarely_used: bool = False
 
     @property
     def shadow(self) -> bool:
@@ -515,6 +525,111 @@ def discover_mcp(workspace: Path, home: Optional[Path] = None) -> List[McpRecord
     records.sort(key=lambda r: (r.managed or r.is_gateway, _RISK_ORDER.get(r.risk, 9),
                                 r.name.lower()))
     return records
+
+
+#: Launchers and flags skipped when picking the argv element that names a
+#: stdio server in ``ps`` output.
+_LAUNCHERS = {"npx", "bunx", "uvx", "pnpx", "pnpm", "dlx", "exec", "run", "node", "bun", "deno",
+              "python", "python3", "uv", "pipx", "-y", "--yes", "-m"}
+
+
+def _process_needle(command: Sequence[str]) -> str:
+    """The text that marks a running copy of this server in ``ps`` output.
+
+    A path is matched whole (``index.js`` alone would match anything). A
+    package is matched by its bare name without version, so ``npm exec
+    @scope/pkg@latest`` and its ``node .../.bin/pkg`` child both match.
+    """
+    for arg in command:
+        base = os.path.basename(arg)
+        if not arg or arg.startswith("-") or base in _LAUNCHERS or arg.startswith("<"):
+            continue
+        if "/" in arg and not arg.startswith("@"):
+            return arg
+        name = arg.rsplit("/", 1)[-1]
+        return name.split("@", 1)[0] if not name.startswith("@") else name
+    return ""
+
+
+def _ps_rows() -> List[Tuple[str, str, int, str]]:
+    """(pid, ppid, rss_kb, command) for every process; [] where ps is absent."""
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,command="], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[2].isdigit():
+            rows.append((parts[0], parts[1], int(parts[2]), parts[3]))
+    return rows
+
+
+def _session_usage(names: Set[str], days: int = 7) -> Tuple[Dict[str, int], int]:
+    """({server: sessions that called it}, sessions with any tool call) over
+    the last ``days``, from the local store. Claude Code sessions only: other
+    agents name MCP tools differently."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    try:
+        from prismor.runtime.query import resolve_db_path
+        db = resolve_db_path()
+        if not db.exists():
+            return {}, 0
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except Exception:
+        return {}, 0
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    used: Dict[str, Set[str]] = {n: set() for n in names}
+    sessions: Set[str] = set()
+    try:
+        rows = conn.execute(
+            "SELECT session_id, json_extract(raw_json, '$.metadata.tool_name') FROM events "
+            "WHERE agent_event = 'PreToolUse' AND ts >= ? "
+            "AND json_extract(raw_json, '$.agent') = 'claude'", (since,))
+        for sid, tool in rows:
+            sessions.add(sid)
+            if isinstance(tool, str) and tool.startswith("mcp__"):
+                server = tool[5:].split("__", 1)[0].lower()
+                if server in used:
+                    used[server].add(sid)
+    except sqlite3.Error:
+        return {}, 0
+    finally:
+        conn.close()
+    return {n: len(s) for n, s in used.items()}, len(sessions)
+
+
+def add_footprint(records: List[McpRecord], days: int = 7) -> None:
+    """Fill ``running``/``rss_mb`` for stdio servers and ``sessions_used`` for
+    Claude Code servers, and flag a user-level server that runs in many copies but
+    is rarely called.
+
+    An agent starts its own copy of every server in its user-level config for
+    each session, and desktop apps keep sessions alive for days, so a server
+    used once a week can still hold dozens of processes.
+    """
+    rows = _ps_rows()
+    usage, total = _session_usage({r.name.lower() for r in records if r.agent == "claude"}, days)
+    for r in records:
+        if r.is_gateway:
+            continue
+        if r.agent == "claude" and total:
+            r.sessions_used, r.sessions_total = usage.get(r.name.lower(), 0), total
+        needle = _process_needle(r.command) if not r.remote else ""
+        if not needle or not rows:
+            continue
+        hits = [row for row in rows if needle in row[3]]
+        pids = {row[0] for row in hits}
+        # One copy = a matching process whose parent is not also matching
+        # (``npm exec`` and its node child are one copy).
+        r.running = sum(1 for row in hits if row[1] not in pids)
+        r.rss_mb = sum(row[2] for row in hits) // 1024
+        r.rarely_used = bool(
+            r.running >= 3 and not r.workspace_scoped and r.sessions_total
+            and r.sessions_total >= 10 and (r.sessions_used or 0) * 10 < r.sessions_total)
 
 
 def _spec_fields(name: str, cfg: Dict[str, Any]) -> Tuple[List[str], str, str]:
