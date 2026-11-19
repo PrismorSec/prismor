@@ -407,7 +407,7 @@ def run_stop(records: List[Dict[str, Any]], *, assume_yes: bool = False) -> int:
     ended, freed = _discover.stop_copies([p for r in idle for p in r["pids"]])
     print(f"  {_c('STOPPED', _GREEN)}  {ended} copies, {_mb(freed)} resident memory freed")
     print(_c("    New sessions start them again until they leave the user-level config "
-             "(`prismor discover mcp --fix`).", _DIM))
+             "(`prismor discover mcp --prune`).", _DIM))
     print()
     return ended
 

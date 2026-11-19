@@ -244,9 +244,12 @@ def apply(
 
     # Removals first: a gateway migration of the same file must not carry a
     # server that is about to be removed.
+    #: config file -> its backup, taken once before the first removal: a
+    #: backup per server would copy a file the previous removal already edited.
+    backups: Dict[str, Path] = {}
     for action in sorted(todo.fixable, key=lambda a: a.kind != "mcp_unused"):
         if action.kind == "mcp_unused":
-            results.append(_remove_unused_mcp(action))
+            results.append(_remove_unused_mcp(action, backups))
             continue
         if action.kind == "agent":
             results.append(_fix_agent(report, action, repo_root=repo_root,
@@ -329,7 +332,7 @@ def _fix_mcp(action: Remediation) -> Remediation:
                        subject=action.subject)
 
 
-def _remove_unused_mcp(action: Remediation) -> Remediation:
+def _remove_unused_mcp(action: Remediation, backups: Dict[str, Path]) -> Remediation:
     """Delete one server from the top-level server block of the file it was
     found in. The file is copied to ``<file>.prismor-<time>.bak`` first and
     re-read just before the write, since agents rewrite these files while
@@ -350,9 +353,16 @@ def _remove_unused_mcp(action: Remediation) -> Remediation:
     if block is None:
         return done("skipped", f"not in the top-level server block of {path} "
                                f"(declared per project?) — remove it with `{action.command}`")
-    backup = Path(f"{path}.prismor-{time.strftime('%Y%m%d-%H%M%S')}.bak")
+    backup = backups.get(str(path))
     try:
-        shutil.copy2(path, backup)
+        if backup is None:
+            backup = Path(f"{path}.prismor-{time.strftime('%Y%m%d-%H%M%S')}.bak")
+            n = 1
+            while backup.exists():  # never overwrite an earlier run's backup
+                n += 1
+                backup = Path(f"{path}.prismor-{time.strftime('%Y%m%d-%H%M%S')}-{n}.bak")
+            shutil.copy2(path, backup)
+            backups[str(path)] = backup
         del block[action.target]
         tmp = path.with_name(path.name + ".prismor-tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")

@@ -128,3 +128,21 @@ def test_plain_fix_does_not_remove_rarely_used_servers():
     from prismor.runtime import remediate
     report = {"mcp": [{"name": "unused", "source": "/nope/.claude.json", "rarely_used": True}]}
     assert all(a.kind == "mcp" for a in remediate.plan(report, kinds=("mcp",)).actions)
+
+
+def test_prune_two_servers_backs_up_the_original_once(tmp_path):
+    import json
+    from prismor.runtime import remediate
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"mcpServers": {"a": {"command": "x"}, "b": {"command": "y"},
+                                              "keep": {"command": "z"}}}))
+    old = tmp_path / ".claude.json.prismor-old.bak"
+    old.write_text("earlier run")
+    report = {"mcp": [{"name": n, "source": str(cfg), "rarely_used": True} for n in ("a", "b")]}
+    results = remediate.apply(report, repo_root=tmp_path, workspace=tmp_path, kinds=("mcp_unused",))
+    assert [r.status for r in results] == ["fixed", "fixed"]
+    assert list(json.loads(cfg.read_text())["mcpServers"]) == ["keep"]
+    backups = [b for b in tmp_path.glob(".claude.json.prismor-*.bak") if b != old]
+    assert len(backups) == 1
+    assert sorted(json.loads(backups[0].read_text())["mcpServers"]) == ["a", "b", "keep"]
+    assert old.read_text() == "earlier run"
