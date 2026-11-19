@@ -144,6 +144,10 @@ def main() -> int:
     stale = []
     for path, update in targets:
         current = path.read_text(encoding="utf-8")
+        # The README table was removed on purpose (#969); only AGENT_INTEGRATIONS.md
+        # must carry markers. Re-add the README markers to turn its table back on.
+        if path == _README_PATH and _README_BEGIN not in current:
+            continue
         updated = update(current)
         if current == updated:
             continue
