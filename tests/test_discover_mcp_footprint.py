@@ -146,3 +146,58 @@ def test_prune_two_servers_backs_up_the_original_once(tmp_path):
     assert len(backups) == 1
     assert sorted(json.loads(backups[0].read_text())["mcpServers"]) == ["a", "b", "keep"]
     assert old.read_text() == "earlier run"
+
+
+def test_needle_never_matches_shells_containers_or_bare_scripts():
+    assert _process_needle(["bash", "-c", "node srv.js"]) == ""
+    assert _process_needle(["docker", "run", "-i", "--rm", "mcp/github"]) == ""
+    assert _process_needle(["/usr/bin/env", "node", "x.js"]) == ""
+    assert _process_needle(["uv", "run", "--with", "mcp", "server.py"]) == ""
+    assert _process_needle(["npm", "exec", "@s/pkg"]) == "pkg"
+    assert _process_needle(["uvx", "mcp-server-fetch"]) == "mcp-server-fetch"
+    from prismor.runtime.discover import _runs
+    assert not _runs("", "/bin/bash -l")
+    assert not _runs("/opt/srv/bin/run", "/usr/opt/srv/bin/run")
+
+
+def test_usage_key_matches_claude_tool_names():
+    from prismor.runtime.discover import _tool_server_key
+    assert _tool_server_key("context7.io") == "context7_io"
+    assert _tool_server_key("My Server") == "my_server"
+
+
+def test_stop_copies_skips_a_pid_that_no_longer_runs_the_server():
+    import subprocess
+    from prismor.runtime.discover import stop_copies
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        assert stop_copies([other.pid], needles={other.pid: "some-mcp-server"}) == (0, 0)
+        assert other.poll() is None
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_prune_writes_through_a_symlink(tmp_path):
+    import json
+    from prismor.runtime import remediate
+    real = tmp_path / "dotfiles" / "claude.json"
+    real.parent.mkdir()
+    real.write_text(json.dumps({"mcpServers": {"a": {"command": "x"}, "b": {"command": "y"}}}))
+    link = tmp_path / ".claude.json"
+    link.symlink_to(real)
+    report = {"mcp": [{"name": "a", "source": str(link), "rarely_used": True}]}
+    assert remediate.apply(report, repo_root=tmp_path, workspace=tmp_path,
+                           kinds=("mcp_unused",))[0].status == "fixed"
+    assert link.is_symlink() and list(json.loads(real.read_text())["mcpServers"]) == ["b"]
+    assert not list(real.parent.glob("*.prismor-tmp"))
+
+
+def test_fix_and_prune_run_as_one_plan(monkeypatch, tmp_path):
+    from prismor.runtime import discover_cli
+    calls = []
+    monkeypatch.setattr(discover_cli._discover, "discover_mcp", lambda ws: [])
+    monkeypatch.setattr(discover_cli._discover, "add_footprint", lambda r: None)
+    monkeypatch.setattr(discover_cli, "run_fix", lambda rep, **kw: calls.append(kw["kinds"]))
+    discover_cli.discover_mcp(tmp_path, fix=True, prune=True, repo_root=tmp_path)
+    assert calls == [("mcp", "mcp_unused")]

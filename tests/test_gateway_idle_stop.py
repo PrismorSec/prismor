@@ -107,3 +107,35 @@ def test_idle_timeout_from_config_entry():
     from prismor.runtime.mcp_gateway import _spec_from_entry
     assert _spec_from_entry("a", {"command": "x", "idleTimeout": 900}).idle_timeout == 900
     assert _spec_from_entry("a", {"command": "x"}).idle_timeout == 0
+
+
+def test_failed_restart_handshake_leaves_server_stopped(tmp_path):
+    # Second start answers nothing to initialize: the restart must fail and
+    # leave no half-started process serving calls.
+    script = tmp_path / "flaky.py"
+    script.write_text(_SERVER.replace(
+        'open(sys.argv[1], "a").write("start\\n")',
+        'open(sys.argv[1], "a").write("start\\n")\n'
+        'import os\nif open(sys.argv[1]).read().count("start") > 1:\n    import time; time.sleep(60)'))
+    starts = tmp_path / "starts"
+    spec = UpstreamSpec(name="flaky", command=[sys.executable, str(script), str(starts)],
+                        transport="stdio", idle_timeout=0.3, inherit_env=True)
+    up = UpstreamStdio(spec)
+    import prismor.runtime.mcp_gateway as gw
+    try:
+        up.initialize(_INIT)
+        up.request("tools/list", {})
+        assert _wait(lambda: up.idle_stops == 1)
+        orig = gw.INIT_TIMEOUT
+        gw.INIT_TIMEOUT = 1.0
+        try:
+            try:
+                up.request("tools/call", {"name": "echo", "arguments": {}})
+                raise AssertionError("restart without a handshake must fail")
+            except UpstreamError:
+                pass
+        finally:
+            gw.INIT_TIMEOUT = orig
+        assert up._idle_stopped and up._proc is None and up.idle_restarts == 0
+    finally:
+        up.close()

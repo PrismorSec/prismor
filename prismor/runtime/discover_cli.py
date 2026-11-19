@@ -375,14 +375,12 @@ def discover_mcp(workspace: Path, *, as_json: bool = False,
     print()
     _print_mcp(records)
     _print_footprint(records)
-    if fix:
+    # One run: removals must happen before a gateway migration of the same file.
+    kinds = (("mcp",) if fix else ()) + (("mcp_unused",) if prune else ())
+    if kinds:
         run_fix({"mcp": records}, workspace=workspace,
                 repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
-                mode=mode, kinds=("mcp",), assume_yes=assume_yes)
-    if prune:
-        run_fix({"mcp": records}, workspace=workspace,
-                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
-                mode=mode, kinds=("mcp_unused",), assume_yes=assume_yes)
+                mode=mode, kinds=kinds, assume_yes=assume_yes)
     if stop:
         run_stop(records, assume_yes=assume_yes)
 
@@ -404,7 +402,8 @@ def run_stop(records: List[Dict[str, Any]], *, assume_yes: bool = False) -> int:
         print(f"  {_c('Nothing stopped.', _DIM)}")
         print()
         return 0
-    ended, freed = _discover.stop_copies([p for r in idle for p in r["pids"]])
+    needles = {p: _discover._process_needle(r.get("command") or []) for r in idle for p in r["pids"]}
+    ended, freed = _discover.stop_copies(list(needles), needles=needles)
     print(f"  {_c('STOPPED', _GREEN)}  {ended} copies, {_mb(freed)} resident memory freed")
     print(_c("    New sessions start them again until they leave the user-level config "
              "(`prismor discover mcp --prune`).", _DIM))

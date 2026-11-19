@@ -339,8 +339,10 @@ def _remove_unused_mcp(action: Remediation, backups: Dict[str, Path]) -> Remedia
     they run."""
     import os
     import shutil
+    import tempfile
     import time
-    path = Path(action.subject)
+    # Write through a symlink (dotfile managers), not over it.
+    path = Path(action.subject).resolve()
     done = lambda status, detail: Remediation(  # noqa: E731
         kind="mcp_unused", target=action.target, status=status, detail=detail,
         command=action.command, subject=action.subject)
@@ -364,15 +366,22 @@ def _remove_unused_mcp(action: Remediation, backups: Dict[str, Path]) -> Remedia
             shutil.copy2(path, backup)
             backups[str(path)] = backup
         del block[action.target]
-        tmp = path.with_name(path.name + ".prismor-tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.chmod(tmp, path.stat().st_mode & 0o777)
-        os.replace(tmp, path)
+        # mkstemp is 0600 from the start: the file holds servers' env tokens.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".prismor-tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(data, indent=2) + "\n")
+            os.chmod(tmp, path.stat().st_mode & 0o777)
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
     except OSError as exc:
         return done("failed", f"could not write {path}: {exc}")
     return done("fixed", f"removed from {path} (backup: {backup}). New sessions no longer "
                          f"start it; to use it in one project, copy its entry from the backup "
-                         f"into that project's .mcp.json")
+                         f"into that project's .mcp.json. An open session that rewrites this "
+                         f"file can bring it back: re-run `prismor discover mcp` to check")
 
 
 def _fix_credential(action: Remediation, *, path: str) -> Remediation:

@@ -365,7 +365,9 @@ class UpstreamStdio(Upstream):
         self._idle_stopped = False
         self.idle_stops = 0
         self.idle_restarts = 0
-        if spec.idle_timeout > 0:
+        # ponytail: POSIX only. close() on Windows ends only the npx/cmd
+        # wrapper, so stopping on every idle period would leak the server.
+        if spec.idle_timeout > 0 and os.name == "posix":
             threading.Thread(target=self._idle_loop, name=f"mcp-idle-{spec.name}",
                              daemon=True).start()
 
@@ -396,11 +398,16 @@ class UpstreamStdio(Upstream):
             self._spawn()
             if self._idle_stopped and self._init_params is not None:
                 # Restarted after an idle stop: the new process needs the
-                # handshake the client did with the old one.
+                # handshake the client did with the old one. If it fails, stop
+                # the process again rather than serve calls without it.
+                try:
+                    self._send_request("initialize", self._init_params, INIT_TIMEOUT)
+                    self._write({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+                except UpstreamError:
+                    self.close()
+                    raise
                 self._idle_stopped = False
                 self.idle_restarts += 1
-                self._send_request("initialize", self._init_params, INIT_TIMEOUT)
-                self._write({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
 
     def _spawn(self) -> None:
         env = stdio_env(self.spec)
@@ -421,12 +428,18 @@ class UpstreamStdio(Upstream):
         except OSError as exc:
             raise UpstreamError(
                 f"failed to start MCP server '{self.spec.name}': {exc}")
+        # Each process gets its own pending map: when an idle-stopped process
+        # reaches EOF, its reader must not fail requests sent to the new one.
+        self._pending = {}
         self._reader = threading.Thread(
-            target=self._read_loop, name=f"mcp-up-{self.spec.name}", daemon=True)
+            target=self._read_loop, args=(self._proc, self._pending),
+            name=f"mcp-up-{self.spec.name}", daemon=True)
         self._reader.start()
 
-    def _read_loop(self) -> None:
-        proc = self._proc
+    def _read_loop(self, proc: Optional[subprocess.Popen] = None,
+                   pending_map: Optional[Dict[str, "_PendingReply"]] = None) -> None:
+        proc = proc or self._proc
+        pending_map = self._pending if pending_map is None else pending_map
         if proc is None or proc.stdout is None:
             return
         for line in proc.stdout:
@@ -444,7 +457,7 @@ class UpstreamStdio(Upstream):
                     # Answer the waiting call with the limit, not the payload.
                     msg = {"jsonrpc": "2.0", "id": msg_id,
                            "error": {"code": -32603, "message": str(_too_big(self.spec, "the reply"))}}
-                pending = self._pending.pop(str(msg_id), None)
+                pending = pending_map.pop(str(msg_id), None)
                 if pending is not None:
                     pending.resolve(msg)
             elif msg_id is not None and msg.get("method"):
@@ -460,10 +473,10 @@ class UpstreamStdio(Upstream):
                 except Exception:
                     pass
         # EOF: upstream died — fail everything still in flight.
-        for pending in list(self._pending.values()):
+        for pending in list(pending_map.values()):
             pending.resolve({"error": {"code": -32603,
                                        "message": f"MCP server '{self.spec.name}' exited"}})
-        self._pending.clear()
+        pending_map.clear()
 
     def _write(self, msg: Dict[str, Any]) -> None:
         proc = self._proc

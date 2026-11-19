@@ -531,8 +531,15 @@ def discover_mcp(workspace: Path, home: Optional[Path] = None) -> List[McpRecord
 
 #: Launchers and flags skipped when picking the argv element that names a
 #: stdio server in ``ps`` output.
-_LAUNCHERS = {"npx", "bunx", "uvx", "pnpx", "pnpm", "dlx", "exec", "run", "node", "bun", "deno",
-              "python", "python3", "uv", "pipx", "-y", "--yes", "-m"}
+_LAUNCHERS = {"npx", "npm", "bunx", "uvx", "pnpx", "pnpm", "yarn", "dlx", "exec", "x", "run",
+              "node", "bun", "deno", "python", "python3", "uv", "pipx", "-y", "--yes", "-m"}
+#: Launcher flags whose next argument is a value, not the server.
+_VALUE_FLAGS = {"--with", "--from", "--python", "-p", "--package", "--directory", "--project"}
+#: A server started through one of these cannot be told apart from every other
+#: shell, container or JVM by its command line, so it is never matched.
+_OPAQUE = {"sh", "bash", "zsh", "fish", "dash", "cmd", "cmd.exe", "powershell", "pwsh", "env",
+           "docker", "podman", "nerdctl", "java", "ruby", "php", "go", "cargo", "dotnet", "sudo"}
+_SCRIPT_EXT = (".js", ".mjs", ".cjs", ".ts", ".py", ".rb", ".sh")
 
 
 def _process_needle(command: Sequence[str]) -> str:
@@ -542,25 +549,47 @@ def _process_needle(command: Sequence[str]) -> str:
     package is matched by its bare name without version, so ``npm exec
     @scope/pkg@latest`` and its ``node .../.bin/pkg`` child both match.
     """
+    skip = False
     for arg in command:
-        base = os.path.basename(arg)
+        base = os.path.basename(arg).lower()
+        if skip:
+            skip = False
+            continue
+        if arg in _VALUE_FLAGS:
+            skip = True
+            continue
         if not arg or arg.startswith("-") or base in _LAUNCHERS or arg.startswith("<"):
             continue
+        if base in _OPAQUE or base.removesuffix(".exe") in _OPAQUE:
+            return ""
         if "/" in arg and not arg.startswith("@"):
             return arg
         name = arg.rsplit("/", 1)[-1]
-        return name.split("@", 1)[0] if not name.startswith("@") else name
+        name = name.split("@", 1)[0] if not name.startswith("@") else name
+        # A bare script name (server.py, index.js) is shared by many projects.
+        return "" if name.lower().endswith(_SCRIPT_EXT) else name
     return ""
 
 
 def _runs(needle: str, command: str) -> bool:
-    """Whether ``command`` runs the server ``needle`` names: an argv token
-    that is the needle, ends in ``/<needle>``, or is ``<needle>@<version>``.
+    """Whether ``command`` runs the server ``needle`` names. A path needle
+    must appear as a whole argv token; a package name as a token that is the
+    name, ends in ``/<name>`` (``.bin/<name>``) or is ``<name>@<version>``.
     A plain substring would also match an editor that has the file open."""
+    if not needle:
+        return False
     for tok in command.split():
-        if tok == needle or tok.endswith("/" + needle) or tok.startswith(needle + "@"):
+        if tok == needle:
+            return True
+        if "/" not in needle and (tok.endswith("/" + needle) or tok.startswith(needle + "@")):
             return True
     return False
+
+
+def _tool_server_key(name: str) -> str:
+    """A server name as it appears in ``mcp__<server>__<tool>``: Claude Code
+    replaces characters outside ``[A-Za-z0-9_-]`` with ``_``."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name).lower()
 
 
 def _ps_rows() -> List[Tuple[str, str, int, str]]:
@@ -604,7 +633,7 @@ def _session_usage(names: Set[str], days: int = 7) -> Tuple[Dict[str, int], int]
         for sid, tool in rows:
             sessions.add(sid)
             if isinstance(tool, str) and tool.startswith("mcp__"):
-                server = tool[5:].split("__", 1)[0].lower()
+                server = _tool_server_key(tool[5:].split("__", 1)[0])
                 if server in used:
                     used[server].add(sid)
     except sqlite3.Error:
@@ -624,12 +653,12 @@ def add_footprint(records: List[McpRecord], days: int = 7) -> None:
     used once a week can still hold dozens of processes.
     """
     rows = _ps_rows()
-    usage, total = _session_usage({r.name.lower() for r in records if r.agent == "claude"}, days)
+    usage, total = _session_usage({_tool_server_key(r.name) for r in records if r.agent == "claude"}, days)
     for r in records:
         if r.is_gateway:
             continue
         if r.agent == "claude" and total:
-            r.sessions_used, r.sessions_total = usage.get(r.name.lower(), 0), total
+            r.sessions_used, r.sessions_total = usage.get(_tool_server_key(r.name), 0), total
         needle = _process_needle(r.command) if not r.remote else ""
         if not needle or not rows:
             continue
@@ -645,9 +674,12 @@ def add_footprint(records: List[McpRecord], days: int = 7) -> None:
             and r.sessions_total >= 10 and (r.sessions_used or 0) * 10 < r.sessions_total)
 
 
-def stop_copies(pids: Sequence[int], grace: float = 3.0) -> Tuple[int, int]:
+def stop_copies(pids: Sequence[int], grace: float = 3.0,
+                needles: Optional[Dict[int, str]] = None) -> Tuple[int, int]:
     """End each copy (the process and everything under it): SIGTERM, then
     SIGKILL after ``grace`` seconds. Never this process or its ancestors.
+    With ``needles`` ({pid: needle}), a pid whose command no longer runs that
+    server is skipped: the list may be minutes old and a pid can be reused.
     Returns (copies ended, MB they held)."""
     import signal
     import time
@@ -655,7 +687,9 @@ def stop_copies(pids: Sequence[int], grace: float = 3.0) -> Tuple[int, int]:
     kids: Dict[str, List[str]] = {}
     rss = {}
     parent = {}
-    for pid, ppid, kb, _ in rows:
+    cmds = {}
+    for pid, ppid, kb, cmd in rows:
+        cmds[pid] = cmd
         kids.setdefault(ppid, []).append(pid)
         rss[pid] = kb
         parent[pid] = ppid
@@ -666,6 +700,8 @@ def stop_copies(pids: Sequence[int], grace: float = 3.0) -> Tuple[int, int]:
     targets: List[int] = []
     copies = 0
     for top in pids:
+        if needles is not None and not _runs(needles.get(top, ""), cmds.get(str(top), "")):
+            continue
         tree, stack = [], [str(top)]
         while stack:
             pid = stack.pop()
