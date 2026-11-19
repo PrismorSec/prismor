@@ -2,7 +2,7 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [opened, ready_for_review, reopened]  # not synchronize: a review per push is token spend, not signal
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"

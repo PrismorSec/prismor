@@ -6,8 +6,9 @@ name: Static analysis
 # Each deliberate exception carries a `# nosec <id>` with the reason.
 
 on:
+  # pull_request covers branches; pushing to every branch ran each check twice.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:
