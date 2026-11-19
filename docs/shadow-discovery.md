@@ -11,6 +11,16 @@ user-level config for each session, so a server that runs in 3 or more
 copies but was called in fewer than 1 in 10 of at least 10 sessions is
 flagged: declare it only in the projects that use it.
 
+Two flags act on the flagged servers. Both list what they will do and ask
+first (`-y` skips the question):
+
+- `--prune` removes them from the user-level config file, after copying it to
+  `<file>.prismor-<time>.bak`. New sessions stop starting them. To use one in a
+  project, copy its entry from the backup into that project's `.mcp.json`.
+- `--stop` ends the copies running now (each copy and everything under it).
+  Sessions that are open lose those servers' tools until they restart. Without
+  `--prune`, new sessions start them again.
+
 The surfaces below add a unified inventory
 (`prismor.inventory.v1`, one JSON object per line).
 

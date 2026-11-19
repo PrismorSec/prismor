@@ -64,3 +64,67 @@ def test_usage_only_for_claude_and_remote_not_matched(monkeypatch):
                        url="https://x.example/mcp", remote=True)
     add_footprint([cursor])
     assert cursor.sessions_used is None and cursor.running is None
+
+
+def test_runs_matches_tokens_not_substrings():
+    from prismor.runtime.discover import _runs
+    assert _runs("get-an-expert-agent", "npm exec get-an-expert-agent@latest")
+    assert _runs("get-an-expert-agent", "node /u/.npm/_npx/ab/node_modules/.bin/get-an-expert-agent")
+    assert not _runs("/u/bin/colab-mcp", "vim /u/bin/colab-mcp.py")
+    assert not _runs("clarity-mcp-server", "grep clarity-mcp-server-old log")
+
+
+def test_fix_removes_rarely_used_server_and_keeps_backup(tmp_path):
+    import json
+    from prismor.runtime import remediate
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"numStartups": 3, "mcpServers": {
+        "unused": {"command": "npx", "args": ["-y", "x"]},
+        "used": {"command": "npx", "args": ["-y", "y"]}}}))
+    report = {"mcp": [
+        {"name": "unused", "source": str(cfg), "rarely_used": True, "running": 9,
+         "rss_mb": 400, "sessions_used": 0, "sessions_total": 50},
+    ]}
+    todo = remediate.plan(report, kinds=("mcp_unused",))
+    assert [a.kind for a in todo.fixable] == ["mcp_unused"]
+    results = remediate.apply(report, repo_root=tmp_path, workspace=tmp_path,
+                              kinds=("mcp_unused",), plan_obj=todo)
+    assert results[0].status == "fixed"
+    data = json.loads(cfg.read_text())
+    assert list(data["mcpServers"]) == ["used"] and data["numStartups"] == 3
+    backups = list(tmp_path.glob(".claude.json.prismor-*.bak"))
+    assert len(backups) == 1 and "unused" in backups[0].read_text()
+
+
+def test_fix_skips_server_not_in_top_level_block(tmp_path):
+    import json
+    from prismor.runtime import remediate
+    cfg = tmp_path / ".claude.json"
+    cfg.write_text(json.dumps({"projects": {"/p": {"mcpServers": {"unused": {"command": "x"}}}}}))
+    report = {"mcp": [{"name": "unused", "source": str(cfg), "rarely_used": True}]}
+    results = remediate.apply(report, repo_root=tmp_path, workspace=tmp_path, kinds=("mcp_unused",))
+    assert results[0].status == "skipped" and "projects" in cfg.read_text()
+
+
+def test_stop_copies_ends_the_whole_tree_and_never_self():
+    import os
+    import subprocess
+    import time
+    from prismor.runtime.discover import _alive, stop_copies
+    sess = subprocess.Popen([sys.executable, "-c",
+                             "import subprocess,time; subprocess.Popen(['sleep','60']); time.sleep(60)"])
+    time.sleep(0.5)
+    child = [int(l.split()[0]) for l in subprocess.run(
+        ["ps", "-axo", "pid=,ppid="], capture_output=True, text=True).stdout.splitlines()
+        if l.split()[1] == str(sess.pid)]
+    assert child
+    assert stop_copies([sess.pid], grace=2)[0] == 1
+    sess.wait(timeout=5)
+    assert not any(_alive(c) for c in child)
+    assert stop_copies([os.getpid()]) == (0, 0)
+
+
+def test_plain_fix_does_not_remove_rarely_used_servers():
+    from prismor.runtime import remediate
+    report = {"mcp": [{"name": "unused", "source": "/nope/.claude.json", "rarely_used": True}]}
+    assert all(a.kind == "mcp" for a in remediate.plan(report, kinds=("mcp",)).actions)

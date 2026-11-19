@@ -107,6 +107,11 @@ class UpstreamSpec:
     tools_ttl: float = 0.0
     #: Seconds a tools/call may take (``"timeout": 60``); None = CALL_TIMEOUT.
     call_timeout: Optional[float] = None
+    #: Stop a stdio server after this many seconds with no request
+    #: (``"idleTimeout": 900``; ``--idle-timeout`` sets the default). The next
+    #: request starts it again and repeats the handshake; list calls are
+    #: answered from the last reply while it is stopped. 0 = never.
+    idle_timeout: float = 0.0
     #: Inbound client headers copied to an http(s) upstream (hosted endpoints;
     #: the stdio gateway has none). Never NEVER_FORWARD; the entry's own
     #: ``headers`` win over a client-sent value.
@@ -216,6 +221,7 @@ def _server_options(cfg: Dict[str, Any], num: Callable[[Any], bool]) -> Dict[str
         "sigv4": {"service": str(sig["service"]), "region": str(sig["region"])}
         if isinstance(sig, dict) and sig.get("service") and sig.get("region") else None,
         "managed_session": cfg.get("managedSession") is not False,
+        "idle_timeout": float(cfg["idleTimeout"]) if num(cfg.get("idleTimeout")) else 0.0,
     }
 
 
@@ -349,10 +355,54 @@ class UpstreamStdio(Upstream):
         self._pending: Dict[str, "_PendingReply"] = {}
         self._counter = 0
         self._reader: Optional[threading.Thread] = None
+        # Idle stop (spec.idle_timeout): the client's `initialize` params to
+        # repeat on restart, the last reply to each list method, and whether
+        # the process is down because it sat idle.
+        self._life = threading.RLock()
+        self._last_used = time.monotonic()
+        self._init_params: Optional[Dict[str, Any]] = None
+        self._list_cache: Dict[str, Dict[str, Any]] = {}
+        self._idle_stopped = False
+        self.idle_stops = 0
+        self.idle_restarts = 0
+        if spec.idle_timeout > 0:
+            threading.Thread(target=self._idle_loop, name=f"mcp-idle-{spec.name}",
+                             daemon=True).start()
+
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        self._init_params = client_params
+        return super().initialize(client_params, timeout)
+
+    def _idle_loop(self) -> None:
+        timeout = self.spec.idle_timeout
+        while True:
+            time.sleep(max(0.2, min(timeout / 4, 30.0)))
+            with self._life:
+                proc = self._proc
+                if (proc is None or proc.poll() is not None or self._pending
+                        or self._init_params is None
+                        or time.monotonic() - self._last_used < timeout):
+                    continue
+                self.close()
+                self._idle_stopped = True
+                self.idle_stops += 1
 
     def _ensure_started(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
-            return
+        with self._life:
+            self._last_used = time.monotonic()
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            self._spawn()
+            if self._idle_stopped and self._init_params is not None:
+                # Restarted after an idle stop: the new process needs the
+                # handshake the client did with the old one.
+                self._idle_stopped = False
+                self.idle_restarts += 1
+                self._send_request("initialize", self._init_params, INIT_TIMEOUT)
+                self._write({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+
+    def _spawn(self) -> None:
         env = stdio_env(self.spec)
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
@@ -428,7 +478,18 @@ class UpstreamStdio(Upstream):
 
     def request(self, method: str, params: Dict[str, Any],
                 timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        if (self._idle_stopped and method.endswith("/list") and not params.get("cursor")
+                and method in self._list_cache):
+            return self._list_cache[method]
         self._ensure_started()
+        result = self._send_request(method, params, timeout)
+        if self.spec.idle_timeout > 0 and method.endswith("/list") and not params.get("cursor"):
+            self._list_cache[method] = result
+        self._last_used = time.monotonic()
+        return result
+
+    def _send_request(self, method: str, params: Dict[str, Any],
+                      timeout: float) -> Dict[str, Any]:
         self._counter += 1
         req_id = f"gw-{self._counter}"
         _note_call_id(req_id)
@@ -452,6 +513,8 @@ class UpstreamStdio(Upstream):
         return msg.get("result") or {}
 
     def notify(self, method: str, params: Dict[str, Any]) -> None:
+        if self._idle_stopped:
+            return  # nothing to tell a server that is not running
         self._ensure_started()
         try:
             self._write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -2714,6 +2777,10 @@ def run_gateway(args, workspace: Path) -> int:
                 specs = []
         else:
             specs = load_gateway_config(path)
+    idle = float(getattr(args, "idle_timeout", 0) or 0)
+    for spec in specs:
+        if idle > 0 and not spec.idle_timeout:
+            spec.idle_timeout = idle
     if getattr(args, "mirror", False) and not any(s.local for s in specs):
         specs.append(UpstreamSpec(name=MIRROR_SPEC_NAME, local=True,
                                   transport="local"))

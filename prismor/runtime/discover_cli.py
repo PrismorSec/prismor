@@ -133,8 +133,8 @@ def _print_footprint(servers: List[Dict[str, Any]]) -> None:
         print()
         print(f"    {_c('●', _YELLOW)} {len(idle)} servers start in every session but are rarely used: "
               f"{copies} copies, {_mb(mem)}.")
-        print(_c("      Remove them from the user-level config and add them to the .mcp.json "
-                 "of the projects that use them.", _DIM))
+        print(_c("      Fix: prismor discover mcp --prune --stop  (removes them from the "
+                 "user-level config with a backup, then ends the running copies)", _DIM))
     print()
 
 
@@ -363,7 +363,8 @@ def discover_agents(workspace: Path, *, as_json: bool = False,
 
 def discover_mcp(workspace: Path, *, as_json: bool = False,
                  fix: bool = False, assume_yes: bool = False,
-                 repo_root: Optional[Path] = None, mode: str = "observe") -> None:
+                 repo_root: Optional[Path] = None, mode: str = "observe",
+                 stop: bool = False, prune: bool = False) -> None:
     """MCP servers declared anywhere, and whether they route through the gateway."""
     found = _discover.discover_mcp(workspace)
     _discover.add_footprint(found)
@@ -378,6 +379,37 @@ def discover_mcp(workspace: Path, *, as_json: bool = False,
         run_fix({"mcp": records}, workspace=workspace,
                 repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
                 mode=mode, kinds=("mcp",), assume_yes=assume_yes)
+    if prune:
+        run_fix({"mcp": records}, workspace=workspace,
+                repo_root=repo_root or Path(__file__).resolve().parent.parent.parent,
+                mode=mode, kinds=("mcp_unused",), assume_yes=assume_yes)
+    if stop:
+        run_stop(records, assume_yes=assume_yes)
+
+
+def run_stop(records: List[Dict[str, Any]], *, assume_yes: bool = False) -> int:
+    """End the running copies of rarely used servers. Returns copies ended."""
+    idle = [r for r in records if r.get("rarely_used") and r.get("pids")]
+    if not idle:
+        print(f"  {_c('No rarely used MCP servers are running.', _GREEN)}")
+        print()
+        return 0
+    copies = sum(len(r["pids"]) for r in idle)
+    mem = sum(r.get("rss_mb") or 0 for r in idle)
+    print(f"  {_c('WILL STOP', _BOLD)}  {copies} copies of {len(idle)} servers, {_mb(mem)}")
+    for r in idle:
+        print(f"    {r['name']:<20}{len(r['pids']):>5} copies")
+    print(_c("    Open sessions lose these servers' tools until they restart.", _DIM))
+    if not assume_yes and not _confirm("Stop them?"):
+        print(f"  {_c('Nothing stopped.', _DIM)}")
+        print()
+        return 0
+    ended, freed = _discover.stop_copies([p for r in idle for p in r["pids"]])
+    print(f"  {_c('STOPPED', _GREEN)}  {ended} copies, {_mb(freed)} resident memory freed")
+    print(_c("    New sessions start them again until they leave the user-level config "
+             "(`prismor discover mcp --fix`).", _DIM))
+    print()
+    return ended
 
 
 def discover_keys(workspace: Path, *, as_json: bool = False,

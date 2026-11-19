@@ -4693,6 +4693,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Govern what was found: hook unmanaged agents, move MCP servers behind "
              "the gateway, import exposed keys into Cloak")
     discover_parser.add_argument(
+        "--prune", action="store_true",
+        help="discover mcp: remove MCP servers that start in every session but are "
+             "rarely used from the user-level config (a backup is kept; asks first)")
+    discover_parser.add_argument(
+        "--stop", action="store_true",
+        help="discover mcp: end the running copies of MCP servers that start in every "
+             "session but are rarely used (asks first; open sessions lose those tools)")
+    discover_parser.add_argument(
         "--yes", "-y", action="store_true",
         help="Apply --fix without the confirmation prompt")
     discover_parser.add_argument(
@@ -4973,6 +4981,11 @@ def build_parser() -> argparse.ArgumentParser:
     gw_parser.add_argument("--namespace", choices=["plain", "none"], default="plain",
                            help="plain=<server>__<tool> (default); none=raw tool names "
                            "(single-upstream shim only)")
+    gw_parser.add_argument("--idle-timeout", dest="idle_timeout", type=float, default=0.0,
+                           metavar="SECONDS",
+                           help="Stop a stdio server after this many seconds without a call "
+                                "and start it again on the next one (default: never; a "
+                                "server's own \"idleTimeout\" wins)")
     gw_parser.add_argument("--mirror", action="store_true",
                            help="Also serve Prismor's mirrored built-in tools "
                                 "(Bash, Read, Write, Edit, Glob, Grep). Disable the "
@@ -6469,7 +6482,9 @@ def _run_discover(args, workspace: Path, repo_root: Path) -> None:
     if section == "agents":
         discover_cli.discover_agents(workspace, as_json=as_json, **fix_kw)
     elif section == "mcp":
-        discover_cli.discover_mcp(workspace, as_json=as_json, **fix_kw)
+        discover_cli.discover_mcp(workspace, as_json=as_json,
+                                  stop=getattr(args, "stop", False),
+                                  prune=getattr(args, "prune", False), **fix_kw)
     elif section == "keys":
         discover_cli.discover_keys(workspace, as_json=as_json,
                                    scan_files=scan_files, **fix_kw)

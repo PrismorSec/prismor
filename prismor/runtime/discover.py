@@ -94,6 +94,8 @@ class McpRecord:
     #: User-level server running in many copies but rarely called: every
     #: session starts it, few use it. Move it to the projects that use it.
     rarely_used: bool = False
+    #: Top process of each running copy (``discover mcp --stop`` ends these).
+    pids: List[int] = field(default_factory=list)
 
     @property
     def shadow(self) -> bool:
@@ -551,6 +553,16 @@ def _process_needle(command: Sequence[str]) -> str:
     return ""
 
 
+def _runs(needle: str, command: str) -> bool:
+    """Whether ``command`` runs the server ``needle`` names: an argv token
+    that is the needle, ends in ``/<needle>``, or is ``<needle>@<version>``.
+    A plain substring would also match an editor that has the file open."""
+    for tok in command.split():
+        if tok == needle or tok.endswith("/" + needle) or tok.startswith(needle + "@"):
+            return True
+    return False
+
+
 def _ps_rows() -> List[Tuple[str, str, int, str]]:
     """(pid, ppid, rss_kb, command) for every process; [] where ps is absent."""
     import subprocess
@@ -621,15 +633,81 @@ def add_footprint(records: List[McpRecord], days: int = 7) -> None:
         needle = _process_needle(r.command) if not r.remote else ""
         if not needle or not rows:
             continue
-        hits = [row for row in rows if needle in row[3]]
+        hits = [row for row in rows if _runs(needle, row[3])]
         pids = {row[0] for row in hits}
         # One copy = a matching process whose parent is not also matching
         # (``npm exec`` and its node child are one copy).
-        r.running = sum(1 for row in hits if row[1] not in pids)
+        r.pids = [int(row[0]) for row in hits if row[1] not in pids]
+        r.running = len(r.pids)
         r.rss_mb = sum(row[2] for row in hits) // 1024
         r.rarely_used = bool(
             r.running >= 3 and not r.workspace_scoped and r.sessions_total
             and r.sessions_total >= 10 and (r.sessions_used or 0) * 10 < r.sessions_total)
+
+
+def stop_copies(pids: Sequence[int], grace: float = 3.0) -> Tuple[int, int]:
+    """End each copy (the process and everything under it): SIGTERM, then
+    SIGKILL after ``grace`` seconds. Never this process or its ancestors.
+    Returns (copies ended, MB they held)."""
+    import signal
+    import time
+    rows = _ps_rows()
+    kids: Dict[str, List[str]] = {}
+    rss = {}
+    parent = {}
+    for pid, ppid, kb, _ in rows:
+        kids.setdefault(ppid, []).append(pid)
+        rss[pid] = kb
+        parent[pid] = ppid
+    protected, cur = set(), str(os.getpid())
+    while cur and cur not in protected:
+        protected.add(cur)
+        cur = parent.get(cur, "")
+    targets: List[int] = []
+    copies = 0
+    for top in pids:
+        tree, stack = [], [str(top)]
+        while stack:
+            pid = stack.pop()
+            if pid in rss and pid not in protected:
+                tree.append(pid)
+                stack.extend(kids.get(pid, []))
+        if tree:
+            copies += 1
+            targets.extend(int(p) for p in tree)
+    freed = sum(rss.get(str(p), 0) for p in targets) // 1024
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if sig == signal.SIGTERM:
+            end = time.monotonic() + grace
+            while time.monotonic() < end and any(_alive(p) for p in targets):
+                time.sleep(0.1)
+    return copies, freed
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A zombie still answers kill(0); ps says whether it has exited.
+    return _zombie(pid) is False
+
+
+def _zombie(pid: int) -> bool:
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not out or out.startswith("Z")
 
 
 def _spec_fields(name: str, cfg: Dict[str, Any]) -> Tuple[List[str], str, str]:

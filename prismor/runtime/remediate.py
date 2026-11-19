@@ -137,7 +137,7 @@ def plan(report: Dict[str, Any], *, kinds: Iterable[str] = FIXABLE_KINDS) -> Rem
                 subject=agent_id,
             ))
 
-    if "mcp" in wanted:
+    if "mcp" in wanted or "mcp_unused" in wanted:
         # Decided per source FILE, not per server: one migration moves every
         # server in a file, and the answer to "can this be migrated" is a
         # property of the file's shape.
@@ -147,6 +147,20 @@ def plan(report: Dict[str, Any], *, kinds: Iterable[str] = FIXABLE_KINDS) -> Rem
                 continue
             name = str(server.get("name") or "")
             source = str(server.get("source") or "")
+            if server.get("rarely_used") and "mcp_unused" in wanted:
+                # Every session starts it and almost none use it: take it out
+                # of the user-level config rather than govern it in place.
+                out.actions.append(Remediation(
+                    kind="mcp_unused", target=name, status="planned",
+                    detail=(f"remove from {source} — {server.get('running')} copies, "
+                            f"{server.get('rss_mb')} MB, called in {server.get('sessions_used')} "
+                            f"of {server.get('sessions_total')} sessions (backup kept)"),
+                    command=f"claude mcp remove {name} -s user",
+                    subject=source,
+                ))
+                continue
+            if "mcp" not in wanted:
+                continue
             if source not in verdicts:
                 verdicts[source] = _why_not_migratable(Path(source))
             reason = verdicts[source]
@@ -228,7 +242,12 @@ def apply(
     migrated: Dict[str, Remediation] = {}
     dotenv_done: set = set()
 
-    for action in todo.fixable:
+    # Removals first: a gateway migration of the same file must not carry a
+    # server that is about to be removed.
+    for action in sorted(todo.fixable, key=lambda a: a.kind != "mcp_unused"):
+        if action.kind == "mcp_unused":
+            results.append(_remove_unused_mcp(action))
+            continue
         if action.kind == "agent":
             results.append(_fix_agent(report, action, repo_root=repo_root,
                                       workspace=workspace, mode=mode))
@@ -308,6 +327,42 @@ def _fix_mcp(action: Remediation) -> Remediation:
     return Remediation(kind="mcp", target=action.target, status=status,
                        detail=result.detail, command=action.command,
                        subject=action.subject)
+
+
+def _remove_unused_mcp(action: Remediation) -> Remediation:
+    """Delete one server from the top-level server block of the file it was
+    found in. The file is copied to ``<file>.prismor-<time>.bak`` first and
+    re-read just before the write, since agents rewrite these files while
+    they run."""
+    import os
+    import shutil
+    import time
+    path = Path(action.subject)
+    done = lambda status, detail: Remediation(  # noqa: E731
+        kind="mcp_unused", target=action.target, status=status, detail=detail,
+        command=action.command, subject=action.subject)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return done("failed", f"could not read {path}: {exc}")
+    block = next((data[k] for k in ("mcpServers", "servers")
+                  if isinstance(data.get(k), dict) and action.target in data[k]), None)
+    if block is None:
+        return done("skipped", f"not in the top-level server block of {path} "
+                               f"(declared per project?) — remove it with `{action.command}`")
+    backup = Path(f"{path}.prismor-{time.strftime('%Y%m%d-%H%M%S')}.bak")
+    try:
+        shutil.copy2(path, backup)
+        del block[action.target]
+        tmp = path.with_name(path.name + ".prismor-tmp")
+        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        os.chmod(tmp, path.stat().st_mode & 0o777)
+        os.replace(tmp, path)
+    except OSError as exc:
+        return done("failed", f"could not write {path}: {exc}")
+    return done("fixed", f"removed from {path} (backup: {backup}). New sessions no longer "
+                         f"start it; to use it in one project, copy its entry from the backup "
+                         f"into that project's .mcp.json")
 
 
 def _fix_credential(action: Remediation, *, path: str) -> Remediation:
