@@ -208,6 +208,18 @@ reviewed, so a tool the server adds later stays off until you turn it on.
 - `timeout` is how many seconds a tool call to this server may take (default
   300).
 
+### Stopping idle servers
+
+Each agent session starts its own gateway, and the gateway starts every server
+behind it, so servers that are rarely called still hold memory in every open
+session. `"idleTimeout": 900` on a stdio server stops it after 900 seconds
+without a request. While it is stopped, the gateway answers `tools/list` (and
+the other list calls) from the server's last reply. The next call starts the
+server again and repeats the client's handshake, which adds the server's start
+time to that one call. `--idle-timeout SECONDS` sets the same value for every
+server that does not set its own. It is off by default. Leave it off for a
+server that keeps state between calls, such as an open browser.
+
 Five more keys on a server entry:
 
 - `forwardHeaders: ["X-Request-Id"]` copies those headers from the caller's

@@ -84,6 +84,18 @@ class McpRecord:
     workspace_scoped: bool = False
     risk: str = "none"
     findings: List[str] = field(default_factory=list)
+    #: Filled by ``add_footprint`` (``discover mcp`` only): live copies of a
+    #: stdio server, their resident memory, and how many agent sessions in the
+    #: last 7 days called one of its tools. None = not measured.
+    running: Optional[int] = None
+    rss_mb: Optional[int] = None
+    sessions_used: Optional[int] = None
+    sessions_total: Optional[int] = None
+    #: User-level server running in many copies but rarely called: every
+    #: session starts it, few use it. Move it to the projects that use it.
+    rarely_used: bool = False
+    #: Top process of each running copy (``discover mcp --stop`` ends these).
+    pids: List[int] = field(default_factory=list)
 
     @property
     def shadow(self) -> bool:
@@ -515,6 +527,223 @@ def discover_mcp(workspace: Path, home: Optional[Path] = None) -> List[McpRecord
     records.sort(key=lambda r: (r.managed or r.is_gateway, _RISK_ORDER.get(r.risk, 9),
                                 r.name.lower()))
     return records
+
+
+#: Launchers and flags skipped when picking the argv element that names a
+#: stdio server in ``ps`` output.
+_LAUNCHERS = {"npx", "npm", "bunx", "uvx", "pnpx", "pnpm", "yarn", "dlx", "exec", "x", "run",
+              "node", "bun", "deno", "python", "python3", "uv", "pipx", "-y", "--yes", "-m"}
+#: Launcher flags whose next argument is a value, not the server.
+_VALUE_FLAGS = {"--with", "--from", "--python", "-p", "--package", "--directory", "--project"}
+#: A server started through one of these cannot be told apart from every other
+#: shell, container or JVM by its command line, so it is never matched.
+_OPAQUE = {"sh", "bash", "zsh", "fish", "dash", "cmd", "cmd.exe", "powershell", "pwsh", "env",
+           "docker", "podman", "nerdctl", "java", "ruby", "php", "go", "cargo", "dotnet", "sudo"}
+_SCRIPT_EXT = (".js", ".mjs", ".cjs", ".ts", ".py", ".rb", ".sh")
+
+
+def _process_needle(command: Sequence[str]) -> str:
+    """The text that marks a running copy of this server in ``ps`` output.
+
+    A path is matched whole (``index.js`` alone would match anything). A
+    package is matched by its bare name without version, so ``npm exec
+    @scope/pkg@latest`` and its ``node .../.bin/pkg`` child both match.
+    """
+    skip = False
+    for arg in command:
+        base = os.path.basename(arg).lower()
+        if skip:
+            skip = False
+            continue
+        if arg in _VALUE_FLAGS:
+            skip = True
+            continue
+        if not arg or arg.startswith("-") or base in _LAUNCHERS or arg.startswith("<"):
+            continue
+        if base in _OPAQUE or base.removesuffix(".exe") in _OPAQUE:
+            return ""
+        if "/" in arg and not arg.startswith("@"):
+            return arg
+        name = arg.rsplit("/", 1)[-1]
+        name = name.split("@", 1)[0] if not name.startswith("@") else name
+        # A bare script name (server.py, index.js) is shared by many projects.
+        return "" if name.lower().endswith(_SCRIPT_EXT) else name
+    return ""
+
+
+def _runs(needle: str, command: str) -> bool:
+    """Whether ``command`` runs the server ``needle`` names. A path needle
+    must appear as a whole argv token; a package name as a token that is the
+    name, ends in ``/<name>`` (``.bin/<name>``) or is ``<name>@<version>``.
+    A plain substring would also match an editor that has the file open."""
+    if not needle:
+        return False
+    for tok in command.split():
+        if tok == needle:
+            return True
+        if "/" not in needle and (tok.endswith("/" + needle) or tok.startswith(needle + "@")):
+            return True
+    return False
+
+
+def _tool_server_key(name: str) -> str:
+    """A server name as it appears in ``mcp__<server>__<tool>``: Claude Code
+    replaces characters outside ``[A-Za-z0-9_-]`` with ``_``."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name).lower()
+
+
+def _ps_rows() -> List[Tuple[str, str, int, str]]:
+    """(pid, ppid, rss_kb, command) for every process; [] where ps is absent."""
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,ppid=,rss=,command="], capture_output=True,
+                             text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    rows = []
+    for line in out.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4 and parts[2].isdigit():
+            rows.append((parts[0], parts[1], int(parts[2]), parts[3]))
+    return rows
+
+
+def _session_usage(names: Set[str], days: int = 7) -> Tuple[Dict[str, int], int]:
+    """({server: sessions that called it}, sessions with any tool call) over
+    the last ``days``, from the local store. Claude Code sessions only: other
+    agents name MCP tools differently."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    try:
+        from prismor.runtime.query import resolve_db_path
+        db = resolve_db_path()
+        if not db.exists():
+            return {}, 0
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    except Exception:
+        return {}, 0
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    used: Dict[str, Set[str]] = {n: set() for n in names}
+    sessions: Set[str] = set()
+    try:
+        rows = conn.execute(
+            "SELECT session_id, json_extract(raw_json, '$.metadata.tool_name') FROM events "
+            "WHERE agent_event = 'PreToolUse' AND ts >= ? "
+            "AND json_extract(raw_json, '$.agent') = 'claude'", (since,))
+        for sid, tool in rows:
+            sessions.add(sid)
+            if isinstance(tool, str) and tool.startswith("mcp__"):
+                server = _tool_server_key(tool[5:].split("__", 1)[0])
+                if server in used:
+                    used[server].add(sid)
+    except sqlite3.Error:
+        return {}, 0
+    finally:
+        conn.close()
+    return {n: len(s) for n, s in used.items()}, len(sessions)
+
+
+def add_footprint(records: List[McpRecord], days: int = 7) -> None:
+    """Fill ``running``/``rss_mb`` for stdio servers and ``sessions_used`` for
+    Claude Code servers, and flag a user-level server that runs in many copies but
+    is rarely called.
+
+    An agent starts its own copy of every server in its user-level config for
+    each session, and desktop apps keep sessions alive for days, so a server
+    used once a week can still hold dozens of processes.
+    """
+    rows = _ps_rows()
+    usage, total = _session_usage({_tool_server_key(r.name) for r in records if r.agent == "claude"}, days)
+    for r in records:
+        if r.is_gateway:
+            continue
+        if r.agent == "claude" and total:
+            r.sessions_used, r.sessions_total = usage.get(_tool_server_key(r.name), 0), total
+        needle = _process_needle(r.command) if not r.remote else ""
+        if not needle or not rows:
+            continue
+        hits = [row for row in rows if _runs(needle, row[3])]
+        pids = {row[0] for row in hits}
+        # One copy = a matching process whose parent is not also matching
+        # (``npm exec`` and its node child are one copy).
+        r.pids = [int(row[0]) for row in hits if row[1] not in pids]
+        r.running = len(r.pids)
+        r.rss_mb = sum(row[2] for row in hits) // 1024
+        r.rarely_used = bool(
+            r.running >= 3 and not r.workspace_scoped and r.sessions_total
+            and r.sessions_total >= 10 and (r.sessions_used or 0) * 10 < r.sessions_total)
+
+
+def stop_copies(pids: Sequence[int], grace: float = 3.0,
+                needles: Optional[Dict[int, str]] = None) -> Tuple[int, int]:
+    """End each copy (the process and everything under it): SIGTERM, then
+    SIGKILL after ``grace`` seconds. Never this process or its ancestors.
+    With ``needles`` ({pid: needle}), a pid whose command no longer runs that
+    server is skipped: the list may be minutes old and a pid can be reused.
+    Returns (copies ended, MB they held)."""
+    import signal
+    import time
+    rows = _ps_rows()
+    kids: Dict[str, List[str]] = {}
+    rss = {}
+    parent = {}
+    cmds = {}
+    for pid, ppid, kb, cmd in rows:
+        cmds[pid] = cmd
+        kids.setdefault(ppid, []).append(pid)
+        rss[pid] = kb
+        parent[pid] = ppid
+    protected, cur = set(), str(os.getpid())
+    while cur and cur not in protected:
+        protected.add(cur)
+        cur = parent.get(cur, "")
+    targets: List[int] = []
+    copies = 0
+    for top in pids:
+        if needles is not None and not _runs(needles.get(top, ""), cmds.get(str(top), "")):
+            continue
+        tree, stack = [], [str(top)]
+        while stack:
+            pid = stack.pop()
+            if pid in rss and pid not in protected:
+                tree.append(pid)
+                stack.extend(kids.get(pid, []))
+        if tree:
+            copies += 1
+            targets.extend(int(p) for p in tree)
+    freed = sum(rss.get(str(p), 0) for p in targets) // 1024
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if sig == signal.SIGTERM:
+            end = time.monotonic() + grace
+            while time.monotonic() < end and any(_alive(p) for p in targets):
+                time.sleep(0.1)
+    return copies, freed
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    # A zombie still answers kill(0); ps says whether it has exited.
+    return _zombie(pid) is False
+
+
+def _zombie(pid: int) -> bool:
+    import subprocess
+    try:
+        out = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                             text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return not out or out.startswith("Z")
 
 
 def _spec_fields(name: str, cfg: Dict[str, Any]) -> Tuple[List[str], str, str]:
