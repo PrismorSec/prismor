@@ -97,7 +97,7 @@ token instead of getting a random one per start.
 | `GET /api/workspaces` | Registered workspaces, the dashboard's primary workspace, and enrollment status |
 | `GET /api/tokens` | Token usage and estimated cost (`?days`: totals, `byModel`, `usd` at list prices, `unpriced` models; or `?session=<id>` for one session, with `context`: what fills its context window now). Reads the transcripts of sessions active in the window first |
 | `GET /api/query-prompt` | A copy-paste prompt that teaches an agent to query the local store |
-| `GET /api/mcp-servers` | MCP servers: where each is declared, whether the gateway manages it, risk, and call/block counts |
+| `GET /api/mcp-servers` | MCP servers: where each is declared, whether the gateway manages it, risk, call/block counts, and `footprint` (local copies running now, resident MB, sessions used of total in the last 7 days, `rarely_used`) |
 | `GET /api/extensions` | The extension ledger: skills, plugins, MCP servers and hooks that put instructions or code into an agent |
 | `GET /api/extensions/detail` | One extension (`?id=…`, `&history=1` for its change history) |
 | `GET /api/extensions/session` | Extensions active in one session (`?id=<session>`) |
