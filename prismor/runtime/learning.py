@@ -410,6 +410,20 @@ _GENERIC_BASENAMES = {"", "a.out", "main", "index.js", "setup.py", "__init__.py"
                       "manage.py", "app.py", "run.py", "main.py"}
 
 
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+_SHELL_BEFORE = re.compile(r"(?:^|[|;&(]\s*)(?:\S*/)?(?:bash|sh|zsh|dash|ksh|ssh)\b[^|;&\n]*$")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies: `cat > f <<EOF` data and `python3 - <<EOF` code are
+    not shell commands, so `Run: python3 x.py` inside one runs nothing. A body
+    fed to a shell (`bash <<EOF`, `ssh h <<EOF`) is kept: it does run."""
+    def sub(m: "re.Match[str]") -> str:
+        line = command[:m.start()].rsplit("\n", 1)[-1]
+        return m.group(0) if _SHELL_BEFORE.search(line) else "<<" + m.group(2)
+    return _HEREDOC.sub(sub, command)
+
+
 def _clean_token(tok: str) -> str:
     tok = tok.strip()
     if len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]:
@@ -578,7 +592,8 @@ def _match_command(
     command: str, created: Dict[str, str], session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
     # (path, cwd it runs in): `cd ui && node src/t.js` runs ui/src/t.js.
-    executed = [(ex, seg_cwd) for seg, seg_cwd in provenance.segment_cwds(command, cwd)
+    shell = _strip_heredocs(command)
+    executed = [(ex, seg_cwd) for seg, seg_cwd in provenance.segment_cwds(shell, cwd)
                 for ex in _extract_executed_paths(seg)]
     downloads = {path: origin for path, origin in created.items() if origin == "download"}
     for ex, seg_cwd in executed:
@@ -594,7 +609,7 @@ def _match_command(
         path = provenance.resolve(ex, seg_cwd)
         if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
             return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
-    for ex in _extract_exfil_paths(command):
+    for ex in _extract_exfil_paths(shell):
         hit = _match_against(ex, created) or _match_against(provenance.resolve(ex, cwd), created)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
