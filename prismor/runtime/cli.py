@@ -3024,8 +3024,14 @@ def main(argv: Optional[List[str]] = None) -> None:
                   f"cloud, registry and Prismor key stores hidden{hidden}")
             net = report["network"]
             if net == "proxy":
-                allow = "egress allowlist on" if report["egress_allowlist"] else (
-                    "egress allowlist off, so HTTP(S) reaches any host")
+                if not report["egress_allowlist"]:
+                    allow = "egress allowlist off, so HTTP(S) reaches any host"
+                elif engine.egress.effective_mode(
+                        "off-allowlist", None, default_mode=getattr(engine, "default_mode", "observe"),
+                        device_mode=getattr(engine, "device_mode", None)) != "enforce":
+                    allow = "egress allowlist in observe mode, so off-list hosts are logged, not blocked"
+                else:
+                    allow = "egress allowlist on"
                 ports = ", ".join(str(p) for p in report["direct_ports"])
                 net_line = f"HTTP(S) through the proxy ({allow})" + (f"; direct ports {ports}" if ports else "")
             else:
@@ -3068,7 +3074,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"  {engine_name} · {_sandbox.describe({**cfg, 'enabled': True})}")
                 if report["network"] == "proxy" and not report["egress_allowlist"]:
                     print(_color("  egress allowlist is off, so HTTP(S) may reach any host. To hold "
-                                 "commands to an allowlist: prismor egress enable", _DIM))
+                                 "commands to an allowlist: prismor egress enable, then prismor egress mode enforce", _DIM))
             _org_managed_hint(workspace)
             return
 

@@ -110,7 +110,10 @@ To hold commands to an allowlist:
 prismor egress enable
 prismor egress default deny
 prismor egress allow registry.npmjs.org pypi.org files.pythonhosted.org github.com
+prismor egress mode enforce
 ```
+
+`prismor egress enable` starts the allowlist in observe mode, so off-list hosts are only logged until you run `prismor egress mode enforce`. Run `prismor egress report` first to see which hosts your commands reach.
 
 ## Configuration
 
