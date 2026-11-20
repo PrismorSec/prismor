@@ -577,19 +577,21 @@ def _build_staged(
 def _match_command(
     command: str, created: Dict[str, str], session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
-    executed = _extract_executed_paths(command)
+    # (path, cwd it runs in): `cd ui && node src/t.js` runs ui/src/t.js.
+    executed = [(ex, seg_cwd) for seg, seg_cwd in provenance.segment_cwds(command, cwd)
+                for ex in _extract_executed_paths(seg)]
     downloads = {path: origin for path, origin in created.items() if origin == "download"}
-    for ex in executed:
-        hit = _match_against(provenance.resolve(ex, cwd), downloads)
+    for ex, seg_cwd in executed:
+        hit = _match_against(provenance.resolve(ex, seg_cwd or cwd), downloads)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
     artifacts = provenance.load() if executed else {}
-    for ex in executed:
-        if "$" in ex:
-            # `python $S/run.py`: the key would be the literal `<cwd>/$S/run.py`,
-            # which every session that names its scratch dir `$S` shares.
+    for ex, seg_cwd in executed:
+        if "$" in ex or (seg_cwd is None and not os.path.isabs(ex)):
+            # `python $S/run.py`, or a relative path after `cd $S`: the key would
+            # be a guess under <cwd> that every session shares.
             continue
-        path = provenance.resolve(ex, cwd)
+        path = provenance.resolve(ex, seg_cwd)
         if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
             return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
     for ex in _extract_exfil_paths(command):

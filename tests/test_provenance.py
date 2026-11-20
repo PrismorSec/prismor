@@ -140,6 +140,24 @@ def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
     assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
 
 
+def test_cd_inside_a_command_moves_where_a_write_lands(tmp_path):
+    # `cd sub && cat > run.py` writes sub/run.py. Keyed at <cwd>/run.py, it
+    # collided with every other session's run.py in that cwd.
+    ws = _workspace(tmp_path)
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, a, "WebFetch", "network", url="https://example.com/helper", response=body)
+    _call(ws, a, "Bash", "shell", command=f"cd {ws}/sub && cat > run.py <<'EOF'\n{body}\nEOF")
+    assert lookup(str(ws / "run.py")) is None
+    assert lookup(str(ws / "sub" / "run.py"))["tags"] == ["untrusted_content"]
+    # Another session runs its own run.py in the cwd: not the tainted file.
+    decision = _call(ws, b, "Bash", "shell", command="python3 run.py")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+    # Running the tainted one through the same cd still warns.
+    decision = _call(ws, b, "Bash", "shell", command=f"cd {ws}/sub && python3 run.py")
+    assert any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
 def test_untrusted_content_crosses_the_session_boundary(tmp_path):
     ws = _workspace(tmp_path)
     note = ws / "shared" / "handoff.md"
