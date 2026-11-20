@@ -85,6 +85,22 @@ class TestCredential(UnlockTestCase):
             unlock.verify("wrong")
         self.assertEqual(unlock.lockout_remaining(), 0)
 
+    def test_first_password_needs_no_current(self):
+        # Nothing to impersonate yet, so the first credential sets freely.
+        self.assertFalse(unlock.is_configured())
+        unlock.set_password(PASSWORD)
+        self.assertTrue(unlock.verify(PASSWORD)[0])
+
+    def test_changing_the_password_requires_the_current_one(self):
+        unlock.set_password(PASSWORD)
+        with self.assertRaises(PermissionError):
+            unlock.set_password("new", current="wrong")
+        with self.assertRaises(PermissionError):
+            unlock.set_password("new")  # no proof at all
+        self.assertTrue(unlock.verify(PASSWORD)[0], "the old password must still work")
+        unlock.set_password("a new password", current=PASSWORD)
+        self.assertTrue(unlock.verify("a new password")[0])
+
     def test_forgetting_the_password_closes_any_open_window(self):
         unlock.set_password(PASSWORD)
         unlock.open_window(workspace=self.workspace)
@@ -144,7 +160,7 @@ class TestWindow(UnlockTestCase):
 
     def test_grant_does_not_survive_a_password_change(self):
         unlock.open_window(workspace=self.workspace)
-        unlock.set_password("a different password")
+        unlock.set_password("a different password", current=PASSWORD)
         self.assertFalse(
             unlock.is_open(self.workspace),
             "changing the password should invalidate windows it did not authorize",
@@ -153,6 +169,26 @@ class TestWindow(UnlockTestCase):
     def test_window_cannot_exceed_the_maximum(self):
         unlock.open_window(duration_seconds=99999, workspace=self.workspace)
         self.assertLessEqual(unlock.remaining_seconds(self.workspace), unlock.MAX_WINDOW_SECONDS)
+
+    def test_a_correctly_signed_but_over_long_window_is_rejected(self):
+        # The forge in the advisory: a grant whose MAC checks out (the key is
+        # derived from a file the attacker can read) but whose window reaches
+        # ten years. The cap is re-checked on read, so it never opens.
+        import json
+        key = unlock._grant_key()
+        now = unlock._now()
+        rec = {
+            "schema": unlock._GRANT_SCHEMA,
+            "at": unlock._iso(now),
+            "until": unlock._iso(now + 10 * 365 * 86400),
+            "by": "agent", "workspace": "",
+        }
+        rec["mac"] = unlock._mac(rec, key)
+        unlock.grant_path().write_text(json.dumps(rec))
+        self.assertFalse(
+            unlock.is_open(self.workspace),
+            "a window longer than the cap must be rejected even with a valid MAC",
+        )
 
 
 class TestOrgControls(UnlockTestCase):
@@ -216,6 +252,41 @@ class TestSelfEditGate(UnlockTestCase):
             self.assertIsNone(
                 allow.check_allowed("risky-write", scope="pattern", workspace=self.workspace)
             )
+
+
+class TestImportRouteIsBlocked(unittest.TestCase):
+    """Opening the window by importing unlock, not running the CLI. The CLI is
+    already blocked and gated; the import route must be a self-edit too."""
+
+    def _blocks(self, command: str) -> bool:
+        from prismor.runtime.hooks import should_block
+        from prismor.runtime.policy_engine import PolicyEngine
+        with tempfile.TemporaryDirectory() as tmp:
+            eng = PolicyEngine(workspace=Path(tmp))
+            findings = eng.evaluate({"type": "shell", "command": command}, index=0)
+            return should_block(
+                findings,
+                {"type": "shell", "command": command, "agent_event": "PreToolUse"},
+            ) is not None
+
+    def test_from_module_import_open_window_blocks(self):
+        self.assertTrue(self._blocks(
+            'python3 -c "from prismor.runtime.unlock import open_window; open_window()"'))
+
+    def test_module_alias_open_window_blocks(self):
+        self.assertTrue(self._blocks(
+            'python3 -c "from prismor.runtime import unlock; unlock.open_window()"'))
+
+    def test_set_password_import_blocks(self):
+        self.assertTrue(self._blocks(
+            "python3 -c \"from prismor.runtime.unlock import set_password; set_password('x')\""))
+
+    def test_dynamic_import_blocks(self):
+        self.assertTrue(self._blocks(
+            'python3 -c "m = __import__(\'prismor.runtime.unlock\'); ..."'))
+
+    def test_ordinary_python_does_not_block(self):
+        self.assertFalse(self._blocks('python3 -c "import json; print(json.dumps({}))"'))
 
 
 if __name__ == "__main__":
