@@ -206,6 +206,10 @@ class TestUnsupportedPlatforms(unittest.TestCase):
             r = subprocess.run([sys.executable, "-c", shim], input=json.dumps(payload), cwd=ws, env=env,
                                capture_output=True, text=True, timeout=60)
             self.assertNotIn("updatedInput", r.stdout, r.stderr)
+            # enforce with no engine for this OS: the call is denied, not run unconfined
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("Prismor sandbox: BLOCKED", r.stderr)
+            self.assertIn("prismor sandbox off", r.stderr)
 
 
 class TestUnconfinedOnWindows(unittest.TestCase):
@@ -315,13 +319,31 @@ class TestDecloakHandOff(unittest.TestCase):
     def test_hand_off_only_to_a_decloak_that_knows_the_index(self):
         project = self.tmp / "proj"
         self._install_decloak(project, "# old hook\n")
-        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}):
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}), \
+             mock.patch("shutil.which", return_value="/usr/bin/jq"):
             self.assertFalse(sandbox.hand_off_to_decloak(project, True))
             (self.tmp / "decloak.sh").write_text("# reads sandbox/active.tsv\n")
             self.assertTrue(sandbox.hand_off_to_decloak(project, True))
             self.assertEqual(self._index(), [f"{project}\t{sandbox.runner(project)}"])
             self.assertFalse(sandbox.hand_off_to_decloak(project, False))
             self.assertEqual(self._index(), [])
+
+    def test_no_jq_means_hook_dispatch_rewrites(self):
+        # decloak.sh exits before its wrap without jq, so it must not be handed the wrap
+        project = self.tmp / "proj"
+        self._install_decloak(project, "# reads sandbox/active.tsv\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}), \
+             mock.patch("shutil.which", return_value=None):
+            self.assertFalse(sandbox.hand_off_to_decloak(project, True))
+
+    def test_decloak_saw_runner_only_when_the_index_was_already_right(self):
+        project = self.tmp / "proj"
+        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}):
+            self.assertFalse(sandbox.decloak_saw_runner(project))      # no index yet
+            sandbox.set_index_entry(str(project), "some-other-runner")
+            self.assertFalse(sandbox.decloak_saw_runner(project))
+            sandbox.set_index_entry(str(project), sandbox.runner(project))
+            self.assertTrue(sandbox.decloak_saw_runner(project))
 
     def test_no_project_dir_means_hook_dispatch_rewrites(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -625,3 +647,211 @@ class TestConfinedRuns(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── fail closed (enforce means contained or not run) ──────────────────────
+
+ENFORCE = {"enabled": True, "mode": "enforce"}
+
+
+class TestRunFailsClosed(unittest.TestCase):
+    """The runner never runs an enforced command unconfined."""
+
+    def setUp(self):
+        sandbox.backend_status.cache_clear()
+        self.addCleanup(sandbox.backend_status.cache_clear)
+        p = mock.patch.object(sandbox, "_exec_unconfined", return_value=0)
+        self.unconfined = p.start()
+        self.addCleanup(p.stop)
+        q = mock.patch.object(sandbox, "_inside_sandbox", return_value=False)
+        self.inside = q.start()
+        self.addCleanup(q.stop)
+
+    def _run(self, command="echo hi", config=ENFORCE):
+        import io
+        err = io.StringIO()
+        with mock.patch.object(sandbox.sys, "stderr", err):
+            rc = sandbox.run(command, root=Path(tempfile.gettempdir()), config=config, wait=True)
+        return rc, err.getvalue()
+
+    def _unavailable(self):
+        return mock.patch.object(sandbox, "backend_status",
+                                 return_value={"available": False, "engine": "bubblewrap", "error": "bwrap not found"})
+
+    def test_missing_engine_refuses_in_enforce(self):
+        with self._unavailable():
+            rc, err = self._run()
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.unconfined.assert_not_called()
+        self.assertIn("BLOCKED", err)
+        self.assertIn("bwrap not found", err)
+        self.assertIn("prismor sandbox off", err)
+        self.assertIn("Nothing ran", err)
+
+    def test_missing_engine_still_runs_when_not_enforcing(self):
+        for cfg in ({"enabled": True, "mode": "observe"}, {"enabled": False}):
+            self.unconfined.reset_mock()
+            with self._unavailable():
+                rc, _ = self._run(config=cfg)
+            self.assertEqual(rc, 0)
+            self.unconfined.assert_called_once()
+
+    def test_bare_prismor_status_still_runs(self):
+        with self._unavailable():
+            rc, _ = self._run("prismor status")
+        self.assertEqual(rc, 0)
+        self.unconfined.assert_called_once()
+
+    def test_foreign_sandbox_refuses_in_enforce(self):
+        self.inside.return_value = True
+        with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": ""}):
+            rc, err = self._run()
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.assertIn("agent's own sandbox", err)
+        self.unconfined.assert_not_called()
+
+    def test_nested_run_inside_our_own_sandbox_passes_through(self):
+        with mock.patch.object(sandbox, "_inside_own_sandbox", return_value=True):
+            rc, _ = self._run()
+        self.assertEqual(rc, 0)
+        self.unconfined.assert_called_once()
+
+    def _darwin(self):
+        return [mock.patch.object(sandbox.sys, "platform", "darwin"),
+                mock.patch.object(sandbox, "backend_status", return_value={
+                    "available": True, "engine": "seatbelt", "path": "/usr/bin/sandbox-exec", "error": None})]
+
+    def test_popen_failure_refuses_in_enforce(self):
+        from contextlib import ExitStack
+        with ExitStack() as st:
+            for p in self._darwin():
+                st.enter_context(p)
+            st.enter_context(mock.patch("prismor.runtime.sandbox_proxy.EgressProxy.for_engine"))
+            st.enter_context(mock.patch.object(sandbox.subprocess, "Popen", side_effect=OSError("boom")))
+            rc, err = self._run(config={**ENFORCE, "network": "proxy"})
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.assertIn("could not start (boom)", err)
+        self.unconfined.assert_not_called()
+
+    def test_exec_failure_refuses_in_enforce(self):
+        from contextlib import ExitStack
+        import io
+        with ExitStack() as st:
+            for p in self._darwin():
+                st.enter_context(p)
+            st.enter_context(mock.patch.object(sandbox.os, "execve", side_effect=OSError("nope")))
+            err = io.StringIO()
+            st.enter_context(mock.patch.object(sandbox.sys, "stderr", err))
+            rc = sandbox.run("echo hi", root=Path(tempfile.gettempdir()),
+                             config={**ENFORCE, "network": "none"})
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.assertIn("could not start (nope)", err.getvalue())
+        self.unconfined.assert_not_called()
+
+
+class TestInsideOwnSandbox(unittest.TestCase):
+    def test_env_marker_alone_is_not_trusted(self):
+        with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": "1"}), \
+             mock.patch.object(sandbox.sys, "platform", "linux"), \
+             mock.patch.object(sandbox.Path, "read_text", return_value="systemd\n"):
+            self.assertFalse(sandbox._inside_own_sandbox())
+
+    def test_linux_needs_marker_and_bwrap_as_pid_1(self):
+        with mock.patch.object(sandbox.sys, "platform", "linux"), \
+             mock.patch.object(sandbox.Path, "read_text", return_value="bwrap\n"):
+            with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": "1"}):
+                self.assertTrue(sandbox._inside_own_sandbox())
+            with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": ""}):
+                self.assertFalse(sandbox._inside_own_sandbox())
+
+
+def _hook(ws: Path, command: str, *, agent: str = "claude", mode: str = "enforce",
+          platform: str = None, env_extra: dict = None):
+    payload = {"session_id": f"s-{agent}", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+               "tool_use_id": f"tu-{abs(hash(command))}", "cwd": str(ws),
+               "tool_input": {"command": command, "description": "d"}}
+    env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
+    for k in ("PRISMOR_WORKSPACE", "CLAUDE_PROJECT_DIR", "PRISMOR_REWRITE_AUTO_APPROVE"):
+        env.pop(k, None)
+    env.update(env_extra or {})
+    shim = ((f"import sys; sys.platform = {platform!r}; " if platform else "import sys; ")
+            + f"sys.argv = ['prismor', 'hook-dispatch', '--agent', {agent!r}, '--mode', {mode!r}]; "
+            "from prismor.runtime.cli import main; main()")
+    return subprocess.run([sys.executable, "-c", shim], input=json.dumps(payload), cwd=ws, env=env,
+                          capture_output=True, text=True, timeout=60)
+
+
+@unittest.skipUnless(sandbox.supported(), "hook rewrite path needs macOS or Linux")
+class TestHookFailsClosed(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / ".git").mkdir()
+        _policy(self.tmp, "settings:\n  sandbox:\n    enabled: true\n")
+
+    def test_agent_that_cannot_rewrite_is_denied(self):
+        r = _hook(self.tmp, "echo hi", agent="codex")
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("codex hooks cannot rewrite", r.stderr)
+        self.assertIn("prismor sandbox off", r.stderr)
+
+    def test_cd_and_read_only_prismor_still_pass(self):
+        for cmd in ("cd src", "prismor status"):
+            r = _hook(self.tmp, cmd, agent="codex")
+            self.assertEqual(r.returncode, 0, cmd + r.stdout + r.stderr)
+
+    def test_observe_hook_and_sandbox_off_do_not_deny(self):
+        self.assertEqual(_hook(self.tmp, "echo hi", agent="codex", mode="observe").returncode, 0)
+        _policy(self.tmp, "settings:\n  sandbox:\n    enabled: false\n")
+        self.assertEqual(_hook(self.tmp, "echo hi", agent="codex").returncode, 0)
+
+    def test_claude_still_gets_the_rewrite(self):
+        r = _hook(self.tmp, "echo hi")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("updatedInput", r.stdout)
+
+    @unittest.skipUnless(shutil.which("jq"), "decloak hand-off needs jq")
+    def test_stale_cloak_index_denies_once_then_hands_off(self):
+        script = self.tmp / "decloak.sh"
+        script.write_text("# reads sandbox/active.tsv\n")
+        (self.tmp / ".claude").mkdir()
+        (self.tmp / ".claude" / "settings.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": f'"{script}"'}]}]}}))
+        extra = {"CLAUDE_PROJECT_DIR": str(self.tmp)}
+        first = _hook(self.tmp, "echo hi", env_extra=extra)
+        self.assertEqual(first.returncode, 2, first.stdout + first.stderr)
+        self.assertIn("Run the command again", first.stderr)
+        second = _hook(self.tmp, "echo hi", env_extra=extra)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotIn("updatedInput", second.stdout)   # decloak.sh does the wrap
+
+
+class TestSandboxOffNeedsAPerson(unittest.TestCase):
+    def test_off_without_a_terminal_is_refused(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            _policy(ws, "settings:\n  sandbox:\n    enabled: true\n")
+            env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
+            r = subprocess.run([sys.executable, "-m", "prismor.runtime.immunity_cli", "sandbox",
+                                "--workspace", str(ws), "off"], cwd=ws, env=env, stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+            self.assertIn("needs a terminal", r.stderr)
+            block = yaml.safe_load((ws / ".prismor" / "policy.yaml").read_text())["settings"]["sandbox"]
+            self.assertTrue(block["enabled"])
+
+
+class TestSelfEditRuleCoversSandboxOff(unittest.TestCase):
+    def test_agent_cannot_run_sandbox_off_or_touch_the_index(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"PRISMOR_HOME": str(Path(d) / "ph")}):
+            engine = PolicyEngine(workspace=Path(d))
+            hit = lambda c: any(f.get("ruleId") == "prismor-self-edit" for f in engine.check_command(c))
+            for cmd in ("prismor sandbox off", "cd x && prismor sandbox off",
+                        "python3 -m prismor.runtime.cli sandbox off", "bash -c 'prismor sandbox off'",
+                        "script -q /dev/null prismor sandbox off", "eval prismor sandbox off",
+                        "echo > ~/.prismor/sandbox/active.tsv"):
+                self.assertTrue(hit(cmd), cmd)
+            for cmd in ("prismor sandbox status", "prismor sandbox on", "prismor sandbox off --help"):
+                self.assertFalse(hit(cmd), cmd)

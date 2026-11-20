@@ -164,13 +164,34 @@ On Linux, bubblewrap (`apt install bubblewrap`) enforces the same file and crede
 - **Protected paths must exist.** bubblewrap can only make an existing path read-only.
 - **Ubuntu 23.10 and later** block unprivileged user namespaces by default (`kernel.apparmor_restrict_unprivileged_userns=1`). bubblewrap cannot start until an admin adds an AppArmor profile for it. `prismor sandbox check` says so.
 
-On Windows, `prismor sandbox on` still saves the setting, but the hook leaves commands as they are, and `prismor sandbox status` and `prismor audit` say the sandbox can't start here. Policy screening, egress and cloaking work as before.
+## When the sandbox can't confine a command
 
-If the engine can't start, for example because the agent already runs inside its own sandbox, the runner says so on stderr and runs the command unconfined. Policy screening still applies, because blocking every shell command over a missing engine is how teams end up uninstalling security tools.
+In enforce mode a shell command runs inside the sandbox or it does not run. When Prismor can't confine a command, it blocks the command and runs nothing. These are the cases:
+
+- The engine is missing or can't start (no `bwrap`, an AppArmor block, `sandbox-exec` fails).
+- The OS has no sandbox (Windows).
+- The agent already runs inside its own sandbox, and Seatbelt can't nest inside it.
+- The agent's hooks can't rewrite a command (Codex and Qwen Code without `PRISMOR_REWRITE_AUTO_APPROVE=1`, Copilot CLI, OpenCode).
+- With Cloak installed, the sandbox settings for the project just changed. One call is blocked, and the agent is told to run it again.
+
+The agent sees this message:
+
+```text
+Prismor sandbox: BLOCKED. The sandbox is on in enforce mode, but it cannot confine this command here: the sandbox engine is not available (bwrap not found). Nothing ran.
+Only a person can change this, in their own terminal. The agent cannot:
+  - see what is wrong and fix it:      prismor sandbox check
+  - or run commands without the sandbox: prismor sandbox off
+```
+
+A bare `cd` and read-only `prismor` commands (`prismor status`, `prismor check`) still run, so the agent can tell you what is wrong.
+
+Only a person can turn the sandbox off. `prismor sandbox off` refuses to run without a terminal (an agent's shell has none), unless a `prismor unlock` window is open. The `prismor-self-edit` rule also blocks an agent that runs `prismor sandbox off` in any form, or writes the Cloak sandbox index. Inside the sandbox, `.prismor/` is read-only, so the policy file can't be changed from a command either.
+
+`settings.sandbox.mode: observe` keeps the old behavior: the runner says so on stderr and runs the command unconfined. Policy screening still applies. `prismor mode apply` on a host with no engine sets the mode's sandbox to `observe`, so a mode never blocks every command by accident.
 
 ## Agents
 
-The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. For other agents, run commands through `prismor sandbox run -- <command>` yourself.
+The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On other agents, an enforced sandbox blocks their shell commands, because it cannot wrap them. Use `mode: observe` there, or run commands yourself through `prismor sandbox run -- <command>`.
 
 ## Known limits
 
