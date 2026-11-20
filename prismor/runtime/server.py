@@ -216,6 +216,13 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
         records = discover_mcp(workspace)
     except Exception:
         records = []
+    try:
+        # Running copies and resident memory from ps, and how many recent
+        # sessions called each server (same numbers as `discover mcp`).
+        from prismor.runtime.discover import add_footprint
+        add_footprint(records)
+    except Exception:
+        pass
     by_name = {}
     for r in records:
         if r.is_gateway:
@@ -224,6 +231,20 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
 
     def _decl(name: str):
         return by_name.get(name.lower()) or []
+
+    def _footprint(decl):
+        """Copies and memory summed over every config that declares the
+        server; None when nothing of it is running locally."""
+        copies = sum(d.get("running") or 0 for d in decl)
+        if not copies:
+            return None
+        return {
+            "copies": copies,
+            "rss_mb": sum(d.get("rss_mb") or 0 for d in decl),
+            "sessions_used": max((d.get("sessions_used") or 0 for d in decl), default=0),
+            "sessions_total": max((d.get("sessions_total") or 0 for d in decl), default=0),
+            "rarely_used": any(d.get("rarely_used") for d in decl),
+        }
 
     usage = {}
     try:
@@ -241,6 +262,7 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
         s["managed"] = s["kind"] == "mirror" or any(d["managed"] for d in decl)
         s["risk"] = max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none")
         s["findings"] = sorted({f for d in decl for f in (d["findings"] or [])})
+        s["footprint"] = _footprint(decl)
         u = usage.get(s["name"]) or {}
         s["usage"] = {k: u.get(k, 0 if k in ("calls", "blocked", "sessions") else "")
                       for k in ("calls", "blocked", "sessions", "last", "lastAbs")}
@@ -278,6 +300,7 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
             "managed": any(d["managed"] for d in decl),
             "risk": max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none"),
             "findings": sorted({f for d in decl for f in (d["findings"] or [])}),
+            "footprint": _footprint(decl),
             "usage": {"calls": u.get("calls", 0), "blocked": u.get("blocked", 0),
                       "sessions": u.get("sessions", 0), "last": u.get("last", ""), "lastAbs": u.get("lastAbs", "")},
         })

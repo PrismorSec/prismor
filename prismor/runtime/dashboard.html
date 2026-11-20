@@ -2961,6 +2961,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .mcp-table .mcp-who { display: inline-flex; align-items: center; gap: 10px; }
   .mcp-table .mcp-name { font-family: var(--font-ui); font-size: 13px; font-weight: 500; color: var(--sui-fg); }
   .mcp-table .mcp-blocked { font-size: 11px; color: var(--tone-danger-fg); }
+  .mcp-table .mcp-sub { font-size: 11px; }
+  .mcp-idle-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--tone-warn-fg); margin-right: 6px; vertical-align: middle; }
   .mcp-avatar { width: 24px; height: 24px; border-radius: var(--r-ctl); background: var(--sui-inset); color: var(--sui-fg-muted);
     box-shadow: inset 0 0 0 1px var(--sui-border); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex: none; }
   .tone { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap;
@@ -5651,6 +5653,7 @@ const MCP_KINDS = [
   ['gateway', 'Behind the gateway', s => s.kind === 'gateway' || s.kind === 'mirror'],
   ['hooks', 'Hook-screened', s => s.kind === 'remote' || s.kind === 'seen'],
   ['idle', 'Idle', s => s.kind !== 'mirror' && !((s.usage || {}).calls)],
+  ['rarely', 'Rarely used', s => !!(s.footprint && s.footprint.rarely_used)],
 ];
 function mcpGov(s) {
   return {
@@ -5667,6 +5670,16 @@ function mcpToolCounts(s) {
   if (s.kind === 'mirror') return { total: tools.length, on: tools.filter(t => t.enabled !== false).length, ask: 0 };
   return { total: tools.length, on: tools.filter(t => (t.state || 'allow') !== 'deny').length, ask: tools.filter(t => t.state === 'ask').length };
 }
+function mcpMem(mb) { return mb >= 1024 ? (Math.round(mb / 102.4) / 10) + ' GB' : mb + ' MB'; }
+// Local copies running now and their resident memory (from ps, via `discover mcp`).
+function mcpRunning(s) {
+  const f = s.footprint;
+  if (!f) return '<span class="mcp-muted">—</span>';
+  const tip = f.copies + ' running cop' + (f.copies === 1 ? 'y' : 'ies') + ' holding ' + mcpMem(f.rss_mb) +
+    (f.sessions_total ? '; called in ' + f.sessions_used + ' of ' + f.sessions_total + ' sessions in the last 7 days' : '');
+  return '<span title="' + safeAttr(tip) + '">' + (f.rarely_used ? '<span class="mcp-idle-dot"></span>' : '') +
+    mcpMem(f.rss_mb) + '<div class="mcp-muted mcp-sub">' + f.copies + ' cop' + (f.copies === 1 ? 'y' : 'ies') + '</div></span>';
+}
 function mcpCopyBtn(text) { return '<button class="mcp-copy" title="Copy" data-copy="' + safeAttr(text) + '" onclick="event.stopPropagation();devCopy(this.dataset.copy,this)">Copy</button>'; }
 
 function renderMcpServers() {
@@ -5680,11 +5693,18 @@ function renderMcpServers() {
   const blocked = servers.reduce((n, s) => n + ((s.usage || {}).blocked || 0), 0);
   const tools = servers.reduce((n, s) => n + (s.tools || []).length, 0);
   const direct = servers.filter(s => s.kind === 'direct').length;
+  const running = servers.filter(s => s.footprint);
+  const memMb = running.reduce((n, s) => n + s.footprint.rss_mb, 0);
+  const copies = running.reduce((n, s) => n + s.footprint.copies, 0);
+  const rarely = running.filter(s => s.footprint.rarely_used);
   if (sum) {
     sum.hidden = false;
     sum.innerHTML =
       '<div><div class="kpi-label">Servers</div><div class="kpi-big">' + servers.length + '</div><div class="kpi-sub">' + (servers.length - direct) + ' governed · ' + direct + ' ungoverned</div></div>' +
-      '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>' +
+      (running.length
+        ? '<div><div class="kpi-label">Memory · running now</div><div class="kpi-big">' + mcpMem(memMb) + '</div><div class="kpi-sub">' + copies + ' copies of ' + running.length + ' server' + (running.length === 1 ? '' : 's') +
+          (rarely.length ? ' · <a href="#" onclick="_mcpFilter.kind=\'rarely\';renderMcpServers();return false">' + rarely.length + ' rarely used</a>' : '') + '</div></div>'
+        : '<div><div class="kpi-label">Tools known</div><div class="kpi-big">' + tools + '</div><div class="kpi-sub">from policy and from calls seen</div></div>') +
       '<div><div class="kpi-label">Calls · 7 days</div><div class="kpi-big">' + fmtNum(calls) + '</div><div class="kpi-sub">across every server below</div></div>' +
       '<div><div class="kpi-label">Blocked · 7 days</div><div class="kpi-big">' + fmtNum(blocked) + '</div><div class="kpi-sub">' + (calls ? (Math.round(blocked / calls * 1000) / 10) + '% of calls' : 'no calls recorded') + '</div></div>';
   }
@@ -5700,7 +5720,7 @@ function renderMcpServers() {
   if (!_mcpVisible.length) { el.innerHTML = '<div class="card empty">No MCP servers match this filter.</div>'; return; }
   const pg = clientPage('mcpPager', _mcpVisible, 25, renderMcpServers, _mcpFilter.kind + '|' + q);
   el.innerHTML = '<div class="card mcp-table-card"><table class="mcp-table"><thead><tr>' +
-      '<th>Server</th><th>Governance</th><th>Transport</th><th>Configured by</th><th class="right">Tools on</th><th class="right">Calls · 7d</th><th class="right">Last call</th>' +
+      '<th>Server</th><th>Governance</th><th>Transport</th><th>Configured by</th><th class="right">Tools on</th><th class="right" title="Local copies running now and the memory they hold">Running now</th><th class="right">Calls · 7d</th><th class="right">Last call</th>' +
     '</tr></thead><tbody>' + pg.rows.map(s => {
       const u = s.usage || {}, c = mcpToolCounts(s), decl = s.declared_in || [];
       const transports = [...new Set(decl.map(d => d.transport || 'stdio'))];
@@ -5711,6 +5731,7 @@ function renderMcpServers() {
         '<td>' + (transports.length ? transports.map(t => '<span class="tone t-outline">' + safe(t) + '</span>').join(' ') : '<span class="mcp-muted">—</span>') + '</td>' +
         '<td>' + (agents.length ? safe(agents.join(', ')) : '<span class="mcp-muted">' + (s.kind === 'seen' ? 'seen in calls' : '—') + '</span>') + '</td>' +
         '<td class="right">' + (c.total ? c.on + '<span class="mcp-muted">/' + c.total + '</span>' + (c.ask ? ' <span class="tone t-warn" title="Ask before each call">' + c.ask + ' ask</span>' : '') : '<span class="mcp-muted">—</span>') + '</td>' +
+        '<td class="right">' + mcpRunning(s) + '</td>' +
         '<td class="right">' + fmtNum(u.calls || 0) + (u.blocked ? '<div class="mcp-blocked">' + fmtNum(u.blocked) + ' blocked</div>' : '') + '</td>' +
         '<td class="right mcp-muted">' + safe(u.last || '—') + '</td></tr>';
     }).join('') + '</tbody></table>' + pg.html + '</div>';
@@ -5777,6 +5798,14 @@ function renderMcpDrawer() {
     const cmd = 'prismor mcp-gateway install --all';
     html += '<div class="banner banner-warn"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
       '<strong>Calls bypass policy</strong>The agent talks to this server straight from its own config, so Prismor never sees its calls. Put it behind the gateway so every call is screened first:' +
+      '<div class="mcp-cmd"><code>' + cmd + '</code>' + mcpCopyBtn(cmd) + '</div></div></div>';
+  }
+  const fp = s.footprint;
+  if (fp && fp.rarely_used) {
+    const cmd = 'prismor discover mcp --prune --stop';
+    html += '<div class="banner banner-warn"><span class="banner-icon"><svg class="icon"><use href="#i-alert"/></svg></span><div class="banner-text">' +
+      '<strong>Starts in every session, rarely used</strong>' + fp.copies + ' copies are holding ' + mcpMem(fp.rss_mb) + ', and it was called in ' + fp.sessions_used + ' of ' + fp.sessions_total +
+      ' sessions in the last 7 days. Remove it from the user-level config (with a backup) and end the running copies:' +
       '<div class="mcp-cmd"><code>' + cmd + '</code>' + mcpCopyBtn(cmd) + '</div></div></div>';
   }
   if ((s.findings || []).length) {
