@@ -1015,8 +1015,9 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             try:
                 session_id = (qs.get("session") or [""])[0]
                 if session_id:
-                    from prismor.runtime.token_usage import session_cost
-                    data = {"sessionId": session_id, **session_cost(Path.cwd(), session_id)}
+                    from prismor.runtime.token_usage import session_context, session_cost
+                    data = {"sessionId": session_id, **session_cost(Path.cwd(), session_id),
+                            "context": session_context(session_id)}
                     self._send_json(data)
                     return
                 days = max(1, qint("days", 1))
