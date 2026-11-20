@@ -184,13 +184,40 @@ def _record_many(workspace: Path, session_id: str, agent: str, rows: List[Dict[s
     rows = [{**{k: v for k, v in r.items() if k != "reasoning_tokens"},
              "agent": r.get("agent") or agent_name or agent} for r in rows]
     changed = store.record_token_usages(workspace, session_id, rows)
-    for row, r_tokens, new in zip(rows, reasoning, changed):
+    last_new = max((i for i, new in enumerate(changed) if new), default=-1)
+    for i, (row, r_tokens, new) in enumerate(zip(rows, reasoning, changed)):
         if new:
-            _spool_usage(session_id, agent, row, r_tokens, agent_name)
+            _spool_usage(session_id, agent, row, r_tokens, agent_name, with_context=i == last_new)
+
+
+_CONTEXT_EVERY_S = 60
+
+
+def _wire_context(session_id: str) -> Optional[Dict[str, Any]]:
+    """The session's context breakdown for the control plane, at most once a
+    minute per session: part totals and the names of the largest items, never
+    their content (no prompt text, commands or tool output)."""
+    try:
+        stamp = store.prismor_home() / "context-sent" / session_id
+        if "/" in session_id or (stamp.exists() and datetime.now().timestamp() - stamp.stat().st_mtime < _CONTEXT_EVERY_S):
+            return None
+        ctx = session_context(session_id)
+        if not ctx.get("known"):
+            return None
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        home = str(Path.home())
+        name = lambda n: "~" + n[len(home):] if n.startswith(home + "/") else n
+        return {**{k: ctx.get(k) for k in ("used", "limit", "compact_at", "first", "turns", "estimated", "model")},
+                "parts": [{"key": p["key"], "label": p["label"], "tokens": p["tokens"], "count": p.get("count", 0),
+                           "items": [{"name": name(i["name"])[:120], "tokens": i["tokens"]} for i in (p.get("items") or [])[:10]]}
+                          for p in ctx["parts"]]}
+    except Exception:
+        return None
 
 
 def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: int,
-                 agent_name: str = "") -> None:
+                 agent_name: str = "", with_context: bool = False) -> None:
     try:
         from prismor.runtime.enterprise import identity as _identity, telemetry_spool as _spool
         if not _identity.is_enrolled():
@@ -222,6 +249,7 @@ def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: in
             "cost_usd": (row["reported_cost_usd"] if row.get("reported_cost_usd") is not None
                          else cost_usd(tokens, row["model"], fetch=False)),
             "redacted": True,
+            **({"context": ctx} if with_context and (ctx := _wire_context(session_id)) else {}),
         }])
     except Exception:
         pass

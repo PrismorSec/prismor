@@ -72,3 +72,16 @@ def test_codex_reads_window_from_rollout(tmp_path):
 
 def test_unknown_without_transcript(tmp_path):
     assert session_context("nope", str(tmp_path / "missing.jsonl")) == {"known": False}
+
+
+def test_wire_context_names_only_and_throttled(tmp_path, monkeypatch):
+    from prismor.runtime import token_usage as tu
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(tu.store, "prismor_home", lambda: tmp_path)
+    path = _write(tmp_path / "t.jsonl", [
+        {"type": "user", "message": {"content": "my secret plan"}}, _turn("m1", 0, 0, 1000)])
+    monkeypatch.setattr(tu, "find_transcript", lambda sid: Path(path))
+    wire = tu._wire_context("s1")
+    assert wire["used"] == 1000 and "my secret plan" not in json.dumps(wire)
+    assert {p["key"]: p for p in wire["parts"]}["messages"]["items"] == [{"name": "Prompt", "tokens": 3}]
+    assert tu._wire_context("s1") is None   # within the minute
