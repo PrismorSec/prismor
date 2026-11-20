@@ -3185,7 +3185,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 raise SystemExit(1)
             name = args.name
             if args.value_file:
-                value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                try:
+                    value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                except (OSError, ValueError) as exc:
+                    sys.stderr.write(f"error: {exc}\n")
+                    raise SystemExit(1)
             else:
                 # Read from stdin (so the value never appears in argv / history).
                 if sys.stdin.isatty():

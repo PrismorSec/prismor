@@ -257,6 +257,59 @@ class TestCloakEnvImport(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("requires either NAME or --env-file", r.stderr)
 
+    def test_cloak_add_from_file_success(self):
+        with tempfile.TemporaryDirectory() as td:
+            secret_file = Path(td) / "secret.txt"
+            secret_file.write_text("super_secret_value\n", encoding="utf-8")
+            env = os.environ.copy()
+            env["PRISMOR_HOME"] = td
+
+            r = run_cli_env("cloak", "add", "TEST_KEY", "--from-file", str(secret_file), env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("Registered @@SECRET:TEST_KEY@@", r.stdout)
+            self.assertEqual((Path(td) / "secrets" / "TEST_KEY").read_text(encoding="utf-8"), "super_secret_value")
+
+    def test_cloak_add_from_file_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            missing_file = Path(td) / "does-not-exist.txt"
+            r = run_cli("cloak", "add", "MY_KEY", "--from-file", str(missing_file))
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("error: [Errno 2] No such file or directory", r.stderr)
+            self.assertIn(str(missing_file), r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+    def test_cloak_add_from_file_invalid_utf8(self):
+        with tempfile.TemporaryDirectory() as td:
+            bad_file = Path(td) / "secret.bin"
+            bad_file.write_bytes(b"\x80\x81\x82\xff")
+            env = os.environ.copy()
+            env["PRISMOR_HOME"] = td
+
+            r = run_cli_env("cloak", "add", "MY_KEY", "--from-file", str(bad_file), env=env)
+            self.assertEqual(r.returncode, 1)
+            self.assertTrue(r.stderr.startswith("error: "))
+            self.assertIn("codec can't decode byte", r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+    @unittest.skipIf(os.name != "posix" or getattr(os, "getuid", lambda: 0)() == 0,
+                     "Requires POSIX non-root user for file permission checks")
+    def test_cloak_add_from_file_permission_denied(self):
+        with tempfile.TemporaryDirectory() as td:
+            unreadable = Path(td) / "secret.txt"
+            unreadable.write_text("secret_val", encoding="utf-8")
+            unreadable.chmod(0o000)
+            try:
+                env = os.environ.copy()
+                env["PRISMOR_HOME"] = td
+
+                r = run_cli_env("cloak", "add", "MY_KEY", "--from-file", str(unreadable), env=env)
+                self.assertEqual(r.returncode, 1)
+                self.assertTrue(r.stderr.startswith("error: "))
+                self.assertIn("Permission denied", r.stderr)
+                self.assertNotIn("Traceback", r.stderr)
+            finally:
+                unreadable.chmod(0o600)
+
 
 class TestImmunityUmbrella(unittest.TestCase):
     """Test the unified `prismor` CLI dispatches to the right engine."""
