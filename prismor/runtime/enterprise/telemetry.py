@@ -406,6 +406,10 @@ def build_record(
         ev = finding.get("evidence")
         if isinstance(ev, str) and ev:
             detail["evidence"] = scrub(ev, scrubbers)
+        elif isinstance(ev, dict) and isinstance(ev.get("path"), str) and ev["path"]:
+            # Structured evidence (memory-integrity findings) has no command;
+            # the file path is what the console shows instead.
+            detail["path"] = scrub(ev["path"], scrubbers)
         for fld in _SENSITIVE_EVENT_FIELDS:
             val = event.get(fld)
             if isinstance(val, str) and val:
