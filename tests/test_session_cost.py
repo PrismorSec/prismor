@@ -32,7 +32,7 @@ def test_litellm_feed_cached_12h(home, monkeypatch):
             "cache_read_input_token_cost": 1e-7, "cache_creation_input_token_cost": 1.25e-6}}
     monkeypatch.delenv("PRISMOR_PRICING_OFFLINE")
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (calls.append(1), io.BytesIO(json.dumps(feed).encode()))[1])
-    cache = home / "home" / "pricing-cache.json"
+    cache = home / "home" / "pricing-cache-v2.json"
 
     assert pricing._fetch_litellm(cache)["claude-zeta-9"]["cache_write"] == 1.25
     assert pricing._fetch_litellm(cache)["claude-zeta-9"]["input"] == 1.0   # served from cache
@@ -197,9 +197,9 @@ def _feeds(home, litellm=None, openrouter=None):
     h = home / "home"
     h.mkdir(exist_ok=True)
     if litellm is not None:
-        (h / "pricing-cache.json").write_text(json.dumps(litellm))
+        (h / "pricing-cache-v2.json").write_text(json.dumps(litellm))
     if openrouter is not None:
-        (h / "openrouter-cache.json").write_text(json.dumps(pricing._reduce_openrouter(openrouter)))
+        (h / "openrouter-cache-v2.json").write_text(json.dumps(pricing._reduce_openrouter(openrouter)))
     pricing._table.cache_clear()
 
 
@@ -231,7 +231,7 @@ def test_route_picks_the_price_list(home):
 def test_price_table_reloads_after_ttl(home, monkeypatch):
     _feeds(home, litellm={"model-q": {"input": 1.0, "output": 1.0, "cache_read": 0, "cache_write": 0}})
     assert pricing.price_for("model-q")["input"] == 1.0
-    (home / "home" / "pricing-cache.json").write_text(json.dumps(
+    (home / "home" / "pricing-cache-v2.json").write_text(json.dumps(
         {"model-q": {"input": 3.0, "output": 1.0, "cache_read": 0, "cache_write": 0}}))
     assert pricing.price_for("model-q")["input"] == 1.0                      # same window: cached
     now = pricing.time.time()

@@ -7025,6 +7025,32 @@ async function loadSessionCost(sessionId){
 // transcript's system prompt, tools, memory files and skills ("~").
 const CTX_COLOR = {messages:'#3b82f6', mcp_tools:'#f97316', system_tools:'#14b8a6', overhead:'#9ca3af'};
 function ctxK(n){ n = n || 0; return n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M' : n >= 1e5 ? Math.round(n/1e3) + 'K' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'') + 'K' : String(n); }
+const CTX_LIMIT_WHY = {
+  'agent setting': "The agent's own auto-compact size for this model: the limit its context panel shows.",
+  'agent': 'Reported by the agent for this model.',
+  'model card': "The model's input window from the price feed (LiteLLM / OpenRouter).",
+  'model id': 'The model id asks for the 1M window.',
+  'observed': 'A turn already held more than the known window, so this is the next window size up.',
+  'default': 'No window known for this model; 200K assumed.',
+};
+// A model switch keeps one window per model: the limit is the current one's.
+function ctxModels(ctx){
+  const m = ctx.models || [];
+  if (m.length < 2) return '';
+  return '<div class="sess-sub">Models <span>switched ' + (m.length - 1) + '× this session</span></div>' + m.map(s =>
+    '<div class="ctx-item"><span class="nm">' + safe(s.model) + ' <span class="dt">from turn ' + s.from_turn + '</span></span><span class="num">' +
+    s.turns + ' turn' + (s.turns === 1 ? '' : 's') + ' · peak ' + ctxK(s.peak) + '</span></div>').join('');
+}
+// Subagents run in their own windows: listed here, never added to the bar above.
+// What each one handed back is a "Subagent result" under Messages.
+function ctxSubagents(ctx){
+  const a = ctx.subagents || [];
+  if (!a.length) return '';
+  return '<div class="sess-sub">Subagents <span>each in its own window; results count under Messages</span></div>' + a.map(s =>
+    '<div class="ctx-item" title="' + safeAttr((s.description || s.id) + ' · ' + s.model + ' · limit from ' + s.limit_source) + '"><span class="nm">' +
+    safe(s.description || s.type || s.id) + ' <span class="dt">' + safe([s.type, s.model].filter(Boolean).join(' · ')) + '</span></span><span class="num">peak ' +
+    ctxK(s.peak) + ' / ' + ctxK(s.limit) + ' · ' + Math.round(100 * s.peak / (s.limit || 1)) + '%</span></div>').join('');
+}
 function renderSessionContext(ctx){
   const el = document.getElementById('sessContext');
   if (!el || !ctx || !ctx.known || !ctx.limit) { if (el) el.hidden = true; return; }
@@ -7049,10 +7075,12 @@ function renderSessionContext(ctx){
   const sum = Math.round(100 * ctx.used / lim) + '% used · ' + ctxK(ctx.used) + ' / ' + ctxK(lim);
   el.innerHTML = '<details name="sesssum" class="sess-ext-all">' + sessHead('', 'Context', sum) + '<div class="ctx-body">' + bar +
     '<div class="ctx-head"><span class="ctx-pct">' + Math.round(100 * ctx.used / lim) + '% used</span><span class="ctx-quiet">' + ctxK(ctx.used) + ' / ' + ctxK(lim) + '</span></div>' +
-    (ctx.compact_at ? '<div class="ctx-quiet">Auto-compact at ' + ctxK(ctx.compact_at) + '</div>' : '') +
-    '<div class="ctx-rows">' + rows + '</div>' +
+    '<div class="ctx-quiet" title="' + safeAttr(CTX_LIMIT_WHY[ctx.limit_source] || '') + '">Limit ' + ctxK(lim) + ' from ' + safe(ctx.limit_source || 'default') +
+      (ctx.compact_at ? ' · auto-compact at ' + ctxK(ctx.compact_at) : '') +
+      (ctx.compactions ? ' · compacted ' + ctx.compactions + '×' : '') + '</div>' +
+    '<div class="ctx-rows">' + rows + '</div>' + ctxModels(ctx) + ctxSubagents(ctx) +
     '<div class="ctx-quiet" style="margin:10px 0">' + safe((ctx.model || ctx.agent) + ' · ' + ctx.turns + ' turn' + (ctx.turns === 1 ? '' : 's')) +
-      (ctx.estimated ? ' · ~ sized from the transcript, scaled to the measured first turn' : '') + '</div></div></details>';
+      (ctx.estimated ? ' · ~ sized from the transcript, scaled to the measured turn after the last tool change' : '') + '</div></div></details>';
   el.hidden = false;
 }
 async function sessViewAction(action){
