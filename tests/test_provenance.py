@@ -102,6 +102,20 @@ def test_staged_execution_warns_only_for_untrusted_script_content(tmp_path, same
     assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
 
 
+def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
+    # Two sessions both call their scratch dir `$S`. The tainted one's
+    # `$S/run.py` must not mark the other's, which is a different file.
+    ws = _workspace(tmp_path)
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, a, "WebFetch", "network", url="https://example.com/helper", response=body)
+    _call(ws, a, "Bash", "shell",
+          command=f"S=/tmp/a; cat > $S/run.py <<'EOF'\n{body}\nEOF")
+    assert lookup(str(ws / "$S" / "run.py")) is None
+    decision = _call(ws, b, "Bash", "shell", command="S=/tmp/b; python3 $S/run.py")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
 def test_untrusted_content_crosses_the_session_boundary(tmp_path):
     ws = _workspace(tmp_path)
     note = ws / "shared" / "handoff.md"
