@@ -179,6 +179,32 @@ def _cursor_deny_text(user_message: str, agent_message: str) -> str:
     return user_message + "\n"
 
 
+def _hook_deny(agent: str, reason: str) -> None:
+    """Deny a PreToolUse call in the shape ``agent`` honors, then exit.
+
+    The same per-agent shapes as the policy deny path in hook-dispatch.
+    """
+    reason = reason.strip()
+    if agent == "copilot":
+        sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
+        raise SystemExit(0)
+    if agent == "qwen" or (agent == "codex" and os.name == "nt"):
+        # Codex on Windows: powershell turns exit 2 into 1, which Codex ignores.
+        sys.stdout.write(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": reason}}) + "\n")
+        raise SystemExit(0)
+    if agent == "antigravity":
+        sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
+        raise SystemExit(0)
+    if agent == "grok":
+        sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
+    elif agent == "cursor":
+        sys.stdout.write(reason + "\n")
+    sys.stderr.write(reason + "\n")
+    raise SystemExit(2)
+
+
 def _spool_status_line(pending: int, failures: int, verified: Dict[str, Any]) -> str:
     """What `enroll-status` says about spooled telemetry. Events sit in the
     spool between batch uploads too, so "unreachable" is only claimed when an
@@ -2868,22 +2894,43 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         # Prismor sandbox (macOS, Linux): every rule, IAM and scoped check has passed on
         # the original command by now. Wrap it so the OS confines it, and whatever
-        # it starts, too. Where Seatbelt cannot start at run time the runner says
-        # so and runs the command unconfined: "not contained", never "not
-        # screened". On Claude with the cloak hook installed, decloak.sh does the
-        # wrap (sandbox.hand_off_to_decloak): two hooks rewriting one call race.
+        # it starts, too. In enforce mode the call is contained or it does not run:
+        # any reason the wrap cannot happen here (no engine on this OS, an agent
+        # that cannot rewrite input, a stale cloak index, an error) denies it, and
+        # the runner refuses when the engine cannot start (sandbox.refuse). Only a
+        # person, with `prismor sandbox off`, turns that into "run unconfined".
+        # On Claude with the cloak hook installed, decloak.sh does the wrap
+        # (sandbox.hand_off_to_decloak): two hooks rewriting one call race.
+        _sandbox_gap = None
+        _sandbox_strict = False
         try:
             if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-                _sandbox_on = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
+                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg)
+                _sandbox_on = _sandbox_strict and _sandbox.supported()
                 _sandbox_root = _sandbox.project_root(payload, workspace)
+                _sandbox_cmd = str(event.get("command") or "")
+                if _sandbox_strict and (not _sandbox_cmd.strip() or _sandbox._PURE_CD.fullmatch(_sandbox_cmd)
+                                        or _sandbox.is_exempt(_sandbox_cmd)):
+                    _sandbox_strict = False   # touches nothing / read-only prismor: runs as is
+                _decloak_fresh = args.agent == "claude" and _sandbox.decloak_saw_runner(_sandbox_root)
                 _decloak_wraps = (args.agent == "claude"
                                   and _sandbox.hand_off_to_decloak(_sandbox_root, _sandbox_on))
+                if _sandbox_strict and not _sandbox.supported():
+                    _sandbox_gap = f"there is no OS sandbox for {sys.platform}"
+                elif _sandbox_strict and _decloak_wraps and not _decloak_fresh:
+                    _sandbox_gap = ("the sandbox settings for this project just changed, so the cloak "
+                                    "hook may not have wrapped this call. Run the command again")
+                elif _sandbox_strict and not _decloak_wraps and not _hook_caps.supports_rewrite(args.agent):
+                    _sandbox_gap = (f"{args.agent} hooks cannot rewrite a command to run it inside "
+                                    "the sandbox")
                 if _sandbox_on and not _decloak_wraps and _hook_caps.supports_rewrite(args.agent):
                     update = _hook_caps.rewrite_output(args.agent, _sandbox.claude_updated_input(
                         _hook_caps.transform_payload(args.agent, payload, event), root=_sandbox_root,
                     ), reason="Prismor sandbox: run under the OS sandbox")
+                    if not update and _sandbox_strict:
+                        _sandbox_gap = "the command could not be rewritten to run inside the sandbox"
                     if update:
                         if _pre_out:
                             # One JSON object per hook call: carry the guidance
@@ -2898,6 +2945,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             raise
         except Exception as _sandbox_exc:
             sys.stderr.write(f"[prismor] sandbox error: {_sandbox_exc}\n")
+            if _sandbox_strict:
+                _sandbox_gap = f"Prismor hit an error preparing the sandbox ({_sandbox_exc})"
+        if _sandbox_gap and args.mode != "observe" and not _paused:
+            from prismor.runtime.sandbox import blocked_message as _sbx_blocked
+            _hook_deny(args.agent, _sbx_blocked(_sandbox_gap))
         if _pre_out:
             sys.stdout.write(json.dumps(_pre_out) + "\n")
         return
@@ -2958,6 +3010,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"  {_color('Engine:', _GREEN)}       {engine_name}")
             else:
                 print(f"  {_color('Engine:', _RED)}       unavailable — {engine_st.get('error')}")
+                if report["enabled"] and report["mode"] == "enforce":
+                    print(_color("                agent shell commands are blocked until the engine "
+                                 "works, or you run `prismor sandbox off`", _RED))
             if report.get("ring") is not None:
                 print(f"  {_color('Ring:', _GREEN)}         {report['ring']} ({report['ring_label']})")
             writes = ("tmp only" if report["workspace_mount"] == "ro"
@@ -2986,6 +3041,15 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
+            if not want and not sys.stdin.isatty():
+                # Turning containment off is a person's call: an agent's shell has
+                # no terminal. An open `prismor unlock` window also counts.
+                from prismor.runtime import unlock as _unlock
+                if not _unlock.is_open(workspace):
+                    sys.stderr.write(
+                        "prismor sandbox off needs a terminal. Run it yourself, not through an "
+                        "agent (or open a window first with `prismor unlock`).\n")
+                    raise SystemExit(2)
             path = _sandbox.set_enabled(workspace, want)
             # The hook keeps this in step on every call; doing it here too makes
             # the next command sandboxed rather than the one after.
@@ -2997,8 +3061,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(_color("commands now run unconfined. Policy screening, egress "
                              "and cloaking are unaffected.", _DIM))
             elif not engine_st["available"]:
-                print(_color(f"the sandbox cannot start here ({engine_st.get('error')}): commands "
-                             "run unconfined. Policy still applies.", _YELLOW))
+                print(_color(f"the sandbox cannot start here ({engine_st.get('error')}): agent shell "
+                             "commands are blocked until it can, or until you run `prismor sandbox off`.",
+                             _YELLOW))
             else:
                 print(f"  {engine_name} · {_sandbox.describe({**cfg, 'enabled': True})}")
                 if report["network"] == "proxy" and not report["egress_allowlist"]:

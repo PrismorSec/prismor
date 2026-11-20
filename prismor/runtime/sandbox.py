@@ -279,6 +279,24 @@ def _inside_sandbox() -> bool:
         return False
 
 
+def _inside_own_sandbox() -> bool:
+    """True when this process runs inside a Prismor sandbox run (a nested call).
+
+    The command is already confined, so it runs as is. The env marker alone is
+    not trusted: on macOS the kernel must also report a Seatbelt sandbox, and on
+    Linux PID 1 must be bubblewrap (``--unshare-pid`` makes it init; the host's
+    PID 1 is systemd or similar).
+    """
+    if os.environ.get("PRISMOR_SANDBOX") != "1":
+        return False
+    if sys.platform == "darwin":
+        return _inside_sandbox()
+    try:
+        return Path("/proc/1/comm").read_text(encoding="utf-8").strip() == "bwrap"
+    except OSError:
+        return False
+
+
 def _shell() -> str:
     sh = os.environ.get("SHELL") or ""
     if os.path.basename(sh) in _SHELLS and os.access(sh, os.X_OK):
@@ -333,6 +351,29 @@ def _note(text: str) -> None:
     sys.stderr.flush()
 
 
+# Exit code of a command the sandbox refused to run (126: "found but not run").
+REFUSED = 126
+
+
+def blocked_message(reason: str) -> str:
+    """What the agent and the person see when enforce cannot confine a command."""
+    return (
+        f"Prismor sandbox: BLOCKED. The sandbox is on in enforce mode, but it cannot "
+        f"confine this command here: {reason}. Nothing ran.\n"
+        "Only a person can change this, in their own terminal. The agent cannot:\n"
+        "  - see what is wrong and fix it:      prismor sandbox check\n"
+        "  - or run commands without the sandbox: prismor sandbox off\n"
+        "Agent: do not try to work around this. Tell the user the sandbox blocked the command.\n"
+    )
+
+
+def refuse(reason: str) -> int:
+    """Fail closed: say why on stderr and run nothing."""
+    sys.stderr.write(blocked_message(reason))
+    sys.stderr.flush()
+    return REFUSED
+
+
 def _windows_bash() -> Optional[str]:
     """Git Bash, which runs agents' Bash commands on Windows. System32\\bash.exe is the WSL launcher."""
     import shutil
@@ -382,13 +423,21 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
     Without a proxy to keep alive this process becomes the sandbox (exec), unless
     ``wait`` asks for the exit code back.
     """
-    if is_exempt(command) or _inside_sandbox():
+    if is_exempt(command) or _inside_own_sandbox():
+        return _exec_unconfined(command)
+    # Enforce means "contained or not run". Only `prismor sandbox off`, which a
+    # person runs in their own terminal, turns that into "run unconfined".
+    strict = enforcing(effective_config(config))
+    if _inside_sandbox():
+        # An agent's own Seatbelt sandbox: ours cannot nest inside it.
+        if strict:
+            return refuse("this shell already runs inside the agent's own sandbox, "
+                          "and the OS sandbox cannot nest inside another one")
         return _exec_unconfined(command)
     status = backend_status()
     if not status["available"]:
-        # Containment is a layer on top of policy. Every rule has already run on
-        # this command, so a missing engine means "not contained", not "not
-        # screened" — refusing here would stop every shell command on the host.
+        if strict:
+            return refuse(f"the sandbox engine is not available ({status.get('error')})")
         _note(f"not available here ({status.get('error')}); running unconfined. Policy still applies.")
         return _exec_unconfined(command)
 
@@ -400,7 +449,14 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
     env = dict(os.environ, PRISMOR_SANDBOX="1")
 
     if profile.network != "proxy" and not wait:
-        os.execve(argv[0], argv, env)
+        try:
+            os.execve(argv[0], argv, env)
+        except OSError as exc:
+            os.close(fd)
+            if strict:
+                return refuse(f"the sandbox could not start ({exc})")
+            _note(f"could not start ({exc}); running unconfined. Policy still applies.")
+            return _exec_unconfined(command)
 
     proxy = None
     if profile.network == "proxy":
@@ -412,6 +468,9 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
     except OSError as exc:
         if proxy:
             proxy.close()
+        os.close(fd)
+        if strict:
+            return refuse(f"the sandbox could not start ({exc})")
         _note(f"could not start ({exc}); running unconfined. Policy still applies.")
         return _exec_unconfined(command)
     os.close(fd)
@@ -530,6 +589,9 @@ def _settings_files(project: str) -> List[Path]:
 
 def decloak_wraps(project: str) -> bool:
     """Whether a decloak.sh that knows the sandbox index is installed for ``project``."""
+    import shutil
+    if not shutil.which("jq"):
+        return False   # decloak.sh exits before its wrap without jq: hook-dispatch wraps instead
     for path in _settings_files(project):
         try:
             hooks = json.loads(path.read_text(encoding="utf-8")).get("hooks") or {}
@@ -569,12 +631,36 @@ def set_index_entry(project: str, runner_cmd: Optional[str]) -> None:
     os.replace(tmp, path)
 
 
+def index_entry(project: str) -> Optional[str]:
+    """The runner decloak.sh will use for ``project``, as the index says now."""
+    try:
+        lines = _index_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for ln in lines:
+        key, _, cmd = ln.partition("\t")
+        if key == project:
+            return cmd
+    return None
+
+
 def hand_off_to_decloak(root: Path, active: bool) -> bool:
     """Keep the index in step with policy; True when decloak.sh will do the wrap."""
     project = os.environ.get("CLAUDE_PROJECT_DIR") or ""
     owns = bool(active and project and decloak_wraps(project))
     set_index_entry(project, runner(root) if owns else None)
     return owns
+
+
+def decloak_saw_runner(root: Path) -> bool:
+    """Whether decloak.sh, running alongside this hook, read the right runner.
+
+    Both hooks run at once, so decloak.sh read the index before
+    :func:`hand_off_to_decloak` could fix it. If the entry was missing or
+    different, decloak.sh may not have wrapped this call. Call before the hand-off.
+    """
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or ""
+    return bool(project) and index_entry(project) == runner(root)
 
 
 # ── CLI helpers ────────────────────────────────────────────────────────────

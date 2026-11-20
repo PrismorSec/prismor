@@ -1505,19 +1505,19 @@ rules:
       # `$PRISMOR_HOME`, any path under a directory called Prismor, and any
       # `git checkout -b feat/...-setup` run from one. Replaying 30 days of
       # real transcripts turned up 1057 such matches against ~30 genuine ones.
-      - '(^|[;&|{`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '(^|[;&|{`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # eval and ssh ProxyCommand run prismor without it sitting at a
       # statement boundary the anchor above can see.
-      - '\beval\s+[''"]?\s*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout)\b'
-      - '\bProxyCommand\b[^\n]*\b(prismor|immunity)(@\S+)?[ \t]+(allow|pause|pause-hard|resume|uninstall|uninstall-hooks|unlock|lock)\b'
+      - '\beval\s+[''"]?\s*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|sandbox[ \t]+off)\b'
+      - '\bProxyCommand\b[^\n]*\b(prismor|immunity)(@\S+)?[ \t]+(allow|pause|pause-hard|resume|uninstall|uninstall-hooks|unlock|lock|sandbox[ \t]+off)\b'
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init|pack[ \t]+(?:add|update|remove))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+egress[ \t]+(allow|deny|rm|mode|default|enable|disable)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # The same CLI reached as a module or a script path.
-      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
-      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # ...or wrapped in a shell, which is how the anchors above would
       # otherwise be stepped around: `bash -c "prismor allow ..."`.
-      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # Opting a command out of org governance through the environment
       # (`PRISMOR_WORKSPACE_SCOPE=personal claude -p ...`, `export ...=local`)
       # is the same escape as `prismor workspace personal`, one level down: the
@@ -1584,6 +1584,10 @@ rules:
       # Other Prismor state an agent has no legitimate reason to rewrite.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
+      # The runner index decloak.sh wraps sandboxed calls from: emptying it
+      # would let a call run unwrapped (sandbox.decloak_saw_runner).
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/sandbox/active\.tsv'
+      - '(^|/)\.prismor/sandbox/active\.tsv$'
       # The cached org policy: a validly signed but older policy written back
       # here (e.g. one carrying device_pause: paused) would be accepted.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
@@ -1614,7 +1618,7 @@ rules:
       - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
-      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # A pty wrapper is exactly how the CLI's "needs a terminal" check would be faked.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
     action: block
