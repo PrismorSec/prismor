@@ -149,6 +149,17 @@ def test_full_capture_includes_scrubbed_detail():
     assert "[REDACTED]" in rec["detail"]["stdout"]
 
 
+def test_full_capture_keeps_path_from_structured_evidence():
+    finding = {
+        "ruleId": "memory-integrity-mismatch", "action": "warn",
+        "evidence": {"path": "/repo/CLAUDE.md", "origin": "unclassified_change"},
+    }
+    rec = telemetry.build_record(finding, {"type": "memory"}, extra={}, full_capture=True)
+    assert rec["detail"]["path"] == "/repo/CLAUDE.md"
+    redacted = telemetry.build_record(finding, {"type": "memory"}, extra={})
+    assert "detail" not in redacted
+
+
 def test_assert_redacted_fails_closed_on_leak():
     bad = {"redacted": True, "detail": {"command": "leak"}}
     with pytest.raises(AssertionError):
