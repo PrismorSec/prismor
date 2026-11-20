@@ -95,7 +95,7 @@ token instead of getting a random one per start.
 | `PUT /api/policy/rules` | Toggle rule enable/mode from the Policy tab |
 | `GET /api/docs` | The docs shipped with this install — the list, one page (`?name=<file>.md`), or a search (`?q=…`) |
 | `GET /api/workspaces` | Registered workspaces, the dashboard's primary workspace, and enrollment status |
-| `GET /api/tokens` | Token usage and estimated cost (`?days`: totals, `byModel`, `usd` at list prices, `unpriced` models; or `?session=<id>` for one session). Reads the transcripts of sessions active in the window first |
+| `GET /api/tokens` | Token usage and estimated cost (`?days`: totals, `byModel`, `usd` at list prices, `unpriced` models; or `?session=<id>` for one session, with `context`: what fills its context window now). Reads the transcripts of sessions active in the window first |
 | `GET /api/query-prompt` | A copy-paste prompt that teaches an agent to query the local store |
 | `GET /api/mcp-servers` | MCP servers: where each is declared, whether the gateway manages it, risk, and call/block counts |
 | `GET /api/extensions` | The extension ledger: skills, plugins, MCP servers and hooks that put instructions or code into an agent |

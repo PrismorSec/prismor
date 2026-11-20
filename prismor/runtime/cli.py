@@ -1756,8 +1756,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         session = get_session(workspace, session_id)
         if session is None:
             raise SystemExit(f"Session not found: {session_id}")
-        from prismor.runtime.token_usage import session_cost
+        from prismor.runtime.token_usage import session_context, session_cost
         session["cost"] = session_cost(workspace, session_id)
+        session["context"] = session_context(session_id)
         emit(session, as_json=args.json, formatter=format_session)
         return
 
@@ -8744,6 +8745,7 @@ def format_session(session: Dict[str, Any]) -> str:
     ]
     if session.get("cost"):
         lines.append(f"Cost: {_fmt_cost(session['cost'])}")
+    lines.extend(format_context(session.get("context") or {}))
     lines.extend(["", "Findings", "--------"])
     for finding in session["findings"]:
         lines.append(f"- [{finding['severity']}] {finding['title']} ({finding['category']})")
@@ -8754,6 +8756,21 @@ def format_session(session: Dict[str, Any]) -> str:
         parts = [event.get("ts"), event.get("type"), event.get("path"), event.get("command"), event.get("url")]
         lines.append(f"- {' | '.join(part for part in parts if part)}")
     return safe_text("\n".join(lines))
+
+
+def format_context(ctx: Dict[str, Any]) -> List[str]:
+    """The session's context window, as lines (empty when unknown)."""
+    if not ctx.get("known"):
+        return []
+    used, limit = ctx["used"], ctx["limit"] or 1
+    k = lambda n: f"{n / 1000:.1f}K" if n < 100_000 else f"{n // 1000}K"
+    est = "~" if ctx.get("estimated") else ""
+    lines = ["", f"Context: {used / limit:.0%} used ({k(used)} / {k(limit)})", "-------"]
+    for p in ctx["parts"]:
+        mark = "" if p["key"] == "messages" else est
+        lines.append(f"  {p['label']:<26}{mark + k(p['tokens']):>8}  {p['tokens'] / limit:6.1%}")
+    lines.append(f"  {'Free space':<26}{k(max(0, limit - used)):>8}  {max(0, limit - used) / limit:6.1%}")
+    return lines
 
 
 def _fmt_cost(cost: Dict[str, Any]) -> str:

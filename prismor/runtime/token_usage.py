@@ -184,13 +184,40 @@ def _record_many(workspace: Path, session_id: str, agent: str, rows: List[Dict[s
     rows = [{**{k: v for k, v in r.items() if k != "reasoning_tokens"},
              "agent": r.get("agent") or agent_name or agent} for r in rows]
     changed = store.record_token_usages(workspace, session_id, rows)
-    for row, r_tokens, new in zip(rows, reasoning, changed):
+    last_new = max((i for i, new in enumerate(changed) if new), default=-1)
+    for i, (row, r_tokens, new) in enumerate(zip(rows, reasoning, changed)):
         if new:
-            _spool_usage(session_id, agent, row, r_tokens, agent_name)
+            _spool_usage(session_id, agent, row, r_tokens, agent_name, with_context=i == last_new)
+
+
+_CONTEXT_EVERY_S = 60
+
+
+def _wire_context(session_id: str) -> Optional[Dict[str, Any]]:
+    """The session's context breakdown for the control plane, at most once a
+    minute per session: part totals and the names of the largest items, never
+    their content (no prompt text, commands or tool output)."""
+    try:
+        stamp = store.prismor_home() / "context-sent" / session_id
+        if "/" in session_id or (stamp.exists() and datetime.now().timestamp() - stamp.stat().st_mtime < _CONTEXT_EVERY_S):
+            return None
+        ctx = session_context(session_id)
+        if not ctx.get("known"):
+            return None
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        home = str(Path.home())
+        name = lambda n: "~" + n[len(home):] if n.startswith(home + "/") else n
+        return {**{k: ctx.get(k) for k in ("used", "limit", "compact_at", "first", "turns", "estimated", "model")},
+                "parts": [{"key": p["key"], "label": p["label"], "tokens": p["tokens"], "count": p.get("count", 0),
+                           "items": [{"name": name(i["name"])[:120], "tokens": i["tokens"]} for i in (p.get("items") or [])[:10]]}
+                          for p in ctx["parts"]]}
+    except Exception:
+        return None
 
 
 def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: int,
-                 agent_name: str = "") -> None:
+                 agent_name: str = "", with_context: bool = False) -> None:
     try:
         from prismor.runtime.enterprise import identity as _identity, telemetry_spool as _spool
         if not _identity.is_enrolled():
@@ -222,6 +249,7 @@ def _spool_usage(session_id: str, agent: str, row: Dict[str, Any], reasoning: in
             "cost_usd": (row["reported_cost_usd"] if row.get("reported_cost_usd") is not None
                          else cost_usd(tokens, row["model"], fetch=False)),
             "redacted": True,
+            **({"context": ctx} if with_context and (ctx := _wire_context(session_id)) else {}),
         }])
     except Exception:
         pass
@@ -358,6 +386,207 @@ def sessions_cost(workspace: Path, session_ids: List[str], backfill: bool = True
 
 def session_cost(workspace: Path, session_id: str) -> Dict[str, Any]:
     return sessions_cost(workspace, [session_id])[session_id]
+
+
+# ponytail: 4 chars/token for the overhead split, then capped to the measured
+# first-turn size; a real tokenizer would only move the estimated rows.
+_CHARS_PER_TOKEN = 4
+_CONTEXT_LABELS = {  # display order
+    "messages": "Messages", "mcp_tools": "MCP tools", "system_tools": "System tools",
+    "system_prompt": "System prompt", "skills": "Skills", "memory": "Memory files",
+    "mcp_instructions": "MCP server instructions", "agents": "Custom agents", "overhead": "Fixed overhead",
+}
+
+
+def _context_window(model: str, peak: int) -> int:
+    # ponytail: transcripts don't record the window; 1M only when the id says so
+    # or a turn already went past 200K.
+    return 1_000_000 if "[1m]" in model or peak > 200_000 else 200_000
+
+
+def _claude_compact_at(model: str) -> int:
+    """Claude Code's ``autoCompactWindow`` user setting (per model under
+    ``modelSettings``, else top level): the size it compacts at, and the limit
+    its own context panel shows. 0 when unset."""
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    try:
+        cfg = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+        per_model = (cfg.get("modelSettings") or {}).get(model) or {}
+        return int(per_model.get("autoCompactWindow") or cfg.get("autoCompactWindow") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+_ITEMS_MAX = 40
+
+
+def _short(text: Any, n: int = 80) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+_IMAGE_CHARS = 1600 * _CHARS_PER_TOKEN  # ponytail: a typical screenshot's tokens, not its base64 length
+
+
+def _block_chars(block: Any) -> int:
+    if isinstance(block, str):
+        return len(block)
+    if isinstance(block, list):
+        return sum(_block_chars(b) for b in block)
+    if isinstance(block, dict) and block.get("type") == "image":
+        return _IMAGE_CHARS
+    if isinstance(block, dict) and block.get("type") == "text":
+        return len(block.get("text") or "")
+    return len(json.dumps(block, ensure_ascii=False))
+
+
+def _claude_context(path: Path) -> Dict[str, Any]:
+    """Live context of a Claude Code session. used/limit/messages are measured
+    (the API's own input token counts); the overhead split is sized from the
+    system prompt, tool schemas, memory files and skill list the transcript
+    records, and scaled so the parts add up to the measured first turn.
+    Each part also lists what it holds (``items``), largest first."""
+    first = last = peak = 0
+    model, turns, seen = "", 0, set()
+    items: Dict[str, List[tuple]] = {}   # part -> [(name, detail, chars)]
+    messages: List[tuple] = []
+    tool_names: Dict[str, tuple] = {}
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("isSidechain"):
+                continue
+            if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary":
+                messages = []  # the summary replaces everything before it
+                continue
+            usage = _claude_usage(entry)
+            if usage:
+                size = usage["input_tokens"] + usage["cache_read_tokens"] + usage["cache_creation_tokens"]
+                first, last, model = first or size, size, usage["model"] or model
+                peak = max(peak, size)
+                if usage["message_id"] not in seen:
+                    seen.add(usage["message_id"])
+                    turns += 1
+            message = entry.get("message")
+            if entry.get("type") in ("user", "assistant") and isinstance(message, dict):
+                content = message.get("content")
+                for block in content if isinstance(content, list) else [content]:
+                    kind = block.get("type") if isinstance(block, dict) else "text"
+                    if kind == "tool_use":
+                        detail = _short(next(iter((block.get("input") or {}).values()), ""), 60) if isinstance(block.get("input"), dict) else ""
+                        tool_names[block.get("id", "")] = (block.get("name") or "tool", detail)
+                        messages.append((f"{block.get('name')} call", detail, _block_chars(block.get("input"))))
+                    elif kind == "tool_result":
+                        name, detail = tool_names.get(block.get("tool_use_id", ""), ("tool", ""))
+                        messages.append((f"{name} result", detail, _block_chars(block.get("content"))))
+                    elif kind == "text":
+                        text = block.get("text") if isinstance(block, dict) else block
+                        if text:
+                            who = "Reply" if entry["type"] == "assistant" else "Prompt"
+                            messages.append((who, _short(text, 60), len(text)))
+                continue
+            att = entry.get("attachment")
+            kind = att.get("type") if isinstance(att, dict) else None
+            if kind == "prompt_snapshot" and isinstance(att.get("tools"), list):
+                items["system_prompt"] = [(_short(s.strip().splitlines()[0] if s.strip() else "", 60) or "Section", "", len(s))
+                                          for s in att.get("systemPrompt") or [] if isinstance(s, str) and len(s) > 40]
+                items["system_tools"], items["mcp_tools"] = [], []
+                for tool in att["tools"]:
+                    if not isinstance(tool, dict):
+                        continue
+                    server = tool.get("server")
+                    items["mcp_tools" if server else "system_tools"].append(
+                        (tool.get("name") or "?", server or "", _block_chars(tool)))
+            elif kind == "instructions":
+                items["memory"] = [(f.get("path", ""), f.get("type", ""), len(f.get("content") or ""))
+                                   for f in att.get("files") or [] if isinstance(f, dict)]
+            elif kind == "skill_listing" and att.get("isInitial", True):
+                items["skills"] = [(ln[2:].split(": ", 1)[0], "", len(ln))
+                                   for ln in (att.get("content") or "").splitlines() if ln.startswith("- ")]
+            elif kind == "mcp_instructions_delta":
+                items.setdefault("mcp_instructions", []).extend(
+                    ((b.splitlines()[0].lstrip("# ") if b else "?"), "", len(b)) for b in att.get("addedBlocks") or [])
+            elif kind == "agent_listing_delta":
+                items.setdefault("agents", []).extend(
+                    (ln.lstrip("- ").split(": ", 1)[0], "", len(ln)) for ln in att.get("addedLines") or [])
+            elif kind in ("hook_success", "hook_additional_context") and att.get("content"):
+                c = att["content"]
+                c = "\n".join(c) if isinstance(c, list) else str(c)
+                messages.append((f"Hook: {att.get('hookName') or 'context'}", _short(c, 60), len(c)))
+    if not last:
+        return {"known": False}
+    est = {k: sum(i[2] for i in v) // _CHARS_PER_TOKEN for k, v in items.items() if v}
+    est = {k: v for k, v in est.items() if v}
+    scale = min(1.0, first / sum(est.values())) if est else 1.0
+    parts = {k: int(v * scale) for k, v in est.items()} or {"overhead": first}
+    overhead = sum(parts.values())
+    parts["messages"] = max(0, last - overhead)
+    parts = {k: parts[k] for k in _CONTEXT_LABELS if k in parts}
+    items["messages"] = messages
+
+    def listing(key: str) -> Dict[str, Any]:
+        rows = sorted(items.get(key) or [], key=lambda i: -i[2])
+        f = 1.0 if key == "messages" else scale
+        return {"items": [{"name": n, "detail": d, "tokens": int(c / _CHARS_PER_TOKEN * f)} for n, d, c in rows[:_ITEMS_MAX]],
+                "count": len(rows)}
+
+    compact_at = _claude_compact_at(model)
+    return {
+        "known": True, "agent": "claude", "model": model, "used": last,
+        "limit": compact_at or _context_window(model, peak), "compact_at": compact_at or None,
+        "first": first, "turns": turns, "estimated": bool(est),
+        "parts": [{"key": k, "label": _CONTEXT_LABELS[k], "tokens": v, **listing(k)} for k, v in parts.items()],
+    }
+
+
+def _codex_context(path: Path) -> Dict[str, Any]:
+    """Codex logs the window and each turn's context size in token_count."""
+    first = last = limit = turns = 0
+    model = ""
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            payload = rec.get("payload") if isinstance(rec, dict) else None
+            if not isinstance(payload, dict):
+                continue
+            if rec.get("type") == "turn_context" and payload.get("model"):
+                model = payload["model"]
+            if rec.get("type") != "event_msg" or payload.get("type") != "token_count":
+                continue
+            info = payload.get("info") or {}
+            lt = info.get("last_token_usage")
+            if not isinstance(lt, dict):
+                continue
+            size = int(lt.get("total_tokens") or 0) or int(lt.get("input_tokens") or 0) + int(lt.get("output_tokens") or 0)
+            if size and size != last:
+                first, last, turns = first or size, size, turns + 1
+            limit = int(info.get("model_context_window") or limit)
+    if not last:
+        return {"known": False}
+    return {
+        "known": True, "agent": "codex", "model": model, "used": last, "limit": limit or _context_window(model, last),
+        "compact_at": None, "first": first, "turns": turns, "estimated": False,
+        "parts": [{"key": "overhead", "label": _CONTEXT_LABELS["overhead"], "tokens": min(first, last)},
+                  {"key": "messages", "label": _CONTEXT_LABELS["messages"], "tokens": max(0, last - first)}],
+    }
+
+
+def session_context(session_id: str, transcript_path: Optional[str] = None) -> Dict[str, Any]:
+    """What fills the session's context window right now (main thread only;
+    subagents have their own windows). ``known`` False = no transcript here."""
+    path = Path(transcript_path) if transcript_path else find_transcript(session_id)
+    if path is None or not path.is_file():
+        return {"known": False}
+    try:
+        return (_codex_context if path.name.startswith("rollout-") else _claude_context)(path)
+    except OSError:
+        return {"known": False}
 
 
 def _output_size(event: Dict[str, Any]) -> int:

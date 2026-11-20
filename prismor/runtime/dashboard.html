@@ -1186,6 +1186,27 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-sum b { color:var(--gray-900); font-weight:600; }
   .sess-dot { width:8px; height:8px; border-radius:50%; background:var(--gray-300); align-self:center; flex:none; }
   .sess-dot.ok { background:#22c55e; } .sess-dot.warn { background: var(--sev-medium); } .sess-dot.bad { background:#ef4444; }
+  .ctx-body { max-width:460px; padding-left:20px; }
+  .ctx-bar { display:flex; gap:2px; height:6px; border-radius:3px; overflow:hidden; background:var(--gray-100); margin:2px 0 4px; }
+  .ctx-bar i { display:block; height:100%; min-width:2px; }
+  .ctx-head { display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin:8px 0 6px; }
+  .ctx-pct { font-size:15px; color:var(--gray-900); font-variant-numeric:tabular-nums; }
+  .ctx-quiet { font-size:12px; color:var(--gray-500); font-variant-numeric:tabular-nums; }
+  .ctx-rows { margin:12px 0 4px; font-size:13px; }
+  .ctx-row > summary, div.ctx-row { display:grid; grid-template-columns:12px minmax(0,1fr) auto 56px; gap:10px; align-items:center; padding:4px 0; }
+  .ctx-row > summary { list-style:none; cursor:pointer; border-radius:4px; }
+  .ctx-row > summary::-webkit-details-marker { display:none; }
+  .ctx-row > summary:hover .lbl { color:var(--gray-900); text-decoration:underline dotted; text-underline-offset:3px; }
+  .ctx-row .sw { width:12px; height:12px; border-radius:3px; }
+  .ctx-row .lbl { color:var(--gray-700); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ctx-row .cnt { color:var(--gray-400); font-size:12px; margin-left:4px; }
+  .ctx-row .num, .ctx-item .num { text-align:right; color:var(--gray-600); font-variant-numeric:tabular-nums; }
+  .ctx-row .pct { text-align:right; color:var(--gray-900); font-variant-numeric:tabular-nums; }
+  .ctx-row.free .lbl, .ctx-row.free .pct { color:var(--gray-500); }
+  .ctx-items { margin:2px 0 8px 22px; padding-left:10px; border-left:1px solid var(--gray-200); max-height:260px; overflow:auto; }
+  .ctx-item { display:flex; justify-content:space-between; gap:12px; padding:3px 0; font-size:12px; color:var(--gray-700); }
+  .ctx-item .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; font-family:var(--font-mono); }
+  .ctx-item .dt, .ctx-item.dt { color:var(--gray-400); font-family:var(--font-ui); }
   .sess-sub { font-size: 11px; font-weight: 600; letter-spacing: 0; text-transform: none; color:var(--gray-500); margin:12px 0 6px; }
   .used-row { display:flex; align-items:center; gap:10px; width:100%; padding:6px 4px; background:none; border:0; border-radius:6px; font:inherit; color:var(--gray-800); text-align:left; cursor:pointer; }
   .used-row:hover { background:var(--gray-100); }
@@ -3909,6 +3930,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
   <div class="sess-summary">
     <div id="sessDev" class="sess-ran-under" hidden></div>
+    <div id="sessContext" class="sess-ran-under" hidden></div>
     <div id="sessUsed" class="sess-ran-under" hidden></div>
     <div id="sessRanUnder" class="sess-ran-under" hidden></div>
   </div>
@@ -6983,9 +7005,11 @@ function renderSessionView(data){
   else renderNodePanelDefault(data);
 }
 async function loadSessionCost(sessionId){
+  renderSessionContext(null);
   let c;
   try { c = await apiFetch('/api/tokens?session=' + encodeURIComponent(sessionId), {timeoutMs: 30000}); } catch (e) { return; }
-  if (_sessionViewState.sessionId !== sessionId || !c || !c.known) return;
+  if (_sessionViewState.sessionId !== sessionId || !c) return;
+  if (!c.known) { renderSessionContext(c.context); return; }
   const t = c.tokens || {}, total = (t.input||0) + (t.output||0) + (t.cache_read||0) + (t.cache_5m||0) + (t.cache_1h||0);
   const el = document.createElement('span');
   el.className = 'sess-cost';
@@ -6994,6 +7018,42 @@ async function loadSessionCost(sessionId){
   el.textContent = (c.usd === null ? 'cost unknown' : fmtUsd(c.usd)) + ' · ' + fmtTok(total) + ' tokens · ' +
     fmtNum(c.turns || 0) + ' turn' + (c.turns === 1 ? '' : 's');
   document.getElementById('sessFlowMeta').appendChild(el);
+  renderSessionContext(c.context);
+}
+// Same parts, same order, as Claude Code's own context panel. Messages and the
+// used/limit totals are measured; the overhead rows are sized from the
+// transcript's system prompt, tools, memory files and skills ("~").
+const CTX_COLOR = {messages:'#3b82f6', mcp_tools:'#f97316', system_tools:'#14b8a6', overhead:'#9ca3af'};
+function ctxK(n){ n = n || 0; return n >= 1e6 ? (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M' : n >= 1e5 ? Math.round(n/1e3) + 'K' : n >= 1e3 ? (n/1e3).toFixed(1).replace(/\.0$/,'') + 'K' : String(n); }
+function renderSessionContext(ctx){
+  const el = document.getElementById('sessContext');
+  if (!el || !ctx || !ctx.known || !ctx.limit) { if (el) el.hidden = true; return; }
+  const lim = ctx.limit, pct = n => (100 * n / lim).toFixed(1) + '%';
+  const color = p => CTX_COLOR[p.key] || 'var(--gray-400)';
+  const free = Math.max(0, lim - ctx.used), est = p => ctx.estimated && p.key !== 'messages' ? '~' : '';
+  const bar = '<div class="ctx-bar" title="' + safeAttr(ctxK(ctx.used) + ' of ' + ctxK(lim)) + '">' +
+    ctx.parts.filter(p => p.tokens).map(p => '<i style="width:' + pct(p.tokens) + ';background:' + color(p) + '" title="' + safeAttr(p.label + ' ' + ctxK(p.tokens)) + '"></i>').join('') + '</div>';
+  // Each row opens to what it holds, largest first ("~": sized from text).
+  const item = (p, i) => '<div class="ctx-item" title="' + safeAttr(i.name + (i.detail ? ' - ' + i.detail : '')) + '"><span class="nm">' + safe(p.key === 'memory' ? tildify(i.name) : i.name) +
+    (i.detail ? ' <span class="dt">' + safe(i.detail) + '</span>' : '') + '</span><span class="num">~' + ctxK(i.tokens) + '</span></div>';
+  const row = p => {
+    const head = '<span class="sw" style="background:' + color(p) + '"></span><span class="lbl">' + safe(p.label) +
+      (p.count ? ' <span class="cnt">' + fmtNum(p.count) + '</span>' : '') + '</span><span class="num">' + est(p) + ctxK(p.tokens) + '</span><span class="pct">' + pct(p.tokens) + '</span>';
+    if (!(p.items || []).length) return '<div class="ctx-row">' + head + '</div>';
+    const more = p.count > p.items.length ? '<div class="ctx-item dt">+ ' + fmtNum(p.count - p.items.length) + ' smaller</div>' : '';
+    return '<details class="ctx-row"><summary>' + head + '</summary><div class="ctx-items">' + p.items.map(i => item(p, i)).join('') + more + '</div></details>';
+  };
+  const rows = ctx.parts.map(row).join('') +
+    '<div class="ctx-row free"><span class="sw" style="background:var(--gray-100);border:1px solid var(--gray-200)"></span><span class="lbl">Free space</span><span class="num">' +
+      ctxK(free) + '</span><span class="pct">' + pct(free) + '</span></div>';
+  const sum = Math.round(100 * ctx.used / lim) + '% used · ' + ctxK(ctx.used) + ' / ' + ctxK(lim);
+  el.innerHTML = '<details name="sesssum" class="sess-ext-all">' + sessHead('', 'Context', sum) + '<div class="ctx-body">' + bar +
+    '<div class="ctx-head"><span class="ctx-pct">' + Math.round(100 * ctx.used / lim) + '% used</span><span class="ctx-quiet">' + ctxK(ctx.used) + ' / ' + ctxK(lim) + '</span></div>' +
+    (ctx.compact_at ? '<div class="ctx-quiet">Auto-compact at ' + ctxK(ctx.compact_at) + '</div>' : '') +
+    '<div class="ctx-rows">' + rows + '</div>' +
+    '<div class="ctx-quiet" style="margin:10px 0">' + safe((ctx.model || ctx.agent) + ' · ' + ctx.turns + ' turn' + (ctx.turns === 1 ? '' : 's')) +
+      (ctx.estimated ? ' · ~ sized from the transcript, scaled to the measured first turn' : '') + '</div></div></details>';
+  el.hidden = false;
 }
 async function sessViewAction(action){
   const sid = _sessionViewState.sessionId, ws = _sessionViewState.workspace;
