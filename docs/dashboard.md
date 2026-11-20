@@ -269,7 +269,7 @@ in order:
    models LiteLLM has not added yet.
 
 Both lists are refreshed at most once every 12 hours into
-`~/.prismor/pricing-cache.json` and `~/.prismor/openrouter-cache.json`, and the
+`~/.prismor/pricing-cache-v2.json` and `~/.prismor/openrouter-cache-v2.json`, and the
 dashboard refreshes them when it starts and reloads them every 12 hours while
 it runs (a built-in snapshot covers offline machines;
 `PRISMOR_PRICING_OFFLINE=1` never fetches). Drop a `~/.prismor/pricing.json`

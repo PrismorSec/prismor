@@ -8835,6 +8835,15 @@ def format_context(ctx: Dict[str, Any]) -> List[str]:
         mark = "" if p["key"] == "messages" else est
         lines.append(f"  {p['label']:<26}{mark + k(p['tokens']):>8}  {p['tokens'] / limit:6.1%}")
     lines.append(f"  {'Free space':<26}{k(max(0, limit - used)):>8}  {max(0, limit - used) / limit:6.1%}")
+    extra = [f"limit from {ctx.get('limit_source') or 'default'}"]
+    if ctx.get("compactions"):
+        extra.append(f"compacted {ctx['compactions']}x")
+    lines.append("  " + " · ".join(extra))
+    if len(ctx.get("models") or []) > 1:
+        lines.append("  Models: " + ", ".join(f"{m['model']} (turn {m['from_turn']}+, peak {k(m['peak'])})" for m in ctx["models"]))
+    for sa in ctx.get("subagents") or []:
+        label = sa.get("description") or sa.get("type") or sa["id"]
+        lines.append(f"  Subagent {label[:40]:<40} peak {k(sa['peak'])} / {k(sa['limit'])} ({sa['model']}, own window)")
     return lines
 
 

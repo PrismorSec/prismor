@@ -5,8 +5,8 @@ rate (defaults to 2x input when absent). Unknown model -> ``None`` (never $0) so
 "unpriced" instead of a misleading zero.
 
 Rates refresh from LiteLLM's public price file at most once per 12 hours
-(cached at ``$PRISMOR_HOME/pricing-cache.json``; set ``PRISMOR_PRICING_OFFLINE=1``
-to never fetch). OpenRouter's model list is a second feed (``openrouter-cache.json``):
+(cached at ``$PRISMOR_HOME/pricing-cache-v2.json``; set ``PRISMOR_PRICING_OFFLINE=1``
+to never fetch). OpenRouter's model list is a second feed (``openrouter-cache-v2.json``):
 its rates price a provider-prefixed id (``moonshotai/kimi-k3``), the form
 OpenRouter traffic carries, at what OpenRouter charges, and fill in models the
 LiteLLM file does not list yet. Direct provider traffic keeps LiteLLM's list
@@ -107,6 +107,8 @@ def _reduce_litellm(raw: Dict[str, Any]) -> Dict[str, Dict[str, float]]:
             "input": per_m("input_cost_per_token"), "output": per_m("output_cost_per_token"),
             "cache_read": per_m("cache_read_input_token_cost"), "cache_write": per_m("cache_creation_input_token_cost"),
         }
+        if isinstance(v.get("max_input_tokens"), int) and v["max_input_tokens"] > 0:
+            rate["max_input_tokens"] = v["max_input_tokens"]  # the model's context window
         if v.get("cache_creation_input_token_cost_above_1hr"):
             rate["cache_1h"] = per_m("cache_creation_input_token_cost_above_1hr")
         for field, value in v.items():
@@ -149,6 +151,8 @@ def _reduce_openrouter(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
                     if per_m(tier, theirs) is not None:
                         rate[ours + "_long_context"] = per_m(tier, theirs)
                 break
+        if isinstance(model.get("context_length"), int) and model["context_length"] > 0:
+            rate["max_input_tokens"] = model["context_length"]
         rate["source"] = "openrouter"
         for key in (model.get("id"), model.get("canonical_slug")):
             if key and "/" in key:
@@ -209,11 +213,12 @@ def _load_table(fetch: bool, _window: int) -> Dict[str, Dict[str, Any]]:
         except Exception:
             return {}
 
-    openrouter = feed(OPENROUTER_URL, "openrouter-cache.json", _reduce_openrouter)
+    # -v2: the reduced cache now keeps each model's context window too.
+    openrouter = feed(OPENROUTER_URL, "openrouter-cache-v2.json", _reduce_openrouter)
     for key, rate in openrouter.items():  # models LiteLLM does not list yet
         table.setdefault(normalize_model(key), rate)
     table.update({k: {"source": "litellm", **v} for k, v in
-                  feed(PRICING_URL, "pricing-cache.json", _reduce_litellm).items()})
+                  feed(PRICING_URL, "pricing-cache-v2.json", _reduce_litellm).items()})
     table.update(openrouter)              # vendor/model ids: what OpenRouter charges
     try:
         override = json.loads((home / "pricing.json").read_text(encoding="utf-8"))
