@@ -257,6 +257,7 @@ packages = [
 "docs/telemetry-receipts.md" = "prismor/runtime/data/docs/telemetry-receipts.md"
 "docs/telemetry-sinks.md" = "prismor/runtime/data/docs/telemetry-sinks.md"
 "docs/tool-access-precedence.md" = "prismor/runtime/data/docs/tool-access-precedence.md"
+"docs/tool-contracts.md" = "prismor/runtime/data/docs/tool-contracts.md"
 "docs/tool-tags.md" = "prismor/runtime/data/docs/tool-tags.md"
 "docs/transcript-ingest.md" = "prismor/runtime/data/docs/transcript-ingest.md"
 
