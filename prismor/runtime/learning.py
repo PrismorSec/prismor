@@ -540,6 +540,10 @@ def _match_command(
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
     artifacts = provenance.load() if executed else {}
     for ex in executed:
+        if "$" in ex:
+            # `python $S/run.py`: the key would be the literal `<cwd>/$S/run.py`,
+            # which every session that names its scratch dir `$S` shares.
+            continue
         path = provenance.resolve(ex, cwd)
         if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
             return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
@@ -582,6 +586,14 @@ def _persist_staged_conn(
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     for category, created_path, origin, exec_path, command in records:
+        # The same call is screened pre and post, and by both hook scopes when
+        # both are installed: one row per (session, file, command), not four.
+        if conn.execute(
+            "SELECT 1 FROM staged_executions WHERE session_id = ? AND created_path = ?"
+            " AND executing_command = ? LIMIT 1",
+            (session_id, created_path[:1000], command[:4000]),
+        ).fetchone():
+            continue
         conn.execute(
             """
             INSERT INTO staged_executions

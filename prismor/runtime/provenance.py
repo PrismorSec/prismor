@@ -122,6 +122,11 @@ def record_write(
     its own earlier one. Another agent's contribution still survives, which is
     what stops this being a laundering path.
     """
+    if "$" in str(path):
+        # An unexpanded `$S/run.py` is not a file: its literal key is shared by
+        # every session that uses the same variable name in the same cwd, so
+        # one tainted session marked all the others' scratch scripts.
+        return
     key = resolve(path, cwd)
     if not key or key in ("/", "."):
         return
