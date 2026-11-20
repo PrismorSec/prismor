@@ -582,6 +582,8 @@ class _Scanner:
 
     def __init__(self, cwd: Optional[Path]) -> None:
         self.cwd = cwd
+        # False after `cd $S` / `cd -`: relative paths then name no known file.
+        self.cwd_known = True
         self.out = ShellScan(set(), set(), set())
         self.tainted: Set[str] = set()
         self.parts: List[Tuple[str, str]] = []
@@ -617,8 +619,16 @@ class _Scanner:
         or a deleted file, not to anything under /dev."""
         if not _word(tok) or tok.startswith("/dev/"):
             return ""
+        if not self.cwd_known and not tok.startswith(("/", "~")):
+            return ""
         key = resolve(tok, self.cwd)
         return "" if key.startswith("/dev/") else key
+
+    def cd(self, target: str) -> None:
+        if target == "-" or not _word(target) or "$" in target or "`" in target:
+            self.cwd_known = False
+        elif self.cwd_known or target.startswith(("/", "~")):
+            self.cwd, self.cwd_known = Path(resolve(target, self.cwd)), True
 
     def scan(self, command: str, depth: int) -> bool:
         """Scan ``command``. True when it puts fetched content on its output,
@@ -646,6 +656,10 @@ class _Scanner:
                     i += 1
                 cmd = os.path.basename(seg[i]) if i < len(seg) else ""
                 args = seg[i + 1:]
+                if cmd == "cd":
+                    # `cd dir && cat > x.py` writes dir/x.py, not <cwd>/x.py.
+                    # ponytail: a `( cd x; ... )` subshell's cd leaks past it.
+                    self.cd(args[0] if args else "~")
                 if cmd in _ASSIGN_CMDS:
                     for a in args:
                         m = _ASSIGN_RE.match(a)
@@ -716,6 +730,21 @@ class _Scanner:
                     fetched_any = True
                 carrying = seg_carries
         return fetched_any
+
+
+def segment_cwds(command: str, cwd: Optional[Path]) -> List[Tuple[str, Optional[Path]]]:
+    """``[(segment, cwd it runs in)]`` split at shell operators, following ``cd``.
+
+    The cwd is None after a ``cd`` to a place that cannot be known statically.
+    """
+    sc = _Scanner(cwd)
+    out: List[Tuple[str, Optional[Path]]] = []
+    for seg in re.split(r"\s*(?:;|&&|\|\||\||\n)\s*", command or ""):
+        words = seg.split()
+        if words and words[0] == "cd":
+            sc.cd(words[1].strip("\"'") if len(words) > 1 else "~")
+        out.append((seg, sc.cwd if sc.cwd_known else None))
+    return out
 
 
 def shell_paths(command: str, cwd: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:

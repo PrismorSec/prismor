@@ -13,10 +13,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from prismor.runtime import provenance
 from prismor.runtime.store import get_db_path, initialize_database
@@ -391,18 +392,36 @@ _RE_TEE = re.compile(r"\btee\b\s+(?:-a\s+)?(" + _PATH_TOK + r")")
 # EXECUTED-path extractors (scanned against the current command).
 _INTERP = r"(?:bash|sh|zsh|ksh|dash|python3?|node|nodejs|ruby|perl|php|deno|bun)"
 _RE_INTERP_EXEC = re.compile(r"\b" + _INTERP + r"\b((?:\s+-{1,2}[^\s]+)*)\s+(" + _PATH_TOK + r")")
-_RE_SOURCE_EXEC = re.compile(r"(?:\bsource\b|(?:^|[;&|]\s*)\.)\s+(" + _PATH_TOK + r")")
+# Command position only: `gh repo create --source .` is a flag, not `source .`.
+_RE_SOURCE_EXEC = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(" + _PATH_TOK + r")")
 _RE_DIRECT_EXEC = re.compile(r"(?:^|[;&|]\s*)(\./" + _PATH_TOK + r"|/" + _PATH_TOK + r")")
 
 # EXFIL extractors (scp / rsync local-source args).
 _RE_SCP = re.compile(r"\bscp\b\s+(.*)")
 _RE_RSYNC = re.compile(r"\brsync\b\s+(.*)")
 _RE_REMOTE_TGT = re.compile(r"^[^/\s]*@?[^/\s]*:")  # host:path / user@host:path
+# A directory is never the script being run (`grep -r x --include=*.sh .`).
+_DIR_TOKENS = {".", "..", "~"}
+_OPT_WITH_ARG = {"-e", "-i", "-P", "-p", "-o", "-F", "-S", "-J", "-l", "-c"}
 
 _NON_FILE_SINKS = {"-", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/tty"}
 # Generic basenames that must NOT match across different paths on basename alone.
 _GENERIC_BASENAMES = {"", "a.out", "main", "index.js", "setup.py", "__init__.py",
                       "manage.py", "app.py", "run.py", "main.py"}
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+_SHELL_BEFORE = re.compile(r"(?:^|[|;&(]\s*)(?:\S*/)?(?:bash|sh|zsh|dash|ksh|ssh)\b[^|;&\n]*$")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies: `cat > f <<EOF` data and `python3 - <<EOF` code are
+    not shell commands, so `Run: python3 x.py` inside one runs nothing. A body
+    fed to a shell (`bash <<EOF`, `ssh h <<EOF`) is kept: it does run."""
+    def sub(m: "re.Match[str]") -> str:
+        line = command[:m.start()].rsplit("\n", 1)[-1]
+        return m.group(0) if _SHELL_BEFORE.search(line) else "<<" + m.group(2)
+    return _HEREDOC.sub(sub, command)
 
 
 def _clean_token(tok: str) -> str:
@@ -452,18 +471,58 @@ def _extract_executed_paths(command: str) -> List[str]:
             np = _norm_path(m.group(1))
             if np and np not in _NON_FILE_SINKS:
                 out.append(np)
-    return out
+    return [p for p in out if p not in _DIR_TOKENS and not p.endswith("/")]
+
+
+def _ssh_config_hosts() -> Set[str]:
+    """Host aliases and HostNames the user declared in ~/.ssh/config."""
+    try:
+        text = (Path.home() / ".ssh" / "config").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return set()
+    hosts: Set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].lower() in ("host", "hostname"):
+            hosts.update(h.lower() for h in parts[1:] if not any(c in h for c in "*?!"))
+    return hosts
+
+
+def _remote_host(tok: str) -> str:
+    return tok.split(":", 1)[0].rsplit("@", 1)[-1].lower()
 
 
 def _extract_exfil_paths(command: str) -> List[str]:
-    """Return normalized local source paths handed to scp/rsync."""
+    """Return normalized local source paths handed to scp/rsync.
+
+    Only the scp/rsync segment's own arguments count: `scp a h:x && ssh h 'bash ~/b'`
+    does not send `~/b`. A copy whose every remote target is a host the user
+    declared in ~/.ssh/config is their own infrastructure, not exfiltration.
+    """
     out: List[str] = []
-    for rx in (_RE_SCP, _RE_RSYNC):
-        m = rx.search(command)
+    own: Optional[Set[str]] = None
+    for seg in _SHELL_SPLIT.split(command):
+        m = re.match(r"\s*(?:\w+=\S*\s+)*(?:scp|rsync)\s+(.*)", seg, re.S)
         if not m:
             continue
-        for raw in m.group(1).split():
-            tok = _clean_token(raw)
+        try:
+            raw = shlex.split(m.group(1))
+        except ValueError:
+            raw = m.group(1).split()
+        toks, skip = [], False
+        for t in raw:
+            if skip:
+                skip = False
+            elif t in _OPT_WITH_ARG:
+                skip = True  # `-i key.pem`, `-e "ssh -i k"`: an option value, not a file sent
+            else:
+                toks.append(_clean_token(t))
+        remotes = [_remote_host(t) for t in toks if t and not t.startswith("-") and _RE_REMOTE_TGT.match(t)]
+        if remotes:
+            own = _ssh_config_hosts() if own is None else own
+            if all(h in own for h in remotes):
+                continue
+        for tok in toks:
             if not tok or tok.startswith("-") or _RE_REMOTE_TGT.match(tok):
                 continue
             np = _norm_path(tok)
@@ -532,22 +591,25 @@ def _build_staged(
 def _match_command(
     command: str, created: Dict[str, str], session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
-    executed = _extract_executed_paths(command)
+    # (path, cwd it runs in): `cd ui && node src/t.js` runs ui/src/t.js.
+    shell = _strip_heredocs(command)
+    executed = [(ex, seg_cwd) for seg, seg_cwd in provenance.segment_cwds(shell, cwd)
+                for ex in _extract_executed_paths(seg)]
     downloads = {path: origin for path, origin in created.items() if origin == "download"}
-    for ex in executed:
-        hit = _match_against(provenance.resolve(ex, cwd), downloads)
+    for ex, seg_cwd in executed:
+        hit = _match_against(provenance.resolve(ex, seg_cwd or cwd), downloads)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
     artifacts = provenance.load() if executed else {}
-    for ex in executed:
-        if "$" in ex:
-            # `python $S/run.py`: the key would be the literal `<cwd>/$S/run.py`,
-            # which every session that names its scratch dir `$S` shares.
+    for ex, seg_cwd in executed:
+        if "$" in ex or (seg_cwd is None and not os.path.isabs(ex)):
+            # `python $S/run.py`, or a relative path after `cd $S`: the key would
+            # be a guess under <cwd> that every session shares.
             continue
-        path = provenance.resolve(ex, cwd)
+        path = provenance.resolve(ex, seg_cwd)
         if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
             return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
-    for ex in _extract_exfil_paths(command):
+    for ex in _extract_exfil_paths(shell):
         hit = _match_against(ex, created) or _match_against(provenance.resolve(ex, cwd), created)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)

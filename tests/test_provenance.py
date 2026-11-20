@@ -102,6 +102,30 @@ def test_staged_execution_warns_only_for_untrusted_script_content(tmp_path, same
     assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
 
 
+def test_repo_code_echoed_by_untrusted_output_does_not_taint_a_write(tmp_path):
+    # The page quotes the repo's own helper; the agent read that helper itself.
+    # Reusing it is the repo's code coming back, not the page's.
+    ws = _workspace(tmp_path)
+    sid = "s-" + uuid.uuid4().hex
+    local = ws / "lib" / "util.py"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shared = "subprocess.run(cmd, env=env, capture_output=True, text=True)"
+    local.write_text(f"def go(cmd, env):\n    return {shared}\n")
+    _call(ws, sid, "Read", "file_read", path=str(local), response=local.read_text())
+    _call(ws, sid, "WebFetch", "network", url="https://example.com/p",
+          response=f"see how the repo calls {shared} before the release steps")
+    script = ws / "probe.py"
+    _call(ws, sid, "Write", "file_write", path=str(script),
+          content=f"import subprocess\nprint({shared})\n")
+    assert "untrusted_content" not in ((lookup(str(script)) or {}).get("tags") or [])
+
+    # Text that only the page supplied still marks the file.
+    bad = ws / "probe2.py"
+    _call(ws, sid, "Write", "file_write", path=str(bad),
+          content="print('before the release steps')\n")
+    assert "untrusted_content" in lookup(str(bad))["tags"]
+
+
 def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
     # Two sessions both call their scratch dir `$S`. The tainted one's
     # `$S/run.py` must not mark the other's, which is a different file.
@@ -114,6 +138,24 @@ def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
     assert lookup(str(ws / "$S" / "run.py")) is None
     decision = _call(ws, b, "Bash", "shell", command="S=/tmp/b; python3 $S/run.py")
     assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
+def test_cd_inside_a_command_moves_where_a_write_lands(tmp_path):
+    # `cd sub && cat > run.py` writes sub/run.py. Keyed at <cwd>/run.py, it
+    # collided with every other session's run.py in that cwd.
+    ws = _workspace(tmp_path)
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, a, "WebFetch", "network", url="https://example.com/helper", response=body)
+    _call(ws, a, "Bash", "shell", command=f"cd {ws}/sub && cat > run.py <<'EOF'\n{body}\nEOF")
+    assert lookup(str(ws / "run.py")) is None
+    assert lookup(str(ws / "sub" / "run.py"))["tags"] == ["untrusted_content"]
+    # Another session runs its own run.py in the cwd: not the tainted file.
+    decision = _call(ws, b, "Bash", "shell", command="python3 run.py")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+    # Running the tainted one through the same cd still warns.
+    decision = _call(ws, b, "Bash", "shell", command=f"cd {ws}/sub && python3 run.py")
+    assert any(f["ruleId"] == "staged-execution" for f in decision.findings)
 
 
 def test_untrusted_content_crosses_the_session_boundary(tmp_path):
