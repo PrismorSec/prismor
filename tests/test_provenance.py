@@ -102,6 +102,30 @@ def test_staged_execution_warns_only_for_untrusted_script_content(tmp_path, same
     assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
 
 
+def test_repo_code_echoed_by_untrusted_output_does_not_taint_a_write(tmp_path):
+    # The page quotes the repo's own helper; the agent read that helper itself.
+    # Reusing it is the repo's code coming back, not the page's.
+    ws = _workspace(tmp_path)
+    sid = "s-" + uuid.uuid4().hex
+    local = ws / "lib" / "util.py"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shared = "subprocess.run(cmd, env=env, capture_output=True, text=True)"
+    local.write_text(f"def go(cmd, env):\n    return {shared}\n")
+    _call(ws, sid, "Read", "file_read", path=str(local), response=local.read_text())
+    _call(ws, sid, "WebFetch", "network", url="https://example.com/p",
+          response=f"see how the repo calls {shared} before the release steps")
+    script = ws / "probe.py"
+    _call(ws, sid, "Write", "file_write", path=str(script),
+          content=f"import subprocess\nprint({shared})\n")
+    assert "untrusted_content" not in ((lookup(str(script)) or {}).get("tags") or [])
+
+    # Text that only the page supplied still marks the file.
+    bad = ws / "probe2.py"
+    _call(ws, sid, "Write", "file_write", path=str(bad),
+          content="print('before the release steps')\n")
+    assert "untrusted_content" in lookup(str(bad))["tags"]
+
+
 def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
     # Two sessions both call their scratch dir `$S`. The tainted one's
     # `$S/run.py` must not mark the other's, which is a different file.

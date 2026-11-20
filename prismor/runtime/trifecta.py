@@ -659,7 +659,10 @@ class GramStore:
         except Exception:
             pass
 
-    def hits(self, text: str, before: Optional[int] = None) -> Dict[str, str]:
+    def hits(
+        self, text: str, before: Optional[int] = None,
+        exclude: Optional[Set[str]] = None,
+    ) -> Dict[str, str]:
         """``{phrase: origin}`` for text this call shares with untrusted content.
 
         Only content recorded at an index strictly below ``before`` counts, the
@@ -682,7 +685,7 @@ class GramStore:
         out: Dict[str, str] = {}
         for h, phrase in grams.items():
             rec = known.get(h)
-            if rec is None:
+            if rec is None or (exclude and h in exclude):
                 continue
             oid, idx = (rec if isinstance(rec, list) else [rec, -1])[:2]
             if before is not None and isinstance(idx, int) and idx >= before:
@@ -692,6 +695,53 @@ class GramStore:
                 else "untrusted content"
             )
         return out
+
+
+def trusted_grams(
+    workspace: Path, session_id: str, extra: Iterable[str],
+    known: Dict[str, Any], cwd: Optional[Path] = None,
+) -> Set[str]:
+    """Gram hashes of local content this session saw that carries no taint.
+
+    A phrase the agent also read in its own untainted files (or that is already
+    in the file it is writing) is not evidence the write came from untrusted
+    content: it is the repo's own code coming back. Read from disk only when a
+    tainted write has hits, so the ordinary call pays nothing.
+    ponytail: current file bytes, not the bytes the session saw; 200 files x
+    200k chars (30-200 ms on real sessions). Snapshot or cache per session if
+    that drift or cost ever matters.
+    """
+    from prismor.runtime import provenance as _prov
+    from prismor.runtime.store import get_db_path
+
+    paths: List[str] = [p for p in extra if p]
+    try:
+        import sqlite3
+        db = get_db_path(workspace)
+        if db.exists():
+            conn = sqlite3.connect(db)
+            try:
+                paths += [r[0] for r in conn.execute(
+                    "SELECT DISTINCT path_text FROM events WHERE session_id = ?"
+                    " AND type = 'file_read' AND path_text IS NOT NULL"
+                    " ORDER BY id DESC LIMIT 200",
+                    (session_id,),
+                )]
+            finally:
+                conn.close()
+    except Exception:
+        pass
+    out: Set[str] = set()
+    for p in dict.fromkeys(paths):
+        key = _prov.resolve(p, cwd)
+        if UNTRUSTED in ((known.get(key) or {}).get("tags") or ()):
+            continue
+        try:
+            with open(key, "r", encoding="utf-8", errors="ignore") as fh:
+                out.update(content_grams(fh.read(1_000_000)))
+        except OSError:
+            continue
+    return out
 
 
 def _rule_pref(match: Dict[str, Any]) -> tuple:

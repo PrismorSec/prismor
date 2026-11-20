@@ -3395,7 +3395,8 @@ class PolicyEngine:
             try:
                 from prismor.runtime.trifecta import (
                     call_text, classify_tool_tags, egress_tags, GramStore,
-                    TagLedger, tool_tags_for_agent, CRITICAL, INFLUENCE, UNTRUSTED,
+                    TagLedger, tool_tags_for_agent, trusted_grams,
+                    CRITICAL, INFLUENCE, UNTRUSTED,
                 )
                 from prismor.runtime.tag_rules import compile_tool_tag_rules
                 _tt_tool = str((event.get("metadata") or {}).get("tool_name") or "")
@@ -3723,7 +3724,19 @@ class PolicyEngine:
                         _written = "\n".join(
                             str(event.get(k) or "") for k in ("content", "command")
                         )
-                        if not _grams.hits(_written, before=index):
+                        _wh = _grams.hits(_written, before=index)
+                        if _wh:
+                            # Phrases the session also read in its own clean
+                            # files, or already in the file being written, are
+                            # the repo's code coming back, not the page's.
+                            _wh = _grams.hits(
+                                _written, before=index,
+                                exclude=trusted_grams(
+                                    self.workspace, session_id, _prov_writes,
+                                    _prov_known, _prov_cwd,
+                                ),
+                            )
+                        if not _wh:
                             _carry = [t for t in _carry if t != UNTRUSTED]
                     # A download is untrusted on its own account, whatever the
                     # session had read before it. Without this a shell-only
