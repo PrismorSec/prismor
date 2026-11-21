@@ -2573,6 +2573,68 @@ rules:
   # Every pattern is anchored at command position (line start, after a shell
   # separator, or behind sudo/env/VAR=) so a commit message, grep, or doc that
   # merely mentions the command does not match.
+  - id: git-clean-force
+    severity: HIGH
+    category: change_control
+    title: Removes untracked files with git clean
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # Require an actual force option before --. Exclude patterns consume
+      # their argument, so `-e -n` is not a dry run and `-e -f` is not force.
+      # Dry-run/help options only exempt this command, not a later command.
+      - |-
+        (?x:
+          (?:^|[\n;&|(`]|\$\()\s*
+          (?:(?:sudo|doas|env|time|nice|exec|command)(?:[ \t]+-\S+)*[ \t]+|\w+=\S+[ \t]+)*
+          (?:(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:\S*/)?git
+          (?:[ \t]+(?!-(?:h|v|-(?:help|version))\b)-{1,2}[\w.-]+(?:=\S*|[ \t]+(?:[^\s;&|'"-][^\s;&|'"]*|'[^'\n]*'|"[^"\n]*"))?)*
+          [ \t]+clean
+          (?=(?:[ \t]*(?:\d*[<>]+|&>>?)(?:&[\d-]+|[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*"))|[ \t]+(?:
+            -[dfqxXin]*e[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |--(?:e|ex|exc|excl|exclu|exclud|exclude)(?:=|[ \t]+)(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |(?!--(?:\s|$)|-[dfqxXin]*e|--(?:e|ex|exc|excl|exclu|exclud|exclude)\b|\d*[<>])(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+          ))*
+            [ \t]+(?:-[dfqxXin]*f[dfqxXin]*(?:e[^\s;&|()]*)?|--(?:f|fo|for|forc|force))(?=\s|$|[;&|)<>'"]))
+          # --no-dry-run cancels earlier -n/--dry-run; a later dry run still wins.
+          (?:(?:[ \t]*(?:\d*[<>]+|&>>?)(?:&[\d-]+|[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*"))|[ \t]+(?:
+            -[dfqxXin]*e[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |--(?:e|ex|exc|excl|exclu|exclud|exclude)(?:=|[ \t]+)(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |(?!['"]?--(?:['"]?\s|['"]?$)|['"]?-[a-zA-Z]*h|['"]?--help\b|-[dfqxXin]*e|--(?:e|ex|exc|excl|exclu|exclud|exclude)\b|\d*[<>])(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+          ))*[ \t]+--no-dry-run(?=\s|$|[;&|)<>'"]))?
+          (?:[ \t]*(?:\d*[<>]+|&>>?)(?:&[\d-]+|[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*"))|[ \t]+(?:
+            -[dfqxXi]*e[ \t]*(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |--(?:e|ex|exc|excl|exclu|exclud|exclude)(?:=|[ \t]+)(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*")
+            |(?!--(?:\s|$)|-[a-zA-Z]*[nh]|--(?:d|dr|dry|dry-|dry-r|dry-ru|dry-run|help)\b|-[dfqxXi]*e|--(?:e|ex|exc|excl|exclu|exclud|exclude)\b|\d*[<>])
+             (?:[^\s;&|()'"<>]+|'(?!-)[^'\n]*'|"(?!-)[^"\n]*")
+          ))*
+          (?:[ \t]+--(?:[ \t]+(?:[^\s;&|()'"<>]+|'[^'\n]*'|"[^"\n]*"))*)?
+          [ \t]*(?=$|[\n;&|)]|['"][ \t]*(?:$|[;&|)]))
+        )
+    guidance: "preview the files with `git clean -n` and confirm what can be removed."
+    action: warn
+
+  - id: git-stash-delete
+    severity: HIGH
+    category: change_control
+    title: Deletes saved work with git stash drop or clear
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - |-
+        (?x:
+          (?:^|[\n;&|(`]|\$\()\s*
+          (?:(?:sudo|doas|env|time|nice|exec|command)(?:[ \t]+-\S+)*[ \t]+|\w+=\S+[ \t]+)*
+          (?:(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:\S*/)?git
+          (?:[ \t]+(?!-(?:h|v|-(?:help|version))\b)-{1,2}[\w.-]+(?:=\S*|[ \t]+(?:[^\s;&|'"-][^\s;&|'"]*|'[^'\n]*'|"[^"\n]*"))?)*
+          [ \t]+stash[ \t]+(?:drop|clear)(?=\s|$|[;&|)'"])
+          (?![^\n;&|]*[ \t]+['"]?(?:-h|--help)['"]?(?=\s|$|[;&|)'"]))
+        )
+    guidance: "inspect saved work with `git stash list` and `git stash show` before deleting it."
+    action: warn
+
   - id: git-push-protected-branch
     severity: HIGH
     category: change_control

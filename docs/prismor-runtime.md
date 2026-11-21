@@ -90,6 +90,31 @@ Several default rules carry `guidance:` (for example `destructive-command`, `rem
 
 A rule cannot rewrite the command into a safer one by itself. Use `action: modify` with a named `transform:` for that.
 
+### Approval before deleting untracked files or stashes
+
+`git-clean-force` reports forced `git clean` calls, including combined flags
+such as `-fdx`. `git-stash-delete` reports `git stash drop` and `git stash clear`.
+Both follow the existing change-control policy: they report by default and
+are not safety-floor rules. To require approval, a human can add:
+
+```yaml
+rules:
+  - id: git-clean-force
+    mode: enforce
+    action: step_up
+  - id: git-stash-delete
+    mode: enforce
+    action: step_up
+```
+
+Dry runs (`git clean -n` / `--dry-run`), help, and normal Git calls such as
+`status`, `diff`, `stash list`, `show`, `push`, `apply` and `pop` do not trigger
+these rules. A dry run exempts only that command, not a later forced cleanup.
+These rules inspect command text; they do not resolve Git aliases or read
+`clean.requireForce`, so cleanup without an explicit force flag is outside
+their scope. Approval uses the same surface support and fail-closed behavior
+described below.
+
 ### Custom guardrails for MCP tools
 
 Say you want a human to sign off before the agent merges a PR through the GitHub MCP, and you want the production database MCP off-limits entirely. Write a rule with the `mcp` event type and Prismor gates the call before it runs:
