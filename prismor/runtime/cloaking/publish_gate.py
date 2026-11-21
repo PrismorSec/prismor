@@ -131,6 +131,36 @@ def _ignored(rel: str, patterns: List[str]) -> bool:
     return hit
 
 
+def _dockerignore(ctx: Path) -> List[str]:
+    f = ctx / ".dockerignore"
+    return f.read_text(encoding="utf-8", errors="replace").splitlines() if f.is_file() else []
+
+
+def _compose_contexts(base: Path, files: List[str]) -> List[Path]:
+    """Build contexts of the services in the compose file(s) that have a `build:`."""
+    import yaml
+    paths = [Path(os.path.expanduser(f)) for f in files] or \
+        [base / n for n in ("compose.yaml", "compose.yml", "docker-compose.yml", "docker-compose.yaml")]
+    out: List[Path] = []
+    for p in paths:
+        p = p if p.is_absolute() else base / p
+        if not p.is_file():
+            continue
+        try:
+            doc = yaml.safe_load(p.read_text(encoding="utf-8", errors="replace")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        for svc in (doc.get("services") or {}).values():
+            b = (svc or {}).get("build") if isinstance(svc, dict) else None
+            ctx = b if isinstance(b, str) else (b.get("context", ".") if isinstance(b, dict) else None)
+            if ctx is not None:
+                c = Path(os.path.expanduser(str(ctx)))
+                out.append(c if c.is_absolute() else p.parent / c)
+        if not files:
+            break   # compose reads the first default file it finds
+    return out
+
+
 def _git(cwd: Path, *args: str) -> str:
     try:
         return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=15).stdout
@@ -201,8 +231,19 @@ def _check_one(name: str, a: List[str], base: Path, vault: Set[str], packed: Lis
                                  "--secret", "--label", "--network", "-o", "--output", "--cache-from"})
         ctx = Path(os.path.expanduser(pos[-1])) if pos else Path(".")
         ctx = ctx if ctx.is_absolute() else base / ctx
-        ign = (ctx / ".dockerignore").read_text(encoding="utf-8", errors="replace").splitlines() if (ctx / ".dockerignore").is_file() else []
-        return scan_files(_walk(ctx, ign), vault, f"`{name} build`")
+        return scan_files(_walk(ctx, _dockerignore(ctx)), vault, f"`{name} build`")
+    # compose builds every service that has a `build:` (build, up, create, run)
+    if (name in ("docker", "podman") and sub == "compose") or name in ("docker-compose", "podman-compose"):
+        ca = a[1:] if sub == "compose" else a
+        pos = _positional(ca, {"-f", "--file", "-p", "--project-name", "--profile", "--env-file",
+                               "--project-directory", "--ansi", "--progress"})
+        if pos[:1] and pos[0] in ("build", "up", "create", "run"):
+            files = [ca[i + 1] for i, x in enumerate(ca[:-1]) if x in ("-f", "--file")]
+            for ctx in _compose_contexts(base, files):
+                r = scan_files(_walk(ctx, _dockerignore(ctx)), vault, f"`{name} {' '.join(a[:1] + pos[:1])}`")
+                if r:
+                    return r
+        return None
     # npm-style packages: ask the tool what it would pack
     if name in ("npm", "pnpm", "yarn", "bun") and sub in ("publish", "pack"):
         try:
