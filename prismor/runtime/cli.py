@@ -3595,7 +3595,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                 _save_hosts(name, args.hosts)
                 return
             if args.value_file:
-                value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                try:
+                    value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                except (OSError, ValueError) as exc:
+                    sys.stderr.write(f"error: {exc}\n")
+                    raise SystemExit(1)
             else:
                 # Read from stdin (so the value never appears in argv / history).
                 if sys.stdin.isatty():
@@ -3605,7 +3609,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     value = sys.stdin.read().rstrip("\n")
             try:
                 path = add_secret(name, value)
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(1)
             print(f"Registered @@SECRET:{name}@@ ({len(value)} bytes) at {path}")
