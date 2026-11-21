@@ -31,6 +31,40 @@ from google.genai import types
 client = genai.Client(http_options=types.HttpOptions(base_url="http://127.0.0.1:7080"))
 ```
 
+### Without a base URL: `prismor proxy -- <agent>`
+
+Claude Code turns off `/remote-control` and claude.ai connectors when
+`ANTHROPIC_BASE_URL` is set to a custom value. To keep them, let Prismor start the agent:
+
+```bash
+prismor proxy --mode enforce -- claude
+```
+
+The agent runs as a child with `HTTPS_PROXY` set to a loopback port, and with a
+local CA (`$PRISMOR_HOME/warp/ca.pem`) trusted only in that child's
+environment. Nothing goes into the system keychain. Only model hosts are
+decrypted, and only their generation paths go through the proxy; each one goes
+back to the host the agent called. Other paths (OAuth, telemetry, token
+counting) and other hosts go to the real host. WebSocket upgrades also go to the
+real host, except on a generation path, where they are refused so that the
+client falls back to HTTPS. Needs the `openssl` CLI.
+
+| Agent | Command | Model host | Checked 2026-11-21 |
+|---|---|---|---|
+| Claude Code | `prismor proxy -- claude` | api.anthropic.com | prompts + tool calls screened, subagents in one session, `/remote-control` kept |
+| Codex (ChatGPT login) | `prismor proxy -- codex` | chatgpt.com | prompts screened (zstd body decoded); WebSocket refused, HTTPS fallback works |
+| OpenCode | `prismor proxy -- opencode` | opencode.ai (default model) | prompts screened |
+| Antigravity CLI | `prismor proxy -- agy` | daily-cloudcode-pa.googleapis.com | prompts + tool calls screened (CloudCode envelope unwrapped; agy tools mapped as in the Antigravity hook: `run_command` → shell, `write_to_file`/`replace_file_content` → file write, `read_url_content` → network, `call_mcp_tool` → MCP) |
+| cursor-agent | — | api2.cursor.sh | own protocol, not screened |
+
+One agent run is one proxy session when the agent sends its own session id
+(`X-Claude-Code-Session-Id`, Codex `session-id`, `x-opencode-session`). Each
+event carries `client_session_id`, the id the agent's hooks log under, and
+`thread`, which separates the main agent, each subagent and side queries.
+
+Not covered yet: agents that pin certificates, Codex's zstd bodies on Python
+before 3.14, and a launcher killed with SIGKILL leaves the agent running.
+
 `GET /health` reports the surface and mode. Requests on unknown paths are
 forwarded untouched, so provider handshakes and `/v1/models` keep working.
 

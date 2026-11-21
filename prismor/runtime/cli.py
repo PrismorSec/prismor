@@ -499,6 +499,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     # ── proxy: the LLM lane ──────────────────────────────────────────────
     if args.command == "proxy":
         from pathlib import Path as _Path
+        warp_cmd = [a for a in (getattr(args, "warp_command", None) or [])]
+        if warp_cmd and warp_cmd[0] == "--":
+            warp_cmd = warp_cmd[1:]
+        if warp_cmd:
+            # `prismor proxy -- <agent>`: run the agent behind the proxy with no
+            # base URL, so first-party gates stay on (warp.py).
+            from prismor.runtime.warp import run_warp
+            sys.exit(run_warp(
+                warp_cmd, mode=args.mode,
+                workspace=_Path(args.workspace) if getattr(args, "workspace", None) else None,
+                config_path=_Path(args.config) if getattr(args, "config", None) else None,
+                session_id=getattr(args, "session_id", "") or "",
+                agent_name=getattr(args, "agent_name", "") or "",
+                judge=getattr(args, "judge", "") or "",
+                judge_budget_ms=int(getattr(args, "judge_budget_ms", 0) or 0)))
         from prismor.runtime.proxy import run_proxy
         run_proxy(
             host=args.host,
@@ -4450,6 +4465,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Cap the semantic LLM judge per event (ms) unless policy sets "
                           "semantic_guard.budget_ms; over budget the heuristic decides on time. "
                           "Use for clients with a turn deadline, e.g. ElevenLabs voice agents (1500)")
+    _pp.add_argument("warp_command", nargs=argparse.REMAINDER,
+                     help="Optional: `-- <agent> [args...]` runs the agent behind the proxy "
+                          "with no base URL (HTTPS_PROXY + a local CA trusted by that agent only), "
+                          "so Claude Code keeps /remote-control and connectors. Needs openssl")
 
     # ── elevenlabs: route ElevenLabs voice agents through the proxy ──────
     _elp = subparsers.add_parser(

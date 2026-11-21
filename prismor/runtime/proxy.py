@@ -99,6 +99,8 @@ PROVIDER_ROUTES: Tuple[Tuple[str, str], ...] = (
     ("/v1/complete", "anthropic"),
     ("/v1/chat/completions", "openai"),
     ("/v1/responses", "openai"),
+    # Codex signed in with ChatGPT: the Responses shape on chatgpt.com.
+    ("/backend-api/codex/responses", "openai"),
     # Gemini names the method in the path, not the body, and carries the model
     # there too: /v1beta/models/gemini-2.5-pro:generateContent. Matching the
     # suffix covers both the Gemini API and the Vertex
@@ -139,6 +141,33 @@ _PASSTHROUGH_PATHS = (
 
 # GET /v1/models/<id> and Gemini /v1beta/models/<model>: a lookup, not a call.
 _MODEL_LOOKUP = re.compile(r"/models/[^/:]+$")
+
+
+def decode_body(raw: bytes, encoding: str, limit: int) -> Optional[bytes]:
+    """Undo a request Content-Encoding, or None when it cannot be read.
+
+    Codex (ChatGPT login) sends its Responses body zstd-compressed. Unread, a
+    compressed body is not JSON: observe mode forwards it unscreened and
+    enforce refuses it, so either way the call is not judged. ``limit`` bounds
+    the output (a small compressed body can expand without end).
+    """
+    enc = encoding.strip().lower()
+    try:
+        if enc in ("gzip", "x-gzip", "deflate"):
+            d = zlib.decompressobj(zlib.MAX_WBITS | (16 if "gzip" in enc else 0))
+            out = d.decompress(raw, limit)
+            return None if d.unconsumed_tail else out
+        if enc == "zstd":
+            try:
+                from compression.zstd import ZstdDecompressor  # Python 3.14+
+            except ImportError:
+                return None  # ponytail: no zstd before 3.14; such a body stays unread
+            d = ZstdDecompressor()
+            out = d.decompress(raw, max_length=limit)
+            return out if d.eof else None
+    except Exception:
+        return None
+    return None
 
 
 def normalized_path(path: str) -> str:
@@ -205,6 +234,7 @@ _STRIP_REQUEST_HEADERS = frozenset({
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
     "accept-encoding",  # we do not decompress, so do not let the upstream compress
     "origin",  # a browser's Origin is the proxy's business, not the provider's
+    "x-prismor-warp", "x-prismor-warp-origin",  # warp.py -> proxy only
 })
 # Request body cap. Generous: multimodal turns carry base64 images and PDFs.
 MAX_BODY_BYTES = 32 * 1024 * 1024
@@ -354,12 +384,36 @@ def _turns(body: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     if isinstance(body.get("messages"), list):
         return [m for m in body["messages"] if isinstance(m, dict)]
+    body = _gemini_request(body)
     return [{"role": t.get("role"), "content": t.get("parts")}
             for t in (body.get("contents") or []) if isinstance(t, dict)]
 
 
+def _gemini_request(body: Dict[str, Any]) -> Dict[str, Any]:
+    """The Gemini request inside Google's CloudCode envelope, else ``body``.
+
+    agy (Antigravity CLI) and Gemini CLI on a Google login call
+    cloudcode-pa's ``v1internal:streamGenerateContent`` with
+    ``{"model", "project", "request": {contents, systemInstruction, tools}}``.
+    """
+    inner = body.get("request")
+    if "contents" not in body and isinstance(inner, dict) and "contents" in inner:
+        return inner
+    return body
+
+
+def _cloudcode_response(event: Any) -> Optional[Dict[str, Any]]:
+    """The Gemini response inside CloudCode's ``{"response": …, "traceId"}``, or None."""
+    inner = event.get("response") if isinstance(event, dict) else None
+    if isinstance(inner, dict) and "candidates" not in event and "candidates" in inner:
+        return inner
+    return None
+
+
 def _system_of(body: Dict[str, Any]) -> Any:
-    return body.get("system") or body.get("instructions") or body.get("systemInstruction")
+    gemini = _gemini_request(body)
+    return (body.get("system") or body.get("instructions")
+            or gemini.get("systemInstruction") or gemini.get("system_instruction"))
 
 
 #: A2A (Agent-to-Agent) JSON-RPC methods. A2A names its method in the *body*,
@@ -489,6 +543,21 @@ def _message_fingerprint(msg: Dict[str, Any]) -> str:
     return hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+#: Headers an agent CLI sends with its own session id on every model call, main
+#: agent and subagents alike. A session keyed on one of these holds the whole
+#: run; ``conversation_key`` then only names the thread inside it.
+CLIENT_SESSION_HEADERS = ("x-claude-code-session-id", "session-id", "x-opencode-session")
+
+
+def client_session_of(headers: Any) -> str:
+    """The agent's own session id from the request headers, or ''."""
+    for name in CLIENT_SESSION_HEADERS:
+        value = (headers.get(name) or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def conversation_key(body: Dict[str, Any]) -> str:
     """A stable id for the conversation this request belongs to.
 
@@ -527,6 +596,7 @@ def _response_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[Any, str,
     """
     calls: List[Tuple[Any, str, Any]] = []
     if provider == "google":
+        body = _cloudcode_response(body) or body
         for candidate in body.get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             for part in content.get("parts") or []:
@@ -612,7 +682,7 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
     """
     if provider == "a2a":
         return a2a_method(body)
-    if provider != "google":
+    if provider != "google" or (body or {}).get("model"):  # CloudCode names it in the body
         return str((body or {}).get("model") or "")
     tail = path.rsplit("/", 1)[-1]
     return tail.split(":", 1)[0] if ":" in tail else tail
@@ -664,6 +734,8 @@ class Screen:
         self._pending: Dict[str, int] = {}
         self._dirty_at: Dict[str, float] = {}
         self._conversations: Dict[str, str] = {}
+        # session id -> the agent's own session id, for linking to hook sessions.
+        self._client_of: Dict[str, str] = {}
         # Declared conversations (X-Prismor-Session): which messages were
         # already screened, and which were blocked. See conversation_delta.
         self._screened: "OrderedDict[str, Dict[str, set]]" = OrderedDict()
@@ -693,17 +765,24 @@ class Screen:
 
     # -- events ----------------------------------------------------------
 
-    def session_for(self, body: Dict[str, Any], explicit: str = "") -> str:
+    def session_for(self, body: Dict[str, Any], explicit: str = "",
+                    client: str = "") -> str:
         """The session this request belongs to.
 
         An explicit ``X-Prismor-Session`` header wins -- a caller that knows
-        its own conversation id should say so. Otherwise the conversation is
-        recognised from its opening exchange, so a chatbot's turns land in one
-        session and two chats do not merge into the proxy's lifetime.
+        its own conversation id should say so. Next, the agent's own session id
+        (``client``, see :data:`CLIENT_SESSION_HEADERS`): one Claude Code run
+        sends it on the main thread, every subagent and every side query, so
+        they share one session instead of one each. Otherwise the conversation
+        is recognised from its opening exchange, so a chatbot's turns land in
+        one session and two chats do not merge into the proxy's lifetime.
         """
-        if explicit:
-            token = re.sub(r"[^A-Za-z0-9_.:-]", "-", explicit)[:64]
-            return f"{self.session_id}-{token}"
+        if explicit or client:
+            token = re.sub(r"[^A-Za-z0-9_.:-]", "-", explicit or client)[:64]
+            sid = f"{self.session_id}-{token}"
+            if client and not explicit:
+                self._client_of[sid] = client
+            return sid
         key = conversation_key(body)
         if not key:
             return self.session_id
@@ -764,28 +843,35 @@ class Screen:
                     state["blocked"].add(fp)
 
     def _base(self, agent_event: str, subject: Optional[str],
-              session_id: str = "") -> Dict[str, Any]:
+              session_id: str = "", thread: str = "") -> Dict[str, Any]:
+        sid = session_id or self.session_id
+        meta: Dict[str, Any] = {"cwd": str(self.workspace), "surface": SURFACE_ID,
+                                "subject": subject}
+        client = self._client_of.get(sid)
+        if client:
+            # The id the agent's hooks log under: joins this to the hook session.
+            meta["client_session_id"] = client
+        if thread:
+            # Which conversation inside the session: main agent, a subagent, or
+            # a side query each open with a different system prompt + task.
+            meta["thread"] = thread
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
-            "session_id": session_id or self.session_id,
+            "session_id": sid,
             "agent": PROXY_AGENT,
             "agent_event": agent_event,
-            "metadata": {
-                "cwd": str(self.workspace),
-                "surface": SURFACE_ID,
-                "subject": subject,
-            },
+            "metadata": meta,
         }
 
     def prompt_event(self, provider: str, model: str, prompt: str,
                      subject: Optional[str], session_id: str = "",
                      parts: Optional[Dict[str, str]] = None,
-                     agent_event: str = "prompt") -> Dict[str, Any]:
+                     agent_event: str = "prompt", thread: str = "") -> Dict[str, Any]:
         # ``agent_event`` decides whether policy may *block* this: only a
         # pre-action event is eligible (hooks.should_block). The LLM lane keeps
         # "prompt" (screen + redact, block on the proposed tool call); an A2A
         # message is itself the action about to happen, so it is pre-action.
-        event = self._base(agent_event, subject, session_id)
+        event = self._base(agent_event, subject, session_id, thread)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": "llm_request"})
         # The flattened blob is what policy reads; the parts are what a person
@@ -798,7 +884,8 @@ class Screen:
 
     def tool_event(self, tool_name: str, arguments: Any, provider: str,
                    model: str, subject: Optional[str],
-                   session_id: str = "") -> Dict[str, Any]:
+                   session_id: str = "", thread: str = "",
+                   antigravity: bool = False) -> Dict[str, Any]:
         """Shape a model-proposed tool call as the event a hook would produce.
 
         This is the whole reason the surface earns its place. ``shape_call_event``
@@ -808,12 +895,23 @@ class Screen:
         of still lands on the generic payload path rather than being waved
         through.
         """
-        event = self._base("PreToolUse", subject, session_id)
+        event = self._base("PreToolUse", subject, session_id, thread)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": tool_name, "proposed": True})
         if isinstance(arguments, dict):
             # Structured arguments for contract selectors (`tool(arg:glob)`).
             event["metadata"]["call_args"] = arguments
+        if antigravity:
+            # agy's own tool names and argument keys (write_to_file {TargetFile,
+            # CodeContent}, …): the hook adapter's verified mapping, so a call
+            # proposed through the proxy meets the rules the hook would apply.
+            from prismor.runtime.hooks import _normalize_antigravity
+            shaped = _normalize_antigravity({"toolCall": {"name": tool_name, "args": arguments}},
+                                            event["session_id"], self.workspace)
+            if shaped.get("type") != "tool_result":
+                event.update({k: v for k, v in shaped.items()
+                              if k not in ("ts", "session_id", "agent", "agent_event", "metadata")})
+                return event
         try:
             from prismor.runtime import mirror
             shaped = mirror.shape_call_event(*_native_call(tool_name, arguments))
@@ -1325,8 +1423,11 @@ class StreamScreen:
 
     def __init__(self, screen: Screen, provider: str, model: str,
                  subject: Optional[str], session_id: str = "",
-                 spoken: bool = False) -> None:
+                 spoken: bool = False, thread: str = "") -> None:
         self.screen = screen
+        self.thread = thread
+        # CloudCode's outer fields (traceId, metadata) once a frame showed them.
+        self._envelope: Optional[Dict[str, Any]] = None
         self.provider = provider
         self.model = model
         self.subject = subject
@@ -1432,7 +1533,7 @@ class StreamScreen:
             self.blocked.extend(child.blocked[seen:])
         if self._choices:
             self._choices = {}
-        return text + out
+        return self._rewrap(text + out)
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
         """Accumulate the token-usage a stream carries, wherever it lands.
@@ -1492,12 +1593,35 @@ class StreamScreen:
         out = self._feed_frame(chunk)
         if not self._fed_text and self._carry.buf:
             out = self._flush_text() + out
-        return out
+        return self._rewrap(out)
+
+    def _rewrap(self, out: bytes) -> bytes:
+        """Put CloudCode's envelope back on every frame this screen emits.
+
+        Frames are judged unwrapped (so one Gemini code path serves both), and
+        refusals and released text tails are built bare; agy only parses the
+        enveloped shape.
+        """
+        if self._envelope is None or not out:
+            return out
+        frames = []
+        for frame in out.split(b"\n\n"):
+            payload = _sse_payload(frame) if frame.strip() else None
+            if payload is not None and _cloudcode_response(payload) is None and "error" not in payload:
+                frame = _sse_reframe(frame, {"response": payload, **self._envelope}).rstrip(b"\n")
+            if frame.strip():
+                frames.append(frame)
+        return b"\n\n".join(frames) + b"\n\n" if frames else b""
 
     def _feed_frame(self, chunk: bytes) -> bytes:
         event = _sse_payload(chunk)
         if event is None:
             return b"" if self._holding else chunk
+        inner = _cloudcode_response(event) if self.provider == "google" else None
+        if inner is not None:
+            # agy / Gemini CLI on a Google login: judge the Gemini response inside.
+            self._envelope = {k: v for k, v in event.items() if k != "response"}
+            chunk, event = _sse_reframe(chunk, inner), inner
 
         self._capture_usage(event)
         if self.strip_usage and event.get("usage") and not event.get("choices"):
@@ -1613,7 +1737,7 @@ class StreamScreen:
             if child is None:
                 child = self._choices[index] = StreamScreen(
                     self.screen, self.provider, self.model, self.subject,
-                    self.session_id, spoken=self.spoken)
+                    self.session_id, spoken=self.spoken, thread=self.thread)
                 child._choices = None            # it screens this one choice itself
             seen = len(child.blocked)
             out = _with_choice_index(child._feed(chunk), index)
@@ -1735,7 +1859,8 @@ class StreamScreen:
         """The refusal that should replace this call, or None to release it."""
         event = self.screen.tool_event(tool_name, arguments,
                                        self.provider, self.model, self.subject,
-                                       session_id=self.session_id)
+                                       session_id=self.session_id, thread=self.thread,
+                                       antigravity=self._envelope is not None)
         try:
             decision = self.screen.evaluate(event, self.subject)
         except Exception:
@@ -1969,6 +2094,11 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 class ProxyHandler(BaseHTTPRequestHandler):
     config: ProxyConfig = ProxyConfig()
     screen: Optional[Screen] = None
+    #: Set by warp.py for one launch. A request carrying it may name which
+    #: ``warp:<host>`` upstream it came from, so a diverted call goes back to
+    #: the host the agent called (chatgpt.com, cloudcode-pa…), not the
+    #: provider default. Without the token the header is ignored.
+    warp_token: str = ""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -2089,6 +2219,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return "openai"
         return self.config.default_upstream
 
+    def _warp_upstream(self) -> str:
+        """``warp:<host>`` when warp.py sent this request with its token, else ''."""
+        token = self.headers.get("x-prismor-warp") or ""
+        if not (self.warp_token and token and hmac.compare_digest(token, self.warp_token)):
+            return ""
+        name = f"warp:{(self.headers.get('x-prismor-warp-origin') or '').strip().lower()}"
+        return name if name in self.config.upstreams else ""
+
     def _auth(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """``(subject, upstream_override, error)`` from the presented credential.
 
@@ -2112,6 +2250,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _forward(self, raw_body: bytes) -> None:
         provider = self._provider()
         path, query = urlsplit(self.path).path, urlsplit(self.path).query
+        self._decoded = False
+        encoding = (self.headers.get("content-encoding") or "").strip()
+        if raw_body and encoding and encoding.lower() != "identity":
+            decoded = decode_body(raw_body, encoding, MAX_BODY_BYTES)
+            if decoded is not None:
+                # Sent on decoded, without the header: what was judged is what goes.
+                raw_body, self._decoded = decoded, True
         body = _loads_object(raw_body)
         a2a = is_a2a(body)
         if a2a:
@@ -2216,7 +2361,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if body is not None and isinstance(self._key_meta.get("body"), dict):
             raw_body = json.dumps(apply_body_rules(body, self._key_meta["body"])).encode()
 
-        name = upstream_override or provider
+        name = upstream_override or self._warp_upstream() or provider
         try:
             chain = self.config.chain(name)
         except ProxyConfigError as exc:
@@ -2279,8 +2424,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # copy is screened and marked, and mask secrets: both synchronous, so the
         # provider never receives either.
         declared = (self.headers.get("x-prismor-session") or "").strip()
+        client = client_session_of(self.headers)
         if declared and _turns(body):
-            sid = self.screen.session_for(body, declared)
+            sid = self.screen.session_for(body, declared, client)
             with self.screen._lock:
                 state = self.screen._screened.get(sid) or {}
                 blocked = set(state.get("blocked") or ())
@@ -2291,7 +2437,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         threading.Thread(target=_judge, name="prismor-proxy-verdict", daemon=True).start()
         # _session_id is set by _screen_request on the judge thread; the stream
         # needs it now, and session_for is deterministic for the same input.
-        self._session_id = self.screen.session_for(unmasked, declared)
+        self._session_id = self.screen.session_for(unmasked, declared, client)
+        self._thread = conversation_key(unmasked) if client else ""
 
     def _gate(self, provider: str, model: str, streaming: bool) -> bool:
         """Hold the first byte to the client until a parallel verdict is in.
@@ -2334,9 +2481,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         """
         assert self.screen is not None
         declared = (self.headers.get("x-prismor-session") or "").strip()
+        client = client_session_of(self.headers)
         # Resolved once per request and reused for the tool calls the response
         # proposes, so a turn's prompt and its consequences share a session.
-        self._session_id = self.screen.session_for(body, declared)
+        self._session_id = self.screen.session_for(body, declared, client)
+        self._thread = conversation_key(body) if client else ""
         new: Optional[List[Tuple[str, str]]] = None
         if declared and provider in ("openai", "anthropic") and _turns(body):
             prompt, new = self.screen.conversation_delta(self._session_id, body)
@@ -2345,6 +2494,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         event = self.screen.prompt_event(
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
+            thread=getattr(self, "_thread", ""),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
         if provider == "a2a":
             # Always a handoff, even when the caller is unnamed: then the sender
@@ -2463,7 +2613,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                           host: str = "", path: str = "",
                           query: str = "") -> Dict[str, str]:
         headers = {k: v for k, v in self.headers.items()
-                   if k.lower() not in _STRIP_REQUEST_HEADERS}
+                   if k.lower() not in _STRIP_REQUEST_HEADERS
+                   and not (getattr(self, "_decoded", False) and k.lower() == "content-encoding")}
         auth_mode = str(spec.get("auth") or "").lower()
         if auth_mode in ("aws-sigv4", "gcp-oauth"):
             # A managed endpoint's credential is ambient (instance role, env,
@@ -2562,7 +2713,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         blocked: Dict[Any, str] = {}
         for call_obj, tool_name, arguments in _response_calls(provider, body):
             event = self.screen.tool_event(tool_name, arguments, provider, model, subject,
-                                           session_id=getattr(self, "_session_id", ""))
+                                           session_id=getattr(self, "_session_id", ""),
+                                           thread=getattr(self, "_thread", ""),
+                                           antigravity=_cloudcode_response(body) is not None)
             try:
                 decision = self.screen.evaluate(event, subject)
             except Exception:
@@ -2606,7 +2759,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         stream = StreamScreen(self.screen, provider, model, subject,
                               getattr(self, "_session_id", ""),
-                              spoken=getattr(self, "_spoken", False))
+                              spoken=getattr(self, "_spoken", False),
+                              thread=getattr(self, "_thread", ""))
         stream.strip_usage = getattr(self, "_usage_injected", False)
         stream.t0 = getattr(self, "_t0", None)
         try:
@@ -2862,7 +3016,7 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
     an allowed sibling of the same name down with it.
     """
     if provider == "google":
-        for candidate in body.get("candidates") or []:
+        for candidate in (_cloudcode_response(body) or body).get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             parts, kept_call = [], False
             for part in content.get("parts") or []:
@@ -3138,12 +3292,17 @@ def default_workspace() -> Path:
         return ws
 
 
-def run_proxy(host: str = "127.0.0.1", port: int = 7080,
-              workspace: Optional[Path] = None, mode: str = "observe",
-              config_path: Optional[Path] = None,
-              session_id: str = "", agent_name: str = "",
-              judge_budget_ms: int = 0, judge: str = "") -> None:
-    """Start the LLM proxy (blocking)."""
+def build_proxy_server(host: str = "127.0.0.1", port: int = 7080,
+                       workspace: Optional[Path] = None, mode: str = "observe",
+                       config_path: Optional[Path] = None,
+                       session_id: str = "", agent_name: str = "",
+                       judge_budget_ms: int = 0, judge: str = ""):
+    """Configure the handler and bind. Returns (server, workspace, warm_s, config).
+
+    Split out of :func:`run_proxy` so ``prismor proxy -- <agent>`` (warp.py) can
+    start the same proxy on a kernel-picked port without printing over the
+    agent's terminal.
+    """
     if judge:
         # Read by the semantic layer when the policy names no provider of its own.
         os.environ["PRISMOR_SEMANTIC_PROVIDER"] = judge
@@ -3168,6 +3327,28 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     )
 
     server = _ThreadingHTTPServer((host, port), ProxyHandler)
+    return server, ws, warm, config
+
+
+def shutdown_proxy() -> None:
+    """Flush anything still inside the debounce window."""
+    ProxyHandler.screen._writer_stop.set()
+    if ProxyHandler.screen._writer.is_alive():
+        ProxyHandler.screen._writer.join(timeout=2.0)
+    ProxyHandler.screen.snapshot()
+    drain_background_sinks()
+
+
+def run_proxy(host: str = "127.0.0.1", port: int = 7080,
+              workspace: Optional[Path] = None, mode: str = "observe",
+              config_path: Optional[Path] = None,
+              session_id: str = "", agent_name: str = "",
+              judge_budget_ms: int = 0, judge: str = "") -> None:
+    """Start the LLM proxy (blocking)."""
+    server, ws, warm, config = build_proxy_server(
+        host, port, workspace=workspace, mode=mode, config_path=config_path,
+        session_id=session_id, agent_name=agent_name,
+        judge_budget_ms=judge_budget_ms, judge=judge)
     base = f"http://{host}:{port}"
     print(f"[prismor] proxy listening on {base}  (mode: {mode})")
     print(f"[prismor] workspace: {ws}")
@@ -3196,6 +3377,7 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     print(f"[prismor]   Continue CLI (cn):         apiBase: {base}/v1   (model entry in config.yaml)")
     print(f"[prismor]   crush:                     \"providers\": {{\"openai\": {{\"base_url\": \"{base}/v1\"}}}}"
           "   (crush.json; it ignores OPENAI_BASE_URL)")
+    print("[prismor]   or skip the base URL:      prismor proxy -- claude   (keeps first-party features)")
     def _stop(signum, _frame):
         # SIGTERM is how a container stops, so the flush has to hang off the
         # signal rather than only off KeyboardInterrupt.
@@ -3212,12 +3394,7 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
     except KeyboardInterrupt:
         print("\n[prismor] proxy stopped.")
     finally:
-        # Flush anything still inside the debounce window on the way out.
-        ProxyHandler.screen._writer_stop.set()
-        if ProxyHandler.screen._writer.is_alive():
-            ProxyHandler.screen._writer.join(timeout=2.0)
-        ProxyHandler.screen.snapshot()
-        drain_background_sinks()
+        shutdown_proxy()
 
 
 if __name__ == "__main__":
