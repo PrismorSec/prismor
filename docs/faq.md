@@ -295,6 +295,29 @@ prismor mode apply dev-safe --observe
 
 Prismor's self-protection rules block in every mode. See [Modes](modes.md).
 
+## Still getting blocked in observe mode?
+
+Observe mode blocks nothing — except the self-protection rules above. If actions are still being stopped after you switched to observe, work through these in order:
+
+1. **Check the mode applies to this project and agent.** Mode lives in the project's `.prismor/policy.yaml` and `.prismor/agents.yaml`, not in the installed binary, so reinstalling Prismor does not reset it. A mode set for one agent does not cover the others. Set it where the block happens:
+
+   ```bash
+   prismor mode apply dev-safe --observe      # this project
+   prismor agents set <name> --mode observe  # one agent
+   ```
+
+2. **Check whether an org policy is in play.** `prismor enroll-status` shows whether this machine is enrolled and which org policy version is cached (the `policy:` line). If it says `Not enrolled`, no org policy can be blocking you — the block comes from the built-in or project rules. If it shows an org and a policy version, the org policy is merged in as an overlay on top of your local rules.
+3. **A revoked device stops getting org policy, but the local rules keep running.** If `enroll-status` says the control plane rejected this device's key, the org overlay no longer applies; the built-in and project rules still run. Re-link with `prismor enroll <token>`, or fully un-enroll with `prismor logout` (step 4).
+4. **Un-enroll when the org is gone.** You do not need the org, its console, or the old enterprise ID: `prismor logout` is local-only. It deletes the device identity (`~/.prismor/identity.json`), the cached org policy, the telemetry spool, and the heartbeat and scope state. Local protection stays on afterwards.
+
+   ```bash
+   prismor logout
+   ```
+
+   Then re-check with `prismor enroll-status` — it should say `Not enrolled`.
+5. **Check for a second enrollment source.** If `PRISMOR_AGENT_KEY` is set in the environment, it takes precedence over the identity file, so the runtime stays enrolled even after `logout` deletes the file. Unset it, and remove it from shell profiles, CI secrets, or container images that bake it in. On a system install the device key is held by the administrator and the org policy is pulled by the admin's `system-sync`; un-enrolling needs the admin.
+6. **Check the hooks match the installed version.** After an upgrade, old hooks can still be the ones firing. `prismor doctor` warns when the hooks and the `prismor` in your terminal are different versions and prints the command to upgrade them.
+
 ## A hook is slow or timing out
 
 Prismor runs before every tool call, so a slow check slows the agent. Find out
