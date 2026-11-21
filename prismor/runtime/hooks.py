@@ -4322,7 +4322,10 @@ def _normalize_antigravity(payload: Dict[str, Any], session_id: str, workspace: 
     Argument keys verified live (2.19.1): run_command {CommandLine, Cwd},
     view_file {AbsolutePath}, write_to_file {TargetFile, CodeContent},
     call_mcp_tool {ServerName, ToolName, Arguments}. The edit tools'
-    keys are matched loosely since they vary across releases.
+    keys are matched loosely since they vary across releases. agy CLI 1.5.14
+    renamed them (read via its tool declarations): read_file {Path},
+    write_file {Path, Content}, edit_file {Path, Target, Replacement}, and
+    run_workflow {Script | ScriptPath}, which runs Python.
     """
     call = payload.get("toolCall") or {}
     tool_name = str(call.get("name") or "")
@@ -4350,11 +4353,16 @@ def _normalize_antigravity(payload: Dict[str, Any], session_id: str, workspace: 
     path = _ag_pick(args, "AbsolutePath", "TargetFile", "FilePath", "File", "Path", "DirectoryPath")
     if tool_name in {"run_command", "shell_exec", "send_command_input"}:
         return {**base, "type": "shell", "command": _ag_pick(args, "CommandLine", "Command", "Input")}
-    if tool_name in {"view_file", "view_file_outline", "view_code_item", "view_content_chunk", "read_notebook"}:
+    if tool_name == "run_workflow":
+        script = _ag_pick(args, "ScriptPath")
+        script = shlex.quote(script) if script else "-c " + shlex.quote(_ag_pick(args, "Script"))
+        return {**base, "type": "shell", "command": f"python3 {script}"}
+    if tool_name in {"view_file", "view_file_outline", "view_code_item", "view_content_chunk", "read_notebook",
+                     "read_file"}:
         return {**base, "type": "file_read", "path": path}
     if tool_name in {"write_to_file", "write_blob", "code_action", "replace_file_content",
-                     "multi_replace_file_content", "edit_notebook", "file_change"}:
-        content = _ag_pick(args, "CodeContent", "ReplacementContent", "Content")
+                     "multi_replace_file_content", "edit_notebook", "file_change", "write_file", "edit_file"}:
+        content = _ag_pick(args, "CodeContent", "ReplacementContent", "Content", "Replacement")
         if not content and isinstance(args.get("ReplacementChunks"), list):
             content = "\n".join(str(c.get("ReplacementContent", "")) for c in args["ReplacementChunks"]
                                 if isinstance(c, dict))

@@ -410,8 +410,11 @@ def run_warp(command: Sequence[str], *, mode: str = "observe",
         sys.stderr.write("[prismor] warp needs the openssl CLI to mint its local CA; "
                          "install it or use ANTHROPIC_BASE_URL with `prismor proxy`.\n")
         return 2
+    # One agent in one project: judge its calls against that project (its
+    # .prismor/ policy, workspace bounds), as its hooks would, not the shared
+    # surfaces/proxy workspace a standalone proxy uses for many clients.
     server, ws, _warm, config = build_proxy_server(
-        "127.0.0.1", 0, workspace=workspace, mode=mode, config_path=config_path,
+        "127.0.0.1", 0, workspace=workspace or Path.cwd(), mode=mode, config_path=config_path,
         session_id=session_id, agent_name=agent_name,
         judge_budget_ms=judge_budget_ms, judge=judge)
     # One pass-through upstream per decrypted host, picked by the token below.
