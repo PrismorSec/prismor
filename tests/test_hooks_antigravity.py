@@ -100,6 +100,17 @@ def test_normalize_tools():
     assert (d["type"], d["command"]) == ("shell", "rm -rf /proj/build")
 
 
+def test_normalize_cli_1_5_tool_names():
+    # agy CLI 1.5.14 tool declarations, read off the wire under `prismor proxy -- agy`.
+    w = _event("write_file", {"Path": "/proj/.env", "Content": "X=1", "Overwrite": True})["event"]
+    assert (w["type"], w["path"], w["content"]) == ("file_write", "/proj/.env", "X=1")
+    e = _event("edit_file", {"Path": "/proj/a.py", "Target": "a", "Replacement": "b"})["event"]
+    assert (e["type"], e["path"], e["content"]) == ("file_write", "/proj/a.py", "b")
+    assert _event("read_file", {"Path": "/proj/a.py"})["event"]["path"] == "/proj/a.py"
+    assert _event("run_workflow", {"Script": "import os"})["event"]["command"] == "python3 -c 'import os'"
+    assert _event("run_workflow", {"ScriptPath": "/proj/w.py"})["event"]["command"] == "python3 /proj/w.py"
+
+
 def test_normalize_mcp_call_uses_server_and_tool_names():
     e = _event("call_mcp_tool", {"ServerName": "github", "ToolName": "create_issue",
                                  "Arguments": '{"title": "x"}'})["event"]

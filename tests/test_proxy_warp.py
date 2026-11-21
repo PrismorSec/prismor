@@ -154,3 +154,20 @@ def test_warp_origin_header_needs_the_launch_token():
     assert h._warp_upstream() == ""                         # any other local client: ignored
     h.headers = {"x-prismor-warp": "secret-token", "x-prismor-warp-origin": "evil.example"}
     assert h._warp_upstream() == ""                         # only hosts warp registered
+
+
+def test_warp_judges_against_the_agents_project(tmp_path, monkeypatch):
+    # Not the shared surfaces/proxy workspace: there, a guarded write in a
+    # project outside $HOME and PRISMOR_HOME read as a scratch rig and the
+    # block went inert (seen live with agy's write_file).
+    seen = {}
+
+    def fake(*a, **kw):
+        seen.update(kw)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(warp, "build_proxy_server", fake)
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError):
+        warp.run_warp(["agy"])
+    assert seen["workspace"] == tmp_path
