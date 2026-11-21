@@ -39,14 +39,14 @@ class TestMinePatterns(unittest.TestCase):
         # Regression for #146: docs/learning.md's own worked example
         # ("psql ... prod") could never fire because no database client was
         # in _SENSITIVE_COMMANDS.
-        self._record_sessions("psql -h prod-db.internal -U admin mydb", 5)
+        self._record_sessions("psql -h analytics-db.internal -U admin mydb", 5)
         candidates = mine_patterns(self.workspace, min_support=3)
         self.assertTrue(candidates, "psql should now be minable")
         self.assertEqual(candidates[0]["rule"]["id"], "learned-psql-0")
         self.assertEqual(candidates[0]["support_count"], 5)
 
     def test_below_min_support_is_not_proposed(self):
-        self._record_sessions("psql -h prod-db.internal -U admin mydb", 2)
+        self._record_sessions("psql -h analytics-db.internal -U admin mydb", 2)
         candidates = mine_patterns(self.workspace, min_support=3)
         self.assertEqual(candidates, [])
 

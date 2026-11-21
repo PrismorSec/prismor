@@ -484,20 +484,183 @@ def env_reads(command: str, cwd: str) -> List[str]:
     return list(dict.fromkeys(out))
 
 
+# Commands whose only output is stdout, in a form the decloak scrub redacts.
+_VIEWERS = {"cat", "head", "tail", "less", "more", "bat", "nl", "wc", "sort", "uniq", "cut",
+            "grep", "egrep", "fgrep", "rg", "ls", "stat", "test", "[", "[[", "echo", "printf",
+            "true", "false", ":", "cd", "pushd", "popd", "file",
+            # touch the file, never its bytes
+            "touch", "rm", "chmod", "chown", "mkdir", "realpath", "readlink", "basename", "dirname",
+            "du", "which", "type", "exit"}
+
+
+_SED_UNSAFE = re.compile(r"^-i|^--in-place|\by/|[;}\s]w\s|/[a-zA-Z0-9]*w(?:\s|$)|(?:^|;)\s*e\b")
+
+
+# Print names, sizes or modes, never the bytes: what they pipe on is safe.
+_METADATA = {"echo", "printf", "ls", "stat", "test", "[", "[[", "file", "touch", "rm", "chmod", "chown", "mkdir",
+             "realpath", "readlink", "basename", "dirname", "du", "which", "type"}
+
+
+def _viewer(words: List[str]) -> bool:
+    k, name = _cmd_name(words)
+    if not words or name in _VIEWERS:
+        return True
+    rest = [w for w in words[k + 1:] if not w.startswith("-")]
+    if name == "prismor" and rest[:1] == ["cloak"]:   # the remedy: vault it, run with it
+        return True
+    if name == "vercel" and rest[:2] == ["env", "pull"]:   # writes the file, reads nothing
+        return True
+    if name in ("cp", "mv", "ln") and len(rest) >= 2:
+        # Another dotenv (or a directory, keeping the name) stays on disk under the
+        # same vault values; the publish gate covers shipping it later.
+        dst = rest[-1]
+        return is_env_basename(dst) or dst in (".", "..") or dst.endswith("/")
+    if name == "git":   # subcommands that only print (or delete), never send
+        sub = [w for w in words[k + 1:] if not w.startswith("-")][:1]
+        return sub in (["check-ignore"], ["ls-files"], ["status"], ["diff"], ["log"], ["show"], ["rm"], ["blame"],
+                       ["commit"], ["clean"])   # the publish gate judges `git add` and `git push`
+    # sed prints to stdout unless it edits in place, writes a file (w), runs a
+    # command (e) or transliterates (y///, which the scrub can't see through).
+    return name == "sed" and not any(_SED_UNSAFE.search(a) for a in words[k + 1:])
+
+
+def _redirect_ok(dst: str) -> bool:
+    # `>> .env` appends to it; `2>/dev/null`, `2>&1` send nothing out.
+    return is_env_basename(dst) or dst.isdigit() or dst in ("/dev/null", "/dev/stdout", "/dev/stderr", "-")
+
+
+# A path literal a script opens or binds: `open('.env')`, `Path(".env")`,
+# `load_dotenv(".env")`, `config({ path: '.env' })`, `p = '.env'`. Code that
+# only carries the name as text (`s.replace("cat .env", ...)`) is not a read.
+# ponytail: names built at runtime (`'.e' + 'nv'`) get past this; that needs the sandbox layer.
+_OPENED = re.compile(r"""(?:\(\s*|[\w\]]\s*=\s*|\bpath\s*[:=]\s*)['"]([^'"\s]+)['"]""")
+
+
+def vaulted_flow(command: str, cwd: str, vaulted: List[str]) -> bool:
+    """True when ``command`` sends one of the ``vaulted`` env files anywhere but
+    the tool output.
+
+    The decloak scrub only redacts what the agent's tool output carries. Once a
+    vaulted env file is piped into a non-viewer, redirected, uploaded,
+    committed, sourced, captured by $(...) or re-encoded, its real values
+    leave by a channel the scrub never sees. Only the pipeline that names the
+    file is judged: `cat a.ts; ls .env*; find src` is three separate commands."""
+    targets = {os.path.realpath(p) for p in vaulted}
+    # A heredoc body is text, not shell: lex the command without the bodies,
+    # then judge each body by what reads it (`cat > notes.md` writes text,
+    # `python3 -` runs code that can send the file anywhere).
+    from prismor.runtime.shell_context import heredocs
+    docs = heredocs(command)
+    shell, bodies, pos = [], [], 0
+    for h in docs:
+        shell.append(command[pos:h.body_start])
+        bodies.append(command[h.body_start:h.body_end])
+        pos = h.body_end
+    shell.append(command[pos:])
+    tokens = _tokens("".join(shell))
+    if tokens is None:
+        return True
+
+    def names(toks: List[str], dynamic: bool = True) -> bool:
+        out: List[str] = []
+        for w in toks:
+            _word_hits(w, cwd, out, dynamic=dynamic)
+        return any(os.path.realpath(p) in targets for p in out if not p.startswith(UNKNOWN))
+
+    # A captured value ($(...) or backticks) goes wherever the command sends it.
+    if any(("$(" in t or "`" in t) and names([t]) for t in tokens):
+        return True
+    for n, t in enumerate(tokens):   # the lexer splits `$(` into `...$`, `(`
+        if t.endswith("$") and n + 1 < len(tokens) and tokens[n + 1] == "(":
+            depth, m = 0, n + 1
+            while m < len(tokens):
+                depth += {"(": 1, ")": -1}.get(tokens[m], 0)
+                if depth == 0:
+                    break
+                m += 1
+            if names(tokens[n + 2:m]):
+                return True
+    pipes: List[List[str]] = [[]]
+    for t in tokens:
+        if t in _CMD_SEP and t not in ("|", "|&"):
+            pipes.append([])
+        else:
+            pipes[-1].append(t)
+    fed = iter(bodies)   # heredoc bodies, in `<<` order
+    for pi, pipe in enumerate(pipes):
+        segs = _segments(pipe)
+        for i, t in enumerate(pipe):
+            if t in ("<<", "<<-"):
+                body = next(fed, "")
+                cmd = _segments(pipe[:i])[-1]["words"]
+                if not _viewer(cmd) and names(_OPENED.findall(body)):
+                    return True
+        # `for f in .env ...; do <body>; done`: the list only binds a name; the
+        # loop is a viewer when every command in its body is one.
+        if _cmd_name(pipe)[1] == "for" and "in" in pipe:
+            body_ok = True
+            for q in pipes[pi + 1:]:
+                if q[:1] == ["done"]:
+                    break
+                body_ok = body_ok and all(_viewer(seg["words"]) for seg in _segments(q))
+            if body_ok:
+                continue
+        if not names(pipe):
+            continue
+        # Bytes flow left to right: segments before the first one that prints
+        # the file's content never see it; a metadata command (or echo of the
+        # name) prints none, so where its output goes does not matter.
+        static = [(i, _cmd_name(seg["words"])[1]) for i, seg in enumerate(segs)
+                  if names(seg["words"] + seg["redir_in"], dynamic=False)]
+        readers = [i for i, name in static if name not in _METADATA]
+        if static and not readers:   # safe unless a runner reads the names
+            if any(_cmd_name(seg["words"])[1] in _RUNNERS for seg in segs[static[0][0]:]):
+                return True
+            continue
+        for n, t in enumerate(pipe):
+            if t in _WRITE_REDIRS and not _redirect_ok(pipe[n + 1] if n + 1 < len(pipe) else ""):
+                return True
+        later = segs[readers[0]:] if readers else [seg for seg in segs if names(seg["words"])]
+        if not all(_viewer(seg["words"]) for seg in later):
+            return True
+    return False
+
+
 def bash_main() -> None:
     """env-guard.sh's Bash path in one process: stdin = command, argv[1] = cwd.
-    Prints ``{"files": {path: [names]}, "total": N, "unknown": word}``."""
+    Prints ``{"files": {path: [names]}, "total": N, "unknown": word,
+    "vaulted_flow": path}``; ``vaulted_flow`` names a fully vaulted env file
+    the command sends somewhere other than the scrubbed tool output."""
     cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-    reads = env_reads(local_text(sys.stdin.read()), cwd)
+    command = local_text(sys.stdin.read())
+    reads = env_reads(command, cwd)
     unknown = next((p[1:] for p in reads if p.startswith(UNKNOWN)), "")
     vault = vault_values()
     files: Dict[str, List[str]] = {}
+    vaulted: List[str] = []
     for p in reads:
         if not p.startswith(UNKNOWN):
             names = unprotected_entries(Path(p), vault)
             if names:
                 files[p] = names
-    print(json.dumps({"files": files, "total": sum(map(len, files.values())), "unknown": unknown}))
+    # Every env file the command names, even by a "metadata" command like
+    # `git add`: once vaulted, only viewers may touch it.
+    named: List[str] = list(reads)
+    for w in _tokens(command) or command.split():
+        _word_hits(w, cwd, named, dynamic=False)
+    for p in dict.fromkeys(named):
+        if not p.startswith(UNKNOWN) and p not in files and not unprotected_entries(Path(p), vault):
+            try:
+                holds = any(len(v) >= MIN_VALUE_LEN and v in Path(p).read_text(encoding="utf-8") for v in vault)
+            except (OSError, UnicodeDecodeError):
+                holds = False
+            if holds:   # an env file with no secrets in it is no one's concern
+                vaulted.append(p)
+    flow = vaulted[0] if vaulted and vaulted_flow(command, cwd, vaulted) else ""
+    from prismor.runtime.cloaking.publish_gate import check as publish_check
+    publish = "" if files or flow else (publish_check(command, cwd, vault) or "")
+    print(json.dumps({"files": files, "total": sum(map(len, files.values())), "unknown": unknown,
+                      "vaulted_flow": flow, "publish": publish}))
 
 
 def grep_targets(path: str, glob: str = "", ftype: str = "", limit: int = 20000) -> List[str]:

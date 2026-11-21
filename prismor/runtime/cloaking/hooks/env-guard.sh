@@ -9,8 +9,11 @@
 # reason itself is the fix: run `prismor cloak add --env-file <path>`, which
 # imports every entry as its own `@@SECRET:name@@` placeholder without the
 # values ever entering model context (the CLI prints names and byte counts
-# only). Once every entry is imported the guard stands down: Reads are then
-# covered by read-guard.sh and Bash output by the decloak scrub.
+# only). Once every entry is imported the guard stands down for viewers: Reads
+# are then covered by read-guard.sh and Bash output by the decloak scrub. It
+# still denies a Bash command that sends the file anywhere else (pipe into a
+# non-viewer, redirect, upload, git add, source, re-encode): the scrub only
+# sees the tool output, so those would carry the real values out.
 #
 # Deliberately allowed even before import:
 #   * `prismor cloak ...` commands — the sanctioned ingestion path.
@@ -137,7 +140,10 @@ fi
 # Cheap fast path: skip Python unless the command could name an env file —
 # literally, through a glob or variable that could expand to one beside it
 # (or after a cd), or through a symlink.
-if [[ "$cmd" != *env* ]]; then
+# Publishing commands (images, packages, releases, uploads, pushes) are always
+# checked: publish_gate.py looks at what they would ship.
+_publish_re='(^|[^[:alnum:]_.-])(docker|podman|buildah|npm|pnpm|yarn|bun|cargo|twine|gem|gh|git|aws|gsutil|curl|wget)([^[:alnum:]_.-]|$)'
+if [[ "$cmd" != *env* && ! "$cmd" =~ $_publish_re ]]; then
   _need=0
   # (a recursive grep reads every dotfile under its directory, too)
   if [[ "$cmd" == *[\$\*\?\[\{\`]* || "$cmd" =~ grep[[:space:]].*-[[:alnum:]]*[rR]|--hidden|-uu ]]; then
@@ -168,6 +174,20 @@ report="$(printf '%s' "$cmd" | PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}
 unknown_env="$(printf '%s' "$report" | jq -r '.unknown // empty')"
 if [[ -n "$unknown_env" ]]; then
   reason="Prismor cloaking: this command reads '$unknown_env' from a directory that can't be resolved before it runs (a variable or command substitution). Prismor can't check whether that file holds secrets missing from the cloak vault, so it is blocked. Use the file's absolute path, or import it first: prismor cloak add --env-file <absolute path>"
+  jq -n --arg r "$reason" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+fi
+pub="$(printf '%s' "$report" | jq -r '.publish // empty')"
+if [[ -n "$pub" ]]; then
+  reason="Prismor publish gate: $pub. Nothing was published. Remove the file or value from what ships (.dockerignore, .npmignore, .gitignore, or the file list), reference secrets by placeholder or environment variable, then retry."
+  jq -n --arg r "$reason" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+fi
+flow="$(printf '%s' "$report" | jq -r '.vaulted_flow // empty')"
+if [[ -n "$flow" ]]; then
+  reason="Prismor cloaking: this command sends the contents of '$flow' somewhere other than the tool output. Its values are in the cloak vault, but the redaction only covers what is printed back to you: piped, redirected, uploaded, committed, sourced or re-encoded, the real values would leave. Only plain viewers (cat, head, grep ...) may read it. Pass a value by placeholder instead, e.g. curl -H \"Authorization: Bearer @@SECRET:NAME@@\" ..."
   jq -n --arg r "$reason" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
   exit 0

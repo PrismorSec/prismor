@@ -24,6 +24,27 @@ tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 response="$(printf '%s' "$input" | jq -c '.tool_response // empty')"
 [[ -n "$response" ]] || exit 0
 
+# A key the vault has never seen (the MCP server read it from its own store)
+# would reach the model raw: vault every pattern match first, under the same
+# auto_<hash> name secret-guard.sh uses, so the scrub below replaces it too.
+# shellcheck source=_patterns.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_patterns.sh"
+SECRETS_DIR="$(prismor_secrets_dir)"   # same vault the other hooks use (honors PRISMOR_HOME)
+prismor_load_patterns
+if [[ "${#PATTERNS[@]}" -gt 0 ]]; then
+  _gargs=()
+  for pat in "${PATTERNS[@]}"; do _gargs+=(-e "$pat"); done
+  if printf '%s' "$response" | grep -qE "${_gargs[@]}" 2>/dev/null; then
+    mkdir -p "$SECRETS_DIR" && chmod 700 "$SECRETS_DIR" 2>/dev/null
+    while IFS= read -r v; do
+      [[ -n "$v" ]] || continue
+      prismor_value_is_cloaked "$v" && continue
+      f="$SECRETS_DIR/auto_$(printf '%s' "$v" | shasum -a 256 | cut -c1-8)"
+      [[ -f "$f" ]] || { printf '%s' "$v" > "$f"; chmod 600 "$f" 2>/dev/null; }
+    done < <(for pat in "${PATTERNS[@]}"; do printf '%s' "$response" | grep -oE "$pat" || true; done | awk 'NF && !seen[$0]++')
+  fi
+fi
+
 # (value, placeholder) pairs, longest value first, as JSON for jq. Built by
 # perl from the vault files and handed over a /dev/fd pipe, never argv. Each
 # secret is listed raw AND in its JSON-escaped form: a string field can hold

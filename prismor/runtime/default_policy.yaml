@@ -828,7 +828,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '(?:^|[\n;&|({]\s*|\b(?:sudo|doas|then|do|else|exec|xargs|nohup|time|env)\s+(?:-\S+\s+)*|\b(?:ssh|sshpass|docker|podman|kubectl)\b[^\n;|]*?\s["'']|-c\s+["'']|\b(?:system|popen|exec\w*|run|call|check_output|Popen|spawn\w*)\s*\(\s*\[?\s*["''])(?:\w+=\S*\s+)*(curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+)?(bash|sh|zsh|dash|ksh)\b'
+      - '(?:^|[\n;&|({]\s*|\b(?:sudo|doas|then|do|else|exec|xargs|nohup|time|env)\s+(?:-\S+\s+)*|\b(?:ssh|sshpass|docker|podman|kubectl)\b[^\n;|]*?\s["'']|-c\s+["'']|\b(?:system|popen|exec\w*|run|call|check_output|Popen|spawn\w*)\s*\(\s*\[?\s*["''])(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+)?(bash|sh|zsh|dash|ksh)\b'
       # A fetch-and-run line that echo/printf hands to a shell or writes into a
       # script. The command-position anchor above skips it, since the fetch sits
       # inside the echo's quotes.
@@ -855,7 +855,9 @@ rules:
     event_types: [file_read, file_write]
     fields: [path]
     patterns:
-      - '(^|/)(\.env(\..*)?|\.npmrc|\.pypirc|id_rsa|id_ed25519|known_hosts|authorized_keys|credentials|config\.json|secrets?)(/|$)|(^|/)\.(aws|ssh|gnupg)(/|$)'
+      - '(^|/)(\.env(?!\.(?:example|sample|template|dist|defaults|schema)(?:/|$))(\..*)?|\.npmrc|\.pypirc|id_rsa|id_ed25519|known_hosts|authorized_keys|credentials|config\.json|secrets?)(/|$)|(^|/)\.(aws|ssh|gnupg)(/|$)'
+      # CLI token stores and browser cookie/login DBs
+      - '(^|/)\.kube/config$|(^|/)\.config/gh/hosts\.ya?ml$|(^|/)\.config/gcloud/|(^|/)\.azure/|(^|/)\.git-credentials$|(^|/)\.netrc$|(^|/)(?-i:Cookies|cookies\.sqlite|Cookies\.binarycookies|Login Data|logins\.json|key4\.db)$'
     action: block
 
   # ── HIGH: Secret file dumped through the shell ────────────────────────
@@ -875,6 +877,102 @@ rules:
     patterns:
       - '(?:^|[;&|{]|(?<!\$)\(|\b(?:then|do|else|xargs|sudo|time|exec)\b)\s*(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|Get-Content|gc|type|sed(?![^\n;&|<>]*\s-i)|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
     action: block
+
+  # ── HIGH: Local credential stores read through the shell ───────────────
+  # secret-file-shell-read covers .env, SSH keys and .aws/credentials. The
+  # other places a dev machine keeps live tokens (kubeconfig, gh hosts file,
+  # gcloud/azure token caches, docker auths, git/netrc credentials, browser
+  # cookie and login DBs) were open: `cat ~/.kube/config` or `sqlite3 .../Cookies`
+  # put the token in the model context. Only reader,
+  # copier and uploader verbs; `kubectl --kubeconfig ~/.kube/config get pods`
+  # uses the file without printing it.
+  - id: credential-store-shell-read
+    severity: HIGH
+    category: secret_access
+    title: Flags printing or copying CLI token stores, kubeconfig or browser cookie DBs through the shell
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # reader / copier / uploader at command position, token store in its args.
+      # Browser DB names are matched case-sensitively: node_modules/.../cookies.js is code.
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|base64|sqlite3|cp|scp|rsync|tar|zip|7z|grep|egrep|rg|awk|sed|cut|jq|yq|curl|wget|Get-Content|gc|type)\b[^\n;&|]*?(?:\.kube[/\\]config\b|\.config[/\\]gh[/\\]hosts\.ya?ml|\.config[/\\]gcloud[/\\](?:credentials\.db|access_tokens\.db|application_default_credentials\.json|legacy_credentials)|\.azure[/\\](?:accessTokens\.json|msal_token_cache)|\.docker[/\\]config\.json|\.git-credentials|\.netrc\b|(?-i:[/\\](?:Cookies|Login Data)|cookies\.sqlite|Cookies\.binarycookies|logins\.json|key4\.db)(?![\w.-]))'
+      # uploaded or posted: curl -F f=@~/.aws/credentials, --data-binary @~/.ssh/id_rsa
+      - '(?:@|<\s*)[^\s;&|]*(?:\.aws[/\\]credentials|\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)\b(?!\.pub)|\.kube[/\\]config|\.config[/\\]gh[/\\]hosts\.ya?ml|\.npmrc|\.pypirc|\.git-credentials|\.netrc)\b'
+      # whole credential folders archived or copied as an argument: tar czf - -C ~ .aws .kube
+      # (not a path inside them: `rsync -e "ssh -i ~/.ssh/key.pem"` names a key file)
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:tar|zip|7z|rsync|cp\s+-[a-zA-Z]*[rR])\b[^\n;&|]*(?:\s|~/|\$HOME/|[\x27"])\.(?:aws|ssh|kube|gnupg|docker|azure|config/gh|config/gcloud)/?(?=[\s\x27"]|$)'
+    action: block
+
+  # ── HIGH: CLI commands that print a live credential ────────────────────
+  # The token never needs to be in a file the agent opens: these print it
+  # straight to the model context. Asks, because moving a credential on
+  # purpose is real work. Capturing it into a variable (`T="$(gh auth token)"`)
+  # never prints it and is not matched.
+  - id: credential-print
+    severity: HIGH
+    category: secret_access
+    title: Flags CLI commands that print a stored token, key or keychain password
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[;&|\n`]\s*|\b(?:sudo|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:gh\s+auth\s+token\b|aws\s+configure\s+(?:get\s+\S*(?:secret|token|key)\b|export-credentials\b)|gcloud\s+auth\s+(?:application-default\s+)?print-(?:access|identity)-token\b|az\s+account\s+get-access-token\b|(?:kubectl|oc)\s+config\s+view\b[^\n;&|]*\s--raw\b|security\s+(?:find-(?:generic|internet)-password\b[^\n;&|]*\s-[a-zA-Z]*[wg]\b|dump-keychain\b)|op\s+(?:read|item\s+get)\b|vault\s+(?:kv\s+get|read)\b)'
+    action: step_up
+
+  # ── MEDIUM: Reading the clipboard into the context ─────────────────────
+  # People copy tokens. Only flagged when the clipboard is printed back to the
+  # model (bare, or through a text filter); `pbpaste > file` or into another
+  # program is not.
+  - id: clipboard-read
+    severity: MEDIUM
+    category: secret_access
+    title: Printing the clipboard (often holds a copied token)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[;&|(\n`]\s*)(?:pbpaste|wl-paste|Get-Clipboard|(?:xclip|xsel)\b[^\n;&|]*\s-(?:[a-z]*o\b|-output\b))\s*(?:$|[;&\n)]|\|\s*(?:cat|head|tail|less|grep|egrep|sed|awk|cut|tr|sort|uniq|jq|base64|xxd|od|fold|rev)\b)'
+    action: step_up
+
+  # ── HIGH: Pulling secrets out of production ────────────────────────────
+  # Reading a prod box's env, a cluster secret or a prod database puts live
+  # production credentials in the model context or on the laptop.
+  # Routine prod work (tail logs, get pods, deploy) is not
+  # matched. "prod" is recognised by name (prod, production, prd) in the host,
+  # namespace or context.
+  - id: prod-secret-read
+    severity: HIGH
+    category: secret_access
+    title: Reading secrets from production (env over ssh, cluster secrets, prod databases, copying prod secret files)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # ssh <prod host> '<reads env or a secret file>'
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?ssh\b[^\n;&|]*?(?:^|[\s@.])(?:prod|production|prd)\b[\w.-]*[^\n;&|]*?(?:\bprintenv\b|(?<![\w.-])env(?:\s|$|[''"])|/proc/[\w/]*environ|\b(?:cat|head|tail|less|grep|strings|xxd)\b[^\n;&|]*(?:\.env\b|secret|credential|\.pem\b|\.key\b))'
+      # any cluster: secret values printed
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:kubectl|oc)\b[^\n;&|]*\bget\s+secrets?\b[^\n;&|]*(?:\s-o\s*=?\s*(?:yaml|json|jsonpath|go-template)|\s--output(?:=|\s))'
+      # exec into a pod and print its env or secret files
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:kubectl|oc)\b[^\n;&|]*\bexec\b[^\n;&|]*\s--\s*(?:\S+\s+)*?(?:printenv\b|env(?:\s|$)|cat\s+\S*(?:\.env\b|secret|/proc/[\w/]*environ))'
+      # prod database clients and dumps
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:psql|mysql|mariadb|mongosh|mongo|pg_dump|pg_dumpall|mysqldump|mongodump|redis-cli)\b[^\n;&|]*?(?:[\s@/.=]|^)(?:prod|production|prd)\b[\w.-]*'
+      # copy a secret file down from a prod host
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:scp|rsync)\b(?:\s+-\S+)*\s+\S*\b(?:prod|production|prd)\b[\w.-]*:\S*(?:\.env\b|secret|credential|\.pem\b|\.key\b)'
+    action: step_up
+
+  # ── HIGH: Agent mints a new credential ─────────────────────────────────
+  # A new access key or token is a standing credential that outlives the task
+  # and is printed straight into the context. Ask a human first.
+  - id: credential-mint
+    severity: HIGH
+    category: secret_access
+    title: Creating a new cloud access key, service-account key or cluster token
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\baws\s+iam\s+create-access-key\b'
+      - '\bgcloud\s+iam\s+service-accounts\s+keys\s+create\b'
+      - '\b(?:kubectl|oc)\s+create\s+token\b'
+      - '\baz\s+ad\s+sp\s+(?:credential\s+reset|create-for-rbac)\b'
+      - '\bgh\s+auth\s+refresh\b'
+    action: step_up
 
   # ── HIGH: Suspicious network destinations ─────────────────────────────
   - id: suspicious-network
@@ -2570,7 +2668,7 @@ rules:
     fields: [command]
     patterns:
       # sudo -l/-v/-k and --help/--version do not elevate anything.
-      - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
+      - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
     action: warn
 
 allowlists: []
