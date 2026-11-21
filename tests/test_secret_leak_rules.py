@@ -123,6 +123,16 @@ def test_docker_build_ships_env(repo):
     assert _gate("docker build -t app .", repo) is None
 
 
+def test_compose_build_ships_env(repo):
+    (repo / "docker-compose.yml").write_text("services:\n  api:\n    build: .\n    env_file: .env\n  db:\n    image: postgres\n")
+    for cmd in ("docker compose build", "docker compose up -d", "docker-compose up --build", "docker compose -f docker-compose.yml build api"):
+        assert "env file" in _gate(cmd, repo), cmd
+    assert _gate("docker compose ps", repo) is None
+    assert _gate("docker compose logs api", repo) is None
+    (repo / ".dockerignore").write_text(".env\n")
+    assert _gate("docker compose build", repo) is None
+
+
 def test_git_add_all_after_gitignore_change(repo):
     assert _gate("git add -A", repo) is None
     (repo / ".gitignore").write_text("")

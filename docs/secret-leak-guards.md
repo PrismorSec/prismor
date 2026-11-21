@@ -116,6 +116,7 @@ with values, a vaulted value, or a string that looks like a key.
 | Command | What it checks |
 |---|---|
 | `docker build`, `podman build`, `buildah bud` | the build context, minus `.dockerignore` |
+| `docker compose build`, `up`, `create`, `run` (and `docker-compose`) | the build context of every service with a `build:`, minus its `.dockerignore` |
 | `npm publish` / `pack` (and pnpm, yarn, bun), `cargo publish` | the files the package would contain |
 | `git add` | the files it would stage |
 | `git push` | the commits that are not on any remote yet |
