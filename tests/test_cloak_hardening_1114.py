@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,50 @@ def test_read_guard_covers_grep_content_and_edit(vault, tmp_path):
     for tool in ("Edit", "MultiEdit"):
         assert denied(hook("read-guard.sh", {"tool_name": tool, "tool_input": {"file_path": str(src / "config.py")}}))
         assert hook("read-guard.sh", {"tool_name": tool, "tool_input": {"file_path": str(src / "app.js")}}) is None
+
+
+@pytest.mark.parametrize("registration,value", [
+    ("file", "\nSYNTHETIC HEADER\n\nSyntheticPayload927abcdef\nSYNTHETIC FOOTER"),
+    ("stdin", "SYNTHETIC HEADER\nx\nSyntheticPayload927abcdef\nSYNTHETIC FOOTER"),
+    ("env", "SYNTHETIC HEADER\nliteral*[0-9]?\\tail\nSyntheticPayload927abcdef\nSYNTHETIC FOOTER"),
+], ids=["file-blank-lines", "stdin-short-line", "env-literal-patterns"])
+def test_read_guard_matches_complete_multiline_values(vault, tmp_path, registration, value):
+    cli = HOOKS.parents[1] / "cli.py"
+    args = [sys.executable, str(cli), "cloak", "add"]
+    if registration == "env":
+        source = tmp_path / "input.env"
+        source.write_text("MULTILINE=" + json.dumps(value) + "\n")
+        args += ["--env-file", str(source)]
+    else:
+        args += ["MULTILINE"]
+        if registration == "file":
+            source = tmp_path / "input.txt"
+            source.write_text(value)
+            args += ["--from-file", str(source)]
+    registered = subprocess.run(args, input=value if registration == "stdin" else "",
+                                capture_output=True, text=True, check=True)
+    assert value not in registered.stdout + registered.stderr
+    assert (vault.dir / "MULTILINE").read_text() == value
+    # The first nonmatching value must not prevent a later secret from blocking.
+    vault("AAA_OTHER", "OtherSyntheticHeader\nOtherSyntheticPayload927")
+    clean = tmp_path / "workspace-one" / "source.txt"
+    secret_file = tmp_path / "workspace-two" / "source.txt"
+    clean.parent.mkdir()
+    secret_file.parent.mkdir()
+    clean.write_text("unrelated content\nSYNTHETIC HEADER\nx\nSYNTHETIC FOOTER\n")
+    secret_file.write_text("prefix\n" + value + "\nsuffix\n")
+    for tool in ("Read", "Edit", "MultiEdit"):
+        # Keep the existing whole-file decision for a limited Read too.
+        extra = {"offset": 1, "limit": 1} if tool == "Read" else {}
+        for path, block in ((clean, False), (secret_file, True)):
+            result = subprocess.run(
+                ["bash", str(HOOKS / "read-guard.sh")],
+                input=json.dumps({"tool_name": tool, "tool_input": {"file_path": str(path), **extra}}),
+                capture_output=True, text=True, check=True,
+            )
+            assert value not in result.stdout + result.stderr
+            response = json.loads(result.stdout) if result.stdout.strip() else None
+            assert denied(response) == block, (registration, tool, path.name)
 
 
 def test_env_guard_covers_grep_content(vault, tmp_path):
