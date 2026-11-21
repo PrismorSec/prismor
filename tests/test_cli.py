@@ -311,6 +311,21 @@ class TestCloakEnvImport(unittest.TestCase):
                 unreadable.chmod(0o600)
 
 
+    def test_cloak_add_store_write_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home-is-a-file"
+            home.write_text("", encoding="utf-8")
+            env = os.environ.copy()
+            env["PRISMOR_HOME"] = str(home)
+            secret_file = Path(td) / "secret.txt"
+            secret_file.write_text("secret_val_123456", encoding="utf-8")
+
+            r = run_cli_env("cloak", "add", "MY_KEY", "--from-file", str(secret_file), env=env)
+            self.assertEqual(r.returncode, 1)
+            self.assertTrue(r.stderr.startswith("error: "), r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
+
+
 class TestImmunityUmbrella(unittest.TestCase):
     """Test the unified `prismor` CLI dispatches to the right engine."""
 

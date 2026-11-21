@@ -3609,7 +3609,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     value = sys.stdin.read().rstrip("\n")
             try:
                 path = add_secret(name, value)
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(1)
             print(f"Registered @@SECRET:{name}@@ ({len(value)} bytes) at {path}")
