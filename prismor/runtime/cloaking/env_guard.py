@@ -133,6 +133,9 @@ _PREFIX_WORDS = {"{", "}", "!", "if", "then", "else", "elif", "fi", "do", "done"
 _ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 # `$IFS` / `${IFS}` / `${IFS:0:1}` expand to whitespace: `cat${IFS}.env`.
 _IFS_RE = re.compile(r"\$\{IFS[^}]*\}|\$IFS(?![A-Za-z0-9_])")
+# The fd number of a redirect (`2>&1`, `1>out`): bash reads it as part of the
+# operator, shlex as a word, which made `docker build . 2>&1` look like context `2`.
+_FD_RE = re.compile(r"(?:(?<=[\s;&|])|^)\d+(?=[<>])")
 
 
 def _tokens(command: str):
@@ -141,7 +144,7 @@ def _tokens(command: str):
     when it does not lex (unbalanced quotes)."""
     import shlex
     try:
-        lex = shlex.shlex(_IFS_RE.sub(" ", command), posix=True, punctuation_chars=_PUNCT)
+        lex = shlex.shlex(_FD_RE.sub("", _IFS_RE.sub(" ", command)), posix=True, punctuation_chars=_PUNCT)
         lex.whitespace = " \t\r"
         lex.whitespace_split = True
         lex.commenters = ""   # a comment swallowed the newline that ends it

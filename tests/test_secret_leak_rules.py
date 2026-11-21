@@ -118,6 +118,7 @@ def _gate(cmd, cwd, vault=frozenset({_VALUE})):
 
 def test_docker_build_ships_env(repo):
     assert "env file" in _gate("docker build -t app .", repo)
+    assert "env file" in _gate("docker build -t app . 2>&1 | tail -40", repo)   # fd redirect, seen live
     (repo / ".dockerignore").write_text(".env\n")
     assert _gate("docker build -t app .", repo) is None
 
