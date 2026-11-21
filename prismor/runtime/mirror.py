@@ -390,7 +390,9 @@ _TOOL_ALIASES = {
 _PROGRAM_TOOLS = {"ssh": "ssh", "kubectl": "kubectl", "node": "node -e", "nodejs": "node -e",
                   "docker": "docker", "git": "git", "helm": "helm", "terraform": "terraform"}
 _SHELLISH_NAME = re.compile(r"shell|exec|command|terminal|bash|cmd")
-_COMMAND_KEYS = ("command", "cmd", "script")
+# CommandLine: Antigravity's run_command (agy), next to Cwd and a model-written
+# toolSummary that must not be read as part of the command.
+_COMMAND_KEYS = ("command", "cmd", "script", "CommandLine", "commandLine", "command_line")
 _EXTRA_COMMAND_KEYS = ("commands", "input", "code", "argv", "args")
 _CODE_KEYS = ("code", "source", "script")
 # `source`/`script` mean code only on a code runner; elsewhere they can be a URL

@@ -24,6 +24,7 @@ from prismor.runtime.proxy import (  # noqa: E402
     ProxyConfigError,
     Screen,
     StreamScreen,
+    _response_calls,
     _strip_blocked_calls,
     error_body,
     extract_prompt,
@@ -975,6 +976,67 @@ def test_gemini_stream_text_passes_through(monkeypatch, tmp_path):
     texts = [p["text"] for line in out.decode().splitlines() if line.startswith("data: ")
              for p in json.loads(line[6:])["candidates"][0]["content"]["parts"]]
     assert "".join(texts) == "hello"
+
+
+def _cloudcode(inner):
+    """agy / Gemini CLI on a Google login: CloudCode wraps each Gemini frame."""
+    return b"data: " + json.dumps({"response": inner, "traceId": "t1", "metadata": {}}).encode() + b"\n\n"
+
+
+def _agy_call(command):
+    # Argument shape seen live from agy 1.5.13 (gemini-4-neon).
+    return {"candidates": [{"content": {"role": "model", "parts": [{"functionCall": {
+        "name": "run_command", "id": "call_1",
+        "args": {"WaitMsBeforeAsync": 5000, "toolSummary": "Run it", "CommandLine": command}}}]}}]}
+
+
+def test_cloudcode_stream_replaces_denied_call_inside_the_envelope(monkeypatch, tmp_path):
+    screen, seen = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "google", "gemini-4-neon", None)
+    out = stream.feed(_cloudcode(_agy_call("rm -rf /"))) + stream.flush()
+
+    assert b"functionCall" not in out and b"rm -rf" not in out
+    frame = json.loads(out.split(b"data: ", 1)[1])
+    assert frame["traceId"] == "t1"                       # agy only parses the envelope
+    assert "Blocked by Prismor" in json.dumps(frame["response"]["candidates"])
+    assert seen[-1]["command"] == "rm -rf /"              # CommandLine, not toolSummary
+
+
+def test_cloudcode_stream_releases_allowed_call_and_text(monkeypatch, tmp_path):
+    screen, _ = _screen(monkeypatch, tmp_path, block_when="rm -rf")
+    stream = StreamScreen(screen, "google", "gemini-4-neon", None)
+    out = stream.feed(_cloudcode(_agy_call("echo ping")))
+    assert json.loads(out.split(b"data: ", 1)[1])["response"]["candidates"][0]["content"][
+        "parts"][0]["functionCall"]["args"]["CommandLine"] == "echo ping"
+    text = _cloudcode({"candidates": [{"content": {"parts": [{"text": "pong"}]},
+                                       "finishReason": "STOP"}]})
+    out = stream.feed(text) + stream.flush()
+    frames = [json.loads(line[6:]) for line in out.decode().splitlines() if line.startswith("data: ")]
+    assert frames and all("response" in f and f["traceId"] == "t1" for f in frames)
+    assert "".join(p["text"] for f in frames
+                   for p in f["response"]["candidates"][0]["content"]["parts"]) == "pong"
+
+
+def test_cloudcode_file_tools_use_the_antigravity_mapping(monkeypatch, tmp_path):
+    screen, seen = _screen(monkeypatch, tmp_path)
+    stream = StreamScreen(screen, "google", "gemini-4-neon", None)
+    call = {"candidates": [{"content": {"parts": [{"functionCall": {"name": "write_to_file",
+            "args": {"TargetFile": "/repo/.env", "CodeContent": "X=1"}}}]}}]}
+    stream.feed(_cloudcode(call))
+    assert (seen[-1]["type"], seen[-1]["path"], seen[-1]["content"]) == ("file_write", "/repo/.env", "X=1")
+    # Same name from a plain Gemini API client: not agy, so not agy's keys.
+    plain = StreamScreen(screen, "google", "gemini-4-neon", None)
+    plain.feed(b"data: " + json.dumps(call).encode() + b"\n\n")
+    assert seen[-1].get("path") != "/repo/.env" or seen[-1]["type"] != "file_write"
+
+
+def test_cloudcode_buffered_response_is_screened_in_place():
+    body = {"response": _agy_call("rm -rf /"), "traceId": "t1"}
+    calls = _response_calls("google", body)
+    assert [(name, args["CommandLine"]) for _, name, args in calls] == [("run_command", "rm -rf /")]
+    out = _strip_blocked_calls("google", body, {id(calls[0][0]): "Blocked by Prismor: nope"})
+    assert out["traceId"] == "t1"
+    assert out["response"]["candidates"][0]["content"]["parts"][0] == {"text": "Blocked by Prismor: nope"}
 
 
 def test_strip_blocked_calls_google_keeps_turn_valid():
