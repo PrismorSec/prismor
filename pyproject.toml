@@ -246,6 +246,7 @@ packages = [
 "docs/sandbox.md" = "prismor/runtime/data/docs/sandbox.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
+"docs/secret-leak-guards.md" = "prismor/runtime/data/docs/secret-leak-guards.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"
 "docs/shadow-discovery.md" = "prismor/runtime/data/docs/shadow-discovery.md"
 "docs/skill-scanner.md" = "prismor/runtime/data/docs/skill-scanner.md"
