@@ -27,6 +27,7 @@ sk-or-v1-[a-f0-9]{64}
 sk-(proj|svcacct|admin)-[A-Za-z0-9_-]{40,}
 sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}
 sk_[a-f0-9]{48}
+AIK_CLIENT_[A-Za-z0-9_-]{36,}
 gsk_[A-Za-z0-9]{52}
 pplx-[A-Za-z0-9]{40,}
 xai-[A-Za-z0-9]{70,}
