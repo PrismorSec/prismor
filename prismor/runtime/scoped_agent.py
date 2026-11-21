@@ -9,6 +9,7 @@ The active rule set becomes:  policy.yaml (base) + scoped_agent (session-only)
 from __future__ import annotations
 
 import json
+import re
 import sys
 from fnmatch import fnmatch
 from pathlib import Path
@@ -361,22 +362,77 @@ def resolve_skill_name(event: Dict[str, Any]) -> Optional[str]:
     return name.strip()[:_MAX_SKILL_NAME] or None
 
 
-def resolve_tool_tags(event: Dict[str, Any]) -> List[str]:
+def mcp_server_tags(tool: str) -> List[str]:
+    """Server-wide tags an MCP tool call answers to: ``mcp__<server>__*``.
+
+    Lets one deny entry switch off a whole MCP server. A call routed through
+    the Prismor gateway reaches the agent's own hook as
+    ``mcp__prismor__<server>__<tool>``, so it answers to the gateway's tag and
+    the real server's; the gateway itself screens under the real name.
+    """
+    if not tool.startswith("mcp__"):
+        return []
+    parts = tool[len("mcp__"):].split("__")
+    if len(parts) < 2 or not parts[0]:
+        return []
+    tags = [f"mcp__{parts[0]}__*"]
+    if parts[0] == "prismor" and len(parts) >= 3 and parts[1]:
+        tags.append(f"mcp__{parts[1]}__*")
+    return tags
+
+
+def tag_matches(entry: Any, tags: List[str]) -> bool:
+    """Does a deny/ask entry cover a call with these tags?
+
+    Exact membership, plus one widening for server-wide entries
+    (``mcp__<server>__*``): the agent may name the server differently from its
+    config. Claude Code turns ``claude.ai Gmail`` into ``claude_ai_Gmail`` and
+    a plugin's server into ``plugin_<plugin>_<server>``, so the entry also
+    matches a server tag that equals the normalized name or ends in
+    ``_<name>`` - the same rule the dashboard's own Off switch uses
+    (extensions._serves).
+    """
+    if not isinstance(entry, str) or not entry:
+        return False
+    if entry in tags:
+        return True
+    if not (entry.startswith("mcp__") and entry.endswith("__*")):
+        return False
+    want = entry[len("mcp__"):-len("__*")]
+    if not want:
+        return False
+    names = {want, re.sub(r"[^A-Za-z0-9_-]", "_", want), re.sub(r"[^A-Za-z0-9_]", "_", want)}
+    for tag in tags:
+        if tag.startswith("mcp__") and tag.endswith("__*"):
+            server = tag[len("mcp__"):-len("__*")]
+            if any(server == n or server.endswith("_" + n) for n in names):
+                return True
+    return False
+
+
+def resolve_tool_tags(event: Dict[str, Any], families: bool = False) -> List[str]:
     """Tool tags this event may be inventoried or denied under.
 
     Usually just the resolved tool name. A skill call additionally yields the
     qualified ``Skill:<name>`` tag, so an operator can deny one skill without
     denying the whole mechanism. The bare tag stays first: denying ``Skill``
     must keep blocking every skill.
+
+    ``families`` adds the ``mcp__<server>__*`` tags for deny/ask matching. Off
+    by default: they are permissions, not tools, and must never be inventoried
+    as something the agent was seen to hold.
     """
     base = _resolve_tool_name(event)
     if not base:
         return []
+    tags = [base]
     if base == _SKILL_TOOL:
         skill = resolve_skill_name(event)
         if skill:
-            return [base, f"{_SKILL_PREFIX}{skill}"]
-    return [base]
+            tags.append(f"{_SKILL_PREFIX}{skill}")
+    if families:
+        tags += mcp_server_tags(base)
+    return tags
 
 
 # ── Rule synthesis ─────────────────────────────────────────────────────────
@@ -484,6 +540,7 @@ def _synthesize_scoped_rules(
         available_set = set(available_tools)
         rules["allowed_tools"] = [t for t in rules["allowed_tools"] if t in available_set]
         rules["deny_tools"] = [t for t in rules["deny_tools"] if t in available_set]
+        rules["origin"] = "llm"
 
         return _apply_web_invariant(_apply_cloak_invariant(rules, goal), available_tools)
 
@@ -772,6 +829,7 @@ def check_scoped_rules(
                 session_id,
                 f"Tool '{tool_name}' is explicitly denied for this session",
                 event_type,
+                rules,
             )
 
         # "*" in allowed_tools = allow-all-except-denied. The dashboard writes
@@ -802,12 +860,14 @@ def check_scoped_rules(
                         session_id,
                         f"Tool '{tool_name}' is not in scope for this session",
                         event_type,
+                        rules,
                     )
             else:
                 return _scoped_finding(
                     session_id,
                     f"Tool '{tool_name}' is not in scope for this session",
                     event_type,
+                    rules,
                 )
 
     # Path check for file events
@@ -820,6 +880,7 @@ def check_scoped_rules(
                     session_id,
                     f"Path '{path}' is outside the scoped paths for this session",
                     event_type,
+                    rules,
                 )
 
     # Network check. A shell command reaches the network as readily as WebFetch
@@ -832,6 +893,7 @@ def check_scoped_rules(
                 session_id,
                 f"Network access denied by scoped rules (url: {url[:100]})",
                 event_type,
+                rules,
             )
         if event_type == "shell":
             from .egress import extract_destinations
@@ -844,14 +906,16 @@ def check_scoped_rules(
                     session_id,
                     f"Network access denied by scoped rules (host: {where[:100]})",
                     event_type,
+                    rules,
                 )
 
     return None
 
 
-def _scoped_finding(session_id: str, reason: str, event_type: str) -> Dict[str, Any]:
+def _scoped_finding(session_id: str, reason: str, event_type: str,
+                    rules: Dict[str, Any]) -> Dict[str, Any]:
     """Build a finding dict for a scoped rule violation."""
-    return {
+    finding = {
         "id": f"{session_id}:scoped-agent",
         "severity": "HIGH",
         "category": "scoped_agent",
@@ -859,10 +923,23 @@ def _scoped_finding(session_id: str, reason: str, event_type: str) -> Dict[str, 
         "evidence": reason,
         "ruleId": "scoped-agent",
         "action": "block",
-        # Scope denials (IAM / scoped-agent) are explicit operator intent, not
-        # observe-by-default detection — they always enforce.
+        # Scope denials (IAM / scoped-agent) always enforce: they are not
+        # observe-by-default detection.
         "mode": "enforce",
     }
+    if rules.get("operator_edited"):
+        finding["scopeOrigin"] = "operator"
+    elif isinstance(rules.get("inventory"), list):
+        # Synthesised from the prompt (only synthesis records an inventory).
+        # Every gap in it — an LLM omission or a keyword miss — denies the
+        # tool the user asked for as surely as the attack (#257): the rule
+        # sees the capability, never the call. So the person decides: an
+        # inline ask where the agent can ask, fail-closed where it cannot.
+        # Attack policy still blocks outright (block outranks step_up). A
+        # scope a human wrote (scope edit, dashboard, IAM) keeps blocking.
+        finding["action"] = "step_up"
+        finding["scopeOrigin"] = rules.get("origin") or "llm"
+    return finding
 
 
 # ── Display ────────────────────────────────────────────────────────────────

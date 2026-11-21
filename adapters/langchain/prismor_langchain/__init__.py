@@ -32,6 +32,7 @@ from typing import Any, Callable, List, Optional, Sequence, Union
 
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
+from prismor.runtime import inflight as _inflight
 from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
 
 __all__ = [
@@ -66,7 +67,7 @@ def _payload(args: tuple, kwargs: dict) -> str:
     return " ".join(parts).strip()
 
 
-def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None, subagent_id=None, subagent_type=None):
+def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), kwargs=None, subagent_id=None, subagent_type=None, mcp_server=None):
     field = _TYPE_FIELD.get(event_type, "command")
     return {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -87,11 +88,34 @@ def _build_event(*, tool_name, payload, event_type, session_id, agent, args=(), 
             # wrap in prismor_guard_tool has no per-call context to draw it from.
             "subagent_id": subagent_id,
             "subagent_type": subagent_type,
+            # The MCP server this tool calls, so a call to an agent served over
+            # MCP (``claude mcp serve``) is checked as a handoff to that agent.
+            "mcp_server": mcp_server,
         },
     }
 
 
-def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="", subagent_id=None, subagent_type=None) -> Decision:
+def _mcp_server(tool: Any) -> Optional[str]:
+    """The MCP server a tool from langchain-mcp-adapters calls, or None.
+
+    Those tools keep the server's bare tool name (``Agent``), and the server
+    only lives in the call closure. ``metadata["mcp_server"]`` overrides it.
+    """
+    md = getattr(tool, "metadata", None)
+    if isinstance(md, dict) and md.get("mcp_server"):
+        return str(md["mcp_server"])
+    fn = getattr(tool, "coroutine", None)
+    code = getattr(fn, "__code__", None)
+    if code is None or "server_name" not in code.co_freevars or not fn.__closure__:
+        return None
+    try:
+        server = fn.__closure__[code.co_freevars.index("server_name")].cell_contents
+    except ValueError:  # an empty cell
+        return None
+    return str(server) if server else None
+
+
+def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_type, agent_name="", subagent_id=None, subagent_type=None, mcp_server=None) -> Decision:
     event = _build_event(
         tool_name=tool_name,
         payload=_payload(args, kwargs),
@@ -102,11 +126,40 @@ def _evaluate(*, tool_name, args, kwargs, subject, ws, agent, mode, sid, event_t
         kwargs=kwargs,
         subagent_id=subagent_id,
         subagent_type=subagent_type,
+        mcp_server=mcp_server,
     )
     return evaluate_tool_call(
         event=event, workspace=ws, agent=agent, agent_name=agent_name,
         mode=mode, session_id=sid, subject=resolve_subject(subject),
     )
+
+
+def _subagent_from_metadata(md: Any) -> tuple:
+    """(subagent_id, subagent_type) from LangGraph run metadata, or (None, None).
+
+    ``langgraph_checkpoint_ns`` is the path of graphs the call runs in, e.g.
+    ``researcher:<uuid>|tools:<uuid>``. One segment is the top-level graph: the
+    main agent, even though its tool node is named ``tools``. More than one
+    means the call runs inside a subgraph, which is how a multi-agent graph (and
+    langgraph-supervisor) runs each agent; the outer segment names that agent
+    and, with its uuid, identifies this run of it.
+    """
+    if not isinstance(md, dict):
+        return None, None
+    ns = str(md.get("langgraph_checkpoint_ns") or md.get("checkpoint_ns") or "")
+    parts = [p for p in ns.split("|") if p]
+    if len(parts) < 2:
+        return None, None
+    return parts[0], parts[0].split(":", 1)[0]
+
+
+def _graph_subagent() -> tuple:
+    """The calling subagent when a guarded tool runs inside a LangGraph graph."""
+    try:
+        from langgraph.config import get_config
+        return _subagent_from_metadata((get_config() or {}).get("metadata"))
+    except Exception:  # not in a graph, or langgraph not installed
+        return None, None
 
 
 class _RunWith:
@@ -144,11 +197,14 @@ def prismor_guard_tool(
     sid = session_id or f"langchain-{os.getpid()}"
     _agent_name = name  # per-instance label (distinct from framework id)
     tool_name = getattr(tool, "name", None) or getattr(tool, "__name__", "tool")
+    mcp_server = _mcp_server(tool)  # before the coroutine is wrapped
 
     def _decide(args: tuple, kwargs: dict):
+        sub_id, sub_type = _graph_subagent()
         decision = _evaluate(
             tool_name=tool_name, args=args, kwargs=kwargs, subject=subject, ws=ws,
             agent=agent, agent_name=_agent_name, mode=mode, sid=sid, event_type=event_type,
+            subagent_id=sub_id, subagent_type=sub_type, mcp_server=mcp_server,
         )
         log_observe_findings(decision, mode=mode, tool_name=tool_name)
         _engine[0] = decision.engine
@@ -170,15 +226,15 @@ def prismor_guard_tool(
                             return _RunWith(
                                 _approvals.redact_approved_payload(args, workspace=ws),
                                 _approvals.redact_approved_payload(kwargs, workspace=ws),
-                            )
-                        return None  # approved → allowed
+                            ), decision
+                        return None, decision  # approved → allowed
                 except Exception:
                     pass
             reason = decision.reason or "policy violation"
             if raise_on_block:
                 raise PrismorBlocked(reason, decision)
-            return f"⛔ Prismor blocked this tool call: {reason}"
-        return None  # allowed
+            return _denial_value(reason), decision
+        return None, decision  # allowed
 
     # The Decision's own PolicyEngine, parked by _decide for _redact to reuse
     # rather than rebuild. A list because the guarded callables are re-entrant
@@ -196,11 +252,28 @@ def prismor_guard_tool(
         """
         return redact_tool_result(result, workspace=ws, engine=_engine[0])
 
+    def _denial_value(reason: str) -> Any:
+        denial = f"⛔ Prismor blocked this tool call: {reason}"
+        # A content_and_artifact tool (every langchain-mcp-adapters tool)
+        # must return (content, artifact), or LangChain raises on the denial.
+        return (denial, None) if getattr(tool, "response_format", None) == "content_and_artifact" else denial
+
+    async def _run(decision: Any, awaitable: Any) -> Any:
+        # Async tools run as a task that is cancelled if a policy refresh
+        # (pause, subject control, restriction) would now refuse it (#942).
+        try:
+            return _redact(await _inflight.run_cancellable(
+                decision, awaitable, tool=tool_name, agent=agent, session_id=sid))
+        except _inflight.Refused as exc:
+            if raise_on_block:
+                raise PrismorBlocked(f"{exc.status}: {exc.reason}", decision)
+            return _denial_value(f"{exc.status}: {exc.reason}")
+
     original_func = getattr(tool, "func", None)
     if callable(original_func):
         @functools.wraps(original_func)
         def guarded_func(*args: Any, **kwargs: Any) -> Any:
-            denial = _decide(args, kwargs)
+            denial, _ = _decide(args, kwargs)
             if isinstance(denial, _RunWith):
                 return _redact(original_func(*denial.args, **denial.kwargs))
             if denial is not None:
@@ -217,16 +290,64 @@ def prismor_guard_tool(
             # servicing other tools/streams instead of sleeping with it.
             import asyncio
 
-            denial = await asyncio.to_thread(_decide, args, kwargs)
+            denial, decision = await asyncio.to_thread(_decide, args, kwargs)
             if isinstance(denial, _RunWith):
-                return _redact(await original_coro(*denial.args, **denial.kwargs))
+                return await _run(decision, original_coro(*denial.args, **denial.kwargs))
             if denial is not None:
                 return denial
-            return _redact(await original_coro(*args, **kwargs))
+            return await _run(decision, original_coro(*args, **kwargs))
         tool.coroutine = guarded_coro
 
-    tool.__prismor_guarded__ = True
+    # A BaseTool subclass (ShellTool, the file-management and Requests tools)
+    # has no func/coroutine: its body is _run/_arun, which BaseTool.run calls.
+    # Guard those on the instance so the call still goes through policy.
+    wrapped = callable(original_func) or callable(original_coro)
+    if not wrapped:
+        for attr, is_async in (("_run", False), ("_arun", True)):
+            impl = getattr(tool, attr, None)
+            if not callable(impl):
+                continue
+            object.__setattr__(tool, attr, _guard_impl(impl, is_async, _decide, _redact, _run))
+            wrapped = True
+    if wrapped:
+        object.__setattr__(tool, "__prismor_guarded__", True)
     return tool
+
+
+# LangChain's own plumbing, passed to _run/_arun alongside the tool's arguments.
+_LC_PLUMBING = ("run_manager", "config", "callbacks")
+
+
+def _guard_impl(impl: Callable, is_async: bool, decide: Callable, redact: Callable,
+                run: Callable) -> Callable:
+    def _split(kwargs: dict) -> tuple:
+        extra = {k: kwargs.pop(k) for k in _LC_PLUMBING if k in kwargs}
+        return kwargs, extra
+
+    if not is_async:
+        @functools.wraps(impl)
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            kwargs, extra = _split(kwargs)
+            denial, _ = decide(args, kwargs)
+            if isinstance(denial, _RunWith):
+                return redact(impl(*denial.args, **denial.kwargs, **extra))
+            if denial is not None:
+                return denial
+            return redact(impl(*args, **kwargs, **extra))
+        return guarded
+
+    @functools.wraps(impl)
+    async def guarded_async(*args: Any, **kwargs: Any) -> Any:
+        import asyncio
+
+        kwargs, extra = _split(kwargs)
+        denial, decision = await asyncio.to_thread(decide, args, kwargs)
+        if isinstance(denial, _RunWith):
+            return await run(decision, impl(*denial.args, **denial.kwargs, **extra))
+        if denial is not None:
+            return denial
+        return await run(decision, impl(*args, **kwargs, **extra))
+    return guarded_async
 
 
 def guard_tools(tools: Sequence[Any], **kwargs: Any) -> List[Any]:
@@ -305,16 +426,15 @@ class PrismorCallbackHandler(_BaseCB):  # type: ignore[misc]
 
     def on_tool_start(self, serialized: dict, input_str: str, **kwargs: Any) -> None:
         name = (serialized or {}).get("name", "tool")
-        # LangGraph stamps the executing graph node onto callback metadata for
-        # every run inside a StateGraph; a multi-agent graph names each agent
-        # node distinctly, so this is that framework's subagent identity.
-        run_metadata = kwargs.get("metadata") or {}
-        node = run_metadata.get("langgraph_node") if isinstance(run_metadata, dict) else None
-        run_id = kwargs.get("run_id")
-        sub_type = str(node) if node else None
-        sub_id = f"{node}-{run_id}" if node and run_id else None
+        # LangGraph stamps the graph path onto callback metadata; a call inside
+        # an agent subgraph is that framework's subagent (see _subagent_from_metadata).
+        sub_id, sub_type = _subagent_from_metadata(kwargs.get("metadata"))
+        # `inputs` is the structured argument dict (langchain-core >= 0.2.x);
+        # input_str is its str(), kept for older versions.
+        inputs = kwargs.get("inputs")
         decision = _evaluate(
-            tool_name=name, args=(input_str,), kwargs={}, subject=self._subject,
+            tool_name=name, args=() if isinstance(inputs, dict) else (input_str,),
+            kwargs=dict(inputs) if isinstance(inputs, dict) else {}, subject=self._subject,
             ws=self._ws, agent=self._agent, mode=self._mode, sid=self._sid,
             event_type=self._event_type, subagent_id=sub_id, subagent_type=sub_type,
         )

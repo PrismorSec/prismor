@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-smolagents"
+version = "0.1.0"
+description = "Prismor adapter for Hugging Face smolagents — per-user runtime tool-call policy for production agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["smolagents", "huggingface", "agents", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+smolagents = ["smolagents>=1.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_smolagents", "prismor"]

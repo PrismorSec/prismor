@@ -182,7 +182,7 @@ class TestCursorInstallMigration(unittest.TestCase):
 
     _REAL = ["sessionStart", "beforeSubmitPrompt", "beforeShellExecution",
              "afterShellExecution", "beforeMCPExecution", "afterMCPExecution",
-             "beforeReadFile", "afterFileEdit"]
+             "beforeReadFile", "afterFileEdit", "afterAgentResponse", "afterAgentThought"]
     _LEGACY = ["beforeShellCommand", "afterShellCommand", "beforeFileWrite", "afterFileWrite"]
 
     def setUp(self):
@@ -588,7 +588,7 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
         self.assertIn("js_repl = false", config_toml)  # unrelated settings preserved
         self.assertIn('model = "gpt-5.4"', config_toml)
 
-    def test_codex_install_leaves_already_correct_config_untouched(self):
+    def test_codex_install_keeps_config_and_only_adds_trust_records(self):
         codex_home = Path(os.environ["CODEX_HOME"])
         codex_home.mkdir(parents=True)
         original = "[features]\nhooks = true\njs_repl = false\n"
@@ -597,7 +597,9 @@ class TestInstallUninstallRoundtrip(unittest.TestCase):
             repo_root=self.repo_root, workspace=self.workspace,
             agent="codex", scope="project", mode="enforce",
         )
-        self.assertEqual((codex_home / "config.toml").read_text(), original)
+        text = (codex_home / "config.toml").read_text()
+        self.assertTrue(text.startswith(original))
+        self.assertIn("[hooks.state.", text[len(original):])
 
     def test_uninstall_nonexistent_config(self):
         results = uninstall_hooks(
@@ -1548,15 +1550,15 @@ class TestUnmappedToolSignal(unittest.TestCase):
         )["event"]
 
     def test_unmapped_tool_is_flagged(self):
-        # NotebookEdit writes a file but has no branch in _normalize_claude.
+        # Workflow has no branch in _normalize_claude.
         event = self._event("claude", {
             "hook_event_name": "PreToolUse",
             "session_id": "c-1",
-            "tool_name": "NotebookEdit",
-            "tool_input": {"notebook_path": "/w/a.ipynb", "new_source": "x = 1"},
+            "tool_name": "Workflow",
+            "tool_input": {"script": "export const meta = {}"},
         })
         self.assertEqual(event["type"], "tool_result")
-        self.assertEqual(event["metadata"]["unmapped_tool"], "NotebookEdit")
+        self.assertEqual(event["metadata"]["unmapped_tool"], "Workflow")
 
     def test_mapped_tool_is_not_flagged(self):
         event = self._event("claude", {

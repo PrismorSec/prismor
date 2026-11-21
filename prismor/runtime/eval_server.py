@@ -12,6 +12,9 @@ Endpoints:
     POST /v1/redact     → {"result": <any JSON>} → the same value with cloaked
                           secrets / data-boundary values masked, + "redacted"
     GET  /health        → {"status": "ok", "ts": "<iso>"}
+    POST /copilot-studio/validate, /copilot-studio/analyze-tool-execution
+                        → Copilot Studio threat detection (copilot_studio.py);
+                          on when PRISMOR_COPILOT_STUDIO_AUDIENCE is set
 
 Request body (POST /v1/evaluate):
     {
@@ -26,7 +29,8 @@ Request body (POST /v1/evaluate):
       "explain":    true,                # optional — add a decision trace to the response
                                          # optional — target of the call, read by `when:` rules
       "agent_name": "support-bot",       # optional — per-instance name (enables kill-switch + control)
-      "workspace":  "/path/to/project"   # optional, overrides server default
+      "workspace":  "/path/to/project"   # ignored unless the server allows it
+                                         # (PRISMOR_EVAL_ALLOW_REQUEST_WORKSPACE=1)
     }
 
     X-Prismor-Agent-Name header also accepted (takes precedence over body field).
@@ -47,14 +51,18 @@ import hmac
 import json
 import os
 import signal
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Dict, Optional
 
+from prismor.runtime.http_gate import browser_gate
 from prismor.runtime.principal import resolve_subject
 from prismor.runtime.runtime import evaluate_tool_call
+from prismor.runtime.ratelimit import Scope as RateScope
+from prismor.runtime import remote_eval
 
 #: Canonical value field per event type — imported rather than restated, so an
 #: SDK adapter posting here produces the same event a hook would.
@@ -64,6 +72,18 @@ from prismor.runtime.runtime import evaluate_tool_call
 #: engine folds all five text fields into one blob) but a rule scoped to
 #: `fields: [response]` silently never matched an event that arrived this way.
 from prismor.runtime.contract import TYPE_FIELD as _TYPE_FIELD
+
+
+def _fresh_session(prefix: str) -> str:
+    """A session of its own for a caller that named none.
+
+    The default used to be ``<prefix>-<pid>``: every such caller shared one
+    session, so one injected tool result marked it tainted and every later
+    anonymous caller's network call was refused (taint-escalation) until the
+    server restarted. No session_id means no history to carry, not someone
+    else's.
+    """
+    return f"{prefix}-{uuid.uuid4().hex[:16]}"
 
 
 def _build_event(
@@ -76,8 +96,11 @@ def _build_event(
     subject_str: Optional[str] = None,
     available_tools: Optional[list[str]] = None,
     resource: Optional[dict] = None,
+    subagent: Optional[dict] = None,
+    handoff_to: Optional[str] = None,
 ) -> dict:
     field = _TYPE_FIELD.get(event_type, "command")
+    sub = subagent if isinstance(subagent, dict) else {}
     # Serialize arguments to a single value string (values only — for regex matching)
     value = " ".join(str(v) for v in arguments.values() if v is not None).strip()
     return {
@@ -97,6 +120,18 @@ def _build_event(
             "resource": resource or {},
             "available_tools": available_tools or [],
             "surface": "eval-server",
+            # The subagent that made the call, as the caller's SDK reports it
+            # (caller-asserted, like `arguments`). Feeds `when: subagent.*`.
+            "subagent_id": str(sub["id"])[:200] if sub.get("id") else None,
+            "subagent_type": str(sub["type"])[:200] if sub.get("type") else None,
+            # The agent it runs under; its per-agent controls apply on top.
+            "parent_agent_name": str(sub["parent"])[:200] if sub.get("parent") else None,
+            # The agent tree the call runs in: delegation records count under it.
+            **({"delegation_scope": str(sub["root"])[:200]} if sub.get("root") else {}),
+            # The subagent this call hands work to, screened by data_boundary.handoffs.
+            **({"handoff_to": str(handoff_to)[:200]} if handoff_to else {}),
+            **({"subagent_depth": sub["depth"]} if isinstance(sub.get("depth"), int) and not isinstance(sub.get("depth"), bool) else {}),
+            **({"subagent_chain": [str(c)[:200] for c in sub["chain"][:32]]} if isinstance(sub.get("chain"), list) else {}),
         },
     }
 
@@ -105,12 +140,19 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+# A tool call plus its arguments; far above any real one, far below a DoS.
+MAX_BODY_BYTES = 12 * 1024 * 1024
+
+
 class EvalHandler(BaseHTTPRequestHandler):
     workspace: Path = Path.cwd()
     # When set, /v1/evaluate requires `Authorization: Bearer <api_key>` — the
     # hosted/exposed mode. /health stays open (liveness probes). Compared
     # constant-time. None (default) preserves the open localhost behavior.
     api_key: Optional[str] = None
+    # The body's "workspace" picks the policy that judges the call, so a caller
+    # must not choose it unless the operator said so. Off by default.
+    allow_request_workspace: bool = False
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         pass  # silence per-request logs; server startup message is printed separately
@@ -123,16 +165,41 @@ class EvalHandler(BaseHTTPRequestHandler):
         if self.headers.get("X-Request-ID"):
             self.send_header("X-Request-ID", self.headers["X-Request-ID"])
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Prismor-Subject, X-Warden-Subject, X-Prismor-Identity, X-Request-ID")
-        self.end_headers()
+    def parse_request(self) -> bool:
+        # The dashboard's gate, for every method: no CORS, so a web page the
+        # user has open can neither read verdicts nor post forged calls.
+        if not super().parse_request():
+            return False
+        # A caller holding the API key (or Copilot Studio's Entra token) has
+        # proven itself, and may come through a tunnel under another Host.
+        from prismor.runtime import copilot_studio as _cs
+        authed = bool(self.api_key) or (
+            self.path.startswith(_cs.PREFIX) and not _cs.insecure(self.server.server_address[0]))
+        refused = browser_gate(self, check_host=not authed)
+        if refused is None:
+            return True
+        self.close_connection = True  # the unread body would parse as the next request
+        self._send_json({"error": refused[1]}, status=refused[0])
+        return False
+
+    def _read_body(self) -> Optional[bytes]:
+        """The request body, or None after answering 413."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            self._send_json({"error": "payload too large"}, 413)
+            return None
+        return self.rfile.read(length) if length > 0 else b""
+
+    def _workspace_for(self, body: dict) -> Path:
+        ws_str = body.get("workspace") if self.allow_request_workspace else None
+        return Path(ws_str) if ws_str else self.workspace
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
@@ -162,8 +229,14 @@ class EvalHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": "not found"}, 404)
 
+    @remote_eval.serving_this_thread()
     def do_POST(self) -> None:  # noqa: N802
         from prismor.runtime import authzen as _az
+        from prismor.runtime import copilot_studio as _cs
+        route = self.path.split("?", 1)[0]  # Copilot Studio appends ?api-version=
+        if route in (_cs.VALIDATE_PATH, _cs.ANALYZE_PATH) and _cs.enabled(self.server.server_address[0], self.workspace):
+            self._copilot_studio(route)
+            return
         if self.path not in ("/v1/evaluate", "/v1/redact", _az.EVALUATION_PATH, _az.EVALUATIONS_PATH):
             self._send_json({"error": "not found"}, 404)
             return
@@ -175,9 +248,11 @@ class EvalHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "unauthorized: missing or invalid API key"}, 401)
                 return
 
-        length = int(self.headers.get("Content-Length", 0))
+        raw = self._read_body()
+        if raw is None:
+            return
         try:
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(raw)
         except Exception as exc:
             self._send_json({"error": f"invalid JSON: {exc}"}, 400)
             return
@@ -190,11 +265,19 @@ class EvalHandler(BaseHTTPRequestHandler):
             # Result-side masking for adapters that cannot import Python (the
             # TypeScript one): the same redact_tool_result the in-process
             # adapters run on a tool's return value before the model sees it.
+            # One engine for the request so the optional PII pass sees policy
+            # and the data-boundary pass does not rebuild it per string.
             from prismor.runtime.redaction import redact_payload_values
-            ws_str = body.get("workspace")
+            ws = self._workspace_for(body)
+            engine = None
+            try:
+                from prismor.runtime.policy_engine import PolicyEngine
+                engine = PolicyEngine(workspace=ws)
+            except Exception:
+                engine = None
             try:
                 result, changed = redact_payload_values(
-                    body.get("result"), workspace=Path(ws_str) if ws_str else self.workspace)
+                    body.get("result"), workspace=ws, engine=engine)
             except Exception as exc:
                 self._send_json({"error": f"redaction error: {exc}"}, 500)
                 return
@@ -222,7 +305,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         event_type: str = body.get("event_type", "shell")
         agent: str = body.get("agent", "sdk")
         mode: str = body.get("mode", "enforce")
-        session_id: str = body.get("session_id", f"eval-{os.getpid()}")
+        session_id: str = body.get("session_id") or _fresh_session("eval")
         # Agent name: prefer X-Prismor-Agent-Name header, then body field.
         # X-Warden-Agent-Name is accepted for backward compatibility with
         # clients built before the Prismor rename.
@@ -241,9 +324,7 @@ class EvalHandler(BaseHTTPRequestHandler):
         )
         subject = resolve_subject(subject_str)
 
-        # Workspace: prefer body field, then server default
-        ws_str: Optional[str] = body.get("workspace")
-        workspace = Path(ws_str) if ws_str else self.workspace
+        workspace = self._workspace_for(body)
 
         event = _build_event(
             tool_name=tool_name,
@@ -255,6 +336,8 @@ class EvalHandler(BaseHTTPRequestHandler):
             available_tools=[str(t) for t in body.get("available_tools", []) if t][:200]
             if isinstance(body.get("available_tools"), list) else [],
             resource=body.get("resource") if isinstance(body.get("resource"), dict) else None,
+            subagent=body.get("subagent"),
+            handoff_to=body.get("handoff_to") if isinstance(body.get("handoff_to"), str) else None,
         )
 
         try:
@@ -268,6 +351,13 @@ class EvalHandler(BaseHTTPRequestHandler):
                 subject=subject,
                 identity_token=self._identity_token(),
                 explain=bool(body.get("explain")),
+                # A shared server keeps no per-caller transcript on disk (as
+                # Copilot Studio). Persisting appended every request to a session
+                # file and re-ran the whole engine over it, judge included, so
+                # each call paid for its verdict twice. Taint is its own store
+                # and still carries across a caller's session_id.
+                persist=False,
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -281,17 +371,20 @@ class EvalHandler(BaseHTTPRequestHandler):
         from prismor.runtime import authzen as _az
 
         def decide(call: Dict[str, Any]) -> Dict[str, Any]:
+            sid = call["session_id"] or _fresh_session("authzen")
             event = _build_event(
                 tool_name=call["tool_name"], arguments=call["arguments"],
                 event_type=call["event_type"], agent="authzen",
-                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                session_id=sid,
                 resource=call["resource"])
             return evaluate_tool_call(
                 event=event, workspace=self.workspace, agent="authzen",
                 agent_name=call["agent_name"], mode="enforce",
-                session_id=call["session_id"] or f"authzen-{os.getpid()}",
+                session_id=sid,
                 subject=resolve_subject(call["subject"]),
                 identity_token=self._identity_token(), explain=call["explain"],
+                persist=False,
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             ).as_dict()
 
         if not isinstance(body, dict):
@@ -306,6 +399,23 @@ class EvalHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, 400)
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
+
+    def _copilot_studio(self, route: str) -> None:
+        """Copilot Studio threat detection. Its own Entra auth, not --api-key;
+        the workspace is always the server's own, as for AuthZEN."""
+        from prismor.runtime import copilot_studio as _cs
+
+        raw = self._read_body()
+        if raw is None:
+            return
+        try:
+            body = json.loads(raw) if raw.strip() else {}
+        except Exception as exc:
+            status, out = 400, _cs.CopilotStudioError(400, f"invalid JSON: {exc}").body()
+        else:
+            status, out = _cs.handle(route, self.headers, body, workspace=self.workspace,
+                                     bound_host=self.server.server_address[0])
+        self._send_json(out, status)
 
     def _identity_token(self) -> Optional[str]:
         """The end user's IdP token. Its own header, because Authorization
@@ -324,21 +434,24 @@ class EvalHandler(BaseHTTPRequestHandler):
 
         agent = str(body.get("agent") or event.get("agent") or "sdk")
         session_id = str(
-            body.get("session_id") or event.get("session_id") or f"eval-{os.getpid()}")
+            body.get("session_id") or event.get("session_id") or _fresh_session("eval"))
         subject_str = (
             self.headers.get("X-Prismor-Subject")
             or self.headers.get("X-Warden-Subject")
             or body.get("subject")
         )
-        ws_str = body.get("workspace")
         event.setdefault("session_id", session_id)
         event.setdefault("agent", agent)
         event.setdefault("agent_event", "PreToolUse")
-        event.setdefault("metadata", {}).setdefault("surface", "eval-server")
+        # HTTP callers cannot claim a trusted hook/mirror identity exemption.
+        event["metadata"] = {**(event.get("metadata") or {}), "surface": "eval-server"}
+        # Same as _build_event: the caller is an SDK, not a coding agent that
+        # loads this server's CLAUDE.md, so skip the project-memory scan (#697).
+        event["metadata"].setdefault("framework", agent)
         try:
             decision = evaluate_tool_call(
                 event=event,
-                workspace=Path(ws_str) if ws_str else self.workspace,
+                workspace=self._workspace_for(body),
                 agent=agent,
                 agent_name=str(body.get("agent_name") or ""),
                 mode=str(body.get("mode") or "enforce"),
@@ -346,6 +459,13 @@ class EvalHandler(BaseHTTPRequestHandler):
                 subject=resolve_subject(subject_str),
                 identity_token=self._identity_token(),
                 explain=bool(body.get("explain")),
+                # A shared server keeps no per-caller transcript on disk (as
+                # Copilot Studio). Persisting appended every request to a session
+                # file and re-ran the whole engine over it, judge included, so
+                # each call paid for its verdict twice. Taint is its own store
+                # and still carries across a caller's session_id.
+                persist=False,
+                rate_scope=RateScope(self.workspace, "eval-server", authoritative=True),
             )
         except Exception as exc:
             self._send_json({"error": f"evaluation error: {exc}"}, 500)
@@ -359,6 +479,7 @@ def run_eval_server(
     workspace: Optional[Path] = None,
     api_key: Optional[str] = None,
     identity: Optional[dict] = None,
+    allow_request_workspace: Optional[bool] = None,
 ) -> None:
     """Start the evaluation HTTP server (blocking).
 
@@ -366,8 +487,17 @@ def run_eval_server(
     for /v1/evaluate so the server can be exposed beyond localhost.
     """
     ws = workspace or Path.cwd()
+    from prismor.runtime import remote_eval
+    remote_eval.SERVING = True  # this server IS the evaluator; never forward
     EvalHandler.workspace = ws
     EvalHandler.api_key = api_key or os.environ.get("PRISMOR_EVAL_KEY") or None
+    EvalHandler.allow_request_workspace = (
+        allow_request_workspace if allow_request_workspace is not None
+        else os.environ.get("PRISMOR_EVAL_ALLOW_REQUEST_WORKSPACE") == "1")
+    # Adapters give up after PRISMOR_EVAL_TIMEOUT (default 5s) and fail closed,
+    # so a judge that answers later refuses the call whatever its verdict. A
+    # policy's own budget_ms still wins.
+    os.environ.setdefault("PRISMOR_SEMANTIC_BUDGET_MS", "4000")
 
     if identity:
         from prismor.runtime.identity_token import (
@@ -393,6 +523,11 @@ def run_eval_server(
     if identity:
         print(f"[prismor] identity: {identity['mode']} — tokens from {identity['issuer']} "
               f"via X-Prismor-Identity (keys: {identity['jwks_uri']})")
+    from prismor.runtime import copilot_studio as _cs
+    if _cs.enabled(host, ws):
+        _cs.warm(ws)
+        print(f"[prismor] POST {_cs.PREFIX}/validate, {_cs.ANALYZE_PATH}  →  Copilot Studio threat detection"
+              + (" (NO AUTH, localhost only)" if _cs.insecure(host) else " (Entra auth)"))
     print(f"[prismor] POST /v1/evaluate  →  tool call → Decision")
     print(f"[prismor] GET  /health       →  liveness check")
 

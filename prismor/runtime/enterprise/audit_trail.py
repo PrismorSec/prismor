@@ -66,6 +66,11 @@ _SUMMARY_CAP = 400
 CHECKPOINT_SCHEMA = "prismor.audit.checkpoint.v1"
 
 
+# ponytail: per-process map, so an approval recorded by another process has no
+# authority_hash; carry it on the Decision if that path ever matters.
+_LAST_AUTHORITY: Dict[str, str] = {}
+
+
 def enabled() -> bool:
     return os.environ.get("PRISMOR_AUDIT_TRAIL", "1").lower() not in (
         "0", "false", "no", "off",
@@ -229,10 +234,23 @@ def _stated_intent(event: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _policy_ref() -> Dict[str, Any]:
+    """The signed org policy this decision was made under (None when the
+    device runs on local policy only)."""
+    try:
+        from prismor.runtime.enterprise import remote_policy as _rp
+        return {"policy_version": _rp.current_version(),
+                "policy_profile_id": _rp.current_profile_id()}
+    except Exception:
+        return {"policy_version": None, "policy_profile_id": None}
+
+
 def _verdict(findings: List[Dict[str, Any]], blocking: Optional[Dict[str, Any]]) -> str:
     if blocking is not None:
         action = str(blocking.get("action") or "").lower()
         return "step_up" if action == "step_up" else "blocked"
+    if any(f.get("suppressedBy") for f in findings):
+        return "suppressed"
     return "warned" if findings else "allowed"
 
 
@@ -264,6 +282,7 @@ def append_action_record(
     subject: Optional[Dict[str, Any]] = None,
     mode: str = "",
     eval_ms: Optional[int] = None,
+    authority_hash: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Append one signed record for an evaluated tool call (any verdict).
 
@@ -290,6 +309,9 @@ def append_action_record(
         "event_type": event.get("type"),
         "tool_name": _tool_name(event),
         "workspace": str(workspace),
+        # The resource the call acts on, as passed to evaluate_tool_call
+        # (kind/id/attr) — what `when: resource.*` rules were judged against.
+        "resource": _scrub(meta.get("resource")) if isinstance(meta, dict) else None,
         "input_summary": _input_summary(view),
         "evidence_hash": hashlib.sha256(_canonical(view)).hexdigest(),
         "agent_stated_intent": _stated_intent(event),
@@ -297,14 +319,20 @@ def append_action_record(
         "extension_id": ((meta.get("extension") or {}).get("id") if isinstance(meta, dict) else None),
         # Decision.
         "verdict": _verdict(findings, blocking),
+        "suppressed_by": next((f["suppressedBy"] for f in findings if f.get("suppressedBy")), None),
         "mode": mode,
         "eval_ms": eval_ms,
+        **_policy_ref(),
         "rules": sorted(
             {str(f.get("ruleId") or f.get("rule_id")) for f in findings
              if f.get("ruleId") or f.get("rule_id")}
         ),
         "reason": _reason(findings, blocking),
+        # The scope the agent held when it acted (enterprise/authority.py).
+        "authority_hash": authority_hash,
     }
+    if authority_hash and session_id:
+        _LAST_AUTHORITY[session_id] = authority_hash
     return _append(record)
 
 
@@ -319,6 +347,10 @@ def append_approval_record(
     fingerprint: str = "",
     agent: str = "",
     session_id: str = "",
+    approver: Optional[Dict[str, Any]] = None,
+    agent_name: str = "",
+    resource: Optional[Dict[str, Any]] = None,
+    rules: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Append one signed record for a human-approval outcome
     (``approved | denied | expired | timeout | request_failed``)."""
@@ -327,18 +359,26 @@ def append_approval_record(
         "ts": datetime.now(timezone.utc).isoformat(),
         "device_id": _device_id(),
         "agent": agent,
-        "agent_name": agent,
+        "agent_name": agent_name or agent,
         "subagent_id": None,
         "subject": {},
         "prismor_version": _prismor_version(),
         "session_id": session_id,
         "tool_name": tool or None,
+        # The resource as it stood when this outcome was recorded, so a
+        # refusal on re-check shows the state that caused it.
+        "resource": _scrub(resource),
         "approval_id": approval_id,
         "status": status,
+        # Who decided, as the console reports it ({"id", "email", "via"}).
+        "approver": approver,
         "fingerprint": fingerprint or None,
-        "rules": [rule_id] if rule_id else [],
+        "rules": rules if rules is not None else ([rule_id] if rule_id else []),
         "severity": severity,
         "reason": reason or f"human approval {status}",
+        **_policy_ref(),
+        # Same scope as the action it resolves: the session's last decision.
+        "authority_hash": _LAST_AUTHORITY.get(session_id) if session_id else None,
     }
     return _append(record)
 

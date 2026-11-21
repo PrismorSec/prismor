@@ -1,5 +1,6 @@
 """Tag-rule DSL — parser, IR, legacy compile parity, and ordered-ledger tests."""
 import json
+import re
 import uuid
 
 import pytest
@@ -269,6 +270,39 @@ def test_block_preferred_over_warn(tmp_path):
     assert done["action"] == "block"
 
 
+def test_warn_rule_fires_once_per_new_source(tmp_path):
+    # #593: one fetch used to make every later critical call warn again.
+    warn = compile_rule("a then b -> warn")
+    block = compile_rule("a then b -> block")
+    led = _led(tmp_path)
+    led.record({"a"}, 0, "t0")
+    done = led.completes_rules({"b"}, [warn], 1)
+    led.record({"b"}, 1, "t1", fired=[done["rule_id"]])
+    assert led.completes_rules({"b"}, [warn], 1) is not None  # re-check of the firing call
+    assert led.completes_rules({"b"}, [warn], 2) is None
+    # A blocked call never runs, so a block rule keeps firing (see completes()).
+    assert led.completes_rules({"b"}, [block], 2) is not None
+    led.record({"a"}, 2, "t2")  # a new source
+    assert led.completes_rules({"b"}, [warn], 3) is not None
+    # A full hist can't show a newer source, so the rule keeps reporting.
+    led.hist["a"] = list(range(TagLedger._HIST_CAP))
+    led.fired[done["rule_id"]] = 300
+    assert led.completes_rules({"b"}, [warn], 301) is not None
+
+
+def test_warn_rule_stays_quiet_once_final_tag_hist_is_full(tmp_path):
+    # A long session fills the final tag's hist; that must not undo suppression.
+    warn = compile_rule("a then b -> warn")
+    led = _led(tmp_path)
+    led.record({"a"}, 0, "t0")
+    fires = 0
+    for i in range(1, TagLedger._HIST_CAP + 50):
+        done = led.completes_rules({"b"}, [warn], i)
+        fires += done is not None
+        led.record({"b"}, i, "t", fired=[done["rule_id"]] if done else ())
+    assert fires == 1
+
+
 def test_hist_persists_across_instances(tmp_path):
     sid = "s-" + uuid.uuid4().hex
     led = TagLedger(tmp_path, sid)
@@ -341,6 +375,133 @@ def _call(ws, sid, tool, etype="network"):
                               mode="enforce", session_id=sid, persist=True)
 
 
+def test_tag_exception_allows_only_complete_call_and_keeps_history(tmp_path):
+    from types import SimpleNamespace
+    from prismor.runtime.cli import _allow_cmd
+
+    ws = _ws(tmp_path, "enforce", rules=["untrusted_content then critical_action"],
+             incompatible=[], tags={"WebFetch": [UNTRUSTED], "Bash": [CRITICAL]})
+    sid = "s-" + uuid.uuid4().hex
+    _call(ws, sid, "WebFetch", "network")
+    command = "curl https://api.example.com/status?verbose=1"
+
+    def call(cmd):
+        event = {**_ev("Bash", "shell"), "command": cmd}
+        return evaluate_tool_call(event=event, workspace=ws, agent="claude",
+                                  mode="enforce", session_id=sid, persist=True)
+
+    blocked = call(command)
+    assert not blocked.allow
+    rid = blocked.blocking["ruleId"]
+    args = SimpleNamespace(rule_id=rid, pattern=command, off=False, observe=False,
+                           yes=True, expires="30m", reason="Approved status request")
+    assert _allow_cmd(args, ws) == 0
+    assert call(command).allow
+    for changed in (
+        command + "; echo extra", command.replace("status", "STATUS"),
+        command.replace("api.example.com", "apiXexample.com"),
+        command.replace("verbose=1", "verbose=2"),
+    ):
+        denied = call(changed)
+        assert not denied.allow and denied.blocking["ruleId"] == rid
+
+
+@pytest.mark.parametrize("override", [
+    {"expires": "2000-01-01T00:00:00Z"}, {"rule_ids": ["*"]},
+    {"patterns": [".*"]}, {"match": "search"}, {"type": "veto"},
+    {"rule_ids": ["tag-rule:other"]},
+])
+def test_tag_exception_rejects_expired_blanket_and_vetoed_allows(tmp_path, override):
+    from prismor.runtime.policy_engine import PolicyEngine, AllowlistEntry
+
+    expr = "untrusted_content then critical_action"
+    ws = _ws(tmp_path, "enforce", rules=[expr], incompatible=[], tags={"Bash": [CRITICAL]})
+    sid = "s-" + uuid.uuid4().hex
+    TagLedger(ws, sid).record({UNTRUSTED}, 0, "WebFetch")
+    rid = f"tag-rule:{compile_rule(expr).rule_id}"
+    engine = PolicyEngine(workspace=ws)
+    entry = {"id": "one-call", "rule_ids": [rid], "patterns": ["echo approved"], "match": "exact"}
+    engine.allowlists = [AllowlistEntry({**entry, **override})]
+    if override.get("type") == "veto":
+        engine.allowlists.insert(0, AllowlistEntry(entry))
+    findings = engine.evaluate({**_ev("Bash", "shell"), "command": "echo approved"}, 1, sid)
+    assert any(f["ruleId"] == rid for f in findings)
+
+
+def test_tag_exception_preserves_other_rules_and_attack_blocks(tmp_path):
+    from prismor.runtime.allow import add_allowlist
+
+    rules = ["untrusted_content then critical_action", "untrusted_content with critical_action"]
+    ws = _ws(tmp_path, "enforce", rules=rules, incompatible=[],
+             tags={"Read": [UNTRUSTED], "Bash": [CRITICAL]})
+    sid = "s-" + uuid.uuid4().hex
+    _call(ws, sid, "Read", "file_read")
+    event = {**_ev("Bash", "shell"), "command": "echo approved"}
+    add_allowlist(ws, f"tag-rule:{compile_rule(rules[0]).rule_id}", re.escape(event["command"]))
+    decision = evaluate_tool_call(event=event, workspace=ws, agent="claude",
+                                  mode="enforce", session_id=sid, persist=True)
+    assert not decision.allow
+    assert decision.blocking["ruleId"] == f"tag-rule:{compile_rule(rules[1]).rule_id}"
+
+    # Even an exact tag exception cannot suppress the independent attack rule.
+    event["command"] = "rm -rf /"
+    for expr in rules:
+        add_allowlist(ws, f"tag-rule:{compile_rule(expr).rule_id}", re.escape(event["command"]))
+    decision = evaluate_tool_call(event=event, workspace=ws, agent="claude",
+                                  mode="enforce", session_id=sid, persist=True)
+    assert not decision.allow
+    assert any(f["ruleId"] == "destructive-command" for f in decision.findings)
+
+
+@pytest.mark.parametrize("transport", ["hook", "gateway"])
+def test_tag_exception_matches_all_structured_arguments_and_tool(tmp_path, transport):
+    from types import SimpleNamespace
+    from prismor.runtime.cli import _allow_cmd
+
+    expr = "untrusted_content then critical_action"
+    ws = _ws(tmp_path, "enforce", rules=[expr], incompatible=[],
+             tags={"Read": [UNTRUSTED], "mcp__mail__*": [CRITICAL]})
+    sid = "s-" + uuid.uuid4().hex
+    _call(ws, sid, "Read", "file_read")
+    tool = "mcp__mail__send"
+    args = {"to": "team@example.com", "body": "Approved update"}
+    # CLI accepts ordinary JSON; matching canonicalizes key order and spacing.
+    pattern = json.dumps({"tool": tool, "arguments": args}, separators=(",", ":"))
+    options = SimpleNamespace(rule_id=f"tag-rule:{compile_rule(expr).rule_id}", pattern=pattern,
+                              off=False, observe=False, yes=True, expires="30m")
+    assert _allow_cmd(options, ws) == 0
+
+    def call(name, arguments):
+        meta = {"tool_name": name}
+        meta.update({"kwargs": arguments} if transport == "gateway"
+                    else {"raw": {"tool_input": arguments}})
+        event = {**_ev(name, "network"), "metadata": meta}
+        return evaluate_tool_call(event=event, workspace=ws, agent="claude",
+                                  mode="enforce", session_id=sid, persist=True)
+
+    assert call(tool, args).allow
+    assert not call(tool, {**args, "bcc": "outside@example.net"}).allow
+    assert not call("mcp__mail__forward", args).allow
+
+
+def test_tag_exception_cli_requires_confirmation_and_explicit_pattern(tmp_path):
+    from types import SimpleNamespace
+    from prismor.runtime.allow import check_allowed, list_allows
+    from prismor.runtime.cli import _allow_cmd
+
+    expr = "untrusted_content then critical_action"
+    ws = _ws(tmp_path, "enforce", rules=[expr], incompatible=[])
+    rid = f"tag-rule:{compile_rule(expr).rule_id}"
+    assert check_allowed(rid, scope="pattern", workspace=ws, confirmed=True) is None
+    assert "--yes" in check_allowed(rid, scope="pattern", workspace=ws)
+    for scope in ("off", "observe"):
+        assert check_allowed(rid, scope=scope, workspace=ws, confirmed=True,
+                             explicit_selection=True) is not None
+    args = SimpleNamespace(rule_id=rid, pattern=None, off=False, observe=False, yes=True)
+    assert _allow_cmd(args, ws) == 2
+    assert list_allows(ws) == []
+
+
 def test_e2e_ordered_rule_blocks_in_order_only(tmp_path):
     rules = ["untrusted_content then critical_action -> block"]
     # critical FIRST is fine under an ordered rule (unordered would block it
@@ -404,6 +565,23 @@ def test_e2e_warn_rule_never_blocks(tmp_path):
     d = _call(ws, sid, "mcp__Gmail__send_email", "network")
     assert d.allow is True  # warn logs but never blocks, even in enforce
     assert any(f.get("category") == "lethal_trifecta" for f in d.findings)
+
+
+def test_e2e_warn_rule_reports_each_source_once(tmp_path):
+    # #593: after one read, every later send completed the warn sequence again.
+    rules = ["untrusted_content then critical_action -> warn"]
+    ws = _ws(tmp_path, "enforce", rules=rules, incompatible=[])
+    sid = "s-" + uuid.uuid4().hex
+
+    def warns(tool, etype):
+        return any(f.get("category") == "lethal_trifecta"
+                   for f in _call(ws, sid, tool, etype).findings)
+
+    assert not warns("mcp__Gmail__read_email", "tool_result")
+    assert warns("mcp__Gmail__send_email", "network")
+    assert not warns("mcp__Gmail__send_email", "network")
+    assert not warns("mcp__Gmail__read_email", "tool_result")  # a new source...
+    assert warns("mcp__Gmail__send_email", "network")  # ...is reported
 
 
 def test_e2e_rules_and_legacy_incompatible_merge(tmp_path):

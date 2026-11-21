@@ -20,6 +20,7 @@ from urllib.parse import unquote, urlparse
 from prismor.runtime import perf as _perf
 from prismor.runtime.egress import EgressPolicy
 from prismor.runtime.data_boundary import DataBoundaryPolicy
+from prismor.runtime.pii import PiiSettings, screen_event as _screen_pii
 
 try:
     import yaml
@@ -40,8 +41,12 @@ except ImportError:
 _DEFAULT_POLICY_PATH = Path(__file__).parent / "default_policy.yaml"
 
 # Internal layer names (rule ``_layer``) -> what telemetry and the console call them.
-_LAYER_NAMES = {"default": "builtin", "user": "local", "project": "project",
+_LAYER_NAMES = {"default": "builtin", "pack": "pack", "user": "local", "project": "project",
                 "remote": "org", "exemption": "repo_exemption"}
+
+# Layers a developer (or an agent on their machine) can write. On a rule the
+# signed org policy sets, these may tighten but never loosen.
+_LOCAL_LAYERS = frozenset({"user", "system", "project"})
 
 # Rules that cannot be disabled or weakened by project-level policy overrides.
 # These protect against the most dangerous attack patterns (destructive commands,
@@ -119,6 +124,18 @@ _RECOMMENDED_RULE_IDS = frozenset({
     "mcp-arg-metadata-endpoint",
 })
 
+# Recommended rules that ask the user (step_up) instead of blocking: actions an
+# agent legitimately takes, but too destructive to run unseen. `setup
+# --recommended` writes them with `action: step_up`. Field test: each of these
+# was detected at HIGH but ran without a prompt under --recommended.
+_RECOMMENDED_ASK_RULE_IDS = frozenset({
+    "datastore-destroy",
+    "iac-destroy",
+    "persistence-shell-profile",
+    "ci-workflow-remote-exec",
+    "agent-instruction-tampering",
+})
+
 # Self-protection rules whose jurisdiction is strictly THIS machine: they guard
 # Prismor's own policy file, unlock credential, and the agent hook config. When
 # one of them matches inside an ssh/docker/kubectl payload, the thing being
@@ -132,13 +149,185 @@ _LOCAL_JURISDICTION_RULE_IDS = frozenset({
     "prismor-self-edit",
     "agent-config-tampering",
     "agent-config-tampering-path",
+    "audit-trail-tampering",
 })
+
+
+def _local_jurisdiction(rule_id: str) -> bool:
+    # A mode's `commands.deny`/`ask` lists decide what may run on THIS host
+    # (modes.yaml: "this mode decides whether a command may run"). `sudo` or
+    # `pip install` inside an ssh payload runs on a box with its own policy.
+    return rule_id in _LOCAL_JURISDICTION_RULE_IDS or (
+        rule_id.startswith("mode-") and rule_id.endswith("-commands")
+    )
+
+
+# Rules whose patterns describe SHELL syntax (a command word and its flags,
+# pipes, redirects) rather than a path or an API. Inside a Python heredoc
+# script that cannot execute strings, such a match is Python source text --
+# `s.replace("rm -rf build", ...)` -- not a command. Path- and API-shaped rules
+# (vault/secret paths, /etc/sudoers, urllib fetches) stay out: Python really
+# does open those. See shell_context.is_inert_script_literal.
+_SHELL_SYNTAX_RULE_IDS = frozenset({
+    "destructive-command",
+    "dos-resource-exhaustion",
+    "remote-execution",
+    "rce-canary",
+    "git-remote-hijack",
+    "pkg-install-from-url",
+    "secret-exfiltration",
+    "credential-aggregation",
+    "credential-staging",
+    "agent-config-tampering",
+    "prismor-self-edit",
+    "iac-destroy",
+    "persistence-shell-profile",
+    "recursive-delete-home",
+})
+# Self-protection rules carry bare PATH patterns too (unlock.json, pause.key,
+# the dashboard API). A Python literal that IS one of those paths is a file the
+# script really opens, so it stays live. Shell-shaped text in a literal --
+# `"rm ~/.prismor/prismor.db"`, `"> .claude/settings.json"`, a backticked
+# `prismor pause` -- is only printed or compared, and may be read as text.
+_SELF_PROTECTION_PATH_MATCH = re.compile(
+    r"^[^\s>`|;&]*(?:\.(?:json|key|db|lock|tmp|ya?ml|toml)\b|mcp-tool-pins/|/api/|\.prismor/|PRISMOR_EVAL_URL)[^\s]*$",
+    re.IGNORECASE,
+)
+
+
+_CONFIG_GUARD_RULE_IDS = frozenset({"agent-config-tampering", "agent-config-tampering-path"})
+_GUARDED_CONFIG_PATH = re.compile(
+    r"[^\s;&|<>\"'=]*\.(?:prismor(?:-warden)?/policy\.yaml|claude/settings(?:\.local)?\.json)"
+)
+_SHELL_ASSIGNMENT = re.compile(
+    r"(?:^|[\s;&|(])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|]*)"
+)
+_TEMP_ROOTS = ("/tmp/", "/private/tmp/", "/var/tmp/", "/var/folders/", "/private/var/folders/")  # prefixes to recognise, never written  # nosec B108
+
+
+def _throwaway_config_path(path: str, assignments: Dict[str, str], workspace: Optional[Path]) -> bool:
+    """True when a guarded config file (a Prismor policy, Claude settings)
+    sits in a scratch rig under a temp dir -- a test install being set up --
+    rather than one that governs this agent: not under the workspace, this
+    PRISMOR_HOME or $HOME. Only on positive evidence: any variable the same
+    command does not assign keeps the path unresolved, and so guarded."""
+    path = _expand_assigned(path, assignments)
+    if "$" in path or "`" in path or not path.startswith("/"):
+        return False
+    real = os.path.normpath(path)
+    if not any(real.startswith(root) for root in _TEMP_ROOTS):
+        return False
+    from prismor.runtime.store import prismor_home
+    from prismor.runtime.paths import is_within
+    for governing in (workspace, prismor_home(), Path.home()):
+        if governing is not None and is_within(real, governing):
+            return False
+    return True
+
+
+def _throwaway_config_match(command: str, match_text: str, workspace: Optional[Path]) -> bool:
+    paths = _GUARDED_CONFIG_PATH.findall(match_text)
+    if not paths:
+        return False
+    assignments = _shell_assignments(command)
+    return all(_throwaway_config_path(p, assignments, workspace) for p in paths)
+
+
+def _expand_assigned(path: str, assignments: Dict[str, str]) -> str:
+    """Substitute `$X`/`${X}` the same command assigned; others stay as-is."""
+    def expand(m: "re.Match[str]") -> str:
+        return assignments.get(m.group(1) or m.group(2), m.group(0))
+    for _ in range(3):  # `S=/tmp/x; W=$S/ws` -- one level of indirection each pass
+        path = re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", expand, path)
+    return path
+
+
+def _shell_assignments(command: str) -> Dict[str, str]:
+    """Variables a command assigns exactly once (a reassigned one is ambiguous:
+    which value a use sees depends on order, so it stays unresolved)."""
+    assignments: Dict[str, str] = {}
+    reassigned: Set[str] = set()
+    for k, v in _SHELL_ASSIGNMENT.findall(command):
+        if k in assignments:
+            reassigned.add(k)  # which value a use sees depends on order; stay guarded
+        assignments[k] = v[1:-1] if v[:1] in "\"'" else v
+    for k in reassigned:
+        del assignments[k]
+    return assignments
+
+
+_APPROVALS_NAME = re.compile(r"approvals\.(?:json|lock|tmp)", re.IGNORECASE)
+_PATH_TOKEN_STOP = " \t\n;&|<>\"'`()="
+
+
+def _foreign_approvals_path(text: str, start: int, end: int) -> bool:
+    """prismor-self-edit on a file merely NAMED approvals.json (issue #928):
+    `prismor approvals list --json > /tmp/x/approvals.json` is a scratch copy,
+    not the queue. Inert only for an absolute path that resolves outside
+    PRISMOR_HOME, and only when the text never names the home at all, so
+    `cp /tmp/x/approvals.json ~/.prismor/` stays live."""
+    if not _APPROVALS_NAME.fullmatch(text[start:end]):
+        return False
+    from prismor.runtime.store import prismor_home
+    from prismor.runtime.paths import is_within
+    home = prismor_home()
+    lowered = text.lower()
+    if ".prismor" in lowered or "prismor_home" in lowered or str(home).lower() in lowered:
+        return False
+    i = start
+    while i > 0 and text[i - 1] not in _PATH_TOKEN_STOP:
+        i -= 1
+    # `S=/tmp/x; ... > $S/approvals.json` is how agents write scratch paths.
+    token = _expand_assigned(text[i:end], _shell_assignments(text))
+    if "$" in token or "`" in token or not token.startswith("/"):
+        return False  # relative, ~ or an unknown variable: could be the home
+    return not is_within(token, home)
+
+
+_IPV4 = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+_SSH_FAMILY = frozenset({"ssh", "scp", "sftp", "rsync"})
+
+
+def _ssh_config_hosts() -> Set[str]:
+    """Host/HostName values from the user's ~/.ssh/config."""
+    try:
+        text = (Path.home() / ".ssh" / "config").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return set()
+    hosts: Set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) > 1 and parts[0].lower() in ("host", "hostname"):
+            hosts.update(parts[1:])
+    return hosts
+
+
+def _configured_ssh_ip_match(match_text: str) -> bool:
+    """raw-ip-outbound on `ssh ubuntu@<ip>` where <ip> is already a host in
+    ~/.ssh/config: the same box `ssh <alias>` reaches, which the rule never
+    sees. Every IP in the match must be configured, so `ssh <own-ip> 'curl
+    <other-ip>'` stays guarded."""
+    words = match_text.split(None, 1)
+    if not words or os.path.basename(words[0]) not in _SSH_FAMILY:
+        return False
+    ips = set(_IPV4.findall(match_text))
+    return bool(ips) and ips <= _ssh_config_hosts()
+
+
+def _shell_syntax_rule(rule_id: str) -> bool:
+    return rule_id in _SHELL_SYNTAX_RULE_IDS or (
+        rule_id.startswith("mode-") and rule_id.endswith("-commands")
+    )
 
 # Canonical field for each event type when 'fields' is not specified in the rule.
 # Fields that hold one statement or one value per line. See CompiledRule.flags.
 _LINE_FIELDS = frozenset({"command", "path", "url"})
 
 _DEFAULT_FIELDS: Dict[str, List[str]] = {
+    "rate_limit": ["content"],
+    "mcp_repeat": ["content"],
+    "spend_budget": ["content"],
+    "model_policy": ["content"],
     "shell": ["command"],
     "file_read": ["path"],
     "file_write": ["path"],
@@ -185,7 +374,13 @@ _TEXT_CONTENT_TYPES = frozenset({"prompt", "tool_result"})
 # loaded at session start) is folded in here so no rule can silently exempt the
 # project-memory source from block-category evaluation (issue #155).
 _UNTRUSTED_CONTENT_ALIASES: Dict[str, set[str]] = {
-    "tool_result": {"memory", "subagent_spawn"},
+    # file_read/network carry the tool's output as `response` after the call
+    # (hooks._attach_tool_result) and nothing before it, so a Read or WebFetch
+    # result is screened like any other tool output.
+    # ponytail: shell output is left out — replaying st3ve's store, 1.6% of it
+    # (mostly grep/sed of code) tripped prompt-injection vs ~0.3% of reads.
+    # Add "shell" once the rule can tell an agent's own code search from a file.
+    "tool_result": {"memory", "subagent_spawn", "file_read", "network"},
 }
 
 # Human-readable provenance tag attached to each finding, so telemetry and the
@@ -197,6 +392,25 @@ _EVENT_SOURCE: Dict[str, str] = {
     "memory": "project_memory",
     "memory_integrity": "memory_integrity",
 }
+
+
+# Semantic-guard findings are titled by what the judge found, not all as
+# "prompt injection": a subagent brief that reads and reports .env is
+# credential exfiltration. The prismor-web dashboard maps older titles the same way.
+_SEMANTIC_LABELS = {
+    "credential_exfiltration": "Credential exfiltration",
+    "security_bypass": "Security bypass",
+    "privilege_escalation": "Privilege escalation",
+    "social_engineering": "Social engineering",
+    "jailbreak": "Jailbreak attempt",
+    "in_content_injection": "Prompt injection in content",
+}
+
+
+def _semantic_title(sem_cat: Any, score: float, subagent: bool) -> str:
+    label = _SEMANTIC_LABELS.get(str(sem_cat), "Prompt injection")
+    where = "in subagent prompt" if subagent else "detected"
+    return f"{label} {where} (semantic guard, score {score:.2f})"
 
 
 def is_subagent_prompt(event: Dict[str, Any]) -> bool:
@@ -246,6 +460,42 @@ def is_floor_protected_rule(
         default_rule is not None
         and default_rule.get("category") in _CORE_BLOCK_CATEGORIES
     )
+
+
+# What a policy pack may set on a rule that already exists: tightening only.
+_PACK_TIGHTEN_KEYS = frozenset({"id", "mode", "severity", "add_patterns"})
+
+
+def pack_rule_problem(rule: Any, existing: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why a policy-pack rule entry must be rejected, or None when it is fine.
+
+    A pack may define a new rule (a complete definition under an unused id) or
+    tighten a built-in one: ``mode: enforce``, a higher ``severity``, extra
+    ``add_patterns``. It may never redefine, disable or loosen a built-in, and
+    never touch the safety floor or self-protection rules at all.
+    """
+    if not isinstance(rule, dict) or not rule.get("id"):
+        return "rule entry needs an id"
+    rid = str(rule["id"])
+    if existing is None:
+        missing = [k for k in ("severity", "category", "title", "event_types") if k not in rule]
+        if "patterns" not in rule and not rule.get("when"):
+            missing.append("patterns")
+        return f"new rule '{rid}' is incomplete (missing {', '.join(missing)})" if missing else None
+    if existing.get("_layer") == "pack":
+        return f"rule '{rid}' is already defined by policy pack '{existing.get('_pack')}'"
+    if rid in _SELF_PROTECTION_RULE_IDS or is_floor_protected_rule(rid, existing):
+        return f"rule '{rid}' is a floor/self-protection rule; packs cannot change it"
+    extra = sorted(set(rule) - _PACK_TIGHTEN_KEYS)
+    if extra:
+        return (f"rule id '{rid}' collides with a built-in rule (a pack may only set "
+                f"mode: enforce, a higher severity and add_patterns on it; got {', '.join(extra)})")
+    if "mode" in rule and str(rule["mode"]).lower() != "enforce":
+        return f"rule '{rid}': a pack may only raise mode to enforce"
+    if "severity" in rule and (_SEVERITY_RANK.get(str(rule["severity"]).lower(), -1)
+                               <= _SEVERITY_RANK.get(str(existing.get("severity", "")).lower(), -1)):
+        return f"rule '{rid}': a pack may only raise severity (built-in is {existing.get('severity')})"
+    return None
 
 
 def is_self_protection_rule(rule_id: str) -> bool:
@@ -395,6 +645,18 @@ class InMemoryTaintStore:
         self.injection_detected: bool = False
         self.injection_event_index: Optional[int] = None
         self.seen_domains: set = set()
+        self.sources: list = []
+        self.installed: set = set()
+
+    def _update(self, **fields: Any) -> None:
+        """No disk: the attribute writes in the shared methods are the whole store."""
+
+    # Doc/skill provenance, shared verbatim with the disk store so the two can't
+    # drift — data-boundary screening calls these and silently skipped itself
+    # when they were missing (GHSA-5vjv-5xrf-37jj).
+    add_source = _TaintStore.add_source
+    add_installed = _TaintStore.add_installed
+    latest_source = _TaintStore.latest_source
 
     def mark_injection(self, event_index: int) -> None:
         self.injection_detected = True
@@ -568,7 +830,7 @@ class RuleCondition:
         return hits >= need
 
 
-_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool"})
+_WHEN_ROOTS = frozenset({"principal", "resource", "args", "tool", "subagent", "rate"})
 _WHEN_CMP_OPS = (ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In, ast.NotIn)
 
 
@@ -586,9 +848,10 @@ class AttrCondition:
         when: "resource.attr.owner != principal.id"
         when: "not principal.verified"
         when: "has(args.dry_run) and args.dry_run == false"
+        when: "subagent.type == 'general-purpose' and tool.name == 'WebFetch'"
 
-    Names are dotted paths rooted at ``principal``, ``resource``, ``args`` or
-    ``tool``; ``args['x-y']`` reaches keys that are not identifiers. Only
+    Names are dotted paths rooted at ``principal``, ``resource``, ``args``,
+    ``tool``, ``subagent`` or the internal ``rate`` context; ``args['x-y']`` reaches keys that are not identifiers. Only
     and/or/not, comparisons (== != < <= > >= in, not in), literals, lists and
     ``has(path)`` are accepted — same no-``eval`` whitelist as RuleCondition.
 
@@ -717,7 +980,7 @@ _RESERVED_NAMES = _WHEN_ROOTS | {"true", "false", "null", "True", "False", "None
 
 def compile_named_conditions(raw: Any) -> Tuple[Dict[str, AttrCondition], List[str]]:
     """settings.conditions → ({name: AttrCondition}, errors). Each body may read
-    the four attribute roots; names cannot refer to other names (no cycles)."""
+    the attribute roots; names cannot refer to other names (no cycles)."""
     out: Dict[str, AttrCondition] = {}
     errors: List[str] = []
     if raw is None:
@@ -760,7 +1023,15 @@ def _compare(op, left: Any, right: Any) -> bool:
     return left >= right
 
 
-def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, Any]:
+def _int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _when_context(event: Dict[str, Any], subject: Optional[Any],
+                  rate_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The attribute namespaces a ``when:`` expression can read."""
     meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
     args = meta.get("kwargs")
@@ -783,11 +1054,28 @@ def _when_context(event: Dict[str, Any], subject: Optional[Any]) -> Dict[str, An
         "claims": dict(getattr(subject, "claims", None) or {}),
     }
     resource = meta.get("resource") if isinstance(meta.get("resource"), dict) else {}
+    # The subagent that made this call, set by the normalizers on calls from
+    # inside one. Keys are always present (None on the main agent) so a
+    # comparison is simply false there, not a missing path that fires the rule.
+    sub_id = meta.get("subagent_id")
+    chain = meta.get("subagent_chain")
+    if not isinstance(chain, list):
+        parent = meta.get("parent_agent_name")
+        chain = [parent] if sub_id and parent else []
+    try:
+        depth = int(meta.get("subagent_depth") or (max(len(chain), 1) if sub_id else 0))
+    except (TypeError, ValueError):
+        depth = max(len(chain), 1) if sub_id else 0
     return {
+        # Only the live runtime supplies this context, never event metadata.
+        "rate": rate_context or {"count": 0, "limit": 0, "error": None},
         "principal": principal,
         "resource": resource,
         "args": args,
         "tool": {"name": str(meta.get("tool_name") or "")},
+        "subagent": {"id": sub_id, "type": meta.get("subagent_type"), "active": bool(sub_id),
+                     "depth": depth, "chain": [str(c) for c in chain],
+                     "number": _int(meta.get("subagent_number")), "age": _int(meta.get("subagent_age"))},
     }
 
 
@@ -795,14 +1083,15 @@ class CompiledRule:
     """A single policy rule with compiled regex patterns."""
 
     __slots__ = (
-        "id", "severity", "category", "title", "event_types",
-        "fields", "patterns", "raw_patterns", "action", "enabled", "mode",
-        "transform",
+        "id", "severity", "category", "title", "event_types", "declared_types",
+        "fields", "_patterns", "_joined", "raw_patterns", "action", "enabled", "mode", "warn_only", "when_invalid",
+        "transform", "guidance",
         "severity_on_write", "severity_on_manifest",
         "pattern_groups", "condition", "layer", "mode_layer", "when", "match_all", "flags",
     )
 
-    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None) -> None:
+    def __init__(self, raw: Dict[str, Any], named: Optional[Dict[str, AttrCondition]] = None,
+                 shipped: Optional[List[str]] = None) -> None:
         self.id: str = raw["id"]
         # Which policy layer last wrote this rule: default, project,
         # remote (signed org) or exemption. Answers "why is this rule
@@ -811,6 +1100,11 @@ class CompiledRule:
         # Which layer set this rule's ``mode`` (None: inherits default_mode).
         # Differs from ``layer`` when a later layer merged other fields on top.
         self.mode_layer: str = str(raw.get("_mode_layer") or self.layer)
+        # An admin wrote `action: warn` on their own rule: report, never block,
+        # unless the rule itself also sets mode: enforce. Rules shipped in
+        # default_policy.yaml (overlays keep `_builtin`) carry warn as legacy
+        # metadata and keep following default_mode.
+        self.warn_only: bool = raw.get("action") == "warn" and not raw.get("_builtin")
         self.severity: str = raw["severity"]
         self.category: str = raw["category"]
         self.title: str = raw["title"]
@@ -821,6 +1115,7 @@ class CompiledRule:
         # this at load time — rather than per-rule in YAML — makes it a
         # structural invariant: no current or future block-category rule can
         # silently exempt the project-memory source.
+        self.declared_types: frozenset[str] = frozenset(self.event_types)
         for base_type, aliases in _UNTRUSTED_CONTENT_ALIASES.items():
             if base_type in self.event_types:
                 self.event_types |= aliases
@@ -839,6 +1134,9 @@ class CompiledRule:
         # Named transform for action: modify (R4 MODIFY). Empty for other
         # actions; the hook dispatcher rewrites tool input via this name.
         self.transform: str = raw.get("transform", "")
+        # What the agent should do instead: appended to a block's reason, and
+        # the whole message of an `instruct` rule (allowed, sent as context).
+        self.guidance: str = str(raw.get("guidance") or "")
         self.enabled: bool = raw.get("enabled", True)
         # Per-rule observe/enforce override. None = inherit settings.default_mode
         # (which itself defaults to "observe"). enforce = this rule blocks on a
@@ -859,6 +1157,7 @@ class CompiledRule:
         # AttrCondition. Core rules refuse it for the same reason they refuse
         # ``condition:``: it can only narrow, and narrowing is disabling.
         self.when: Optional[AttrCondition] = None
+        self.when_invalid: bool = False
         raw_when = raw.get("when")
         if raw_when:
             if raw["id"] in _NON_OVERRIDABLE_RULE_IDS or raw["category"] in _CORE_BLOCK_CATEGORIES:
@@ -869,7 +1168,13 @@ class CompiledRule:
                 try:
                     self.when = AttrCondition(str(raw_when), named)
                 except ConditionError as exc:
-                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored\n")
+                    # Fail toward detection, not toward blocking: without its
+                    # ``when`` the rule matches everything its patterns do (a
+                    # rule scoped to one tool would block them all), so it
+                    # reports but never blocks until the expression is fixed.
+                    sys.stderr.write(f"[prismor] rule '{raw['id']}': {exc} — when ignored; "
+                                     "the rule reports but cannot block until it is fixed\n")
+                    self.when_invalid = True
         # A rule may match on attributes alone (no patterns). Such a rule fires
         # on every event of its types for which ``when`` holds. If its ``when``
         # failed to parse it has nothing left to match on, and firing on every
@@ -915,8 +1220,15 @@ class CompiledRule:
         self.raw_patterns: List[str] = effective
         # A when-only rule has no text to match; `(?!)` keeps every other
         # caller of `.patterns` (repo scans, context checks) inert for it.
-        joined = _alternation(effective) if effective else "(?!)"
-        self.patterns: re.Pattern[str] = re.compile(joined, self.flags)
+        self._joined: str = _alternation(effective) if effective else "(?!)"
+        self._patterns: Optional[re.Pattern[str]] = None
+        # The shipped default patterns, unchanged, are known to compile (the
+        # suite compiles every one), so they compile on first use: a hook
+        # process screens one event and only touches that event type's rules.
+        # Anything an overlay changed compiles now, so a bad regex still fails
+        # the load exactly as before.
+        if effective != shipped:
+            self._patterns = re.compile(self._joined, self.flags)
 
         # ── Optional named groups + boolean condition ────────────────────
         # Absent `condition:` => self.condition stays None and matching takes
@@ -958,6 +1270,12 @@ class CompiledRule:
                     # Fail toward MORE detection: drop the condition, keep the
                     # flat alternation. A typo must never silently disable a rule.
                     sys.stderr.write(f"[prismor] rule '{self.id}': {exc} — condition ignored\n")
+
+    @property
+    def patterns(self) -> "re.Pattern[str]":
+        if self._patterns is None:
+            self._patterns = re.compile(self._joined, self.flags)
+        return self._patterns
 
     def evaluate_condition(self, values: List[str]) -> Optional[str]:
         """Evaluate this rule's condition across ``values`` (the checked fields).
@@ -1043,12 +1361,14 @@ class AllowlistEntry:
     carve-out visible in the same list.
     """
 
-    __slots__ = ("id", "rule_ids", "patterns", "raw_patterns", "reason", "type", "expires", "match")
+    __slots__ = ("id", "rule_ids", "patterns", "raw_patterns", "reason", "type", "expires", "match", "source")
 
     def __init__(self, raw: Dict[str, Any]) -> None:
         self.id: str = raw["id"]
         self.rule_ids: set[str] = set(raw["rule_ids"])
         self.reason: str = raw.get("reason", "")
+        # Policy layer the entry came from ("default" for the shipped file).
+        self.source: str = str(raw.get("_source") or "default")
         # Optional ISO-8601 expiry, so a "just this once" exception written by
         # `prismor allow --expires` lapses on its own instead of quietly
         # becoming permanent policy.
@@ -1082,19 +1402,111 @@ class AllowlistEntry:
 # Output of a bare `prismor <status subcommand>` is text Prismor itself wrote
 # (scope/status/doctor explain policy, so they read like "every tool allowed ...
 # re-enable by ..." and the judge scored that as a security bypass). Only these
-# subcommands: `sessions`, `agents transcript` and friends replay untrusted
-# session content and must stay judged. No shell metacharacters, so nothing
-# else's output can ride along in the same call.
+# subcommands, cloak help and the names-only cloak list are exempt. `sessions`
+# and `agents transcript` replay untrusted content and must stay judged.
+# No shell metacharacters, so nothing else's output can ride along in the call.
+# The one tail allowed is `2>&1` and a `head`/`tail` with only a line count, or a
+# `grep` with plain flags and one pattern: with no file argument they print
+# nothing but what Prismor wrote. `cloak <sub> --help` must be the whole call:
+# `cloak run` executes everything after it.
+# Unquoted: no glob/brace/tilde chars, or the shell expands the pattern into file args.
+_GREP_WORD = r"[^\s\-;&|`$()<>'\"\\*?\[{~][^\s;&|`$()<>'\"\\*?\[{]*"
+# A tail that only narrows what the command printed: no file, no other command.
+_SAFE_TAIL = (r"(?:\s+2>&1)?(?:\s*\|\s*(?:(?:head|tail)(?:\s+-(?:n\s*)?\d+)?"
+              rf"|grep(?:\s+-[cEFhinovwx]+)*\s+(?:{_GREP_WORD}|'{_GREP_WORD}'|\"{_GREP_WORD}\")))?\s*$")
 _PRISMOR_STATUS_CMD = re.compile(
-    r"^\s*(?:\S*/)?(?:prismor|immunity-agent)"
-    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*|\s+--?(?:version|help))?\s*$"
+    r"^\s*(?:[^\s;&|`$()<>]*/)?(?:prismor|immunity-agent)"
+    r"(?:\s+(?:scope|status|doctor|version|help)\b[^;&|`$()<>\n]*"
+    r"|\s+cloak\s+(?:list|(?:[a-z]+\s+)?(?:--help|-h))|\s+query\s+--schema"
+    r"|\s+(?:--?(?:version|help)|-h))?" + _SAFE_TAIL
 )
+# Commands joined by `;`, `&&` or `||` are exempt only when every one of them is.
+_CHAIN_SEP = re.compile(r";|&&|\|\|")
+
+
+_PRE_EVENTS = {"pretooluse", "beforeshellexecution", "beforemcpexecution"}
+_POST_EVENTS = {"posttooluse", "aftershellexecution", "aftermcpexecution"}
+
+
+def _call_key(event: Dict[str, Any]) -> Tuple[Any, ...]:
+    raw = (event.get("metadata") or {}).get("raw") or {}
+    call_id = raw.get("tool_use_id") or raw.get("toolUseId") or raw.get("call_id") if isinstance(raw, dict) else None
+    if call_id:
+        return ("id", str(call_id))
+    return ("call", event.get("type"), event.get("command"), event.get("path"), event.get("url"))
+
+
+def pre_twin_index(events: List[Dict[str, Any]], index: int) -> Optional[int]:
+    """Index of the pre-action event of the same tool call as the post-action
+    ``events[index]``, or None. A post event repeats the call's command/path, so
+    every rule that matched the call fires on it again: one tool call, two
+    findings (field test: each detect-only shell finding stored twice)."""
+    event = events[index]
+    if str(event.get("agent_event") or "").lower() not in _POST_EVENTS:
+        return None
+    key = _call_key(event)
+    for j in range(index - 1, max(-1, index - 50), -1):
+        prev = events[j]
+        if str(prev.get("agent_event") or "").lower() in _PRE_EVENTS and _call_key(prev) == key:
+            return j
+    return None
+
+
+def drop_post_twin_findings(findings: List[Dict[str, Any]], events: List[Dict[str, Any]],
+                            index: int, prior: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """``findings`` for ``events[index]`` minus rules its pre twin already raised."""
+    twin = pre_twin_index(events, index) if 0 <= index < len(events) else None
+    if twin is None:
+        return findings
+    seen = {f.get("ruleId") for f in prior if f.get("eventIndex") == twin}
+    return [f for f in findings if f.get("ruleId") not in seen]
 
 
 def _is_prismor_status_output(event: Dict[str, Any]) -> bool:
     if str(event.get("agent_event") or "") != "PostToolUse" or event.get("type") != "shell":
         return False
-    return bool(_PRISMOR_STATUS_CMD.match(str(event.get("command") or "")))
+    cmd = str(event.get("command") or "").strip()
+    if "\n" in cmd or "\r" in cmd:  # `\s` in the regex would let a newline start a second command
+        return False
+    parts = [p for p in _CHAIN_SEP.split(cmd) if p.strip()]
+    return bool(parts) and all(_PRISMOR_STATUS_CMD.match(p) for p in parts)
+
+# The agent's own auto-memory: notes it wrote about this project (#915).
+# Descriptive text about secrets ("`.env` reads are blocked", "the scrubber
+# replaces vault values") keyword-scores as credential exfiltration.
+_AGENT_MEMORY_PATH = re.compile(r"/\.claude/projects/[^/]+/memory/[^/]+$|/\.codex/memories/[^/]+$")
+_PLAIN_READ_CMD = re.compile(r"^\s*(?:cat|head|tail|less|bat|sed\s+-n\s+\S+)\b((?:\s+(?:-\S+|[^\s;&|`$()<>]+))+)\s*$")
+# `| head` / `| grep x` only trims the same issue text, so it keeps the cap (#882).
+_GH_VIEW_CMD = re.compile(r"^\s*gh\s+(?:issue|pr)\s+view\b[^;&|`$()<>\n]*?" + _SAFE_TAIL)
+# Something the text could actually send data TO. Issue and PR bodies about
+# the guard quote attack phrases; without a target they are not an attack.
+_EXFIL_TARGET = re.compile(
+    r"\b(?:send|post|upload|forward|transmit|exfiltrat\w*|to)\b[^\n]{0,60}https?://"
+    r"|\b(?:curl|wget|nc|ncat|scp)\s|\b\d{1,3}(?:\.\d{1,3}){3}\b",
+    re.IGNORECASE,
+)
+
+
+def _reads_agent_memory(event: Dict[str, Any]) -> bool:
+    """A completed read whose every file is in the agent's own memory dir."""
+    if str(event.get("agent_event") or "") != "PostToolUse":
+        return False
+    if event.get("type") == "file_read":
+        paths = [str(event.get("path") or "")]
+    elif event.get("type") == "shell":
+        m = _PLAIN_READ_CMD.match(str(event.get("command") or ""))
+        paths = [w for w in (m.group(1).split() if m else []) if not w.startswith("-")]
+    else:
+        return False
+    return bool(paths) and all(
+        _AGENT_MEMORY_PATH.search(os.path.expanduser(p).replace("\\", "/")) for p in paths)
+
+
+def _is_gh_view_output(event: Dict[str, Any]) -> bool:
+    return (str(event.get("agent_event") or "") == "PostToolUse"
+            and event.get("type") == "shell"
+            and _GH_VIEW_CMD.match(str(event.get("command") or "")) is not None)
+
 
 class PolicyEngine:
     """Loads, merges, and evaluates YAML-based security policies."""
@@ -1107,12 +1519,20 @@ class PolicyEngine:
         self.workspace: Optional[Path] = workspace
         self.rules: List[CompiledRule] = []
         self.allowlists: List[AllowlistEntry] = []
+        # Rule ids the signed org policy sets. Local layers can't loosen them.
+        self._org_rule_ids: set[str] = set()
+        self._pre_local: Dict[str, Dict[str, Any]] = {}
         self.block_categories: set[str] = set()
         self._manifest_re: Optional[re.Pattern[str]] = None
         self.egress_allowlist = []
         self.egress: EgressPolicy = EgressPolicy()
         self.data_boundary: DataBoundaryPolicy = DataBoundaryPolicy()
         self._data_boundary_source: str = "default"
+        self._agent_connections_source: str = "default"
+        # Off until _load reads settings.agent_connections; set here so an early
+        # return from _load still leaves evaluate() something to read.
+        from prismor.runtime.agent_connections import ConnectionPolicy
+        self.agent_connections = ConnectionPolicy()
         # Which policy layer last set the egress config. "remote" means the org
         # signed it, which is what makes an enforce verdict authoritative.
         self._egress_source: str = "default"
@@ -1126,9 +1546,23 @@ class PolicyEngine:
         # True when project_policy_error is set and the last valid copy of the
         # file is enforced in its place (see _load_last_good).
         self.project_policy_fallback: bool = False
+        self.rate_limit: Optional[Dict[str, int]] = None
+        # settings.models / settings.spend_budgets (see budgets.py); an
+        # invalid value is dropped and reported through spend_error.
+        self.models: Optional[Dict[str, Any]] = None
+        self.spend_budgets: Optional[List[Dict[str, Any]]] = None
+        self.spend_error: Optional[str] = None
+        self.mcp_tool_repeat_limits: Dict[str, Dict[str, int]] = {}
+        self.mcp_tool_repeat_limits_error: Optional[str] = None
+        self.mcp_tool_repeat_limits_source = "default"
+        self.rate_limit_source: str = "default"
+        self.rate_limit_error: Optional[str] = None
         self.outputs: List[Dict[str, Any]] = []
         self.semantic_guard_config: Dict[str, Any] = {}
         self.sandbox_config: Dict[str, Any] = {}
+        # Off until settings.pii.enabled. The object exists so a caller can
+        # read it before _load finishes; evaluate() does not scan while disabled.
+        self.pii: PiiSettings = PiiSettings()
         self._semantic_guard = None  # lazy-instantiated on first uncertain event
         # Optional caller-supplied taint store, used instead of the per-session
         # file. Set by stateless callers that reconstruct taint by replay
@@ -1136,6 +1570,8 @@ class PolicyEngine:
         self.taint_override: Optional[Any] = None
         self.remote_policy_meta: Dict[str, Any] = {}
         self._default_mode_explicit: bool = False
+        self.pack_errors: List[str] = []
+        self.packs_loaded: List[str] = []
         # True when this policy names its blocking set rule by rule
         # (settings.selection: explicit, written by `prismor setup`) and that
         # choice is locally authoritative. See _resolve_mode.
@@ -1210,10 +1646,21 @@ class PolicyEngine:
             and self.explicit_selection
         )
         note = " (floor waived: settings.selection is explicit)" if floor_waived else ""
+        if rule.when_invalid:
+            return "observe", "when: does not parse — reports only until it is fixed"
+        if rule.action == "instruct":
+            # Ahead of device mode: an enforce override must not turn advice
+            # into a block (an unknown action on an enforce finding blocks).
+            return "observe", "action: instruct — allows the call and sends guidance; never blocks"
         if self.device_mode:
             return self.device_mode, f"device mode override{note}"
         if rule.mode:
             return rule.mode, f"rule sets mode: {rule.mode}{note}"
+        if rule.warn_only:
+            # An admin who wrote "warn" meant report, not block: an enforcing
+            # default_mode must not turn their rule into a hard block. Setting
+            # mode: enforce on the rule itself still does.
+            return "observe", "action: warn — reports only (set mode: enforce on the rule to block)"
         return self.default_mode, f"policy default_mode: {self.default_mode}{note}"
 
     def decision_layer(self, rule: "CompiledRule") -> str:
@@ -1278,6 +1725,21 @@ class PolicyEngine:
         replace non-core rules. Settings are merged key-by-key, so a later layer
         wins (remote is applied after project = org-admin authoritative).
         """
+        _layer_settings = override_raw.get("settings") or {}
+        if "mcp_tool_repeat_limits" in _layer_settings:
+            from prismor.runtime.ratelimit import validate_repeat_limits
+            errors = validate_repeat_limits(_layer_settings["mcp_tool_repeat_limits"])
+            if errors:
+                self.mcp_tool_repeat_limits_error = "; ".join(errors)
+                return
+        if "rate_limit" in _layer_settings:
+            from prismor.runtime.ratelimit import validate_settings
+            _rate_errors = validate_settings(_layer_settings["rate_limit"])
+            if _rate_errors:
+                # Reject the whole invalid layer before it can weaken the
+                # previous rate rules while leaving their settings behind.
+                self.rate_limit_error = "; ".join(_rate_errors)
+                return
         for rule in override_raw.get("rules", []) or []:
             rule_id = rule.get("id", "")
             default = rules_by_id.get(rule_id)
@@ -1299,6 +1761,15 @@ class PolicyEngine:
                 if default:
                     merged = {**default, **rule}
                     merged["enabled"] = True  # force enabled
+                    # Category is part of floor membership: changing it would
+                    # enable narrowing conditions and weakening by later layers.
+                    # event_types/fields set what the rule sees: narrowing them
+                    # (e.g. event_types: [ui_action]) would let it never match.
+                    for _k in ("category", "event_types", "fields"):
+                        if _k in default:
+                            merged[_k] = default[_k]
+                        else:
+                            merged.pop(_k, None)
                     # Core protections are ADD-ONLY: their default patterns,
                     # action, and severity can never be replaced or weakened,
                     # only extended. Without restoring action/severity here, an
@@ -1328,6 +1799,10 @@ class PolicyEngine:
             # flips one field without dropping the rule's patterns/category. A full
             # overlay rule still fully overrides — every key it provides wins.
             existing = rules_by_id.get(rule["id"])
+            if source == "remote":
+                self._org_rule_ids.add(rule["id"])
+                if isinstance(existing, dict) and existing.get("_layer") in _LOCAL_LAYERS:
+                    existing = self._drop_local_loosening(existing, rule)
             if isinstance(existing, dict):
                 merged = {**existing, **rule}
                 # add_patterns/disable_patterns are UNIONED across layers (project
@@ -1360,7 +1835,9 @@ class PolicyEngine:
                 if "mode" in rule:
                     rule["_mode_layer"] = source
                 rules_by_id[rule["id"]] = rule
-        allowlist_raw.extend(override_raw.get("allowlists", []) or [])
+        allowlist_raw.extend(
+            {**a, "_source": source} if isinstance(a, dict) else a
+            for a in override_raw.get("allowlists", []) or [])
         override_settings = dict(override_raw.get("settings", {}) or {})
         # `selection: explicit` makes the safety floor opt-in, so it is a
         # local-only affordance for a developer's own machine. Arriving from the
@@ -1372,6 +1849,16 @@ class PolicyEngine:
                 f"(the safety floor stays on for managed workspaces)\n"
             )
             override_settings.pop("selection", None)
+        # device_mode is the console's per-device kill switch. A repo or local
+        # file may tighten it to enforce, never set observe: that would downgrade
+        # every non-floor rule from a file any agent in the repo can write.
+        if (source != "remote"
+                and str(override_settings.get("device_mode", "")).lower() == "observe"):
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.device_mode: observe from the {source} policy layer "
+                "(only the console may set a device to observe)\n"
+            )
+            override_settings.pop("device_mode", None)
         # Identity config names the issuer whose tokens Prismor believes. From a
         # repo or local file it would let whoever writes that file mint users
         # and roles, so only the signed org policy may set it.
@@ -1381,6 +1868,14 @@ class PolicyEngine:
                 f"(only the signed org policy or eval-server flags may set it)\n"
             )
             override_settings.pop("identity", None)
+        # Same reasoning for Copilot Studio: its tenant / app allowlist decides
+        # whose Entra tokens the eval-server accepts. Console or env only.
+        if source != "remote" and "copilot_studio" in override_settings:
+            sys.stderr.write(
+                f"[prismor] Ignoring settings.copilot_studio from the {source} policy layer "
+                f"(only the signed org policy or PRISMOR_COPILOT_STUDIO_* env may set it)\n"
+            )
+            override_settings.pop("copilot_studio", None)
         if "block_categories" in override_settings:
             cats = set(override_settings.get("block_categories") or [])
             dropped = _CORE_BLOCK_CATEGORIES - cats
@@ -1398,6 +1893,14 @@ class PolicyEngine:
             self._egress_source = source
         if "data_boundary" in override_settings:
             self._data_boundary_source = source
+        if "agent_connections" in override_settings:
+            self._agent_connections_source = source
+        if "mcp_tool_repeat_limits" in override_settings:
+            self.mcp_tool_repeat_limits_source = source
+            self.mcp_tool_repeat_limits_error = None
+        if "rate_limit" in override_settings:
+            self.rate_limit_source = source
+            self.rate_limit_error = None
         if "default_mode" in override_settings or "mode" in override_settings:
             self._default_mode_source = source
         # semantic_guard is a nested stanza with its own defaults (enabled,
@@ -1408,12 +1911,76 @@ class PolicyEngine:
                 **(settings.get("semantic_guard") or {}),
                 **override_settings["semantic_guard"],
             }
+        # Same shape as semantic_guard: a project that sets `enabled: true`
+        # keeps the default entity list, threshold and model.
+        if isinstance(override_settings.get("pii"), dict):
+            override_settings["pii"] = {
+                **(settings.get("pii") or {}),
+                **override_settings["pii"],
+            }
         # Named conditions merge per name: an org layer redefining `is_finance`
         # wins over the project's, but does not erase the project's other names
         # (which its own rules still reference).
         if isinstance(override_settings.get("conditions"), dict) and isinstance(settings.get("conditions"), dict):
             override_settings["conditions"] = {**settings["conditions"], **override_settings["conditions"]}
         settings.update(override_settings)
+
+    def _apply_packs(self, rules_by_id: Dict[str, Dict[str, Any]]) -> None:
+        try:
+            from prismor.runtime import policy_packs
+            packs, self.pack_errors = policy_packs.load_all()
+        except Exception as exc:  # a broken pack store must never break enforcement
+            self.pack_errors = [f"policy packs could not be loaded: {exc}"]
+            return
+        for name, raw in packs:
+            if name not in self.packs_loaded:
+                self.packs_loaded.append(name)
+            for rule in raw.get("rules") or []:
+                existing = rules_by_id.get(str(rule.get("id", ""))) if isinstance(rule, dict) else None
+                problem = pack_rule_problem(rule, existing)
+                if problem:
+                    msg = f"policy pack '{name}': {problem} (ignored)"
+                    self.pack_errors.append(msg)
+                    sys.stderr.write(f"[prismor] {msg}\n")
+                    continue
+                if existing is None:
+                    rules_by_id[rule["id"]] = {**rule, "_layer": "pack", "_pack": name,
+                                               **({"_mode_layer": "pack"} if "mode" in rule else {})}
+                    continue
+                merged = dict(existing)
+                if "mode" in rule:
+                    merged["mode"], merged["_mode_layer"] = "enforce", "pack"
+                if "severity" in rule:
+                    merged["severity"] = str(rule["severity"]).upper()
+                adds = list(dict.fromkeys([*(existing.get("add_patterns") or []),
+                                           *(rule.get("add_patterns") or [])]))
+                if adds:
+                    merged["add_patterns"] = adds
+                rules_by_id[rule["id"]] = merged
+
+    def _drop_local_loosening(self, local: Dict[str, Any], org: Dict[str, Any]) -> Dict[str, Any]:
+        """The rule as the org layer should see it: what it was before any local
+        layer touched it, plus only the local changes that tighten it.
+
+        A field-level merge would otherwise keep every key the org entry leaves
+        out, so a local ``enabled: false``, ``disable_patterns`` or narrower
+        ``patterns`` would survive on a rule the org enforces.
+        """
+        base = self._pre_local.get(local.get("id", ""))
+        if base is None:
+            # Only a local file defines this id. A complete org rule replaces it;
+            # a sparse org tweak (e.g. add_patterns) is building on the local rule.
+            if not all(k in org for k in ("severity", "category", "title", "event_types")):
+                return local
+            base = {}
+        kept = dict(base)
+        adds = list(dict.fromkeys([*(base.get("add_patterns") or []), *(local.get("add_patterns") or [])]))
+        if adds:
+            kept["add_patterns"] = adds
+        if "mode" not in org and str(local.get("mode", "")).lower() == "enforce":
+            kept["mode"] = "enforce"
+            kept["_mode_layer"] = local.get("_mode_layer", local.get("_layer"))
+        return kept
 
     def _load(self, workspace: Optional[Path], policy_path: Optional[Path]) -> None:
         default_raw = _load_yaml(_DEFAULT_POLICY_PATH)
@@ -1422,13 +1989,26 @@ class PolicyEngine:
 
         # Start with default rules indexed by id.
         rules_by_id: Dict[str, Dict[str, Any]] = {}
+        # Each default rule's patterns as shipped, before any overlay merges.
+        shipped: Dict[str, List[str]] = {
+            r["id"]: [str(p) for p in (r.get("patterns") or [])] for r in default_raw.get("rules", [])}
         for rule in default_raw.get("rules", []):
             rule["_layer"] = "default"
+            rule["_builtin"] = True
             if "mode" in rule:
                 rule["_mode_layer"] = "default"
             rules_by_id[rule["id"]] = rule
 
         allowlist_raw: List[Dict[str, Any]] = list(default_raw.get("allowlists", []) or [])
+        # Policy packs (`prismor policy pack add`): above the defaults, below
+        # every local layer. Add or tighten only; see pack_rule_problem.
+        self.pack_errors: List[str] = []
+        self.packs_loaded: List[str] = []
+        if policy_path is None:
+            self._apply_packs(rules_by_id)
+        # Merges build new dicts rather than mutating these, so a shallow copy
+        # is the rules as shipped (see _drop_local_loosening).
+        self._pre_local = dict(rules_by_id)
 
         # Settings start from defaults; project policy can extend or override.
         settings: Dict[str, Any] = dict(default_raw.get("settings", {}) or {})
@@ -1483,6 +2063,19 @@ class PolicyEngine:
                 override_raw = _load_yaml(layer_path)
                 if override_raw is not None and not isinstance(override_raw, dict):
                     raise ValueError("the top level must be a mapping (version:, rules:, settings:)")
+                _rate_settings = (override_raw or {}).get("settings") or {}
+                if "mcp_tool_repeat_limits" in _rate_settings:
+                    from prismor.runtime.ratelimit import validate_repeat_limits
+                    errors = validate_repeat_limits(_rate_settings["mcp_tool_repeat_limits"])
+                    if errors:
+                        self.mcp_tool_repeat_limits_error = "; ".join(errors)
+                        raise ValueError(self.mcp_tool_repeat_limits_error)
+                if "rate_limit" in _rate_settings:
+                    from prismor.runtime.ratelimit import validate_settings
+                    _rate_errors = validate_settings(_rate_settings["rate_limit"])
+                    if _rate_errors:
+                        self.rate_limit_error = "; ".join(_rate_errors)
+                        raise ValueError(self.rate_limit_error)
             except Exception as exc:  # malformed YAML or shape: fall back, say so
                 override_raw = None
                 detail = " ".join(str(exc).split())[:240]
@@ -1549,6 +2142,20 @@ class PolicyEngine:
 
         # Compile settings.
         self.block_categories = set(settings.get("block_categories", []))
+        self.rate_limit = settings.get("rate_limit")
+        from prismor.runtime import budgets as _budgets
+        _spend_errors: List[str] = []
+        for _key, _check in (("models", _budgets.validate_models),
+                             ("spend_budgets", _budgets.validate_budgets)):
+            if settings.get(_key) is None:
+                continue
+            _errs = _check(settings[_key])
+            if _errs:
+                _spend_errors.extend(_errs)
+            else:
+                setattr(self, _key, settings[_key])
+        self.spend_error = "; ".join(_spend_errors) or None
+        self.mcp_tool_repeat_limits = settings.get("mcp_tool_repeat_limits", {})
         # Org per-agent controls (kill-switch / forced mode / IAM profile per
         # named agent) from the verified signed remote policy. Only populated on
         # org-managed workspaces (the remote overlay is only merged there); the
@@ -1587,6 +2194,10 @@ class PolicyEngine:
         # see the layer filter in _apply_override and identity_token.py.
         _idc = settings.get("identity")
         self.identity: Dict[str, Any] = _idc if isinstance(_idc, dict) else {}
+        # Copilot Studio provider config (settings.copilot_studio): the Entra
+        # tenants and app ids an org registered in the console. Signed layer only.
+        _csc = settings.get("copilot_studio")
+        self.copilot_studio: Dict[str, Any] = _csc if isinstance(_csc, dict) else {}
         # Tool-combination governance config (settings.tool_tags):
         # customizable tags + forbidden combinations (generalized trifecta).
         _tt = settings.get("tool_tags")
@@ -1646,16 +2257,16 @@ class PolicyEngine:
         )
         for _db_err in self.data_boundary.errors:
             sys.stderr.write(f"[prismor] data_boundary policy: {_db_err}\n")
+        # Agent connections (settings.agent_connections): which agent may hand
+        # work to which — see agent_connections.py.
+        from prismor.runtime.agent_connections import ConnectionPolicy
+        self.agent_connections = ConnectionPolicy.from_settings(
+            settings, source=self._agent_connections_source
+        )
         if self.data_boundary.enabled:
             _db_raw = settings.get("data_boundary") or {}
             if isinstance(_db_raw, dict) and _db_raw.get("self_identity_auto", True):
-                try:
-                    from prismor.runtime.data_boundary import discover_self_identity
-                    for _ident in discover_self_identity(self.workspace):
-                        if _ident not in self.data_boundary.self_identity:
-                            self.data_boundary.self_identity.append(_ident)
-                except Exception:
-                    pass
+                self.data_boundary.discover_self_later(self.workspace)
         # Keep the flat list in sync when a modern policy defines the allowlist
         # only under settings.egress, so the MCP static scanner still sees it.
         if not self.egress_allowlist and self.egress.enabled:
@@ -1670,16 +2281,15 @@ class PolicyEngine:
         # unacceptable latency.
         # Resolve what a command actually runs (script argument, sourced file,
         # npm script, make recipe, Dockerfile) and evaluate that content too.
-        # Findings are advisory until an operator promotes them -- see
-        # execution_target_action.
+        # See execution_target_action for whether those findings can block.
         self.inspect_execution_targets: bool = bool(
             settings.get("inspect_execution_targets", True)
         )
-        # "observe" reports without ever blocking (default, so upgrading an
-        # install cannot start breaking builds). "enforce" lets a finding from
-        # inspected content block exactly as an inline one would.
+        # "enforce" (default) resolves a finding from inspected content exactly
+        # as an inline one: the floor blocks, other rules keep their own mode.
+        # "observe" reports without ever blocking.
         self.execution_target_action: str = str(
-            settings.get("execution_target_action", "observe")
+            settings.get("execution_target_action", "enforce")
         ).strip().lower()
         self.supply_chain_install_check: bool = bool(
             settings.get("supply_chain_install_check", True)
@@ -1707,6 +2317,10 @@ class PolicyEngine:
         if isinstance(sg, dict):
             self.semantic_guard_config = sg
 
+        self.pii = PiiSettings.from_mapping(settings.get("pii"))
+        for _pii_err in self.pii.errors:
+            sys.stderr.write(f"[prismor] pii policy: {_pii_err}\n")
+
         sandbox = settings.get("sandbox") or {}
         if isinstance(sandbox, dict):
             self.sandbox_config = sandbox
@@ -1731,7 +2345,7 @@ class PolicyEngine:
             if rule_data.get("id") in floor_off:
                 continue
             if rule_data.get("enabled", True):
-                compiled = CompiledRule(rule_data, self.named_conditions)
+                compiled = CompiledRule(rule_data, self.named_conditions, shipped.get(rule_data["id"]))
                 if compiled.enabled:  # a when-only rule with a broken `when` disables itself
                     self.rules.append(compiled)
 
@@ -1751,6 +2365,7 @@ class PolicyEngine:
         subject: Optional[Any] = None,
         include_suppressed: bool = False,
         trace: Optional[List[Dict[str, Any]]] = None,
+        rate_context: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Evaluate a single event against all loaded rules. Returns findings.
 
@@ -1834,6 +2449,10 @@ class PolicyEngine:
                 check_fields = rule.fields
             elif matched_via_mcp_alias:
                 check_fields = _MCP_ALIAS_DEFAULT_FIELDS
+            elif event_type not in rule.declared_types:
+                # Reached via _UNTRUSTED_CONTENT_ALIASES: screen the content,
+                # not the alias type's own field (a command, path or URL).
+                check_fields = ["combined_text"]
             else:
                 check_fields = _DEFAULT_FIELDS.get(event_type, [])
             if _dry_run and "command" in check_fields:
@@ -1928,7 +2547,7 @@ class PolicyEngine:
             when_holds: Optional[bool] = None
             if rule.when is not None:
                 if when_ctx is None:
-                    when_ctx = _when_context(event, subject)
+                    when_ctx = _when_context(event, subject, rate_context)
                 when_holds = rule.when.evaluate(when_ctx)
             if trace is not None:
                 # Every rule whose patterns matched, including the ones a
@@ -1982,9 +2601,48 @@ class PolicyEngine:
                         command_substitution_spans,
                         heredocs,
                         is_inert_match,
+                        is_inert_remote_match,
+                        is_inert_script_literal,
                         is_remote_payload,
                         quoted_spans,
                     )
+
+                    def _is_match_inert(text, m):
+                        if is_inert_match(text, m.start(), m.end()):
+                            return True
+                        if _shell_syntax_rule(rule.id) and not (
+                            rule.id in _SELF_PROTECTION_RULE_IDS
+                            and _SELF_PROTECTION_PATH_MATCH.search(m.group(0).strip(" \t\n'\""))
+                        ) and is_inert_script_literal(text, m.start(), m.end()):
+                            return True
+                        # A self-protection rule guards THIS install. When the
+                        # match sits inside an ssh/docker/kubectl payload it
+                        # describes another machine's Prismor, which this policy
+                        # does not govern and whose remediation ("run it
+                        # yourself") cannot help. Report it, do not block it.
+                        # Scoped to these rules on purpose: a remote `rm -rf /`
+                        # still destroys a real machine (issue #344).
+                        if _local_jurisdiction(rule.id) and is_remote_payload(
+                            text, m.start(), m.end()
+                        ):
+                            return True
+                        if rule.id in _CONFIG_GUARD_RULE_IDS and _throwaway_config_match(
+                            text, text[m.start():m.end()], self.workspace
+                        ):
+                            return True
+                        if rule.id == "prismor-self-edit" and _foreign_approvals_path(
+                            text, m.start(), m.end()
+                        ):
+                            return True
+                        if rule.id == "raw-ip-outbound" and _configured_ssh_ip_match(
+                            text[m.start():m.end()]
+                        ):
+                            return True
+                        # Any rule: inert text INSIDE a remote payload (a banner
+                        # the remote shell echoes) is inert here too.
+                        return is_inert_remote_match(
+                            text, m.start(), m.end(), rule.patterns
+                        )
                     # Rules match against a normalized command so command
                     # substitutions expose their executable payload
                     # (``echo "$(rm -rf /)"`` -> ``echo " rm -rf / "``).
@@ -2025,20 +2683,7 @@ class PolicyEngine:
                             )
                             _m = rule.patterns.search(_context_text)
                     if _m is not None:
-                        context_inert = is_inert_match(
-                            _context_text, _m.start(), _m.end()
-                        )
-                        # A self-protection rule guards THIS install. When the
-                        # match sits inside an ssh/docker/kubectl payload it
-                        # describes another machine's Prismor, which this policy
-                        # does not govern and whose remediation ("run it
-                        # yourself") cannot help. Report it, do not block it.
-                        # Scoped to these rules on purpose: a remote `rm -rf /`
-                        # still destroys a real machine (issue #344).
-                        if not context_inert and rule.id in _LOCAL_JURISDICTION_RULE_IDS:
-                            context_inert = is_remote_payload(
-                                _context_text, _m.start(), _m.end()
-                            )
+                        context_inert = _is_match_inert(_context_text, _m)
                     # Context is judged on the first raw match. In a multi-line
                     # command (e.g. an inert heredoc body next to a real command)
                     # or a compound command separated by semicolons on one line
@@ -2049,25 +2694,48 @@ class PolicyEngine:
                     # command (`echo 'chmod 777'; r''m -rf /`) cannot hide
                     # behind an inert first match.
                     if context_inert:
-                        def _is_match_inert(text, m):
-                            if is_inert_match(text, m.start(), m.end()):
-                                return True
-                            if (
-                                rule.id in _LOCAL_JURISDICTION_RULE_IDS
-                                and is_remote_payload(text, m.start(), m.end())
-                            ):
-                                return True
-                            return False
-
                         _texts = [_context_text, _dequote_shell(_context_text)]
                         context_inert = all(
                             _is_match_inert(text, m)
                             for text in _texts if text
                             for m in rule.patterns.finditer(text)
                         )
+                    # A match that only a rewrite produced -- backticks or
+                    # `$(...)` unwrapped, quotes stripped, homoglyphs folded --
+                    # cannot be mapped back to the raw text, so the checks
+                    # above fall back to live. Those rewrites model what a shell
+                    # does, and no shell reads a quoted-delimiter heredoc bound
+                    # for a text file, a commit message or a Python script that
+                    # cannot reach one. Blank those bodies and look again with
+                    # every rewrite: nothing left means only data matched.
+                    # Self-protection rules stay out: their paths are files a
+                    # Python script really opens.
+                    if (not context_inert and _shell_syntax_rule(rule.id)
+                            and rule.id not in _SELF_PROTECTION_RULE_IDS):
+                        from prismor.runtime.shell_context import (
+                            blank_keep_lines,
+                            data_heredoc_spans,
+                        )
+                        _raw = str(event.get("command") or "")
+                        _data = data_heredoc_spans(_raw)
+                        if _data:
+                            _rest = blank_keep_lines(_raw, _data)
+                            _views = [_rest, _normalize_command(_rest)]
+                            _views += [d for d in map(_dequote_shell, list(_views)) if d]
+                            _views += [_fold_confusables(v) for v in list(_views)]
+                            context_inert = not any(_rule_hits(rule, v) for v in _views)
                 except Exception as exc:  # never let context checking drop a finding
                     sys.stderr.write(f"[prismor] context check error: {exc}\n")
                     context_inert = False
+            elif event_type in ("file_read", "file_write") and rule.id == "prismor-self-edit":
+                _p = str(event.get("path") or "")
+                _hits = list(rule.patterns.finditer(_p))
+                context_inert = bool(_hits) and all(
+                    _foreign_approvals_path(_p, h.start(), h.end()) for h in _hits
+                )
+            elif event_type == "file_write" and rule.id in _CONFIG_GUARD_RULE_IDS:
+                _wpath = str(event.get("path") or "")
+                context_inert = _throwaway_config_path(_wpath, {}, self.workspace)
 
             finding_id = f"{rule.id}-{index}"
             prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2083,6 +2751,10 @@ class PolicyEngine:
                 # Attributed against the folded copy when that is what matched,
                 # otherwise the pattern would re-scan text it cannot match.
                 "pattern": rule.matched_pattern(folded_evidence or matched_evidence),
+                # The rule's `when:` condition, which held for this call. Static
+                # policy text like `pattern`; for a rule with only a `when:` it
+                # is the whole reason it fired.
+                "when": rule.when.source if rule.when else None,
                 "eventIndex": index,
                 "ruleId": rule.id,
                 "action": rule.action,
@@ -2100,6 +2772,8 @@ class PolicyEngine:
                 # position. should_block() never blocks on such a finding.
                 "contextInert": context_inert,
             }
+            if rule.guidance:
+                finding["guidance"] = rule.guidance
 
             # Only present when the rule matched an ASCII-folded copy rather
             # than the raw text — i.e. the payload was deliberately obfuscated.
@@ -2274,7 +2948,12 @@ class PolicyEngine:
             # way — avoids symlink mismatches like macOS /var → /private/var.
             _vault = os.path.normpath(os.path.expanduser(str(_secrets_dir())))
         except Exception:
-            _vault = ""
+            # Fail closed: an import or env error must not switch the guard
+            # off, so fall back to the default location.
+            try:
+                _vault = os.path.normpath(os.path.expanduser("~/.prismor/secrets"))
+            except Exception:
+                _vault = ""
         if _vault:
             _hit_vault = None
             if event_type in ("file_read", "file_write"):
@@ -2287,7 +2966,9 @@ class PolicyEngine:
                 _cmd = field_values.get("command", "")
                 # ".prismor/secrets" matches every expansion form of the default
                 # location (~/, $HOME/, absolute); _vault matches a custom dir.
-                if _cmd and (".prismor/secrets" in _cmd or _vault in _cmd):
+                # Mentions under another user's (nonexistent) home are test
+                # fixtures, not this vault (#592).
+                if _cmd and _shell_vault_mentions(_cmd, _vault):
                     _hit_vault = _cmd
             if _hit_vault is not None:
                 finding_id = f"prismor-vault-access-{index}"
@@ -2353,6 +3034,28 @@ class PolicyEngine:
                     "action": "warn",
                 })
                 break  # one finding per event is enough
+
+        # ── Hidden Unicode text (tag-character / variation-selector smuggling)
+        # Any field: tool results, prompts, file writes, skill and memory text.
+        # The fold above lets content rules match the decoded text; this
+        # finding fires even when the hidden wording matches no rule.
+        for _field, _val in field_values.items():
+            _hidden = _hidden_unicode_text(_val) if isinstance(_val, str) else None
+            if _hidden is not None:
+                finding_id = f"unicode-hidden-text-{index}"
+                prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
+                findings.append({
+                    "id": prefixed_id,
+                    "severity": "HIGH",
+                    "category": "prompt_injection",
+                    "title": "Content hides text in invisible Unicode (tag characters or variation selectors)",
+                    "evidence": _truncate(f"{_field}: hidden text {_hidden!r}" if _hidden
+                                          else f"{_field}: run of variation selectors"),
+                    "eventIndex": index,
+                    "ruleId": "unicode-hidden-text",
+                    "action": "warn",
+                })
+                break
 
         # ── Invisible-char check for skill content ─────────────────────────
         # Zero-width characters in a skill manifest have no legitimate use —
@@ -2422,6 +3125,29 @@ class PolicyEngine:
             except Exception as _db_exc:  # never let data-boundary screening break evaluation
                 sys.stderr.write(f"[prismor] data_boundary evaluation error: {_db_exc}\n")
 
+        # Agent connections: may this agent hand work to that one at all, over
+        # any channel (handoff, CLI, MCP agent, A2A) - see agent_connections.py.
+        if self.agent_connections.enabled:
+            from prismor.runtime.agent_connections import agent_message
+            _am = agent_message(event, self.agent_connections)
+            if _am:
+                event.setdefault("metadata", {})["agent_message"] = {
+                    **_am, "from_id": self.agent_connections.resolve(_am["from"]),
+                    "to_id": self.agent_connections.resolve(_am["to"])}
+                _cf = self.agent_connections.finding(_am, index, session_id)
+                if _cf:
+                    findings.append(_cf)
+
+        # Data boundary on handoffs: what an agent passes to a subagent.
+        if self.data_boundary.enabled and (event_type == "subagent_spawn"
+                                           or (event.get("metadata") or {}).get("handoff_to")):
+            try:
+                findings.extend(self.data_boundary.evaluate_handoff(
+                    event, index, session_id=session_id,
+                    default_mode=self.default_mode, device_mode=self.device_mode))
+            except Exception as _ho_exc:
+                sys.stderr.write(f"[prismor] data_boundary handoff error: {_ho_exc}\n")
+
         # ── Provenance bookkeeping: doc/skill loads and installs ───────────
         # Cheap and detection-independent: record where instructions came from
         # so later findings can say "following SKILL.md from <host>".
@@ -2488,6 +3214,34 @@ class PolicyEngine:
                         })
                 except Exception:
                     pass
+
+        # ── NER / Presidio PII (opt-in) ────────────────────────────────────
+        # Off unless settings.pii.enabled. The import of presidio happens
+        # inside the detector, and only on this branch, so a default hook
+        # never loads the model. Script lines and the SessionStart skills
+        # audit are skipped: one spaCy pass per line would dominate the call.
+        if (
+            self.pii.enabled
+            and not event.get("_script_line")
+            and not event.get("_bulk_scan")
+        ):
+            try:
+                with _perf.stage("pii"):
+                    findings.extend(_screen_pii(
+                        event,
+                        field_values,
+                        index,
+                        session_id,
+                        settings=self.pii,
+                        allowlist_match=lambda text: self.allowlist_match(
+                            "pii-ner", text,
+                        ),
+                        include_suppressed=include_suppressed,
+                        subject=subject_dict,
+                    ))
+            except Exception as exc:
+                _perf.RULES.setdefault("pii-ner", [0, 0, 0.0, 0])[3] += 1
+                sys.stderr.write(f"[prismor] pii evaluation error: {exc}\n")
 
         # ── Hybrid semantic prompt-injection layer (opt-in) ────────────────
         # Catches paraphrased, social-engineered, and in-content injection
@@ -2634,10 +3388,15 @@ class PolicyEngine:
             and self.workspace is not None
             and not event.get("_script_line")
         ):
+            # What the contract layer below needs from the provenance scan, so
+            # the costly shell scan runs once for both.
+            _ct_io: Optional[tuple] = None
+            _ct_cfg: Dict[str, Any] = self.tool_tags
             try:
                 from prismor.runtime.trifecta import (
                     call_text, classify_tool_tags, egress_tags, GramStore,
-                    TagLedger, tool_tags_for_agent, CRITICAL, INFLUENCE, UNTRUSTED,
+                    TagLedger, tool_tags_for_agent, trusted_grams,
+                    CRITICAL, INFLUENCE, UNTRUSTED,
                 )
                 from prismor.runtime.tag_rules import compile_tool_tag_rules
                 _tt_tool = str((event.get("metadata") or {}).get("tool_name") or "")
@@ -2652,6 +3411,7 @@ class PolicyEngine:
                     self.tool_tags,
                     str(event.get("agent_name") or event.get("agent") or ""),
                 )
+                _ct_cfg = _tt_cfg
                 # Destination-derived tags let a tag rule reference where a call
                 # is going, not just which tool it is — the egress verdict for
                 # THIS event is already in `findings` by the time we get here.
@@ -2672,7 +3432,12 @@ class PolicyEngine:
                 _prov_fetched: Set[str] = set()
                 _prov_copied = False
                 _prov_chain = ""
-                if _tt_cfg.get("provenance_enabled", True):
+                # A replay (`ingest --discover`) re-runs old transcripts out of
+                # order; letting it stamp the live store made today's sessions
+                # "inherit" from a replay of last month's.
+                if _tt_cfg.get("provenance_enabled", True) and not str(
+                    session_id or ""
+                ).startswith("replay:"):
                     from prismor.runtime import provenance as _prov
                     _prov_cwd = Path(
                         str((event.get("metadata") or {}).get("cwd") or self.workspace)
@@ -2705,6 +3470,7 @@ class PolicyEngine:
                             )
                             for _rp in _prov_reads
                         )
+                    _ct_io = (_prov, _prov_known, list(_prov_reads), _prov_cwd)
                     for _rp in _prov_reads if _prov_known else ():
                         if not _rp:
                             continue
@@ -2728,7 +3494,12 @@ class PolicyEngine:
                         # The causal edge is worth reporting even when no rule
                         # fires: one agent acting on another's output is not
                         # visible anywhere else in the session log.
-                        if _is_pre_action_event(event):
+                        # The same agent re-reading its own earlier notes is
+                        # ordinary work; report it only when the file carries
+                        # something untrusted. Tags still inherit either way.
+                        if _is_pre_action_event(event) and (
+                            _wr.get("agent") != _tt_agent or UNTRUSTED in _inherit
+                        ):
                             _pf = f"provenance-read-{index}"
                             findings.append({
                                 "id": f"{session_id}:{_pf}" if session_id else _pf,
@@ -2738,6 +3509,12 @@ class PolicyEngine:
                                     f"Cross-agent read: {_tt_agent} is acting on "
                                     f"'{Path(_rp).name}', written by "
                                     f"{_wr.get('agent', '?')}"
+                                    # Same agent, earlier session: taint carries
+                                    # across sessions, but "cross-agent" misleads.
+                                    if _wr.get("agent") != _tt_agent else
+                                    f"Cross-session read: {_tt_agent} is acting on "
+                                    f"'{Path(_rp).name}', written by its session "
+                                    f"{str(_wr.get('session', '?'))[:8]}"
                                 ),
                                 "evidence": (
                                     f"chain: {_prov_chain}; "
@@ -2751,7 +3528,11 @@ class PolicyEngine:
 
                 _tags = classify_tool_tags(
                     event, event_type,
-                    {f.get("category") for f in findings},
+                    # A finding judged inert (the match is text: a commit
+                    # message, a Python string, an echoed banner) says the call
+                    # does NOT perform that action, so it cannot make the call
+                    # critical either.
+                    {f.get("category") for f in findings if not f.get("contextInert")},
                     _tt_cfg,
                     extra_tags=_extra,
                 )
@@ -2819,6 +3600,15 @@ class PolicyEngine:
                 _tt_mode = self.device_mode or str(_tt_cfg.get("mode", "observe")).lower()
                 if _tags:
                     _rules = compile_tool_tag_rules(_tt_cfg)
+                    # Exempt each rule separately before choosing the strongest
+                    # match: another matching rule must still be able to block.
+                    _call_input = _tag_rule_call_text(event)
+                    _rules = [r for r in _rules if (
+                        r.source in ("incompatible", "default")
+                        or not self.allowlist_match(
+                            f"tag-rule:{r.rule_id}", _call_input, whole_call=True,
+                        )
+                    )]
                     _done = _ledger.completes_rules(_tags, _rules, index)
                     if _done is not None and _done.get("action") == "warn":
                         # A warn rule observes but never blocks — even under a
@@ -2890,7 +3680,11 @@ class PolicyEngine:
                     # already covered and let every later same-tagged call
                     # through (the one-denied-call-poisons-the-ledger bypass).
                     if not (_done is not None and _tt_mode == "enforce"):
-                        _ledger.record(_tags, index, _tt_tool)
+                        # A warn rule is noted with the call it fired on, so it
+                        # reports again only once its earlier steps recur.
+                        _warned = _done is not None and _done.get("action") == "warn"
+                        _ledger.record(_tags, index, _tt_tool,
+                                       fired=[_done["rule_id"]] if _warned else ())
 
                 # Stamp what this session is carrying onto everything it writes,
                 # so the next agent to read it inherits the same state. The
@@ -2906,6 +3700,19 @@ class PolicyEngine:
                     and not (_done is not None and _tt_mode == "enforce")
                 ):
                     _carry = _prov.propagatable(set(_ledger.seen) | set(_tags))
+                    # The session label travels with the file too (#532), at
+                    # session granularity: audience is about what the session
+                    # has seen, and a paraphrase leaks as well as a quote does.
+                    _ct_carry = None
+                    try:
+                        from prismor.runtime import contracts as _ctw
+                        if _ctw.enabled(_tt_cfg):
+                            _ct_carry = _ctw.SessionLabel(
+                                self.workspace, session_id,
+                                _ctw.Principals(_tt_cfg.get("principals")),
+                            ).at(index).carried()
+                    except Exception:
+                        _ct_carry = None
                     # A session that read one page does not thereby poison
                     # every file it touches for the rest of its life -- it was
                     # marking config files it edited for its own reasons, and
@@ -2917,7 +3724,19 @@ class PolicyEngine:
                         _written = "\n".join(
                             str(event.get(k) or "") for k in ("content", "command")
                         )
-                        if not _grams.hits(_written, before=index):
+                        _wh = _grams.hits(_written, before=index)
+                        if _wh:
+                            # Phrases the session also read in its own clean
+                            # files, or already in the file being written, are
+                            # the repo's code coming back, not the page's.
+                            _wh = _grams.hits(
+                                _written, before=index,
+                                exclude=trusted_grams(
+                                    self.workspace, session_id, _prov_writes,
+                                    _prov_known, _prov_cwd,
+                                ),
+                            )
+                        if not _wh:
                             _carry = [t for t in _carry if t != UNTRUSTED]
                     # A download is untrusted on its own account, whatever the
                     # session had read before it. Without this a shell-only
@@ -2939,12 +3758,69 @@ class PolicyEngine:
                             (_prov_known.get(_prov.resolve(_wp, _prov_cwd)) or {})
                             .get("writer") or {}
                         ).get("session") == session_id
-                        if _wt or _mine:
+                        if _wt or _mine or _ct_carry:
                             _prov.record_write(
                                 _wp, _wt, agent=_tt_agent,
                                 session=session_id, tool=_tt_tool or event_type,
-                                index=index, cwd=_prov_cwd,
+                                index=index, cwd=_prov_cwd, label=_ct_carry,
                             )
+            except Exception:
+                pass
+
+            # ── Per-tool contracts (#532) ─────────────────────────────────
+            # A contract says what a tool's result does to the session label
+            # (`delta`, `effects`: applied once the call has succeeded) and
+            # what the label must satisfy for a call to run (`requires`:
+            # checked here, before it does). Detection lives in contracts.py;
+            # this is enforcement. Its own try block: a tag-layer failure
+            # above must not take the contract check down with it.
+            try:
+                from prismor.runtime import contracts as _ct
+                if _ct.enabled(_ct_cfg):
+                    _ct_tool = str((event.get("metadata") or {}).get("tool_name") or "")
+                    _ct_pre = _is_pre_action_event(event)
+                    _ct_hit, _ = _ct.resolve(event, _ct_cfg, self.workspace)
+                    _ct_inherit = []
+                    if _ct_io is not None and _ct_io[1]:
+                        for _rp in _ct_io[2]:
+                            _e = _ct_io[1].get(_ct_io[0].resolve(_rp, _ct_io[3])) if _rp else None
+                            _labs = _ct_io[0].read_labels(_e, session_id) if isinstance(_e, dict) else []
+                            if _labs:
+                                _ct_inherit.append((_rp, _labs, _e.get("writer") or {}))
+                    if _ct_hit or _ct_inherit:
+                        _ct_names = _ct.Principals(_ct_cfg.get("principals"))
+                        _ct_store = _ct.SessionLabel(self.workspace, session_id, _ct_names)
+                        _ct_args = _ct.call_args(event)
+                        _ct_mode = self.device_mode or str(_ct_cfg.get("mode", "observe")).lower()
+                        _ct_denied = False
+                        if _ct_pre and any(c.has_requires for c in _ct_hit):
+                            # One approved call goes through; the label stays
+                            # where it is, and every other contract still applies.
+                            _ct_call = _tag_rule_call_text(event)
+                            _ct_bad = _ct.check_requires(
+                                [c for c in _ct_hit if not self.allowlist_match(
+                                    f"{_ct.RULE_PREFIX}{c.contract_id}", _ct_call,
+                                    whole_call=True)],
+                                _ct_store.at(index), _ct_names, _ct_tool, _ct_args, event,
+                            )
+                            if _ct_bad:
+                                findings.append(_ct.finding_for(
+                                    _ct_bad, tool=_ct_tool, index=index,
+                                    session_id=session_id, mode=_ct_mode))
+                                _ct_denied = _ct_mode == "enforce"
+                        # The result is what changes the label, so it is applied
+                        # on the post event -- or on admission, for a surface
+                        # that never sees the result as an event of its own.
+                        if not _ct.is_failure(event) and (
+                            not _ct_pre or (_ct.result_unseen(event) and not _ct_denied)
+                        ):
+                            _ct.apply_result(
+                                _ct_store, _ct_hit, index=index, tool=_ct_tool,
+                                args=_ct_args, event=event)
+                            for _rp, _labs, _wr in _ct_inherit:
+                                _ct.inherit(
+                                    _ct_store, _labs, index=index, path=_rp, writer=_wr,
+                                    tool=_ct_tool or event_type, event=event)
             except Exception:
                 pass
 
@@ -3008,7 +3884,21 @@ class PolicyEngine:
         # surface that has a deadline of its own (`prismor proxy --judge-budget-ms`
         # in front of a voice agent that retries a turn after a few seconds).
         budget = float(cfg.get("budget_ms") or os.environ.get("PRISMOR_SEMANTIC_BUDGET_MS") or 0) / 1000
-        result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
+        if _is_pre_action_event(event):
+            result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
+        else:
+            # The tool already ran: this verdict reports and taints, it cannot
+            # block. A judge round trip on every tool result was ~0.6s p50 and
+            # 10s p99 of the agent's wall time (#716), so it gets a budget, and
+            # while enforcement is paused (nothing to taint for) the heuristic.
+            from prismor.runtime import pause as _pause
+            if _pause.is_paused():
+                from prismor.runtime.semantic_guard import _heuristic_analyze
+                result = _heuristic_analyze(text)
+            else:
+                post = float(cfg.get("post_tool_budget_ms")
+                             or os.environ.get("PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS") or 1500) / 1000
+                result = _analyze_within(guard, text, min(budget, post) if budget > 0 else post)
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)
         if str(getattr(risk, "reason", "")).startswith("[LLM fallback]"):
@@ -3026,6 +3916,12 @@ class PolicyEngine:
         # its own it may block only when several strong signals agree.
         judged = str(getattr(risk, "mode", "")) in ("hybrid_local_llm", "hybrid_api", "local_llm", "api")
         if not judged:
+            # First-party text that only keyword-scores (#915). A model verdict
+            # still stands for both.
+            if _reads_agent_memory(event):
+                return None
+            if _is_gh_view_output(event) and not _EXFIL_TARGET.search(text):
+                block_t = float("inf")  # HIGH at most, never CRITICAL
             block_t = max(block_t, float(cfg.get("heuristic_block_threshold", 0.85)))
         action = "block" if score >= block_t else "warn"
         # A parent's security-analysis brief can quote attack fixtures, as can
@@ -3052,7 +3948,7 @@ class PolicyEngine:
             "id": prefixed_id,
             "severity": severity,
             "category": category,
-            "title": f"Semantic prompt-injection detected ({sem_cat}, score {score:.2f})",
+            "title": _semantic_title(sem_cat, score, is_subagent_prompt(event)),
             "evidence": _truncate(evidence),
             "eventIndex": index,
             "ruleId": rule_id,
@@ -3070,18 +3966,23 @@ class PolicyEngine:
         scorer: Any,
         index: int,
         session_id: str,
+        refuse: str = "",
     ) -> Optional[Dict[str, Any]]:
         """Score one package spec and build a finding dict, or None on an
-        "allow" verdict or lookup failure. Shared by the command-line and
-        manifest-write supply-chain checks below.
+        "allow" verdict. Shared by the command-line and manifest-write
+        supply-chain checks below. A check that fails blocks (unchecked is not
+        clean); ``refuse`` skips the lookup and blocks with that reason.
         """
         from supplychain.ecosystems.metadata import fetch_metadata
 
         try:
+            if refuse:
+                raise RuntimeError(refuse)
             meta = fetch_metadata(spec, ecosystem)
             verdict = scorer.score(spec, meta, install_event)
-        except Exception:
-            return None
+        except Exception as exc:
+            verdict = self._unchecked_verdict(spec, ecosystem, refuse or f"check failed ({exc})")
+            meta = verdict.meta
         if verdict.verdict == "allow":
             return None
 
@@ -3108,7 +4009,7 @@ class PolicyEngine:
             mimic = check_typosquat(spec.name, meta.ecosystem)
 
         _sv = None
-        if mimic is None:
+        if mimic is None and not refuse:
             try:
                 from supplychain.scoring.safe_version import recommend_safe_version
                 _sv = recommend_safe_version(spec.name, ecosystem, exclude_version=spec.version)
@@ -3154,6 +4055,16 @@ class PolicyEngine:
             # Ordinary vulnerable versions keep following the policy's mode.
             "mode": "enforce" if has_ioc else (self.device_mode or self.default_mode),
         }
+
+    @staticmethod
+    def _unchecked_verdict(spec: Any, ecosystem: str, why: str) -> Any:
+        """A block verdict for a package the install check could not run on."""
+        from supplychain.ecosystems.metadata import PackageMetadata
+        from supplychain.scoring.engine import PackageVerdict, Signal
+        meta = PackageMetadata(name=spec.name, ecosystem=ecosystem, version=None, age_days=None,
+                               maintainer_count=None, has_install_script=False, source=spec.source)
+        return PackageVerdict(spec=spec, meta=meta, score=0, verdict="block",
+                              signals=[Signal("unverified_check", 0, f"not checked: {why}")])
 
     def _check_execution_targets(
         self,
@@ -3207,6 +4118,7 @@ class PolicyEngine:
                     "ruleId": rule.id,
                     "action": "warn" if advisory else rule.action,
                     "transform": rule.transform,
+                    **({"guidance": rule.guidance} if rule.guidance else {}),
                     "subject": subject_dict,
                     "source": "execution_target",
                     # Where the dangerous content actually lives, so a reviewer
@@ -3244,33 +4156,43 @@ class PolicyEngine:
         findings: List[Dict[str, Any]] = []
         try:
             from supplychain.ecosystems.detector import detect_install
-            from supplychain.scoring.engine import RiskScorer, load_allowlist
         except Exception:
             return findings
 
-        allowlist = load_allowlist(self.workspace) if self.workspace else set()
-        scorer = RiskScorer(allowlist=allowlist)
-
+        scorer = None  # built on the first install: the scorer pulls in urllib, ~13ms per shell call
         checked = 0
         for argv in _iter_install_argvs(command):
-            if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                break
             try:
                 install_event = detect_install(argv)
             except Exception:
                 continue
             if install_event is None or not install_event.packages:
                 continue
+            if scorer is None:
+                try:
+                    from supplychain.scoring.engine import RiskScorer, load_allowlist
+                except Exception:
+                    return findings
+                scorer = RiskScorer(allowlist=load_allowlist(self.workspace) if self.workspace else set())
+            findings.extend(self._score_specs(install_event.packages, install_event.ecosystem,
+                                              install_event, scorer, index, session_id, checked))
+            checked += len(install_event.packages)
+        return findings
 
-            for spec in install_event.packages:
-                if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                    break
-                checked += 1
-                finding = self._score_package(
-                    spec, install_event.ecosystem, install_event, scorer, index, session_id
-                )
-                if finding is not None:
-                    findings.append(finding)
+    def _score_specs(self, specs: List[Any], ecosystem: str, install_event: Any, scorer: Any,
+                     index: int, session_id: str, checked: int = 0) -> List[Dict[str, Any]]:
+        """Score up to the per-command cap, then refuse each remaining package:
+        an unchecked package is not a clean one."""
+        cap = _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND
+        findings: List[Dict[str, Any]] = []
+        for spec in specs:
+            checked += 1
+            refuse = (f"more than {cap} packages in one command, install them in smaller batches"
+                      if checked > cap else "")
+            finding = self._score_package(spec, ecosystem, install_event, scorer, index,
+                                          session_id, refuse=refuse)
+            if finding is not None:
+                findings.append(finding)
         return findings
 
     def _extract_manifest_pins(self, content: str, ecosystem: str) -> List[Tuple[str, str]]:
@@ -3324,24 +4246,14 @@ class PolicyEngine:
         except Exception:
             return findings
 
-        allowlist = load_allowlist(self.workspace) if self.workspace else set()
-        scorer = RiskScorer(allowlist=allowlist)
+        scorer = RiskScorer(allowlist=load_allowlist(self.workspace) if self.workspace else set())
         install_event = InstallEvent(ecosystem=ecosystem, argv=[], packages=[])
-
-        checked = 0
-        seen: set = set()
+        first: Dict[str, str] = {}  # a name pinned twice: the first pin counts
         for name, version in pins:
-            if checked >= _SUPPLY_CHAIN_MAX_PACKAGES_PER_COMMAND:
-                break
-            if name in seen:
-                continue
-            seen.add(name)
-            checked += 1
-            spec = PackageSpec(raw=f"{name}@{version}", name=name, source="registry", version=version)
-            finding = self._score_package(spec, ecosystem, install_event, scorer, index, session_id)
-            if finding is not None:
-                findings.append(finding)
-        return findings
+            first.setdefault(name, version)
+        specs = [PackageSpec(raw=f"{name}@{version}", name=name, source="registry", version=version)
+                 for name, version in first.items()]
+        return self._score_specs(specs, ecosystem, install_event, scorer, index, session_id)
 
     def _check_transitive_postinstall(self, index: int, session_id: str) -> List[Dict[str, Any]]:
         """Scan the FULL resolved npm dependency tree (including
@@ -3635,6 +4547,7 @@ class PolicyEngine:
     def allowlist_match(
         self, rule_id: str, evidence: str,
         rule: Optional["CompiledRule"] = None, shell: bool = False,
+        *, whole_call: bool = False,
     ) -> Optional["AllowlistEntry"]:
         """The allowlist entry suppressing this finding, or None.
 
@@ -3653,21 +4566,44 @@ class PolicyEngine:
         for entry in self.allowlists:
             if entry.type != "allow" or not entry.applies_to(rule_id):
                 continue
+            # A local exception can't excuse a rule the org enforces. That takes
+            # an org exemption, which the console grants and records.
+            if entry.source in _LOCAL_LAYERS and rule_id in self._org_rule_ids:
+                continue
+            # A `rule_ids: ["*"]` or match-anything entry blanks every floor and
+            # self-protection finding. Those rules stay pinned; a named allow
+            # for one rule still applies.
+            if _floor_allowlist_rejected(rule_id, entry, rule):
+                continue
+            if whole_call:
+                # Tag exceptions cover the entire input, case-sensitively.
+                # Neither substring nor individual shell-segment matches grant.
+                if evidence and entry.match == "exact" and re.fullmatch(
+                    _alternation(entry.raw_patterns), evidence,
+                ):
+                    return entry
+                continue
             if rule is None or not shell:
                 if entry.patterns.search(evidence):
                     return entry
                 continue
-            if entry.match == "exact" and entry.covers(evidence):
+            # Coverage is judged on the statements as written. The
+            # normalized command also carries a basename spelling of each
+            # (`/tmp/v/bin/pip install` -> `pip install`, for the rules); an
+            # allow naming the full path could never cover that copy.
+            raw = _strip_basename_copy(evidence)
+            if entry.match == "exact" and entry.covers(raw):
                 return entry
             # A shell command is allowed only if every statement the rule
             # still hits is itself covered: `<allowed>; <anything else>` used
             # to ride through on the allowed half's substring match.
             from prismor.runtime.data_boundary import _split_segments
-            segments = [s for s in _split_segments(evidence) if s.strip()]
+            segments = [s.strip() for s in _split_segments(raw) if s.strip()]
             if not any(entry.covers(s) for s in segments):
                 continue
             residual = "\n".join(s for s in segments if not entry.covers(s))
-            if residual and _rule_hits(rule, residual):
+            # The rule judges what is left in both spellings, as it did the call.
+            if residual and _rule_hits(rule, residual + "\n" + _basename_command_words(residual)):
                 continue
             return entry
         return None
@@ -3776,7 +4712,8 @@ def _has_invisible_chars(text: str) -> bool:
     no ASCII co-presence required. Used for skill content where zero-width
     characters have no legitimate purpose and indicate hidden payload injection.
     """
-    return any(ord(ch) in _INVISIBLE_CODEPOINTS for ch in text)
+    return any(ord(ch) in _INVISIBLE_CODEPOINTS or 0xE0000 <= ord(ch) <= 0xE007F
+               for ch in text)
 
 
 def _has_suspicious_unicode(text: str) -> bool:
@@ -3863,6 +4800,39 @@ _CONFUSABLE_FOLD = {
     0x1160: None,  # HANGUL JUNGSEONG FILLER
     0x180E: None,  # MONGOLIAN VOWEL SEPARATOR
 }
+# Unicode tag characters (U+E0000-E007F). Invisible when rendered, but models
+# read U+E0041 as "A": "ASCII smuggling" hides a whole instruction in them.
+# Fold each to the ASCII it shadows so the injection rules see the text.
+_CONFUSABLE_FOLD.update({cp: chr(cp - 0xE0000) for cp in range(0xE0020, 0xE007F)})
+_CONFUSABLE_FOLD.update({0xE0000: None, 0xE0001: None, 0xE007F: None})
+# Variation selectors render as nothing on their own; a run of them can
+# encode arbitrary bytes ("emoji smuggling"). Match-only text drops them.
+_CONFUSABLE_FOLD.update({cp: None for cp in range(0xFE00, 0xFE10)})
+_CONFUSABLE_FOLD.update({cp: None for cp in range(0xE0100, 0xE01F0)})
+
+# Three or more tag characters in a row is hidden text, not a flag emoji
+# modifier: subdivision flags put 3-6 tags right after U+1F3F4, and the
+# lookbehind (U+1F3F4 or another tag) skips every start inside one. A payload
+# behind U+1F3F4 escapes this finding but is still folded for the rules. Four or more
+# variation selectors in a row never occur in real text.
+_HIDDEN_TEXT_RE = re.compile(
+    "(?<![\U0001F3F4\U000E0020-\U000E007E])[\U000E0020-\U000E007E]{3,}"
+    "|[\uFE00-\uFE0F\U000E0100-\U000E01EF]{4,}"
+)
+
+
+def _hidden_unicode_text(text: str) -> Optional[str]:
+    """Decoded preview of tag-character text hidden in ``text``, "" for a
+    variation-selector run, or None when there is none."""
+    if not text or max(text) < "\uFE00":
+        return None
+    m = _HIDDEN_TEXT_RE.search(text)
+    if not m:
+        return None
+    run = m.group(0)
+    if run[0] >= "\U000E0100" or run[0] <= "\uFE0F":
+        return ""
+    return "".join(chr(ord(c) - 0xE0000) for c in run)
 
 
 def _fold_confusables(text: str) -> str:
@@ -3887,6 +4857,130 @@ def _fold_confusables(text: str) -> str:
 
 _ANSI_C_QUOTE_RE = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
 _SHELL_OPERATOR_CHARS = frozenset("();<>|&")
+
+
+# ── Vault-guard context (issue #592) ────────────────────────────────────────
+# The shell form of prismor-vault-access looks for the vault's directory name
+# anywhere in a command. Test fixtures and docs routinely spell a FAKE home,
+# e.g. `PRISMOR_SECRETS_DIR=/home/u/.prismor/secrets pytest`, which is not this
+# user's vault. Such a mention is exempt only when every one of these holds,
+# otherwise it still fires (fail closed):
+#   * the whole path word is a literal absolute path: no `~`, `$`, globs,
+#     braces, backslashes or backticks the shell could rewrite;
+#   * after lexical normalisation (so `/home/u/../ubuntu` collapses) it is
+#     `/home/<name>/.prismor/secrets[/...]` or `/Users/<name>/...`;
+#   * that home is not the current user's ($HOME or the passwd entry), even
+#     through a symlink, and its `.prismor` is not $PRISMOR_HOME;
+#   * the path is not the live vault, and nothing exists there on disk -- a
+#     real directory under another home is someone's actual vault.
+_VAULT_DIRNAME = ".prismor/secrets"
+# Characters that end a path word when scanning outwards from a mention.
+_VAULT_WORD_DELIMS = frozenset(" \t\r\n\"'`;|&<>()=")
+# Characters that let the shell turn the word into a different path.
+_VAULT_UNSAFE_CHARS = frozenset("~$*?[]{}\\!`")
+_FOREIGN_HOME_RE = re.compile(r"^/(?:home|Users)/[^/]+$")
+
+
+def _current_homes() -> Set[str]:
+    homes: Set[str] = set()
+    try:
+        homes.add(os.path.expanduser("~"))
+    except Exception:
+        pass
+    try:
+        import pwd
+        homes.add(pwd.getpwuid(os.getuid()).pw_dir)
+    except Exception:
+        pass
+    out: Set[str] = set()
+    for h in homes:
+        if h and h.startswith("/"):
+            out.add(os.path.normpath(h))
+            try:
+                out.add(os.path.realpath(h))
+            except Exception:
+                pass
+    return out
+
+
+def _vault_word_bounds(cmd: str, start: int, end: int) -> Tuple[int, int]:
+    """Expand ``cmd[start:end]`` outwards to the enclosing path word."""
+    lo = start
+    while lo > 0 and cmd[lo - 1] not in _VAULT_WORD_DELIMS:
+        lo -= 1
+    hi = end
+    while hi < len(cmd) and cmd[hi] not in _VAULT_WORD_DELIMS:
+        hi += 1
+    return lo, hi
+
+
+def _is_foreign_home_vault_mention(cmd: str, start: int, vault: str) -> bool:
+    """True when the ``.prismor/secrets`` at ``cmd[start:]`` is a literal path
+    under ANOTHER user's home that does not exist here. Anything uncertain
+    returns False so the guard fires."""
+    import posixpath
+
+    end = start + len(_VAULT_DIRNAME)
+    lo, hi = _vault_word_bounds(cmd, start, end)
+    word = cmd[lo:hi]
+    if not word.startswith("/") or any(c in _VAULT_UNSAFE_CHARS for c in word):
+        return False
+    # The home is whatever precedes the mention, normalised so `..`, `.` and
+    # doubled slashes cannot disguise the real home.
+    home = posixpath.normpath(cmd[lo:start] or "/")
+    if not _FOREIGN_HOME_RE.match(home):
+        return False
+    foreign_vault = home + "/" + _VAULT_DIRNAME
+    full = posixpath.normpath(word.rstrip("/") or "/")
+    # The rest of the word must stay inside that foreign vault.
+    if full != foreign_vault and not full.startswith(foreign_vault + "/"):
+        return False
+    try:
+        real_homes = _current_homes()
+        if home in real_homes or os.path.realpath(home) in real_homes:
+            return False
+        prismor_home = os.environ.get("PRISMOR_HOME")
+        if prismor_home and posixpath.normpath(
+                os.path.expanduser(prismor_home)) == home + "/.prismor":
+            return False
+        if vault:
+            for candidate in (foreign_vault, os.path.realpath(foreign_vault)):
+                if candidate == vault or candidate.startswith(vault + "/"):
+                    return False
+            real_vault = os.path.realpath(vault)
+            real_cand = os.path.realpath(foreign_vault)
+            if real_cand == real_vault or real_cand.startswith(real_vault + "/"):
+                return False
+        # Fixtures name homes that do not exist. A vault that really exists
+        # under another home is somebody's secrets: keep guarding it.
+        if os.path.lexists(foreign_vault) or os.path.lexists(home + "/.prismor"):
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def _shell_vault_mentions(cmd: str, vault: str) -> List[Tuple[int, int]]:
+    """``(start, end)`` of every mention in ``cmd`` the vault guard acts on.
+
+    The default directory name matches every expansion form of the default
+    location (``~/``, ``$HOME/``, absolute, relative); ``vault`` matches a
+    custom ``PRISMOR_SECRETS_DIR``. A default-name mention that sits under
+    another user's home (a test fixture) is dropped, see
+    _is_foreign_home_vault_mention.
+    """
+    hits: List[Tuple[int, int]] = []
+    i = cmd.find(_VAULT_DIRNAME)
+    while i != -1:
+        if not _is_foreign_home_vault_mention(cmd, i, vault):
+            hits.append((i, i + len(_VAULT_DIRNAME)))
+        i = cmd.find(_VAULT_DIRNAME, i + 1)
+    if vault:
+        i = cmd.find(vault)
+        while i != -1:
+            hits.append((i, i + len(vault)))
+            i = cmd.find(vault, i + 1)
+    return hits
 
 
 def _dequote_shell(cmd: str) -> Optional[str]:
@@ -3935,6 +5029,25 @@ def _dequote_shell(cmd: str) -> Optional[str]:
 
 
 _HEREDOC_START_RE = re.compile(r"<<-?[ \t]*['\"]?(\w+)['\"]?")
+
+
+def _floor_allowlist_rejected(rule_id: str, entry: "AllowlistEntry", rule: Optional["CompiledRule"]) -> bool:
+    """True when this allowlist entry must not suppress a floor finding."""
+    # Self-protection is lifted only by a password-verified unlock window,
+    # never by an allowlist: a cloned repo's .prismor/policy.yaml could
+    # otherwise name agent-config-tampering and unhook itself (GHSA-v6vw-pfgj-4mg8).
+    if rule_id in _SELF_PROTECTION_RULE_IDS:
+        return True
+    protected = (rule_id in _NON_OVERRIDABLE_RULE_IDS
+                 or rule_id.startswith(("tag-rule:", "tool-contract:")))
+    if rule is not None and getattr(rule, "category", None) in _CORE_BLOCK_CATEGORIES:
+        protected = True
+    if not protected:
+        return False
+    # Only the blanket forms: every rule, or a pattern that matches anything
+    # (it matches the empty string). A named search allow such as
+    # `patterns: [scratch]` on destructive-command still applies.
+    return "*" in entry.rule_ids or entry.patterns.search("") is not None
 
 
 def _expand_braces(cmd: str) -> str:
@@ -3992,6 +5105,74 @@ def _equate_shell(cmd: str) -> str:
     return cmd
 
 
+_SHELL_ASSIGN = re.compile(
+    r"(?:^|[\s;&|(])(?:export\s+|local\s+|declare\s+(?:-\S+\s+)*)?([A-Za-z_][A-Za-z0-9_]*)="
+    r"(\"[^\"\n]*\"|'[^'\n]*'|[^\s;&|<>()`]*)"
+)
+_SHELL_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _expand_shell_vars(cmd: str) -> str:
+    """``CMD=rm; DIR=/; $CMD -rf $DIR`` with the variables substituted, or "".
+
+    One pass over assignments made on the same command line; the environment
+    the shell inherits is unknown here and left as written.
+    """
+    values = {m.group(1): m.group(2).strip("\"'") for m in _SHELL_ASSIGN.finditer(cmd)}
+    if not values:
+        return ""
+    out = _SHELL_REF.sub(lambda m: values.get(m.group(1) or m.group(2), m.group(0)), cmd)
+    return out if out != cmd else ""
+
+
+# A decoder anywhere on the line makes its literal operands worth decoding.
+_B64_DECODER = re.compile(
+    r"\bbase64\s+(?:-\S*\s+)*(?:-d|-D|--decode)\b|\bb64decode\b|\batob\s*\(|"
+    r"\bopenssl\s+(?:base64|enc)\b[^\n]*\s-d\b|\bfrombase64string\b",
+    re.I,
+)
+_HEX_DECODER = re.compile(r"\bxxd\s+(?:-\S+\s+)*-r\b|\bfromhex\b|\bunhexlify\b", re.I)
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}")
+_HEX_TOKEN = re.compile(r"\b(?:[0-9a-fA-F]{2}){6,}\b")
+
+
+def _decode_inline_payloads(cmd: str) -> str:
+    """Decoded text of base64/hex literals on a line that decodes them, or "".
+
+    ``echo cm0gLXJmIC8= | base64 -d | sh`` never shows ``rm -rf /`` to a
+    pattern. Bounded: at most 8 operands of 4 KB, one level deep, and only
+    results that read as text are kept.
+    """
+    import base64
+    import binascii
+
+    def _text(raw: bytes) -> str:
+        try:
+            s = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+        printable = sum(ch.isprintable() or ch in "\n\t" for ch in s)
+        return s if s and printable >= 0.9 * len(s) else ""
+
+    found: List[str] = []
+    if _B64_DECODER.search(cmd):
+        for tok in _B64_TOKEN.findall(cmd)[:8]:
+            tok = tok[:4096]
+            try:
+                raw = base64.b64decode(tok + "=" * (-len(tok) % 4), altchars=b"-_" if "-" in tok or "_" in tok else None)
+            except (binascii.Error, ValueError):
+                continue
+            text = _text(raw)
+            if text:
+                found.append(text)
+    if _HEX_DECODER.search(cmd):
+        for tok in _HEX_TOKEN.findall(cmd)[:8]:
+            text = _text(bytes.fromhex(tok[:8192]))
+            if text:
+                found.append(text)
+    return "\n".join(found)
+
+
 def _normalize_command(cmd: str) -> str:
     """Normalize a shell command for consistent pattern matching.
 
@@ -4020,6 +5201,11 @@ def _normalize_command(cmd: str) -> str:
         r'\1',
         cmd,
     )
+    # What a decode or a variable would put on the command line at run time.
+    # Appended, like the rewrites below, so it can add a match but never hide one.
+    derived = [d for d in (_expand_shell_vars(cmd), _decode_inline_payloads(cmd)) if d]
+    if derived:
+        cmd = "\n".join([cmd, *derived])
     # Rewritten shell forms are matched next to the original, so a rewrite
     # can add a match but never hide one.
     equated = _equate_shell(cmd)
@@ -4076,6 +5262,17 @@ _LEAD_WRAPPER = (
 _ABS_COMMAND = re.compile(
     r"(^|[\n;|(`]|(?<![<>])&)(\s*(?:" + _LEAD_WRAPPER + r")*)['\"]?(/[^\s;&|<>'\"`]+)['\"]?"
 )
+
+
+def _strip_basename_copy(cmd: str) -> str:
+    """``cmd`` without the basename spelling _normalize_command appends."""
+    lines = cmd.split("\n")
+    half = len(lines) // 2
+    if len(lines) % 2 == 0 and half:
+        first = "\n".join(lines[:half])
+        if _basename_command_words(first) == "\n".join(lines[half:]) != first:
+            return first
+    return cmd
 
 
 def _basename_command_words(cmd: str) -> str:
@@ -4336,6 +5533,20 @@ def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     is made on time from the heuristic path and the degradation is recorded.
     """
     import threading
+    from prismor.runtime.semantic_guard import _heuristic_analyze
+    from prismor.runtime.semantic_guard_v2 import CLI_TIMEOUT
+    # A CLI judge spawns a process that answers in 5-20s. Under a shorter budget
+    # it was abandoned every time: in a hook the process exited first and left
+    # the child running orphaned with its verdict thrown away, and in a server
+    # the late verdict landed in the cache, so the same text warned once and
+    # blocked the next time. The heuristic decided anyway; skip the spawn.
+    # ponytail: also skips a cached CLI verdict; pass a no-spawn flag if that matters.
+    if getattr(guard, "mode", "") == "hybrid_local_llm" and budget_s < CLI_TIMEOUT:
+        _perf.degraded("semantic_judge:cli_over_budget")
+        risk = _heuristic_analyze(text)
+        risk.reason = (f"[LLM skipped] a CLI judge cannot answer within {int(budget_s * 1000)}ms "
+                       f"(needs budget_ms >= {int(CLI_TIMEOUT * 1000)}); " + risk.reason)
+        return risk
     box: List[Any] = []
     # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
     # process exits right after, and a CLI judge's own timeout reaps its child.
@@ -4351,7 +5562,6 @@ def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     t.join(budget_s)
     if box:
         return box[0]
-    from prismor.runtime.semantic_guard import _heuristic_analyze
     if t.is_alive():
         _perf.degraded("semantic_judge:budget")
         prefix = f"[LLM budget] judge over {int(budget_s * 1000)}ms budget; "
@@ -4376,6 +5586,10 @@ def _semantic_text(event: Dict[str, Any], field_values: Dict[str, str]) -> str:
     if str(event.get("type", "")) == "file_write" and not _instruction_file(field_values.get("path", "")):
         return ""
     text = field_values.get("combined_text", "").strip()
+    if text and max(text) >= "\U000E0000":
+        # Tag characters read as ASCII to the model but as nothing to the
+        # heuristics and judge: hand them the decoded text.
+        text = _fold_confusables(text).strip()
     return text if len(text) >= 12 else ""
 
 def _bool_field(event: Dict[str, Any], key: str) -> str:
@@ -4395,6 +5609,25 @@ def _bool_field(event: Dict[str, Any], key: str) -> str:
     if isinstance(value, str):
         return value.strip().lower()
     return "true" if value else "false"
+
+
+def _tag_rule_call_text(event: Dict[str, Any]) -> str:
+    """Complete command or named tool arguments; never tool output or evidence."""
+    if event.get("type") == "shell":
+        return str(event.get("command") or "")
+    meta = event.get("metadata") or {}
+    args = meta.get("kwargs")
+    raw = meta.get("raw") or {}
+    if args is None and isinstance(raw, dict):
+        args = next((raw[k] for k in (
+            "tool_input", "arguments", "input", "toolInput", "toolArgs", "tool_args",
+        ) if k in raw), None)
+    if not isinstance(args, dict) or not meta.get("tool_name"):
+        return ""
+    try:
+        return json.dumps({"tool": meta["tool_name"], "arguments": args}, sort_keys=True)
+    except (TypeError, ValueError, RecursionError):
+        return ""
 
 
 def _extract_mcp_args(event: Dict[str, Any]) -> str:
@@ -4729,6 +5962,20 @@ def validate_policy(path: Path) -> List[str]:
         errors.append("Missing required field: rules")
         return errors
 
+    if "mcp_tool_repeat_limits" in (raw.get("settings") or {}):
+        from prismor.runtime.ratelimit import validate_repeat_limits
+        errors.extend(validate_repeat_limits(raw["settings"]["mcp_tool_repeat_limits"]))
+
+    if "rate_limit" in (raw.get("settings") or {}):
+        from prismor.runtime.ratelimit import validate_settings
+        errors.extend(validate_settings(raw["settings"]["rate_limit"]))
+
+    from prismor.runtime import budgets as _budgets
+    for _key, _check in (("models", _budgets.validate_models),
+                         ("spend_budgets", _budgets.validate_budgets)):
+        if (raw.get("settings") or {}).get(_key) is not None:
+            errors.extend(_check(raw["settings"][_key]))
+
     named, cond_errors = compile_named_conditions((raw.get("settings") or {}).get("conditions"))
     errors.extend(cond_errors)
 
@@ -4804,8 +6051,12 @@ def validate_policy(path: Path) -> List[str]:
                 errors.append(f"{prefix}.condition: {e}")
 
         action = rule.get("action", "")
-        if action and action not in ("block", "warn", "log", "modify", "step_up", "defer"):
-            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, or defer)")
+        if action and action not in ("block", "warn", "log", "modify", "step_up", "defer", "instruct"):
+            errors.append(f"{prefix}: invalid action '{action}' (must be block, warn, log, modify, step_up, defer, or instruct)")
+        if "guidance" in rule and not (isinstance(rule["guidance"], str) and rule["guidance"].strip()):
+            errors.append(f"{prefix}.guidance: must be a non-empty string")
+        elif action == "instruct" and "guidance" not in rule:
+            errors.append(f"{prefix}: action 'instruct' needs a guidance string")
 
     for i, entry in enumerate(raw.get("allowlists", []) or []):
         prefix = f"allowlists[{i}]"
@@ -4825,6 +6076,12 @@ def validate_policy(path: Path) -> List[str]:
     # for the fleet block AND each per-agent overlay under `agents:`. A broken
     # rule hidden in an overlay is exactly as broken as one in the fleet block,
     # and considerably harder to notice.
+    pii_raw = (raw.get("settings") or {}).get("pii")
+    if pii_raw is not None:
+        from prismor.runtime.pii import validate_pii_settings
+        for _pii_err in validate_pii_settings(pii_raw):
+            errors.append(_pii_err)
+
     tt = ((raw.get("settings") or {}).get("tool_tags") or {})
     if isinstance(tt, dict):
         from prismor.runtime.tag_rules import ParseError as _TagParseError, compile_rule as _compile_tag_rule
@@ -4848,6 +6105,8 @@ def validate_policy(path: Path) -> List[str]:
                     errors.append(f"{where}.incompatible[{i}]: needs at least 2 distinct tags")
 
         _lint_tag_block(tt, "settings.tool_tags")
+        from prismor.runtime import contracts as _contracts
+        errors.extend(_contracts.lint(tt, "settings.tool_tags"))
 
         agents = tt.get("agents")
         if agents is not None and not isinstance(agents, dict):
@@ -4862,6 +6121,7 @@ def validate_policy(path: Path) -> List[str]:
                 if mode is not None and str(mode).lower() not in ("observe", "enforce"):
                     errors.append(f"{where}.mode: must be observe or enforce")
                 _lint_tag_block(sub, where)
+                errors.extend(_contracts.lint(sub, where))
 
     return errors
 
@@ -4895,9 +6155,11 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
             "block_categories": sorted(engine.block_categories),
             "egress_allowlist": list(engine.egress_allowlist),
             "mcp_transport_action": engine.mcp_transport_action,
+            "mcp_tool_repeat_limits": engine.mcp_tool_repeat_limits,
             "supply_chain_install_check": engine.supply_chain_install_check,
             "supply_chain_transitive_scan": engine.supply_chain_transitive_scan,
             "semantic_guard": engine.semantic_guard_config,
+            "pii": engine.pii.as_dict(),
             "sandbox": engine.sandbox_config,
             "tool_tags": engine.tool_tags,
         },
@@ -4921,6 +6183,7 @@ def export_effective_policy(engine: "PolicyEngine") -> Dict[str, Any]:
                     if name != "patterns"
                 },
                 "when": rule.when.source if rule.when else None,
+                **({"guidance": rule.guidance} if rule.guidance else {}),
             }
             for rule in sorted(engine.rules, key=lambda r: r.id)
         ],

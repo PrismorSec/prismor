@@ -26,6 +26,8 @@ set -uo pipefail
 
 # shellcheck source=_patterns.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_patterns.sh"
+# shellcheck source=_ledger.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
 
 SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
@@ -36,6 +38,7 @@ command -v jq >/dev/null 2>&1 || exit 0
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 [[ -n "$tool_name" ]] || exit 0
+session_id="$(printf '%s' "$input" | jq -r '.session_id // empty')"
 
 # Pick the text to scan. For Bash we scan only the command; for file-writing
 # and MCP tools we scan the entire input object so we cover content,
@@ -59,8 +62,37 @@ case "$tool_name" in
 esac
 [[ -n "$scan_text" ]] || exit 0
 
+# A vaulted value written raw into a file or MCP argument. decloak.sh only
+# substitutes placeholders in Bash, so outside Bash a real vaulted value can
+# only be one the model copied, and nothing redacts it once it is written or
+# sent. Checked against the vault itself, so values with no known shape (a DB
+# password) count too.
+if [[ "$kind" != "bash" ]]; then
+  for f in "$SECRETS_DIR"/*; do
+    [[ -f "$f" ]] || continue
+    v="$(cat "$f")"
+    prismor_scrubbable "$v" || continue
+    if [[ "$scan_text" == *"$v"* ]]; then
+      name="$(basename "$f")"
+      prismor_cloak_event tool_input redacted "$session_id" "$name" vaulted "$tool_name"
+      reason="Prismor cloaking: this ${tool_name} call holds the real value of a vaulted secret. It was NOT written or sent. Use @@SECRET"":${name}@@ (or an environment-variable reference) instead of the raw value."
+      jq -n --arg r "$reason" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      exit 0
+    fi
+  done
+fi
+
 prismor_load_patterns
 [[ "${#PATTERNS[@]}" -gt 0 ]] || exit 0
+
+# One grep over every pattern first: most calls carry no secret, and the loop
+# below forks grep once per pattern. Only a definite no-match (exit 1) skips
+# it; a match or a grep error (one bad custom pattern) runs the loop as before.
+grep_args=()
+for pat in "${PATTERNS[@]}"; do grep_args+=(-e "$pat"); done
+printf '%s' "$scan_text" | grep -qE "${grep_args[@]}" 2>/dev/null
+[[ $? -eq 1 ]] && exit 0
 
 # Collect unique matches across all patterns.
 matches="$(
@@ -89,6 +121,7 @@ while IFS= read -r real_value; do
     printf '%s' "$real_value" > "$secret_file"
     chmod 600 "$secret_file" 2>/dev/null || true
   fi
+  prismor_cloak_event tool_input redacted "$session_id" "$placeholder_name" "$(prismor_pattern_for "$real_value")" "$tool_name"
   reported+="  • @@SECRET:${placeholder_name}@@"$'\n'
   new_count=$((new_count + 1))
 done <<< "$matches"

@@ -14,6 +14,10 @@ Read endpoints:
     GET /api/sessions      → paginated sessions  (?page&limit&sort&dir)
     GET /api/findings      → paginated findings  (?page&limit&agent&severity&category&q)
     GET /api/events        → paginated events    (?page&limit&verdict&agent)
+    GET /api/logs          → every event, filtered (?days&status&type&tool&server&agent&session&q&page&limit)
+                             with facet counts, outcome totals and a volume histogram (logs.py)
+    GET /api/spend         → spend today / this month, per model, budgets (?days)
+    GET /api/logs/event    → one call in full, with its result and findings (?id=<ws>:<event id>&post=<ws>:<result id>)
     GET /api/supply-chain  → supply chain enforcement stats
     GET /api/workspaces    → registered workspaces + enrollment status
     GET /api/policy        → all policy layers for a workspace (?workspace=…)
@@ -44,7 +48,6 @@ Every request passes ``_request_allowed``: no CORS, a loopback-only Host header
 from __future__ import annotations
 
 import hmac
-import ipaddress
 import json
 import os
 import re
@@ -55,8 +58,9 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse, parse_qs, unquote, urlsplit
+from urllib.parse import urlparse, parse_qs, unquote
 
+from prismor.runtime.http_gate import browser_gate, is_loopback as _is_loopback
 from prismor.runtime.store import (
     get_aggregate_stats,
     get_sessions_page,
@@ -67,7 +71,6 @@ from prismor.runtime.store import (
     get_findings_page,
     get_events_page,
     get_supply_chain_stats,
-    get_token_stats,
     get_agents_overview,
     list_registered_workspaces,
     get_enrollment,
@@ -213,6 +216,13 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
         records = discover_mcp(workspace)
     except Exception:
         records = []
+    try:
+        # Running copies and resident memory from ps, and how many recent
+        # sessions called each server (same numbers as `discover mcp`).
+        from prismor.runtime.discover import add_footprint
+        add_footprint(records)
+    except Exception:
+        pass
     by_name = {}
     for r in records:
         if r.is_gateway:
@@ -221,6 +231,20 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
 
     def _decl(name: str):
         return by_name.get(name.lower()) or []
+
+    def _footprint(decl):
+        """Copies and memory summed over every config that declares the
+        server; None when nothing of it is running locally."""
+        copies = sum(d.get("running") or 0 for d in decl)
+        if not copies:
+            return None
+        return {
+            "copies": copies,
+            "rss_mb": sum(d.get("rss_mb") or 0 for d in decl),
+            "sessions_used": max((d.get("sessions_used") or 0 for d in decl), default=0),
+            "sessions_total": max((d.get("sessions_total") or 0 for d in decl), default=0),
+            "rarely_used": any(d.get("rarely_used") for d in decl),
+        }
 
     usage = {}
     try:
@@ -238,6 +262,7 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
         s["managed"] = s["kind"] == "mirror" or any(d["managed"] for d in decl)
         s["risk"] = max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none")
         s["findings"] = sorted({f for d in decl for f in (d["findings"] or [])})
+        s["footprint"] = _footprint(decl)
         u = usage.get(s["name"]) or {}
         s["usage"] = {k: u.get(k, 0 if k in ("calls", "blocked", "sessions") else "")
                       for k in ("calls", "blocked", "sessions", "last", "lastAbs")}
@@ -275,6 +300,7 @@ def _enrich_mcp_inventory(workspace: Path, servers, seen):
             "managed": any(d["managed"] for d in decl),
             "risk": max((d["risk"] for d in decl), key=_RISK_RANK.get, default="none"),
             "findings": sorted({f for d in decl for f in (d["findings"] or [])}),
+            "footprint": _footprint(decl),
             "usage": {"calls": u.get("calls", 0), "blocked": u.get("blocked", 0),
                       "sessions": u.get("sessions", 0), "last": u.get("last", ""), "lastAbs": u.get("lastAbs", "")},
         })
@@ -470,20 +496,6 @@ _SERVER_TOKEN: Optional[str] = None
 _TOKEN_COOKIE = "prismor_dashboard_token"
 
 
-def _is_loopback(host: str) -> bool:
-    host = host.strip("[]")
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _hostname(netloc: str) -> str:
-    return (urlsplit("//" + netloc).hostname or "").lower()
-
-
 def _revocation_state() -> Optional[dict]:
     """The device-revoked marker, or None. Never raises."""
     try:
@@ -568,6 +580,26 @@ def _changelog_since(current: str) -> List[Dict[str, str]]:
     return out
 
 
+def project_policy_disables_floor(content: str) -> bool:
+    """True when this YAML opts the project out of the safety floor.
+
+    The dashboard writes the file directly. floor-off already asks for the
+    unlock password; this route did not, so selection: explicit landed with
+    no check.
+    """
+    try:
+        import yaml
+        data = yaml.safe_load(content) or {}
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    settings = data.get("settings") or {}
+    if not isinstance(settings, dict):
+        return False
+    return str(settings.get("selection", "")).lower() == "explicit"
+
+
 class PrismorRequestHandler(BaseHTTPRequestHandler):
     """Minimal HTTP handler for the prismor dashboard API."""
 
@@ -592,21 +624,9 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
         The API reads agent transcripts and rewrites the security policy, so a
         web page the user happens to have open must not be able to reach it.
         """
-        host = self.headers.get("Host", "")
-        bound = str(self.server.server_address[0])
-        # DNS rebinding: an attacker's hostname resolving to 127.0.0.1 is
-        # same-origin to the browser, so Origin alone can't catch it.
-        if _is_loopback(bound) and not _is_loopback(_hostname(host)):
-            return 403, "forbidden host"
-        # CSRF / cross-origin reads. Our own page is always same-origin.
-        origin = self.headers.get("Origin")
-        if origin is not None and urlsplit(origin).netloc.lower() != host.lower():
-            return 403, "cross-origin request refused"
-        # A link to the dashboard is fine (the page can't read the result);
-        # a script fetch or form post from another site is not.
-        navigation = self.command == "GET" and self.headers.get("Sec-Fetch-Mode") == "navigate"
-        if self.headers.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none") and not navigation:
-            return 403, "cross-site request refused"
+        refused = browser_gate(self)
+        if refused:
+            return refused
         if _SERVER_TOKEN:
             presented = self._presented_token()
             if not presented or not hmac.compare_digest(presented, _SERVER_TOKEN):
@@ -787,6 +807,11 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"requests": reqs})
             return
 
+        if path == "/api/decisions":
+            from prismor.runtime import decisions
+            self._send_json({"decisions": decisions.list_all()})
+            return
+
         if path == "/api/changelog":
             from prismor.runtime import __version__
             try:
@@ -923,6 +948,32 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(data)
             return
 
+        if path == "/api/logs":
+            try:
+                from prismor.runtime.logs import query_logs
+                self._send_json(query_logs(
+                    {k: qstr(k) for k in ("status", "type", "tool", "server", "agent", "session", "q")},
+                    page=qint("page", 1), limit=qint("limit", 50), days=qint("days", 7)))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/spend":
+            try:
+                from prismor.runtime import budgets
+                from prismor.runtime.policy_engine import PolicyEngine
+                engine = PolicyEngine(workspace=self._resolve_workspace({}) or Path.cwd())
+                self._send_json(budgets.summary(engine.spend_budgets, days=qint("days", 30)))
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
+        if path == "/api/logs/event":
+            from prismor.runtime.logs import get_log_event
+            data = get_log_event(qstr("id"), qstr("post"))
+            self._send_json(data, status=404 if "error" in data else 200)
+            return
+
         if path == "/api/docs":
             root = _docs_dir()
             if root is None:
@@ -987,12 +1038,14 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             try:
                 session_id = (qs.get("session") or [""])[0]
                 if session_id:
-                    from prismor.runtime.token_usage import session_cost
-                    data = {"sessionId": session_id, **session_cost(Path.cwd(), session_id)}
+                    from prismor.runtime.token_usage import session_context, session_cost
+                    data = {"sessionId": session_id, **session_cost(Path.cwd(), session_id),
+                            "context": session_context(session_id)}
                     self._send_json(data)
                     return
                 days = max(1, qint("days", 1))
-                data = get_token_stats(hours=days * 24)
+                from prismor.runtime.token_usage import token_stats
+                data = token_stats(hours=days * 24)
             except Exception as exc:
                 self._send_json({"error": str(exc)}, status=500)
                 return
@@ -1222,6 +1275,34 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=400)
             return
 
+        # POST /api/decisions — allow / ask / deny a rule (optionally one exact
+        # call) or a tool tag at session / agent / workspace / device scope.
+        # {"remove": "<id>"} drops one. See decisions.py.
+        if path == "/api/decisions":
+            from prismor.runtime import decisions
+            try:
+                body = self._read_json_body()
+                if body.get("remove"):
+                    self._send_json({"ok": decisions.remove(str(body["remove"]))})
+                    return
+                sid = str(body.get("scopeId") or "")
+                if body.get("scope") == "session" and sid.startswith("replay:"):
+                    sid = sid.rsplit(":", 1)[-1]  # replay:<agent>:<id> -> the hook's id
+                ws = body.get("workspace") or str(_SERVER_WORKSPACE or "")
+                if body.get("action") != "deny" and ws:
+                    from prismor.runtime.enterprise import workspace_scope
+                    if workspace_scope.is_managed(Path(ws)):
+                        self._send_json({"ok": False, "error": (
+                            "This workspace is managed by your organization, so only Deny applies "
+                            "here. Allow or Ask from the Prismor console instead.")}, status=403)
+                        return
+                rec = decisions.add({**body, "scopeId": sid,
+                                     "workspace": body.get("workspace") or str(_SERVER_WORKSPACE or "")})
+                self._send_json({"ok": True, "decision": rec})
+            except ValueError as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
         # POST /api/tool-policy — deny/allow a tool tag at agent or global scope
         if path == "/api/tool-policy":
             length = int(self.headers.get("Content-Length", 0))
@@ -1328,6 +1409,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             try:
                 body = self._read_json_body()
                 content = body.get("yaml", "")
+                if project_policy_disables_floor(content):
+                    from prismor.runtime import unlock
+                    ok, msg = unlock.verify(str(body.get("password") or ""))
+                    if not ok:
+                        self._send_json({"error": msg}, status=401)
+                        return
                 ws_str = body.get("workspace")
                 workspace = Path(ws_str) if ws_str else _SERVER_WORKSPACE
                 if not workspace:
@@ -1427,11 +1514,12 @@ class _DashboardServer(ThreadingHTTPServer):
 
 
 def _warm_dashboard_reads() -> None:
-    """Pay the one-off costs before anyone opens a page: the read index, and
-    the parse of recent shell commands the Files page lists."""
-    from prismor.runtime import devlog
+    """Pay the one-off costs before anyone opens a page: the read index, the
+    parse of recent shell commands the Files page lists, and a price refresh
+    (hooks never fetch prices, so nothing else keeps the cache current)."""
+    from prismor.runtime import devlog, pricing
     from prismor.runtime.store import ensure_read_indexes
-    for step in (ensure_read_indexes, lambda: devlog.files("")):
+    for step in (ensure_read_indexes, lambda: devlog.files(""), lambda: pricing.price_for("", fetch=True)):
         try:
             step()
         except Exception:
@@ -1475,6 +1563,8 @@ def run_server(
 
     url = f"http://{host}:{port}" + (f"/?token={_SERVER_TOKEN}" if _SERVER_TOKEN else "")
     print(f"[prismor] dashboard → {url}  (Ctrl-C to stop)  state → {prismor_home()}", flush=True)
+    from prismor.runtime.logs import warm as _warm_logs
+    threading.Thread(target=_warm_logs, daemon=True).start()
     if open_browser:
         import webbrowser
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()

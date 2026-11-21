@@ -8,7 +8,10 @@ Subcommands:
     rules add "<expr>"       add a rule expression (parse-checked first)
     rules rm <n|expr>        remove a rule by index (from `rules list`) or text
     edit                     interactive wizard over tools + rules
-    lint [file]              validate every rule expression; exit 1 on errors
+    lint [file]              validate every rule expression and contract; exit 1 on errors
+    contracts                active tool contracts (delta / requires / effects)
+    label [session]          a session's label and the calls that narrowed it
+    coverage                 per MCP server: tools with a contract, tags only, neither
     test [--session|--last]  dry-run rules against recorded session logs
 
 The heavy lifting (parsing, classification, ledger) lives in ``tag_rules`` and
@@ -25,7 +28,7 @@ from prismor.runtime.tag_rules import (
     CompiledRule, ParseError, compile_rule, compile_tool_tag_rules, lint_rules,
 )
 from prismor.runtime.trifecta import (
-    TOOL_TAG_DEFAULTS, TagLedger, _matches, _tool_name, classify_tool_tags,
+    CRITICAL, UNTRUSTED, TOOL_TAG_DEFAULTS, TagLedger, _matches, _tool_name, classify_tool_tags,
 )
 
 # ── small output helpers (match cli.py's ANSI style, no deps) ────────────────
@@ -196,7 +199,7 @@ def tags_list(workspace: Path, last: int = 50) -> None:
     if not seen:
         print("no tools recorded yet — run some agent sessions first")
         return
-    print(_c(f"{'TOOL':36s} {'KIND':14s} {'TAGS':30s} TIER", _BOLD))
+    print(_c(f"{'TOOL':36s} {'KIND':14s} {'TAGS':30s} {'TIER':10s} CONTRACT", _BOLD))
     for tool in sorted(seen):
         tags, tier = seen[tool]
         tag_s = ", ".join(sorted(tags)) if tags else _c("(untagged)", _DIM)
@@ -206,7 +209,7 @@ def tags_list(workspace: Path, last: int = 50) -> None:
         kind_s = ", ".join(sorted(tool_kinds)) or "-"
         kind_c = _RED if "UNMAPPED" in tool_kinds else _DIM
         print(f"{tool:36s} {_c(f'{kind_s:14s}', kind_c)} {tag_s:30s} "
-              f"{_c(tier, tier_c)}")
+              f"{_c(f'{tier:10s}', tier_c)} {_contract_cell(tool, tt)}")
     unmapped = sorted(t for t, k in kinds.items() if "UNMAPPED" in k and t in seen)
     if unmapped:
         print(_c(
@@ -219,6 +222,181 @@ def tags_list(workspace: Path, last: int = 50) -> None:
                  "(prismor/runtime/hooks.py)", _DIM))
     enabled = "enabled" if tt.get("enabled") else "disabled"
     print(_c(f"\ntool_tags: {enabled}, mode={tt.get('mode', 'observe')}", _DIM))
+
+
+def _contract_cell(tool: str, tt: Dict[str, Any]) -> str:
+    """``delta+requires (policy)`` for a tool some contract governs, else ``-``."""
+    from prismor.runtime import contracts
+
+    if not contracts.enabled(tt):
+        return _c("-", _DIM)
+    found, tier = contracts.contracts_for_tool(tool, tt)
+    if not found:
+        return _c("-", _DIM)
+    parts = [p for p in ("delta", "requires", "effects")
+             if any(p in c.parts() for c in found)]
+    return f"{'+'.join(parts)} {_c('(' + tier + ')', _DIM)}"
+
+
+# ── subcommands: contracts / label / coverage ────────────────────────────────
+
+def tags_contracts(workspace: Path) -> None:
+    """The contracts in the effective policy, with the id a block names."""
+    from prismor.runtime import contracts
+
+    tt = _effective_tool_tags(workspace)
+    found = contracts.compile_contracts(tt.get("contracts"))
+    if not found:
+        print("no contracts in policy (settings.tool_tags.contracts)")
+        print(_c("  built-in packs still label well-known GitHub and Slack reads; "
+                 "see docs/tool-contracts.md", _DIM))
+    else:
+        print(_c(f"{'ID':12s} {'TOOL':52s} DECLARES", _BOLD))
+        for c in found:
+            bits = []
+            if c.delta_audience is not None:
+                bits.append(f"audience -> {{{', '.join(c.delta_audience)}}}")
+            if c.delta_trust:
+                bits.append(f"trust -> {c.delta_trust}")
+            if c.requires_audience:
+                bits.append(f"requires audience ⊇ {{{', '.join(c.requires_audience)}}}")
+            if c.requires_trust:
+                bits.append(f"requires trust ≥ {c.requires_trust}")
+            if c.requires_effects:
+                bits.append(f"requires effects {{{', '.join(c.requires_effects)}}}")
+            if c.forbids_effects:
+                bits.append(f"forbids effects {{{', '.join(c.forbids_effects)}}}")
+            if c.effects:
+                bits.append(f"effects {{{', '.join(c.effects)}}}")
+            print(f"{c.contract_id:12s} {c.selector:52s} {'; '.join(bits)}")
+    principals = tt.get("principals")
+    if isinstance(principals, dict) and principals:
+        print(_c("\nprincipals", _BOLD))
+        for key, val in principals.items():
+            vals = val if isinstance(val, (list, tuple)) else [val]
+            print(f"  {key} ⊇ {{{', '.join(str(v) for v in vals)}}}")
+    _disabled_note(workspace)
+
+
+def tags_label(workspace: Path, session: Optional[str] = None) -> None:
+    """A session's label, and every call that narrowed it."""
+    from prismor.runtime import contracts
+
+    tt = _effective_tool_tags(workspace)
+    if not session:
+        recent = _recent_sessions(workspace, 1)
+        if not recent:
+            print("no recorded sessions")
+            return
+        session = recent[0][0]
+    store = contracts.SessionLabel(workspace, session,
+                                   contracts.Principals(tt.get("principals")))
+    label = store.at()
+    print(_c(session, _BOLD))
+    print(f"  audience  {{{', '.join(label.audience)}}}"
+          + _c(contracts._since(label.audience_since), _DIM))
+    print(f"  trust     {label.trust}" + _c(contracts._since(label.trust_since), _DIM))
+    print(f"  effects   {{{', '.join(sorted(label.effects))}}}")
+    entries = sorted(store.entries(), key=lambda e: e.get("index", 0))
+    if not entries:
+        print(_c("  nothing has narrowed this session's label", _DIM))
+        return
+    print(_c("\n  narrowed by", _BOLD))
+    for e in entries:
+        what = []
+        if "audience" in e:
+            what.append(f"audience {{{', '.join(e['audience'])}}}")
+        if "trust" in e:
+            what.append(f"trust {e['trust']}")
+        if e.get("effects"):
+            what.append(f"effects {{{', '.join(e['effects'])}}}")
+        print(f"  [{e.get('index', '?'):>4}] {_c(_when(e.get('ts')), _DIM)} "
+              f"{e.get('call') or e.get('tool')}: {'; '.join(what)}")
+
+
+def _known_mcp_tools(workspace: Path, last: int) -> Dict[str, Set[str]]:
+    """``{server: {full tool name}}`` from every inventory Prismor keeps:
+    servers the agents declare (`discover`), tools the gateway has listed
+    (its definition pins), and tools seen in recorded sessions."""
+    servers: Dict[str, Set[str]] = {}
+    try:
+        from prismor.runtime.discover import discover_mcp
+
+        for rec in discover_mcp(workspace):
+            if not rec.is_gateway:
+                servers.setdefault(rec.name, set())
+    except Exception:
+        pass
+    try:
+        from prismor.runtime import mcp_tool_pins
+
+        for path in mcp_tool_pins._dir().glob("*.json"):
+            data = json.loads(path.read_text(encoding="utf-8"))
+            server = str(data.get("server") or "")
+            if server and isinstance(data.get("tools"), dict):
+                servers.setdefault(server, set()).update(
+                    f"mcp__{server}__{t}" for t in data["tools"])
+    except Exception:
+        pass
+    known = sorted(servers, key=len, reverse=True)
+    for sid, _ in _recent_sessions(workspace, last):
+        for ev in _session_events(workspace, sid):
+            tool = _tool_name(ev)
+            if not tool.startswith("mcp__"):
+                continue
+            rest = tool[len("mcp__"):]
+            # A server name can itself contain "__": prefer the longest
+            # declared one that prefixes the tool over splitting blindly.
+            server = next((s for s in known if rest.startswith(s + "__")),
+                          rest.partition("__")[0])
+            servers.setdefault(server, set()).add(tool)
+    return servers
+
+
+def coverage_report(workspace: Path, last: int = 50) -> List[Dict[str, Any]]:
+    from prismor.runtime import contracts
+
+    tt = _effective_tool_tags(workspace)
+    rows: List[Dict[str, Any]] = []
+    for server, tools in sorted(_known_mcp_tools(workspace, last).items()):
+        row: Dict[str, Any] = {"server": server, "tools": len(tools), "contract": 0,
+                               "tags_only": 0, "neither": 0, "uncovered": []}
+        for tool in sorted(tools):
+            if contracts.enabled(tt) and contracts.contracts_for_tool(tool, tt)[0]:
+                row["contract"] += 1
+            elif _resolve_with_tier({"metadata": {"tool_name": tool}}, "", tt)[0]:
+                row["tags_only"] += 1
+            else:
+                row["neither"] += 1
+                row["uncovered"].append(tool)
+        rows.append(row)
+    return rows
+
+
+def tags_coverage(workspace: Path, last: int = 50, as_json: bool = False) -> None:
+    rows = coverage_report(workspace, last)
+    if as_json:
+        print(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        print("no MCP servers discovered and none seen in recorded sessions")
+        return
+    print(_c(f"{'SERVER':28s} {'TOOLS':>5s} {'CONTRACT':>9s} {'TAGS ONLY':>10s} {'NEITHER':>8s}", _BOLD))
+    for r in rows:
+        if not r["tools"]:
+            print(f"{r['server']:28s} {_c('    - (no tools seen yet: run a session or list it through the gateway)', _DIM)}")
+            continue
+        bare_n = r["neither"]
+        print(f"{r['server']:28s} {r['tools']:5d} {r['contract']:9d} {r['tags_only']:10d} "
+              f"{_c(f'{bare_n:8d}', _RED if bare_n else _GREEN)}")
+    bare = [(r["server"], r["uncovered"]) for r in rows if r["uncovered"]]
+    for server, tools in bare:
+        print(_c(f"\n{server}: no contract and no tag", _YELLOW))
+        for t in tools[:20]:
+            print(f"  {t}")
+        if len(tools) > 20:
+            print(_c(f"  … and {len(tools) - 20} more", _DIM))
+    _disabled_note(workspace)
 
 
 # ── subcommand: provenance ───────────────────────────────────────────────────
@@ -260,6 +438,10 @@ def tags_provenance(workspace: Path, path: Optional[str] = None) -> None:
         crossed = [r for r in readers if r.get("session") != writer.get("session")]
         print(_c(key, _BOLD))
         print(f"  tags     {tags}")
+        for lab in entry.get("labels") or []:
+            if isinstance(lab, dict):
+                print(f"  label    audience {{{', '.join(lab.get('audience') or [])}}}, "
+                      f"trust {lab.get('trust', '?')}")
         print(f"  written  {writer.get('agent', '?')}:{writer.get('session', '?')}"
               f" via {writer.get('tool') or '?'} {_c(_when(writer.get('ts')), _DIM)}")
         if not readers:
@@ -439,18 +621,47 @@ def tags_lint(workspace: Path, file: Optional[str]) -> None:
     for _, err in errors:
         _print_parse_error(err)
     ok = len(exprs) - len(errors)
+    # Contracts: unknown fields, bad values, a delta that tries to widen.
+    from prismor.runtime import contracts
+
+    contract_errors = contracts.lint(tt)
+    for sub_name, sub_tt in (tt.get("agents") or {}).items() if isinstance(tt.get("agents"), dict) else ():
+        contract_errors += contracts.lint(sub_tt, f"settings.tool_tags.agents.{sub_name}")
+    for msg in contract_errors:
+        print(_c(msg, _RED))
+    n_contracts = len(tt.get("contracts") or []) if isinstance(tt.get("contracts"), list) else 0
     # Legacy list sanity too.
     legacy = tt.get("incompatible") or []
     bad_legacy = [s for s in legacy
                   if not isinstance(s, (list, tuple)) or len(set(s)) < 2]
     for s in bad_legacy:
         print(_c(f"legacy incompatible entry needs >=2 tags: {s!r}", _RED))
-    if errors or bad_legacy:
-        print(_c(f"\n{len(errors) + len(bad_legacy)} error(s), {ok} rule(s) OK",
-                 _RED))
+    if errors or bad_legacy or contract_errors:
+        print(_c(f"\n{len(errors) + len(bad_legacy) + len(contract_errors)} error(s), "
+                 f"{ok} rule(s) OK", _RED))
         sys.exit(1)
     print(_c(f"all good: {ok} rule expression(s), "
-             f"{len(legacy)} legacy set(s)", _GREEN))
+             f"{len(legacy)} legacy set(s)"
+             + (f", {n_contracts} contract(s)" if n_contracts else ""), _GREEN))
+    # A selector that names no tool anyone has seen is usually a typo, and a
+    # contract that never matches fails open. Advisory: the tool may simply
+    # not have been used here yet.
+    known = {t for tools in _known_mcp_tools(workspace, 50).values() for t in tools}
+    for sid, _ in _recent_sessions(workspace, 50):
+        known.update(t for t in (_tool_name(ev) for ev in _session_events(workspace, sid)) if t)
+    if known:
+        for c in contracts.compile_contracts(tt.get("contracts")):
+            if not any(c.matches_tool(t) for t in known):
+                print(_c(f"warning: contract '{c.selector}' matches no tool seen on this "
+                         "machine (recorded sessions, gateway listings)", _YELLOW))
+    for rule in compile_tool_tag_rules(tt):
+        if (rule.action == "block" and rule.ordered
+                and rule.all_tags == {UNTRUSTED, CRITICAL}):
+            print(_c(f"warning: {rule.source} (effective action: block)\n"
+                     "  Sequence alone does not establish untrusted influence and can\n"
+                     "  repeatedly block later calls. Consider "
+                     "'critical_action with untrusted_influence -> block'\n"
+                     "  and keeping this sequence at '-> warn'.", _YELLOW))
 
 
 # ── subcommand: test (log replay) ────────────────────────────────────────────
@@ -462,10 +673,10 @@ class _ReplayLedger(TagLedger):
     def _load(self) -> None:  # pragma: no cover - trivially empty
         pass
 
-    def _commit(self, new_tags, index: int, tool: str) -> None:
+    def _commit(self, new_tags, index: int, tool: str, fired=()) -> None:
         # Persistence seam: apply to the in-memory view only, so a replay can
         # never write into (or be polluted by) real enforcement state.
-        self._apply(new_tags, index, tool)
+        self._apply(new_tags, index, tool, fired)
 
 
 def tags_test(
@@ -512,7 +723,8 @@ def tags_test(
                 if done.get("action") == "block":
                     # a blocked call would not have executed: don't record
                     continue
-            ledger.record(tags, idx, tool)
+            warned = done is not None and done.get("action") == "warn"
+            ledger.record(tags, idx, tool, fired=[done["rule_id"]] if warned else ())
         label = _c(sid[:24], _BOLD)
         if not hits:
             print(f"{label}  {_c('clean', _GREEN)} ({len(events)} events)")

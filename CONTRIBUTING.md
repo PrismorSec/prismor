@@ -108,6 +108,11 @@ python3 -m pip install ruff bandit
 ruff check --select E9,F63,F7,F82 .
 bandit -r prismor adapters -ll -q
 
+# Type check (advisory, not a CI gate; scope lives in [tool.pyright] in pyproject.toml)
+python3 -m pip install pyright
+pyright                          # full: ~10s on a laptop
+pyright prismor/runtime/proxy.py # one file: ~1s
+
 # If you changed a policy rule
 prismor policy validate prismor/runtime/default_policy.yaml
 prismor check "rm -rf /"

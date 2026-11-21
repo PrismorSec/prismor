@@ -220,3 +220,18 @@ class TestSelfEditGate(UnlockTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_system_password_with_batch_syntax_is_refused(monkeypatch):
+    """`security -i` returns the LAST command's status, so a password that
+    appends a command (`x"\\nlist-keychains`) must never reach it."""
+    import subprocess as _sp
+    from prismor.runtime import unlock as _u
+    calls = []
+    monkeypatch.setattr(_u.sys, "platform", "darwin")
+    monkeypatch.setattr(_u.subprocess, "run",
+                        lambda *a, **k: calls.append(a) or _sp.CompletedProcess(a, 0))
+    for pw in ('x"\nlist-keychains', "a\rb", "a\\b", "a\x00b"):
+        assert _u._verify_system_password(pw) is False
+    assert calls == []
+    assert _u._verify_system_password("plain pass") is True

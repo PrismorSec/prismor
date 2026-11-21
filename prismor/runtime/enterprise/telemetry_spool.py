@@ -15,6 +15,9 @@ Properties:
   in a sidecar (``telemetry-spool-drops.json``) with its first/last ``ts``, so
   the next successful upload can report the gap instead of leaving a silent
   hole in the audit trail (see sinks.upload_telemetry).
+* **Per identity.** A ``$PRISMOR_AGENT_KEY`` process spools to its own file
+  (``identity.identity_scope()``): the next upload drains only records that
+  identity produced, never the enrolled machine's hook events.
 * **Concurrent-safe.** Hook invocations from parallel agent processes
   serialize on an ``fcntl`` lock around every read-modify-write.
 * **Privacy-preserving.** Records are spooled *after* the telemetry redaction
@@ -62,7 +65,7 @@ def _fresh(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def spool_path() -> Path:
-    return _identity.prismor_home() / "telemetry-spool.jsonl"
+    return _identity.prismor_home() / f"telemetry-spool{_identity.identity_scope()}.jsonl"
 
 
 @contextmanager
@@ -115,11 +118,11 @@ def _write_records(path: Path, records: List[Dict[str, Any]]) -> None:
 
 
 def drops_path() -> Path:
-    return _identity.prismor_home() / "telemetry-spool-drops.json"
+    return _identity.prismor_home() / f"telemetry-spool-drops{_identity.identity_scope()}.json"
 
 
 def backoff_path() -> Path:
-    return _identity.prismor_home() / "telemetry-backoff.json"
+    return _identity.prismor_home() / f"telemetry-backoff{_identity.identity_scope()}.json"
 
 
 def _read_json(path: Path) -> Dict[str, Any]:
@@ -242,6 +245,14 @@ def note_upload_failure(now: float) -> None:
         _write_json(path, {"failures": failures, "next_at": now + delay})
     except OSError:
         pass
+
+
+def upload_failures() -> int:
+    """Consecutive failed uploads since the last success (0 when none). Never raises."""
+    try:
+        return int(_read_json(backoff_path()).get("failures") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def clear_backoff() -> None:

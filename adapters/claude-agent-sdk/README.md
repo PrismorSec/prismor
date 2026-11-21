@@ -16,27 +16,18 @@ against a `PreToolUseHookInput` (`tool_name`, `tool_input`). Returning
 `hookSpecificOutput.permissionDecision: "deny"` blocks the tool call
 before it runs — this overrides even `bypassPermissions` permission mode.
 
-## ⚠️ Verification methodology note
+## Verified
 
-Unlike the other adapters in this repo, this one can't be live-tested with
-the shared OpenAI key — the Claude Agent SDK requires genuine
-Anthropic/Claude Code authentication to run at all. It was instead
-live-tested on a separate host with an authenticated Claude Code CLI
-session (`claude-agent-sdk` shells out to the installed `claude` binary).
-
-Naive destructive test commands (`rm -rf /`, cloud-metadata SSRF) turned
-out to be an **unreliable** way to verify this particular adapter: Claude
-refuses those on its own, hook or no hook — confirmed with a baseline run
-that had *zero* Prismor hooks installed and still refused. The test that
-actually isolates the adapter's effect is a benign-framed write to
-`.claude/settings.json` (Prismor's own `agent-config-tampering` rule):
-Claude executes it readily with no hook installed, and the adapter denies
-it once installed. This discriminating test is also what caught a real
-bug during development — an earlier default `matcher` regex
-(`"Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch"`) never matched
-custom MCP tool names (`mcp__<server>__<tool>`), so the hook silently
-never fired for anything but Claude's built-in tools. `matcher` now
-defaults to `None` (every tool call) for exactly this reason.
+Live-tested with an `ANTHROPIC_API_KEY` on `claude-sonnet-5-5` (the SDK's
+bundled `claude` CLI authenticates with it), each request run with and
+without the hook. Use requests Claude runs on its own: obvious attacks
+(`rm -rf /`, posting `/etc/passwd` to an unknown host) are refused with no
+hook at all. A `.claude/settings.json` write (`agent-config-tampering`) and a
+`curl -X POST ... -d` through a custom MCP tool (`network-exfil-tool`) both
+run without the hook and are denied with it. `matcher` defaults to `None`
+because a built-in-names regex never matched custom MCP tools
+(`mcp__<server>__<tool>`) and silently exempted them. Full table in
+[docs/frameworks-claude-agent-sdk.md](../../docs/frameworks-claude-agent-sdk.md).
 
 ## Install
 

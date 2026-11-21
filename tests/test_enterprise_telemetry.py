@@ -149,6 +149,17 @@ def test_full_capture_includes_scrubbed_detail():
     assert "[REDACTED]" in rec["detail"]["stdout"]
 
 
+def test_full_capture_keeps_path_from_structured_evidence():
+    finding = {
+        "ruleId": "memory-integrity-mismatch", "action": "warn",
+        "evidence": {"path": "/repo/CLAUDE.md", "origin": "unclassified_change"},
+    }
+    rec = telemetry.build_record(finding, {"type": "memory"}, extra={}, full_capture=True)
+    assert rec["detail"]["path"] == "/repo/CLAUDE.md"
+    redacted = telemetry.build_record(finding, {"type": "memory"}, extra={})
+    assert "detail" not in redacted
+
+
 def test_assert_redacted_fails_closed_on_leak():
     bad = {"redacted": True, "detail": {"command": "leak"}}
     with pytest.raises(AssertionError):
@@ -207,7 +218,8 @@ def test_prismor_sink_uploads_redacted(tmp_path, monkeypatch):
     assert captured["headers"]["authorization"] == "Bearer prism_dev_abc"
     assert captured["body"]["org_id"] == "org_1"
     assert captured["body"]["device_id"] == "dev_1"
-    ev = captured["body"]["events"][0]
+    # The first upload also carries the device_status coverage report.
+    ev = next(e for e in captured["body"]["events"] if e.get("type") != "device_status")
     assert ev["redacted"] is True
     assert ev["device_id"] == "dev_1"
     # The uploaded payload must not contain the raw command or secret.

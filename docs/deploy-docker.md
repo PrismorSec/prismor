@@ -16,6 +16,32 @@ Then set the OpenAI credential's **Base URL** inside n8n to
 workflow is governed. See [n8n.md](n8n.md) for the walkthrough with
 screenshots.
 
+## The published image
+
+Every release publishes the image as `ghcr.io/prismorsec/prismor`, for
+`linux/amd64` and `linux/arm64`, tagged with the full version (`X.Y.Z`), the
+minor line (`X.Y`, which follows its newest patch) and — for final releases —
+`latest`; the tags come from the release tag, nothing is edited per release.
+The compose file pulls it;
+set `PRISMOR_VERSION` to pin one, or `docker compose build` to build from the
+checkout instead.
+
+```bash
+docker run -d -p 127.0.0.1:7080:7080 -v prismor_home:/var/lib/prismor \
+  --read-only --tmpfs /tmp --cap-drop ALL \
+  ghcr.io/prismorsec/prismor:latest                    # the LLM proxy
+
+docker run -d -p 127.0.0.1:7071:7071 -v prismor_home:/var/lib/prismor \
+  -e PRISMOR_EVAL_KEY="$(openssl rand -hex 24)" \
+  ghcr.io/prismorsec/prismor:latest eval-server        # for non-Python SDKs
+```
+
+`eval-server` refuses to start without `PRISMOR_EVAL_KEY` (or `--api-key`):
+inside a container it binds every interface, so anything that can reach the
+container could otherwise evaluate against your policy. Callers send it as
+`Authorization: Bearer <key>`. Any other argument runs as a plain `prismor`
+command, e.g. `docker run --rm ghcr.io/prismorsec/prismor check "<command>"`.
+
 ## What the container needs to keep
 
 ```yaml
@@ -74,8 +100,12 @@ dashboard` serves it from `$PRISMOR_HOME`, so a container's sessions are
 readable without a control plane at all:
 
 ```bash
-docker compose exec prismor prismor dashboard --no-open --host 0.0.0.0
+docker compose run --rm -p 127.0.0.1:7070:7070 prismor \
+  dashboard --no-open --host 0.0.0.0
 ```
+
+It runs beside the proxy on the same volume; only the proxy's port is published
+otherwise, so the dashboard needs its own.
 
 Bound off loopback, the dashboard requires a token: open the
 `/?token=…` URL it prints (or set `PRISMOR_DASHBOARD_TOKEN`).

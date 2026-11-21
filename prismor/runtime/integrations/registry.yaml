@@ -13,6 +13,9 @@
 #   status      shipped | roadmap | sweep-only
 #   config_paths   {project, user, system} config locations (where applicable)
 #   events      lifecycle events hooked
+#   event_types canonical event types the adapter produces from what the agent
+#               actually sends; rules on other types never fire for this agent
+#               (pinned by tests/test_integration_event_coverage.py)
 #   blocking    exit-2 | json-permission | throw | proxy-deny | none
 #   normalizer  prismor/runtime/hooks.py function (coding agents) or adapter module (frameworks)
 #   sweep_dir   config dir scanned by `immunity sweep` (optional)
@@ -30,7 +33,8 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".claude/settings.json", user: "~/.claude/settings.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, SessionStart, SubagentStop, SessionEnd, Stop, StopFailure]
+    event_types: [prompt, memory, subagent_spawn, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_claude
     sweep_dir: "~/.claude/"
@@ -47,7 +51,8 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".cursor/hooks.json" }
-    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit]
+    events: [sessionStart, beforeSubmitPrompt, beforeShellExecution, afterShellExecution, beforeMCPExecution, afterMCPExecution, beforeReadFile, afterFileEdit, afterAgentResponse, afterAgentThought]
+    event_types: [prompt, memory, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_cursor
     sweep_dir: "~/.config/Cursor/"
@@ -65,6 +70,7 @@ agents:
     status: shipped
     config_paths: { project: ".windsurf/hooks.json", user: "~/.codeium/windsurf/hooks.json" }
     events: [pre_user_prompt, pre_read_code, post_read_code, pre_write_code, post_write_code, pre_run_command, post_run_command, pre_mcp_tool_use, post_mcp_tool_use, post_cascade_response]
+    event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: json-permission
     normalizer: _normalize_windsurf
     sweep_dir: "~/.codeium/"
@@ -77,6 +83,7 @@ agents:
     status: shipped
     config_paths: { project: ".openclaw/extensions/prismor/", user: "~/.openclaw/extensions/prismor/" }
     events: [before_tool_call, after_tool_call, message_received]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: return-block
     normalizer: _normalize_openclaw
     sweep_dir: "~/.openclaw/"
@@ -90,6 +97,7 @@ agents:
     status: shipped
     config_paths: { project: ".hermes/plugins/prismor/", user: "~/.hermes/plugins/prismor/" }
     events: [pre_tool_call, post_tool_call, pre_llm_call]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: return-block
     normalizer: _normalize_hermes
     sweep_dir: "~/.hermes/"
@@ -102,7 +110,8 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".codex/hooks.json", user: "~/.codex/hooks.json" }
-    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop]
+    events: [UserPromptSubmit, PreToolUse, PermissionRequest, PostToolUse, SubagentStop, Stop]
+    event_types: [prompt, shell]
     blocking: exit-2
     normalizer: _normalize_codex
     sweep_dir: "~/.codex/"
@@ -121,7 +130,8 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".github/hooks/prismor.json", user: "~/.copilot/hooks/prismor.json" }
-    events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    events: [UserPromptSubmit, PreToolUse, PostToolUse, Stop]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_copilot
     sources: ["https://docs.github.com/en/copilot/reference/hooks-configuration"]
@@ -136,6 +146,7 @@ agents:
     status: shipped
     config_paths: { project: ".grok/hooks/prismor.json", user: "~/.grok/hooks/prismor.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_grok
     sweep_dir: "~/.grok/"
@@ -154,6 +165,7 @@ agents:
     status: shipped
     config_paths: { project: ".kiro/agents/kiro_default.json", user: "~/.kiro/agents/kiro_default.json" }
     events: [userPromptSubmit, preToolUse, postToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_kiro
     sweep_dir: "~/.kiro/"
@@ -165,6 +177,70 @@ agents:
       disable: "custom-agent allowedTools"
       notes: "from docs, not live-tested"
 
+  - id: jetbrains-ai
+    name: JetBrains AI Assistant
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.config/JetBrains" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.config/JetBrains/"
+    notes: "Discovered from the IDE config directory and plugin id com.intellij.ml.llm (Marketplace 22282, verified 2026-11-03). No Prismor hook surface. Windows config is %APPDATA%\\JetBrains, found by the inventory collector. MCP servers in options/llm.mcpServers.xml are inventory-only."
+    sources: ["https://plugins.jetbrains.com/plugin/22282-jetbrains-ai-assistant", "https://www.jetbrains.com/help/ai-assistant/mcp.html"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin; MCP servers are the governable surface"
+
+  - id: junie
+    name: Junie
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { project: ".junie/mcp/mcp.json", user: "~/.junie/mcp/mcp.json" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.junie/"
+    notes: "Plugin id org.jetbrains.junie (Marketplace 26104, verified 2026-11-03). MCP config is mcpServers JSON at ~/.junie/mcp/mcp.json and .junie/mcp/mcp.json. No Prismor hook surface."
+    sources: ["https://plugins.jetbrains.com/plugin/26104-junie-the-ai-coding-agent-by-jetbrains", "https://junie.jetbrains.com/docs/junie-cli-mcp-configuration.html"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin and CLI; MCP servers are the governable surface"
+
+  - id: copilot-jetbrains
+    name: GitHub Copilot for JetBrains
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.config/github-copilot/intellij/mcp.json" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.config/github-copilot/"
+    notes: "Plugin id com.github.copilot (Marketplace 17718, verified 2026-11-03). MCP config root key is servers. Windows path is %LOCALAPPDATA%\\github-copilot\\intellij\\mcp.json, scanned by the inventory collector. Distinct from the Copilot CLI entry."
+    sources: ["https://plugins.jetbrains.com/plugin/17718-github-copilot--your-ai-pair-programmer", "https://docs.github.com/copilot/how-tos/provide-context/use-mcp/extend-copilot-chat-with-mcp"]
+    mirror:
+      status: unsupported
+      notes: "IDE plugin; MCP servers are the governable surface"
+
+  - id: roo
+    name: Roo Code
+    kind: coding-agent
+    surface: rules-only
+    status: sweep-only
+    config_paths: { user: "~/.roo/" }
+    events: []
+    blocking: none
+    normalizer: null
+    sweep_dir: "~/.roo/"
+    notes: "VS Code extension RooVeterinaryInc.roo-cline (Marketplace id verified 2026-11-03). Global MCP settings live under the extension globalStorage directory; that path is scanned by discover and was not re-checked against a current Roo doc page."
+    sources: ["https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline"]
+    mirror:
+      status: unsupported
+      notes: "VS Code extension"
+
   - id: crush
     name: Crush (Charmbracelet)
     kind: coding-agent
@@ -172,6 +248,7 @@ agents:
     status: shipped
     config_paths: { project: "crush.json", user: "~/.config/crush/crush.json" }
     events: [PreToolUse]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_crush
     sweep_dir: "~/.config/crush/"
@@ -189,6 +266,7 @@ agents:
     status: shipped
     config_paths: { project: ".openhands/hooks.json" }
     events: [PreToolUse, UserPromptSubmit]
+    event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_openhands
     sweep_dir: "~/.openhands/"
@@ -205,6 +283,7 @@ agents:
     status: shipped
     config_paths: { project: ".qwen/settings.json", user: "~/.qwen/settings.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_qwen
     sweep_dir: "~/.qwen/"
@@ -223,6 +302,7 @@ agents:
     status: shipped
     config_paths: { project: ".continue/settings.json", user: "~/.continue/settings.json" }
     events: [UserPromptSubmit, PreToolUse, PostToolUse]
+    event_types: [prompt, shell, file_read, file_write, network]
     blocking: exit-2
     normalizer: _normalize_continue
     sweep_dir: "~/.continue/"
@@ -236,6 +316,7 @@ agents:
     status: shipped
     config_paths: { project: ".agents/plugins/prismor/hooks/hooks.json", user: "~/.agents/plugins/prismor/hooks/hooks.json" }
     events: [PreToolUse, UserPromptSubmit]
+    event_types: [prompt, shell, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_goose
     sweep_dir: "~/.config/goose/"
@@ -254,10 +335,11 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".gemini/settings.json", user: "~/.gemini/settings.json", system: "/etc/gemini-cli/settings.json" }
-    events: [BeforeTool, AfterTool, SessionStart]
+    events: [BeforeTool, AfterTool, SessionStart, BeforeAgent, AfterAgent]
+    event_types: [prompt, memory, shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_gemini
-    notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeAgent, AfterAgent, BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
+    notes: "Built from the public hooks reference; not yet verified against a live gemini binary. Gemini CLI also exposes BeforeModel, BeforeToolSelection, AfterModel and SessionEnd, which Prismor does not hook."
     sources: ["https://geminicli.com/docs/hooks/reference/"]
     mirror:
       status: possible
@@ -272,6 +354,7 @@ agents:
     status: shipped
     config_paths: { project: ".opencode/plugins/", user: "~/.config/opencode/plugins/" }
     events: ["tool.execute.before", "tool.execute.after"]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: throw
     normalizer: _normalize_opencode
     sources: ["https://opencode.ai/docs/plugins/", "https://github.com/sst/opencode/blob/dev/packages/plugin/src/index.ts"]
@@ -406,6 +489,7 @@ agents:
     status: shipped
     config_paths: { project: ".agents/hooks.json", user: "~/.gemini/config/hooks.json" }
     events: [PreToolUse]
+    event_types: [shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_antigravity
     sweep_dir: "~/.antigravity/"
@@ -586,6 +670,54 @@ agents:
     notes: "before_tool_callback(tool, args, tool_context) set on LlmAgent(before_tool_callback=fn) (or as a BasePlugin method, which take precedence over agent-level callbacks). Deny-by-substitution by default, not exception: returning None proceeds with the real tool call; returning a dict SKIPS tool execution and that dict becomes the result instead — the model never sees the tool actually run. raise_on_block=True raises PrismorBlocked instead. Verified live (2026-07) against a real LlmAgent using ADK's LiteLlm wrapper for openai/gpt-4o-mini with a genuine OpenAI key (pip install \"google-adk[extensions]\"): a destructive shell command was denied before the tool's Python implementation ever ran; a benign command executed normally. pip install \"prismor[google-adk]\"."
     sources: ["https://adk.dev/callbacks/types-of-callbacks/", "https://adk.dev/plugins/"]
 
+  - id: agent-framework
+    name: Microsoft Agent Framework
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [function_middleware]
+    blocking: throw
+    normalizer: "prismor_agent_framework"
+    notes: "PrismorMiddleware is a FunctionMiddleware passed as Agent(middleware=[...]); process(context, call_next) wraps every tool invocation and the innermost link runs the function. Deny by not awaiting call_next() and setting context.result to the denial, so the model sees a coherent tool response and the run continues (MiddlewareTermination would end the whole loop); raise_on_block=True raises PrismorBlocked. The tool's output is redacted after call_next. Verified live (2026-10) on agent-framework 1.22.0 with Agent(client=OpenAIChatClient(model='gpt-6-luna')) and a genuine OpenAI key: a curl -d @/etc/passwd upload was denied before the tool's Python implementation ran; a benign lookup executed normally. pip install \"prismor[agent-framework]\"."
+    sources: ["https://learn.microsoft.com/en-us/agent-framework/"]
+
+  - id: llamaindex
+    name: LlamaIndex
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [tool_call]
+    blocking: return-block
+    normalizer: "prismor_llamaindex"
+    notes: "guard_tools([...]) wraps each FunctionTool's _fn/_async_fn, which FunctionTool.call/acall run; FunctionAgent, ReActAgent and AgentWorkflow all execute tools through acall, so one wrap covers every agent type. Plain functions are wrapped in FunctionTool.from_defaults; other BaseTools are guarded at call/acall. A denial is returned as the tool output so the run continues; allowed output is redacted. pip install \"prismor[llamaindex]\"."
+    sources: ["https://docs.llamaindex.ai/en/stable/module_guides/deploying/agents/tools/"]
+
+  - id: smolagents
+    name: Hugging Face smolagents
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [tool_forward]
+    blocking: return-block
+    normalizer: "prismor_smolagents"
+    notes: "guard_agent(agent) / guard_tools([...]) wrap each Tool instance's forward, which Tool.__call__ runs. ToolCallingAgent calls tools directly and CodeAgent's LocalPythonExecutor hands the same tool objects to generated code, so both agent types are covered. CodeAgent's own Python (code that calls no tool) is not a tool call and stays with smolagents' import allowlist/sandbox; remote executors serialize tools and are not covered. final_answer is not screened. pip install \"prismor[smolagents]\"."
+    sources: ["https://huggingface.co/docs/smolagents/tutorials/tools"]
+
+  - id: ag2
+    name: AG2
+    kind: framework
+    surface: sdk
+    status: shipped
+    config_paths: {}
+    events: [on_tool_execution, function_map]
+    blocking: return-block
+    normalizer: "prismor_ag2"
+    notes: "AG2 1.x: prismor_middleware() is a Middleware factory for Agent(middleware=[...]); BaseMiddleware.on_tool_execution wraps every tool execution and a deny returns ToolResultEvent.from_call(event, denial) without awaiting call_next, the same shape as AG2's own approval_required. AG2 0.x (import autogen): guard_agent(executor) wraps every function in the executor's function_map. Distinct from autogen-core (id: autogen-core). pip install \"prismor[ag2]\"."
+    sources: ["https://docs.ag2.ai/"]
+
   - id: mastra
     name: Mastra (TypeScript)
     kind: framework
@@ -594,8 +726,8 @@ agents:
     config_paths: {}
     events: [execute]
     blocking: throw
-    normalizer: "prismor-mastra (npm)"
-    notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install prismor-mastra."
+    normalizer: "@prismor/mastra (npm)"
+    notes: "prismorTool()/prismorTools() wrap a tool's execute function directly (CrewAI/LangChain-style), calling the Prismor eval-server (surface: http sidecar, prismor eval-server --port 7071) before the body runs. CORRECTED FROM ROADMAP: the originally-planned processOutputStep + abort() hook was tested live and found NOT reliable — abort() throws a workflow-level error but the tool's execute function runs anyway regardless (confirmed with timestamped logging against a real agent run, @mastra/core v0.x, 2026-07). Direct execute-wrapping does reliably block, since the wrapped function is what Mastra actually calls. Verified live against a real Agent running gpt-4o-mini (via @ai-sdk/openai) with a genuine OpenAI key and a local eval-server: a destructive shell command was denied before the tool's JS implementation ever ran; a benign command executed normally. npm install @prismor/mastra."
     sources: ["https://mastra.ai/reference/processors/processor-interface", "https://mastra.ai/docs/agents/processors"]
 
   - id: beeai
@@ -698,5 +830,5 @@ agents:
     blocking: none
     normalizer: null
     sweep_dir: "~/.config/herdr/"
-    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged, so there is no Herdr-specific interception surface. Verified live 2026-07-30 against herdr 0.7.5 + prismor 1.32.1 — hook dispatch and cloaking decloak/scrub both confirmed working identically inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
+    notes: "Terminal multiplexer that spawns coding agents in real PTY panes (not a proxy or sandbox); wrapped agents' own hooks fire unchanged. Herdr does not intercept tool calls, but since ~0.8 `herdr integration install <agent>` adds its own SessionStart hook (herdr-agent-state.sh) to the agent's hook config (e.g. ~/.claude/settings.json, ~/.codex/hooks.json) for pane/session detection; the merge is additive and leaves Prismor's entries intact. Verified live 2026-07-30 (herdr 0.7.5 + prismor 1.32.1) and 2026-10-30 (herdr 0.9.5 + prismor 1.68.4) — hook dispatch and cloaking decloak/scrub confirmed working inside a Herdr pane. See AGENT_INTEGRATIONS.md for the full test writeup."
     sources: ["https://herdr.dev/"]

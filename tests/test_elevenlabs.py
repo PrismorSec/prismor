@@ -192,6 +192,36 @@ def test_body_rules_rewrite_the_elevenlabs_request_shape():
     assert el.body_rules("gpt-4o-mini") == {}
 
 
+@pytest.mark.parametrize("model,effort", [
+    # none is rejected with a 400: ask for the lowest effort the model takes
+    ("gpt-5", "minimal"), ("gpt-5-mini", "minimal"), ("gpt-5-nano", "minimal"),
+    ("gpt-5-mini-2025-08-07", "minimal"),
+    ("gpt-6-astra", "low"), ("gpt-6.1-sol", "low"),
+    # none is accepted (and needed for tools on chat completions)
+    ("gpt-5.1", "none"), ("gpt-5.6-luna", "none"), ("gpt-6-luna", "none"), ("gpt-6-sol", "none"),
+])
+def test_body_rules_ask_for_an_effort_the_model_accepts(model, effort):
+    body = {"model": model, "max_tokens": 8192, "temperature": 0.0, "messages": []}
+    assert proxy_mod.apply_body_rules(body, el.body_rules(model))["reasoning_effort"] == effort
+
+
+def test_connect_writes_the_models_lowest_effort_into_the_key_rules(home):
+    fake = FakeElevenLabs([_agent("a1")])
+    el.connect(fake, ["a1"], "https://p.example.com", model="gpt-5-mini")
+    (meta,) = json.loads((home / "proxy.json").read_text())["keys"].values()
+    assert meta["body"]["set"] == {"reasoning_effort": "minimal"}
+
+
+
+@pytest.mark.parametrize("model", ["gpt-5-pro", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-astra-2026-09-01"])
+def test_connect_refuses_models_chat_completions_cannot_serve(home, model):
+    fake = FakeElevenLabs([_agent("a1")])
+    with pytest.raises(el.ElevenLabsError, match="gpt-6-luna"):
+        el.connect(fake, ["a1"], "https://p.example.com", model=model)
+    assert _prompt(fake, "a1")["llm"] == "gemini-2.5-flash"  # agent left untouched
+    assert not (home / "proxy.json").exists()
+
+
 def test_connect_refuses_plain_http(home):
     with pytest.raises(el.ElevenLabsError):
         el.connect(FakeElevenLabs([_agent("a1")]), ["a1"], "http://1.2.3.4:7080")

@@ -1,0 +1,17 @@
+version: "1.0"
+rules:
+  - id: acme-no-prod-db-dump
+    severity: HIGH
+    category: data_exfiltration
+    title: Blocks dumping the production database
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\bpg_dump\b[^\n]*\bprod\b'
+    action: block
+    mode: enforce
+  - id: sudo-command
+    mode: enforce
+    severity: HIGH
+    add_patterns:
+      - '\bdoas\s'

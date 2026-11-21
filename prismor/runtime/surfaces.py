@@ -105,3 +105,16 @@ def ungoverned(workspace: Path) -> List[str]:
     """
     return sorted(a for a, s in resolve(workspace).items()
                   if s["possible"] and not s["active"])
+
+
+def unsupported_present() -> List[str]:
+    """Installed coding agents Prismor cannot intercept at all (sweep-only:
+    no hooks, no mirror). Not a gap Prismor can close, but one the owner must
+    see: everything such an agent runs is unscreened."""
+    try:
+        from prismor.runtime.integrations.registry import by_status
+        return sorted(e.id for e in by_status("sweep-only")
+                      if e.kind == "coding-agent" and e.sweep_dir
+                      and Path(e.sweep_dir).expanduser().exists())
+    except Exception:
+        return []

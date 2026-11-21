@@ -625,6 +625,127 @@ def _resolve_skill_source(entry: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+# ── Skill companion files ───────────────────────────────────────────────────
+#
+# A skill is a directory, not a SKILL.md: the instructions tell the agent to run
+# `python3 scripts/x.py`, and whatever x.py imports is what executes. Scanning
+# only the manifest passed a skill whose scripts/ carried the payload
+# (PrismorSec/prismor#796), so every file beside SKILL.md is read too.
+
+_SKILL_SKIP_DIRS = {".git", "node_modules", ".venv", "venv"}
+_SKILL_MAX_FILES = 500  # a SKILL.md at the top of a big tree must not walk all of it
+# Native code the scanner cannot read; a skill has no reason to ship it.
+_NATIVE_EXTENSIONS = {".so", ".dylib", ".dll", ".exe"}
+
+
+def skill_companion_files(skill_md: Path) -> List[Path]:
+    """Every file in a skill's directory except SKILL.md itself, in walk order."""
+    root = skill_md.parent
+    out: List[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames if d not in _SKILL_SKIP_DIRS)
+        for fn in sorted(filenames):
+            p = Path(dirpath) / fn
+            if p.name == "SKILL.md" and p.parent == root:
+                continue
+            out.append(p)
+            if len(out) >= _SKILL_MAX_FILES:
+                return out
+    return out
+
+
+def _skill_companions(entry: Dict[str, Any]) -> List[Path]:
+    if entry.get("kind") != "skill" or not entry.get("source"):
+        return []
+    return skill_companion_files(Path(entry["source"]))
+
+
+def _read_source(p: Path) -> Optional[str]:
+    try:
+        size = p.stat().st_size
+        if p.suffix not in _SOURCE_EXTENSIONS or size == 0 or size > _MAX_SOURCE_SIZE:
+            return None
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _pyc_source(pyc: Path) -> Optional[Path]:
+    """The .py a cached .pyc belongs to: pkg/__pycache__/mod.cpython-312.pyc -> pkg/mod.py."""
+    if pyc.parent.name == "__pycache__":
+        return pyc.parent.parent / (pyc.name.split(".", 1)[0] + ".py")
+    return pyc.with_suffix(".py")
+
+
+def _pyc_problem(pyc: Path) -> Optional[str]:
+    """Why this .pyc cannot be trusted to be its source, or None if it matches.
+
+    Python writes __pycache__ beside a skill's modules on first import, so a .pyc
+    alone is normal. What is not normal is bytecode that differs from the source
+    it sits next to: with UNCHECKED_HASH invalidation the loader runs it without
+    looking at the .py, which is the #796 bypass. The code objects are compared
+    rather than the header, because a timestamp header's mtime/size is just as
+    forgeable as the flags.
+    """
+    import importlib.util
+    import marshal
+
+    src = _pyc_source(pyc)
+    if not src.is_file():
+        return "compiled bytecode with no matching source"
+    try:
+        data = pyc.read_bytes()
+    except OSError:
+        return None
+    if len(data) < 16:
+        return "truncated bytecode file"
+    flags = int.from_bytes(data[4:8], "little")
+    if flags & 0b01 and not flags & 0b10:
+        return "unchecked-hash bytecode (loaded without checking its source)"
+    if data[:4] != importlib.util.MAGIC_NUMBER:
+        # Another interpreter's cache; this one cannot decode it to compare.
+        return None
+    try:
+        # ponytail: marshal is not hardened against crafted input; a malformed
+        # .pyc can make the scan fail loudly, never pass silently.
+        cached = marshal.loads(data[16:])  # compared, never executed  # nosec B302
+        opt = 2 if ".opt-2." in pyc.name else 1 if ".opt-1." in pyc.name else 0
+        fresh = compile(src.read_bytes(), cached.co_filename, "exec", dont_inherit=True, optimize=opt)
+    except Exception:
+        return "bytecode that does not decode or compile against its source"
+    if cached != fresh:
+        return f"bytecode that does not match {src.name}"
+    return None
+
+
+def _skill_companion_findings(entry: Dict[str, Any], files: List[Path]) -> List[Dict[str, Any]]:
+    """Findings for files beside SKILL.md that cannot be read as source."""
+    name = entry["name"]
+    findings: List[Dict[str, Any]] = []
+    for p in files:
+        if p.suffix in (".pyc", ".pyo"):
+            why = _pyc_problem(p)
+        elif p.suffix in _NATIVE_EXTENSIONS:
+            why = "native binary that cannot be scanned"
+        else:
+            continue
+        if not why:
+            continue
+        rel = os.path.relpath(p, Path(entry["source"]).parent)
+        findings.append({
+            "id": f"skill-opaque-code-{name}-{rel}",
+            "severity": "HIGH",
+            "category": "skill_risk",
+            "title": f"Skill '{name}' ships {why}: {rel}",
+            "evidence": f"file={rel}",
+            "eventIndex": 0,
+            "ruleId": "skill-opaque-code",
+            "action": "warn",
+            "skillName": name,
+        })
+    return findings
+
+
 # ── Schema audit ────────────────────────────────────────────────────────────
 
 # Words in a tool description that strongly suggest the tool can do more than
@@ -1265,6 +1386,10 @@ def _synthesize_event(entry: Dict[str, Any]) -> Dict[str, Any]:
     source_code = _resolve_skill_source(entry)
     if source_code:
         combined += "\n--- source code ---\n" + source_code
+    for p in _skill_companions(entry):
+        text = _read_source(p)
+        if text:
+            combined += f"\n--- {p.name} ---\n" + text
 
     return {
         "type": "skill_manifest",
@@ -1337,13 +1462,20 @@ def scan_skills(
 
         # AST-level dangerous code detection for Python skill sources.
         # Non-Python files fail ast.parse silently and return [].
-        skill_source = _resolve_skill_source(entry)
-        if skill_source:
-            for af in _ast_scan_python(skill_source, entry["name"]):
-                af["skillSource"] = entry.get("source", "")
-                af["agent"] = entry.get("agent", "unknown")
-                af["scope"] = entry.get("scope", "project")
-                findings.append(af)
+        # Skills also run the files beside SKILL.md, so each .py is parsed on its
+        # own (a concatenation of mixed languages would fail ast.parse) and
+        # bytecode or binaries that cannot be read get a finding of their own.
+        companions = _skill_companions(entry)
+        sources = [_resolve_skill_source(entry)]
+        sources += [_read_source(p) for p in companions if p.suffix == ".py"]
+        extra: List[Dict[str, Any]] = _skill_companion_findings(entry, companions)
+        for src in filter(None, sources):
+            extra += _ast_scan_python(src, entry["name"])
+        for af in extra:
+            af["skillSource"] = entry.get("source", "")
+            af["agent"] = entry.get("agent", "unknown")
+            af["scope"] = entry.get("scope", "project")
+            findings.append(af)
 
     if drift_state is not None:
         _save_drift_state(drift_state)

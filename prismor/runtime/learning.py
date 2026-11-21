@@ -13,11 +13,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
+from prismor.runtime import provenance
 from prismor.runtime.store import get_db_path, initialize_database
 
 
@@ -67,6 +69,18 @@ CREATE TABLE IF NOT EXISTS staged_executions (
     detected_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_staged_session ON staged_executions(session_id);
+
+-- Human verdicts from the org console on events this device sent, keyed by
+-- the event id the runtime minted (findings.enrichment_json.eventId). Unlike
+-- dismissals these are decisions a person made, so they outrank them.
+CREATE TABLE IF NOT EXISTS console_labels (
+    event_id TEXT PRIMARY KEY,
+    rule_id TEXT,
+    tool_name TEXT,
+    label TEXT NOT NULL,
+    labeled_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_console_labels_rule ON console_labels(rule_id);
 """
 
 
@@ -190,6 +204,47 @@ def record_dismissal(
 
 _EVASION_THRESHOLD = 0.6
 
+# Rules that decide from session state (earlier calls, tags, files written
+# before) rather than from a pattern in the blocked command's own text. A
+# command blocked by one of these says nothing about the command's shape, so a
+# similar later command is not evading anything (#595). Matched as a whole id
+# or as the prefix of a finding id (`staged-exec-0`, `tag-rule:x-12`).
+_STATEFUL_RULES = (
+    "staged-execution", "staged-exec", "evasion-detection", "evasion",
+    "tag-rule", "tool-contract", "tool-category-crossover", "cross-agent-flow",
+    "taint-escalation", "memory-self-reinforcement", "scoped-agent",
+    "agent-tool-deny", "agent-disabled", "identity-unverified", "iam",
+)
+
+def _is_stateful_rule(rule_id: str) -> bool:
+    return any(
+        rule_id == name or rule_id.startswith(name + "-") or rule_id.startswith(name + ":")
+        for name in _STATEFUL_RULES
+    )
+
+
+def _was_block(enrichment_json: Optional[str]) -> bool:
+    if not enrichment_json:
+        return True  # older rows say nothing either way; keep detecting
+    try:
+        meta = json.loads(enrichment_json) or {}
+    except (ValueError, TypeError):
+        return True
+    return meta.get("action") == "block" and meta.get("mode") != "observe"
+
+
+def _blocking_rule_id(finding_id: str, enrichment_json: Optional[str]) -> str:
+    """The rule behind a stored finding: ``enrichment_json.ruleId``, else the
+    finding id with its session prefix stripped (older rows)."""
+    try:
+        rule_id = (json.loads(enrichment_json or "{}") or {}).get("ruleId")
+    except (ValueError, TypeError, AttributeError):
+        rule_id = None
+    if rule_id:
+        return str(rule_id)
+    return str(finding_id or "").split(":", 1)[-1]
+
+
 
 def detect_evasion(
     workspace: Path,
@@ -229,7 +284,7 @@ def detect_evasion(
         # into `events` before this runs) self-matches at 100%.
         finding_rows = conn.execute(
             """
-            SELECT event_index, finding_id, title, category
+            SELECT event_index, finding_id, title, category, enrichment_json
             FROM findings
             WHERE session_id = ? AND event_index IS NOT NULL
             """,
@@ -249,15 +304,30 @@ def detect_evasion(
 
         evasion_findings = []
         seen_blocked: set = set()
-        for event_index, finding_id, title, category in finding_rows:
+        for event_index, finding_id, title, category, enrichment_json in finding_rows:
             if event_index is None or event_index < 0 or event_index >= len(ordered_cmds):
+                continue
+            # Only a block that came from the command's own text can be evaded
+            # by rewording it. Session-state rules (staged-execution, tag
+            # rules, ...) fire on what happened before, not on the shape.
+            if _is_stateful_rule(_blocking_rule_id(finding_id, enrichment_json)):
+                continue
+            # Only a call that was actually stopped can be evaded. A warning
+            # (observe mode, a warn rule) or a flag on a command's OUTPUT left
+            # nothing to get around, and seeding from those made `prismor query`
+            # an "evasion" of a `prismor status` whose output had been flagged.
+            # A real block is always re-saved with action=block, mode=enforce;
+            # a block-rule that only observed keeps mode=observe.
+            if not _was_block(enrichment_json):
                 continue
             blocked_cmd = ordered_cmds[event_index]
             if not blocked_cmd:
                 continue
-            # The current command passed policy (no findings); never compare it
-            # against itself.
-            if blocked_cmd == command:
+            # The same command again (modulo whitespace) is a retry, not an
+            # evasion: it just passed policy on its own, so whatever blocked it
+            # before was not its text. Also stops the current command, already
+            # snapshotted into `events`, from matching itself.
+            if _WHITESPACE.sub(" ", blocked_cmd.strip()) == _WHITESPACE.sub(" ", command.strip()):
                 continue
             if blocked_cmd in seen_blocked:
                 continue
@@ -308,44 +378,50 @@ def detect_evasion(
 
 # ── Staged-execution detection (write/fetch-then-execute correlation) ────────
 #
-# Closes the cross-call bypass where the dangerous action is split across two
-# tool calls so neither matches a single-command rule:
-#   call 1:  curl -o /tmp/x.sh URL   (or  echo … > /tmp/x.sh,  or a Write tool)
-#   call 2:  bash /tmp/x.sh
-# We track files *created* earlier in the same session (downloads, redirects,
-# tee, file_write events) and flag a later command that executes — or exfils via
-# scp/rsync — one of those paths. The single-command chained form
-# (`curl -o x && bash x`) is caught by also scanning the segments of one command.
-#
-# Safety property: created paths come ONLY from in-session events, so a
-# repo-tracked script (`bash ./scripts/build.sh`) that was never written this
-# session is absent from the set and never fires. We never blanket-flag "running
-# a script" — only "running a script this session created".
+# Correlate downloads with later execution, including across tool calls. Local
+# writes only warrant an execution warning when artifact provenance records
+# untrusted content. File transfers retain their separate write-then-exfil check.
 
 # A path token: double-quoted, single-quoted, or a bare run of non-delimiter chars.
 _PATH_TOK = r"""(?:"[^"]+"|'[^']+'|[^\s;&|<>]+)"""
 
 # CREATED-path extractors (scanned against prior events + earlier segments).
-_RE_CURL_OUT = re.compile(r"\bcurl\b[^\n]*?(?:-o|--output)\s+(" + _PATH_TOK + r")")
-_RE_WGET_OUT = re.compile(r"\bwget\b[^\n]*?(?:-O|--output-document=?)\s*(" + _PATH_TOK + r")")
 _RE_REDIRECT = re.compile(r"(?<![0-9&])>>?\s*(" + _PATH_TOK + r")")
 _RE_TEE = re.compile(r"\btee\b\s+(?:-a\s+)?(" + _PATH_TOK + r")")
 
 # EXECUTED-path extractors (scanned against the current command).
 _INTERP = r"(?:bash|sh|zsh|ksh|dash|python3?|node|nodejs|ruby|perl|php|deno|bun)"
 _RE_INTERP_EXEC = re.compile(r"\b" + _INTERP + r"\b((?:\s+-{1,2}[^\s]+)*)\s+(" + _PATH_TOK + r")")
-_RE_SOURCE_EXEC = re.compile(r"(?:\bsource\b|(?:^|[;&|]\s*)\.)\s+(" + _PATH_TOK + r")")
+# Command position only: `gh repo create --source .` is a flag, not `source .`.
+_RE_SOURCE_EXEC = re.compile(r"(?:^|[;&|(\n]\s*)(?:source|\.)\s+(" + _PATH_TOK + r")")
 _RE_DIRECT_EXEC = re.compile(r"(?:^|[;&|]\s*)(\./" + _PATH_TOK + r"|/" + _PATH_TOK + r")")
 
 # EXFIL extractors (scp / rsync local-source args).
 _RE_SCP = re.compile(r"\bscp\b\s+(.*)")
 _RE_RSYNC = re.compile(r"\brsync\b\s+(.*)")
 _RE_REMOTE_TGT = re.compile(r"^[^/\s]*@?[^/\s]*:")  # host:path / user@host:path
+# A directory is never the script being run (`grep -r x --include=*.sh .`).
+_DIR_TOKENS = {".", "..", "~"}
+_OPT_WITH_ARG = {"-e", "-i", "-P", "-p", "-o", "-F", "-S", "-J", "-l", "-c"}
 
 _NON_FILE_SINKS = {"-", "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/zero", "/dev/tty"}
 # Generic basenames that must NOT match across different paths on basename alone.
 _GENERIC_BASENAMES = {"", "a.out", "main", "index.js", "setup.py", "__init__.py",
                       "manage.py", "app.py", "run.py", "main.py"}
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+_SHELL_BEFORE = re.compile(r"(?:^|[|;&(]\s*)(?:\S*/)?(?:bash|sh|zsh|dash|ksh|ssh)\b[^|;&\n]*$")
+
+
+def _strip_heredocs(command: str) -> str:
+    """Drop heredoc bodies: `cat > f <<EOF` data and `python3 - <<EOF` code are
+    not shell commands, so `Run: python3 x.py` inside one runs nothing. A body
+    fed to a shell (`bash <<EOF`, `ssh h <<EOF`) is kept: it does run."""
+    def sub(m: "re.Match[str]") -> str:
+        line = command[:m.start()].rsplit("\n", 1)[-1]
+        return m.group(0) if _SHELL_BEFORE.search(line) else "<<" + m.group(2)
+    return _HEREDOC.sub(sub, command)
 
 
 def _clean_token(tok: str) -> str:
@@ -362,12 +438,10 @@ def _norm_path(tok: str) -> str:
     return os.path.normpath(os.path.expanduser(tok))
 
 
-def _extract_created_paths(command: str) -> List[Tuple[str, str]]:
+def _extract_created_paths(command: str, cwd: Path) -> List[Tuple[str, str]]:
     """Return [(normalized_path, origin)] for files this command creates."""
     out: List[Tuple[str, str]] = []
     for rx, origin in (
-        (_RE_CURL_OUT, "download"),
-        (_RE_WGET_OUT, "download"),
         (_RE_TEE, "tee"),
         (_RE_REDIRECT, "redirect"),
     ):
@@ -375,6 +449,7 @@ def _extract_created_paths(command: str) -> List[Tuple[str, str]]:
             np = _norm_path(m.group(1))
             if np and np not in _NON_FILE_SINKS:
                 out.append((np, origin))
+    out.extend((path, "download") for path in provenance.fetch_targets(command, cwd))
     return out
 
 
@@ -396,18 +471,58 @@ def _extract_executed_paths(command: str) -> List[str]:
             np = _norm_path(m.group(1))
             if np and np not in _NON_FILE_SINKS:
                 out.append(np)
-    return out
+    return [p for p in out if p not in _DIR_TOKENS and not p.endswith("/")]
+
+
+def _ssh_config_hosts() -> Set[str]:
+    """Host aliases and HostNames the user declared in ~/.ssh/config."""
+    try:
+        text = (Path.home() / ".ssh" / "config").read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return set()
+    hosts: Set[str] = set()
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].lower() in ("host", "hostname"):
+            hosts.update(h.lower() for h in parts[1:] if not any(c in h for c in "*?!"))
+    return hosts
+
+
+def _remote_host(tok: str) -> str:
+    return tok.split(":", 1)[0].rsplit("@", 1)[-1].lower()
 
 
 def _extract_exfil_paths(command: str) -> List[str]:
-    """Return normalized local source paths handed to scp/rsync."""
+    """Return normalized local source paths handed to scp/rsync.
+
+    Only the scp/rsync segment's own arguments count: `scp a h:x && ssh h 'bash ~/b'`
+    does not send `~/b`. A copy whose every remote target is a host the user
+    declared in ~/.ssh/config is their own infrastructure, not exfiltration.
+    """
     out: List[str] = []
-    for rx in (_RE_SCP, _RE_RSYNC):
-        m = rx.search(command)
+    own: Optional[Set[str]] = None
+    for seg in _SHELL_SPLIT.split(command):
+        m = re.match(r"\s*(?:\w+=\S*\s+)*(?:scp|rsync)\s+(.*)", seg, re.S)
         if not m:
             continue
-        for raw in m.group(1).split():
-            tok = _clean_token(raw)
+        try:
+            raw = shlex.split(m.group(1))
+        except ValueError:
+            raw = m.group(1).split()
+        toks, skip = [], False
+        for t in raw:
+            if skip:
+                skip = False
+            elif t in _OPT_WITH_ARG:
+                skip = True  # `-i key.pem`, `-e "ssh -i k"`: an option value, not a file sent
+            else:
+                toks.append(_clean_token(t))
+        remotes = [_remote_host(t) for t in toks if t and not t.startswith("-") and _RE_REMOTE_TGT.match(t)]
+        if remotes:
+            own = _ssh_config_hosts() if own is None else own
+            if all(h in own for h in remotes):
+                continue
+        for tok in toks:
             if not tok or tok.startswith("-") or _RE_REMOTE_TGT.match(tok):
                 continue
             np = _norm_path(tok)
@@ -452,11 +567,10 @@ def _build_staged(
         title = "Exfiltration of in-session-generated file (scp/rsync)"
         verb = "exfiltrates"
     else:
-        # Local write-then-execute. Agents write+run helper scripts constantly,
-        # so warn rather than block; operators can promote `staged_execution`
-        # to a block category in policy for stricter enforcement.
+        # Provenance tracks reused untrusted content, including across sessions.
+        # Preserve the warning severity for this signal.
         category, severity, action = "staged_execution", "MEDIUM", "warn"
-        title = "Staged execution: running a file created earlier this session"
+        title = "Staged execution: running a file containing untrusted content"
         verb = "executes"
     finding = {
         "id": f"{session_id}:staged-exec-0" if session_id else "staged-exec-0",
@@ -465,7 +579,7 @@ def _build_staged(
         "title": title,
         "evidence": (
             f"Command '{command[:160]}' {verb} '{exec_path}' "
-            f"(created via {origin} earlier this session)"
+            f"(origin: {origin})"
         ),
         "ruleId": "staged-execution",
         "action": action,
@@ -475,35 +589,57 @@ def _build_staged(
 
 
 def _match_command(
-    command: str, created: Dict[str, str], session_id: str
+    command: str, created: Dict[str, str], session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
-    for ex in _extract_executed_paths(command):
-        hit = _match_against(ex, created)
+    # (path, cwd it runs in): `cd ui && node src/t.js` runs ui/src/t.js.
+    shell = _strip_heredocs(command)
+    executed = [(ex, seg_cwd) for seg, seg_cwd in provenance.segment_cwds(shell, cwd)
+                for ex in _extract_executed_paths(seg)]
+    downloads = {path: origin for path, origin in created.items() if origin == "download"}
+    for ex, seg_cwd in executed:
+        hit = _match_against(provenance.resolve(ex, seg_cwd or cwd), downloads)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
-    for ex in _extract_exfil_paths(command):
-        hit = _match_against(ex, created)
+    artifacts = provenance.load() if executed else {}
+    for ex, seg_cwd in executed:
+        if "$" in ex or (seg_cwd is None and not os.path.isabs(ex)):
+            # `python $S/run.py`, or a relative path after `cd $S`: the key would
+            # be a guess under <cwd> that every session shares.
+            continue
+        path = provenance.resolve(ex, seg_cwd)
+        if "untrusted_content" in artifacts.get(path, {}).get("tags", []):
+            return _build_staged(session_id, command, path, "untrusted_content", ex, exfil=False)
+    for ex in _extract_exfil_paths(shell):
+        hit = _match_against(ex, created) or _match_against(provenance.resolve(ex, cwd), created)
         if hit:
             return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
     return None
 
 
 def _scan_intra_command(
-    command: str, session_id: str
+    command: str, session_id: str, cwd: Path
 ) -> Optional[Tuple[Dict[str, Any], Tuple[str, str, str, str, str]]]:
     """Catch the single-command chained form: `curl -o x && bash x`."""
     seen: Dict[str, str] = {}
-    for seg in _SHELL_SPLIT.split(command):
+    start = 0
+    # Scan each prefix so pipelines retain their fetch provenance without
+    # letting a later download taint an earlier execution of the same path.
+    boundaries = [(m.start(), m.end()) for m in _SHELL_SPLIT.finditer(command)]
+    for end, next_start in boundaries + [(len(command), len(command))]:
+        seg = command[start:end]
+        start = next_start
+        downloads = {path: origin for path, origin in seen.items() if origin == "download"}
         for ex in _extract_executed_paths(seg):
-            hit = _match_against(ex, seen)
+            hit = _match_against(provenance.resolve(ex, cwd), downloads)
             if hit:
                 return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=False)
         for ex in _extract_exfil_paths(seg):
-            hit = _match_against(ex, seen)
+            hit = _match_against(ex, seen) or _match_against(provenance.resolve(ex, cwd), seen)
             if hit:
                 return _build_staged(session_id, command, hit[0], hit[1], ex, exfil=True)
-        for cp, origin in _extract_created_paths(seg):
-            seen.setdefault(cp, origin)
+        for cp, origin in _extract_created_paths(command[:end], cwd):
+            if origin == "download" or cp not in seen:
+                seen[cp] = origin
     return None
 
 
@@ -512,6 +648,14 @@ def _persist_staged_conn(
 ) -> None:
     now = datetime.now(timezone.utc).isoformat()
     for category, created_path, origin, exec_path, command in records:
+        # The same call is screened pre and post, and by both hook scopes when
+        # both are installed: one row per (session, file, command), not four.
+        if conn.execute(
+            "SELECT 1 FROM staged_executions WHERE session_id = ? AND created_path = ?"
+            " AND executing_command = ? LIMIT 1",
+            (session_id, created_path[:1000], command[:4000]),
+        ).fetchone():
+            continue
         conn.execute(
             """
             INSERT INTO staged_executions
@@ -544,66 +688,52 @@ def detect_staged_execution(
     event: Dict[str, Any],
     current_findings: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Flag a passing shell command that executes/exfils a file created earlier
-    in the same session (write-then-exec, fetch-then-exec, scp of a staged file).
+    """Block staged downloads; warn on untrusted script content or staged exfil.
 
-    Only runs when the event has no findings (it passed policy checks). Returns
-    at most one HIGH-severity, action=block finding.
+    Informational cross-agent provenance findings do not suppress this check.
     """
-    if current_findings:
+    if any(f.get("ruleId") != "cross-agent-flow" or f.get("action") != "log"
+           for f in current_findings):
         return []
 
     command = event.get("command", "")
     if not command:
         return []
+    cwd = Path((event.get("metadata") or {}).get("cwd") or workspace)
 
-    # ── Intra-command pass (no DB needed) ──
-    intra = _scan_intra_command(command, session_id)
+    intra = _scan_intra_command(command, session_id, cwd)
     if intra is not None:
         finding, record = intra
         _persist_staged(workspace, session_id, [record])
         return [finding]
 
-    # ── Cross-event pass ──
+    created: Dict[str, str] = {}
     db_path = get_db_path(workspace)
-    if not db_path.exists():
-        return []
-
-    conn = sqlite3.connect(db_path)
-    try:
-        initialize_learning_tables(conn)
-        rows = conn.execute(
-            "SELECT id, type, command_text, path_text FROM events "
-            "WHERE session_id = ? ORDER BY id ASC",
-            (session_id,),
-        ).fetchall()
-        # Drop the current event (highest id) — save_session_snapshot already
-        # persisted it, and it would otherwise self-match.
-        if rows:
-            rows = rows[:-1]
-
-        created: Dict[str, str] = {}
-        for _id, etype, cmd_text, path_text in rows:
+    if db_path.exists():
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT type, command_text, path_text FROM events "
+                "WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        # The current event was already persisted by save_session_snapshot.
+        for etype, cmd_text, path_text in rows[:-1]:
             if etype == "file_write" and path_text:
-                np = _norm_path(path_text)
-                if np:
-                    created.setdefault(np, "write")
+                created.setdefault(_norm_path(path_text), "write")
             elif etype == "shell" and cmd_text:
-                for cp, origin in _extract_created_paths(cmd_text):
-                    created.setdefault(cp, origin)
+                for cp, origin in _extract_created_paths(cmd_text, cwd):
+                    if origin == "download" or cp not in created:
+                        created[cp] = origin
 
-        if not created:
-            return []
-
-        result = _match_command(command, created, session_id)
-        if result is None:
-            return []
-
-        finding, record = result
-        _persist_staged_conn(conn, session_id, [record])
-        return [finding]
-    finally:
-        conn.close()
+    result = _match_command(command, created, session_id, cwd)
+    if result is None:
+        return []
+    finding, record = result
+    _persist_staged(workspace, session_id, [record])
+    return [finding]
 
 
 # ── Pattern mining ─────────────────────────────────────────────────────────
@@ -718,10 +848,78 @@ _FIXTURE_SESSIONS_SQL = """
 """
 
 
-def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
-    """Find rules that have been dismissed more than threshold times.
+# ── Console labels (human verdicts) ────────────────────────────────────────
 
-    Returns a list of dicts with rule_id, dismissal_count, and recommendation.
+def save_console_labels(workspace: Path, labels: List[Dict[str, Any]]) -> int:
+    """Store labels from ``GET /api/devices/labels``. A relabel on the console
+    arrives as a newer row for the same event and replaces the old one."""
+    rows = [
+        (str(l["eventId"]), l.get("ruleId"), l.get("toolName"), str(l["label"]), str(l.get("at") or ""))
+        for l in labels
+        if isinstance(l, dict) and l.get("eventId") and l.get("label")
+    ]
+    if not rows:
+        return 0
+    db_path = initialize_database(workspace)
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        conn.executemany(
+            "INSERT OR REPLACE INTO console_labels (event_id, rule_id, tool_name, label, labeled_at) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
+
+
+def console_labels_cursor(workspace: Path) -> Optional[str]:
+    """The newest label time already stored: the `since` for the next pull."""
+    db_path = get_db_path(workspace)
+    if not db_path.exists():
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        initialize_learning_tables(conn)
+        row = conn.execute("SELECT MAX(labeled_at) FROM console_labels").fetchone()
+    finally:
+        conn.close()
+    return row[0] if row and row[0] else None
+
+
+def _console_verdicts(conn: sqlite3.Connection) -> Dict[str, Dict[str, Any]]:
+    """Per rule: human TP and FP counts, plus the local evidence of the FPs
+    (joined by event id; the console of a redacted org never had it)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    rows = conn.execute(
+        """
+        SELECT c.rule_id, c.label, f.evidence
+        FROM console_labels c
+        LEFT JOIN findings f ON json_extract(f.enrichment_json, '$.eventId') = c.event_id
+        WHERE c.rule_id IS NOT NULL AND c.label IN ('true_positive', 'false_positive')
+        """
+    ).fetchall()
+    for rule_id, label, evidence in rows:
+        r = out.setdefault(rule_id, {"tp": 0, "fp": 0, "fp_evidence": []})
+        if label == "true_positive":
+            r["tp"] += 1
+        else:
+            r["fp"] += 1
+            if evidence and len(r["fp_evidence"]) < 3:
+                r["fp_evidence"].append(evidence)
+    return out
+
+
+def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str, Any]]:
+    """Find rules that are likely too noisy.
+
+    Two sources. A rule a human marked false positive on the console is
+    reported from the first label: that is a decision, not a guess. A rule
+    dismissed ``threshold`` times locally is reported as before. A rule with
+    any human true-positive label is pinned: it is still listed, but the
+    recommendation is to keep it and narrow it, never to lower or allow it.
+
     Self-test sessions (see ``_FIXTURE_SESSIONS_SQL``) are excluded.
     """
     db_path = get_db_path(workspace)
@@ -731,6 +929,10 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     conn = sqlite3.connect(db_path)
     try:
         initialize_learning_tables(conn)
+        try:
+            verdicts = _console_verdicts(conn)
+        except sqlite3.Error:
+            verdicts = {}  # no findings table yet, or a SQLite without JSON1
         rows = conn.execute(
             f"""
             SELECT rule_id, COUNT(*) as cnt,
@@ -750,20 +952,43 @@ def track_false_positives(workspace: Path, threshold: int = 5) -> List[Dict[str,
     finally:
         conn.close()
 
+    dismissed = {rule_id: (count, reasons, evidences) for rule_id, count, reasons, evidences in rows}
     results = []
-    for rule_id, count, reasons, evidences in rows:
-        sample_evidence = (evidences or "").split("|||")[:3]
+    for rule_id in list(dismissed) + [r for r in verdicts if r not in dismissed]:
+        count, reasons, evidences = dismissed.get(rule_id, (0, None, None))
+        v = verdicts.get(rule_id, {"tp": 0, "fp": 0, "fp_evidence": []})
+        if not v["fp"] and rule_id not in dismissed:
+            continue  # only true positives: nothing to tune
+        sample_evidence = v["fp_evidence"] or (evidences or "").split("|||")[:3]
+        if v["tp"]:
+            recommendation = (
+                f"Rule '{rule_id}' has {v['tp']} confirmed true positive(s) "
+                f"and {v['fp']} confirmed false positive(s). Keep it: narrow its "
+                "pattern to skip the false-positive shape, do not lower or allow it."
+            )
+        elif v["fp"]:
+            recommendation = (
+                f"Rule '{rule_id}' was marked false positive {v['fp']} time(s) by a "
+                "reviewer on the console. Add a narrow allowlist entry for that shape."
+            )
+        else:
+            recommendation = (
+                f"Rule '{rule_id}' has been dismissed {count} times. "
+                "Consider lowering severity or adding an allowlist entry."
+            )
         results.append({
             "rule_id": rule_id,
             "dismissal_count": count,
+            "confirmed_fp": v["fp"],
+            "confirmed_tp": v["tp"],
+            "pinned": bool(v["tp"]),
             "reasons": reasons,
             "sample_evidence": sample_evidence,
-            "recommendation": (
-                f"Rule '{rule_id}' has been dismissed {count} times. "
-                "Consider lowering severity or adding an allowlist entry."
-            ),
+            "recommendation": recommendation,
         })
 
+    # Human-confirmed first, then by local dismissals.
+    results.sort(key=lambda r: (-r["confirmed_fp"], -r["dismissal_count"]))
     return results
 
 

@@ -188,6 +188,30 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _tree_sha256(skill_md: Path) -> str:
+    """Hash of every file beside SKILL.md (names + bytes).
+
+    The agent runs the skill's scripts, not just reads its SKILL.md, so a swapped
+    scripts/ file or __pycache__ .pyc must read as "changed" too (#796).
+    """
+    # ponytail: rehashes every companion file each audit (~130ms warm for 400
+    # skills / 3.6k files); cache per-file digests by (size, mtime_ns, ctime_ns)
+    # if SessionStart latency matters.
+    from prismor.runtime.scanner import skill_companion_files
+
+    root = skill_md.parent
+    h = hashlib.sha256()
+    for f in skill_companion_files(skill_md):
+        h.update(os.path.relpath(f, root).encode() + b"\0")
+        try:
+            with f.open("rb") as fh:
+                h.update(fh.read(_MAX_BYTES))
+        except OSError:
+            pass
+        h.update(b"\0")
+    return h.hexdigest()
+
+
 def _frontmatter(text: str) -> Dict[str, str]:
     m = _FRONTMATTER_RE.match(text)
     if not m:
@@ -269,16 +293,22 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
         except OSError:
             continue
         digest = _sha256(path)
+        tree = _tree_sha256(path)
         fm = _frontmatter(text)
         key = str(path)
         prior = baseline.get(key) if isinstance(baseline.get(key), dict) else None
         if prior is None:
             status = "new"
             if record:
-                baseline[key] = {"sha256": digest, "first_seen": now, "approved": False}
+                baseline[key] = {"sha256": digest, "tree_sha256": tree, "first_seen": now, "approved": False}
                 changed_baseline = True
-        elif prior.get("sha256") == digest:
+        elif prior.get("sha256") == digest and prior.get("tree_sha256", tree) == tree:
             status = "approved" if prior.get("approved") else "unchanged"
+            if record and "tree_sha256" not in prior:
+                # Baselines from before the tree hash: adopt the current tree
+                # once rather than flag every reviewed skill as changed.
+                prior["tree_sha256"] = tree
+                changed_baseline = True
         else:
             status = "changed"
 
@@ -288,7 +318,7 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
             # still tracks it: a later edit reads as "changed" and is audited.
             status, findings = "bundled", []
         else:
-            cache_key = f"{digest}:{rules_fp}"
+            cache_key = f"{digest}:{tree}:{rules_fp}"
             findings = cache.get(cache_key)
             if not isinstance(findings, list):
                 try:
@@ -332,6 +362,7 @@ def approve_skill(workspace: Path, path: Path) -> Dict[str, Any]:
     key = str(path)
     entry = {
         "sha256": _sha256(path),
+        "tree_sha256": _tree_sha256(path),
         "first_seen": (baseline.get(key) or {}).get("first_seen") or datetime.now(timezone.utc).isoformat(),
         "approved": True,
         "approved_at": datetime.now(timezone.utc).isoformat(),

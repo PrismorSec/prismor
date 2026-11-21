@@ -24,3 +24,25 @@ def test_odd_versions_do_not_raise():
     assert _is_newer("1.44.0.dev1", "1.43.0")
     for bad in ("", "not-a-version", "..."):
         _is_newer(bad, "1.43.0")  # must not raise
+
+
+def _notice(monkeypatch, capsys, **env):
+    from prismor.runtime import immunity_cli, version_check
+    for k in ("PRISMOR_NO_UPDATE_CHECK", "AI_AGENT", "CLAUDECODE", "CODEX_THREAD_ID",
+              "CODEX_SANDBOX", "CURSOR_AGENT", "GEMINI_CLI"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(version_check, "latest_known_version", lambda: "999.0.0")
+    immunity_cli._update_notice()
+    return capsys.readouterr().err
+
+
+def test_notice_shows_in_a_human_terminal(monkeypatch, capsys):
+    assert "999.0.0 is available" in _notice(monkeypatch, capsys)
+
+
+def test_notice_is_not_shown_to_an_agent(monkeypatch, capsys):
+    # Agents relayed it into answers about something else (demo finding #7).
+    assert _notice(monkeypatch, capsys, CLAUDECODE="1") == ""
+    assert _notice(monkeypatch, capsys, CODEX_THREAD_ID="t") == ""

@@ -12,6 +12,7 @@ import base64
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -321,11 +322,42 @@ def test_cloak_placeholders_resolve_on_the_way_out_and_mask_on_the_way_in(editor
     editor.terminal_output = f"Authorization: Bearer {cloak}\n"
     report, _ = editor.prompt({"op": "run", "command": "bash", "args": [
         "-c", "curl -s -H 'X-Token: @@SECRET:deploy_token@@' https://api.example.com/whoami"]})
-    # The editor ran the real value …
-    assert cloak in editor.seen[0]["params"]["args"][1]
+    # M1: no raw value crosses the pipe; the editor runs the resolver, which
+    # reads the vault itself and expands the placeholder as data.
+    sent = editor.seen[0]["params"]
+    assert cloak not in json.dumps(editor.seen)
+    assert sent["command"] == "bash" and sent["args"][0].endswith("decloak-exec.sh")
+    env = {e["name"]: e["value"] for e in sent["env"]}
+    assert "@@SECRET:deploy_token@@" in env["PRISMOR_CLOAK_CMD"]
     # … and the agent only ever sees the placeholder.
     assert cloak not in json.dumps(report)
     assert "@@SECRET:deploy_token@@" in report["ok"]["output"]
+
+
+def test_cloaked_terminal_runs_the_value_as_data(editor, cloak, tmp_path):
+    """M1: what the editor is handed resolves to the value, never runs it."""
+    (tmp_path / "secrets" / "evil").write_text("$(touch pwned1)'; touch pwned2; '")
+    report, _ = editor.prompt({"op": "run", "command": "printf '[%s]' @@SECRET:deploy_token@@ '@@SECRET:evil@@'",
+                               "env": [{"name": "TOK", "value": "@@SECRET:deploy_token@@"}]})
+    sent = editor.seen[0]["params"]
+    assert cloak not in json.dumps(editor.seen)
+    env = {**os.environ, **{e["name"]: e["value"] for e in sent["env"]}}
+    run = subprocess.run([sent["command"], *sent["args"]], env=env, cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert run.stdout == f"[{cloak}][$(touch pwned1)'; touch pwned2; ']"
+    assert not list(tmp_path.glob("pwned*"))
+    run = subprocess.run([sent["command"], *sent["args"]], env={**env, "PRISMOR_CLOAK_CMD":
+                         env["PRISMOR_CLOAK_CMD"].split("\n")[0] + "\nprintf %s \"$TOK\""},
+                         cwd=tmp_path, capture_output=True, text=True)
+    assert run.stdout == cloak   # an env placeholder is exported to the command
+
+
+def test_resolved_terminal_command_is_screened_again(editor, cloak, tmp_path):
+    """M1: a secret can carry what the placeholder form hid."""
+    (tmp_path / "secrets" / "boom").write_text("x; rm -rf /")
+    report, _ = editor.prompt({"op": "run", "command": "echo @@SECRET:boom@@"})
+    assert "resolved" in report["error"]["message"]
+    assert editor.methods() == []
 
 
 def test_read_masks_and_write_back_restores_the_secret(editor, cloak):

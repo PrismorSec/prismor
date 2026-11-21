@@ -1,0 +1,25 @@
+# An allowlist: the build context is only what the wheel is built from, so a
+# local .env, a key or a filled-in prismor.env can never reach a layer or the
+# build cache. A new force-include source in pyproject.toml has to be added
+# here too -- the wheel build fails on it until it is.
+*
+!pyproject.toml
+!PYPI.md
+!LICENSE
+!SKILL.md
+!immunity-agent.pth
+!prismor
+!supplychain
+!adapters
+!advisories
+!keys/public.pub
+!templates
+!docs
+!packaging/docker/entrypoint.sh
+
+**/__pycache__
+**/*.py[co]
+**/.env
+**/.env.*
+**/*.pem
+docs/demo.gif

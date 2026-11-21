@@ -33,6 +33,8 @@ BLOCKED_COMMANDS = [
     "prismor allow secret-exfiltration --off --yes",
     "prismor allow destructive-command --pattern 'rm -rf /'",
     "prismor policy edit",
+    "prismor policy pack add acme/policies@v1",
+    "prismor policy pack remove acme-baseline",
     "prismor unlock",
     "prismor lock",
     "prismor pause",
@@ -64,9 +66,21 @@ BLOCKED_COMMANDS = [
     # Other runtime state that governs enforcement.
     "echo '{}' > ~/.prismor/pause.json",
     "rm ~/.prismor/identity.json",
+    # The signed org-policy cache: an older signed policy written back is a rollback.
+    "cp /tmp/old.yaml ~/.prismor/remote-policy.yaml",
+    "cp /tmp/old.sig ~/.prismor/remote-policy.yaml.sig",
+    "echo '{}' > ~/.prismor/remote-policy.hwm.json",
     # The local dashboard's unauthenticated write API.
     "curl -X PUT http://127.0.0.1:7070/api/policy/rules -d '{}'",
     "curl -X POST http://localhost:7070/api/agents/claude -d '{}'",
+    "curl -sXPATCH http://127.0.0.1:7070/api/sessions/abc/control --json '{}'",
+    "curl --request=POST http://127.0.0.1:7070/api/pause",
+    "curl -s http://127.0.0.1:7070/api/pause $FLAGS",
+    "curl -K req.cfg http://127.0.0.1:7070/api/policy",
+    "wget --method=PUT http://localhost:7070/api/policy",
+    "cd /x && curl http://127.0.0.1:7070/api/approvals -d '{\"id\":1}'",
+    "python3 -c \"import urllib.request as u;u.urlopen('http://127.0.0.1:7070/api/pause',data=b'{}')\"",
+    "echo hi; nc localhost 7070 /api/policy",
     # Wrappers whose only purpose would be to disguise one of the above.
     "script -q /dev/null prismor allow risky-write --off",
     # Wrapped in a shell, which is how the anchoring would otherwise be
@@ -85,6 +99,12 @@ BLOCKED_COMMANDS = [
     "python3 -m prismor.runtime.cli session share --public",
     "bash -c 'prismor session share --public'",
     "script -q /dev/null prismor session share --public",
+    # Which real secret a placeholder unlocks is the human's call too.
+    "prismor cloak add OPENAI_KEY --from-ref op://Private/OpenAI/credential",
+    "cd /x && prismor cloak add k --from-ref agentcore://us-east-1/cli/openai",
+    "python3 -m prismor.runtime.cli cloak add k --from-ref okta-pam://t/g/p/s",
+    "bash -c 'prismor cloak add k --from-ref op://v/i/f'",
+    "echo '{}' > ~/.prismor/secret-sources.json",
 ]
 
 # Things an agent legitimately does, which must keep working.
@@ -101,6 +121,7 @@ ALLOWED_COMMANDS = [
     "prismor sessions --findings-only",
     "prismor deps",
     "prismor policy show",
+    "prismor policy pack list",
     # Asking is not editing: the request only lands in the console for an
     # admin to decide, so the agent may file it on the user's behalf.
     "prismor egress request www.linkedin.com --reason 'research task'",
@@ -121,8 +142,23 @@ ALLOWED_COMMANDS = [
     "prismor session share",
     "prismor session share --org",
     "prismor session share --with bob@example.com",
+    # Refreshing references a person set up, or vaulting a value the agent
+    # already holds, changes nothing about which secrets it can reach.
+    "prismor cloak sync",
+    "prismor cloak sync OPENAI_KEY",
+    "prismor cloak list",
+    "prismor cloak add k --from-file /tmp/v",
+    'grep -n "from-ref" docs/sweep-and-cloak.md',
     "prismor session https://www.prismor.dev/s/Tk9x",
     'grep -n "session share --public" SKILL.md',
+    # Reading the dashboard API is not writing it: every GET on these routes
+    # is read-only. An agent checking why a session search came back empty
+    # was blocked for exactly this.
+    "curl -s 'http://127.0.0.1:7070/api/sessions?q=i%20added%20in%20secrets'",
+    "curl -fsSL http://localhost:7070/api/policy | jq .",
+    "d=/tmp/x; sed -n 1,5p $d/store.py; curl -s --max-time 30 'http://127.0.0.1:7070/api/sessions?q=c88c21eb' | head -c 400",
+    "curl -s http://127.0.0.1:7070/api/sessions | python3 -c \"import sys,json;print(json.load(sys.stdin)['total'])\"",
+    "wget -qO- http://127.0.0.1:7070/api/approvals",
 ]
 
 
@@ -213,6 +249,262 @@ class TestSelfProtectionCannotBeSwitchedOff(unittest.TestCase):
                 self.assertIsNotNone(
                     allow.check_allowed(rule_id, scope="pattern", workspace=d, confirmed=True)
                 )
+
+    def test_committed_named_allowlist_cannot_suppress_self_protection(self):
+        # GHSA-v6vw-pfgj-4mg8 item 3: a repo-committed policy names the rule and
+        # a narrow pattern instead of the blanket `*` / `.*` form #671 rejects.
+        eng = _engine(
+            'version: "1.0"\nallowlists:\n'
+            "  - id: repo-ships-this\n"
+            "    rule_ids: [agent-config-tampering, agent-config-tampering-path, prismor-self-edit]\n"
+            "    patterns: ['settings\\.json', 'policy\\.yaml', 'prismor']\n"
+        )
+        for event in (
+            {"type": "shell", "command": "echo '{}' > .claude/settings.json"},
+            {"type": "file_write", "path": "/work/.prismor/policy.yaml"},
+            {"type": "shell", "command": "prismor allow destructive-command --off --yes"},
+        ):
+            with self.subTest(event=event):
+                findings = eng.evaluate(event, index=0)
+                self.assertIsNotNone(should_block(findings, {**PRE, "type": event["type"]}))
+
+
+class TestContainerBindMountSelfProtection(unittest.TestCase):
+    """Bind mounts that expose the host policy must not suppress
+    self-protection findings (issues #898, #912)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.eng = _engine(_render_selection_policy([]))
+
+    _MOUNT_CASES = [
+        (
+            "local substitution in SSH command",
+            "ssh remote \"$(docker run -v .:/h image sh -c "
+            "'echo x > /h/.prismor/policy.yaml')\"",
+        ),
+        (
+            "volume root bind",
+            'docker run -v /:/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount bind from root",
+            'docker run --mount type=bind,source=/,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume absolute home",
+            'docker run -v /home/user:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "podman --mount bind",
+            'podman run --mount type=bind,source=/home,target=/h image sh -c '
+            '"rm /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount source before type",
+            'docker run --mount source=/,type=bind,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount src= alias",
+            'docker run --mount type=bind,src=/,target=/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount= with equals",
+            'docker run --mount=type=bind,source=/home,target=/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount with $HOME",
+            'docker run --mount type=bind,source=$HOME,target=/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /root bind",
+            'docker run -v /root:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /Users/ bind",
+            'docker run -v /Users/dev:/host image sh -c '
+            '"echo x > /host/.prismor/policy.yaml"',
+        ),
+        (
+            "volume parent /home",
+            'docker run -v /home:/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume parent /Users",
+            'docker run -v /Users:/h image sh -c '
+            '"echo x > /h/dev/.prismor/policy.yaml"',
+        ),
+        (
+            "volume /home/ trailing slash",
+            'docker run -v /home/:/h image sh -c '
+            '"echo x > /h/user/.prismor/policy.yaml"',
+        ),
+        (
+            "volume macOS /var/root",
+            'docker run -v /var/root:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "--mount source=~",
+            'docker run --mount type=bind,source=~,target=/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume through ..",
+            'docker run -v /tmp/../home/user:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "volume from a variable",
+            'D=/home/user; docker run -v $D:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+        (
+            "clustered short flags",
+            'docker run -itv /:/host image sh -c '
+            '"echo x > /host/home/user/.prismor/policy.yaml"',
+        ),
+        (
+            "windows drive path",
+            'docker run -v C:\\Users\\dev:/h image sh -c '
+            '"echo x > /h/.prismor/policy.yaml"',
+        ),
+    ]
+
+    # Binds that cannot reach this install: the payload stays remote.
+    _NON_HOST_CASES = [
+        ("--mount /tmp", 'docker run --mount type=bind,source=/tmp/x,target=/x image'),
+        ("--mount project dir", 'docker run --mount type=bind,source=/Users/dev/proj,target=/x image'),
+        ("named volume", 'docker run --mount type=volume,source=vol,target=/x image'),
+        ("short named volume", 'docker run -v vol:/x image'),
+        ("default volume type", 'docker run --mount source=vol,target=/x image'),
+        ("volume type after source", 'docker run --mount source=vol,target=/x,type=volume image'),
+        ("Windows project bind", r'docker run --mount type=bind,source=C:\work,target=/x image'),
+        ("remote policy", 'ssh remote'),
+        ("relative mount on SSH host", 'ssh remote docker run -v .:/h image'),
+        ("volume /rootfs", 'docker run -v /rootfs:/x image'),
+        ("volume /homework", 'docker run -v /homework:/x image'),
+        ("volume project under home", 'docker run -v /home/user/proj:/app image'),
+    ]
+
+    def test_non_host_binds_stay_remote(self):
+        for label, prefix in self._NON_HOST_CASES:
+            with self.subTest(label=label):
+                command = prefix + ' sh -c "echo x > /home/user/.prismor/policy.yaml"'
+                findings = self.eng.evaluate({"type": "shell", "command": command}, index=0)
+                sp = [f for f in findings if f.get("ruleId") in _SELF_PROTECTION_RULE_IDS]
+                self.assertTrue(sp, f"no self-protection finding: {label}")
+                self.assertTrue(all(f.get("contextInert") for f in sp), f"not inert: {label}")
+
+    def test_bind_mount_commands_are_blocked(self):
+        for label, command in self._MOUNT_CASES:
+            with self.subTest(label=label):
+                event = {"type": "shell", "command": command}
+                findings = self.eng.evaluate(event, index=0)
+                blocking = should_block(findings, {**PRE, "type": "shell"})
+                self.assertIsNotNone(blocking, f"not blocked: {label}")
+
+    def test_relative_binds_keep_self_protection_but_allow_ordinary_calls(self):
+        prefixes = [
+            'docker run -v .:/h image',
+            'docker run -v "./:/h" image',
+            'podman run --volume ./config:/h image',
+            'nerdctl run --volume=config/:/h image',
+            'docker run -v nested/path:/h image',
+            'docker run --mount type=bind,src=.,target=/h image',
+            'docker run --mount type=bind,source=config,target=/h image',
+            'podman run --mount="source=config,target=/h,type=bind" image',
+        ]
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                command = 'cd ~ && ' + prefix + ' sh -c "echo x > /h/.prismor/policy.yaml"'
+                event = {**PRE, "type": "shell", "command": command}
+                blocking = should_block(self.eng.evaluate(event, index=0), event)
+                self.assertIsNotNone(blocking)
+                self.assertIn(blocking["ruleId"], _SELF_PROTECTION_RULE_IDS)
+                event["command"] = 'cd ~ && ' + prefix + ' sh -c "cat /etc/hostname"'
+                self.assertIsNone(should_block(self.eng.evaluate(event, index=0), event))
+
+    def test_container_without_host_mount_is_remote(self):
+        command = (
+            'docker run image sh -c '
+            '"echo x > /home/user/.prismor/policy.yaml"'
+        )
+        event = {"type": "shell", "command": command}
+        findings = self.eng.evaluate(event, index=0)
+        for f in findings:
+            if f.get("ruleId") in _SELF_PROTECTION_RULE_IDS:
+                self.assertTrue(
+                    f.get("contextInert", False),
+                    "container without host mount should be inert",
+                )
+
+    def test_kubectl_payloads_fail_closed_on_local_cluster(self):
+        """A pod's hostPath isn't on the command line (issue #912). On a local
+        cluster it can be this machine's policy dir; on a remote one it can't."""
+        P = 'sh -c "echo x > /h/.prismor/policy.yaml"'
+        cmds = [
+            f"kubectl exec pod -- {P}",
+            f"kubectl -n default exec -it pod -- {P}",
+            f"oc exec pod -- {P}",
+            f"kubectl debug node/n -it --image=busybox -- {P}",
+        ]
+
+        def blocks(command):
+            event = {**PRE, "type": "shell", "command": command}
+            b = should_block(self.eng.evaluate(event, index=0), event)
+            return b is not None and b["ruleId"] in _SELF_PROTECTION_RULE_IDS
+
+        with tempfile.TemporaryDirectory() as d:
+            cfg = os.path.join(d, "config")
+            for ctx, local in [("kind-dev", True), ("minikube", True),
+                               ("docker-desktop", True), ("k3d-test", True),
+                               ("arn:aws:eks:us-east-1:1:cluster/prod", False),
+                               ("gke_proj_zone_prod", False)]:
+                with open(cfg, "w") as f:
+                    f.write(f"apiVersion: v1\ncurrent-context: {ctx}\n")
+                with mock.patch.dict(os.environ, {"KUBECONFIG": cfg}):
+                    for command in cmds:
+                        with self.subTest(ctx=ctx, command=command):
+                            self.assertEqual(blocks(command), local)
+            # --context on the command line wins over the kubeconfig.
+            with mock.patch.dict(os.environ, {"KUBECONFIG": cfg}):  # gke_ (remote)
+                self.assertTrue(blocks(f"kubectl --context kind-x exec pod -- {P}"))
+            self.assertTrue(blocks(f"kubectl --kubeconfig {cfg} --context=minikube exec pod -- {P}"))
+            self.assertFalse(blocks(f"kubectl --kubeconfig={cfg} exec pod -- {P}"))
+        # Unknown context: stays remote (#344).
+        self.assertFalse(blocks(f"kubectl exec pod -- {P}"))
+
+    def test_compose_payloads_fail_closed(self):
+        """Compose-file volumes aren't on the command line (issue #912), so
+        compose payloads keep self-protection."""
+        P = 'sh -c "echo x > /h/.prismor/policy.yaml"'
+        for prefix in [
+            "docker compose run svc",
+            "docker compose exec svc",
+            "podman compose run svc",
+        ]:
+            with self.subTest(prefix=prefix):
+                event = {**PRE, "type": "shell", "command": f"{prefix} {P}"}
+                blocking = should_block(self.eng.evaluate(event, index=0), event)
+                self.assertIsNotNone(blocking)
+                self.assertIn(blocking["ruleId"], _SELF_PROTECTION_RULE_IDS)
+        for command in [
+            'docker compose run svc sh -c "cat /etc/hostname"',
+            "kubectl get pods",
+        ]:
+            with self.subTest(command=command):
+                event = {**PRE, "type": "shell", "command": command}
+                self.assertIsNone(should_block(self.eng.evaluate(event, index=0), event))
 
 
 class TestUnblockMessage(unittest.TestCase):

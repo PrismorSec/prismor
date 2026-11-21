@@ -38,7 +38,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8"]
+dev = ["build", "pytest", "cryptography>=41", "PyJWT[crypto]>=2.8",
+       # Runs only the tests a change can reach (pytest --testscope). .github/workflows/tests.yml
+       "testscope>=0.3; python_version >= '3.9'", "pytest-xdist"]
 # Kept so existing `pip install "prismor[signing]"` commands still resolve;
 # cryptography is now a core dependency.
 signing = ["cryptography>=41"]
@@ -48,6 +50,14 @@ identity = ["PyJWT[crypto]>=2.8"]
 # LLM layer of the semantic prompt-injection guard on hosts without the Claude
 # Code CLI: routes to any provider via litellm. `pip install "prismor[semantic]"`.
 semantic = ["litellm>=1.40"]
+# NER PII detection (Microsoft Presidio). Off until settings.pii.enabled.
+# The spaCy model is a separate download: python -m spacy download en_core_web_sm
+# `pip install "prismor[pii]"`. Python 3.9+ (Presidio does not publish 3.8 wheels).
+pii = [
+    "presidio-analyzer>=2.2.354; python_version >= '3.9'",
+    "presidio-anonymizer>=2.2.354; python_version >= '3.9'",
+    "spacy>=3.7,<4; python_version >= '3.9'",
+]
 # Framework adapters ship inside this package (prismor.<framework>);
 # the extras just pull the framework itself so `pip install "prismor[langchain]"`
 # is a one-liner. See adapters/ for the sources and docs/frameworks-*.
@@ -60,12 +70,13 @@ autogen-core = ["autogen-core>=0.4"]
 agno = ["agno>=1.0"]
 semantic-kernel = ["semantic-kernel>=1.0"]
 google-adk = ["google-adk>=1.0"]
+agent-framework = ["agent-framework>=1.0"]
+llamaindex = ["llama-index-core>=0.12"]
+smolagents = ["smolagents>=1.0"]
+ag2 = ["ag2>=0.9"]
 beeai = ["beeai-framework>=0.1"]
-# Live-verified separately from the rest of this list, against an
-# authenticated Claude Code CLI session rather than the shared OpenAI key
-# (the SDK needs real Anthropic auth to run at all) — see
-# prismor.claude_agent_sdk's module docstring and
-# adapters/claude-agent-sdk/README.md for the verification methodology.
+# Live-verified with an ANTHROPIC_API_KEY (the SDK runs the bundled claude
+# CLI) — see docs/frameworks-claude-agent-sdk.md for the method.
 claude-agent-sdk = ["claude-agent-sdk>=0.1"]
 frameworks = [
     "langchain-core>=0.2",
@@ -77,6 +88,10 @@ frameworks = [
     "agno>=1.0",
     "semantic-kernel>=1.0",
     "google-adk>=1.0",
+    "agent-framework>=1.0",
+    "llama-index-core>=0.12",
+    "smolagents>=1.0",
+    "ag2>=0.9",
     "beeai-framework>=0.1",
     "claude-agent-sdk>=0.1",
 ]
@@ -112,6 +127,10 @@ packages = [
     "adapters/agno/prismor_agno",
     "adapters/semantic-kernel/prismor_semantic_kernel",
     "adapters/google-adk/prismor_google_adk",
+    "adapters/agent-framework/prismor_agent_framework",
+    "adapters/llamaindex/prismor_llamaindex",
+    "adapters/smolagents/prismor_smolagents",
+    "adapters/ag2/prismor_ag2",
     "adapters/beeai/prismor_beeai",
     "adapters/claude-agent-sdk/prismor_claude_agent_sdk",
 ]
@@ -129,6 +148,10 @@ packages = [
 "adapters/agno/prismor/agno/__init__.py" = "prismor/agno/__init__.py"
 "adapters/semantic-kernel/prismor/semantic_kernel/__init__.py" = "prismor/semantic_kernel/__init__.py"
 "adapters/google-adk/prismor/google_adk/__init__.py" = "prismor/google_adk/__init__.py"
+"adapters/agent-framework/prismor/agent_framework/__init__.py" = "prismor/agent_framework/__init__.py"
+"adapters/llamaindex/prismor/llamaindex/__init__.py" = "prismor/llamaindex/__init__.py"
+"adapters/smolagents/prismor/smolagents/__init__.py" = "prismor/smolagents/__init__.py"
+"adapters/ag2/prismor/ag2/__init__.py" = "prismor/ag2/__init__.py"
 "adapters/beeai/prismor/beeai/__init__.py" = "prismor/beeai/__init__.py"
 "adapters/claude-agent-sdk/prismor/claude_agent_sdk/__init__.py" = "prismor/claude_agent_sdk/__init__.py"
 "immunity-agent.pth" = "immunity-agent.pth"
@@ -150,23 +173,31 @@ packages = [
 "docs/attestation-bundle.md" = "prismor/runtime/data/docs/attestation-bundle.md"
 "docs/attribute-conditions.md" = "prismor/runtime/data/docs/attribute-conditions.md"
 "docs/audit-trail.md" = "prismor/runtime/data/docs/audit-trail.md"
+"docs/authority-changes.md" = "prismor/runtime/data/docs/authority-changes.md"
 "docs/authzen.md" = "prismor/runtime/data/docs/authzen.md"
 "docs/canary.md" = "prismor/runtime/data/docs/canary.md"
+"docs/chatgpt.md" = "prismor/runtime/data/docs/chatgpt.md"
+"docs/claude-cowork.md" = "prismor/runtime/data/docs/claude-cowork.md"
 "docs/cli-reference.md" = "prismor/runtime/data/docs/cli-reference.md"
 "docs/cloud-agents.md" = "prismor/runtime/data/docs/cloud-agents.md"
 "docs/connecting-to-the-platform.md" = "prismor/runtime/data/docs/connecting-to-the-platform.md"
+"docs/copilot-studio.md" = "prismor/runtime/data/docs/copilot-studio.md"
 "docs/dashboard.md" = "prismor/runtime/data/docs/dashboard.md"
 "docs/data-boundary.md" = "prismor/runtime/data/docs/data-boundary.md"
 "docs/decision-contract.md" = "prismor/runtime/data/docs/decision-contract.md"
 "docs/deploy-docker.md" = "prismor/runtime/data/docs/deploy-docker.md"
 "docs/deploy-intune.md" = "prismor/runtime/data/docs/deploy-intune.md"
 "docs/deploy-jamf.md" = "prismor/runtime/data/docs/deploy-jamf.md"
+"docs/deploy-workspace-one.md" = "prismor/runtime/data/docs/deploy-workspace-one.md"
 "docs/dev-insights.md" = "prismor/runtime/data/docs/dev-insights.md"
 "docs/docker.md" = "prismor/runtime/data/docs/docker.md"
 "docs/elevenlabs.md" = "prismor/runtime/data/docs/elevenlabs.md"
 "docs/enterprise-tool-access.md" = "prismor/runtime/data/docs/enterprise-tool-access.md"
+"docs/event-types.md" = "prismor/runtime/data/docs/event-types.md"
 "docs/extensions.md" = "prismor/runtime/data/docs/extensions.md"
 "docs/faq.md" = "prismor/runtime/data/docs/faq.md"
+"docs/frameworks-ag2.md" = "prismor/runtime/data/docs/frameworks-ag2.md"
+"docs/frameworks-agent-framework.md" = "prismor/runtime/data/docs/frameworks-agent-framework.md"
 "docs/frameworks-agno.md" = "prismor/runtime/data/docs/frameworks-agno.md"
 "docs/frameworks-autogen-core.md" = "prismor/runtime/data/docs/frameworks-autogen-core.md"
 "docs/frameworks-beeai.md" = "prismor/runtime/data/docs/frameworks-beeai.md"
@@ -175,16 +206,20 @@ packages = [
 "docs/frameworks-crewai.md" = "prismor/runtime/data/docs/frameworks-crewai.md"
 "docs/frameworks-google-adk.md" = "prismor/runtime/data/docs/frameworks-google-adk.md"
 "docs/frameworks-langchain.md" = "prismor/runtime/data/docs/frameworks-langchain.md"
+"docs/frameworks-llamaindex.md" = "prismor/runtime/data/docs/frameworks-llamaindex.md"
 "docs/frameworks-mastra.md" = "prismor/runtime/data/docs/frameworks-mastra.md"
 "docs/frameworks-openai-agents.md" = "prismor/runtime/data/docs/frameworks-openai-agents.md"
 "docs/frameworks-overview.md" = "prismor/runtime/data/docs/frameworks-overview.md"
 "docs/frameworks-pydantic-ai.md" = "prismor/runtime/data/docs/frameworks-pydantic-ai.md"
 "docs/frameworks-semantic-kernel.md" = "prismor/runtime/data/docs/frameworks-semantic-kernel.md"
+"docs/frameworks-smolagents.md" = "prismor/runtime/data/docs/frameworks-smolagents.md"
 "docs/frameworks-vercel-ai.md" = "prismor/runtime/data/docs/frameworks-vercel-ai.md"
 "docs/getting-started.md" = "prismor/runtime/data/docs/getting-started.md"
 "docs/glossary.md" = "prismor/runtime/data/docs/glossary.md"
 "docs/governance-surfaces.md" = "prismor/runtime/data/docs/governance-surfaces.md"
 "docs/hermes.md" = "prismor/runtime/data/docs/hermes.md"
+"docs/hosted-evaluation.md" = "prismor/runtime/data/docs/hosted-evaluation.md"
+"docs/hosted-proxy.md" = "prismor/runtime/data/docs/hosted-proxy.md"
 "docs/iam.md" = "prismor/runtime/data/docs/iam.md"
 "docs/identity-verification.md" = "prismor/runtime/data/docs/identity-verification.md"
 "docs/inference-hook.md" = "prismor/runtime/data/docs/inference-hook.md"
@@ -193,6 +228,7 @@ packages = [
 "docs/live-telemetry.md" = "prismor/runtime/data/docs/live-telemetry.md"
 "docs/llm-proxy.md" = "prismor/runtime/data/docs/llm-proxy.md"
 "docs/mcp-gateway.md" = "prismor/runtime/data/docs/mcp-gateway.md"
+"docs/mcp-hub.md" = "prismor/runtime/data/docs/mcp-hub.md"
 "docs/memory-integrity.md" = "prismor/runtime/data/docs/memory-integrity.md"
 "docs/modes.md" = "prismor/runtime/data/docs/modes.md"
 "docs/n8n.md" = "prismor/runtime/data/docs/n8n.md"
@@ -200,14 +236,20 @@ packages = [
 "docs/observability.md" = "prismor/runtime/data/docs/observability.md"
 "docs/openclaw.md" = "prismor/runtime/data/docs/openclaw.md"
 "docs/pause-and-login.md" = "prismor/runtime/data/docs/pause-and-login.md"
+"docs/pii.md" = "prismor/runtime/data/docs/pii.md"
 "docs/policy-layers-and-exemptions.md" = "prismor/runtime/data/docs/policy-layers-and-exemptions.md"
+"docs/policy-packs.md" = "prismor/runtime/data/docs/policy-packs.md"
 "docs/prismor-runtime.md" = "prismor/runtime/data/docs/prismor-runtime.md"
 "docs/prompt-guardrails.md" = "prismor/runtime/data/docs/prompt-guardrails.md"
 "docs/query-your-data.md" = "prismor/runtime/data/docs/query-your-data.md"
+"docs/residual-risk.md" = "prismor/runtime/data/docs/residual-risk.md"
+"docs/sandbox.md" = "prismor/runtime/data/docs/sandbox.md"
 "docs/scoped-agent.md" = "prismor/runtime/data/docs/scoped-agent.md"
 "docs/sdk-integration.md" = "prismor/runtime/data/docs/sdk-integration.md"
 "docs/semantic-guard.md" = "prismor/runtime/data/docs/semantic-guard.md"
+"docs/shadow-discovery.md" = "prismor/runtime/data/docs/shadow-discovery.md"
 "docs/skill-scanner.md" = "prismor/runtime/data/docs/skill-scanner.md"
+"docs/subagent-limits.md" = "prismor/runtime/data/docs/subagent-limits.md"
 "docs/subagents.md" = "prismor/runtime/data/docs/subagents.md"
 "docs/supply-chain.md" = "prismor/runtime/data/docs/supply-chain.md"
 "docs/sweep-and-cloak.md" = "prismor/runtime/data/docs/sweep-and-cloak.md"
@@ -215,6 +257,7 @@ packages = [
 "docs/telemetry-receipts.md" = "prismor/runtime/data/docs/telemetry-receipts.md"
 "docs/telemetry-sinks.md" = "prismor/runtime/data/docs/telemetry-sinks.md"
 "docs/tool-access-precedence.md" = "prismor/runtime/data/docs/tool-access-precedence.md"
+"docs/tool-contracts.md" = "prismor/runtime/data/docs/tool-contracts.md"
 "docs/tool-tags.md" = "prismor/runtime/data/docs/tool-tags.md"
 "docs/transcript-ingest.md" = "prismor/runtime/data/docs/transcript-ingest.md"
 
@@ -239,3 +282,9 @@ include = [
     "PYPI.md",
     "LICENSE",
 ]
+
+# Type checking is advisory (not a CI gate). Scoped to shipped code so a local
+# venv/, build/ or a nested worktree is never walked (#585). See CONTRIBUTING.md.
+[tool.pyright]
+include = ["prismor", "adapters", "supplychain"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", "venv", "build", "dist"]

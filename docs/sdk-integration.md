@@ -46,6 +46,10 @@ url|content, metadata{tool_name, framework, args, kwargs} }`. `type` selects the
 matched field: `shell→command`, `file_read|file_write→path`, `network→url`,
 `prompt|tool_result→content`.
 
+> **Hosted evaluation (enterprise):** set `PRISMOR_EVAL_URL` and `PRISMOR_EVAL_KEY`
+> and the runtime sends each call to a Prismor-run evaluator instead of the
+> local engine. See [hosted-evaluation.md](hosted-evaluation.md).
+
 ## Multi-tenant subjects
 
 One deployed agent serves many users. Attribute each call with `use_subject`
@@ -115,7 +119,7 @@ with use_subject("user:alice"):
 ### Vercel AI SDK / any language (HTTP)
 Run the sidecar: `prismor eval-server --port 7071 --workspace .`
 ```ts
-import { prismorTools } from "prismor-warden";
+import { prismorTools } from "@prismor/vercel-ai";
 const tools = prismorTools({ run_shell, search_web }, { subject: `user:${userId}` });
 await generateText({ model, tools, prompt });
 ```

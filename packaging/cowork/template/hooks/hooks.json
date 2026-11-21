@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}],
+    "SessionEnd": [{"matcher": "*", "hooks": [{"type": "command", "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/prismor-hook.sh\""}]}]
+  }
+}

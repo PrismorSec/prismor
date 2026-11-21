@@ -180,7 +180,10 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
     )
     req.add_header("User-Agent", _http_user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:  # fixed or operator-configured URL  # nosec B310
+        # On the hot path (no explicit interval) a slow control plane must not
+        # hold the tool call: 8s showed up as 15s PostToolUse stalls (#716).
+        # The next debounce window retries.
+        with urllib.request.urlopen(req, timeout=8 if interval is not None else 3) as resp:  # fixed or operator-configured URL  # nosec B310
             body = json.loads(resp.read().decode("utf-8"))
         _identity.clear_revoked()
         _spool.clear_backoff()
@@ -200,6 +203,13 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
     except (urllib.error.URLError, OSError):
         _spool.note_upload_failure(now)
         return False
+
+    # Org vault: its own signed endpoint, synced only when its signal moves.
+    # Runs before the policy pull so a slow vault never delays a policy change
+    # by more than its own short timeout.
+    if "secretsSig" in body:
+        from prismor.runtime.cloaking import managed as _managed
+        _managed.maybe_sync(body.get("secretsSig"))
 
     latest = body.get("version")
     version_changed = latest is not None and latest != cur
@@ -323,11 +333,35 @@ def check_and_refresh(interval: Optional[float] = None) -> bool:
         latest_identity_sig is not None
         and str(latest_identity_sig) != str(_current_identity_sig())
     )
-    if (version_changed or profile_changed or capture_changed or guardrails_changed
+    # Copilot Studio's tenant + app allowlist (settings.copilot_studio), also
+    # served without a version bump: registering a tenant in the console must
+    # reach the eval-server before its first /validate times out.
+    latest_cs_sig = body.get("copilotStudioSig")
+    copilot_studio_changed = (
+        latest_cs_sig is not None
+        and str(latest_cs_sig) != str(_settings_block_sig("copilot_studio"))
+    )
+    # Extensions an org admin reviewed in the console (settings.extension_reviews),
+    # served without a version bump; a review should reach the device's next
+    # session rather than wait for some other change.
+    latest_ext_reviews_sig = body.get("extensionReviewsSig")
+    ext_reviews_changed = (
+        latest_ext_reviews_sig is not None
+        and str(latest_ext_reviews_sig) != str(_settings_block_sig("extension_reviews"))
+    )
+    # Agent connections (settings.agent_connections): drawing or removing an
+    # edge between two agents applies without a version bump.
+    latest_conn_sig = body.get("agentConnectionsSig")
+    connections_changed = (
+        latest_conn_sig is not None
+        and str(latest_conn_sig) != str(_settings_block_sig("agent_connections"))
+    )
+    if (version_changed or profile_changed or capture_changed or guardrails_changed or ext_reviews_changed
             or repos_changed or controls_changed or rule_ex_changed
             or egress_changed or tool_denies_changed or subject_controls_changed
             or device_mode_changed or tool_tags_changed or pause_changed
-            or self_edit_changed or identity_changed):
+            or self_edit_changed or identity_changed or copilot_studio_changed
+            or connections_changed):
         return fetch(force=True)
     return False
 
@@ -371,6 +405,8 @@ def _current_rule_exemptions_sig() -> str:
         lines = sorted(
             f"{e.get('id')}:{e.get('ruleId') or ''}:{e.get('scope') or ''}:"
             f"{e.get('scopeId') or ''}:{e.get('action') or 'allow'}:{e.get('expires') or ''}"
+            # Appended only when set, so signatures of older entries are unchanged.
+            + (f":{e['pattern']}" if e.get("pattern") else "")
             for e in exemptions if isinstance(e, dict) and e.get("id")
         )
         if not lines:
@@ -472,7 +508,7 @@ def _current_pause_sig() -> str:
         if not isinstance(pause, dict) or not pause:
             return ""
         import hashlib
-        blob = json.dumps(pause, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(pause, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -531,7 +567,7 @@ def _current_self_edit_sig() -> str:
         if not isinstance(rec, dict) or not rec:
             return ""
         import hashlib
-        blob = json.dumps(rec, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(rec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -558,7 +594,7 @@ def _current_egress_sig() -> str:
                 return ""
             egress = {"egress_allowlist": sorted(str(x) for x in legacy)}
         import hashlib
-        blob = json.dumps(egress, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(egress, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -571,6 +607,21 @@ def _current_prompt_guardrails_sig() -> str:
     try:
         pol = verify_and_load()
         block = ((pol or {}).get("settings") or {}).get("prompt_guardrails")
+        if not isinstance(block, dict) or not block:
+            return ""
+        import hashlib
+        blob = json.dumps(block, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _settings_block_sig(key: str) -> str:
+    """Canonical JSON of settings.<key> → sha256 → 16 hex (empty when unset),
+    matching the server's blockSig for that block."""
+    try:
+        pol = verify_and_load()
+        block = ((pol or {}).get("settings") or {}).get(key)
         if not isinstance(block, dict) or not block:
             return ""
         import hashlib
@@ -613,7 +664,7 @@ def _current_tool_tags_sig() -> str:
         if not isinstance(tags, dict) or not tags:
             return ""
         import hashlib
-        blob = json.dumps(tags, sort_keys=True, separators=(",", ":"))
+        blob = json.dumps(tags, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
     except Exception:
         return ""
@@ -650,6 +701,84 @@ def _verify_signature(payload: bytes, sig_b64: str) -> bool:
     return result.ok
 
 
+_HWM_SKEW_SECONDS = 300
+
+
+def _hwm_path() -> Path:
+    return _policy_home() / "remote-policy.hwm.json"
+
+
+def _as_epoch(v: Any) -> Optional[float]:
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _signed_binding_ok(parsed: Dict[str, Any]) -> bool:
+    """Freshness and binding checks on fields INSIDE the signed bytes.
+
+    A signature alone says "the org signed this once", so any older signed
+    policy (one that paused enforcement, or predates a block rule) could be
+    written back over the cache. When the console includes a ``_signed`` block
+    it is enforced: device/org must match this device, ``expires_at`` must be
+    in the future, and ``issued_at`` may never go backwards (high-water mark).
+    The unsigned meta.json is never consulted. Absent block = legacy console:
+    accepted, so existing deployments keep working.
+    """
+    signed = parsed.get("_signed")
+    if signed is None:
+        # Once this device has applied a bound policy, an unbound one can only
+        # be an older replay (the console always binds now): refuse it.
+        if _hwm_path().exists():
+            sys.stderr.write("[prismor] remote policy carries no device binding but a bound one was applied — ignoring\n")
+            return False
+        return True
+    if not isinstance(signed, dict):
+        return False
+    # A system install's non-admin users see only the public identity, and a
+    # $PRISMOR_AGENT_KEY identity carries no ids at all (the console binds them
+    # server-side from the key). Compare only ids this side actually knows; the
+    # issued_at high-water mark below still blocks replays of older policy.
+    ident = _identity.load_identity() or _identity.keyless_identity() or {}
+    for field in ("device_id", "org_id"):
+        want = signed.get(field)
+        have = ident.get(field)
+        if want is not None and have is not None and str(want) != str(have):
+            sys.stderr.write(f"[prismor] remote policy is bound to another {field} — ignoring\n")
+            return False
+    now = time.time()
+    exp = _as_epoch(signed.get("expires_at"))
+    if signed.get("expires_at") is not None and (exp is None or exp <= now):
+        sys.stderr.write("[prismor] remote policy has expired — ignoring\n")
+        return False
+    issued = _as_epoch(signed.get("issued_at"))
+    if signed.get("issued_at") is not None and issued is None:
+        return False
+    if issued is not None:
+        try:
+            hwm = float(json.loads(_hwm_path().read_text(encoding="utf-8")).get("issued_at", 0))
+        except (OSError, ValueError, TypeError, AttributeError):
+            hwm = 0.0
+        # Several console instances sign; tolerate small clock skew between them.
+        if issued < hwm - _HWM_SKEW_SECONDS:
+            sys.stderr.write("[prismor] remote policy is older than one already applied — ignoring\n")
+            return False
+        if issued > hwm:
+            try:
+                tmp = _hwm_path().with_suffix(".tmp")
+                tmp.write_text(json.dumps({"issued_at": issued}), encoding="utf-8")
+                os.replace(tmp, _hwm_path())
+            except OSError:
+                pass
+    return True
+
+
 def verify_and_load() -> Optional[Dict[str, Any]]:
     """Load and verify the cached remote policy. Returns the parsed policy dict
     (with a ``_remote_meta`` key) or None if absent / unverifiable.
@@ -676,10 +805,24 @@ def verify_and_load() -> Optional[Dict[str, Any]]:
             return None
         try:
             import yaml
-            parsed = yaml.safe_load(payload.decode("utf-8"))
+
+            # The server writes ISO times unquoted (device_pause.at). Stock
+            # safe_load turns them into datetimes, which pause.py can't parse
+            # and the *Sig helpers can't json.dumps, so an org pause was
+            # silently ignored and re-pulled forever. Keep the exact string.
+            class _Loader(yaml.SafeLoader):
+                pass
+
+            _Loader.add_constructor(
+                "tag:yaml.org,2002:timestamp", lambda loader, node: loader.construct_scalar(node)
+            )
+            # SafeLoader subclass; the timestamp tag stays a string so pause.py can parse it.
+            parsed = yaml.load(payload.decode("utf-8"), Loader=_Loader)  # nosec B506
         except Exception:
             return None
         if not isinstance(parsed, dict):
+            return None
+        if not _signed_binding_ok(parsed):
             return None
         _VERIFIED.clear()
         _VERIFIED[key] = parsed
@@ -757,6 +900,24 @@ def fetch(ttl: float = DEFAULT_TTL_SECONDS, force: bool = False) -> bool:
         return False
     if not _verify_signature(policy_yaml.encode("utf-8"), signature):
         sys.stderr.write("[prismor] fetched remote policy failed verification — discarding\n")
+        return False
+
+    # A signed but malformed quota must not replace the last good signed
+    # policy: rejecting it only at engine merge would drop the previous org
+    # limit on the next process. Validate before touching either cache file.
+    try:
+        import yaml
+        from prismor.runtime.ratelimit import validate_settings, validate_repeat_limits
+        _settings = (yaml.safe_load(policy_yaml) or {}).get("settings") or {}
+        if ("mcp_tool_repeat_limits" in _settings
+                and validate_repeat_limits(_settings["mcp_tool_repeat_limits"])):
+            sys.stderr.write("[prismor] fetched remote policy has invalid mcp_tool_repeat_limits settings — discarding\n")
+            return False
+        if "rate_limit" in _settings and validate_settings(_settings["rate_limit"]):
+            sys.stderr.write("[prismor] fetched remote policy has invalid rate_limit settings — discarding\n")
+            return False
+    except (ValueError, TypeError, AttributeError, yaml.YAMLError):
+        sys.stderr.write("[prismor] fetched remote policy is malformed — discarding\n")
         return False
 
     # Developer-facing transparency: detect the org flipping capture mode.

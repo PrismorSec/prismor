@@ -12,9 +12,10 @@ the pipeline) keeps blocking.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
-from typing import List, NamedTuple, Tuple
+from typing import List, NamedTuple, Optional, Pattern, Tuple
 
 # Commands whose quoted argument is executed, not printed. A match inside one of
 # these payloads is code and must never be downgraded.
@@ -278,7 +279,8 @@ def _blank(text: str, spans) -> str:
 # .toml - CI workflows and package.json scripts DO get executed.
 _TEXT_FILE_EXTS = frozenset({".md", ".markdown", ".txt", ".log", ".rst", ".adoc", ".csv", ".tsv"})
 _TEXT_DEVICES = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"})
-_REDIRECT_RE = re.compile(r"\d*(?:&>>?|>>?\|?)\s*(&\d+|[^\s;&|<>]+)")
+# `&\s*\d+`: the dequoted spelling of `2>&1` is `2 >& 1`.
+_REDIRECT_RE = re.compile(r"\d*(?:&>>?|>>?\|?)\s*(&\s*\d+|&-|[^\s;&|<>]+)")
 
 
 def _redirects_to_text(segment: str, command: str) -> bool:
@@ -298,6 +300,18 @@ def _redirects_to_text(segment: str, command: str) -> bool:
             return False
         if command.count(name) != 1:
             return False
+    return True
+
+
+def _is_separator(bare: str, k: int) -> bool:
+    """``bare[k]`` ends a pipeline segment. The ``&`` of a redirect (``2>&1``,
+    ``&>file``, ``>&2``) does not: splitting there cut ``echo "..." 2>&1`` into
+    a redirect with no target, which read as live."""
+    ch = bare[k]
+    if ch not in _SEPARATORS:
+        return False
+    if ch == "&" and ((k > 0 and bare[k - 1] in "<>") or bare[k + 1:k + 2] == ">"):
+        return False
     return True
 
 
@@ -334,6 +348,21 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
     # command, hiding a trailing ``; python3 x.py`` from the interpreter check.
     spans = quoted_spans(_blank(command, hspans))
     bare = _blank(_outside_quotes(command, spans), hspans)
+
+    lead, trimmed = match_start, match_end
+    while lead < trimmed and command[lead].isspace():
+        lead += 1  # a `(?:^|\s)` anchor takes the newline before the body
+    while trimmed > lead and command[trimmed - 1].isspace():
+        trimmed -= 1
+    for h in hdocs:
+        if h.body_start <= lead and trimmed <= h.body_end and _is_text_heredoc(command, h):
+            # Still live where the shell expands the body: `$(...)` in an
+            # unquoted-delimiter body runs as the heredoc is read.
+            body = command[h.body_start:h.body_end]
+            return not (h.expands and any(
+                match_start < h.body_start + b and trimmed > h.body_start + a
+                for a, b in command_substitution_spans(body)
+            ))
 
     for word in bare.replace(_SEPARATORS[0], " ").replace(_SEPARATORS[1], " ").replace(_SEPARATORS[2], " ").split():
         if word.rsplit("/", 1)[-1] in _INTERPRETERS:
@@ -380,11 +409,11 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
             continue
         seg_start = 0
         for k in range(start):
-            if bare[k] in _SEPARATORS:
+            if _is_separator(bare, k):
                 seg_start = k + 1
         seg_end = len(command)
         for k in range(start, len(command)):
-            if bare[k] in _SEPARATORS:
+            if _is_separator(bare, k):
                 seg_end = k
                 break
         segment = bare[seg_start:seg_end]
@@ -398,6 +427,9 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
             return len(tokens) > 1 and tokens[1] in _GH_TEXT_SUBCOMMANDS
         if argv0 == "git":
             return len(tokens) > 1 and tokens[1] in _GIT_MESSAGE_SUBCOMMANDS
+        if argv0 in ("prismor", "immunity"):
+            # `prismor check "<cmd>"` evaluates the text; it never runs it.
+            return len(tokens) > 1 and tokens[1] in ("check", "semantic-check")
         return argv0 in _INERT_SINKS
     return False
 
@@ -456,8 +488,118 @@ def _is_remote_argument(words: List[str]) -> bool:
     return not (prev.startswith("-") and prev != "--" and not _PAYLOAD_FLAG.match(prev))
 
 
+# A bind of this machine's home, policy dir, or root, or chroot of `/`,
+# still reaches THIS install. The payload is not someone else's Prismor.
+# `:/` on its own matches every absolute destination (`-v /tmp:/tmp`).
+# Relative sources can also expose this install: their working directory is
+# unknown here, so they cannot establish that a policy write is remote.
+def _host_source(c: str) -> str:
+    """Bind source that can expose this install: `/`, a home dir or its
+    parent (`/home`, `/home/u`, not `/home/u/proj`), the policy dir, or a
+    path we can't resolve statically (relative paths, `..`, `$VAR`). ``c``
+    is the class of characters allowed by the surrounding flag syntax."""
+    seg = c[:-1] + r"/\\]"  # one path component: c minus separators
+    return (
+        "(?:"
+        r"/"
+        r"|~/?"
+        rf"|/(?:home|Users)(?:/{seg}*)?/?"
+        r"|/(?:var/)?root/?"
+        rf"|{c}*/\.prismor{c}*"
+        rf"|{c}*\.\.{c}*"
+        rf"|{c}*\${c}*"
+        rf"|\.{c}*"
+        rf"|(?![/\\]|[A-Za-z]:){c}*[/\\]{c}*"
+        rf"|[A-Za-z]:[\\/]Users(?:[\\/]{seg}*)?[\\/]?"
+        rf"|//[A-Za-z]/Users(?:/{seg}*)?/?"
+        ")"
+    )
+
+
+# `-v SRC:DST`, also clustered short flags (`-itv`). Sources stop at `:`.
+_VOLUME_FLAG = r"(?:(?<![\w-])-[A-Za-z]*v|--volume)(?:=|\s+)[\"']?"
+# `--mount k=v,...` with `src`/`source` anywhere in the list.
+_MOUNT_FLAG = r"--mount(?:=|\s+)[\"']?"
+_MOUNT_FIELDS = r"(?:[^\s,\"']*,)*"
+_MOUNT_SOURCE = _MOUNT_FLAG + _MOUNT_FIELDS + r"(?:src|source)="
+# A bare name is a relative path only for an explicit bind, not a named volume.
+_BIND_SOURCE = (_MOUNT_FLAG + r"(?=" + _MOUNT_FIELDS + r"type=bind(?:[,\s\"']|$))"
+                + _MOUNT_FIELDS + r"(?:src|source)=")
+
+_HOST_POLICY_MOUNT = re.compile(
+    r"\b(?:docker|podman|nerdctl)\b[^\n]*"
+    r"(?:"
+    + _VOLUME_FLAG + _host_source(r"[^\s:\"']") + r"(?::|[\s\"']|$)"
+    + r"|" + _VOLUME_FLAG + r"[^\s:\"']*:/(?:[\s\"']|$)"
+    + r"|" + _MOUNT_SOURCE + _host_source(r"[^\s,\"']") + r"(?=[,\s\"']|$)"
+    + r"|" + _BIND_SOURCE + r"(?![/\\]|[A-Za-z]:)[^\s,\"']+(?=[,\s\"']|$)"
+    + r")"
+)
+_CHROOT_HOST_ROOT = re.compile(r"\bchroot\s+/(?:\s|$)")
+# Compose declares its mounts in a file, not on the command line (issue
+# #912), so a compose payload can't prove it is remote. Fail closed.
+# ponytail: no compose-file parse; noisy only when the payload itself touches
+# a policy path. Parse `volumes:` with _host_source if that bites.
+_COMPOSE = re.compile(
+    r"\b(?:docker|podman|nerdctl)\b[^\n]*\scompose\s"
+)
+
+# A pod's hostPath isn't on the command line either (issue #912). When the
+# cluster runs on this machine, that mount can be this install's policy dir.
+_KUBE_EXEC = re.compile(r"\b(?:kubectl|oc)\s(?:[^\n]*\s)?(?:exec|debug|run|attach)\s")
+_KUBE_FLAG = r"--{}(?:=|\s+)[\"']?([^\s\"']+)"
+_LOCAL_KUBE_CONTEXT = re.compile(
+    r"(?:kind|k3d|minikube|docker-desktop|docker-for-desktop|rancher-desktop"
+    r"|orbstack|colima|microk8s|k3s|kubernetes-admin@kubernetes)(?:$|[-@_])"
+)
+
+
+def _kube_context(command: str) -> str:
+    """The context `kubectl` will use: `--context`, else `current-context` from
+    `--kubeconfig` / $KUBECONFIG (first entry) / ~/.kube/config. "" if unknown."""
+    m = re.search(_KUBE_FLAG.format("context"), command)
+    if m:
+        return m.group(1)
+    m = re.search(_KUBE_FLAG.format("kubeconfig"), command)
+    path = m.group(1) if m else (os.environ.get("KUBECONFIG", "").split(os.pathsep)[0]
+                                 or "~/.kube/config")
+    # ponytail: line scan, no YAML parse; cluster-server (127.0.0.1) check if
+    # custom-named local contexts show up.
+    try:
+        with open(os.path.expanduser(path), encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("current-context:"):
+                    return line.split(":", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
+def _local_kube_exec(command: str) -> bool:
+    return (_KUBE_EXEC.search(command) is not None
+            and _LOCAL_KUBE_CONTEXT.match(_kube_context(command)) is not None)
+
+
+def _reaches_host_policy(command: str) -> bool:
+    return (
+        _HOST_POLICY_MOUNT.search(command) is not None
+        or _CHROOT_HOST_ROOT.search(command) is not None
+        or _COMPOSE.search(command) is not None
+        or _local_kube_exec(command)
+    )
+
+
 def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
-    """True when the match lies inside the payload of a context-switching command.
+    """True when the match runs in another execution context; see
+    :func:`remote_payload_span`."""
+    return remote_payload_span(command, match_start, match_end) is not None
+
+
+def remote_payload_span(command: str, match_start: int, match_end: int) -> Optional[Tuple[int, int, str]]:
+    """``(start, end, text)`` of the remote payload holding the match -- the
+    quoted argument of a context-switching command, or a heredoc fed to
+    ``ssh`` as the remote shell's stdin -- else None. ``text`` is what the
+    remote shell receives (quotes removed).
 
     Answers "will the LOCAL shell run this?", not "is this dangerous?". Used
     only for rules whose jurisdiction is this machine -- Prismor's own policy,
@@ -481,10 +623,13 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
         local too (issue #607).
     """
     if match_start < 0 or match_end > len(command):
-        return False
+        return None
+    stdin_payload = _remote_heredoc_payload(command, match_start, match_end)
+    if stdin_payload is not None:
+        return stdin_payload
     spans = quoted_spans(command)
     if not spans:
-        return False
+        return None
     bare = _outside_quotes(command, spans)
 
     for start, end, _is_payload, is_closed in spans:
@@ -514,7 +659,7 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
                     is_sub = True
                     break
             if is_sub:
-                return False
+                return None
 
         # A newline separates commands as surely as `;` does.
         seg_start = 0
@@ -523,13 +668,415 @@ def is_remote_payload(command: str, match_start: int, match_end: int) -> bool:
                 seg_start = k + 1
         prefix = bare[seg_start:start]
         if any(opener in prefix for opener in _LOCAL_EVAL_OPENERS):
-            return False
+            return None
         tokens = prefix.split()
         if not tokens or tokens[0].rsplit("/", 1)[-1] not in _REMOTE_CONTEXTS:
-            return False
+            return None
         try:
             words = shlex.split(command[seg_start:end + 1])
         except ValueError:
+            return None
+        if not (words and _is_remote_argument(words)):
+            return None
+        # Mounts in an SSH payload belong to the remote host. Local option
+        # values and substitutions were rejected above before reaching here.
+        if words[0].rsplit("/", 1)[-1] not in ("ssh", "sshpass") and _reaches_host_policy(command):
+            return None
+        return start + 1, end, _unquote(command[start:end + 1])
+    return None
+
+
+def _unquote(word: str) -> str:
+    """The text the receiving shell sees for one closed quoted word."""
+    if word[:1] == chr(39):
+        return word[1:-1]
+    # Inside double quotes, backslash only escapes $ ` " \ and newline.
+    return re.sub(r'\\([$`"\\\n])', r"\1", word[1:-1])
+
+
+def _remote_heredoc_payload(command: str, match_start: int, match_end: int) -> Optional[Tuple[int, int, str]]:
+    """``ssh host [bash -s] <<EOF ... EOF``: the body is the remote shell's
+    stdin, so it runs over there. Only when ssh runs no remote command or a
+    stdin-reading shell; anything else (``ssh host 'cat > f' <<EOF``) is data
+    for a remote program and left to the quoted-argument path."""
+    for h in heredocs(command):
+        if not (h.body_start <= match_start and match_end <= h.body_end):
+            continue
+        if h.expands and any(
+            match_start < h.body_start + b and match_end > h.body_start + a
+            for a, b in command_substitution_spans(command[h.body_start:h.body_end])
+        ):
+            return None  # `$(...)` in an unquoted body runs locally first
+        segment = command[:h.start].rsplit("\n", 1)[-1]
+        for sep in _SEPARATORS:
+            segment = segment.split(sep)[-1]
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            return None
+        if not words or words[0].rsplit("/", 1)[-1] != "ssh":
+            return None
+        cmd_at = _ssh_command_start(words, 0)
+        if cmd_at < 0:
+            return None
+        try:
+            # ssh joins its command words and the remote shell re-splits them,
+            # so `'bash -s'` is two words over there.
+            remote = shlex.split(" ".join(words[cmd_at:]))
+        except ValueError:
+            return None
+        while remote and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", remote[0]):
+            remote = remote[1:]  # `OLD=x bash -s`: env for the remote shell
+        if remote and not (
+            remote[0].rsplit("/", 1)[-1] in ("bash", "sh", "zsh", "dash", "ksh")
+            and all(w.startswith("-") for w in remote[1:])
+        ):
+            return None
+        return h.body_start, h.body_end, command[h.body_start:h.body_end]
+    return None
+
+
+def is_inert_remote_match(command: str, match_start: int, match_end: int,
+                          pattern: Pattern[str], _depth: int = 0) -> bool:
+    """True when the match sits in a remote payload and, judged as the
+    command the REMOTE shell runs, every match of ``pattern`` there is inert
+    text -- a banner the remote shell echoes, say.
+
+    Unlike :func:`is_remote_payload` this holds for every rule, because it
+    never treats remoteness itself as harmless: a destructive command in the
+    payload is just as live over there, so it still blocks (issue #344)."""
+    if _depth > 3:
+        return False
+    span = remote_payload_span(command, match_start, match_end)
+    if span is None:
+        return False
+    inner = span[2]
+    matches = list(pattern.finditer(inner))
+    if not matches:
+        return False  # the match spans the quoting itself; cannot attribute it
+    return all(
+        is_inert_match(inner, m.start(), m.end())
+        or is_inert_script_literal(inner, m.start(), m.end())
+        or is_inert_remote_match(inner, m.start(), m.end(), pattern, _depth + 1)
+        for m in matches
+    )
+
+
+# Python that can start a process or run generated code. A shell-syntax match
+# inside a string literal is only text when nothing in the script could hand
+# that string to a shell (or to exec, which could).
+#
+# Searched against the script's CODE only (string literals and comments
+# blanked, see _python_tokens): a docstring that says "subprocess" runs nothing.
+# The builtins exec/eval/compile match as bare names, called or not (`run =
+# exec` is an alias), but never as an attribute: `re.compile(...)` and
+# `model.eval()` are not the builtin.
+_PY_EXEC = re.compile(
+    r"\b(?:subprocess|os\s*\.\s*(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|startfile)"
+    r"|pty\s*\.\s*spawn|commands\s*\.|__import__|importlib"
+    r"|ctypes|pexpect|paramiko|fabric|invoke|plumbum|asyncio\s*\.\s*create_subprocess\w*"
+    # Indirection that reaches the above without naming it.
+    r"|getattr\s*\(|globals\s*\(|locals\s*\(|vars\s*\(|builtins|runpy|multiprocessing"
+    r"|concurrent|pickle|marshal|shelve|code\s*\.\s*interact|InteractiveConsole|webbrowser)"
+    r"|(?<![\w.])(?:exec|eval|compile|breakpoint)\b|(?<![\w.])sh\s*\."
+)
+_PYTHON_BIN = re.compile(r"^python[0-9.]*$")
+# Shells and runners that would execute what the script prints.
+_STDOUT_EXECUTORS = frozenset({
+    "bash", "sh", "zsh", "ksh", "dash", "csh", "tcsh", "fish",
+    "eval", "exec", "source", "xargs", "ssh", "sudo", "doas",
+})
+
+
+def _python_tokens(source: str) -> Optional[Tuple[List[Tuple[int, int]], str]]:
+    """``(inert_spans, code)`` for a Python source: the character spans of
+    every string literal (f-strings whole) and comment, and the source with
+    the inert text blanked so :data:`_PY_EXEC` sees only code. An f-string's
+    ``{...}`` stays in ``code`` -- it is evaluated. None when the source does
+    not tokenize; callers must then keep the match live."""
+    import io
+    import tokenize
+    line_starts = [0]
+    for line in source.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    def at(pos: Tuple[int, int]) -> int:
+        return line_starts[pos[0] - 1] + pos[1]
+
+    spans: List[Tuple[int, int]] = []
+    blank: List[Tuple[int, int]] = []
+    fstring_start: List[int] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+            name = tokenize.tok_name.get(tok.type, "")
+            if name in ("STRING", "COMMENT"):
+                span = (at(tok.start), at(tok.end))
+                spans.append(span)
+                # Before 3.12 an f-string is one STRING token, expressions
+                # and all: keep it in the code rather than blank a call.
+                prefix = tok.string[:3].lower()
+                if not (name == "STRING" and "f" in prefix.split("'")[0].split('"')[0]):
+                    blank.append(span)
+            elif name == "FSTRING_MIDDLE":
+                blank.append((at(tok.start), at(tok.end)))
+            elif name == "FSTRING_START":
+                fstring_start.append(at(tok.start))
+            elif name == "FSTRING_END" and fstring_start:
+                spans.append((fstring_start.pop(), at(tok.end)))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return None
+    return spans, _blank(source, blank)
+
+
+def is_inert_script_literal(command: str, match_start: int, match_end: int) -> bool:
+    """True when the match lies in a string literal of a Python heredoc
+    script (``python3 - <<'EOF'``) that cannot execute strings.
+
+    Agents edit files this way all day, and a ``s.replace(old, new)`` carries
+    shell text as data. A shell-syntax rule matching that literal is reading
+    Python source, not a command. Conservative: the script must contain no
+    process/exec primitive (:data:`_PY_EXEC`), its output must not feed a
+    shell, the match must sit wholly inside one literal, and in an unquoted
+    body no ``$(...)`` may overlap the match. Callers apply this only to rules
+    whose patterns describe shell syntax -- a path rule still fires on
+    ``open('~/.ssh/id_rsa')``, which Python really does read.
+    """
+    for h in heredocs(command):
+        if not (h.body_start <= match_start and match_end <= h.body_end):
+            continue
+        literals = _python_data_body(command, h)
+        if literals is None:
             return False
-        return bool(words) and _is_remote_argument(words)
+        body = command[h.body_start:h.body_end]
+        # Patterns anchored on a trailing delimiter consume the whitespace
+        # after the closing quote; that is no more code than the quote is.
+        while match_end > match_start and command[match_end - 1].isspace():
+            match_end -= 1
+        rel_start, rel_end = match_start - h.body_start, match_end - h.body_start
+        if h.expands and any(rel_start < b and rel_end > a for a, b in command_substitution_spans(body)):
+            return False
+        return any(a <= rel_start and rel_end <= b for a, b in literals)
     return False
+
+
+def _python_data_body(command: str, h: Heredoc) -> Optional[List[Tuple[int, int]]]:
+    """The literal/comment spans of heredoc ``h`` when it is a Python script
+    that cannot reach a shell, else None. Python here is ``python3 - <<EOF``,
+    or ``cat > x.py <<EOF`` (whatever runs that file runs Python; a shebang
+    naming anything else means it is not Python). Cannot reach a shell: no
+    process/exec primitive in its code, no pipe on the opener line, and no
+    shell or runner anywhere outside the heredoc bodies that could run what
+    it prints or the file it writes."""
+    tokens = _opener_tokens(command, h)
+    argv0 = tokens[0].rsplit("/", 1)[-1] if tokens else ""
+    body = command[h.body_start:h.body_end]
+    if argv0 in _HEREDOC_SINKS:
+        target = _sink_target(tokens)
+        first = body.lstrip("\n").split("\n", 1)[0]
+        if not (target and target.endswith(".py")) or (
+            first.startswith("#!") and "python" not in first
+        ):
+            return None
+    elif not _PYTHON_BIN.match(argv0):
+        return None
+    if "|" in command[h.start:h.body_start].replace("||", ""):
+        return None
+    outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
+    for word in re.split(r"[\s;&|()]+", outside):
+        if word.rsplit("/", 1)[-1] in _STDOUT_EXECUTORS:
+            return None
+    parsed = _python_tokens(body)
+    if parsed is None or (_PY_EXEC.search(parsed[1]) and not _argv_only_subprocess(body, parsed[1])):
+        return None
+    return parsed[0]
+
+
+# argv[0] values that run their arguments (or stdin) as code or as another
+# command, so an argv list starting with one is as live as shell=True.
+_ARGV_RUNNERS = _STDOUT_EXECUTORS | frozenset({
+    "env", "node", "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "osascript",
+    "nohup", "timeout", "nice", "time", "script", "su", "chroot", "docker", "podman",
+    "kubectl", "nsenter", "find", "parallel", "watch", "busybox", "expect", "tclsh",
+    "awk", "gawk", "make", "npx", "uvx", "pipx", "py",
+    # Run a command named in an option: git -c core.pager= / --upload-pack=,
+    # rsync -e, tar --to-command, scp/sftp -o ProxyCommand, zip -TT.
+    "git", "rsync", "tar", "scp", "sftp", "zip",
+})
+_SUBPROCESS_CALLS = frozenset({"run", "call", "check_call", "check_output", "Popen"})
+_SUBPROCESS_VALUES = frozenset({
+    "PIPE", "DEVNULL", "STDOUT", "CalledProcessError", "TimeoutExpired",
+    "CompletedProcess", "SubprocessError",
+})
+
+
+def _prismor_module_argv(elts) -> bool:
+    """`[sys.executable, "-m", "prismor.<module>", ...]`: the replay's most
+    common harness shape, feeding a hook payload on stdin. Prismor's own CLI
+    does not run its arguments; any other module or a script path stays live."""
+    import ast
+    if len(elts) < 4:
+        return False
+    a, b, c, d = elts[:4]
+    return (isinstance(a, ast.Attribute) and a.attr == "executable"
+            and isinstance(a.value, ast.Name) and a.value.id == "sys"
+            and isinstance(b, ast.Constant) and b.value == "-m"
+            and isinstance(c, ast.Constant) and c.value in _PRISMOR_CLI_MODULES
+            and isinstance(d, ast.Constant) and d.value in _SCREEN_ONLY_SUBCOMMANDS)
+
+
+# Only subcommands that screen a call and never run one (sandbox, exec-hook,
+# mcp-gateway, proxy do run commands, so they stay live).
+_PRISMOR_CLI_MODULES = frozenset({"prismor.runtime.cli", "prismor.runtime.immunity_cli"})
+_SCREEN_ONLY_SUBCOMMANDS = frozenset({"hook-dispatch", "check", "semantic-check"})
+
+
+def _argv_only_subprocess(body: str, code: str) -> bool:
+    """Issue #931: a test harness that feeds attack strings to a hook as DATA,
+    `subprocess.run(["prismor", "check", c], input=...)`. True only when
+    `subprocess` is the sole exec primitive and every use of it is a direct
+    `subprocess.<run|call|...>([<literal non-runner>, ...])` with no shell=,
+    executable= or **kwargs, and the module is imported plainly (no alias, no
+    `from subprocess import`). Anything else -- shell=True, a bash/ssh/python
+    argv, a non-literal argv, os.system, eval -- keeps the body live."""
+    if _PY_EXEC.search(re.sub(r"\bsubprocess\b", " ", code)):
+        return False
+    import ast
+    try:
+        tree = ast.parse(body)
+    except (SyntaxError, ValueError):
+        return False
+    ok_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            return False
+        if isinstance(node, ast.Import):
+            if any(a.name == "subprocess" and a.asname for a in node.names):
+                return False
+        if (isinstance(node, ast.Attribute) and node.attr in _SUBPROCESS_VALUES
+                and isinstance(node.value, ast.Name) and node.value.id == "subprocess"):
+            ok_names.add(id(node.value))
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name)
+                and f.value.id == "subprocess"):
+            continue
+        if f.attr not in _SUBPROCESS_CALLS or not node.args:
+            return False
+        argv = node.args[0]
+        if not (isinstance(argv, (ast.List, ast.Tuple)) and argv.elts):
+            return False
+        if not _prismor_module_argv(argv.elts):
+            first = argv.elts[0]
+            if not (isinstance(first, ast.Constant) and isinstance(first.value, str)):
+                return False
+            prog = first.value.rsplit("/", 1)[-1]
+            if prog in _ARGV_RUNNERS or _PYTHON_BIN.match(prog):
+                return False
+        for kw in node.keywords:
+            if kw.arg is None or kw.arg == "executable":
+                return False
+            if kw.arg == "shell" and not (isinstance(kw.value, ast.Constant) and kw.value.value is False):
+                return False
+        ok_names.add(id(f.value))
+    # Every other reference to the module (`f = subprocess.run`) is unchecked.
+    return all(id(n) in ok_names for n in ast.walk(tree)
+               if isinstance(n, ast.Name) and n.id == "subprocess")
+
+
+def data_heredoc_spans(command: str) -> List[Tuple[int, int]]:
+    """``(body_start, body_end)`` of every heredoc whose WHOLE body is data:
+    the delimiter is quoted, so the shell substitutes and dequotes nothing in
+    it, and it goes somewhere that never hands it to a shell -- a text file or
+    commit/PR message (:func:`_is_text_heredoc`), or a Python script that
+    cannot reach one (:func:`_python_data_body`).
+
+    For a match that exists only after a rewrite (``$(...)``/backticks
+    unwrapped, quotes stripped, homoglyphs folded): those rewrites model what
+    a shell would do, and no shell reads these bodies. A rule that no longer
+    matches once they are blanked matched only data. Callers apply this to
+    shell-syntax rules only, as for :func:`is_inert_script_literal`."""
+    return [
+        (h.body_start, h.body_end) for h in heredocs(command)
+        if not h.expands and (_is_text_heredoc(command, h) or _python_data_body(command, h) is not None)
+    ]
+
+
+def blank_keep_lines(text: str, spans) -> str:
+    """``text`` with each span's characters blanked, newlines kept, so line
+    structure (and every heredoc's closing delimiter) survives."""
+    chars = list(text)
+    for start, end in spans:
+        for k in range(start, min(end, len(chars))):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
+def _opener_tokens(command: str, h: Heredoc) -> List[str]:
+    """Words of the simple command that owns heredoc ``h``: its segment of the
+    opener line before ``<<``, plus the rest of that line up to the next
+    separator (``cat <<'EOF' > notes.md``). Leading ``VAR=value`` dropped."""
+    before = command[:h.start].rsplit("\n", 1)[-1]
+    for sep in _SEPARATORS:
+        before = before.split(sep)[-1]
+    after = re.split(r"[;|&]", command[h.op_end:h.body_start], maxsplit=1)[0]
+    tokens = before.split() + after.split()
+    while tokens and "=" in tokens[0] and not tokens[0].startswith("="):
+        tokens = tokens[1:]
+    return tokens
+
+
+def _sink_target(tokens: List[str]) -> Optional[str]:
+    """The file a ``cat``/``tee`` heredoc writes, or None (stdout, or more
+    than one file)."""
+    if not tokens:
+        return None
+    argv0 = tokens[0].rsplit("/", 1)[-1]
+    targets: List[str] = []
+    if argv0 == "cat":
+        for k, tok in enumerate(tokens[1:], 1):
+            m = re.match(r"^\d*>{1,2}\|?(.*)$", tok)
+            if m:
+                name = m.group(1) or (tokens[k + 1] if k + 1 < len(tokens) else "")
+                targets.append(name)
+    elif argv0 == "tee":
+        targets = [t for t in tokens[1:] if not t.startswith(("-", ">", "<"))]
+    targets = [t.strip("\"'") for t in targets if t]
+    return targets[0] if len(targets) == 1 else None
+
+
+def _is_text_heredoc(command: str, h: Heredoc) -> bool:
+    """True when heredoc ``h`` is prose by where it goes, whatever else the
+    command runs: ``cat > notes.md`` / ``tee NOTES.txt`` (a text file the rest
+    of the command never names again, so it is not then sourced or run), or a
+    commit/PR message read from stdin (``git commit -F -``, ``gh pr create
+    --body "$(cat <<'EOF'``). Unlike the general sink rule, an interpreter
+    elsewhere in the command does not make this body live: nothing hands a
+    text file or a commit message to it."""
+    tokens = _opener_tokens(command, h)
+    if not tokens:
+        return False
+    argv0 = tokens[0].rsplit("/", 1)[-1]
+    if argv0 in ("git", "gh"):
+        texty = _GIT_MESSAGE_SUBCOMMANDS if argv0 == "git" else _GH_TEXT_SUBCOMMANDS
+        if len(tokens) < 2 or tokens[1] not in texty:
+            return False
+        # Body is stdin (`-F -`, `--body-file -`) or the `$(cat` of an argument.
+        return tokens[-1].endswith("$(cat") or (
+            "-" in tokens and any(t in ("-F", "--file", "--body-file") for t in tokens)
+        )
+    if argv0 not in _HEREDOC_SINKS:
+        return False
+    target = _sink_target(tokens)
+    if not target:
+        return False
+    if target in _TEXT_DEVICES:
+        return True
+    name = target.rsplit("/", 1)[-1]
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    if ext not in _TEXT_FILE_EXTS:
+        return False
+    outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
+    # Named once (the redirect itself), and no glob that could pick it up.
+    return outside.count(name) == 1 and not re.search(r"\*[^\s;&|]*" + re.escape(ext) + r"\b", outside, re.I)

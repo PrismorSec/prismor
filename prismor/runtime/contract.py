@@ -29,7 +29,7 @@ new surface) do not bump it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from prismor.runtime.policy_engine import PolicyEngine
@@ -66,6 +66,11 @@ TYPE_FIELD: Dict[str, str] = {
     "skill_manifest": "content",
     "subagent_spawn": "content",
     "ui_action": "control_label",
+    # Runtime-generated accounting context; supplied metadata cannot trigger it.
+    "rate_limit": "content",
+    "mcp_repeat": "content",
+    "spend_budget": "content",
+    "model_policy": "content",
 }
 
 EVENT_TYPES: Tuple[str, ...] = tuple(TYPE_FIELD)
@@ -93,6 +98,11 @@ BLOCK = "block"
 STEP_UP = "step_up"
 DEFER = "defer"
 MODIFY = "modify"
+#: Rule action, not a verdict: the call is allowed and the rule's ``guidance``
+#: goes to the agent as context. Its findings always resolve to observe
+#: (PolicyEngine.explain_mode), so they never govern a decision and can never
+#: outrank or soften a block from another finding.
+INSTRUCT = "instruct"
 
 #: Verdicts a rule may carry as its ``action``. ``warn``/``log`` are reporting
 #: actions: they produce findings but never a blocking decision, so they are
@@ -156,6 +166,19 @@ class Decision:
     # and how the subject was established. Absent from the wire form unless
     # asked for, so the contract stays additive.
     explain: Optional[Dict[str, Any]] = None
+    # Set on a ``step_up`` decision: re-runs the same evaluation (optionally
+    # against a fresh ``resource``) so an approval granted minutes later is
+    # checked against current policy and state before the tool runs.
+    # In-process only; never on the wire.
+    recheck: Optional[Callable[..., "Decision"]] = field(default=None, repr=False, compare=False)
+    # Set on a ``step_up`` decision: what this call does (event + resource id,
+    # see ``approvals.call_key``), so its approval is never reused for another
+    # call of the same tool. In-process only; never on the wire.
+    call_key: Optional[str] = field(default=None, repr=False, compare=False)
+    # Called with (status, refusing Decision) when this call loses its
+    # authority after the allow (inflight.py): sends the refusal to the
+    # console like any block. In-process only; never on the wire.
+    on_refused: Optional[Callable[[str, Any], None]] = field(default=None, repr=False, compare=False)
 
     @property
     def verdict(self) -> str:

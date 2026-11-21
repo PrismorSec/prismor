@@ -7,6 +7,15 @@
 # still applies unenrolled.
 set -eu
 
+# HEALTHCHECK runs this beside PID 1 without its arguments or env, so the port
+# is read from the surface's own command line: probing a fixed port marks
+# eval-server unhealthy forever. A one-shot command has no port and no health.
+if [ "${1:-}" = healthcheck ]; then
+  port=$(tr '\0' '\n' < /proc/1/cmdline | sed -n '/^--port$/{n;p;q;}')
+  [ -z "$port" ] && exit 0
+  exec curl -fsS -o /dev/null "http://127.0.0.1:${port}/health"
+fi
+
 if [ -n "${PRISMOR_ENROLL_TOKEN:-}" ] && [ ! -f "${PRISMOR_HOME}/identity.json" ]; then
   echo "[prismor] enrolling this container..."
   prismor enroll "${PRISMOR_ENROLL_TOKEN}" \
@@ -31,6 +40,14 @@ case "${1:-proxy}" in
     ;;
   eval-server)
     shift
+    # In a container it always binds 0.0.0.0, where the CLI only warns about a
+    # missing key -- and that warning is easy to never see. Refuse instead.
+    case " $* " in *" --api-key "*|*" --api-key="*) ;; *)
+      if [ -z "${PRISMOR_EVAL_KEY:-}" ]; then
+        echo "[prismor] eval-server needs PRISMOR_EVAL_KEY (or --api-key): it is reachable by anything that can reach this container" >&2
+        exit 64
+      fi ;;
+    esac
     exec prismor eval-server \
       --host 0.0.0.0 \
       --port "${PRISMOR_EVAL_PORT:-7071}" \

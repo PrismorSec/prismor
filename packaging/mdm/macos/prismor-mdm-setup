@@ -3,8 +3,9 @@
 # Called by the package's postinstall with values from the configuration
 # profile (domain dev.prismor), and usable from a Jamf policy script:
 #   /opt/prismor/bin/prismor-mdm-setup --token "$4" --mode "${5:-enforce}"
+# The token may also come from $PRISMOR_ENROLL_TOKEN, which keeps it out of argv.
 set -u
-MODE=enforce RULES="" TOKEN="" API="" LABEL=""
+MODE=enforce RULES="" TOKEN="${PRISMOR_ENROLL_TOKEN:-}" API="" LABEL=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --mode) MODE="${2:-enforce}"; shift 2 ;;
@@ -26,8 +27,8 @@ if [ -n "$TOKEN" ]; then
     echo "prismor-mdm-setup: already enrolled; token not used"
   else
     [ -n "$LABEL" ] || LABEL=$(/usr/sbin/scutil --get ComputerName 2>/dev/null || hostname -s)
-    ARGS=(--token "$TOKEN" --label "$LABEL"); [ -n "$API" ] && ARGS+=(--api-base "$API")
-    "$P" enroll "${ARGS[@]}" </dev/null || { echo "prismor-mdm-setup: enrollment failed" >&2; exit 3; }
+    ARGS=(--label "$LABEL"); [ -n "$API" ] && ARGS+=(--api-base "$API")
+    PRISMOR_ENROLL_TOKEN="$TOKEN" "$P" enroll "${ARGS[@]}" </dev/null || { echo "prismor-mdm-setup: enrollment failed" >&2; exit 3; }
     "$P" system-sync --quiet || true
   fi
 fi

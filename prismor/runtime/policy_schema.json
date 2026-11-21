@@ -33,6 +33,50 @@
       "type": "object",
       "description": "Policy-level settings that control enforcement behaviour",
       "properties": {
+        "mcp_tool_repeat_limits": {
+          "type": "object",
+          "propertyNames": {"type": "string", "pattern": "\\S"},
+          "additionalProperties": {
+            "type": "object",
+            "propertyNames": {"type": "string", "pattern": "\\S"},
+            "additionalProperties": {"type": "integer", "minimum": 1}
+          },
+          "description": "Optional exact server -> tool -> identical calls allowed per session in a rolling 60 seconds. Enforcement follows mcp-repeat-limit-exceeded and mcp-repeat-limit-unavailable."
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allow": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "deny": {"type": "array", "items": {"type": "string", "minLength": 1}}
+          },
+          "description": "Allowed models. Globs match the model id as sent and its normalized name. Deny wins; with no allow list, every model that is not denied is allowed. Enforcement follows the model-not-allowed rule's mode."
+        },
+        "spend_budgets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["scope", "usd"],
+            "properties": {
+              "scope": {"enum": ["session", "agent", "user", "device"]},
+              "usd": {"type": "number", "minimum": 0},
+              "period": {"enum": ["daily", "weekly", "monthly"], "default": "monthly"},
+              "match": {"type": "string", "minLength": 1, "description": "One agent or user (scope agent or user only); absent = each one."}
+            }
+          },
+          "description": "Per-seat USD caps. Periods reset on UTC calendar boundaries; a session budget covers the whole session. Enforcement follows the spend-budget-exceeded rule's mode."
+        },
+        "rate_limit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["requests_per_minute"],
+          "properties": {
+            "requests_per_minute": {"type": "integer", "minimum": 1},
+            "max_burst": {"type": "integer", "minimum": 0, "default": 0}
+          },
+          "description": "Optional per-identity, per-workspace admissions in an exact rolling 60 seconds. Capacity is requests_per_minute + max_burst. Enforcement follows the rate-limit-exceeded and rate-limit-unavailable rules."
+        },
         "default_mode": {
           "type": "string",
           "enum": [
@@ -83,20 +127,76 @@
           "description": "Settings for the optional LLM-assisted semantic prompt-injection layer.",
           "additionalProperties": true
         },
-        "sandbox": {
+        "inventory": {
           "type": "object",
-          "description": "Docker-backed shell sandbox settings for constraining allowed Bash commands.",
+          "description": "Shadow-agent inventory (prismor discover endpoint). Secret values are never stored here; sink credentials stay in the environment or Cloak.",
+          "additionalProperties": true
+      },
+        "pii": {
+          "type": "object",
+          "description": "Optional Presidio NER PII detection. Off by default; requires the prismor[pii] extra. Findings store masked evidence only.",
+          "additionalProperties": false,
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Whether hook-dispatch rewrites supported Bash tool calls through the sandbox runner."
+              "description": "Scan prompts, tool arguments and tool results. False by default so the hook path does not load Presidio."
             },
             "backend": {
               "type": "string",
-              "enum": [
-                "docker"
-              ],
-              "description": "Sandbox backend. Docker is the v1 backend."
+              "enum": ["presidio", "regex"],
+              "description": "presidio uses the NER engine when installed and falls back to regex otherwise. regex never imports Presidio."
+            },
+            "entities": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "Presidio entity types to detect, for example PERSON, EMAIL_ADDRESS, UK_NHS."
+            },
+            "score_threshold": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "language": {"type": "string"},
+            "model": {
+              "type": "string",
+              "description": "spaCy model name. Default en_core_web_sm."
+            },
+            "action": {
+              "type": "string",
+              "enum": ["observe", "redact", "block"]
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["observe", "enforce"],
+              "description": "observe records the finding. enforce lets redact and block act."
+            },
+            "mask_style": {
+              "type": "string",
+              "enum": ["mask", "replace", "hash", "redact"]
+            },
+            "max_chars": {
+              "type": "integer",
+              "minimum": 200,
+              "maximum": 50000
+            },
+            "fields": {
+              "type": "array",
+              "items": {"type": "string"}
+            },
+            "allow_list": {
+              "type": "array",
+              "description": "Values never reported or masked, matched case-insensitively (product names the model tags as PERSON or LOCATION).",
+              "items": {"type": "string"}
+            }
+          }
+        },
+        "sandbox": {
+          "type": "object",
+          "description": "Prismor sandbox: run allowed shell commands under the OS sandbox (Seatbelt on macOS, bubblewrap on Linux). See docs/sandbox.md.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether hook-dispatch runs allowed shell calls through the sandbox."
             },
             "mode": {
               "type": "string",
@@ -104,25 +204,36 @@
                 "observe",
                 "enforce"
               ],
-              "description": "observe logs unavailable sandbox state; enforce fails closed when the sandbox is unavailable."
+              "description": "enforce confines commands; observe leaves them unconfined."
             },
-            "image": {
-              "type": "string",
-              "description": "Container image used for sandboxed shell execution."
-            },
-            "workdir": {
-              "type": "string",
-              "description": "Container working directory for the workspace mount."
+            "ring": {
+              "type": [
+                "string",
+                "integer"
+              ],
+              "enum": [
+                "0",
+                "1",
+                "2",
+                "3",
+                0,
+                1,
+                2,
+                3
+              ],
+              "description": "Preset: 0 read-only, no network; 1 workspace-write, no network; 2 workspace-write, network through the egress allowlist; 3 workspace-write, open network. Explicit fields win."
             },
             "network": {
               "type": "string",
               "enum": [
                 "none",
+                "proxy",
+                "open",
+                "allowlist",
                 "bridge",
-                "host",
-                "allowlist"
+                "host"
               ],
-              "description": "Docker network mode. allowlist currently fails closed to none because Docker cannot enforce domain allowlists by itself."
+              "description": "none: no network. proxy: HTTP(S) through a loopback proxy that applies settings.egress. open: not restricted. allowlist/bridge/host are older names for proxy/open/open."
             },
             "workspace_mount": {
               "type": "string",
@@ -130,44 +241,51 @@
                 "ro",
                 "rw"
               ],
-              "description": "Whether the workspace bind mount is read-only or read-write."
+              "description": "Whether commands may write the project directory."
+            },
+            "writable": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra paths commands may write (relative paths are from the project root)."
+            },
+            "hide": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Extra paths commands may not read, such as .env or ~/.ssh."
+            },
+            "direct_ports": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "description": "TCP ports reachable directly in proxy mode (default [22], for git over SSH)."
+            },
+            "backend": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
+            },
+            "image": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
+            },
+            "workdir": {
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "read_only_root": {
-              "type": "boolean",
-              "description": "Run the container with a read-only root filesystem."
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "tmpfs": {
-              "type": "array",
-              "description": "Docker --tmpfs entries for controlled writable scratch space.",
-              "items": {
-                "type": "string"
-              }
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "env_allowlist": {
-              "type": "array",
-              "description": "Host environment variable names allowed into the sandbox.",
-              "items": {
-                "type": "string"
-              }
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             },
             "resource_limits": {
-              "type": "object",
-              "description": "Docker resource limits.",
-              "properties": {
-                "cpus": {
-                  "type": "string"
-                },
-                "memory": {
-                  "type": "string"
-                },
-                "pids_limit": {
-                  "type": "integer"
-                },
-                "timeout_seconds": {
-                  "type": "integer"
-                }
-              },
-              "additionalProperties": false
+              "description": "Docker-era setting, accepted so older policies load; ignored by the native sandbox."
             }
           },
           "additionalProperties": false
@@ -395,6 +513,185 @@
                 },
                 "minItems": 2
               }
+            },
+            "contracts_enabled": {
+              "type": "boolean"
+            },
+            "contract_defaults_enabled": {
+              "type": "boolean",
+              "description": "Apply the built-in contract packs (GitHub, Slack) to tools no policy or server contract names."
+            },
+            "meta_contracts_enabled": {
+              "type": "boolean",
+              "description": "Honor contracts MCP servers self-declare in _meta.prismor.contract."
+            },
+            "contracts": {
+              "type": "array",
+              "description": "Per-tool contracts: what a tool's result does to the session label (delta, effects) and what a call requires of it (requires).",
+              "items": {
+                "type": "object",
+                "required": [
+                  "tool"
+                ],
+                "additionalProperties": false,
+                "anyOf": [
+                  {
+                    "required": [
+                      "delta"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "requires"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "effects"
+                    ]
+                  }
+                ],
+                "properties": {
+                  "tool": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Tool name or glob, optionally narrowed by argument selectors: name(arg:glob, arg:glob)."
+                  },
+                  "args": {
+                    "type": "object",
+                    "description": "Argument selectors as a map, for patterns the inline form cannot hold (commas, parentheses).",
+                    "additionalProperties": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                      ]
+                    }
+                  },
+                  "delta": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "audience": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                        }
+                      },
+                      "trust": {
+                        "type": "string",
+                        "enum": [
+                          "internal",
+                          "untrusted"
+                        ]
+                      }
+                    }
+                  },
+                  "requires": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "minProperties": 1,
+                    "properties": {
+                      "audience_contains": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                        }
+                      },
+                      "trust": {
+                        "type": "string",
+                        "enum": [
+                          "trusted",
+                          "internal",
+                          "untrusted"
+                        ]
+                      },
+                      "effects": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                        }
+                      },
+                      "no_effects": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                        }
+                      }
+                    }
+                  },
+                  "effects": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9][a-z0-9_.\\-]*$"
+                    }
+                  }
+                }
+              }
+            },
+            "principals": {
+              "type": "object",
+              "description": "Static principal map: principal -> the principals (or address globs) inside it.",
+              "additionalProperties": {
+                "oneOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                  },
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[^\\s\\x00-\\x1f\\x7f]{1,200}$"
+                    }
+                  }
+                ]
+              }
+            },
+            "contract_packs": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "github": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "private": {
+                      "description": "owner/repo globs that are private: a list, or a map of glob -> audience.",
+                      "type": [
+                        "array",
+                        "object"
+                      ]
+                    }
+                  }
+                },
+                "slack": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "connect_channels": {
+                      "description": "Channel ids or names (globs) that are Slack Connect channels.",
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -486,6 +783,40 @@
           "description": "Data boundary: screens what an outbound call SENDS (emails, phones, cards, secrets, files) against where it is going (internal / trusted / external / untrusted). Catches agents that follow third-party docs into shipping the user's own data to a service the user never approved, while letting synthetic/test payloads and trusted destinations through silently.",
           "additionalProperties": false,
           "properties": {
+            "handoffs": {
+              "type": "object",
+              "description": "What an agent may hand to a subagent: an action per data class (email, phone, ssn, card, iban, secret) for a Claude Code launch prompt or an adapter-marked handoff. Inert unless set. per_subagent overrides by subagent type.",
+              "properties": {
+                "per_subagent": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "enum": [
+                        "allow",
+                        "observe",
+                        "warn",
+                        "step_up",
+                        "redact",
+                        "block"
+                      ]
+                    }
+                  }
+                }
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "observe",
+                  "warn",
+                  "step_up",
+                  "redact",
+                  "block"
+                ]
+              }
+            },
             "enabled": {
               "type": "boolean",
               "description": "Opt in. Defaults to false."
@@ -718,8 +1049,11 @@
         "category",
         "title",
         "event_types",
-        "patterns",
         "action"
+      ],
+      "anyOf": [
+        {"required": ["patterns"]},
+        {"required": ["when"]}
       ],
       "properties": {
         "id": {
@@ -760,6 +1094,10 @@
               "memory",
               "skill_manifest",
               "ui_action",
+              "rate_limit",
+              "mcp_repeat",
+              "spend_budget",
+              "model_policy",
               "mcp"
             ]
           },
@@ -800,6 +1138,11 @@
           },
           "minItems": 1
         },
+        "when": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Attribute condition. A when-only rule needs no patterns. The rate namespace is populated only by the live admission gate."
+        },
         "action": {
           "type": "string",
           "enum": [
@@ -808,9 +1151,15 @@
             "log",
             "step_up",
             "modify",
-            "defer"
+            "defer",
+            "instruct"
           ],
-          "description": "Authorization verdict when this rule fires as an enforce finding on a pre-action event. block = deny; step_up = require inline human approval (maps to an 'ask' prompt on Claude/Copilot; other surfaces fail closed); modify = rewrite the tool input via `transform`; defer = escalate to the semantic evaluator. warn/log are non-blocking (observe). Whether a rule blocks at all is still gated by `mode`/`default_mode`."
+          "description": "Authorization verdict when this rule fires as an enforce finding on a pre-action event. block = deny; step_up = require inline human approval (maps to an 'ask' prompt on Claude/Copilot; other surfaces fail closed); modify = rewrite the tool input via `transform`; defer = escalate to the semantic evaluator. warn/log are non-blocking (observe). instruct = allow the call and send `guidance` to the agent as context; never blocks. Whether a rule blocks at all is still gated by `mode`/`default_mode`."
+        },
+        "guidance": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the agent should do instead. Appended to the reason of a block; the message an `instruct` rule sends."
         },
         "transform": {
           "type": "string",

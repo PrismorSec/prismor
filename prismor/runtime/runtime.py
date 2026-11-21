@@ -19,15 +19,19 @@ import os
 import re
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from prismor.runtime import perf
+from prismor.runtime import ratelimit
 from prismor.runtime.contract import CONTRACT_VERSION, Decision
 from prismor.runtime.hooks import legacy_should_block, should_block
 from prismor.runtime.policy_engine import PolicyEngine
-from prismor.runtime.principal import Subject, current_token, is_verified, resolve_subject
+from prismor.runtime.principal import (
+    Subject, current_token, is_verified, resolve_subject, trusted_device_surface,
+)
 from prismor.runtime.store import (
     append_session_event,
     persist_runtime_findings,
@@ -40,6 +44,14 @@ from prismor.runtime.store import (
 __all__ = ["CONTRACT_VERSION", "Decision", "evaluate_tool_call", "log_observe_findings"]
 
 
+def _call_text(event: Dict[str, Any]) -> str:
+    """The one string an exact-call decision is matched against."""
+    for key in ("command", "path", "url"):
+        if event.get(key):
+            return " ".join(str(event[key]).split())
+    return ""
+
+
 def _apply_rule_exemptions(
     findings: List[Dict[str, Any]],
     rule_exemptions: Optional[List[Dict[str, Any]]],
@@ -48,34 +60,53 @@ def _apply_rule_exemptions(
     subject: Optional[Subject],
     verified_users_only: bool = False,
     surface: str = "",
+    event: Optional[Dict[str, Any]] = None,
+    agent_names: tuple = (),
 ) -> List[Dict[str, Any]]:
-    """Relax or downgrade findings per admin-granted, signed rule exemptions.
+    """Apply rule decisions: org-signed exemptions and local dashboard ones.
 
-    Each exemption is ``{ruleId, scope (user|device|session), scopeId, action
-    (allow|flag), expires?}``, matched at eval time against the current context.
-    ``allow`` drops the matched finding (the call proceeds, nothing recorded);
-    ``flag`` downgrades it to observe (reported as a warning, but non-blocking).
+    Each entry is ``{ruleId, scope (org|user|device|agent|session), scopeId,
+    action (allow|flag|ask|deny), pattern?, expires?}``, matched at eval time
+    against the current context. ``allow`` drops the matched finding, ``flag``
+    downgrades it to observe, ``ask`` turns it into a human-approval request
+    (step_up) and ``deny`` makes it block whatever the mode.
 
-    Core protections are never exemptable: a floor rule id / core block category
-    (and the agent kill-switch) is left untouched regardless of any exemption.
+    ``pattern`` limits the entry to one exact call (the command, path or URL,
+    whitespace-normalised). Only such an exact-call entry may relax a
+    safety-floor rule; the self-protection rules and the agent kill-switch are
+    never relaxed, and ``deny`` can apply to anything.
 
     ``verified_users_only`` (set when the org verifies identity): a ``user``
     exemption then needs a verified subject, so ``subject: "user:alice"`` sent
     by anyone no longer carries Alice's exemptions.
+
+    On a device surface (hook, mirror) the enrolled device is the actor, so an
+    unverified subject (``PRISMOR_SUBJECT``, which an agent can set on a child
+    agent it spawns) never chooses whose ``user`` entries apply: the device's
+    own user does. It can neither borrow another user's allow nor escape a deny
+    aimed at the device's user.
     """
     if not rule_exemptions:
         return findings
-    from prismor.runtime.policy_engine import _NON_OVERRIDABLE_RULE_IDS, _CORE_BLOCK_CATEGORIES
+    from prismor.runtime.policy_engine import (
+        _NON_OVERRIDABLE_RULE_IDS, _CORE_BLOCK_CATEGORIES, is_self_protection_rule,
+    )
 
     now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     user_id = subject.user_id if subject else None
-    device_id = None
+    device_id = device_user = None
     try:
         from prismor.runtime.enterprise import identity as _identity
-        ident = _identity.load_identity()
-        device_id = ident.get("device_id") if ident else None
+        ident = _identity.load_identity() or {}
+        device_id, device_user = ident.get("device_id"), ident.get("user_id")
     except Exception:
-        device_id = None
+        device_id = device_user = None
+    if not is_verified(subject, surface):
+        if trusted_device_surface(surface):
+            user_id = device_user
+        elif verified_users_only:
+            user_id = None
+    call = _call_text(event or {})
 
     def _matches(ex: Dict[str, Any], rule_id: str) -> bool:
         if str(ex.get("ruleId") or "") != rule_id:
@@ -83,13 +114,18 @@ def _apply_rule_exemptions(
         exp = ex.get("expires")
         if exp and str(exp) < now_iso:
             return False
+        pattern = ex.get("pattern")
+        if pattern and " ".join(str(pattern).split()) != call:
+            return False
         scope, scope_id = ex.get("scope"), ex.get("scopeId")
+        if scope == "org":
+            return True
         if scope == "user":
-            if verified_users_only and not is_verified(subject, surface):
-                return False
             return bool(user_id) and scope_id == user_id
         if scope == "device":
             return bool(device_id) and scope_id == device_id
+        if scope == "agent":
+            return bool(scope_id) and scope_id in agent_names
         if scope == "session":
             return bool(session_id) and scope_id == session_id
         return False
@@ -97,25 +133,42 @@ def _apply_rule_exemptions(
     out: List[Dict[str, Any]] = []
     for f in findings:
         rule_id = str(f.get("ruleId") or "")
-        category = f.get("category")
-        # Floor + admin kill-switch are never relaxable.
-        if (rule_id in _NON_OVERRIDABLE_RULE_IDS
-                or category in _CORE_BLOCK_CATEGORIES
-                or category == "agent-control"):
-            out.append(f)
-            continue
         match = next((ex for ex in rule_exemptions if isinstance(ex, dict) and _matches(ex, rule_id)), None)
-        if match is None:
+        action = str((match or {}).get("action") or "allow")
+        layer = "local" if (match or {}).get("local") else "org"
+        floor = rule_id in _NON_OVERRIDABLE_RULE_IDS or f.get("category") in _CORE_BLOCK_CATEGORIES
+        pinned = (is_self_protection_rule(rule_id) or f.get("category") == "agent-control"
+                  or (floor and not (match or {}).get("pattern")))
+        if match is None or (pinned and action != "deny"):
             out.append(f)
-        elif str(match.get("action") or "allow") == "flag":
+        elif action == "deny":
+            out.append({**f, "mode": "enforce", "action": "block", "authoritative": True,
+                        "decidedBy": f"{layer} {match.get('scope')} deny", "policyLayer": layer})
+        elif action == "ask":
+            out.append({**f, "mode": "enforce", "action": "step_up", "category": "agent-control",
+                        "decidedBy": f"{layer} {match.get('scope')} ask", "policyLayer": layer})
+        elif action == "flag":
             # Keep the finding (auditable warning), but strip its ability to block.
-            downgraded = {**f, "mode": "observe", "exempted": "flag", "policyLayer": "org"}
-            out.append(downgraded)
+            out.append({**f, "mode": "observe", "exempted": "flag", "policyLayer": layer})
         # action == "allow": drop the finding entirely.
     return out
 
 
 _OBSERVE_WARNED: set = set()
+
+
+def _load_local_decisions(engine: PolicyEngine, workspace: Path) -> None:
+    """Attach dashboard decisions belonging to this policy's workspace."""
+    try:
+        from prismor.runtime import decisions
+        rules, tools = decisions.for_runtime(
+            workspace, managed=bool(getattr(engine, "workspace_managed", False)))
+        if rules:
+            engine.rule_exemptions = list(engine.rule_exemptions or []) + rules
+        if tools:
+            engine.tool_denies = list(engine.tool_denies or []) + tools
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] local decisions error: {exc}\n")
 
 
 def _warn_observe_adapter(framework: str, findings: List[Dict[str, Any]]) -> None:
@@ -166,39 +219,205 @@ def _block_reason(finding: Dict[str, Any]) -> str:
 _NO_PROJECT_AGENTS = frozenset({"prismor-proxy", "mcp-gateway"})
 
 
-_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file")
-_READ_TOOL = re.compile(r"read|open|cat|load|view|get_?file", re.I)
-_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file", re.I)
+_PATH_ARGS = ("path", "file_path", "filepath", "filename", "file", "file_name", "notebook_path")
+_CMD_ARGS = ("command", "cmd", "commands", "script", "code")
+_URL_ARGS = ("url", "urls", "uri", "href", "endpoint")
+_CONTENT_ARGS = ("content", "contents", "file_text", "new_str", "new_source", "text", "data", "body")
+# upload/download first: "load" in them used to make both a file read.
+_UPLOAD_TOOL = re.compile(r"upload|attach", re.I)
+_READ_TOOL = re.compile(r"read|open|cat|(?<!up)(?<!down)load|view|get_?file", re.I)
+_WRITE_TOOL = re.compile(r"write|save|edit|append|create|put_?file|replace", re.I)
+# Handing work to another agent: OpenAI Agents handoffs (transfer_to_<agent>)
+# and CrewAI's delegation tools, sanitized or not.
+_SPAWN_TOOL = re.compile(r"^(transfer_to_|delegate[ _]work|ask[ _]question)", re.I)
+_SPAWN_ARGS = ("task", "question", "message", "prompt", "input", "context", "reason")
+_URL_VALUE = re.compile(r"\b[a-z][a-z0-9+.-]*://[^\s'\"<>]+", re.I)
 
 
-def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
-    """Treat an SDK tool that only takes a file path as the file access it is.
-
-    Adapters default every tool to ``shell``, so ``read_file(path=".env")``
-    arrived as a "shell command" consisting of a bare path and none of the
-    file-read secret rules could see it (#542). Only adapter events (they carry
-    ``metadata.framework``) with a single path argument and a read/write-named
-    tool are re-typed; anything with a command argument stays shell.
-    """
-    meta = event.get("metadata") or {}
-    if event.get("type") != "shell" or not meta.get("framework"):
-        return
+def _adapter_kwargs(meta: Dict[str, Any]) -> Dict[str, Any]:
     kwargs = meta.get("kwargs") or meta.get("args") or {}
-    if set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
+    if isinstance(kwargs, dict) and set(kwargs) == {"input"} and isinstance(kwargs["input"], str):
         try:  # OpenAI Agents SDK FunctionTools hand over one JSON string
             kwargs = json.loads(kwargs["input"])
         except ValueError:
-            return
-    if not isinstance(kwargs, dict):
+            return {}
+    return kwargs if isinstance(kwargs, dict) else {}
+
+
+def _flat(value: Any) -> List[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in _flat(v)]
+    return [value if isinstance(value, str) else json.dumps(value, default=str)]
+
+
+def _retype_adapter_file_call(event: Dict[str, Any]) -> None:
+    """Type an SDK adapter's tool call from its tool name and argument names.
+
+    Adapters hand over one fixed type (``shell`` by default) and every argument
+    value joined into that type's field, so ``read_file(path=".env")`` was a
+    "shell command" (#542), ``fetch(url=…)`` never met an egress rule, and an
+    adapter that asked for ``file_write`` got ``path`` = "path content". Only
+    adapter events (``metadata.framework``) are touched, from their structured
+    ``kwargs``; a command argument keeps a call shell. Every value still reaches
+    the text rules: the ones not placed in a typed field go to ``content``.
+    """
+    meta = event.get("metadata") or {}
+    if not meta.get("framework") or event.get("type") not in ("shell", "file_read", "file_write", "network"):
         return
-    paths = [v for k, v in kwargs.items() if k.lower() in _PATH_ARGS and isinstance(v, str) and v]
-    if len(paths) != 1 or any(k.lower() in ("command", "cmd", "script") for k in kwargs):
-        return
+    kw = {str(k).lower(): v for k, v in _adapter_kwargs(meta).items()}
     name = str(meta.get("tool_name") or "")
-    kind = "file_read" if _READ_TOOL.search(name) else "file_write" if _WRITE_TOOL.search(name) else ""
-    if kind:
-        event["type"] = kind
+    if event["type"] == "shell" and _SPAWN_TOOL.match(name):
+        # The brief is instruction text that will drive another agent, screened
+        # like a Claude Agent/Task charter.
+        brief = [s for k in _SPAWN_ARGS for s in _flat(kw.get(k))] or [s for v in kw.values() for s in _flat(v)]
+        event.update(type="subagent_spawn", prompt="\n".join(brief), description=name,
+                      subagent_type=str(kw.get("coworker") or re.sub(r"^transfer_to_", "", name, flags=re.I)))
+        event.pop("command", None)
+        return
+    if not kw or any(kw.get(k) not in (None, "", []) for k in _CMD_ARGS):
+        return
+    pick = lambda keys: [s for k in keys for s in _flat(kw.get(k))]  # noqa: E731
+    paths, urls = pick(_PATH_ARGS), pick(_URL_ARGS)
+    body = pick(_CONTENT_ARGS)
+    kind = event["type"]
+    if kind == "shell":
+        if len(paths) == 1:
+            # An upload sends a local file somewhere: the risk is what it reads.
+            kind = ("file_read" if _UPLOAD_TOOL.search(name)
+                    else "file_write" if body or _WRITE_TOOL.search(name)
+                    else "file_read" if _READ_TOOL.search(name) else "")
+        elif urls and not paths:
+            kind = "network"
+        if not kind:
+            return
+    placed = {*_PATH_ARGS, *_URL_ARGS, *_CONTENT_ARGS}
+    rest = [s for k, v in kw.items() if k not in placed for s in _flat(v)]
+    if kind == "network":
+        found = urls or [u for s in rest for u in _URL_VALUE.findall(s)]
+        if not found:
+            return
+        # Any URL-looking value counts as a destination: an agent can put one
+        # in a parameter no rule expects (new_tab=, referer=).
+        extra = [u for s in rest for u in _URL_VALUE.findall(s) if u not in found]
+        event["url"] = "\n".join(found + extra)
+        if rest:
+            event["outbound_payload"] = " ".join(rest)
+    else:
+        if len(paths) != 1:
+            return
         event["path"] = paths[0]
+        if kind == "file_write" or rest:
+            event["content"] = "\n".join(body + rest)
+    event["type"] = kind
+    event.pop("command", None)
+
+
+# Types an admin may reclassify a tool into from the console.
+_SCOPE_RANK = {"session": 0, "agent": 1, "device": 2, "org": 3}
+_OVERRIDE_TYPES = ("shell", "file_read", "file_write", "network", "tool_result", "subagent_spawn")
+# Where an unmapped hook payload keeps the tool's arguments, per agent.
+_ARG_KEYS = ("tool_input", "toolInput", "toolArgs", "tool_args", "arguments", "args", "input", "params")
+
+
+def _call_args(event: Dict[str, Any]) -> Dict[str, Any]:
+    """The tool's own argument dict, from an SDK adapter or an unmapped hook payload."""
+    meta = event.get("metadata") or {}
+    if meta.get("framework"):
+        return _adapter_kwargs(meta)
+    try:
+        payload = json.loads(event.get("response") or "")
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    if event.get("mcp_server"):
+        return payload  # an MCP pre-call carries the arguments themselves
+    if isinstance(payload.get("toolCall"), dict):
+        payload = payload["toolCall"]  # Antigravity
+    for key in _ARG_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def _apply_tool_type_override(event: Dict[str, Any], entries: Any, agent_name: str,
+                              parent: Optional[str], session_id: str) -> None:
+    """Re-type a call an admin reclassified from the console.
+
+    Entries are ``settings.tool_denies`` items with ``action: "classify"`` and a
+    ``type`` (they ride the same signed list and sync, and a runtime that does
+    not know the action skips them), matched by tool tag and scope like a deny. The
+    new type's field is filled from the call's arguments by argument name; every
+    original value also stays in ``content`` so the text rules lose nothing. The
+    change is recorded in ``metadata.type_override`` for the audit trail.
+    """
+    if not isinstance(entries, list) or not entries:
+        return
+    from prismor.runtime.contract import TYPE_FIELD
+    from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
+    tags = resolve_tool_tags(event, families=True)
+    if not tags:
+        return
+    hit, best = None, len(_SCOPE_RANK)
+    for e in entries:
+        if not isinstance(e, dict) or e.get("type") not in _OVERRIDE_TYPES or not tag_matches(e.get("tool"), tags):
+            continue
+        scope, sid = e.get("scope") or "org", e.get("scopeId")
+        if scope in ("org", "device") or (scope == "agent" and sid in (agent_name, parent)) \
+                or (scope == "session" and sid == session_id):
+            rank = _SCOPE_RANK.get(scope, len(_SCOPE_RANK))
+            if rank < best:  # the narrowest matching scope wins, whatever the list order
+                hit, best = e, rank
+    old = event.get("type")
+    if hit is None or hit["type"] == old:
+        return
+    new = hit["type"]
+    kw = {str(k).lower(): v for k, v in _call_args(event).items()}
+    pick = lambda keys: [x for k in keys for x in _flat(kw.get(k))]  # noqa: E731
+    text = "\n".join(str(event.get(f)) for f in ("command", "path", "url", "prompt", "response", "content")
+                     if event.get(f))
+    if new == "shell":
+        event["command"] = "\n".join(pick(_CMD_ARGS)) or " ".join(x for v in kw.values() for x in _flat(v)) or text
+    elif new == "network":
+        urls = pick(_URL_ARGS) or _URL_VALUE.findall(text)
+        event["url"] = "\n".join(urls)
+        event["outbound_payload"] = json.dumps(kw, default=str) if kw else text
+    elif new in ("file_read", "file_write"):
+        event["path"] = (pick(_PATH_ARGS) or [event.get("path") or ""])[0]
+    elif new == "subagent_spawn":
+        event["prompt"] = "\n".join(pick(_SPAWN_ARGS)) or text
+    else:
+        event[TYPE_FIELD[new]] = json.dumps(kw, default=str) if kw else text
+    body = pick(_CONTENT_ARGS)
+    event["content"] = "\n".join(body + ([text] if text else []))
+    event["type"] = new
+    event.setdefault("metadata", {})["type_override"] = {
+        "from": old, "to": new, "tool": hit.get("tool"), "scope": hit.get("scope") or "org"}
+
+
+def _parent_agent_of(event: Dict[str, Any], agent_name: str) -> Optional[str]:
+    """The agent a subagent call runs under, when it differs from ``agent_name``.
+
+    Adapters (and eval-server callers) name it in ``metadata.parent_agent_name``;
+    otherwise, for a subagent call made inside another guarded tool of this
+    process, it is the agent whose tool is running (subagent_context).
+    """
+    meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+    if not meta.get("subagent_id"):
+        return None
+    parent = meta.get("parent_agent_name")
+    if not parent:
+        from prismor.runtime.subagent_context import current_parent
+        parent = current_parent()
+    return str(parent) if parent and parent != agent_name else None
 
 
 def evaluate_tool_call(
@@ -220,6 +439,10 @@ def evaluate_tool_call(
     identity_token: Optional[str] = None,
     explain: bool = False,
     session_seq: Optional[int] = None,
+    deny_tools: Sequence[str] = (),
+    rate_accounting: bool = True,
+    rate_scope: Optional[ratelimit.Scope] = None,
+    mcp_repeat_call: Optional[tuple[str, str, str]] = None,
 ) -> Decision:
     """Evaluate one normalized tool-call ``event`` against active policy.
 
@@ -233,6 +456,10 @@ def evaluate_tool_call(
         repo_root: repo root for analysis (defaults to ``workspace``).
         subject: resolved end-user principal; if ``None`` it is resolved from
             ``PRISMOR_SUBJECT`` / device identity so single-user installs are unchanged.
+        deny_tools: extra tool tags denied for this call by the caller's own
+            scope, merged into the agent's deny list (same finding, logging and
+            hiding as an operator deny). The MCP gateway passes a tool its
+            server entry's tool selection leaves out.
         record: when False, decide only - no event, finding, telemetry, heartbeat
             or audit record. Used when another hook process (a global and a
             project install of the same agent) already records this call.
@@ -241,6 +468,13 @@ def evaluate_tool_call(
         session_seq: zero-based position of this event in its session when the
             caller handles persistence. Defaults to the last index in the
             loaded history (or zero for a standalone pre-check).
+        rate_accounting: False only for host-owned probes or historical replay.
+            Independent of persist/record: live proxies do their own recording.
+        rate_scope: host-owned quota workspace/agent and optional hook call id.
+            HTTP callers cannot select these through event/body fields.
+        mcp_repeat_call: gateway-owned (server, tool, call fingerprint) for a
+            separate local admission after security evaluation. Never accepted
+            from event metadata or HTTP; contains no raw tool arguments.
         taint_store: optional session-taint store to use instead of the on-disk
             per-session file. Callers with no local box (the hosted
             inference-hook channel) pass one ``InMemoryTaintStore`` shared
@@ -272,6 +506,22 @@ def evaluate_tool_call(
     _agent_name = agent_name or agent
 
     _retype_adapter_file_call(event)
+    if event.get("type") == "shell" and event.get("command"):
+        from prismor.runtime.cloaking.runtime import unwrap_decloak
+        from prismor.runtime.sandbox import unwrap_command as _unwrap_sandbox
+        event["command"] = _unwrap_sandbox(unwrap_decloak(str(event["command"])))
+
+    # A subagent runs on its parent's authority: the parent's per-agent
+    # controls are applied on top of its own (see agents.inherit_control).
+    _parent_agent = _parent_agent_of(event, _agent_name)
+    if _parent_agent:
+        event.setdefault("metadata", {}).setdefault("parent_agent_name", _parent_agent)
+    if (event.get("metadata") or {}).get("subagent_id"):
+        # Where in the agent tree the call sits, for `when: subagent.depth/chain`.
+        from prismor.runtime.subagent_context import current_chain
+        _chain = [n for n in current_chain() if n != _agent_name] or ([_parent_agent] if _parent_agent else [])
+        event["metadata"].setdefault("subagent_chain", _chain)
+        event["metadata"].setdefault("subagent_depth", max(len(event["metadata"]["subagent_chain"]), 1))
 
     # Stamp principal and agent identity onto the event.
     meta = event.setdefault("metadata", {})
@@ -281,13 +531,33 @@ def evaluate_tool_call(
     if resource is not None:
         meta["resource"] = resource
 
+    # Hosted evaluation (PRISMOR_EVAL_URL): the Prismor-run server decides,
+    # records and reports, so nothing is written or uploaded from here.
+    from prismor.runtime import remote_eval as _remote_eval
+    _remote = _remote_eval.remote_url()
+    # Repeated-call accounting stays with the forwarding gateway, even when
+    # the normal security decision is hosted.
+    if _remote and mcp_repeat_call is None:
+        return _remote_eval.evaluate_remote(
+            _remote, event=event, agent=agent, agent_name=agent_name, mode=mode,
+            session_id=session_id, subject=subject,
+            identity_token=identity_token or current_token(), explain=explain,
+        )
+
+    from prismor.runtime import delegations as _delegations
+    from prismor.runtime.subagent_context import tree_session
+    _scope = str(meta.get("delegation_scope") or tree_session(session_id, bool(meta.get("subagent_id"))))
+    _delegations.stamp(event, _agent_name, _scope, reserve=record)
+
     perf.lap()
     if not record:
         persist = False
+    events = [event]
+    analysis: Optional[Dict[str, Any]] = None
     if persist:
-        append_session_event(workspace, session_id, event)
-        events = read_session_events(workspace, session_id)
         try:
+            append_session_event(workspace, session_id, event)
+            events = read_session_events(workspace, session_id) or [event]
             from prismor.runtime.cli import analyze_session_incremental  # lazy: avoid import cycle
             analysis = analyze_session_incremental(
                 events, repo_root=repo_root, workspace=workspace, session_id=session_id
@@ -303,10 +573,8 @@ def evaluate_tool_call(
                 analysis=analysis,
                 append_only=True,
             )
-        except Exception as exc:  # best-effort; never block on analysis failure
-            sys.stderr.write(f"[prismor] analysis error: {exc}\n")
-    else:
-        events = [event]
+        except Exception as exc:  # recording must never bypass enforcement
+            sys.stderr.write(f"[prismor] session recording/analysis error: {exc}\n")
     perf.lap("session_analysis")
 
     # Keep the org policy fresh for every caller, not just hook-dispatch: an SDK
@@ -323,7 +591,19 @@ def evaluate_tool_call(
     engine = PolicyEngine(workspace=workspace)
     if taint_store is not None:
         engine.taint_override = taint_store
+    # Allow / ask / deny decisions made on this machine's dashboard ride the
+    # same matchers as the org's signed rule_exemptions and tool_denies.
+    _load_local_decisions(engine, workspace)
     perf.lap("policy_load")
+
+    # An admin's "classify as" from the console, before any rule sees the call.
+    try:
+        _apply_tool_type_override(
+            event, [d for d in (getattr(engine, "tool_denies", None) or [])
+                    if isinstance(d, dict) and d.get("action") == "classify"],
+            _agent_name, _parent_agent, session_id)
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] tool-type override error: {exc}\n")
 
     # Verified end-user identity. Off unless the signed org policy (or the
     # eval-server's flags) configure an issuer; then the subject comes from the
@@ -359,6 +639,12 @@ def evaluate_tool_call(
             _agent_name, workspace,
             remote_controls=getattr(engine, "agent_controls", None),
         )
+        if _parent_agent:
+            from prismor.runtime.agents import inherit_control
+            _control = inherit_control(_control, resolve_agent_control(
+                _parent_agent, workspace,
+                remote_controls=getattr(engine, "agent_controls", None),
+            ))
         # Throttled auto-registration.  The current tool is observed; an SDK
         # may declare its full roster in metadata.available_tools; exact tools
         # in a synthesized session scope are registered as scoped access.
@@ -369,7 +655,11 @@ def evaluate_tool_call(
             # "Skill:<name>" tag, so the console can inventory which skills this
             # agent actually reaches for — not just that it uses skills at all.
             for _tag in resolve_tool_tags(event):
-                _capabilities.append({"name": _tag, "source": "observed"})
+                # The type this runtime judged it as - before any console
+                # correction, so the console can show "was X" and an admin
+                # removing the correction sees the runtime's own call again.
+                _typed = (meta.get("type_override") or {}).get("from") or event.get("type")
+                _capabilities.append({"name": _tag, "source": "observed", "type": str(_typed or "")})
             for _tool in meta.get("available_tools") or []:
                 _capabilities.append({"name": str(_tool), "source": "declared"})
             _scoped = load_scoped_rules(workspace, session_id) if session_id else None
@@ -400,8 +690,178 @@ def evaluate_tool_call(
     _guard_t0 = time.perf_counter()
     _session_seq = session_seq if session_seq is not None else len(events) - 1
     _trace: Optional[List[Dict[str, Any]]] = [] if explain else None
-    findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
-                               trace=_trace)
+    _repeat = None
+    if mcp_repeat_call is not None:
+        server, tool, key = mcp_repeat_call
+        limit = engine.mcp_tool_repeat_limits.get(server, {}).get(tool)
+        _repeat = {"count": 0, "limit": 0, "error": engine.mcp_tool_repeat_limits_error}
+        if limit is not None and not _repeat["error"]:
+            _repeat = ratelimit.admit(workspace, key, {"requests_per_minute": limit})
+        _repeat.update(server=server, tool=tool)
+        event["type"] = "mcp_repeat"
+        event["content"] = json.dumps(_repeat, sort_keys=True)
+    try:
+        findings = engine.evaluate(event, _session_seq, session_id=session_id, subject=subject,
+                                   trace=_trace, **({"rate_context": _repeat} if _repeat is not None else {}))
+        if _repeat is not None:
+            for finding in findings:
+                if finding.get("category") == "rate_limit":
+                    finding["rateLimit"] = _repeat
+                    finding["evidence"] = json.dumps(_repeat, sort_keys=True)
+                    finding["policyLayer"] = engine.mcp_tool_repeat_limits_source
+                    finding["remediation"] = (
+                        "Ask the operator to restore the repeated-call accounting store or configuration."
+                        if _repeat["error"] else
+                        f"Retry in {_repeat.get('retry_after', 0):.2f}s; ask the operator to review the limit if polling is expected.")
+                    if engine.mcp_tool_repeat_limits_source in {"remote", "exemption"}:
+                        finding["authoritative"] = True
+    except Exception as exc:
+        # An engine that cannot decide must not let the call through: on
+        # enforce this blocks, on observe it is reported like any finding.
+        sys.stderr.write(f"[prismor] policy engine error: {exc}\n")
+        findings = [{
+            "id": f"{session_id}:policy-engine-error", "ruleId": "policy-engine-error",
+            "severity": "high", "category": "policy-engine-error", "mode": "enforce",
+            "title": "Policy engine failed on this call — blocked rather than unscreened",
+            "evidence": f"{type(exc).__name__}: {exc}", "eventIndex": _session_seq,
+        }]
+    if analysis is not None:
+        # A post-action event repeats its call's command/path, so every rule the
+        # pre-action event already reported fires again. Report it once: the
+        # duplicate was stored and sent as a second finding for the same call.
+        from prismor.runtime.policy_engine import drop_post_twin_findings
+        findings = drop_post_twin_findings(
+            findings, events, _session_seq, analysis.get("findings") or [])
+    _host_rate_findings: List[Dict[str, Any]] = []
+    _host_rate_report = None
+    # Stateful admission is performed ONCE, outside evaluate(): session replay,
+    # memory scans and additional patch paths must never reserve extra slots.
+    from prismor.runtime.hooks import _is_pre_action
+    if (rate_accounting and (
+            (rate_scope is not None and rate_scope.authoritative)
+            or (_is_pre_action(str(event.get("agent_event") or ""))
+                and event.get("agent_event") != "PreCheck"
+                and event.get("type") not in {"prompt", "memory", "skill_manifest", "rate_limit"}))):
+        _rate_scope = rate_scope or ratelimit.Scope(workspace, _agent_name)
+        _rate_engine = (engine if _rate_scope.workspace.resolve() == workspace.resolve()
+                        else PolicyEngine(workspace=_rate_scope.workspace))
+        if _rate_engine is not engine:
+            _load_local_decisions(_rate_engine, _rate_scope.workspace)
+        if _rate_engine.rate_limit is not None or _rate_engine.rate_limit_error:
+            _rate_subject = subject
+            _rate_error = _rate_engine.rate_limit_error
+            _rate_identity_findings = []
+            if _rate_scope.authoritative:
+                from prismor.runtime import identity_token as _rate_idt
+                _rate_cfg = _rate_idt.effective_config(_rate_engine.identity)
+                if _rate_cfg != _identity_cfg:
+                    # A caller-selected workspace may have a different issuer
+                    # (or no identity policy). It cannot prove quota identity
+                    # on behalf of the host's policy authority.
+                    _rate_subject = Subject()
+                    if _rate_cfg:
+                        try:
+                            _rate_subject, _, _rate_identity_finding = _rate_idt.apply(
+                                _rate_subject, identity_token or current_token(), _rate_cfg,
+                                surface=str(meta.get("surface") or ""), session_id=session_id)
+                        except Exception:
+                            _rate_error = "Quota identity verification unavailable"
+                            _, _, _rate_identity_finding = _rate_idt.apply(
+                                Subject(), None, _rate_cfg, surface="eval-server", session_id=session_id)
+                        if _rate_identity_finding:
+                            _rate_identity_findings.append(_rate_identity_finding)
+            _rate_identity = ratelimit.identity_key(
+                _rate_subject, _rate_scope.agent, str(meta.get("surface") or ""))
+            if _rate_error:
+                _rate = {"count": 0, "limit": 0, "used": 0, "remaining": 0,
+                         "retry_after": 0, "identity": _rate_identity,
+                         "error": _rate_error}
+            else:
+                _rate = ratelimit.admit(_rate_scope.workspace, _rate_identity,
+                                        _rate_engine.rate_limit, call_id=_rate_scope.call_id)
+            _rate_event = {"type": "rate_limit", "agent_event": "PreToolUse",
+                           "content": json.dumps(_rate, sort_keys=True)}
+            _rate_findings = _rate_identity_findings + _rate_engine.evaluate(
+                _rate_event, _session_seq, session_id=session_id, subject=_rate_subject,
+                rate_context=_rate, trace=_trace)
+            for _f in _rate_findings:
+                _f["rateLimit"] = _rate
+                _f["policyLayer"] = _rate_engine.rate_limit_source
+                _f["remediation"] = (
+                    "Inspect `prismor rate status`; wait for capacity or ask the operator to review the policy."
+                    if _rate["error"] is None else
+                    "Restore access to the rate-limit store/configuration, then retry; inspect `prismor rate status`.")
+                if _rate_scope.authoritative or _rate_engine.rate_limit_source in {"remote", "exemption"}:
+                    _f["authoritative"] = True
+            if _rate_scope.authoritative:
+                # Only the quota owner's decisions may relax its findings.
+                # Request-selected workspace, agent/session labels and asserted
+                # usernames cannot select exemptions from a different policy.
+                _host_rate_findings = _rate_findings
+                _host_rate_report = (_rate_engine, _rate_scope, _rate_event, _rate_subject)
+                try:
+                    _host_rate_findings = _apply_rule_exemptions(
+                        _rate_findings, _rate_engine.rule_exemptions,
+                        session_id="", subject=_rate_subject, verified_users_only=True,
+                        surface=str(meta.get("surface") or ""), event=event,
+                        agent_names=(_rate_scope.agent,))
+                except Exception as exc:
+                    sys.stderr.write(f"[prismor] quota-owner exemption error: {exc}\n")
+            else:
+                findings.extend(_rate_findings)
+    # Allowed models and spend budgets (budgets.py). Like the rate gate this
+    # runs once per live action, never on replay. The proxy's LLM request is
+    # its "prompt" event, so it is checked before the request goes upstream.
+    _gate_type = str(event.get("type") or "")
+    if (rate_accounting
+            and (engine.models is not None or engine.spend_budgets or engine.spend_error)
+            and ((_is_pre_action(str(event.get("agent_event") or ""))
+                  and event.get("agent_event") != "PreCheck"
+                  and _gate_type not in {"memory", "skill_manifest", "rate_limit", "mcp_repeat"})
+                 or (_gate_type == "prompt" and meta.get("tool_name") == "llm_request"))):
+        from prismor.runtime import budgets as _budgets
+        _surface = str(meta.get("surface") or "")
+        # A virtual key's subject is set by the proxy operator, not the caller.
+        _user = (str(getattr(subject, "user_id", "") or "")
+                 if is_verified(subject, _surface) or _surface == "llm-proxy" else "")
+        _gate_reports = []
+        try:
+            if engine.spend_error:
+                _gate_reports.append(("spend_budget", {
+                    "error": engine.spend_error, "used": 0, "limit": 0}))
+            else:
+                _model = str(meta.get("model") or "") or (
+                    _budgets.session_model(session_id) if engine.models is not None else "")
+                _mr = _budgets.model_report(engine.models, _model)
+                if _mr:
+                    _gate_reports.append(("model_policy", _mr))
+                _br = _budgets.budget_report(engine.spend_budgets, session_id=session_id,
+                                             agent=_agent_name, user=_user)
+                if _br:
+                    _gate_reports.append(("spend_budget", _br))
+        except Exception as exc:  # never let accounting crash the hook
+            _gate_reports.append(("spend_budget", {
+                "error": f"spend check failed: {exc}", "used": 0, "limit": 0}))
+        for _gtype, _report in _gate_reports:
+            _gate_event = {"type": _gtype, "agent_event": "PreToolUse",
+                           "content": json.dumps(_report, sort_keys=True, default=str)}
+            for _f in engine.evaluate(_gate_event, _session_seq, session_id=session_id,
+                                      subject=subject, rate_context=_report, trace=_trace):
+                _f["spend"] = _report
+                if _report.get("error"):
+                    _f["evidence"] = str(_report["error"])
+                elif _gtype == "model_policy":
+                    _f["evidence"] = f"model {_report['model']} {_report['reason']}"
+                else:
+                    _per = f" this {_report['period'][:-2].replace('dai', 'day')}" if _report.get("period") else ""
+                    _usd = lambda v: f"${v:.2f}" if v >= 0.01 or v == 0 else f"${v:.4f}"  # noqa: E731
+                    _f["evidence"] = (f"{_report['scope']} {_report['seat']}: {_usd(_report['used'])} of "
+                                      f"{_usd(_report['limit'])}{_per}")
+                _f["reason"] = f"{_f.get('title') or 'Spend limit'}: {_f['evidence']}"  # proxy refusal text
+                _f["remediation"] = ("Inspect `prismor spend status`; ask the operator to raise the "
+                                     "budget or allow the model.")
+                findings.append(_f)
+
     # A multi-file patch is one event with one `path`; every other file it
     # touches gets the path rules too. Content is dropped so the content rules,
     # already run above, do not fire twice.
@@ -519,6 +979,14 @@ def evaluate_tool_call(
     if _identity_finding is not None:
         findings.insert(0, _identity_finding)
 
+    # A caller-scoped deny (the MCP gateway's per-server tool selection) joins
+    # the agent's own list, so it hides, blocks and logs exactly like one.
+    if deny_tools:
+        from dataclasses import replace as _dc_replace
+        from prismor.runtime.agents import AgentControl
+        _base = _control if _control is not None else AgentControl(name=_agent_name)
+        _control = _dc_replace(_base, deny_tools=tuple(_base.deny_tools) + tuple(deny_tools))
+
     # Per-agent / global tool-tag deny list (operator-set from the dashboard's
     # Tool Call panel). Resolves the tool tag the same way scoped rules do, so
     # arbitrary MCP tags (e.g. mcp__node_repl__js) work verbatim. Tagged
@@ -526,14 +994,15 @@ def evaluate_tool_call(
     # operator decision, not a passive detection.
     if _control is not None and getattr(_control, "deny_tools", ()):  # noqa: SIM102
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import make_agent_tool_deny_finding
             # Deny on any tag this event answers to: the bare "Skill" tag
-            # blocks every skill, "Skill:<name>" blocks just the one.
-            for _tname in resolve_tool_tags(event):
-                if _tname in _control.deny_tools:
-                    findings.append(make_agent_tool_deny_finding(_agent_name, _tname, session_id))
-                    break
+            # blocks every skill, "Skill:<name>" blocks just the one, and
+            # "mcp__<server>__*" a whole MCP server.
+            _tags = resolve_tool_tags(event, families=True)
+            _hit_deny = next((d for d in _control.deny_tools if tag_matches(d, _tags)), None)
+            if _hit_deny is not None:
+                findings.append(make_agent_tool_deny_finding(_agent_name, _hit_deny, session_id))
         except Exception as exc:
             sys.stderr.write(f"[prismor] tool-deny error: {exc}\n")
 
@@ -554,15 +1023,16 @@ def evaluate_tool_call(
     # both blocked and queued for approval.
     if _control is not None and getattr(_control, "ask_tools", ()):  # noqa: SIM102
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import make_agent_tool_step_up_finding
             _denied = getattr(_control, "deny_tools", ())
-            for _tname in resolve_tool_tags(event):
-                if _tname in _control.ask_tools and _tname not in _denied:
+            _tags = resolve_tool_tags(event, families=True)
+            if not any(tag_matches(d, _tags) for d in _denied):
+                _hit_ask = next((a for a in _control.ask_tools if tag_matches(a, _tags)), None)
+                if _hit_ask is not None:
                     findings.append(make_agent_tool_step_up_finding(
-                        _agent_name, _tname, session_id, scope_label="agent",
+                        _agent_name, _hit_ask, session_id, scope_label="agent",
                         rule_id="agent-tool-step-up"))
-                    break
         except Exception as exc:
             sys.stderr.write(f"[prismor] tool-ask error: {exc}\n")
 
@@ -574,12 +1044,13 @@ def evaluate_tool_call(
     _org_denies = getattr(engine, "tool_denies", None)
     if _org_denies:
         try:
-            from prismor.runtime.scoped_agent import resolve_tool_tags
+            from prismor.runtime.scoped_agent import resolve_tool_tags, tag_matches
             from prismor.runtime.agents import (
                 make_agent_tool_deny_finding,
                 make_agent_tool_step_up_finding,
             )
-            _otags = resolve_tool_tags(event)
+            # families: one `mcp__<server>__*` entry switches off a whole server.
+            _otags = resolve_tool_tags(event, families=True)
             if _otags:
                 for _d in _org_denies:
                     # 'allow' entries are handled in the block below; anything
@@ -588,17 +1059,18 @@ def evaluate_tool_call(
                     if not isinstance(_d, dict) or _d.get("action", "deny") not in ("deny", "step_up"):
                         continue
                     _otn = _d.get("tool")
-                    if _otn not in _otags:
+                    if not tag_matches(_otn, _otags):
                         continue
                     _scope = _d.get("scope") or "org"
                     _sid = _d.get("scopeId")
                     _hit = (
                         _scope in ("org", "device")
-                        or (_scope == "agent" and _sid == _agent_name)
+                        or (_scope == "agent" and _sid in (_agent_name, _parent_agent))
                         or (_scope == "session" and _sid == session_id)
                     )
                     if _hit:
-                        _label = "org" if _scope == "org" else f"org {_scope}"
+                        _layer = "local" if _d.get("local") else "org"
+                        _label = _layer if _scope == "org" else f"{_layer} {_scope}"
                         if _d.get("action") == "step_up":
                             findings.append(make_agent_tool_step_up_finding(
                                 _agent_name, _otn, session_id,
@@ -635,7 +1107,9 @@ def evaluate_tool_call(
                     _asid = _a.get("scopeId")
                     _ahit = (
                         _ascope in ("org", "device")
-                        or (_ascope == "agent" and _asid == _agent_name)
+                        # A subagent's own allow must not lift what its parent
+                        # is denied; the parent's allow covers its subagents.
+                        or (_ascope == "agent" and _asid == (_parent_agent or _agent_name))
                         or (_ascope == "session" and _asid == session_id)
                     )
                     if _ahit:
@@ -664,18 +1138,36 @@ def evaluate_tool_call(
             agent_profile=_control.iam_profile if _control else None,
             remote_controls=getattr(engine, "subject_controls", None),
         )
+        # A subagent is also held to the IAM profile of the agents above it.
+        for _profile in (getattr(_control, "parent_iam_profiles", ()) if not iam_finding else ()):
+            iam_finding = check_iam(
+                workspace=workspace, event=event, session_id=session_id,
+                subject=subject, agent_profile=_profile,
+                remote_controls=getattr(engine, "subject_controls", None),
+            )
+            if iam_finding:
+                break
         if iam_finding:
             findings.append(iam_finding)
     except Exception as exc:
         sys.stderr.write(f"[prismor] IAM enforcement error: {exc}\n")
 
-    # Cross-call learning correlation on otherwise-clean shell events.
-    if not findings and event.get("type") == "shell":
+    # Provenance notices are informational; staged execution still needs to
+    # inspect the untrusted artifact that produced them.
+    if event.get("type") == "shell" and all(
+        f.get("ruleId") == "cross-agent-flow" and f.get("action") == "log"
+        for f in findings
+    ):
+        # A PostToolUse event carries the decloaked command. Re-cloak it so the
+        # detectors compare it against the stored (placeholder) form of the same
+        # call, and never write a raw secret into their tables (#808).
+        from prismor.runtime.store import _recloak_event
+        detector_event = _recloak_event(event)
         for fn_name in ("detect_evasion", "detect_staged_execution"):
             try:
                 from prismor.runtime import learning
                 detector = getattr(learning, fn_name)
-                extra = detector(workspace, session_id, event, findings)
+                extra = detector(workspace, session_id, detector_event, findings)
                 if extra:
                     findings.extend(extra)
             except Exception as exc:
@@ -706,16 +1198,33 @@ def evaluate_tool_call(
             session_id=session_id, subject=subject,
             verified_users_only=bool(_identity_cfg),
             surface=str(meta.get("surface") or ""),
+            event=event,
+            agent_names=tuple(n for n in (_agent_name, _parent_agent) if n),
         )
     except Exception as exc:
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
 
+    findings.extend(_host_rate_findings)
+
     _eval_ms = int((time.perf_counter() - _guard_t0) * 1000)
     perf.lap("scoped_iam_learning")
 
-    if persist and findings:
+    # One id per finding, minted before it is stored or shipped: the console row
+    # uses it as its primary key, the local store keeps it in enrichment, and
+    # the block message links to it. That shared id is how an agent's report and
+    # a human's label on the console find their way back to this command.
+    for _f in findings:
+        if isinstance(_f, dict) and not _f.get("eventId"):
+            _f["eventId"] = "evt_" + uuid.uuid4().hex
+
+    # Long-lived surfaces persist their events themselves (persist=False).
+    # Stateful rate decisions cannot be reconstructed from that history, so
+    # preserve them as runtime findings before a proxy rebuilds its snapshot.
+    _to_persist = findings if persist else (
+        [f for f in findings if "rateLimit" in f] if record else [])
+    if _to_persist:
         try:
-            persist_runtime_findings(workspace, session_id, findings, _session_seq)
+            persist_runtime_findings(workspace, session_id, _to_persist, _session_seq)
         except Exception as exc:
             sys.stderr.write(f"[prismor] finding persistence error: {exc}\n")
 
@@ -728,7 +1237,7 @@ def evaluate_tool_call(
                 agent_name=_agent_name if _agent_name != agent else "",
                 session_id=session_id,
             )
-            heartbeat.maybe_flush()
+            heartbeat.maybe_flush(workspace=workspace)
             if flush_at_exit:
                 heartbeat.flush_at_exit()
         except Exception:
@@ -748,6 +1257,11 @@ def evaluate_tool_call(
 
     perf.lap("telemetry")
     blocking = should_block(findings, event)
+    _rate_blocking = should_block([f for f in findings if "rateLimit" in f],
+                                 {"agent_event": "PreToolUse"})
+    if _rate_blocking is not None:
+        from prismor.runtime.contract import strongest
+        blocking = strongest([f for f in (blocking, _rate_blocking) if f is not None])
     if blocking is None and mode == "enforce" and getattr(engine, "is_legacy_policy", False):
         blocking = legacy_should_block(findings, event, engine.block_categories)
 
@@ -780,11 +1294,21 @@ def evaluate_tool_call(
             # Re-scan rather than just dropping: should_block() returns the FIRST
             # enforce-rated finding, which may be an ordinary detection sitting
             # ahead of an authoritative one that observe mode must not suppress.
+            _would_block = blocking
             blocking = should_block(
                 [f for f in findings
                  if f.get("category") == "agent-control" or f.get("authoritative")],
                 event,
             )
+            # An org per-agent observe pin silently outranks --mode enforce and
+            # device_mode, so say so (#256): stderr, and the audit verdict reads
+            # "suppressed" instead of an ordinary "warned".
+            if blocking is None and _org_chose_observe:
+                _would_block["suppressedBy"] = f"org agent control: {_agent_name} mode=observe"
+                sys.stderr.write(
+                    f"[prismor] would block ({_would_block.get('ruleId') or _would_block.get('category')}); "
+                    f"suppressed by org per-agent control '{_agent_name}' mode=observe\n"
+                )
 
     # The finding that actually blocks reports as enforced. The legacy bridge
     # blocks by category while the finding still carries the rule's observe
@@ -822,6 +1346,27 @@ def evaluate_tool_call(
             eval_ms=_eval_ms,
             session_seq=_session_seq,
         )
+        if _host_rate_report and _host_rate_findings:
+            _owner, _owner_scope, _summary_event, _owner_subject = _host_rate_report
+            # Selecting a different action workspace cannot silence the
+            # quota owner's alerts. Send only quota metadata there, never the
+            # other workspace's command/arguments, and do not duplicate sinks
+            # that already received the normal action record above.
+            _owner_outputs = [out for out in _owner.outputs if out not in engine.outputs]
+            _owner_sid = f"rate-limit-{_host_rate_findings[0]['rateLimit']['identity']}"
+            _owner_findings = [dict(f, id=f"{_owner_sid}:{f.get('ruleId')}:{_session_seq}")
+                               for f in _host_rate_findings]
+            _dispatch_telemetry(
+                engine=_owner, findings=_owner_findings, event=_summary_event,
+                workspace=_owner_scope.workspace, agent=_owner_scope.agent,
+                mode="enforce" if blocking is not None else mode,
+                session_id=_owner_sid, subject=_owner_subject, eval_ms=_eval_ms,
+                session_seq=_session_seq, outputs=_owner_outputs)
+        if event.get("agent_event") == "UserPromptSubmit":
+            _dispatch_refusals(engine=engine, event=event, workspace=workspace, agent=agent,
+                               session_id=session_id, subject=subject)
+        _dispatch_cloak_ledger(engine=engine, workspace=workspace, agent=agent,
+                               session_id=session_id, subject=subject)
 
     # Tamper-evident signed audit trail: one chained + signed record per
     # evaluated call — every verdict, not just findings — so the local trail
@@ -831,7 +1376,16 @@ def evaluate_tool_call(
     try:
         from prismor.runtime.enterprise import audit_trail as _audit
         if record and _audit.enabled():
+            _authority = None
+            try:
+                from prismor.runtime.enterprise import authority as _authz
+                _authority = _authz.store(_authz.snapshot(
+                    workspace=workspace, subject=subject, control=_control, engine=engine,
+                    session_id=session_id, parent_agent=_parent_agent))
+            except Exception as exc:
+                sys.stderr.write(f"[prismor] authority snapshot error: {exc}\n")
             _audit.append_action_record(
+                authority_hash=_authority,
                 event=event,
                 findings=findings,
                 blocking=blocking,
@@ -853,6 +1407,7 @@ def evaluate_tool_call(
                 "ruleId": "audit-trail-strict",
                 "title": "Audit trail write failed — action blocked (PRISMOR_AUDIT_STRICT=1)",
             }
+            _delegations.release(event, _scope)
             return Decision(
                 allow=False,
                 findings=findings,
@@ -878,6 +1433,49 @@ def evaluate_tool_call(
         }
     if blocking is None and mode == "observe" and meta.get("framework"):
         _warn_observe_adapter(str(meta["framework"]), findings)
+    if blocking is not None:
+        _delegations.release(event, _scope)  # a refused launch uses no number
+    _recheck = None
+    if record:  # a decide-only re-check gets no re-check of its own
+        import copy as _copy
+        # A step-up waits minutes for a human: snapshot the event so a caller
+        # mutating it meanwhile can't change what is re-judged. An allow is
+        # re-checked at commit/in flight (inflight.py, #942); its event is
+        # built per call, so a reference is enough and keeps the hot path cheap.
+        _held = str((blocking or {}).get("action") or "").lower() == "step_up"
+        _snapshot = _copy.deepcopy(event) if _held else event
+
+        def _recheck(resource_now: Optional[Dict[str, Any]] = None) -> Decision:
+            # Decide-only: no event, delegation number, rate count or audit
+            # record — the approval outcome record covers this call.
+            return evaluate_tool_call(
+                event=_copy.deepcopy(_snapshot), workspace=workspace, agent=agent,
+                mode=mode, session_id=session_id, repo_root=repo_root, subject=subject,
+                persist=False, record=False, agent_name=agent_name,
+                register_agent=False, flush_at_exit=False,
+                resource=resource_now if resource_now is not None else resource,
+                identity_token=identity_token, deny_tools=deny_tools,
+                rate_accounting=False,
+            )
+    _on_refused = None
+    if record:
+        def _on_refused(status: str, now: Any) -> None:
+            # A call stopped after its allow (cancelled_in_flight,
+            # revoked_before_commit) reaches the console as a block on the
+            # same session, with the refusing rule (#942 follow-up).
+            blk = dict((getattr(now, "blocking", None) or {}))
+            rule = blk.get("ruleId") or "recheck"
+            finding = dict(blk, ruleId=rule, action="block", mode="enforce",
+                           severity=blk.get("severity") or "high",
+                           title=f"Stopped while running ({status}): "
+                                 f"{getattr(now, 'reason', None) or blk.get('title') or rule}",
+                           enforcementOutcome=status)
+            _dispatch_telemetry(
+                engine=getattr(now, "engine", None) or engine, findings=[finding], event=event,
+                workspace=workspace, agent=agent,
+                agent_name=_agent_name if _agent_name != agent else None,
+                mode="enforce", session_id=session_id, subject=subject,
+            )
     return Decision(
         allow=blocking is None,
         findings=findings,
@@ -886,7 +1484,18 @@ def evaluate_tool_call(
         subject=subject,
         engine=engine,
         explain=_explain,
+        recheck=_recheck,
+        call_key=_step_up_call_key(blocking, event, resource),
+        on_refused=_on_refused,
     )
+
+
+def _step_up_call_key(blocking: Optional[Dict[str, Any]], event: Any, resource: Any) -> Optional[str]:
+    """Only held calls need one; skip the hash on the allow path."""
+    if str((blocking or {}).get("action") or "").lower() != "step_up":
+        return None
+    from prismor.runtime.enterprise.approvals import call_key
+    return call_key(event, resource) or None
 
 
 def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") -> None:
@@ -911,6 +1520,71 @@ def log_observe_findings(decision: Decision, *, mode: str, tool_name: str = "") 
         sys.stderr.write(f"[prismor] observe{label}: would block in enforce mode - [{severity}] {title}\n")
 
 
+def _dispatch_refusals(
+    *, engine: PolicyEngine, event: Dict[str, Any], workspace: Path, agent: str,
+    session_id: str, subject: Subject,
+) -> None:
+    """Ship a ``model_refusal`` row for each prompt the model's safety
+    classifier refused. No hook fires for a refusal, so the next prompt is the
+    first chance to see it in the transcript; the row carries the refusal's own
+    time, which files it under the refused turn in the console. Category only,
+    never the prompt. Best-effort."""
+    transcript = ((event.get("metadata") or {}).get("raw") or {}).get("transcript_path")
+    if not transcript or not session_id:
+        return
+    try:
+        from prismor.runtime.store import prismor_home, transcript_refusals
+        refusals = transcript_refusals(str(transcript))
+        if not refusals:
+            return
+        seen_file = prismor_home() / "cache" / f"refusals-{re.sub(r'[^A-Za-z0-9_-]', '', session_id)}.txt"
+        seen = set(seen_file.read_text(encoding="utf-8").split()) if seen_file.exists() else set()
+        fresh = [r for r in refusals if r["uuid"] and r["uuid"] not in seen]
+        if not fresh:
+            return
+        seen_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(seen_file, "a", encoding="utf-8") as fh:
+            fh.writelines(r["uuid"] + "\n" for r in fresh)
+    except Exception:
+        return
+    for r in fresh:
+        _dispatch_telemetry(
+            engine=engine,
+            findings=[{"action": "allow", "severity": "info", "category": r["category"],
+                       "ruleId": "model-refusal", "title": "Prompt refused by the model's safety classifier"}],
+            event={"type": "model_refusal", "agent_event": "ModelRefusal", "ts": r["ts"], "occurred_at": r["ts"]},
+            workspace=workspace, agent=agent, mode="observe", session_id=session_id, subject=subject,
+        )
+
+
+def _dispatch_cloak_ledger(
+    *, engine: PolicyEngine, workspace: Path, agent: str, session_id: str, subject: Subject,
+) -> None:
+    """Ship what the bash cloak hooks caught since the last call
+    (cloaking/ledger.py). Each line is filed under the session the hook saw
+    and the time it happened; the vault name and pattern only, never a
+    value. Best-effort, and a stat() when nothing is pending."""
+    if not getattr(engine, "outputs", None):
+        return
+    try:
+        from prismor.runtime.cloaking import ledger as _ledger
+        records = _ledger.drain()
+    except Exception:
+        return
+    for rec in records:
+        finding = _ledger.to_finding(rec)
+        _dispatch_telemetry(
+            engine=engine,
+            findings=[finding],
+            event={"type": "cloak", "agent_event": "Cloak", "occurred_at": rec.get("ts"),
+                   "metadata": {"tool_name": finding.get("toolName") or "cloak"}},
+            workspace=workspace, agent=agent,
+            mode="enforce" if rec.get("action") == "blocked" else "observe",
+            session_id=str(rec.get("session_id") or "") or session_id,
+            subject=subject,
+        )
+
+
 def _dispatch_telemetry(
     *,
     engine: PolicyEngine,
@@ -924,10 +1598,12 @@ def _dispatch_telemetry(
     subject: Subject,
     eval_ms: Optional[int] = None,
     session_seq: Optional[int] = None,
+    outputs: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Forward findings to configured sinks before the blocking decision so a
     SIEM sees every event, including blocked ones. Best-effort."""
-    if not getattr(engine, "outputs", None):
+    outputs = getattr(engine, "outputs", None) if outputs is None else outputs
+    if not outputs:
         return
     if not findings:
         # Full session capture: under the org's full_capture opt-in every
@@ -935,12 +1611,14 @@ def _dispatch_telemetry(
         # session trail is the whole trail. Redacted orgs keep the old
         # findings-only behaviour (they already get per-session call counts
         # from the heartbeat).
-        try:
-            from prismor.runtime.enterprise import remote_policy as _rp
-            if not _rp.current_full_capture():
+        # A gateway server with logPayloads ships every call, like full capture.
+        if not event.get("log_payloads"):
+            try:
+                from prismor.runtime.enterprise import remote_policy as _rp
+                if not _rp.current_full_capture():
+                    return
+            except Exception:
                 return
-        except Exception:
-            return
         findings = [{
             "action": "allow",
             "severity": "info",
@@ -965,7 +1643,7 @@ def _dispatch_telemetry(
                 repo = None
         sink_dispatch(
             findings,
-            engine.outputs,
+            outputs,
             extra={
                 "session_id": session_id,
                 "agent": agent,

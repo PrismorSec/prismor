@@ -22,7 +22,8 @@ flowchart TD
 ```
 
 The LLM is only called for the uncertain zone — roughly 1–2% of events in
-production workloads. The rest is handled in under a millisecond.
+production workloads (measured on live traffic outside the repo; no in-repo
+corpus reproduces it). The rest is handled in under a millisecond.
 
 "Any event" includes what a tool hands back: on a post-tool hook the file body,
 command output, or fetched page is screened alongside the arguments, which is
@@ -187,7 +188,7 @@ prismor install-hooks --agent all --mode enforce
 
 An enrolled device can use Prismor's hosted judge: no CLI and no key, about two
 seconds a verdict. The server judges with `gpt-5.6-luna`, which scored 83/83
-injections with one false block in 74 benign texts on our internal evaluation set; the model is chosen server-side, so a
+injections with one false block in 74 benign texts on our internal evaluation set (not checked in to this repo); the model is chosen server-side, so a
 device never configures one. The judged text (at most 3000 characters) and the heuristic score
 go to the control plane under the device key; the text is not stored. Verdicts count
 against the org's monthly judge quota and are cached like CLI verdicts. Not enrolled,
@@ -236,15 +237,36 @@ Without a policy setting, `prismor proxy --judge typesafe --judge-budget-ms 1500
 the same thing for that one proxy process (`PRISMOR_SEMANTIC_PROVIDER` /
 `PRISMOR_SEMANTIC_BUDGET_MS`). An explicit policy value wins.
 
+On a tool's **result** (PostToolUse) the judge's verdict reports and taints the
+session but cannot block, because the tool already ran. There it gets
+`post_tool_budget_ms` (default `1500`, or `PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS`)
+even when `budget_ms` is unset, and falls back to the heuristic when it runs
+over. A CLI judge (`claude`, `codex`) needs up to 20s, so under any budget below
+`20000` it is not started at all and the heuristic decides (`[LLM skipped]` in
+the reason): CLI judges cover events before a tool runs, not tool results. The
+eval-server and hosted evaluation set a 4s budget by default, so behind them a
+CLI judge never runs; use `api`, `prismor` or `typesafe` there. While enforcement is paused, tool results get the heuristic only.
+
+`prismor cloak list` and `prismor cloak [<subcommand>] --help` output is exempt
+from the semantic judge: it contains placeholder names or CLI documentation, not
+secret values. So is a `| head`, `| tail` or `| grep <pattern>` over it with no
+file argument, and a `;`, `&&` or `||` chain in which every command is exempt.
+A chain that includes any other command, and commands that replay untrusted
+content, still get scanned. Post-tool notices name the originating tool and its
+`tool_use_id` when available, so parallel results can be distinguished even if
+the client displays the notice beside another result.
+
 ### Judging every ingested text
 
 The judge only sees text whose heuristic score falls in `[low_threshold, high_threshold)`.
 Paraphrased, encoded and translated injections mostly score 0 on the regexes. On a
-157-text evaluation set (83 injections across 8 phrasings and 8 carriers, 74 hard
+157-text evaluation set kept outside the repo (83 injections across 8 phrasings and 8 carriers, 74 hard
 benign texts), 45 injections never reached the judge, so the gated layer blocked 34%
 of them whichever judge was configured. Scoring every text, gpt-5.6-luna blocked
 83/83 with 1 false block and gpt-4o-mini 80/83 with 6. On one real machine only 1.6%
-of ingested texts landed in the default band.
+of ingested texts landed in the default band. These judge figures were
+measured outside the repo; `python3 scripts/bench_policy.py` covers only the
+deterministic layers (see [residual-risk.md](residual-risk.md)).
 
 With a fast judge (`api`, `prismor` or `typesafe`) this is now the default: every ingested text
 is judged, because a verdict costs about a second. A CLI judge keeps the narrow band

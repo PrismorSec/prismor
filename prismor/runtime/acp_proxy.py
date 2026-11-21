@@ -35,8 +35,10 @@ web fetch, a shell it spawns itself because the editor did not advertise the
 agent's native Prismor hooks. The proxy says on stderr which capabilities the
 editor offered, so a gap is visible rather than assumed away.
 
-Cloaking: ``@@SECRET:name@@`` in a ``terminal/create`` (command, args, env) or
-``fs/write_text_file`` content is resolved just before the editor runs it, and
+Cloaking: a ``terminal/create`` whose command, args or env hold a secret
+placeholder is handed to the editor as ``bash decloak-exec.sh`` (the Claude
+hook's resolver), so no raw value crosses the pipe, and the resolved command is
+screened again; ``fs/write_text_file`` content is resolved before the write, and
 raw secret values in what comes back (terminal output, file reads) are masked to
 placeholders before the agent sees them. File reads get cloak masking only —
 the agent writes edited files back whole, and only a cloak placeholder can be
@@ -53,6 +55,7 @@ from __future__ import annotations
 import itertools
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -604,6 +607,11 @@ class AcpProxy:
                 f"Blocked by Prismor: unknown secret placeholder @@SECRET:{exc.args[0]}@@ — "
                 "register it with `prismor cloak add` (refusing to run the literal placeholder)."))
             return
+        except PermissionError as exc:
+            _log(f"blocked {method} after resolving placeholders: {exc}")
+            self._error_to_agent(msg["id"], (
+                f"Blocked by Prismor: the command with its secrets resolved is refused ({exc})."))
+            return
         if method == "terminal/create":
             # Command text for provenance on the output scan; stored with the
             # placeholder form, never the resolved value.
@@ -614,20 +622,7 @@ class AcpProxy:
     def _decloak(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
         from prismor.runtime.cloaking.runtime import decloak_text, placeholder_names
         if method == "terminal/create":
-            fields = [params.get("command")] + list(params.get("args") or []) + [
-                e.get("value") for e in (params.get("env") or []) if isinstance(e, dict)]
-            if not any(isinstance(f, str) and placeholder_names(f) for f in fields):
-                return params
-            out = dict(params)
-            out["command"] = decloak_text(str(params.get("command") or ""))
-            if params.get("args"):
-                out["args"] = [decloak_text(a) if isinstance(a, str) else a for a in params["args"]]
-            if params.get("env"):
-                out["env"] = [({**e, "value": decloak_text(e["value"])}
-                               if isinstance(e, dict) and isinstance(e.get("value"), str) else e)
-                              for e in params["env"]]
-            _log("resolved cloaked secret placeholder(s) for terminal/create")
-            return out
+            return self._decloak_terminal(params)
         if method == "fs/write_text_file":
             content = params.get("content")
             if not isinstance(content, str) or not placeholder_names(content):
@@ -645,6 +640,46 @@ class AcpProxy:
             secrets = {k: v for k, v in _read_secret_map().items() if k in allowed}
             return {**params, "content": _resolve_known(content, secrets)}
         return params
+
+    def _decloak_terminal(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """A ``terminal/create`` with placeholders, rewritten so no raw value
+        crosses the pipe: the editor runs ``bash decloak-exec.sh`` with the
+        placeholder-form script in ``PRISMOR_CLOAK_CMD``; the resolver reads the
+        vault itself and expands each placeholder as a quoted reference to a
+        non-exported shell variable, never as shell text. Placeholder ``env``
+        entries become ``export`` lines of that script. The resolved command is
+        screened again, as ``prismor cloak run`` does (a secret can carry what
+        the placeholder form hid). Raises KeyError on an unknown placeholder and
+        PermissionError when the resolved command is blocked."""
+        from prismor.runtime.cloaking.runtime import (
+            _read_secret_map, _resolved_command_block, decloak_text, placeholder_names)
+        from prismor.runtime.cloaking.secrets_store import secrets_dir
+        env = [e for e in (params.get("env") or []) if isinstance(e, dict)]
+        cloaked_env = [e for e in env if isinstance(e.get("value"), str) and placeholder_names(e["value"])]
+        args = [str(a) for a in (params.get("args") or []) if a is not None]
+        cmd = str(params.get("command") or "")
+        shell_c = (os.path.basename(cmd) in ("sh", "bash", "zsh", "dash") and len(args) == 2
+                   and args[0] in ("-c", "-lc", "-ic", "-cl"))
+        script = terminal_command_text(params) if (shell_c or not args) else shlex.join([cmd, *args])
+        if not cloaked_env and not placeholder_names(script):
+            return params
+        script = "".join(
+            f"export {e['name']}={shlex.quote(e['value'])}\n" for e in cloaked_env
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(e.get("name") or ""))) + script
+        secrets = _read_secret_map()
+        for name in placeholder_names(script):
+            if name not in secrets:
+                raise KeyError(name)
+        blocked = _resolved_command_block(["bash", "-c", decloak_text(script, secrets=secrets)])
+        if blocked is not None:
+            raise PermissionError(blocked)
+        resolver = Path(__file__).parent / "cloaking" / "hooks" / "decloak-exec.sh"
+        out_env = [e for e in env if e not in cloaked_env and e.get("name") not in (
+            "PRISMOR_CLOAK_CMD", "PRISMOR_SECRETS_DIR")]
+        out_env += [{"name": "PRISMOR_CLOAK_CMD", "value": script},
+                    {"name": "PRISMOR_SECRETS_DIR", "value": str(secrets_dir())}]
+        _log("routed cloaked terminal/create through the placeholder resolver")
+        return {**params, "command": "bash", "args": [str(resolver)], "env": out_env}
 
     def _guard_permission(self, msg: Dict[str, Any], params: Dict[str, Any]) -> None:
         session_id = params.get("sessionId")

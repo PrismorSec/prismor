@@ -289,6 +289,33 @@ def test_withhold_catches_semantic_injection_category():
     assert got is not None and got["ruleId"] == "semantic-guard-hybrid"
 
 
+def test_withhold_skips_a_keyword_only_semantic_warn():
+    """Keyword scoring below its block threshold flags SDK docs; it must not hide
+    them. (Cloudflare's Durable Objects and R2 docs were withheld this way.)"""
+    findings = [{"category": "prompt_injection_semantic", "mode": "enforce", "action": "warn",
+                 "judged": False, "ruleId": "semantic-guard-hybrid"}]
+    assert _result_withhold_finding(findings) is None
+
+
+def test_withhold_keeps_a_model_judged_semantic_warn_and_a_keyword_block():
+    judged = [{"category": "prompt_injection_semantic", "action": "warn", "judged": True, "ruleId": "j"}]
+    strong = [{"category": "prompt_injection_semantic", "action": "block", "judged": False, "ruleId": "k"}]
+    assert _result_withhold_finding(judged)["ruleId"] == "j"
+    assert _result_withhold_finding(strong)["ruleId"] == "k"
+
+
+@pytest.mark.parametrize("text", [
+    # Cloudflare Durable Objects docs: a JS `export` and `context.env` read as "export .env".
+    "```\nexport async function onRequestGet(context) {  const id = context.env.DURABLE_OBJECT.newUniqueId();  const stub = context.env.DURABLE_OBJECT.get(id);\n```",
+    # Cloudflare R2 docs: a CLI flag's description.
+    "* `--service-account-key-file` `string`  \n(GCS provider only) The path to your Google Cloud service account key JSON file",
+])
+def test_docs_results_flagged_only_by_keywords_are_not_withheld(text):
+    from prismor.runtime.policy_engine import PolicyEngine
+    findings = PolicyEngine().evaluate({"type": "tool_result", "tool_name": "mcp__cfdocs__search", "content": text}, 0)
+    assert _result_withhold_finding(findings) is None
+
+
 def test_withhold_fires_on_observe_mode_result_injection():
     """A tool RESULT is untrusted external content, a distinct trust boundary
     from the user's own prompts. The gateway withholds a poisoned result even

@@ -16,8 +16,11 @@ so protection heals itself even if ``prismor resume`` is never run.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import time
 import uuid
 from datetime import datetime, timezone
@@ -41,6 +44,62 @@ def prismor_home() -> Path:
 def pause_path() -> Path:
     from prismor.runtime import system_install
     return system_install.policy_home() / "pause.json"
+
+
+def _key_path() -> Path:
+    return pause_path().parent / "pause.key"
+
+
+_MAC_FIELDS = ("schema", "paused", "hard", "at", "until", "reason", "by")
+
+
+def _existing_key() -> Optional[bytes]:
+    """The pause MAC key, or None. Never creates one (a missing key means an
+    unsigned marker is ignored)."""
+    try:
+        raw = _key_path().read_bytes()
+    except OSError:
+        return None
+    return raw if len(raw) == 32 else None
+
+
+def _ensure_key() -> bytes:
+    key = _existing_key()
+    if key is not None:
+        return key
+    from prismor.runtime import system_install
+    path = _key_path()
+    # A system install writes the marker as root and the user's hook reads it,
+    # so the key takes the shared file mode there. The user still cannot write
+    # that directory, which is what keeps a marker from being forged.
+    if system_install.is_system_managed():
+        system_install.mkdir_public(path.parent)
+        mode = system_install.shared_file_mode()
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mode = 0o600
+    fresh = secrets.token_bytes(32)
+    # O_EXCL so two writers don't each sign with a key the other just replaced.
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, mode)
+    except FileExistsError:
+        key = _existing_key()
+        if key is None:
+            raise
+        return key
+    try:
+        os.write(fd, fresh)
+        if hasattr(os, "fchmod"):  # the umask can strip bits from the open() mode
+            os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+    return fresh
+
+
+def _mac(record: Dict[str, Any], key: bytes) -> str:
+    body = {k: record.get(k) for k in _MAC_FIELDS}
+    blob = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(key, blob, hashlib.sha256).hexdigest()
 
 
 def parse_duration(text: str) -> int:
@@ -87,6 +146,7 @@ def set_paused(duration_seconds: Optional[int] = None, reason: str = "", by: str
         "by": (by or "")[:120],
         "last_beat": 0.0,
     }
+    record["mac"] = _mac(record, _ensure_key())
     from prismor.runtime import system_install
     system_install.write_shared(pause_path(), json.dumps(record, indent=2))
     return record
@@ -142,9 +202,22 @@ def beat_resumed(agent: Optional[str] = None) -> bool:
 def _read_raw() -> Optional[Dict[str, Any]]:
     try:
         data = json.loads(pause_path().read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) and data.get("paused") else None
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict) or not data.get("paused"):
+        return None
+    # A hand-written {"paused": true} used to skip the deny. Only a marker
+    # set_paused signed with pause.key counts. A missing or swapped key does
+    # not: we never create the key on read.
+    key = _existing_key()
+    mac = data.get("mac")
+    if key is None or not isinstance(mac, str):
+        return None
+    try:
+        ok = hmac.compare_digest(mac, _mac(data, key))
+    except (TypeError, ValueError):
+        return None
+    return data if ok else None
 
 
 def _parse_iso(text: Any) -> Optional[float]:

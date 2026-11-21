@@ -45,9 +45,17 @@ def _policy_path(workspace: Optional[Path]) -> str:
     return str((workspace / ".prismor" / "policy.yaml")) if workspace else ".prismor/policy.yaml"
 
 
+def _evidence_pattern(rule_id: str, finding: Dict[str, Any]) -> Optional[str]:
+    # pii-ner evidence is masked (bullets) while its allowlist is matched
+    # against the raw text, so a pattern built from it could never match.
+    if rule_id == "pii-ner":
+        return None
+    return literal_pattern(finding.get("evidence") or "")
+
+
 def _allowlist_yaml(rule_id: str, finding: Dict[str, Any]) -> List[str]:
     """YAML for an allowlist entry suppressing this rule for this evidence only."""
-    pattern = literal_pattern(finding.get("evidence") or "")
+    pattern = _evidence_pattern(rule_id, finding)
     if pattern is None:
         pattern = "<regex matching only the case you want to allow>"
     # Column 0 for the top-level key: these lines are meant to be pasted
@@ -76,7 +84,7 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
     an unblock path is that the narrow one should be the easy one.
     """
     path = _policy_path(workspace)
-    pattern = literal_pattern(finding.get("evidence") or "")
+    pattern = _evidence_pattern(rule_id, finding)
     steps: List[str] = []
     if pattern:
         steps.append(
@@ -85,6 +93,11 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
         )
         steps.append(
             "   (add --expires 30m to make it temporary)"
+        )
+    elif rule_id == "pii-ner":
+        steps.append(
+            f"1. Stop flagging one value (a product or team name):  add it to "
+            f"settings.pii.allow_list in {path}"
         )
     else:
         steps.append(
@@ -336,18 +349,28 @@ def _subsystem_steps(
         ]
 
     if rule_id.startswith("tag-rule:"):
-        # A tag-rule expression, not a policy rule: `prismor allow` cannot
-        # name it (it said "No rule named ..." and left people stuck).
         return [
-            "This is a tag-sequence rule (settings.tool_tags.rules), not a policy "
-            "rule, so `prismor allow` cannot relax it.",
+            "This is a tag-sequence rule (settings.tool_tags.rules). A human can "
+            "allow one complete command or call without clearing the session's tags.",
             "1. See the rules and why tools carry each tag: prismor tags rules  /  prismor tags list",
-            "2. Untag the tool that should not count. Where `prismor tags list` shows its "
-            "TIER as explicit: prismor tags rm <tool> <tag>. Where it shows inference: set "
-            "`settings.tool_tags.inference_enabled: false` so plain reads and commands are "
-            "not tagged by event type.",
-            "3. Or drop the rule: prismor tags rules rm <index>",
-            "Tags accumulate for the whole session, so start a fresh session afterwards.",
+            f"2. In your own terminal: prismor allow {rule_id} "
+            "--pattern '<complete literal command or call>' --expires 30m --yes",
+            "Other rules still apply. See docs/tool-tags.md for structured call arguments.",
+            f"3. Remove the exception: prismor allow --undo allow-{rule_id}",
+        ]
+
+    if rule_id.startswith("tool-contract:"):
+        return [
+            "This is a tool contract (settings.tool_tags.contracts): the call "
+            "requires something of the session label that what this session has "
+            "read no longer allows. The label only narrows, so it cannot be reset "
+            "from inside the session.",
+            "1. See the label and the call that narrowed it: prismor tags label",
+            f"2. To let this one call through, in your own terminal: prismor allow {rule_id} "
+            "--pattern '<complete literal command or call>' --expires 30m --yes",
+            "   The label stays where it is and every other contract still applies.",
+            "3. Or do the work in a fresh session that has not read the restricted content.",
+            f"4. Remove the exception: prismor allow --undo allow-{rule_id}",
         ]
 
     if rule_id == "tool-category-crossover":
@@ -394,6 +417,17 @@ def data_boundary_steps(finding: Dict[str, Any], workspace: Optional[Path]) -> L
     host = str(finding.get("destHost") or "").strip() or "<destination host>"
     classes = list(finding.get("dataClasses") or []) or ["<class>"]
     per_class = ", ".join(f"{c}: allow" for c in classes)
+    if finding.get("handoffTo") is not None:  # what an agent hands a subagent
+        target = str(finding.get("handoffTo") or "") or "<subagent type>"
+        return [
+            "This is the data boundary on handoffs (settings.data_boundary.handoffs), not a "
+            "policy rule, so `prismor allow` cannot relax it. Edit "
+            f"{path}:",
+            f'1. Allow this data for this subagent:  under settings.data_boundary.handoffs.per_subagent add  "{target}": {{{per_class}}}',
+            "2. Or hand over a reference (a record id, a file path) instead of the value itself.",
+            "3. Or keep reporting but stop blocking:  settings.data_boundary.mode: observe",
+            f"Check the file with: prismor policy validate {path}  — then retry the call.",
+        ]
     return [
         "This is the data boundary (settings.data_boundary), not a policy rule, "
         "so `prismor allow` cannot relax it. Edit "
@@ -421,6 +455,12 @@ def unblock_steps(
 
     if rule_id in _SELF_PROTECTION_RULE_IDS:
         return _self_protection_steps(rule_id, workspace)
+
+    if rule_id.startswith(("tag-rule:", "tool-contract:")) and org_managed:
+        return [
+            "This workspace is org-managed. Ask an admin for a scoped exception: "
+            'prismor exempt request --reason "<why>"',
+        ]
 
     steps = _subsystem_steps(rule_id, finding, workspace, session_id, enrolled)
     if steps is None:
@@ -463,7 +503,7 @@ def format_unblock(
         from prismor.runtime.enterprise import identity as _ident
         if enrolled and _ident.load_identity() is not None:
             lines.append('  Or ask your org for an exception: prismor exempt request --reason "<why>"')
-        return "\n".join(lines)
+        return "\n".join(lines + _review_lines(finding, session_id, enrolled))
     steps = unblock_steps(
         finding,
         workspace=workspace,
@@ -472,7 +512,7 @@ def format_unblock(
         enrolled=enrolled,
     )
     if not steps:
-        return ""
+        return "\n".join(_review_lines(finding, session_id, enrolled)).lstrip("\n")
     # An unlock window only lets the agent edit LOCAL policy, which cannot lift
     # a block the org's egress policy owns — offering it there is a dead end,
     # and the one step that works (a request) is open to the agent too.
@@ -493,7 +533,32 @@ def format_unblock(
     return "\n".join(
         [header] + steps
         + ([] if is_egress else _delegate_steps(rule_id, workspace))
+        + _review_lines(finding, session_id, enrolled)
     )
+
+
+def _review_lines(finding: Dict[str, Any], session_id: Optional[str], enrolled: bool) -> List[str]:
+    """If the block looks wrong: report it and hand the user the console link.
+
+    The report only asks; a reviewer's label is what teaches `prismor learn`.
+    Enrolled devices only, since the event lives on the org console.
+    """
+    event_id = finding.get("eventId")
+    if not enrolled or not event_id:
+        return []
+    try:
+        from prismor.runtime.enterprise import fp_report as _fp
+        url = _fp.review_url(event_id, session_id)
+    except Exception:
+        url = None
+    if not url:
+        return []
+    return [
+        "",
+        f'Looks like a false positive? Agent: run `prismor report-fp {event_id} --reason "<why it is safe>"`,',
+        f"then give the user this link to confirm or reject it: {url}",
+        "Do not work around the block while you wait.",
+    ]
 
 
 def _delegate_steps(rule_id: str, workspace: Optional[Path]) -> List[str]:

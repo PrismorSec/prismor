@@ -53,9 +53,12 @@ are set. Without them it ships the scripts unsigned.
 - `-Mode enforce|observe` (default `enforce`);
 - `-Rules id1,id2` (default: the recommended set);
 - `-ApiBase` (only for a self-hosted control plane);
-- `-Label` (default: the computer name).
+- `-Label` (default: the computer name);
+- `-Discover` turns on the daily endpoint inventory for every user. Sinks
+  go in `inventory.yaml`; their secrets stay in the environment.
 
-Leave out `-Token` to install without enrolling.
+Leave out `-Token` to install without enrolling. See
+[Shadow-agent discovery](shadow-discovery.md).
 
 Mint the token in the console (Devices → Fleet token). It has a use limit
 and an expiry, so the copy stored in the Intune app can't enroll machines
@@ -79,7 +82,8 @@ PowerShell:
 
 - **Detection script:** `remediation-detect.ps1`. It reports drift: the marker,
   the launcher or the Claude Code / Codex hook file is missing, or no longer
-  points at Prismor.
+  points at Prismor. When an inventory scan exists it also prints the age of
+  `last.ndjson` and the count of records at each risk level.
 - **Remediation script:** `remediation-fix.ps1`. It re-runs
   `prismor setup --system` with the mode the device was installed with. The
   enrollment is untouched.

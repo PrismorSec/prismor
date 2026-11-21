@@ -46,16 +46,28 @@ def org_patterns_file() -> Path:
     return home / "cloak_patterns.org.txt"
 
 
+# path -> ((mtime_ns, size, inode), patterns). Every string the store scrubs
+# asks for all three files: ~250 reads per hook call, now ~250 stats.
+_READ_CACHE: dict = {}
+
+
 def _read_patterns(path: Path) -> List[str]:
-    if not path.exists():
+    try:
+        st = path.stat()
+    except OSError:
         return []
+    sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+    hit = _READ_CACHE.get(str(path))
+    if hit is not None and hit[0] == sig:
+        return list(hit[1])
     out: List[str] = []
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         out.append(line)
-    return out
+    _READ_CACHE[str(path)] = (sig, out)
+    return list(out)
 
 
 def builtin_patterns() -> List[str]:

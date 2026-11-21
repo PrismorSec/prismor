@@ -38,6 +38,8 @@ class HookCaps:
     session_context: Optional[str] = None
     post_context: Optional[str] = None
     prompt_context: Optional[str] = None
+    # Context added before a tool runs (an `instruct` rule's guidance).
+    pre_context: Optional[str] = None
     input_rewrite: Optional[str] = None
     # Native event name -> canonical name, for agents that don't use Claude's.
     event_aliases: Mapping[str, str] = field(default_factory=dict)
@@ -46,10 +48,11 @@ class HookCaps:
 
 
 CAPS: Dict[str, HookCaps] = {
-    # https://code.claude.com/docs/en/hooks
+    # https://code.claude.com/docs/en/hooks (PreToolUse also takes
+    # hookSpecificOutput.additionalContext, added before the tool runs)
     "claude": HookCaps(
         session_context=NESTED, post_context=NESTED, prompt_context=NESTED,
-        input_rewrite=REWRITE_CLAUDE,
+        pre_context=NESTED, input_rewrite=REWRITE_CLAUDE,
     ),
     # https://learn.chatgpt.com/docs/hooks and openai/codex
     # codex-rs/hooks/src/engine/output_parser.rs: updatedInput is applied only
@@ -124,6 +127,7 @@ def canonical_event(agent: str, native: Any) -> str:
 
 _CONTEXT_KIND = {
     "SessionStart": "session_context",
+    "PreToolUse": "pre_context",
     "PostToolUse": "post_context",
     "UserPromptSubmit": "prompt_context",
 }

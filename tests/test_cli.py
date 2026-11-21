@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLI = str(REPO_ROOT / "prismor" / "runtime" / "cli.py")
-IMMUNITY_CLI = str(REPO_ROOT / "bin" / "immunity")
+IMMUNITY_CLI = str(REPO_ROOT / "bin" / "prismor")
 SAMPLE = str(REPO_ROOT / "prismor" / "runtime" / "examples" / "sample-session.jsonl")
 
 
@@ -88,7 +88,7 @@ class TestCliExitCodes(unittest.TestCase):
     def test_sandbox_help(self):
         r = run_cli("sandbox", "--help")
         self.assertEqual(r.returncode, 0)
-        self.assertIn("Docker-backed sandbox", r.stdout)
+        self.assertIn("OS sandbox", r.stdout)
 
 
 class TestCliCommandConsolidation(unittest.TestCase):

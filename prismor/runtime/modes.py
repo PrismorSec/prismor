@@ -186,14 +186,14 @@ def _check_tag_inference_declared(mode: Dict[str, Any]) -> None:
         )
 
 
-def needs_container_runtime(mode: Dict[str, Any]) -> bool:
-    """Whether this mode's shell path depends on a working container runtime.
+def needs_sandbox_engine(mode: Dict[str, Any]) -> bool:
+    """Whether this mode's shell path depends on the OS sandbox engine.
 
     True only when all three hold: the sandbox is on, it is *enforcing*, and the
     mode still lets the agent run a shell. An observing sandbox degrades to a
-    warning when the runtime is missing, and a mode that denies Bash never
+    warning when the engine is missing, and a mode that denies Bash never
     reaches the sandbox gate at all — `regulated-airgap` is the second case, so
-    it runs fine on a host with no Docker.
+    it runs fine on a host with no sandbox engine.
     """
     sandbox = mode.get("sandbox") or {}
     if not sandbox.get("enabled"):
@@ -209,37 +209,36 @@ def sandbox_preflight(mode: Dict[str, Any]) -> Optional[str]:
 
     Containment is one axis of a posture, not the posture itself: a mode whose
     sandbox cannot start still has its rules, its egress allowlist and its tag
-    rules, and all of those work on a host with no Docker. So this reports the
-    problem and :func:`apply_mode` degrades that one axis to ``observe`` — it
-    is not a reason to refuse the whole mode, which would leave the workspace
-    with no policy at all.
+    rules, and all of those work on a host with no sandbox engine. So this
+    reports the problem and :func:`apply_mode` degrades that one axis to
+    ``observe`` — it is not a reason to refuse the whole mode, which would
+    leave the workspace with no policy at all.
     """
-    if not needs_container_runtime(mode):
+    if not needs_sandbox_engine(mode):
         return None
-    from prismor.runtime.sandbox import docker_status
-    status = docker_status()
-    if status.get("cli_found") and status.get("server_reachable"):
+    from prismor.runtime.sandbox import backend_status
+    status = backend_status()
+    if status.get("available"):
         return None
-    return str(status.get("error") or "Docker is not reachable")
+    return str(status.get("error") or "no native sandbox on this host")
 
 
-# One wording for "Docker is missing, so the sandbox is skipped", used by
+# One wording for "no sandbox engine, so the sandbox is skipped", used by
 # `mode apply`, `mode show`, `prismor setup` and the hook path. Callers key off
 # the NOTE: prefix rather than the prose, so the sentence can be reworded
 # without breaking them.
 SANDBOX_SKIPPED_NOTE = (
-    "NOTE: Docker is not available here ({reason}) — the sandbox is skipped. "
-    "Rules, egress and tag rules still enforce; start Docker and re-apply for "
-    "container isolation."
+    "NOTE: no native sandbox here ({reason}) — the sandbox is skipped. "
+    "Rules, egress and tag rules still enforce; OS containment needs macOS."
 )
 
 
 def degrade_sandbox(mode: Dict[str, Any]) -> Dict[str, Any]:
     """A copy of ``mode`` whose sandbox observes instead of enforcing.
 
-    Used when the host has no container runtime. Every other axis is left
-    exactly as the mode declares it, so what the operator loses is container
-    isolation, not the rules, the egress allowlist or the tag rules.
+    Used when the host has no sandbox engine. Every other axis is left
+    exactly as the mode declares it, so what the operator loses is OS
+    containment, not the rules, the egress allowlist or the tag rules.
 
     The copy is flagged so :func:`compile_mode` can stamp the provenance:
     without it the written policy differs from the mode's own compile and
@@ -437,7 +436,7 @@ def apply_mode(
     #
     # Deliberately NOT gated on `force`. `force` means "overwrite a policy I did
     # not generate"; conflating it with "skip the runtime check" is what let
-    # `prismor setup` write an enforcing sandbox onto a host with no Docker.
+    # `prismor setup` write an enforcing sandbox onto a host with no sandbox engine.
     if not observe:
         problem = sandbox_preflight(mode)
         if problem is not None:
@@ -530,7 +529,7 @@ def has_drifted(workspace: Path) -> bool:
     policy_path = workspace / ".prismor" / "policy.yaml"
     try:
         mode = get_mode(mode_id)
-        # A policy compiled where Docker was missing legitimately differs from
+        # A policy compiled with no sandbox engine legitimately differs from
         # the catalogue mode. Compare it against what it actually is, or every
         # such install reports itself hand-edited the moment it is written.
         if is_sandbox_skipped_build(workspace):
@@ -638,10 +637,10 @@ def format_explain(mode: Dict[str, Any]) -> str:
         lines.append(f"                     {extra}")
     sandbox = mode.get("sandbox") or {}
     if sandbox.get("enabled"):
-        root = "read-only root" if sandbox.get("read_only_root") else "writable root"
-        ring = f"{sandbox.get('mode', 'observe')}, network {sandbox.get('network', 'none')}, {root}"
+        from prismor.runtime.sandbox import describe as _describe_sandbox
+        ring = f"{sandbox.get('mode', 'observe')}, {_describe_sandbox(sandbox)}"
     else:
-        ring = "host native (unconfined)"
+        ring = "off (unconfined)"
     lines.append(f"    Sandbox        : {ring}")
     denied = ", ".join(tools.get("deny") or []) or "none"
     asked = ", ".join(tools.get("ask") or []) or "none"

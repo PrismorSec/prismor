@@ -1,0 +1,120 @@
+# VS Code-family extension ids. ``verified`` is against the Marketplace gallery
+# API (publisher.extensionName) on 2026-11-03. Matching is case-insensitive.
+# ``codeium.windsurf`` is not a published id; Windsurf's extension is Codeium.codeium.
+- id: github.copilot
+  name: GitHub Copilot
+  vendor: GitHub
+  kind: ide_extension
+  editor: vscode
+  ai_capability: completion
+  match: {extension_id: GitHub.copilot}
+  source_url: https://marketplace.visualstudio.com/items?itemName=GitHub.copilot
+  verified: true
+- id: github.copilot-chat
+  name: GitHub Copilot Chat
+  vendor: GitHub
+  kind: ide_extension
+  editor: vscode
+  ai_capability: chat
+  match: {extension_id: GitHub.copilot-chat}
+  source_url: https://marketplace.visualstudio.com/items?itemName=GitHub.copilot-chat
+  verified: true
+- id: saoudrizwan.claude-dev
+  name: Cline
+  vendor: Cline
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: saoudrizwan.claude-dev}
+  source_url: https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev
+  verified: true
+- id: RooVeterinaryInc.roo-cline
+  name: Roo Code
+  vendor: RooVeterinaryInc
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: RooVeterinaryInc.roo-cline}
+  source_url: https://marketplace.visualstudio.com/items?itemName=RooVeterinaryInc.roo-cline
+  verified: true
+- id: Continue.continue
+  name: Continue
+  vendor: Continue
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: Continue.continue}
+  source_url: https://marketplace.visualstudio.com/items?itemName=Continue.continue
+  verified: true
+- id: AmazonWebServices.amazon-q-vscode
+  name: Amazon Q
+  vendor: Amazon Web Services
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: AmazonWebServices.amazon-q-vscode}
+  source_url: https://marketplace.visualstudio.com/items?itemName=AmazonWebServices.amazon-q-vscode
+  verified: true
+- id: Google.geminicodeassist
+  name: Gemini Code Assist
+  vendor: Google
+  kind: ide_extension
+  editor: vscode
+  ai_capability: completion
+  match: {extension_id: Google.geminicodeassist}
+  source_url: https://marketplace.visualstudio.com/items?itemName=Google.geminicodeassist
+  verified: true
+- id: anthropic.claude-code
+  name: Claude Code for VS Code
+  vendor: Anthropic
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: anthropic.claude-code}
+  source_url: https://marketplace.visualstudio.com/items?itemName=anthropic.claude-code
+  verified: true
+- id: openai.chatgpt
+  name: Codex
+  vendor: OpenAI
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: openai.chatgpt}
+  source_url: https://marketplace.visualstudio.com/items?itemName=openai.chatgpt
+  verified: true
+- id: sourcegraph.cody-ai
+  name: Cody
+  vendor: Sourcegraph
+  kind: ide_extension
+  editor: vscode
+  ai_capability: chat
+  match: {extension_id: sourcegraph.cody-ai}
+  source_url: https://marketplace.visualstudio.com/items?itemName=sourcegraph.cody-ai
+  verified: true
+- id: Codeium.codeium
+  name: Windsurf Plugin
+  vendor: Codeium
+  kind: ide_extension
+  editor: vscode
+  ai_capability: completion
+  match: {extension_id: Codeium.codeium}
+  source_url: https://marketplace.visualstudio.com/items?itemName=Codeium.codeium
+  verified: true
+- id: TabNine.tabnine-vscode
+  name: Tabnine
+  vendor: TabNine
+  kind: ide_extension
+  editor: vscode
+  ai_capability: completion
+  match: {extension_id: TabNine.tabnine-vscode}
+  source_url: https://marketplace.visualstudio.com/items?itemName=TabNine.tabnine-vscode
+  verified: true
+- id: kilocode.Kilo-Code
+  name: Kilo Code
+  vendor: kilocode
+  kind: ide_extension
+  editor: vscode
+  ai_capability: agent
+  match: {extension_id: kilocode.Kilo-Code}
+  source_url: https://marketplace.visualstudio.com/items?itemName=kilocode.Kilo-Code
+  verified: true

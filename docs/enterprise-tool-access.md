@@ -1,5 +1,10 @@
 # Enterprise tool access inventory
 
+> **Prismor console feature.** This page needs a Prismor console account; the
+> open-source runtime on its own does not include it.
+> [Sign in to the console](https://prismor.dev/sign-in), then connect this
+> machine as described in [Connecting to the platform](connecting-to-the-platform.md).
+
 Managed Prismor runtimes register tool capabilities with the control plane at
 the existing device-authenticated endpoint:
 
@@ -37,7 +42,9 @@ GET /api/admin/tool-capabilities?orgId=<org>&agentId=<agent>&sessionId=<session>
 
 Each result identifies internal versus MCP tools, the MCP server name,
 discovery sources, sessions, and whether signed policy currently allows or
-denies delivery.
+denies delivery. It also carries the event type the tool's latest call was
+judged as (`eventType`) and any admin correction (`classifiedAs`). See
+[docs/event-types.md](event-types.md).
 
 Grant and revoke use the existing policy endpoint:
 

@@ -362,22 +362,40 @@ def mirror_tool_definitions(workspace: Optional[Path] = None) -> List[Dict[str, 
 # or an argv list. Matched only on exact native names, a proposed
 # ``curl … | bash`` fell through to the generic payload path and no command rule
 # ever saw a command. Shared by the LLM proxy and the MCP gateway.
+#: Anthropic's built-in text editor tool, one name for view/create/str_replace/insert.
+_TEXT_EDITOR_TOOLS = ("str_replace_editor", "str_replace_based_edit_tool", "text_editor")
+_TEXT_EDITOR_COMMANDS = {"view": "Read", "create": "Write"}
+
 _TOOL_ALIASES = {
     **{n: "Bash" for n in ("bash", "shell", "sh", "terminal", "exec", "run", "run_command", "run_shell",
                            "run_shell_command", "exec_command", "execute_command", "execute_shell",
-                           "shell_command", "local_shell", "container.exec", "run_terminal_cmd")},
+                           "shell_command", "local_shell", "container.exec", "run_terminal_cmd",
+                           "system", "cli", "subprocess", "run_process")},
     **{n: "Read" for n in ("read", "read_file", "cat_file", "view_file", "open_file")},
     # apply_patch (Codex, Capy) creates/overwrites files from a patch string:
     # judged as a Write on the patch's first target, with the whole patch as content.
     **{n: "Write" for n in ("write", "write_file", "create_file", "save_file", "apply_patch")},
     **{n: "Edit" for n in ("edit", "edit_file", "str_replace", "replace_in_file",
                            "multi_edit", "multiedit")},
-    **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse")},
+    # Anthropic's text editor tool; native_call picks Read/Write/Edit from `command`.
+    **{n: "Edit" for n in _TEXT_EDITOR_TOOLS},
+    **{n: "WebFetch" for n in ("webfetch", "web_fetch", "fetch", "fetch_url", "http_get", "browse",
+                               "http_request", "http", "request", "curl", "browser_navigate",
+                               "navigate", "browser_open", "open_url", "goto", "visit_url")},
     "glob": "Glob", "grep": "Grep",
 }
+# Tools named after one program take its arguments, not a shell line: judged
+# as that program's command, so `kubectl delete ns prod` or `ssh prod rm -rf /`
+# meets the same rules as when typed into Bash.
+_PROGRAM_TOOLS = {"ssh": "ssh", "kubectl": "kubectl", "node": "node -e", "nodejs": "node -e",
+                  "docker": "docker", "git": "git", "helm": "helm", "terraform": "terraform"}
 _SHELLISH_NAME = re.compile(r"shell|exec|command|terminal|bash|cmd")
 _COMMAND_KEYS = ("command", "cmd", "script")
-_EXTRA_COMMAND_KEYS = ("commands", "input", "code")
+_EXTRA_COMMAND_KEYS = ("commands", "input", "code", "argv", "args")
+_CODE_KEYS = ("code", "source", "script")
+# `source`/`script` mean code only on a code runner; elsewhere they can be a URL
+# or a name, which must keep the generic payload path.
+_CODE_RUNNER_NAME = re.compile(r"python|node|javascript|\bjs\b|code|script|eval|repl|interpreter|notebook")
 _PATCH_TARGET = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
 
 
@@ -407,6 +425,18 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
     if not isinstance(arguments, dict):
         return tool, arguments
     args = dict(arguments)
+    program = _PROGRAM_TOOLS.get(str(tool_name or "").strip().lower().rsplit(".", 1)[-1].rsplit("__", 1)[-1])
+    rest = ""
+    if program:
+        rest = next((args[k] for k in _COMMAND_KEYS + _EXTRA_COMMAND_KEYS if args.get(k)), "")
+        if isinstance(rest, list):
+            import shlex
+            rest = shlex.join(str(c) for c in rest)
+        host = args.get("host") or args.get("hostname") or args.get("target") if program == "ssh" else ""
+    if program and rest:
+        return "Bash", {**args, "command": " ".join(str(x) for x in (program, host, rest) if x)}
+    if str(tool_name or "").strip().lower().rsplit(".", 1)[-1].rsplit("__", 1)[-1] in _TEXT_EDITOR_TOOLS:
+        tool = _TEXT_EDITOR_COMMANDS.get(str(args.get("command") or "").lower(), "Edit")
     shellish = _SHELLISH_NAME.search(str(tool_name or "").lower())
     if tool == "Bash" or (
         shellish and any(args.get(key) for key in _EXTRA_COMMAND_KEYS)
@@ -437,17 +467,28 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
             "file_path",
             args.get("path") or args.get("filename") or args.get("file")
             or args.get("filePath") or args.get("file_path")
+            # Cursor's edit_file/read_file, and save-style tools
+            or args.get("target_file") or args.get("filepath")
             or (target.group(1).strip() if target else ""),
         )
         if tool == "Write":
-            args.setdefault("content", args.get("text") or args.get("contents") or patch)
+            args.setdefault("content", args.get("text") or args.get("contents")
+                            or args.get("file_text") or patch)
+        if tool == "Edit" and "new_string" not in args:
+            # text editor str_replace/insert (new_str), create (file_text), Cursor (code_edit)
+            for key in ("new_str", "file_text", "code_edit"):
+                if isinstance(args.get(key), str):
+                    args["new_string"] = args[key]
+                    break
         if tool == "Edit" and "new_string" not in args and isinstance(args.get("edits"), list):
             # multi_edit: every replacement is written text, so all of it is screened.
             args["new_string"] = "\n".join(str(e.get("new_string") or "")
                                            for e in args["edits"] if isinstance(e, dict))
     elif tool == "WebFetch":
-        args.setdefault("url", args.get("uri") or args.get("href") or "")
-    code = args.get("code")
+        args.setdefault("url", args.get("uri") or args.get("href") or args.get("endpoint")
+                        or args.get("target") or args.get("address") or "")
+    keys = _CODE_KEYS if _CODE_RUNNER_NAME.search(str(tool_name or "").lower()) else ("code",)
+    code = next((args[k] for k in keys if isinstance(args.get(k), str) and args[k].strip()), None)
     if (
         tool not in ("Bash", "Read", "Write", "Edit", "WebFetch", "Glob", "Grep")
         and isinstance(code, str)

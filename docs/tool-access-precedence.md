@@ -47,6 +47,27 @@ exfiltration, RCE, privilege escalation, DoS, tool-category crossover — is a
 different, always-on layer that no admin action can weaken; see
 [docs/policy-layers-and-exemptions.md](policy-layers-and-exemptions.md).
 
+## What a deny entry can name
+
+A deny or ask entry (org `tool_denies`, or a local `deny_tools` / `ask_tools`
+list) names a tool tag:
+
+| Tag | Matches |
+|---|---|
+| `Bash`, `mcp__github__create_issue` | that one tool, verbatim |
+| `Skill` | every skill call |
+| `Skill:<name>` | one skill, e.g. `Skill:wiki-capture` |
+| `mcp__<server>__*` | every tool of one MCP server |
+
+A server-wide entry also matches the names an agent gives that server: a call
+through the Prismor gateway (`mcp__prismor__<server>__<tool>`), a plugin's
+server (`mcp__plugin_<plugin>_<server>__<tool>`), and a configured name with
+spaces or dots (`claude.ai Gmail` arrives as `claude_ai_Gmail`). A lookalike
+is a different server: `mcp__posthog__*` does not match `mcp__posthog2__…`.
+The console's Extensions **Off** switch writes `Skill:<name>` and
+`mcp__<server>__*` entries. Allow entries stay exact: a server-wide tag can
+only tighten.
+
 ## Why this changed
 
 Earlier, the dashboard's "Allowed" badge meant only *"no org-level deny

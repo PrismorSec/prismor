@@ -53,6 +53,9 @@ CONTENT_ALLOWLIST = {
     "tests/test_cloak_secret_guard.py", # secret-detection tests: AWS example key + dummy ghp_ token fixtures
     "tests/test_oss_guard.py",          # this guard's own tests embed a fake PEM + AWS example key as fixtures
     "tests/test_cloak_env_guard.py",    # env-guard tests: a planted sk-live-CANARY key the guard must catch
+    # inventory fixtures: ghp_CANARY tokens the redaction tests prove never reach output
+    "tests/fixtures/inventory/windows-dev/profiles/alice/AppData/Local/github-copilot/intellij/mcp.json",
+    "tests/fixtures/inventory/windows-dev/profiles/alice/AppData/Roaming/JetBrains/IntelliJIdea2026.2/options/llm.mcpServers.xml",
 }
 
 # Content signatures of secret material. (label, compiled regex)

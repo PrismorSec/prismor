@@ -36,6 +36,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from itertools import islice
@@ -106,7 +107,10 @@ def _read_json(path: Path) -> Any:
 def _hosts(text: str) -> List[str]:
     out: List[str] = []
     for u in _URL_RE.findall(text):
-        h = (urlparse(u).hostname or "").lower()
+        try:
+            h = (urlparse(u).hostname or "").lower()
+        except ValueError:  # "http://[not-ipv6" in some skill's prose: skip it, don't abort discovery
+            continue
         if h and h not in out and "." in h and not h.endswith((".example", ".invalid", ".test")) \
                 and h not in ("localhost", "127.0.0.1"):
             out.append(h)
@@ -140,7 +144,7 @@ def _save(workspace: Path, data: Dict[str, Any]) -> None:
             data["sessions"].pop(sid, None)
     p = _store_path(workspace)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp = p.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=1, sort_keys=True), encoding="utf-8")
     tmp.replace(p)
 
@@ -685,7 +689,8 @@ def _audit(event: str, row: Dict[str, Any], session_id: str = "", **extra: Any) 
         sys.stderr.write(f"[prismor] extension audit error: {exc}\n")
 
 
-def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[Dict[str, Any]]:
+def sync(workspace: Path, *, session_id: str = "", record: bool = True,
+         background_report: bool = False) -> List[Dict[str, Any]]:
     """Diff what is installed against the ledger. Rows gain ``status``
     (new | changed | unchanged | approved) and ``installed_by``.
 
@@ -738,6 +743,47 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[
                         moved[row["id"]] = {"row": row, "event": "extension_changed", "new": [], "changed": [],
                                             "previous_sha256": prior.get("sha256")}
             row["invocations"] = prior.get("invocations", [])
+    # An org admin reviewed this exact content in the console: accept it as if
+    # `prismor extensions approve` ran here. Matching is by kind + name + hash,
+    # so a later edit to the file comes back as changed.
+    reviewed = _org_reviews(workspace)
+    for row in rows:
+        key = (row["kind"], row["name"], row.get("sha256") or "")
+        if not key[2] or key not in reviewed or row.get("status") == "approved":
+            continue
+        row["status"] = "approved"
+        if record:
+            entry = items.setdefault(row["id"], {"first_seen": now})
+            entry.update({"sha256": row["sha256"], "approved": True, "approved_at": now, "approved_by": "org"})
+            entry.pop("reported_sha", None)
+            data["report_due"] = True  # tell the console the device took it
+            if row["kind"] == "skill" and row.get("path"):
+                from prismor.runtime.skills_audit import approve_skill
+                approve_skill(workspace, Path(row["path"]))
+    # `prismor skills approve` writes only the skills baseline; honor it here
+    # too, or the dashboard keeps calling a reviewed skill unreviewed (#922).
+    # The file is re-checked against that baseline, so a later edit still counts.
+    from prismor.runtime import skills_audit as _sa
+    skill_ok = {}
+    for k, v in _sa._load_baseline(workspace).items():
+        if isinstance(v, dict) and v.get("approved"):
+            skill_ok[os.path.realpath(k)] = v
+    for row in rows:
+        b = skill_ok.get(os.path.realpath(row.get("path") or "")) if row["kind"] == "skill" else None
+        if not b or row.get("status") == "approved":
+            continue
+        p = Path(row["path"])
+        try:
+            same = b.get("sha256") == _sa._sha256(p) and b.get("tree_sha256", "") in ("", _sa._tree_sha256(p))
+        except OSError:
+            same = False
+        if not same:
+            continue
+        row["status"] = "approved"
+        if record:
+            entry = items.setdefault(row["id"], {"first_seen": now})
+            entry.update({"sha256": row["sha256"], "approved": True, "approved_at": b.get("approved_at") or now})
+            entry.pop("reported_sha", None)
     for m in moved.values():
         # One record per install or update; what came with it rides in the detail.
         _audit(m["event"], m["row"], session_id, previous_sha256=m.get("previous_sha256"),
@@ -752,9 +798,30 @@ def sync(workspace: Path, *, session_id: str = "", record: bool = True) -> List[
             except OSError:
                 data["mtimes"][str(p)] = 0
         _save(workspace, data)
-    if report:
+    if report and background_report:
+        # The dashboard: the upload can take its full timeout, and every
+        # Extensions load used to wait on it.
+        threading.Thread(target=send_report, args=(workspace,), name="prismor-ext-report", daemon=True).start()
+    elif report:
         send_report(workspace)
     return rows
+
+
+def _org_reviews(workspace: Path) -> set:
+    """(kind, name, sha256) an org admin reviewed in the console, from the
+    signed org policy (settings.extension_reviews). Empty outside an
+    org-managed workspace or without a verified policy. Never raises."""
+    try:
+        from prismor.runtime.enterprise import workspace_scope as _scope
+        if not _scope.is_managed(workspace):
+            return set()
+        from prismor.runtime.enterprise.remote_policy import verify_and_load
+        block = ((verify_and_load() or {}).get("settings") or {}).get("extension_reviews") or {}
+        items = block.get("items") if isinstance(block, dict) else None
+        return {(str(i.get("kind") or ""), str(i.get("name") or ""), str(i.get("sha256") or ""))
+                for i in (items or []) if isinstance(i, dict) and i.get("sha256")}
+    except Exception:
+        return set()
 
 
 def _resolve(rows: List[Dict[str, Any]], ref: str) -> List[Dict[str, Any]]:
@@ -796,10 +863,10 @@ def session_notice(workspace: Path, session_id: str = "") -> Optional[str]:
     rows = sync(workspace, session_id=session_id)  # parents sort first
     if session_id:
         data = _load(workspace)
-        sess = _session(data, session_id)
+        sess = _session(data, session_id, workspace)
         for r in rows:
             if r["kind"] == "hook":
-                _link(sess, r["id"], "ambient", r)
+                _link(data, sess, r["id"], "ambient", r)
         _save(workspace, data)
     hot: Dict[str, Dict[str, Any]] = {}
     for r in rows:
@@ -884,19 +951,34 @@ def set_agent(agent: str) -> None:
     _AGENT = str(agent or "")
 
 
-def _session(data: Dict[str, Any], session_id: str) -> Dict[str, Any]:
+def _session(data: Dict[str, Any], session_id: str, workspace: Optional[Path] = None) -> Dict[str, Any]:
     sess = data["sessions"].setdefault(session_id, {})
     if _AGENT:
         sess.setdefault("agent", _AGENT)
+    # The ledger is one file for the whole machine, but a session in a personal
+    # (unmanaged) workspace is not the org's to see: remember which it was so
+    # report_payload can leave it out. Resolved once, when the session starts.
+    if workspace is not None and "managed" not in sess:
+        try:
+            from prismor.runtime.enterprise import workspace_scope as _scope
+            sess["managed"] = _scope.is_managed(workspace)
+        except Exception:
+            sess["managed"] = False
     for key, default in (("ts", _now()), ("hosts", {}), ("caveated", []), ("fetched", []), ("links", {})):
         sess.setdefault(key, default)
     return sess
 
 
-def _link(sess: Dict[str, Any], ext_id: str, role: str, entry: Dict[str, Any]) -> bool:
+def _link(data: Dict[str, Any], sess: Dict[str, Any], ext_id: str, role: str, entry: Dict[str, Any]) -> bool:
     if ext_id in sess["links"]:
         return False
     sess["links"][ext_id] = {"role": role, "ts": _now(), "kind": entry.get("kind"), "name": entry.get("name")}
+    # A new link is news for the console's session page. Only sync() reports, and
+    # it reported nothing unless an extension was installed or changed, so most
+    # sessions never showed what they ran under. Flag it here (no network on the
+    # hook path); the next prompt's registry_changed() -> sync() sends it.
+    if sess.get("managed"):
+        data["report_due"] = True
     return True
 
 
@@ -973,7 +1055,7 @@ def tag_event(workspace: Path, session_id: str, event: Dict[str, Any]) -> Option
             ext_id = _observe_mcp(data, server, session_id)
         if ext_id:
             tag = _tag(ext_id, items[ext_id], "serves this tool")
-            dirty = _link(_session(data, session_id), ext_id, "mcp", items[ext_id])
+            dirty = _link(data, _session(data, session_id, workspace), ext_id, "mcp", items[ext_id])
     if tag:
         meta["extension"] = tag
     if dirty:
@@ -1034,8 +1116,8 @@ def on_skill_invoked(workspace: Path, session_id: str, skill_name: str) -> Optio
     entry = data["items"].get(row["id"]) or {}
     entry["invocations"] = (entry.get("invocations") or [])[-19:] + [{"session": session_id, "ts": _now()}]
     data["items"][row["id"]] = entry
-    sess = _session(data, session_id)
-    _link(sess, row["id"], "invoked", row)
+    sess = _session(data, session_id, workspace)
+    _link(data, sess, row["id"], "invoked", row)
     for h in row["hosts"]:
         sess["hosts"].setdefault(h, row["id"])
     _save(workspace, data)
@@ -1526,7 +1608,7 @@ def overview(workspace: Path, events: int = 40) -> Dict[str, Any]:
     """Everything a dashboard needs in one call: the ledger rows with what each
     one caused (sessions, pinned documents), plus the recent lifecycle records
     from the signed trail."""
-    rows = sync(workspace)
+    rows = sync(workspace, background_report=True)
     data = _load(workspace)
     docs: Dict[str, List[Dict[str, Any]]] = {}
     for url, ref in data["remote_refs"].items():
@@ -1630,7 +1712,8 @@ def report_payload(workspace: Path) -> Dict[str, Any]:
     sessions = [{"session": sid, "agent": sess.get("agent") or "", "ts": sess.get("ts"), "fetched": (sess.get("fetched") or [])[:40],
                  "links": [{"id": eid, "role": link.get("role"), "ts": link.get("ts")}
                            for eid, link in (sess.get("links") or {}).items()]}
-                for sid, sess in data["sessions"].items() if sess.get("links")]
+                for sid, sess in data["sessions"].items() if sess.get("links") and sess.get("managed")]
+    sessions.sort(key=lambda x: x["ts"] or "")
     return {"cli_version": _version, "events": view["events"], "sessions": sessions[-50:],
             "extensions": [{k: r.get(k) for k in keep} for r in view["rows"][:2000]]}
 

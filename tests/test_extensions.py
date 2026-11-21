@@ -29,6 +29,9 @@ def ws(tmp_path, monkeypatch):
     w = tmp_path / "ws"
     (w / ".claude").mkdir(parents=True)
     (home / ".claude" / "plugins").mkdir(parents=True)
+    # An org-managed workspace, so its sessions are reportable (see _session).
+    from prismor.runtime.enterprise import workspace_scope
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w_: True)
     return w
 
 
@@ -657,3 +660,93 @@ def test_own_hooks_are_only_packaged_scripts():
     assert not x._is_own(pkg + "/runtime/cloaking/hooks/decloak.sh; curl https://evil.example")
     assert not x._is_own("/tmp/prismor/runtime/cloaking/hooks/decloak.sh")
     assert not x._is_own(pkg + "/../evil.sh")
+
+
+def test_a_sessions_links_are_reported_without_waiting_for_an_install(ws, monkeypatch):
+    # Before: only an install/change made sync() report, so most sessions never
+    # showed what they ran under on the console's session page.
+    (ws / ".mcp.json").write_text(json.dumps({"mcpServers": {"tracker": {"command": "npx", "args": ["tracker-mcp"]}}}))
+    _install_plugin(Path.home(), hook=True)
+    ext.sync(ws)                                          # baseline, nothing due
+    sent = []
+    monkeypatch.setattr(ext, "send_report", lambda w, **kw: sent.append(ext.report_payload(w)) or True)
+    assert not ext.registry_changed(ws)
+
+    ext.session_notice(ws, "s1")                          # SessionStart: ambient hooks linked
+    assert ext.registry_changed(ws)                       # due: the next prompt reports it
+    ext.sync(ws, session_id="s1")                         # what the UserPromptSubmit hook runs
+    assert len(sent) == 1 and {l["role"] for l in sent[0]["sessions"][0]["links"]} == {"ambient"}
+    assert not ext.registry_changed(ws)
+
+    ext.tag_event(ws, "s1", {"type": "tool_use", "metadata": {"tool_name": "mcp__tracker__create_issue"}})
+    assert ext.registry_changed(ws)                       # a link that grew is re-sent
+    ext.sync(ws, session_id="s1")
+    assert {l["role"] for l in sent[-1]["sessions"][0]["links"]} == {"ambient", "mcp"}
+    ext.tag_event(ws, "s1", {"type": "tool_use", "metadata": {"tool_name": "mcp__tracker__list"}})
+    assert not ext.registry_changed(ws)                   # same link again: nothing new
+
+
+def test_personal_workspace_sessions_stay_off_the_org_report(ws, monkeypatch, tmp_path):
+    from prismor.runtime.enterprise import workspace_scope
+    personal = tmp_path / "personal"
+    personal.mkdir()
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w_: Path(w_) != personal)
+    _install_plugin(Path.home(), hook=True)
+    ext.sync(ws)
+    ext.session_notice(ws, "org-session")
+    ext.sync(ws)
+    ext.session_notice(personal, "personal-session")
+    ids = [s["session"] for s in ext.report_payload(ws)["sessions"]]
+    assert ids == ["org-session"]
+
+
+def test_a_malformed_url_in_a_skill_does_not_abort_discovery():
+    assert ext._hosts("see http://[::1 and https://docs.vendor-ai.dev/x") == ["docs.vendor-ai.dev"]
+
+
+def test_a_console_review_in_the_signed_policy_approves_that_exact_content(ws, monkeypatch):
+    ext.sync(ws)  # baseline
+    _install_plugin(Path.home())
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    assert skill["status"] == "new"
+
+    from prismor.runtime.enterprise import remote_policy
+    policy = {"settings": {"extension_reviews": {"items": [{"kind": "skill", "name": "vendor-ai", "sha256": skill["sha256"]}]}}}
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: policy)
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    assert skill["status"] == "approved"
+    # Recorded locally, so it holds without the policy too.
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {})
+    assert next(r for r in ext.sync(ws) if r["name"] == "vendor-ai" and r["kind"] == "skill")["status"] == "approved"
+
+    # A later edit is new content: the review does not cover it.
+    Path(skill["path"]).write_text(SKILL + "\nAlso run this.\n")
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: policy)
+    assert next(r for r in ext.sync(ws) if r["name"] == "vendor-ai" and r["kind"] == "skill")["status"] == "changed"
+
+
+def test_console_reviews_are_ignored_outside_a_managed_workspace(ws, monkeypatch):
+    ext.sync(ws)
+    _install_plugin(Path.home())
+    skill = next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")
+    from prismor.runtime.enterprise import remote_policy, workspace_scope
+    monkeypatch.setattr(remote_policy, "verify_and_load", lambda: {"settings": {"extension_reviews": {"items": [
+        {"kind": "skill", "name": "vendor-ai", "sha256": skill["sha256"]}]}}})
+    monkeypatch.setattr(workspace_scope, "is_managed", lambda w_: False)
+    assert next(r for r in ext.sync(ws) if r["kind"] == "skill" and r["name"] == "vendor-ai")["status"] != "approved"
+
+
+def test_skills_approve_clears_the_dashboard_review_flag_until_the_skill_changes(ws):
+    # #922: `prismor skills approve` wrote only the skills baseline, so the
+    # dashboard kept showing the reviewed skill as unreviewed.
+    from prismor.runtime.skills_audit import approve_skill
+    ext.sync(ws)
+    skill = Path.home() / ".claude" / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(SKILL)
+    row = lambda: next(r for r in ext.overview(ws)["rows"] if r["kind"] == "skill")
+    assert row()["needs_review"]
+    approve_skill(ws, skill)
+    assert not row()["needs_review"]
+    skill.write_text(SKILL + "\nnew line\n")
+    assert row()["needs_review"]

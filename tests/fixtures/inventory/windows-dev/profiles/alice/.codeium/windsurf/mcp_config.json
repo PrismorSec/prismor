@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "windsurf": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@windsurf/mcp@0.1.0"
+      ]
+    }
+  }
+}

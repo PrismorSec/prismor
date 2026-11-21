@@ -86,6 +86,25 @@ since dropping a required flag breaks the command), `block`. Only `step_up`,
 `redact` and `block` act, and only when the data boundary (or the device) is in
 enforce mode.
 
+## Handing data to a subagent
+
+`handoffs` screens what an agent hands a subagent: a Claude Code launch prompt,
+an agent used as a tool, an ADK `AgentTool`. Each data class gets an action,
+with overrides by subagent type:
+
+```yaml
+data_boundary:
+  enabled: true
+  handoffs:
+    secret: block
+    email: warn
+    per_subagent:
+      billing: {email: allow}
+```
+
+Nothing is screened without a `handoffs` block. See
+[Limiting subagents](subagent-limits.md#screen-what-an-agent-hands-a-subagent).
+
 ## Findings
 
 | Rule id | When |
@@ -96,6 +115,7 @@ enforce mode.
 | `pii-to-untrusted` | Email, phone, SSN, card or IBAN to a host your egress policy denies |
 | `pii-to-external` | Any other send of those classes whose action isn't `allow`: an external or unknown destination, or a trusted one for SSN, card and IBAN |
 | `file-upload-to-external` | A local file upload (`-d @file`, `-F field=@file`) carrying no other sensitive value, when the `file` action isn't `allow` |
+| `secret-to-subagent` / `pii-to-subagent` | A credential, or email, phone, SSN, card or IBAN, handed to a subagent, when `handoffs` sets an action for it |
 
 Evidence is always masked (`53*******47`): the value itself is never stored.
 

@@ -29,7 +29,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 # Default tag vocabulary (the red/blue pair, in PDF language).
 UNTRUSTED = "untrusted_content"
@@ -76,6 +76,13 @@ TOOL_TAG_DEFAULTS = [
     ("mcp__*__*delete*", "glob", [CRITICAL]),
     ("mcp__*__*create*", "glob", [CRITICAL]),
 ]
+
+# The `*create*` / `*delete*` globs above mean "creates or deletes something
+# other people see". Opening a browser tab, a terminal session or an unsent
+# draft is local UI state; tagging `tabs_create_mcp` critical made every tab
+# opened after a page read complete the trifecta (replay of 293 real sessions,
+# where users had hand-tagged it `browser_ui` to get their work done).
+_LOCAL_SURFACE = re.compile(r"__(?:[a-z_]*_)?(?:tabs?|windows?|sessions?|drafts?|panes?|screenshots?)(?:_|$)")
 
 # Default incompatible set when the policy declares none (the red/blue rule).
 # Kept for the legacy `incompatible:` surface; DEFAULT_RULES is what a policy
@@ -312,7 +319,9 @@ def tool_tags_for_agent(
         merged["tags"] = combined
 
     # Rules and legacy incompatible sets append; neither list can be shortened.
-    for key in ("rules", "incompatible"):
+    # Contracts append for the same reason: one more can only restrict. The
+    # `principals` map is NOT merged -- adding a member widens an audience.
+    for key in ("rules", "incompatible", "contracts"):
         extra = sub.get(key)
         if isinstance(extra, (list, tuple)) and extra:
             merged[key] = list(tt.get(key) or []) + list(extra)
@@ -406,6 +415,8 @@ def _classify_base(
     if tt.get("defaults_enabled", True):
         for matcher, match_type, deftags in TOOL_TAG_DEFAULTS:
             if _matches(tool_name, matcher, match_type):
+                if CRITICAL in deftags and match_type == "glob" and _LOCAL_SURFACE.search(tool_name):
+                    deftags = [t for t in deftags if t != CRITICAL]
                 tags |= set(deftags)
         if tags:
             return tags
@@ -648,7 +659,10 @@ class GramStore:
         except Exception:
             pass
 
-    def hits(self, text: str, before: Optional[int] = None) -> Dict[str, str]:
+    def hits(
+        self, text: str, before: Optional[int] = None,
+        exclude: Optional[Set[str]] = None,
+    ) -> Dict[str, str]:
         """``{phrase: origin}`` for text this call shares with untrusted content.
 
         Only content recorded at an index strictly below ``before`` counts, the
@@ -671,7 +685,7 @@ class GramStore:
         out: Dict[str, str] = {}
         for h, phrase in grams.items():
             rec = known.get(h)
-            if rec is None:
+            if rec is None or (exclude and h in exclude):
                 continue
             oid, idx = (rec if isinstance(rec, list) else [rec, -1])[:2]
             if before is not None and isinstance(idx, int) and idx >= before:
@@ -681,6 +695,53 @@ class GramStore:
                 else "untrusted content"
             )
         return out
+
+
+def trusted_grams(
+    workspace: Path, session_id: str, extra: Iterable[str],
+    known: Dict[str, Any], cwd: Optional[Path] = None,
+) -> Set[str]:
+    """Gram hashes of local content this session saw that carries no taint.
+
+    A phrase the agent also read in its own untainted files (or that is already
+    in the file it is writing) is not evidence the write came from untrusted
+    content: it is the repo's own code coming back. Read from disk only when a
+    tainted write has hits, so the ordinary call pays nothing.
+    ponytail: current file bytes, not the bytes the session saw; 200 files x
+    200k chars (30-200 ms on real sessions). Snapshot or cache per session if
+    that drift or cost ever matters.
+    """
+    from prismor.runtime import provenance as _prov
+    from prismor.runtime.store import get_db_path
+
+    paths: List[str] = [p for p in extra if p]
+    try:
+        import sqlite3
+        db = get_db_path(workspace)
+        if db.exists():
+            conn = sqlite3.connect(db)
+            try:
+                paths += [r[0] for r in conn.execute(
+                    "SELECT DISTINCT path_text FROM events WHERE session_id = ?"
+                    " AND type = 'file_read' AND path_text IS NOT NULL"
+                    " ORDER BY id DESC LIMIT 200",
+                    (session_id,),
+                )]
+            finally:
+                conn.close()
+    except Exception:
+        pass
+    out: Set[str] = set()
+    for p in dict.fromkeys(paths):
+        key = _prov.resolve(p, cwd)
+        if UNTRUSTED in ((known.get(key) or {}).get("tags") or ()):
+            continue
+        try:
+            with open(key, "r", encoding="utf-8", errors="ignore") as fh:
+                out.update(content_grams(fh.read(1_000_000)))
+        except OSError:
+            continue
+    return out
 
 
 def _rule_pref(match: Dict[str, Any]) -> tuple:
@@ -709,6 +770,8 @@ class TagLedger:
         # tag -> sorted [indexes] of every recorded occurrence (capped). Needed
         # for ordered ("then") rules; ``seen`` alone only knows first occurrence.
         self.hist: Dict[str, List[int]] = {}
+        # warn rule id -> index of the last call it fired on.
+        self.fired: Dict[str, int] = {}
         self._load()
 
     def _load(self) -> None:
@@ -726,6 +789,9 @@ class TagLedger:
                     for t, v in h.items()
                     if isinstance(v, (list, tuple))
                 }
+            f = data.get("fired")
+            if isinstance(f, dict):
+                self.fired = {r: i for r, i in f.items() if isinstance(i, int)}
         except Exception:
             pass
         # Pre-hist ledger files: synthesize history from first-seen so ordered
@@ -740,7 +806,9 @@ class TagLedger:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(
-                json.dumps({"seen": self.seen, "hist": self.hist}, indent=2),
+                json.dumps(
+                    {"seen": self.seen, "hist": self.hist, "fired": self.fired}, indent=2
+                ),
                 encoding="utf-8",
             )
         except Exception:
@@ -809,8 +877,24 @@ class TagLedger:
             final = steps[-1]
             if not (final & new_tags):
                 continue
-            # Walk the non-final steps as an ordered subsequence over hist.
-            cursor = -1
+            # Walk the non-final steps as an ordered subsequence over hist. A
+            # warn rule walks from the last call it fired on, so it reports a
+            # sequence once per new occurrence of its earlier steps rather than
+            # on every later call. Block and redact rules always walk from the
+            # start: a blocked call never runs, so firing once would let a retry
+            # through (see completes()). A tag that must recur but whose hist is
+            # full can't show a newer occurrence, so it never suppresses. This
+            # call's own final-step tags aren't looked up, so a long session full
+            # of critical calls keeps suppressing.
+            last = None
+            if getattr(rule, "action", "") == "warn":
+                last = self.fired.get(getattr(rule, "rule_id", ""))
+            recur = set().union(*steps[:-1]) | (final - new_tags)
+            if last is None or last >= current_index or any(
+                len(self.hist.get(t, ())) >= self._HIST_CAP for t in recur
+            ):
+                last = -1
+            cursor = last
             ok = True
             for step in steps[:-1]:
                 step_pos = cursor
@@ -870,7 +954,9 @@ class TagLedger:
                 return idx
         return None
 
-    def _apply(self, new_tags: Set[str], index: int, tool: str) -> None:
+    def _apply(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
         """Mutate the in-memory view only. The persistence seam for subclasses
         that must not touch the real ledger files (see ``tags_cli._ReplayLedger``)."""
         import bisect
@@ -882,14 +968,21 @@ class TagLedger:
             indexes = self.hist.setdefault(tag, [])
             if index not in indexes and len(indexes) < self._HIST_CAP:
                 bisect.insort(indexes, index)
+        for rule_id in fired:
+            self.fired[rule_id] = max(index, self.fired.get(rule_id, index))
 
-    def record(self, new_tags: Set[str], index: int, tool: str) -> None:
-        """Record ``new_tags`` for this session, in memory and on disk."""
+    def record(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
+        """Record ``new_tags`` for this session, in memory and on disk, along
+        with the ids of the warn rules this call ``fired``."""
         if not new_tags:
             return
-        self._commit(new_tags, index, tool)
+        self._commit(new_tags, index, tool, fired)
 
-    def _commit(self, new_tags: Set[str], index: int, tool: str) -> None:
+    def _commit(
+        self, new_tags: Set[str], index: int, tool: str, fired: Iterable[str] = ()
+    ) -> None:
         """Persist ``new_tags`` to the session's ledger file.
 
         The read-modify-write happens inside an exclusive lock and lands
@@ -922,6 +1015,13 @@ class TagLedger:
                     hist[tag] = indexes
                 state["seen"] = seen
                 state["hist"] = hist
+                last_fired = state.get("fired")
+                if not isinstance(last_fired, dict):
+                    last_fired = {}
+                for rule_id in fired:
+                    prev = last_fired.get(rule_id)
+                    last_fired[rule_id] = max(index, prev) if isinstance(prev, int) else index
+                state["fired"] = last_fired
                 # Keep the in-memory view consistent with what was committed, so
                 # a caller that records then re-checks sees the merged truth.
                 s = state.get("seen")
@@ -938,6 +1038,9 @@ class TagLedger:
                         if isinstance(indexes, (list, tuple)):
                             merged = set(self.hist.get(tag, ())) | {int(i) for i in indexes}
                             self.hist[tag] = sorted(merged)[: self._HIST_CAP]
+                for rule_id, idx in last_fired.items():
+                    if isinstance(idx, int):
+                        self.fired[rule_id] = max(idx, self.fired.get(rule_id, idx))
         except Exception:
             # Never break the tool call being screened over a ledger write.
             pass

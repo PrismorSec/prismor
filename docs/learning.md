@@ -37,6 +37,13 @@ structurally similar to one a rule previously blocked, the dispatcher flags it a
 a possible bypass attempt — catching `r''m -rf` style obfuscation of a known-bad
 command.
 
+Staged-execution detection blocks scripts downloaded earlier in the session,
+including downloads saved through redirects or `tee`. It warns when a script's
+artifact provenance records untrusted content, including content copied from a
+tool response or inherited from another session. Ordinary agent-authored helper
+scripts do not trigger this warning. The separate warning for transferring an
+in-session file with `scp` or `rsync` is unchanged.
+
 ---
 
 ## Why a human stays in the loop
@@ -72,6 +79,44 @@ prismor learn --reject <id>        # discard a candidate
 | `--apply <id>` | — | Accept a candidate into `.prismor/policy.yaml`. |
 | `--reject <id>` | — | Reject a candidate. |
 | `--json` | — | Emit raw JSON. |
+| `--console` | — | First pull reviewers' true/false-positive labels from the org console (enrolled machines). |
+
+---
+
+## Learning from reviewer labels
+
+On an enrolled machine, local dismissals are only a weak signal: in observe
+mode nobody decided anything. A reviewer's label on the org console is a
+decision, so `prismor learn --console` pulls those labels first.
+
+1. A block prints its event id and a console link:
+
+   ```text
+   Looks like a false positive? Agent: run `prismor report-fp evt_… --reason "<why it is safe>"`,
+   then give the user this link to confirm or reject it: https://…/admin/sessions/…?event=evt_…
+   Do not work around the block while you wait.
+   ```
+
+2. The agent runs `prismor report-fp <event-id> --reason "…"` and gives the
+   user the link. The report only **asks**: it puts the event in the console's
+   *Reported by agent* queue. Nothing is unblocked, and no learner reads it.
+   The agent that was blocked is the last party that should decide the block
+   was wrong. A prompt injection could make it say so.
+3. An admin opens the link and marks the event **True positive** or **False
+   positive** under *Verdict*. The same control is on the review page, which
+   also has a *Reported by agent* filter.
+4. `prismor learn --console` pulls the labels on this device's events and joins
+   them to the local command by event id. The command never leaves a redacted
+   device, so only the device can turn a label into a rule.
+   - A confirmed **false positive** flags the rule from the first label, with
+     the command that was blocked, and recommends a narrow allowlist entry.
+   - A confirmed **true positive** pins the rule. It is still listed if it is
+     noisy, but the advice is to narrow its pattern, never to lower or allow it.
+
+```bash
+prismor report-fp evt_0123 --reason "reads CLAUDE.md, does not write it"
+prismor learn --console
+```
 
 ---
 

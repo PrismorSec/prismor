@@ -22,6 +22,12 @@ Easy path::
     runtime = SingleThreadedAgentRuntime(
         intervention_handlers=[PrismorInterventionHandler(subject="user:alice", mode="enforce")],
     )
+
+Subagents: the runtime says which agent sent each FunctionCall
+(``message_context.sender``). Calls from the main agent carry no subagent;
+calls from any other agent are attributed to it (type = its AgentId type) for
+``when: subagent.*`` rules. Name the main agent's type with ``main_agent=``;
+otherwise the first agent seen sending a tool call is taken as the main one.
 """
 from __future__ import annotations
 
@@ -83,6 +89,7 @@ class PrismorInterventionHandler(DefaultInterventionHandler):
         session_id: Optional[str] = None,
         event_type: str = "shell",
         drop_instead_of_raise: bool = False,
+        main_agent: Optional[str] = None,
     ) -> None:
         self._subject = subject
         self._ws = Path(workspace) if workspace else Path.cwd()
@@ -91,12 +98,27 @@ class PrismorInterventionHandler(DefaultInterventionHandler):
         self._sid = session_id or f"autogen-core-{os.getpid()}"
         self._event_type = event_type
         self._drop = drop_instead_of_raise
+        self._main = main_agent
+
+    def _subagent(self, sender: Any) -> tuple:
+        """(subagent_id, subagent_type) for the sending agent, or (None, None) for the main one."""
+        sender_type = getattr(sender, "type", None)
+        if not sender_type:
+            return None, None
+        if self._main is None:
+            # ponytail: first sender is the main agent; pass main_agent= when
+            # several agents can start at once.
+            self._main = sender_type
+        if sender_type == self._main:
+            return None, None
+        return str(sender), sender_type
 
     async def on_send(self, message: Any, *, message_context: Any, recipient: Any) -> Any:
         if not isinstance(message, FunctionCall):
             return message  # not a tool call -- pass through untouched
 
         field = _TYPE_FIELD.get(self._event_type, "command")
+        sub_id, sub_type = self._subagent(getattr(message_context, "sender", None))
         event = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": self._sid,
@@ -109,6 +131,8 @@ class PrismorInterventionHandler(DefaultInterventionHandler):
                 "framework": "autogen-core",
                 "call_id": message.id,
                 "recipient": str(recipient),
+                "subagent_id": sub_id,
+                "subagent_type": sub_type,
             },
         }
         decision: Decision = evaluate_tool_call(

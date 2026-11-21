@@ -35,20 +35,23 @@ from __future__ import annotations
 
 import json
 import os
+import fnmatch
 import re
 import shlex
 import signal
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
+from prismor.runtime.tui_format import safe_text as _safe_text
 
 PROTOCOL_VERSION_FALLBACK = "2025-03-26"
 GATEWAY_AGENT = "mcp-gateway"
@@ -83,6 +86,71 @@ class UpstreamSpec:
     #: In-process mirrored built-ins (see runtime/mirror.py) — no child
     #: process, no socket. Served by UpstreamLocal.
     local: bool = False
+    #: Which of the server's tools this gateway exposes, from the entry's
+    #: ``"tools": {"allow": [...], "deny": [...]}`` (tool names as the server
+    #: lists them, globs allowed). ``allow`` None = every tool. A tool left out
+    #: is hidden from tools/list and, if called by name anyway, denied through
+    #: the normal policy pipeline (agent-control finding, logged). Hosted MCP
+    #: endpoints use it for their tool selection and for "new tools start off".
+    allow_tools: Optional[List[str]] = None
+    deny_tools: List[str] = field(default_factory=list)
+    #: Scan and pin this server's tool definitions (runtime/mcp_tool_pins.py).
+    #: ``"pin": false`` on the entry turns it off.
+    pin: bool = True
+    #: What agents see instead of the upstream's own metadata, from
+    #: ``"tools": {"overrides": {"<tool>": {"name", "description", "inputSchema"}}}``.
+    #: Display only: policy, tool selection, pinning and telemetry keep the
+    #: upstream's name and definition, so a rename can't dodge a deny rule.
+    overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    #: Seconds to reuse this server's tools/list (``"tools": {"cacheTtl": 300}``).
+    #: 0 asks the upstream on every list. Cleared when it announces list_changed.
+    tools_ttl: float = 0.0
+    #: Seconds a tools/call may take (``"timeout": 60``); None = CALL_TIMEOUT.
+    call_timeout: Optional[float] = None
+    #: Stop a stdio server after this many seconds with no request
+    #: (``"idleTimeout": 900``; ``--idle-timeout`` sets the default). The next
+    #: request starts it again and repeats the handshake; list calls are
+    #: answered from the last reply while it is stopped. 0 = never.
+    idle_timeout: float = 0.0
+    #: Inbound client headers copied to an http(s) upstream (hosted endpoints;
+    #: the stdio gateway has none). Never NEVER_FORWARD; the entry's own
+    #: ``headers`` win over a client-sent value.
+    forward_headers: List[str] = field(default_factory=list)
+    #: Ship this server's call arguments and result text (after redaction) in
+    #: telemetry even when the org keeps telemetry redacted.
+    log_payloads: bool = False
+    #: Refuse a call whose JSON arguments, or an upstream reply, exceeds this.
+    max_body_bytes: Optional[int] = None
+    #: {"service", "region"}: sign every http(s) request with AWS SigV4.
+    sigv4: Optional[Dict[str, str]] = None
+    #: Stdio only. False (default) starts the server with a minimal
+    #: environment (see stdio_env) plus its own ``env`` and the names in
+    #: ``"envPassthrough"``; ``"inheritEnv": true`` passes the full one.
+    inherit_env: bool = False
+    env_passthrough: List[str] = field(default_factory=list)
+    #: Keep the upstream's Mcp-Session-Id and re-initialize once if it expires
+    #: (HTTP 404). False never stores or sends one.
+    managed_session: bool = True
+
+    @property
+    def identity(self) -> str:
+        from prismor.runtime.mcp_tool_pins import server_identity
+        return server_identity(self.url, self.command)
+    #: OAuth sign-in for a remote server (see runtime/mcp_oauth.py), from the
+    #: entry's ``"oauth"`` value: a dict (``client_id``, ``client_secret``,
+    #: ``scopes`` for a pre-registered client), or False to turn it off. Used
+    #: only when the entry sends no Authorization header of its own.
+    oauth: Any = None
+
+    @property
+    def uses_oauth(self) -> bool:
+        return (self.remote and self.oauth is not False and not self.sigv4
+                and not any(k.lower() == "authorization" for k in self.headers))
+
+    def excludes(self, tool: str) -> bool:
+        if any(fnmatch.fnmatchcase(tool, p) for p in self.deny_tools):
+            return True
+        return self.allow_tools is not None and not any(fnmatch.fnmatchcase(tool, p) for p in self.allow_tools)
 
     @property
     def remote(self) -> bool:
@@ -120,6 +188,43 @@ def load_gateway_config(path: Path) -> List[UpstreamSpec]:
     return specs
 
 
+def _tool_selection(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    sel = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    allow = sel.get("allow")
+    deny = sel.get("deny")
+    overrides = sel.get("overrides") if isinstance(sel.get("overrides"), dict) else {}
+    ttl, timeout = sel.get("cacheTtl"), cfg.get("timeout")
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0  # noqa: E731
+    return {
+        "allow_tools": [str(t) for t in allow] if isinstance(allow, list) else None,
+        "deny_tools": [str(t) for t in deny] if isinstance(deny, list) else [],
+        "overrides": {str(k): v for k, v in overrides.items() if isinstance(v, dict)},
+        "tools_ttl": float(ttl) if num(ttl) else 0.0,
+        "call_timeout": float(timeout) if num(timeout) else None,
+        **_server_options(cfg, num),
+    }
+
+
+#: Never copied from a client request, whatever forwardHeaders says.
+NEVER_FORWARD = frozenset({"authorization", "cookie", "host", "content-length", "mcp-session-id"})
+
+
+def _server_options(cfg: Dict[str, Any], num: Callable[[Any], bool]) -> Dict[str, Any]:
+    fwd = cfg.get("forwardHeaders")
+    sig = cfg.get("sigv4")
+    body = cfg.get("maxBodyBytes")
+    return {
+        "forward_headers": [str(h) for h in fwd if isinstance(h, str) and h.lower() not in NEVER_FORWARD]
+        if isinstance(fwd, list) else [],
+        "log_payloads": cfg.get("logPayloads") is True,
+        "max_body_bytes": int(body) if num(body) else None,
+        "sigv4": {"service": str(sig["service"]), "region": str(sig["region"])}
+        if isinstance(sig, dict) and sig.get("service") and sig.get("region") else None,
+        "managed_session": cfg.get("managedSession") is not False,
+        "idle_timeout": float(cfg["idleTimeout"]) if num(cfg.get("idleTimeout")) else 0.0,
+    }
+
+
 def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
     # {"mirror": true} / {"type": "mirror"} — the in-process built-ins.
     if cfg.get("mirror") is True or str(cfg.get("type") or "").lower() == "mirror":
@@ -131,9 +236,13 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
         if not re.match(r"https?://", meta["url"], re.I):
             raise GatewayConfigError(f"server '{name}' url must be http(s): {meta['url']}")
         headers = cfg.get("headers") if isinstance(cfg.get("headers"), dict) else {}
-        return UpstreamSpec(name=name, url=meta["url"],
+        oauth = cfg.get("oauth")
+        env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}  # SigV4 credentials
+        return UpstreamSpec(name=name, url=meta["url"], env={str(k): str(v) for k, v in env.items()},
                             transport=meta["transport"] or "http",
-                            headers=dict(headers or {}))
+                            headers=dict(headers or {}), pin=cfg.get("pin") is not False,
+                            oauth=oauth if oauth is False or isinstance(oauth, dict) else None,
+                            **_tool_selection(cfg))
     command = cfg.get("command")
     if isinstance(command, str):
         argv = [command] + [str(a) for a in cfg.get("args") or []]
@@ -142,8 +251,13 @@ def _spec_from_entry(name: str, cfg: Dict[str, Any]) -> UpstreamSpec:
     else:
         raise GatewayConfigError(f"server '{name}' has neither a url nor a command")
     env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    passthrough = cfg.get("envPassthrough")
     return UpstreamSpec(name=name, command=argv, transport="stdio",
-                        env={str(k): str(v) for k, v in (env or {}).items()})
+                        env={str(k): str(v) for k, v in (env or {}).items()},
+                        inherit_env=cfg.get("inheritEnv") is True,
+                        env_passthrough=[str(n) for n in passthrough]
+                        if isinstance(passthrough, list) else [],
+                        pin=cfg.get("pin") is not False, **_tool_selection(cfg))
 
 
 def parse_inline_server(value: str) -> UpstreamSpec:
@@ -154,7 +268,11 @@ def parse_inline_server(value: str) -> UpstreamSpec:
     rest = rest.strip()
     if rest.startswith(("http://", "https://")):
         return UpstreamSpec(name=name.strip(), url=rest, transport="http")
-    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio")
+    # A command named on the CLI gets the full environment: the host passes
+    # that server's env to the gateway process, and there is no config
+    # entry to name envPassthrough in.
+    return UpstreamSpec(name=name.strip(), command=shlex.split(rest), transport="stdio",
+                        inherit_env=True)
 
 
 # ── upstream clients ─────────────────────────────────────────────────────────
@@ -194,6 +312,40 @@ class Upstream:
         pass
 
 
+# Variables a stdio MCP server needs to start and reach the network (npx,
+# uvx, node, python, proxies, CA bundles), but no credentials. Everything
+# else in the gateway's environment (cloud keys, tokens) stays out unless
+# the entry names it in env / envPassthrough or sets inheritEnv.
+_STDIO_ENV_NAMES = frozenset({
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TERM", "TZ", "TMPDIR",
+    "TEMP", "TMP", "PWD", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE", "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "NODE_PATH",
+    "VIRTUAL_ENV", "PYTHONPATH", "PYTHONHOME", "UV_CACHE_DIR",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    # Windows
+    "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "APPDATA",
+    "LOCALAPPDATA", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "PROGRAMFILES",
+    "ProgramFiles", "PROGRAMDATA", "ProgramData", "NUMBER_OF_PROCESSORS",
+})
+_STDIO_ENV_PREFIXES = ("LC_", "XDG_", "npm_config_", "NPM_CONFIG_", "NVM_", "UV_",
+                       "PIP_INDEX", "PIP_EXTRA_INDEX", "PIP_CERT")
+
+
+def stdio_env(spec: "UpstreamSpec", base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Environment for a stdio upstream: allowlisted names from ``base``,
+    then passthrough names, then the entry's own env (which wins)."""
+    base = dict(os.environ if base is None else base)
+    if spec.inherit_env:
+        env = base
+    else:
+        keep = set(spec.env_passthrough)
+        env = {k: v for k, v in base.items()
+               if k in _STDIO_ENV_NAMES or k in keep or k.startswith(_STDIO_ENV_PREFIXES)}
+    env.update(spec.env)
+    return env
+
+
 class UpstreamStdio(Upstream):
     def __init__(self, spec: UpstreamSpec,
                  on_notification: Optional[Callable[[str, Dict[str, Any]], None]] = None):
@@ -203,12 +355,62 @@ class UpstreamStdio(Upstream):
         self._pending: Dict[str, "_PendingReply"] = {}
         self._counter = 0
         self._reader: Optional[threading.Thread] = None
+        # Idle stop (spec.idle_timeout): the client's `initialize` params to
+        # repeat on restart, the last reply to each list method, and whether
+        # the process is down because it sat idle.
+        self._life = threading.RLock()
+        self._last_used = time.monotonic()
+        self._init_params: Optional[Dict[str, Any]] = None
+        self._list_cache: Dict[str, Dict[str, Any]] = {}
+        self._idle_stopped = False
+        self.idle_stops = 0
+        self.idle_restarts = 0
+        # ponytail: POSIX only. close() on Windows ends only the npx/cmd
+        # wrapper, so stopping on every idle period would leak the server.
+        if spec.idle_timeout > 0 and os.name == "posix":
+            threading.Thread(target=self._idle_loop, name=f"mcp-idle-{spec.name}",
+                             daemon=True).start()
+
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        self._init_params = client_params
+        return super().initialize(client_params, timeout)
+
+    def _idle_loop(self) -> None:
+        timeout = self.spec.idle_timeout
+        while True:
+            time.sleep(max(0.2, min(timeout / 4, 30.0)))
+            with self._life:
+                proc = self._proc
+                if (proc is None or proc.poll() is not None or self._pending
+                        or self._init_params is None
+                        or time.monotonic() - self._last_used < timeout):
+                    continue
+                self.close()
+                self._idle_stopped = True
+                self.idle_stops += 1
 
     def _ensure_started(self) -> None:
-        if self._proc is not None and self._proc.poll() is None:
-            return
-        env = dict(os.environ)
-        env.update(self.spec.env)
+        with self._life:
+            self._last_used = time.monotonic()
+            if self._proc is not None and self._proc.poll() is None:
+                return
+            self._spawn()
+            if self._idle_stopped and self._init_params is not None:
+                # Restarted after an idle stop: the new process needs the
+                # handshake the client did with the old one. If it fails, stop
+                # the process again rather than serve calls without it.
+                try:
+                    self._send_request("initialize", self._init_params, INIT_TIMEOUT)
+                    self._write({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
+                except UpstreamError:
+                    self.close()
+                    raise
+                self._idle_stopped = False
+                self.idle_restarts += 1
+
+    def _spawn(self) -> None:
+        env = stdio_env(self.spec)
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
             kwargs["start_new_session"] = True
@@ -226,12 +428,18 @@ class UpstreamStdio(Upstream):
         except OSError as exc:
             raise UpstreamError(
                 f"failed to start MCP server '{self.spec.name}': {exc}")
+        # Each process gets its own pending map: when an idle-stopped process
+        # reaches EOF, its reader must not fail requests sent to the new one.
+        self._pending = {}
         self._reader = threading.Thread(
-            target=self._read_loop, name=f"mcp-up-{self.spec.name}", daemon=True)
+            target=self._read_loop, args=(self._proc, self._pending),
+            name=f"mcp-up-{self.spec.name}", daemon=True)
         self._reader.start()
 
-    def _read_loop(self) -> None:
-        proc = self._proc
+    def _read_loop(self, proc: Optional[subprocess.Popen] = None,
+                   pending_map: Optional[Dict[str, "_PendingReply"]] = None) -> None:
+        proc = proc or self._proc
+        pending_map = self._pending if pending_map is None else pending_map
         if proc is None or proc.stdout is None:
             return
         for line in proc.stdout:
@@ -244,7 +452,12 @@ class UpstreamStdio(Upstream):
                 continue
             msg_id = msg.get("id")
             if msg_id is not None and ("result" in msg or "error" in msg):
-                pending = self._pending.pop(str(msg_id), None)
+                limit = self.spec.max_body_bytes
+                if limit and len(line.encode("utf-8")) > limit:
+                    # Answer the waiting call with the limit, not the payload.
+                    msg = {"jsonrpc": "2.0", "id": msg_id,
+                           "error": {"code": -32603, "message": str(_too_big(self.spec, "the reply"))}}
+                pending = pending_map.pop(str(msg_id), None)
                 if pending is not None:
                     pending.resolve(msg)
             elif msg_id is not None and msg.get("method"):
@@ -260,10 +473,10 @@ class UpstreamStdio(Upstream):
                 except Exception:
                     pass
         # EOF: upstream died — fail everything still in flight.
-        for pending in list(self._pending.values()):
+        for pending in list(pending_map.values()):
             pending.resolve({"error": {"code": -32603,
                                        "message": f"MCP server '{self.spec.name}' exited"}})
-        self._pending.clear()
+        pending_map.clear()
 
     def _write(self, msg: Dict[str, Any]) -> None:
         proc = self._proc
@@ -278,9 +491,21 @@ class UpstreamStdio(Upstream):
 
     def request(self, method: str, params: Dict[str, Any],
                 timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        if (self._idle_stopped and method.endswith("/list") and not params.get("cursor")
+                and method in self._list_cache):
+            return self._list_cache[method]
         self._ensure_started()
+        result = self._send_request(method, params, timeout)
+        if self.spec.idle_timeout > 0 and method.endswith("/list") and not params.get("cursor"):
+            self._list_cache[method] = result
+        self._last_used = time.monotonic()
+        return result
+
+    def _send_request(self, method: str, params: Dict[str, Any],
+                      timeout: float) -> Dict[str, Any]:
         self._counter += 1
         req_id = f"gw-{self._counter}"
+        _note_call_id(req_id)
         pending = _PendingReply()
         self._pending[req_id] = pending
         try:
@@ -301,6 +526,8 @@ class UpstreamStdio(Upstream):
         return msg.get("result") or {}
 
     def notify(self, method: str, params: Dict[str, Any]) -> None:
+        if self._idle_stopped:
+            return  # nothing to tell a server that is not running
         self._ensure_started()
         try:
             self._write({"jsonrpc": "2.0", "method": method, "params": params})
@@ -350,6 +577,39 @@ class _PendingReply:
         return self._msg
 
 
+class _Unauthorized(Exception):
+    def __init__(self, code: int, reason: Any):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+        self.reason = reason
+
+
+class _SessionExpired(Exception):
+    """HTTP 404 to a request that carried a session id (streamable-HTTP spec)."""
+
+
+#: The inbound client request's headers for the message being handled, set
+#: per thread by Gateway._dispatch (hosted endpoints pass them in
+#: ``_inboundHeaders``). Read by UpstreamHttp for ``forwardHeaders``.
+_inbound = threading.local()
+
+from prismor.runtime.inflight import Refused as _InFlightRefused  # noqa: E402
+
+#: Set per worker thread by Gateway._call_upstream: request() appends the
+#: JSON-RPC id it sent, so a revoke can name it in notifications/cancelled.
+_call_ids = threading.local()
+
+
+def _note_call_id(req_id: str) -> None:
+    holder = getattr(_call_ids, "holder", None)
+    if holder is not None:
+        holder.append(req_id)
+
+
+def _too_big(spec: UpstreamSpec, what: str) -> UpstreamError:
+    return UpstreamError(f"MCP server '{spec.name}': {what} is larger than its {spec.max_body_bytes}-byte limit (maxBodyBytes)")
+
+
 class UpstreamHttp(Upstream):
     """Streamable-HTTP upstream via stdlib urllib.
 
@@ -365,19 +625,57 @@ class UpstreamHttp(Upstream):
                  guard: Optional[Callable[[UpstreamSpec], None]] = None):
         super().__init__(spec, on_notification, guard)
         self._session_id: Optional[str] = None
+        self._init_params: Optional[Dict[str, Any]] = None  # to re-open an expired session
         self._counter = 0
         self._lock = threading.Lock()
+        self.oauth = None
+        if spec.uses_oauth:
+            from prismor.runtime.mcp_oauth import OAuthSession
+            self.oauth = OAuthSession(spec.name, spec.url)
 
     def _post(self, body: Dict[str, Any], timeout: float,
               want_reply: bool) -> Optional[Dict[str, Any]]:
-        import urllib.request
-        import urllib.error
         # Before the socket, not after. `initialize` and `tools/list` dial the
         # server before any tool call exists to screen, so a URL that policy
         # forbids would otherwise be reached during discovery — the tool
         # surface is not the only thing that talks to the network.
         if self.guard is not None:
             self.guard(self.spec)
+        auth = self.oauth.authorization() if self.oauth is not None else None
+        try:
+            try:
+                return self._send_once(body, timeout, want_reply, auth)
+            except _SessionExpired:
+                # The server dropped our session: open a new one, then retry
+                # this message once. initialize itself never gets here (it is
+                # sent without a session id).
+                self._session_id = None
+                if self._init_params is None:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session")
+                self.initialize(self._init_params, timeout=REQUEST_TIMEOUT)
+                try:
+                    return self._send_once(body, timeout, want_reply, auth)
+                except _SessionExpired:
+                    raise UpstreamError(f"MCP server '{self.spec.name}' ended the session again right after a new one was opened")
+        except _Unauthorized as exc:
+            # A token the server no longer takes: refresh (or pick up a newer
+            # sign-in) and retry once. Without one, the model is told which
+            # command the human has to run instead of a bare "HTTP 401".
+            if self.oauth is None:
+                raise UpstreamError(f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
+            from prismor.runtime.mcp_oauth import login_hint
+            if auth is None or not self.oauth.unauthorized(auth):
+                raise UpstreamError(login_hint(self.spec.name))
+            try:
+                return self._send_once(body, timeout, want_reply, self.oauth.authorization())
+            except _Unauthorized:
+                raise UpstreamError(login_hint(self.spec.name))
+
+    def _send_once(self, body: Dict[str, Any], timeout: float, want_reply: bool,
+                   auth: Optional[str]) -> Optional[Dict[str, Any]]:
+        import urllib.error
+        import urllib.parse
+        import urllib.request
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -385,31 +683,87 @@ class UpstreamHttp(Upstream):
             # common CDNs/WAFs (Cloudflare returns 403) — identify honestly.
             "User-Agent": "prismor-gateway/" + _gateway_version(),
         }
-        headers.update(self.spec.headers)
-        if self._session_id:
+        if self.spec.forward_headers:
+            inbound = {k.lower(): v for k, v in (getattr(_inbound, "headers", None) or {}).items()}
+            for name in self.spec.forward_headers:
+                if name.lower() not in NEVER_FORWARD and name.lower() in inbound:
+                    headers[name] = str(inbound[name.lower()])
+        headers.update(self.spec.headers)  # the entry's own headers win
+        if auth:
+            headers["Authorization"] = auth
+        sent_session = self.spec.managed_session and self._session_id
+        if sent_session:
             headers["Mcp-Session-Id"] = self._session_id
-        req = urllib.request.Request(
-            self.spec.url, data=json.dumps(body).encode("utf-8"),
-            headers=headers, method="POST")
+        data = json.dumps(body).encode("utf-8")
+        if self.spec.sigv4:
+            headers.update(self._sigv4(data))
+        req = urllib.request.Request(self.spec.url, data=data, headers=headers, method="POST")
+        from prismor.runtime.mcp_oauth import no_redirect
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
+            with no_redirect.open(req, timeout=timeout) as resp:  # http(s) enforced in _spec_from_entry  # nosec B310
                 sid = resp.headers.get("Mcp-Session-Id")
-                if sid:
+                if sid and self.spec.managed_session:
                     self._session_id = sid
                 if not want_reply:
                     return None
                 ctype = (resp.headers.get("Content-Type") or "").lower()
-                raw = resp.read().decode("utf-8", errors="replace")
+                limit = self.spec.max_body_bytes
+                raw_bytes = resp.read(limit + 1) if limit else resp.read()
+                if limit and len(raw_bytes) > limit:
+                    raise _too_big(self.spec, "the reply")
+                raw = raw_bytes.decode("utf-8", errors="replace")
                 if "text/event-stream" in ctype:
                     return self._parse_sse(raw, str(body.get("id")))
                 if not raw.strip():
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
+            if exc.code == 404 and sent_session:
+                raise _SessionExpired()
+            if exc.code == 401:
+                raise _Unauthorized(exc.code, exc.reason)
+            if 300 <= exc.code < 400:
+                # Following would hand our headers to a host the egress guard
+                # never screened. The config should name the final address.
+                loc = urllib.parse.urljoin(self.spec.url, exc.headers.get("Location") or "")
+                raise UpstreamError(
+                    f"MCP server '{self.spec.name}' redirected (HTTP {exc.code}) to "
+                    f"{loc.split('?')[0]}; redirects are not followed. Set its url to that address.")
+            if exc.code == 403 and self.oauth is not None:
+                from prismor.runtime.mcp_oauth import parse_www_authenticate
+                challenge = parse_www_authenticate(exc.headers.get("WWW-Authenticate") or "")
+                if challenge.get("error") == "insufficient_scope":
+                    self.oauth.insufficient_scope(challenge.get("scope") or "")
+                    raise UpstreamError(
+                        f"MCP server '{self.spec.name}' needs more access than was granted"
+                        f"{' (' + challenge['scope'] + ')' if challenge.get('scope') else ''}. "
+                        f"Ask the user to run `prismor mcp-gateway login {self.spec.name}` again, then retry.")
             raise UpstreamError(
                 f"MCP server '{self.spec.name}' HTTP {exc.code}: {exc.reason}")
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise UpstreamError(f"MCP server '{self.spec.name}' unreachable: {exc}")
+
+    def _sigv4(self, payload: bytes) -> Dict[str, str]:
+        """SigV4 headers for one POST, from the environment overlaid with the
+        entry's env. Missing credentials refuse the request: never unsigned."""
+        from urllib.parse import urlsplit
+        from prismor.runtime.proxy import sigv4_headers
+        env = {**os.environ, **self.spec.env}
+        key, secret = env.get("AWS_ACCESS_KEY_ID"), env.get("AWS_SECRET_ACCESS_KEY")
+        if not key or not secret:
+            raise UpstreamError(
+                f"MCP server '{self.spec.name}' signs with AWS SigV4 but AWS_ACCESS_KEY_ID / "
+                "AWS_SECRET_ACCESS_KEY are not set (environment or the server's env)")
+        u = urlsplit(self.spec.url)
+        return sigv4_headers(
+            access_key=key, secret_key=secret, session_token=env.get("AWS_SESSION_TOKEN") or "",
+            region=self.spec.sigv4["region"], service=self.spec.sigv4["service"], method="POST",
+            canonical_uri=u.path or "/", query=u.query, payload=payload, host=u.netloc)
+
+    def initialize(self, client_params: Dict[str, Any],
+                   timeout: float = REQUEST_TIMEOUT) -> Dict[str, Any]:
+        self._init_params = client_params
+        return super().initialize(client_params, timeout=timeout)
 
     def _parse_sse(self, raw: str, want_id: str) -> Optional[Dict[str, Any]]:
         reply: Optional[Dict[str, Any]] = None
@@ -441,6 +795,7 @@ class UpstreamHttp(Upstream):
         with self._lock:
             self._counter += 1
             req_id = f"gw-{self._counter}"
+        _note_call_id(req_id)
         msg = self._post({"jsonrpc": "2.0", "id": req_id,
                           "method": method, "params": params},
                          timeout=timeout, want_reply=True)
@@ -535,9 +890,16 @@ class _Route:
     # _meta.tags, or annotations["prismor/tags"]) — consumed by trifecta
     # classification below the explicit org map (admin always wins).
     meta_tags: List[str] = field(default_factory=list)
+    # The contract the server declares on the tool (_meta.prismor.contract):
+    # what its result does to the session label and what a call requires of
+    # it. Same tier as meta_tags -- below the org's explicit contracts.
+    meta_contract: List[Dict[str, Any]] = field(default_factory=list)
 
 
 _META_TAG_RE = re.compile(r"^[a-z0-9][a-z0-9_.\-]*$")
+#: MCP tool names: the spec (2025-11-25) allows A-Z a-z 0-9 _ - . in 1-128
+#: chars; / and : are accepted too since real servers use them for namespaces.
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-/:]{1,128}\Z")
 _META_TAG_CAP = 8
 
 
@@ -568,6 +930,30 @@ def _extract_meta_tags(tool: Dict[str, Any]) -> List[str]:
             out.append(tag)
         if len(out) >= _META_TAG_CAP:
             break
+    return out
+
+
+def _extract_meta_contract(tool: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Pull a self-declared contract off an upstream tool definition.
+
+    Untrusted input, so it is parsed by the same validator a policy contract
+    goes through and dropped whole on any error. What survives can only
+    restrict: a contract has no field that widens a session label.
+    """
+    meta = tool.get("_meta")
+    pris = meta.get("prismor") if isinstance(meta, dict) else None
+    raw = pris.get("contract") if isinstance(pris, dict) else None
+    items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    out: List[Dict[str, Any]] = []
+    from prismor.runtime import contracts
+    for item in items[:_META_TAG_CAP]:
+        if not isinstance(item, dict):
+            continue
+        # A server speaks for its own tool only: any `tool` selector is dropped.
+        item = {k: v for k, v in item.items() if k != "tool"}
+        contract, errors = contracts.parse_contract(item, "_meta", tool=str(tool.get("name") or ""))
+        if contract is not None and not errors:
+            out.append(item)
     return out
 
 
@@ -608,6 +994,12 @@ class Gateway:
             for s in specs
         ]
         self._routes: Dict[str, _Route] = {}
+        #: resources/read and prompts/get routing, built by their list calls:
+        #: resource URI -> upstream, client prompt name -> (upstream, name),
+        #: and (uriTemplate prefix, upstream) for templated resources.
+        self._resource_routes: Dict[str, Upstream] = {}
+        self._prompt_routes: Dict[str, Tuple[Upstream, str]] = {}
+        self._template_routes: List[Tuple[str, Upstream]] = []
         self._routes_lock = threading.Lock()
         self._stdout_lock = threading.Lock()
         self._eval_lock = threading.Lock()
@@ -623,6 +1015,12 @@ class Gateway:
         # as a status tool so "no tools" is never the whole story.
         self._failed: Dict[str, str] = {}
         self._init_cv = threading.Condition()
+        #: definition hash -> blocking finding (or None): each distinct
+        #: definition is scanned once per process, not on every tools/list.
+        self._definition_scans: Dict[str, Optional[Dict[str, Any]]] = {}
+        #: exposed tool name -> why its definition is held back (poisoned, or
+        #: changed since it was pinned). Hidden in enforce; refused by name.
+        self._quarantined: Dict[str, Dict[str, Any]] = {}
 
     # ── serve loop ───────────────────────────────────────────────────────
 
@@ -672,6 +1070,9 @@ class Gateway:
             self._handle_notification(method, msg.get("params") or {})
             return
         params = msg.get("params") or {}
+        # The hosted handler attaches the HTTP request's headers (forwardHeaders).
+        inbound = msg.get("_inboundHeaders") if isinstance(msg.get("_inboundHeaders"), dict) else None
+        _inbound.headers = inbound
         if method == "initialize":
             self._handle_initialize(req_id, params)
         elif method == "tools/list":
@@ -679,13 +1080,23 @@ class Gateway:
         elif method == "tools/call":
             # Claude Code issues concurrent tool calls; handle off-loop so one
             # slow upstream doesn't head-of-line-block the others.
-            self._executor.submit(self._handle_tools_call_safe, req_id, params)
+            self._executor.submit(self._with_inbound, inbound, self._handle_tools_call_safe, req_id, params)
+        elif method in ("resources/list", "resources/templates/list", "prompts/list"):
+            self._handle_catalog_list(req_id, method)
+        elif method in ("resources/read", "prompts/get"):
+            self._executor.submit(self._with_inbound, inbound, self._handle_fetch_safe, req_id, method, params)
         elif method == "ping":
             self._reply(req_id, {})
         else:
-            # Tools-only aggregation: resources/prompts are never advertised in
-            # the initialize capabilities, so a compliant client won't ask.
             self._reply_error(req_id, -32601, f"method not supported by prismor-gateway: {method}")
+
+    @staticmethod
+    def _with_inbound(inbound: Optional[Dict[str, Any]], fn: Callable[..., None], *args: Any) -> None:
+        _inbound.headers = inbound  # worker threads are pooled: always reset
+        try:
+            fn(*args)
+        finally:
+            _inbound.headers = None
 
     def _handle_notification(self, method: str, params: Dict[str, Any]) -> None:
         if method == "notifications/initialized":
@@ -708,6 +1119,7 @@ class Gateway:
             self.agent_name = str(client_info["name"])
         self._client_protocol = str(
             params.get("protocolVersion") or PROTOCOL_VERSION_FALLBACK)
+        self._init_params = params
         # Upstreams are initialized concurrently, off the serve loop: a slow
         # one (cold `npx -y`) must neither delay the client's handshake nor be
         # declared dead after REQUEST_TIMEOUT. tools/list waits for them; one
@@ -719,7 +1131,12 @@ class Gateway:
                              name=f"mcp-init-{up.spec.name}", daemon=True).start()
         self._reply(req_id, {
             "protocolVersion": self._client_protocol,
-            "capabilities": {"tools": {"listChanged": True}},
+            # Resources and prompts are always advertised: upstreams are still
+            # starting here, so whether any has them isn't known yet, and an
+            # empty list is a valid answer.
+            "capabilities": {"tools": {"listChanged": True},
+                             "resources": {"listChanged": True},
+                             "prompts": {"listChanged": True}},
             "serverInfo": {"name": "prismor-gateway",
                            "version": _gateway_version()},
         })
@@ -743,6 +1160,22 @@ class Gateway:
             # Routes from that list stay valid, so they are not cleared.
             self._send({"jsonrpc": "2.0",
                         "method": "notifications/tools/list_changed", "params": {}})
+
+    def _retry_signed_in(self, announce: bool) -> None:
+        """Bring up an OAuth server that failed for want of a sign-in once the
+        user has run `login`, without restarting the gateway."""
+        for up in self.upstreams:
+            if (up.spec.name not in self._failed or getattr(up, "oauth", None) is None
+                    or up.oauth.authorization() is None):
+                continue
+            try:
+                up.initialize(getattr(self, "_init_params", {}), timeout=REQUEST_TIMEOUT)
+            except Exception:
+                continue
+            self._failed.pop(up.spec.name, None)
+            if announce:
+                self._send({"jsonrpc": "2.0",
+                            "method": "notifications/tools/list_changed", "params": {}})
 
     # ── tools/list ───────────────────────────────────────────────────────
 
@@ -772,6 +1205,8 @@ class Gateway:
         Anything else (a pattern that might match some arguments and not
         others) stays a call-time decision. Observe mode hides nothing.
         """
+        if self._selection_denies(route):
+            return True  # not exposed by this gateway's tool selection, in any mode
         if self.mode != "enforce" or self._passthrough(route):
             return False
         # ponytail: one full evaluation per tool (~20 ms each: the engine is
@@ -787,8 +1222,10 @@ class Gateway:
                 # is needed for the argument-independent decisions used below.
                 decision = evaluate_tool_call(
                     event=self._build_call_event(route, {}), workspace=self.workspace,
+                    deny_tools=self._selection_denies(route),
                     agent=GATEWAY_AGENT, mode=self.mode, session_id="",
                     agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
                     register_agent=False, flush_at_exit=False)
         except Exception:
             return False  # a broken probe hides nothing; the call is still checked
@@ -796,6 +1233,12 @@ class Gateway:
         if decision.allow or not b:
             return False
         if b.get("category") == "agent-control":
+            return True
+        # A per-person (or per-team) control that names this tool: the org's
+        # subject_controls deny_tools, or an IAM profile's tool allow/deny list.
+        # Those checks read only the tool name ("Tool '<name>' is ..."); an IAM
+        # path or network limit depends on the arguments and stays per call.
+        if b.get("category") == "iam" and "Tool '" in str(b.get("title") or ""):
             return True
         rule = next((r for r in getattr(decision.engine, "rules", []) if r.id == b.get("ruleId")), None)
         if rule is None or rule.when is None or rule.fields != ["tool_name"]:
@@ -805,10 +1248,12 @@ class Gateway:
         src += " " + " ".join(c.source for n, c in named.items() if n in src)
         return "args" not in src and "resource" not in src
 
-    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any]) -> None:
+    def _handle_tools_list(self, req_id: Any, params: Dict[str, Any], reply: bool = True) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
-        hidden: List[str] = []
+        hidden: Dict[str, _Route] = {}
+        quarantined: Dict[str, Dict[str, Any]] = {}
+        self._retry_signed_in(announce=False)
         with self._init_cv:
             # Give upstreams still in their handshake a chance to come up
             # rather than answering with 0 tools (#559). Whatever is still
@@ -827,47 +1272,99 @@ class Gateway:
                     f"[prismor-gateway] upstream '{up.spec.name}' is still starting; "
                     "its tools will be announced via tools/list_changed\n")
                 continue
-            try:
-                result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
-            except UpstreamError as exc:
-                sys.stderr.write(
-                    f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
-                self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
-                continue
+            cached = getattr(up, "tools_cache", None)
+            if up.spec.tools_ttl and cached and time.monotonic() - cached[0] < up.spec.tools_ttl:
+                result = cached[1]
+            else:
+                try:
+                    result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError as exc:
+                    sys.stderr.write(
+                        f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")
+                    self._failed.setdefault(up.spec.name, f"tools/list failed: {exc}")
+                    continue
+                if up.spec.tools_ttl:
+                    up.tools_cache = (time.monotonic(), result)
+            listed_any = False
             for tool in result.get("tools") or []:
                 if not isinstance(tool, dict) or not tool.get("name"):
                     continue
                 original = str(tool["name"])
-                exposed = self._client_tool_name(up.spec.name, original,
-                                                 local=up.spec.local)
+                if not _TOOL_NAME_RE.match(original):
+                    # Control chars in a name can repaint `prismor mcp-gateway tools`.
+                    sys.stderr.write(f"[prismor-gateway] skipping a tool with an invalid name from "
+                                     f"'{up.spec.name}': {_safe_text(original[:80])}\n")
+                    continue
+                override = up.spec.overrides.get(original) or {}
+                exposed = self._client_tool_name(
+                    up.spec.name, str(override.get("name") or original), local=up.spec.local)
                 routes[exposed] = _Route(upstream=up, server=up.spec.name,
                                          tool=original,
-                                         meta_tags=_extract_meta_tags(tool))
+                                         meta_tags=_extract_meta_tags(tool),
+                                         meta_contract=_extract_meta_contract(tool))
+                # Pin before the per-caller filter: trust on first use is per
+                # server, so a tool hidden from this caller is still part of the
+                # server's first listing.
+                problem = self._definition_problem(routes[exposed], tool)
+                listed_any = True
                 if self._never_allowed(routes[exposed]):
-                    hidden.append(exposed)
-                    del routes[exposed]
+                    hidden[exposed] = routes.pop(exposed)
                     continue
+                if problem is not None:
+                    quarantined[exposed] = problem
+                    if self.mode == "enforce" and not self._passthrough(routes[exposed]):
+                        hidden[exposed] = routes.pop(exposed)
+                        continue
+                    sys.stderr.write(f"[prismor] observe ({exposed}): would hide in enforce mode - "
+                                     f"[{problem.get('severity')}] {problem.get('title')}\n")
+                # Pinning above judged the upstream's own definition; the
+                # override only changes what the agent is shown.
                 entry = dict(tool)
+                if isinstance(override.get("description"), str):
+                    entry["description"] = override["description"]
+                if isinstance(override.get("inputSchema"), dict):
+                    entry["inputSchema"] = override["inputSchema"]
                 entry["name"] = exposed
                 if self.namespace != "none" and not up.spec.local:
-                    desc = str(tool.get("description") or "")
+                    desc = str(entry.get("description") or "")
                     entry["description"] = f"[{up.spec.name}] {desc}".strip()
                 tools.append(entry)
-        if self._failed:
-            down = "; ".join(f"{n}: {e}" for n, e in sorted(self._failed.items()))
+            if listed_any and up.spec.pin and not up.spec.local:
+                try:
+                    from prismor.runtime import mcp_tool_pins as _pins
+                    _pins.mark_baseline(up.spec.identity)
+                except OSError:
+                    pass
+        # Held definitions are hidden in enforce; without a status entry a
+        # legitimately updated tool would just vanish and nobody would know
+        # to run `prismor mcp-gateway tools`.
+        held = sorted(n for n in quarantined if n in hidden)
+        if self._failed or held:
+            parts = []
+            if self._failed:
+                down = "; ".join(f"{n}: {e}" for n, e in sorted(self._failed.items()))
+                parts.append(f"{len(self._failed)} MCP server(s) are down and their tools are missing. {down}")
+            if held:
+                parts.append(f"{len(held)} tool(s) hidden until a human reviews their changed or flagged "
+                             f"definition (`prismor mcp-gateway tools`): {', '.join(held)}")
             tools.append({"name": STATUS_TOOL, "inputSchema": {"type": "object", "properties": {}},
-                          "description": f"Prismor gateway: {len(self._failed)} MCP server(s) are down "
-                                         f"and their tools are missing. {down}"[:1000]})
-        if hidden:
-            sys.stderr.write(f"[prismor-gateway] hiding {len(hidden)} tool(s) this caller can never use: "
-                             f"{', '.join(sorted(hidden))}\n")
+                          "description": f"Prismor gateway: {' '.join(parts)}"[:1000]})
+        denied = sorted(set(hidden) - set(quarantined))
+        if denied:
+            sys.stderr.write(f"[prismor-gateway] hiding {len(denied)} tool(s) this caller can never use: "
+                             f"{', '.join(denied)}\n")
         from prismor.runtime.principal import current_token
+        if quarantined:
+            sys.stderr.write(f"[prismor-gateway] {len(quarantined)} tool definition(s) need review: "
+                             f"{', '.join(sorted(quarantined))} (prismor mcp-gateway tools)\n")
         with self._routes_lock:
             self._routes = routes
-            self._hidden = set(hidden)
+            self._hidden = hidden
+            self._quarantined = quarantined
             # Which end user this list was filtered for (see _identity_changed).
             self._listed_token = current_token()
-        self._reply(req_id, {"tools": tools})
+        if reply:
+            self._reply(req_id, {"tools": tools})
 
     def _identity_changed(self) -> None:
         """Tell the host to re-list when the end user's token has changed since
@@ -897,16 +1394,48 @@ class Gateway:
         name = str(params.get("name") or "")
         arguments = params.get("arguments")
         with self._routes_lock:
-            route = self._routes.get(name)
-            hidden = name in getattr(self, "_hidden", ())
+            # A tool hidden from this caller's list is still judged and logged
+            # when called by name (an agent probing for denied tools must show
+            # up in the console); the policy that hid it blocks it below.
+            route = self._routes.get(name) or getattr(self, "_hidden", {}).get(name)
+            unlisted = not self._routes and not getattr(self, "_hidden", None)
+        if route is None and unlisted and name != STATUS_TOOL:
+            # Routes are built by tools/list. A call that comes first (a new
+            # hosted session, a client reusing a tool name it remembers)
+            # builds them once instead of answering "unknown tool" for a tool
+            # that exists.
+            self._handle_tools_list(None, {}, reply=False)
+            with self._routes_lock:
+                route = self._routes.get(name) or self._hidden.get(name)
+        if route is None and self._failed:
+            self._retry_signed_in(announce=True)
         if route is None and name == STATUS_TOOL:
-            lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] or ["all servers are up"]
+            with self._routes_lock:
+                held = sorted(n for n in self._quarantined if n in getattr(self, "_hidden", {}))
+            lines = [f"{n}: {e}" for n, e in sorted(self._failed.items())] + [
+                f"{n}: definition held for review, run `prismor mcp-gateway tools`" for n in held
+            ] or ["all servers are up"]
             self._reply(req_id, {"content": [{"type": "text", "text": "\n".join(lines)}]})
             return
         if route is None:
-            self._reply_error(req_id, -32602,
-                              f"tool {name} is not available to this caller (denied by policy)" if hidden
-                              else f"unknown tool: {name}")
+            # A tool of a server that is down: say why rather than "unknown".
+            down = next((f"{n}: {e}" for n, e in self._failed.items()
+                         if self.namespace != "none" and name.startswith(f"{n}__")), None)
+            self._reply_error(req_id, -32602, down or f"unknown tool: {name}")
+            return
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
+            return
+        with self._routes_lock:
+            held = self._quarantined.get(name)
+        if held is not None and self.mode == "enforce" and not self._passthrough(route):
+            # Judged and logged as a blocked call (an agent calling a tool it
+            # was never shown is worth seeing in the console), then refused
+            # with the definition's own reason rather than a generic deny.
+            self._evaluate(self._build_call_event(route, arguments),
+                           deny_tools=[f"mcp__{route.server}__{route.tool}"])
+            self._reply(req_id, _blocked_result("Blocked by Prismor", held))
             return
 
         # Keep org-managed policy fresh on the hot path (debounced ~30s;
@@ -926,7 +1455,9 @@ class Gateway:
         passthrough = self._passthrough(route)
 
         # Pre-call evaluation.
-        decision = self._evaluate(self._build_call_event(route, arguments))
+        approval_id: Optional[str] = None  # set when a human approved this call
+        decision = self._evaluate(self._build_call_event(route, arguments),
+                                  deny_tools=self._selection_denies(route))
         if decision is not None:
             from prismor.runtime.runtime import log_observe_findings
             log_observe_findings(decision, tool_name=name,
@@ -961,6 +1492,7 @@ class Gateway:
                     outcome = _approvals.await_step_up(
                         decision, event=None, agent=GATEWAY_AGENT, session_id=self.session_id, tool=name,
                     )
+                    approval_id = getattr(outcome, "approval_id", None)
                     if outcome:
                         if getattr(outcome, "redacted", False):
                             arguments = _approvals.redact_approved_payload(arguments, workspace=self.workspace)
@@ -973,9 +1505,26 @@ class Gateway:
                     unblock=self._unblock_text(decision.blocking, route)))
                 return
 
-        result = route.upstream.request(
-            "tools/call", {"name": route.tool, "arguments": arguments},
-            timeout=CALL_TIMEOUT)
+        # Reserve only after security/approval checks and argument rewrites.
+        # Failed upstream calls still consume a slot: a retry loop must stop too.
+        repeat_decision = self._repeat_decision(route, arguments, decision)
+        if repeat_decision is not None:
+            from prismor.runtime.runtime import log_observe_findings
+            log_observe_findings(repeat_decision, tool_name=name,
+                                 mode="observe" if passthrough else self.mode)
+            if repeat_decision.blocking is not None and not passthrough:
+                self._reply(req_id, _blocked_result("Blocked by Prismor", repeat_decision.blocking))
+                return
+
+        try:
+            result = self._call_upstream(route, name, arguments, decision,
+                                         watch=self.mode == "enforce" and not passthrough,
+                                         approval_id=approval_id)
+        except _InFlightRefused as exc:
+            self._reply(req_id, _blocked_result("Blocked by Prismor", {
+                "severity": "high", "ruleId": exc.rule,
+                "title": f"stopped while running ({exc.status}): {exc.reason}"}))
+            return
 
         # The gateway holds the response, so its output can be *repaired*
         # rather than only refused: strip credential material before the model
@@ -996,11 +1545,20 @@ class Gateway:
         # either, so a paused gateway must not start pushing raw secret values
         # into the model's context. Data-boundary redaction IS policy, so it
         # goes with the rest of enforcement.
-        result = self._redact_result(result, data_boundary=not passthrough)
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        result = self._redact_result(
+            result, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
 
         # Post-call: the response is untrusted content — scan before the model
         # ever sees it (prompt injection, poisoned tool output, secrets).
-        decision = self._evaluate(self._build_result_event(route, result, arguments))
+        # NER already ran inside redaction when it is in redact+enforce; do
+        # not pay for the model a second time on the masked text.
+        _result_event = self._build_result_event(route, result, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
         if decision is not None:
             from prismor.runtime.runtime import log_observe_findings
             log_observe_findings(decision, tool_name=name,
@@ -1029,6 +1587,197 @@ class Gateway:
                 include_evidence=False))
             return
 
+        self._reply(req_id, result)
+
+    def _call_upstream(self, route: "_Route", name: str, arguments: Any,
+                       decision: Any, watch: bool,
+                       approval_id: Optional[str] = None) -> Dict[str, Any]:
+        """Forward a tools/call. When ``watch``, the call is re-checked on every
+        policy refresh while it runs; if the agent was paused or restricted
+        meanwhile, the upstream gets ``notifications/cancelled`` and the client
+        a refusal (#942)."""
+        timeout = route.upstream.spec.call_timeout or CALL_TIMEOUT
+        params = {"name": route.tool, "arguments": arguments}
+        if not watch or getattr(decision, "recheck", None) is None:
+            return route.upstream.request("tools/call", params, timeout=timeout)
+        from prismor.runtime import inflight as _inflight
+        ids: List[str] = []
+        inbound = getattr(_inbound, "headers", None)  # forwardHeaders, per thread
+
+        def _call() -> Dict[str, Any]:
+            _call_ids.holder = ids
+            _inbound.headers = inbound
+            try:
+                return route.upstream.request("tools/call", params, timeout=timeout)
+            finally:
+                _call_ids.holder = None
+                _inbound.headers = None
+
+        def _cancel() -> None:
+            for i in ids:
+                route.upstream.notify("notifications/cancelled",
+                                      {"requestId": i, "reason": "authority revoked by Prismor"})
+
+        return _inflight.wait_cancellable(
+            decision, _call, tool=name, agent=GATEWAY_AGENT,
+            session_id=self.session_id, on_cancel=_cancel, approval_id=approval_id)
+
+    # ── resources and prompts ────────────────────────────────────────────
+
+    def _catalog_upstreams(self) -> List[Upstream]:
+        """Upstreams that can serve resources/prompts: up, and not mirrors."""
+        with self._init_cv:
+            self._init_cv.wait_for(lambda: not (self._starting - self._late), timeout=REQUEST_TIMEOUT)
+            starting = set(self._starting)
+        return [up for up in self.upstreams
+                if not up.spec.local and up.spec.name not in starting and up.spec.name not in self._failed]
+
+    def _handle_catalog_list(self, req_id: Any, method: str) -> None:
+        key = {"resources/list": "resources", "resources/templates/list": "resourceTemplates",
+               "prompts/list": "prompts"}[method]
+        items: List[Dict[str, Any]] = []
+        resources: Dict[str, Upstream] = {}
+        prompts: Dict[str, Tuple[Upstream, str]] = {}
+        templates: List[Tuple[str, Upstream]] = []
+        for up in self._catalog_upstreams():
+            cursor = None
+            for _ in range(20):  # ponytail: page cap, a catalog past 20 pages is truncated
+                try:
+                    page = up.request(method, {"cursor": cursor} if cursor else {}, timeout=REQUEST_TIMEOUT)
+                except UpstreamError:
+                    break  # most servers have no resources or prompts (-32601)
+                for entry in page.get(key) or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry = dict(entry)
+                    if self.namespace != "none" and isinstance(entry.get("description"), str):
+                        entry["description"] = f"[{up.spec.name}] {entry['description']}"
+                    if key == "resources" and isinstance(entry.get("uri"), str):
+                        resources.setdefault(entry["uri"], up)  # URIs are global: first server wins
+                    elif key == "resourceTemplates" and isinstance(entry.get("uriTemplate"), str):
+                        templates.append((entry["uriTemplate"].split("{", 1)[0], up))
+                    elif key == "prompts" and isinstance(entry.get("name"), str):
+                        exposed = self._client_tool_name(up.spec.name, entry["name"])
+                        prompts[exposed] = (up, entry["name"])
+                        entry["name"] = exposed
+                    else:
+                        continue
+                    items.append(entry)
+                cursor = page.get("nextCursor")
+                if not cursor:
+                    break
+        with self._routes_lock:
+            if key == "resources":
+                self._resource_routes = resources
+            elif key == "resourceTemplates":
+                self._template_routes = templates
+            else:
+                self._prompt_routes = prompts
+        if req_id is not None:
+            self._reply(req_id, {key: items})
+
+    def _fetch_route(self, method: str, params: Dict[str, Any]) -> Optional[Tuple[_Route, Dict[str, Any]]]:
+        """The route and upstream params for resources/read or prompts/get."""
+        def lookup() -> Optional[Tuple[_Route, Dict[str, Any]]]:
+            with self._routes_lock:
+                if method == "prompts/get":
+                    hit = self._prompt_routes.get(str(params.get("name") or ""))
+                    if hit is None:
+                        return None
+                    up, name = hit
+                    # Policy sees `mcp__<server>__prompt__<name>`: denyable apart from a tool of the same name.
+                    return (_Route(upstream=up, server=up.spec.name, tool=f"prompt__{name}"),
+                            {"name": name, "arguments": params.get("arguments") or {}})
+                uri = str(params.get("uri") or "")
+                up = self._resource_routes.get(uri) or next(
+                    (u for prefix, u in self._template_routes if prefix and uri.startswith(prefix)), None)
+                if up is None:
+                    return None
+                return _Route(upstream=up, server=up.spec.name, tool="read_resource"), {"uri": uri}
+        found = lookup()
+        if found is None:
+            # As with tools: a client may fetch without listing first.
+            if method == "prompts/get":
+                self._handle_catalog_list(None, "prompts/list")
+            else:
+                self._handle_catalog_list(None, "resources/list")
+                self._handle_catalog_list(None, "resources/templates/list")
+            found = lookup()
+        return found
+
+    def _handle_fetch_safe(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        try:
+            self._handle_fetch(req_id, method, params)
+        except UpstreamError as exc:
+            self._reply_error(req_id, exc.code or -32603, str(exc))
+        except Exception as exc:  # never kill the serve loop from a worker
+            self._reply_error(req_id, -32603, f"prismor-gateway internal error: {exc}")
+
+    def _handle_fetch(self, req_id: Any, method: str, params: Dict[str, Any]) -> None:
+        """resources/read and prompts/get, judged like a tool call.
+
+        Both put server-written text in front of the model, so the result is
+        masked and scanned exactly as a tool result is. Pre-call, policy sees
+        `mcp__<server>__read_resource` (the URI in its arguments) or
+        `mcp__<server>__prompt__<name>`, so server-wide denies cover them.
+        """
+        found = self._fetch_route(method, params)
+        if found is None:
+            what = "prompt" if method == "prompts/get" else "resource"
+            self._reply_error(req_id, -32602, f"unknown {what}: {params.get('name') or params.get('uri')}")
+            return
+        route, upstream_params = found
+        arguments = upstream_params.get("arguments", {"uri": upstream_params.get("uri")})
+        limit = route.upstream.spec.max_body_bytes
+        if limit and len(json.dumps(arguments, default=str).encode("utf-8")) > limit:
+            self._reply_error(req_id, -32602, str(_too_big(route.upstream.spec, "this call's input")))
+            return
+        try:
+            from prismor.runtime.enterprise import remote_policy as _remote
+            _remote.check_and_refresh()
+        except Exception:
+            pass
+        passthrough = self._passthrough(route)
+        name = f"{route.server}__{route.tool}"
+        # ponytail: a block here is final; step-up approval and pii_redact
+        # rewrites are tools/call only. Add them when a resource rule needs one.
+        decision = self._evaluate(self._build_call_event(route, arguments))
+        if decision is not None and decision.blocking is not None:
+            if passthrough:
+                self._note_passthrough(name, decision.blocking, passthrough)
+            else:
+                text = _blocked_result("Blocked by Prismor", decision.blocking,
+                                       unblock=self._unblock_text(decision.blocking, route))
+                self._reply_error(req_id, -32001, text["content"][0]["text"])
+                return
+
+        result = route.upstream.request(method, upstream_params,
+                                        timeout=route.upstream.spec.call_timeout or CALL_TIMEOUT)
+        # Mask and scan the text the model will read, as for tool results.
+        slots = _fetched_text_slots(method, result)
+        shaped = {"content": [{"type": "text", "text": s["text"]} for s in slots]}
+        _pii_engine = getattr(decision, "engine", None) if decision is not None else None
+        _pii_notes = _pii_notes_for(_pii_engine)
+        shaped = self._redact_result(
+            shaped, data_boundary=not passthrough, engine=_pii_engine, pii_notes=_pii_notes)
+        for slot, block in zip(slots, shaped["content"]):
+            slot["text"] = block["text"]
+        _result_event = self._build_result_event(route, shaped, arguments)
+        if getattr(_pii_notes, "scanned", False):
+            _result_event["_pii_done"] = True
+        decision = self._evaluate(_result_event)
+        _merge_pii_notes(decision, _pii_notes, _pii_engine, self.session_id)
+        withhold = None
+        if decision is not None and not passthrough:
+            withhold = decision.blocking
+            if withhold is None and self.mode == "enforce":
+                withhold = _result_withhold_finding(decision.findings)
+        if withhold is not None:
+            text = _blocked_result("[Prismor] response withheld", withhold,
+                                   unblock=self._unblock_text(withhold, route, arguments=arguments),
+                                   include_evidence=False)
+            self._reply_error(req_id, -32001, text["content"][0]["text"])
+            return
         self._reply(req_id, result)
 
     # ── pause / pass-through ─────────────────────────────────────────────
@@ -1105,7 +1854,14 @@ class Gateway:
                 "(takes effect on the next session)")
         return "\n\n".join(lines)
 
-    def _redact_result(self, result: Any, *, data_boundary: bool = True) -> Any:
+    def _redact_result(
+        self,
+        result: Any,
+        *,
+        data_boundary: bool = True,
+        engine: Any = None,
+        pii_notes: Optional[List[Any]] = None,
+    ) -> Any:
         """Mask cloak secrets and data-boundary values in a mirrored tool's output.
 
         The masking itself is shared with every other surface that can see tool
@@ -1114,7 +1870,8 @@ class Gateway:
         """
         from prismor.runtime.redaction import redact_mcp_result
         out, changed = redact_mcp_result(
-            result, workspace=self.workspace, data_boundary=data_boundary)
+            result, workspace=self.workspace, data_boundary=data_boundary,
+            engine=engine, pii_notes=pii_notes)
         if changed:
             sys.stderr.write(
                 "[prismor-gateway] redacted sensitive values from tool output\n")
@@ -1180,7 +1937,128 @@ class Gateway:
         if refusal:
             raise UpstreamError(refusal)
 
-    def _evaluate(self, event: Dict[str, Any]):
+    def _definition_problem(self, route: "_Route", tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Why this tool's definition must not reach the model, or None.
+
+        Two checks, both before the model ever reads the description:
+
+        - the definition is scanned like a skill (``skill_manifest`` rules,
+          including ``mcp-tool-poisoning``): hidden instructions, concealment
+          from the user, shadowing of other servers' tools, secret reads;
+        - it is compared with the definition pinned the first time this
+          server listed it, so a tool that changes after it was trusted (a
+          "rug pull"), or a tool the server adds after its first listing, is
+          held until a human approves it.
+
+        A definition a human approved (``prismor mcp-gateway approve``) is not
+        re-scanned while it stays the same.
+        """
+        spec = route.upstream.spec
+        if spec.local or not spec.pin:
+            return None
+        from prismor.runtime import mcp_tool_pins as pins
+        digest = pins.definition_hash(tool)
+        identity = spec.identity
+        try:
+            if pins.is_reviewed(identity, route.tool, digest):
+                return None
+            finding = self._scan_definition(route, tool, digest)
+            state = pins.check(identity, spec.name, tool,
+                               flagged=(finding or {}).get("ruleId") or ("flagged" if finding else ""))
+        except OSError as exc:
+            if self.mode != "enforce":
+                sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); scanning only\n")
+                return self._definition_scans.get(digest)
+            # Without the pin store a rug pull is invisible: hold, never allow unchecked.
+            sys.stderr.write(f"[prismor-gateway] tool pins unavailable ({exc}); holding "
+                             f"'{route.tool}' on '{spec.name}' until the pin store is readable\n")
+            return {
+                "ruleId": "mcp-tool-pins-unavailable", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' on MCP server '{spec.name}' could not be checked against "
+                         f"its pinned definition (pin store error: {exc})",
+                "remediation": "Ask the user to fix the permissions or disk space of "
+                               "$PRISMOR_HOME/mcp-tool-pins and restart the gateway.",
+            }
+        if finding is not None:
+            return finding
+        if state == "held":
+            return {
+                "ruleId": "mcp-tool-definition-new", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' is new on MCP server '{spec.name}', which was already "
+                         "reviewed, and the new tool has not been reviewed",
+                "remediation": f"Ask the user to review it with `prismor mcp-gateway tools {spec.name}`, "
+                               "which shows the definition and the command to approve it.",
+            }
+        if state == "changed":
+            return {
+                "ruleId": "mcp-tool-definition-changed", "category": "skill_risk", "severity": "high",
+                "title": f"Tool '{route.tool}' on MCP server '{spec.name}' changed its description or "
+                         "schema since it was first used, and the change has not been reviewed",
+                "remediation": f"Ask the user to review it with `prismor mcp-gateway tools {spec.name}`, "
+                               "which shows the new version and the command to approve it.",
+            }
+        return None
+
+    def _scan_definition(self, route: "_Route", tool: Dict[str, Any], digest: str) -> Optional[Dict[str, Any]]:
+        if digest in self._definition_scans:
+            return self._definition_scans[digest]
+        from prismor.runtime.mcp_tool_pins import definition_text
+        from prismor.runtime.runtime import evaluate_tool_call
+        text = definition_text(tool)
+        event = {**self._event_base(route, "PreToolUse"), "type": "skill_manifest",
+                 "content": text, "prompt": text, "path": f"mcp:{route.server}/{route.tool}"}
+        finding = None
+        try:
+            with self._eval_lock:
+                # A probe first (no telemetry): every clean definition of every
+                # server would otherwise show up as an event on each start.
+                decision = evaluate_tool_call(
+                    event=event, workspace=self.workspace, agent=GATEWAY_AGENT, mode="enforce",
+                    session_id="", agent_name=self.agent_name, persist=False, record=False,
+                    rate_accounting=False,
+                    register_agent=False, flush_at_exit=False)
+            from prismor.runtime.contract import strongest
+            finding = strongest([f for f in decision.findings
+                                 if f.get("action") == "block" and not f.get("contextInert")
+                                 and f.get("category") in _DEFINITION_CATEGORIES])
+            if finding is not None:
+                # Flagged: record it once, so the console sees which server
+                # shipped a poisoned definition.
+                self._evaluate(event)
+        except Exception as exc:
+            sys.stderr.write(f"[prismor-gateway] tool definition scan failed for {route.tool}: {exc}\n")
+        if finding is not None:
+            finding = dict(finding)
+            finding.pop("evidence", None)   # the evidence is the poisoned text itself
+            finding["remediation"] = (
+                f"The tool's description was withheld from the model. Ask the user to review it with "
+                f"`prismor mcp-gateway tools {route.server}`; approve only if it is legitimate.")
+        self._definition_scans[digest] = finding
+        return finding
+
+    def _selection_denies(self, route: "_Route") -> List[str]:
+        """The route's tool tag when the server entry's tool selection leaves it out."""
+        spec = route.upstream.spec
+        if spec.local or not spec.excludes(route.tool):
+            return []
+        return [f"mcp__{route.server}__{route.tool}"]
+
+    def _repeat_decision(self, route: _Route, arguments: Any, decision: Any):
+        from prismor.runtime import ratelimit
+        from prismor.runtime.policy_engine import PolicyEngine
+        engine = getattr(decision, "engine", None) or PolicyEngine(workspace=self.workspace)
+        if (not engine.mcp_tool_repeat_limits_error
+                and route.tool not in engine.mcp_tool_repeat_limits.get(route.server, {})):
+            return None
+        # No tool tags or raw arguments: this is accounting, not another call.
+        event = {"type": "mcp_repeat", "agent_event": "PreToolUse",
+                 "ts": datetime.now(timezone.utc).isoformat(),
+                 "metadata": {"surface": "mirror" if route.upstream.spec.local else "mcp-gateway"}}
+        key = ratelimit.repeat_key(self.session_id, route.server, route.tool, arguments)
+        return self._evaluate(event, mcp_repeat_call=(route.server, route.tool, key))
+
+    def _evaluate(self, event: Dict[str, Any], deny_tools: Optional[List[str]] = None,
+                  mcp_repeat_call: Optional[tuple[str, str, str]] = None):
         """Run one event through the shared runtime pipeline.
 
         Serialized: the trifecta TagLedger depends on session ordering, and
@@ -1197,6 +2075,12 @@ class Gateway:
                     mode=self.mode,
                     session_id=self.session_id,
                     agent_name=self.agent_name,
+                    deny_tools=deny_tools or (),
+                    # persist=False: the accounting pass is not a session event;
+                    # a block still lands as a runtime finding (rateLimit).
+                    **({"mcp_repeat_call": mcp_repeat_call, "rate_accounting": False,
+                        "register_agent": False, "persist": False}
+                       if mcp_repeat_call is not None else {}),
                 )
         except Exception as exc:
             # Fail open on engine *errors* only in observe mode; in enforce
@@ -1235,6 +2119,8 @@ class Gateway:
             # Server-declared tags ride on the event; trifecta consumes them
             # as a classification tier below the explicit org map.
             metadata["meta_tags"] = list(route.meta_tags)
+        if route.meta_contract:
+            metadata["meta_contract"] = list(route.meta_contract)
         return {
             "ts": datetime.now(timezone.utc).isoformat(),
             "session_id": self.session_id,
@@ -1245,6 +2131,12 @@ class Gateway:
 
     def _build_call_event(self, route: _Route, arguments: Any) -> Dict[str, Any]:
         base = self._event_base(route, "PreToolUse")
+        if route.upstream.spec.log_payloads:
+            # The logged copy only, masked like results are (cloak secrets and
+            # data-boundary values); the upstream still gets the real arguments.
+            from prismor.runtime.redaction import redact_text
+            logged, _ = redact_text(json.dumps(arguments, default=str), workspace=self.workspace)
+            base["log_payloads"] = {"arguments": logged}
         # The structured arguments, for `when:` rules (`args.amount`). Without
         # this every args.* path is missing and an attribute rule fires on
         # every call through the gateway.
@@ -1285,6 +2177,11 @@ class Gateway:
     def _build_result_event(self, route: _Route, result: Any,
                             arguments: Any = None) -> Dict[str, Any]:
         base = self._event_base(route, "PostToolUse")
+        if isinstance(arguments, dict):
+            # A contract's argument selectors decide what this RESULT does to
+            # the session label. Under its own key rather than `kwargs`, which
+            # `when:` rules read and which result events have never carried.
+            base["metadata"]["call_args"] = arguments
         if route.upstream.spec.local:
             from prismor.runtime import mirror
             shaped = mirror.shape_result_event(
@@ -1297,6 +2194,9 @@ class Gateway:
         spec = route.upstream.spec
         if spec.remote:
             event["url"] = spec.url
+        if spec.log_payloads:
+            # The result as the model sees it: built after _redact_result.
+            event["log_payloads"] = {"result": event["response"]}
         return event
 
     # ── upstream notifications ───────────────────────────────────────────
@@ -1307,12 +2207,22 @@ class Gateway:
                 # Route map is rebuilt on the client's next tools/list.
                 with self._routes_lock:
                     self._routes = {}
+                for up in self.upstreams:
+                    if up.spec.name == server:
+                        up.tools_cache = None
                 self._send({"jsonrpc": "2.0", "method": method, "params": params})
             elif method.startswith("notifications/"):
                 # progress / logging — pass through untouched (tokens are
                 # client-allocated and unambiguous).
                 self._send({"jsonrpc": "2.0", "method": method, "params": params})
         return _handler
+
+
+#: Finding categories that keep a tool DEFINITION from the model: the skill
+#: rules (hidden instructions, exfil endpoints, secret reads, mcp-tool-poisoning)
+#: and plain prompt injection.
+_DEFINITION_CATEGORIES = frozenset({"skill_risk", "prompt_injection", "prompt_injection_semantic",
+                                    "secret_access", "secret_exfiltration"})
 
 
 #: Result-side finding categories the gateway withholds a response over. A
@@ -1322,6 +2232,50 @@ class Gateway:
 _WITHHOLD_CATEGORIES = frozenset({"prompt_injection", "prompt_injection_semantic",
                                   "secret_access", "secret_exfiltration",
                                   "data_boundary", "pii"})
+
+
+def _pii_notes_for(engine: Any):
+    """A note list only when NER redaction will run. The default path allocates nothing."""
+    pii = getattr(engine, "pii", None) if engine is not None else None
+    if (
+        pii is None
+        or not getattr(pii, "enabled", False)
+        or getattr(pii, "action", "") != "redact"
+        or getattr(pii, "mode", "") != "enforce"
+    ):
+        return None
+    from prismor.runtime.pii import PiiNotes
+    return PiiNotes()
+
+
+def _merge_pii_notes(decision: Any, notes: List[Any], engine: Any, session_id: str) -> None:
+    """Record PII that result redaction already removed, so the audit row exists.
+
+    Redaction runs before the post-call scan, and the scan is what the model
+    will see. A name that was just masked would otherwise leave no finding.
+    The note list holds spans in memory; the finding stores a mask.
+    """
+    if not notes or decision is None or engine is None:
+        return
+    findings = getattr(decision, "findings", None)
+    if not isinstance(findings, list):
+        return
+    if any(f.get("ruleId") == "pii-ner" for f in findings if isinstance(f, dict)):
+        return
+    from prismor.runtime.pii import finding_from_hits
+    index = 0
+    for existing in findings:
+        if isinstance(existing, dict) and existing.get("eventIndex") is not None:
+            index = existing["eventIndex"]
+            break
+    finding = finding_from_hits(
+        notes, index=index, session_id=session_id or "",
+        settings=engine.pii,
+        backend=getattr(notes, "backend", "") or engine.pii.backend,
+        fallback_reason=getattr(notes, "fallback", ""),
+    )
+    if finding:
+        findings.append(finding)
 
 
 def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1346,13 +2300,46 @@ def _result_withhold_finding(findings: List[Dict[str, Any]]) -> Optional[Dict[st
     Still skips ``contextInert`` matches (an injection quoted inside a commit
     message or grep pattern describes rather than performs) and any category
     outside the curated withhold set. Returns None when nothing qualifies.
+
+    A semantic finding no model produced is keyword scoring, and the engine
+    only lets it block at its higher heuristic threshold, because on its own it
+    flags SDK docs and source code (``export async function`` + ``context.env``
+    read as "export .env"). Withholding on its warn would hide ordinary docs
+    from the model, so such a finding withholds only when it reached block.
     """
     from prismor.runtime.contract import strongest
     return strongest([
         f for f in (findings or [])
         if not f.get("contextInert")
-        and f.get("category") in _WITHHOLD_CATEGORIES
+        and (
+            f.get("category") in _WITHHOLD_CATEGORIES
+            or (
+                f.get("ruleId") == "pii-ner"
+                and f.get("action") == "block"
+                and str(f.get("mode") or "").lower() == "enforce"
+            )
+        )
+        and not _heuristic_semantic_warn(f)
     ])
+
+
+def _heuristic_semantic_warn(finding: Dict[str, Any]) -> bool:
+    return (finding.get("category") == "prompt_injection_semantic"
+            and not finding.get("judged")
+            and finding.get("action") != "block")
+
+
+def _fetched_text_slots(method: str, result: Any) -> List[Dict[str, Any]]:
+    """The dicts holding model-bound text in a resources/read or prompts/get
+    result, so their `text` can be masked in place. Blobs and embedded
+    resources inside prompt messages are left as they are."""
+    if not isinstance(result, dict):
+        return []
+    if method == "resources/read":
+        items = result.get("contents") or []
+    else:
+        items = [m.get("content") for m in result.get("messages") or [] if isinstance(m, dict)]
+    return [i for i in items if isinstance(i, dict) and isinstance(i.get("text"), str)]
 
 
 def _blocked_result(prefix: str, blocking: Dict[str, Any],
@@ -1647,6 +2634,114 @@ def _install_everywhere(workspace: Path, mode: str = "enforce") -> str:
     return head + "\n" + "\n".join(lines)
 
 
+def _run_pins(action: str, args) -> int:
+    """``prismor mcp-gateway tools [server]`` and ``approve <server> [tool…]``."""
+    from prismor.runtime import mcp_tool_pins as pins
+    config = getattr(args, "config", None)
+    specs = [s for s in load_gateway_config(Path(config).expanduser() if config else DEFAULT_GATEWAY_CONFIG)
+             if not s.local]
+    target = getattr(args, "target", None)
+    if target:
+        specs = [s for s in specs if s.name == target]
+        if not specs:
+            raise GatewayConfigError(f"no server named {target!r} in the gateway config")
+    if action == "approve":
+        if not target:
+            raise GatewayConfigError("approve needs a server name: prismor mcp-gateway approve <server> [tool ...]")
+        names = list(getattr(args, "tool_names", None) or [])
+        out = pins.approve(specs[0].identity, names or None)
+        if out["approved"]:
+            print(_safe_text(f"Approved {len(out['approved'])} tool definition(s) on {target}: "
+                  f"{', '.join(out['approved'])}. A running gateway lists them on its next tools/list."))
+        if out["stale"]:
+            print(_safe_text(f"Not approved, changed again since you reviewed it: {', '.join(out['stale'])}. "
+                  f"Run `prismor mcp-gateway tools {target}` and review the current version."))
+        if out["missing"] or not (out["approved"] or out["stale"]):
+            print(f"Nothing pending for: {', '.join(out['missing']) if out['missing'] else target}")
+        return 1 if out["stale"] else 0
+    for spec in specs:
+        data = pins.load(spec.identity)
+        if not spec.pin:
+            print(f"{spec.name}: pinning off (\"pin\": false)")
+            continue
+        print(_safe_text(f"{spec.name}: {len(data['tools'])} pinned, {len(data['pending'])} need review"))
+        for name, entry in sorted(data["pending"].items()):
+            why = [] if name not in data["tools"] else ["changed since it was pinned"]
+            if entry.get("reason") == "new":
+                why.append("new tool on a server you already reviewed")
+            elif entry.get("reason") != "changed":
+                why.append(f"flagged by {entry.get('reason')}")
+            short = entry["hash"][:pins.SHORT_HASH]
+            print(_safe_text(f"  ! {name}@{short}: {', '.join(why) or 'new'} (seen {entry.get('seen_at')})"))
+            for line in pins.review_lines(data, name):
+                print(f"      | {_safe_text(line)}")
+            print(_safe_text(f"    approve this exact version: prismor mcp-gateway approve {spec.name} {name}@{short}"))
+    return 0
+
+
+def _auth_specs(args) -> List[UpstreamSpec]:
+    if getattr(args, "upstream", None) and args.upstream.strip().startswith(("http://", "https://")):
+        return [UpstreamSpec(name="upstream", url=args.upstream.strip(), transport="http")]
+    specs = [parse_inline_server(v) for v in getattr(args, "server", None) or []]
+    if specs:
+        return specs
+    config = getattr(args, "config", None)
+    return load_gateway_config(Path(config).expanduser() if config else DEFAULT_GATEWAY_CONFIG)
+
+
+def _run_auth(action: str, args) -> int:
+    """``prismor mcp-gateway login|logout <server>`` and ``auth``."""
+    from prismor.runtime import mcp_oauth
+    specs = [s for s in _auth_specs(args) if s.remote]
+    if action == "auth":
+        if not specs:
+            print("No remote MCP servers in the gateway config.")
+        for s in specs:
+            state = mcp_oauth.status(s.url) if s.uses_oauth else "uses its own Authorization header"
+            print(f"  {s.name:<20} {state}")
+        return 0
+    target = getattr(args, "target", None)
+    if not target and len(specs) == 1:
+        target = specs[0].name
+    match = [s for s in specs if s.name == target]
+    if not match:
+        names = ", ".join(s.name for s in specs) or "none"
+        raise GatewayConfigError(f"no remote server named {target!r} in the gateway config (remote servers: {names})")
+    spec = match[0]
+    if action == "logout":
+        rec = mcp_oauth.load_record(spec.url)
+        if rec is None:
+            print(f"{spec.name} was not signed in.")
+            return 0
+        revoked = mcp_oauth.revoke_record(rec)
+        mcp_oauth.delete_record(spec.url)
+        print(f"Signed out of {spec.name}." + ("" if revoked else
+              " The server could not be asked to revoke the token; it stays valid there until it expires."))
+        return 0
+    if not spec.uses_oauth:
+        raise GatewayConfigError(
+            f"'{spec.name}' sends its own Authorization header or has \"oauth\": false; "
+            "remove that to sign in with OAuth")
+    no_browser = bool(getattr(args, "no_browser", False))
+
+    def _show(url: str) -> None:
+        verb = "Open this URL to sign in" if no_browser else "Opening your browser. If it does not open, visit"
+        print(f"{verb} to {spec.name}:\n\n  {url}\n", flush=True)
+
+    try:
+        rec = mcp_oauth.login(spec.name, spec.url, headers=spec.headers,
+                              oauth_cfg=spec.oauth if isinstance(spec.oauth, dict) else None,
+                              open_browser=not no_browser,
+                              port=int(getattr(args, "callback_port", 0) or 0),
+                              on_authorize_url=_show)
+    except mcp_oauth.OAuthError as exc:
+        sys.stderr.write(f"[prismor] sign-in to {spec.name} failed: {exc}\n")
+        return 1
+    print(f"Signed in to {spec.name} via {rec['issuer']}. "
+          "A running gateway picks this up on its next call.")
+    return 0
+
+
 def run_gateway(args, workspace: Path) -> int:
     """Entry point for ``prismor mcp-gateway`` (called from cli.main)."""
     action = getattr(args, "action", None) or "serve"
@@ -1663,6 +2758,10 @@ def run_gateway(args, workspace: Path) -> int:
     if action == "uninstall":
         print(uninstall_gateway(workspace))
         return 0
+    if action in ("tools", "approve"):
+        return _run_pins(action, args)
+    if action in ("login", "logout", "auth"):
+        return _run_auth(action, args)
 
     specs: List[UpstreamSpec] = []
     if getattr(args, "upstream", None):
@@ -1671,8 +2770,8 @@ def run_gateway(args, workspace: Path) -> int:
             specs.append(UpstreamSpec(name="upstream", url=value, transport="http"))
         else:
             argv = shlex.split(value)
-            specs.append(UpstreamSpec(name=_shim_name(argv),
-                                      command=argv, transport="stdio"))
+            specs.append(UpstreamSpec(name=_shim_name(argv), command=argv,
+                                      transport="stdio", inherit_env=True))
     for inline in getattr(args, "server", None) or []:
         specs.append(parse_inline_server(inline))
     if not specs:
@@ -1691,6 +2790,10 @@ def run_gateway(args, workspace: Path) -> int:
                 specs = []
         else:
             specs = load_gateway_config(path)
+    idle = float(getattr(args, "idle_timeout", 0) or 0)
+    for spec in specs:
+        if idle > 0 and not spec.idle_timeout:
+            spec.idle_timeout = idle
     if getattr(args, "mirror", False) and not any(s.local for s in specs):
         specs.append(UpstreamSpec(name=MIRROR_SPEC_NAME, local=True,
                                   transport="local"))

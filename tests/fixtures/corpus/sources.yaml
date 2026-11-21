@@ -1,0 +1,90 @@
+# Attack side of the policy benchmark corpus (scripts/bench_policy.py).
+#
+# Nothing here is a payload. Each entry points at cases that already live in
+# the repo's own tests or templates; the bench reads them from there at run
+# time (YAML load or an AST read of the test's literal case table), so a case
+# is never duplicated and stays in step with the test that owns it.
+#
+#   kind: template      -> a policy-tests YAML file (type/input/expect cases)
+#   kind: parametrize   -> string values of @pytest.mark.parametrize(<arg>, [...])
+#                          on <test>
+#   kind: module_list   -> a module-level list of strings named <name>
+#   kind: event_dicts   -> `event = {...}` literals in the methods of <class>;
+#                          a method that asserts NotIn is a benign lookalike;
+#                          `methods:` sets expected/category per method
+#
+# side: attack | benign. expected: block | warn | allow; when omitted, an
+# attack takes the default action of `rule` in default_policy.yaml.
+# event: shell (string is the command) | file_read | file_write (string is the
+# path). Only literal strings are harvested; f-strings and computed values are
+# skipped and counted as such in the report.
+version: 1
+sources:
+  - kind: template
+    file: templates/policy-tests-owasp.yaml
+    category_by_rule: true
+    category: owasp_starter_pack
+
+  - {kind: parametrize, file: tests/test_bypass_threatmodel.py, test: test_destructive_payload_is_seen_through_indirection,
+     arg: command, side: attack, event: shell, rule: destructive-command, category: destructive_command}
+  - {kind: parametrize, file: tests/test_bypass_threatmodel.py, test: test_tampering_is_blocked,
+     arg: command, side: attack, event: shell, rule: agent-config-tampering, category: security_bypass}
+  - {kind: parametrize, file: tests/test_bypass_threatmodel.py, test: test_host_hook_config_writes_are_blocked,
+     arg: path, side: attack, event: file_write, rule: agent-config-tampering-path, category: security_bypass}
+  - {kind: parametrize, file: tests/test_bypass_threatmodel.py, test: test_reads_are_not_tampering,
+     arg: command, side: benign, event: shell, category: security_bypass}
+
+  - {kind: parametrize, file: tests/test_recursive_delete_home.py, test: test_warns,
+     arg: cmd, side: attack, event: shell, rule: recursive-delete-home, category: destructive_command}
+  - {kind: parametrize, file: tests/test_recursive_delete_home.py, test: test_quiet,
+     arg: cmd, side: benign, event: shell, category: destructive_command}
+  - {kind: parametrize, file: tests/test_recursive_delete_home_windows.py, test: test_flags,
+     arg: cmd, side: attack, event: shell, rule: recursive-delete-home, category: destructive_command}
+  - {kind: parametrize, file: tests/test_recursive_delete_home_windows.py, test: test_leaves_alone,
+     arg: cmd, side: benign, event: shell, category: destructive_command}
+
+  - {kind: parametrize, file: tests/test_secret_file_shell_read.py, test: test_flags,
+     arg: cmd, side: attack, event: shell, rule: secret-file-shell-read, category: secret_access}
+  - {kind: parametrize, file: tests/test_secret_file_shell_read.py, test: test_quiet,
+     arg: cmd, side: benign, event: shell, category: secret_access}
+
+  - {kind: parametrize, file: tests/test_windows_coverage_gaps.py, test: test_force_push_to_protected_branch_matches,
+     arg: cmd, side: attack, event: shell, rule: git-remote-hijack, category: secret_exfiltration}
+  - {kind: parametrize, file: tests/test_windows_coverage_gaps.py, test: test_ordinary_pushes_do_not_match,
+     arg: cmd, side: benign, event: shell, category: secret_exfiltration}
+  - {kind: parametrize, file: tests/test_windows_hook_coverage.py, test: test_ordinary_commands_stay_quiet,
+     arg: cmd, side: benign, event: shell, category: mixed}
+
+  - {kind: module_list, file: tests/test_shell_context.py, name: ATTACKS,
+     side: attack, event: shell, expected: block, category: shell_evasion}
+  - {kind: module_list, file: tests/test_shell_context.py, name: INERT,
+     side: benign, event: shell, category: shell_evasion}
+  - {kind: module_list, file: tests/test_shell_context.py, name: BENIGN,
+     side: benign, event: shell, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_double_quote_command_substitution_blocks_at_runtime,
+     arg: command, side: attack, event: shell, expected: block, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_harmless_prefix_on_same_line_blocks_at_runtime,
+     arg: command, side: attack, event: shell, expected: block, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_quote_split_command_blocks_at_runtime,
+     arg: command, side: attack, event: shell, expected: block, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_unquoted_heredoc_command_substitution_blocks_at_runtime,
+     arg: command, side: attack, event: shell, expected: block, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_quote_split_text_stays_allowed,
+     arg: command, side: benign, event: shell, category: shell_evasion}
+  - {kind: parametrize, file: tests/test_shell_context.py, test: test_quoted_or_literal_heredoc_allows_at_runtime,
+     arg: command, side: benign, event: shell, category: shell_evasion}
+
+  - {kind: event_dicts, file: tests/test_detection_improvements.py, class: TestExpandedPromptInjectionPolicyEngine,
+     expected: block, category: prompt_injection,
+     methods: {test_skill_behavior_manipulation_rule: {expected: warn, category: skill_risk},
+               test_never_mention_user_fires: {expected: warn, category: skill_risk},
+               test_append_to_every_response_fires: {expected: warn, category: skill_risk}}}
+
+# One-line reason per known miss, keyed by case id. The bench writes these
+# into docs/residual-risk.md; a miss without an entry is listed as untriaged.
+residual:
+  benign/file_read/dc398bda: >-
+    The secret-access path pattern matches every `.env.*` name, so a values-free
+    `.env.example` template is blocked on Read; the shell-read rule already exempts it.
+  benign/file_write/552e4e37: >-
+    Same `.env.*` path pattern as above, applied to a write of an example template.

@@ -1,4 +1,4 @@
-# prismor-mastra
+# @prismor/mastra
 
 Prismor adapter for **Mastra** (TypeScript). Every tool call is routed
 through the Prismor eval-server (`prismor eval-server`, a local HTTP
@@ -26,7 +26,7 @@ thrown error genuinely prevents the tool body from running.
 ## Install
 
 ```bash
-npm install prismor-mastra
+npm install @prismor/mastra
 ```
 
 Start the eval-server once, alongside your app:
@@ -40,7 +40,7 @@ prismor eval-server --port 7071
 ```ts
 import { Agent } from "@mastra/core/agent";
 import { openai } from "@ai-sdk/openai";
-import { prismorTool } from "prismor-mastra";
+import { prismorTool } from "@prismor/mastra";
 
 const guardedRunShell = prismorTool("run_shell", runShell, {
   mode: "enforce",

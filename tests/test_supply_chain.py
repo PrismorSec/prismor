@@ -190,8 +190,8 @@ class TestOSVScoring:
             )
             mock_fetch.assert_not_called()
 
-    def test_cve_verdict_warn_for_single_high(self):
-        """Single high CVE (30 pts) should trigger WARN (threshold=30)."""
+    def test_cve_verdict_block_for_single_high(self):
+        """Any known CVE on the version being installed blocks, whatever its points."""
         cves = [
             {
                 "id": "CVE-2023-999",
@@ -204,11 +204,11 @@ class TestOSVScoring:
         with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
-        assert verdict.verdict == "warn"
+        assert verdict.verdict == "block"
         assert verdict.score == 30
 
-    def test_cve_verdict_warn_for_critical(self):
-        """Critical CVE (50 pts) should trigger WARN (threshold=30, <60 for block)."""
+    def test_cve_verdict_block_for_critical(self):
+        """Critical CVE (50 pts) blocks though it is under the 60 threshold."""
         cves = [
             {
                 "id": "CVE-2023-999",
@@ -221,7 +221,7 @@ class TestOSVScoring:
         with patch("supplychain.scoring.engine.fetch_vulns", return_value=cves):
             verdict = scorer.score(_make_spec(), _make_meta(), _make_event())
 
-        assert verdict.verdict == "warn"
+        assert verdict.verdict == "block"
         assert verdict.score == 50
 
 
@@ -635,3 +635,17 @@ class TestFetchVulnsBatch:
 
         mock_post.assert_not_called()
         assert result[("cached-pkg", "npm", "1.0.0")][0]["id"] == "GHSA-cached"
+
+
+@pytest.mark.parametrize("argv, expected", [
+    # The interpreter path after --python / -p is not a package.
+    (["uv", "pip", "install", "--python", ".venv/bin/python", "testscope==0.3.1"], ["testscope"]),
+    (["uv", "pip", "install", "-p", "3.12", "requests"], ["requests"]),
+    (["uv", "pip", "install", "--python=.venv/bin/python", "requests"], ["requests"]),
+    (["pip", "install", "--constraint", "c.txt", "--target", "out", "flask"], ["flask"]),
+    # npm keeps its own meaning: `-f` is --force, so the package is still scored.
+    (["npm", "install", "-f", "lodash"], ["lodash"]),
+])
+def test_value_flags_are_not_scored_as_packages(argv, expected):
+    from supplychain.ecosystems.detector import detect_install
+    assert [p.name for p in detect_install(argv).packages] == expected

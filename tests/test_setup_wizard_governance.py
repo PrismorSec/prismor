@@ -60,11 +60,11 @@ class TestInstallCompilesMode(unittest.TestCase):
         policy = (self.target / ".prismor" / "policy.yaml").read_text(encoding="utf-8")
         self.assertIn(f"mode: {mode_id}", policy)
 
-    def test_install_on_a_host_with_no_docker_keeps_the_posture(self):
-        """The wizard used to pass force=True, which ALSO skipped the runtime
-        check, so setup wrote an enforcing sandbox onto a host with no Docker —
-        strictly more dangerous than the `mode apply` it wraps. Now the sandbox
-        axis degrades and everything else still lands.
+    def test_install_on_a_host_with_no_sandbox_engine_keeps_the_posture(self):
+        """The wizard used to pass force=True, which ALSO skipped the engine
+        check, so setup wrote an enforcing sandbox onto a host that could not
+        run it — strictly more dangerous than the `mode apply` it wraps. Now the
+        sandbox axis degrades and everything else still lands.
 
         The catalogue ships every mode's sandbox off (containment is opt-in via
         `prismor sandbox on`), so this patches dev-safe back on to keep
@@ -75,9 +75,9 @@ class TestInstallCompilesMode(unittest.TestCase):
                       "sandbox": {**_dev_safe["sandbox"], "enabled": True}}
         with mock.patch("prismor.runtime.setup_wizard._REPO_ROOT", Path("/nonexistent")), \
              mock.patch.object(_modes, "get_mode", return_value=_sandboxed), \
-             mock.patch("prismor.runtime.sandbox.docker_status",
-                        new=lambda: {"cli_found": False, "server_reachable": False,
-                                     "error": "docker CLI not found"}), \
+             mock.patch("prismor.runtime.sandbox.backend_status",
+                        new=lambda: {"available": False, "engine": None,
+                                     "error": "no native sandbox on testos"}), \
              mock.patch("prismor.runtime.enterprise.workspace_scope.is_managed",
                         return_value=False):
             setup_wizard._do_install(

@@ -12,7 +12,7 @@
  */
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { prismorTools, prismorTool, useSubject, PrismorBlocked } = require("../dist/index.js");
+const { prismorTools, prismorTool, useSubject, useSession, PrismorBlocked } = require("../dist/index.js");
 
 function withMockFetch(impl, fn) {
   const original = globalThis.fetch;
@@ -372,4 +372,123 @@ test("identityToken is sent as X-Prismor-Identity, never in the body", async () 
     assert.equal(requests[0].headers["X-Prismor-Identity"], "Bearer eyJ.test.sig");
     assert.equal(JSON.stringify(requests[0].body).includes("eyJ.test.sig"), false);
   });
+});
+
+test("langchain: tools report under the langchain framework id, not vercel-ai", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const { prismorLangChainTool } = require("../dist/index.js");
+    const t = prismorLangChainTool({ name: "run_shell", invoke: async () => "ok" }, { agentName: "support-langgraph-js" });
+    await t.invoke({ command: "echo hi" });
+  });
+  assert.equal(requests[0].body.agent, "langchain");
+  assert.equal(requests[0].body.agent_name, "support-langgraph-js");
+});
+
+test("a toolset run inside another agent's tool reports as a subagent", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const fetch_url = { execute: async ({ url }) => `fetched ${url}` };
+    const researcherTools = prismorTools({ fetch_url }, { agentName: "researcher" });
+    const ask_researcher = {
+      // A subagent: this tool runs another agent, which calls its own tools.
+      execute: async ({ q }) => researcherTools.fetch_url.execute({ url: q }, { toolCallId: "inner-1" }),
+    };
+    const mainTools = prismorTools({ fetch_url, ask_researcher }, { agentName: "support-bot" });
+    await mainTools.fetch_url.execute({ url: "https://a.test" }, { toolCallId: "c1" });
+    await mainTools.ask_researcher.execute({ q: "https://b.test" }, { toolCallId: "c2" });
+  });
+  const by = (n) => requests.filter((r) => r.body.tool_name === n);
+  assert.equal(by("fetch_url")[0].body.subagent, undefined);          // main agent
+  assert.equal(by("ask_researcher")[0].body.subagent, undefined);     // main agent launching it
+  const { root, ...sub } = by("fetch_url")[1].body.subagent;
+  assert.deepEqual(sub, { id: "support-bot:c2", type: "researcher", parent: "support-bot", depth: 1, chain: ["support-bot"] });
+  assert.equal(root, by("ask_researcher")[0].body.session_id);  // counted in the launching call's session
+});
+
+test("a subagent of a subagent reports depth 2 and its chain", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const lookup = { execute: async () => "found" };
+    const summTools = prismorTools({ lookup }, { agentName: "summarizer" });
+    const resTools = prismorTools({
+      ask_summarizer: { execute: async () => summTools.lookup.execute({}, { toolCallId: "s1" }) },
+    }, { agentName: "researcher" });
+    const mainTools = prismorTools({
+      ask_researcher: { execute: async () => resTools.ask_summarizer.execute({}, { toolCallId: "r1" }) },
+    }, { agentName: "support-bot" });
+    await mainTools.ask_researcher.execute({}, { toolCallId: "m1" });
+  });
+  const { root, ...sub } = requests.find((r) => r.body.tool_name === "lookup").body.subagent;
+  assert.equal(root, requests.find((r) => r.body.tool_name === "ask_researcher").body.session_id);
+  assert.deepEqual(sub, { id: "researcher:r1", type: "summarizer", parent: "researcher",
+                          depth: 2, chain: ["support-bot", "researcher"] });
+});
+
+test("langgraph js: a call inside an agent subgraph is a subagent; a lone ReAct agent is not", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const { prismorLangChainTool } = require("../dist/index.js");
+    const t = prismorLangChainTool({ name: "fetch_url", invoke: async () => "ok" });
+    // Shapes from a live @langchain/langgraph 1.5 run.
+    await t.invoke({ url: "a" }, { metadata: { langgraph_checkpoint_ns: "tools:84a9" } });
+    await t.invoke({ url: "b" }, { metadata: { langgraph_checkpoint_ns: "researcher:a730|tools:cd9a" } });
+  });
+  assert.equal(requests[0].body.subagent, undefined);
+  assert.deepEqual(requests[1].body.subagent, { id: "researcher:a730", type: "researcher" });
+});
+
+test("a tool listed in handoffs sends handoff_to", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ ask_researcher: { execute: async () => "ok" }, other: { execute: async () => "ok" } },
+      { agentName: "support-bot", handoffs: { ask_researcher: "researcher" } });
+    await tools.ask_researcher.execute({ q: "x" }, { toolCallId: "h1" });
+    await tools.other.execute({}, { toolCallId: "h2" });
+  });
+  assert.equal(requests[0].body.handoff_to, "researcher");
+  assert.equal(requests[1].body.handoff_to, undefined);
+});
+
+// ── Sessions: one per request, not one per process ──────────────────────────
+// Tools are wrapped once at module scope, so before useSession() every user's
+// calls on a long-running server shared the toolset's single session.
+
+test("one module-scope toolset, two concurrent requests: each request is its own session", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    const turn = (user) => useSubject(`user:${user}`, async () => {
+      await tools.a.execute({}, {});
+      await new Promise((r) => setTimeout(r, 5));
+      await tools.b.execute({}, {});
+    });
+    await Promise.all([turn("alice"), turn("bob")]);
+  });
+  const byUser = (u) => new Set(requests.filter((r) => r.body.subject === `user:${u}`).map((r) => r.body.session_id));
+  assert.equal(byUser("alice").size, 1, "alice's two calls share one session");
+  assert.equal(byUser("bob").size, 1, "bob's two calls share one session");
+  assert.notDeepEqual([...byUser("alice")], [...byUser("bob")], "alice and bob are different sessions");
+});
+
+test("useSession() groups calls under the caller's own conversation id, across tools", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    await useSession("chat:42", async () => {
+      await useSubject("user:alice", () => tools.a.execute({}, {}));  // an open session is kept
+      await tools.b.execute({}, {});
+    });
+  });
+  assert.deepEqual(requests.map((r) => r.body.session_id), ["chat:42", "chat:42"]);
+});
+
+test("outside any request scope a toolset keeps one session for all its tools", async () => {
+  const requests = [];
+  await withMockFetch(recordingFetch(requests), async () => {
+    const tools = prismorTools({ a: { execute: async () => "a" }, b: { execute: async () => "b" } });
+    await tools.a.execute({}, {});
+    await tools.b.execute({}, {});
+  });
+  assert.equal(new Set(requests.map((r) => r.body.session_id)).size, 1);
 });

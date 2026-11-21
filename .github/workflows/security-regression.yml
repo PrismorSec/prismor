@@ -5,8 +5,9 @@ name: Security regression
 # This is the CI gate behind the secret-cloaking and policy-enforcement layers.
 
 on:
+  # pull_request covers branches; pushing to every branch ran each check twice.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:
@@ -24,8 +25,9 @@ jobs:
         # receipt-schema tests actually run instead of skipping: they execute
         # the verifier published in docs/telemetry-receipts.md, which is how
         # that spec is kept honest. PyJWT is the [identity] extra, so the
-        # token-verification tests run rather than skip.
-        run: python3 -m pip install --quiet pytest cryptography "PyJWT[crypto]>=2.8"
+        # token-verification tests run rather than skip. jsonschema checks
+        # the published policy schema against the runtime settings.
+        run: python3 -m pip install --quiet pytest cryptography "PyJWT[crypto]>=2.8" jsonschema
       - name: Verify integration registry
         # Catches registry.yaml drift vs SURFACES/BLOCKING enums and matrix sync
         # (see TODO.md: verify_registry.sh in CI). Needs PyYAML for the YAML load path.
@@ -83,3 +85,19 @@ jobs:
           # The runner appends `exit $LASTEXITCODE` to every pwsh step, so the
           # blocked check's own exit 2 would fail the step it just satisfied.
           exit 0
+
+  inventory:
+    name: Inventory (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python -m pip install --quiet pytest pyyaml jsonschema
+      - name: Inventory suite
+        run: python -m pytest tests/inventory -q -p no:randomly

@@ -91,9 +91,9 @@ def test_callback_handler_blocks_on_tool_start(tmp_path):
 
 
 def test_callback_handler_captures_langgraph_node_as_subagent(tmp_path, monkeypatch):
-    """LangGraph stamps the executing graph node onto callback run metadata.
-    In a multi-agent StateGraph each node is a distinct agent, so this is that
-    framework's subagent identity — must flow into event metadata."""
+    """LangGraph stamps the graph path onto callback run metadata. A call
+    inside an agent subgraph is a subagent; the top-level graph (including a
+    single ReAct agent's "tools" node) is the main agent."""
     import prismor_langchain as pl
 
     captured = []
@@ -108,16 +108,24 @@ def test_callback_handler_captures_langgraph_node_as_subagent(tmp_path, monkeypa
     handler = PrismorCallbackHandler(mode="observe", workspace=tmp_path)
     # No LangGraph metadata: a plain single-agent call, no subagent.
     handler.on_tool_start({"name": "run_shell"}, "echo hi")
-    # Inside a LangGraph node named "researcher": attributed to that subagent.
+    # A single ReAct agent: its tool node is "tools", one graph level. Still the
+    # main agent (shapes captured from a live LangGraph 1.x run).
     handler.on_tool_start(
-        {"name": "run_shell"}, "echo hi",
-        run_id="run-1", metadata={"langgraph_node": "researcher"},
+        {"name": "run_shell"}, "echo hi", run_id="run-1",
+        metadata={"langgraph_node": "tools", "langgraph_checkpoint_ns": "tools:e3e2"},
+    )
+    # The "researcher" agent subgraph of a multi-agent graph: a subagent.
+    handler.on_tool_start(
+        {"name": "run_shell"}, "echo hi", run_id="run-2",
+        metadata={"langgraph_node": "tools",
+                  "langgraph_checkpoint_ns": "researcher:9933|tools:f019"},
     )
 
-    assert len(captured) == 2
+    assert len(captured) == 3
     assert captured[0]["metadata"]["subagent_type"] is None
-    assert captured[1]["metadata"]["subagent_type"] == "researcher"
-    assert captured[1]["metadata"]["subagent_id"] == "researcher-run-1"
+    assert captured[1]["metadata"]["subagent_type"] is None
+    assert captured[2]["metadata"]["subagent_type"] == "researcher"
+    assert captured[2]["metadata"]["subagent_id"] == "researcher:9933"
 
 
 def _write_iam(workspace: Path) -> None:
@@ -147,3 +155,62 @@ def test_use_subject_per_user_iam(tmp_path, monkeypatch):
 
     with use_subject("user:bob"), pytest.raises(PrismorBlocked):
         guarded[0].run(tool_input={"command": "ls -la"})
+
+
+def test_agent_served_over_mcp_is_a_handoff(tmp_path):
+    """langchain-mcp-adapters names a tool by the server's bare tool name; the
+    server is only in the call closure. An agent served over MCP is still checked."""
+    import yaml
+    from langchain_core.tools import StructuredTool
+
+    (tmp_path / ".prismor").mkdir()
+    (tmp_path / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({"settings": {"agent_connections": {
+        "mode": "enforce",
+        "agents": {"agt_claude": {"name": "claude", "aliases": ["mcp:claude"]}},
+        "allow": [{"from": "planner", "to": "claude"}],
+    }}}))
+
+    def mcp_tool(server_name):
+        async def call_tool(**arguments):  # closes over server_name, as langchain-mcp-adapters' does
+            return f"{server_name} ran", None
+        return StructuredTool(name="Agent", description="Run a subagent.", coroutine=call_tool,
+                              response_format="content_and_artifact",
+                              args_schema={"type": "object", "properties": {"prompt": {"type": "string"}}})
+
+    def call(name):
+        t = prismor_guard_tool(mcp_tool("claude"), workspace=tmp_path, agent="langchain", name=name, mode="enforce")
+        return asyncio.run(t.ainvoke({"prompt": "hi"}))
+
+    assert call("planner") == "claude ran"
+    blocked = call("researcher")
+    assert "Prismor blocked" in blocked and "researcher" in blocked and "claude" in blocked
+
+
+def test_async_tool_cancelled_when_authority_revoked(tmp_path, monkeypatch):
+    """#942: a running async tool is cancelled when a re-check now refuses it."""
+    import prismor_langchain as plc
+    from prismor.runtime import inflight
+    from prismor.runtime.runtime import Decision
+
+    state = {"allow": True}
+
+    def recheck(resource=None):
+        return Decision(allow=True) if state["allow"] else Decision(
+            allow=False, blocking={"action": "block", "ruleId": "org-paused"}, reason="agent paused")
+
+    monkeypatch.setattr(plc, "evaluate_tool_call", lambda **k: Decision(allow=True, recheck=recheck))
+    monkeypatch.setattr(inflight, "interval", lambda: 0.05)
+    ran_to_end = []
+
+    @tool
+    async def freeze_account(account: str) -> str:
+        """Freeze an account."""
+        state["allow"] = False  # the console pauses the agent while this runs
+        await asyncio.sleep(2)
+        ran_to_end.append(account)
+        return "frozen"
+
+    guarded = guard_tools([freeze_account], workspace=tmp_path, mode="enforce")
+    out = asyncio.run(guarded[0].ainvoke({"account": "ACC-1"}))
+    assert "cancelled_in_flight" in out and "agent paused" in out
+    assert not ran_to_end

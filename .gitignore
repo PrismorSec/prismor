@@ -54,3 +54,9 @@ assets/*
 experiments/*
 .agents/*node_modules/
 node_modules/
+
+# Filled-in compose env: enrollment and SIEM tokens (the .example is the template)
+packaging/docker/prismor.env
+
+# testscope dependency map (pytest --testscope-record)
+.testscope/

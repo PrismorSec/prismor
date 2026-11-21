@@ -9,7 +9,7 @@
   <a href="https://discord.gg/FH2PRX754c"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
 <h3 align="center">Runtime security for Claude Code, Codex, Langchain and other AI agents frameworks/harness.</h3>
-Prismor is highly customizable based on user's own policies. Observe or enforce mode to see agent activity in a local self-serve dashboard</h4>
+Prismor is highly customizable based on user's own policies. Observe or enforce mode to see and control agent activity in a local self-serve dashboard</h4>
 
 
 
@@ -35,7 +35,7 @@ Prismor is highly customizable based on user's own policies. Observe or enforce 
 
 ---
 <p align="center">
-  <img src="assets/readme-demo.gif" width="90%" alt="Prismor demo"/>
+  <img src="assets/readme-demo.gif" width="90%" alt="Prismor demo: pip install prismor, prismor setup, then the dashboard's overview, sessions, extensions and MCP servers views"/>
 </p>
 
 ---
@@ -76,20 +76,25 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - 🛡️ [Prismor](docs/prismor-runtime.md) covers the policy engine, session logs, security audit, and CLI reference
 - 📦 [Supply Chain](docs/supply-chain.md) covers install-time enforcement, IOC matching, and risk scoring
 - 🛜 [Network Isolation](docs/network-isolation.md) covers policy-driven egress control, raw IP detection, and tunnel blocking
+- 🧱 [Sandbox](docs/sandbox.md) runs every allowed shell command under macOS's own sandbox (Seatbelt) with `prismor sandbox on`: writes held to the project, credential stores hidden, git hooks and agent config locked, and the network held to your egress allowlist, for the command and everything it starts, such as a package's postinstall script
 - 🔍 [Skill Scanner](docs/skill-scanner.md) covers MCP server and skill risk scanning across supported agents
 - 🚦 [MCP Guardrails](docs/prismor-runtime.md#custom-guardrails-for-mcp-tools) let you block a specific MCP server or tool, or require human approval before the agent calls it, with a policy rule you write yourself
 - 🛰️ [MCP Gateway](docs/mcp-gateway.md) is a single MCP connector that fronts every other MCP server you use — each `tools/call` is policy-evaluated before it forwards and each response is injection-scanned before the model sees it, so a poisoned tool result never becomes context. `prismor mcp-gateway install` moves an existing `.mcp.json` behind it
+- 🧹 [MCP Memory](docs/shadow-discovery.md) shows what your MCP servers cost: every agent session starts its own copy of each server in your user-level config, so `prismor discover mcp` lists running copies, memory and how many sessions used each one this week. `--prune` removes the ones nobody uses from the user-level config, `--stop` ends their running copies, and the gateway's `--idle-timeout` stops the ones you keep between calls. On one Mac this ended 373 copies and freed 21 GB of swap
 - 🧭 [Prompt Guardrails](docs/prompt-guardrails.md) add plain-language rules to the agent's context, such as "never push to main", set per agent in the console and tuned per session; a running session picks up an edit on its next prompt
 - 🛤️ [LLM Proxy](docs/llm-proxy.md) governs an agent Prismor cannot hook, through the one thing every agent has: its model traffic. Point it at `prismor proxy` with `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or the Google Gen AI SDK's `HttpOptions(base_url=...)` and nothing else about the agent changes. Every tool call the model *proposes* — Anthropic `tool_use`, OpenAI `tool_calls`, Gemini `functionCall` — is reshaped into the same event a `Bash` hook produces and judged by the same rule, with streamed calls held until they can be judged
 - [Claude Inference Hooks](docs/inference-hook.md) makes Prismor the AI security server behind Claude Enterprise: Anthropic sends every governed prompt from claude.ai, Claude Code and Cowork to `prismor inference-hook serve`, which runs your policy on the transcript and answers allow/deny before the model runs — signed requests (Standard Webhooks), fail-closed, shadow mode, nothing to install on user devices. `prismor inference-hook test` sends signed sample frames to check the wiring
+- [Microsoft Copilot Studio](docs/copilot-studio.md) makes Prismor an external threat detection provider for Copilot Studio agents: before each tool a generative-orchestration agent runs, Copilot Studio sends the planned call and the outputs of earlier tools to the eval-server, which answers block or allow within the one-second window. Entra ID token auth, fail-closed on timeout
 - 🏷️ [Tool Tags](docs/tool-tags.md) classify tools by capability (read, write, network, exec) so a rule can say "nothing that reads private data may also reach the network" instead of naming every tool one by one — MCP tools self-declare via `_meta`, and `prismor tags` lists, tests, and lints the rule expressions
+- 📜 [Tool Contracts](docs/tool-contracts.md) add what tags cannot say: what a tool's result does to the session (reading the private `acme/billing` repo narrows who may see it) and what a call requires of it (a public issue needs an unrestricted audience), by argument, with a label that only ever narrows and follows files between agents
 - 🔐 [Sweep and Cloak](docs/sweep-and-cloak.md) covers secret prevention at tool boundaries, practical setup, best practices, threat model, and cleanup for leaked secrets
 - 🦞 [OpenClaw Integration](docs/openclaw.md) covers the OpenClaw plugin that screens every tool call, and project or global setup
 - 🤖 [Hermes Agent Integration](docs/hermes.md) covers the Hermes policy plugin, secret cloaking (decloak at execution, output scrubbing, paste guard) and how Hermes enables plugins
 - ☁️ [Hosted Agent VMs](docs/cloud-agents.md) governs agents that run on a machine you never log into (Claude Code on the web, Cursor cloud agents, Copilot coding agent, OpenHands Cloud, Codex cloud, Replicas): the platform's setup script installs the binary, and `install-hooks --portable` writes a hook config that is safe to commit
 - 🧠 [Semantic Guard](docs/semantic-guard.md): opt-in hybrid layer that adds an LLM-assisted intent check for paraphrased prompt-injection attempts the regex rules cannot catch
 - 🚧 [Data Boundary](docs/data-boundary.md) decides what may be sent where: real emails, phones, SSNs, cards, IBANs and secrets are screened against the destination's trust tier, so an agent following a third-party setup guide can't ship your data to a service you never approved
-- 🧑‍🤝‍🧑 [Subagents](docs/subagents.md) enforces the same policy inside Claude Code subagents, refuses approval prompts a background subagent can't ask for, and tells you in one line what happened inside each one
+- 👤 [PII detection](docs/pii.md) is an optional Presidio pass for names, places and NHS numbers the regex rules do not see. It is off by default (`pip install "prismor[pii]"`), so the hook path stays on the regex budget
+- 🧑‍🤝‍🧑 [Subagents](docs/subagents.md) enforces the same policy inside Claude Code subagents, refuses approval prompts a background subagent can't ask for, and tells you in one line what happened inside each one. [Limiting subagents](docs/subagent-limits.md) caps how many an agent launches, lets a delegation expire, and screens what a subagent is handed
 - 🔎 [Dev Insights](docs/dev-insights.md): `prismor rca`, `blame`, `friction` and `session --changes` answer where an agent run went wrong, who wrote a line, and what agents keep tripping over
 - ⏸️ [Pause and Login](docs/pause-and-login.md): `prismor pause` stops blocking without going dark; `prismor login` connects the hosted judge
 - 🪤 [Canary](docs/canary.md) plants honeytoken credential files that trip a CRITICAL finding the moment an agent reads them, catching recon behavior
@@ -100,7 +105,7 @@ For the Skill, curl, and git-clone alternatives, plus PEP 668 systems and secret
 - ⚖️ [Layered Policy & Exemptions](docs/policy-layers-and-exemptions.md) covers per-rule observe/enforce, the non-overridable floor, and admin-granted, time-boxed exemptions across org / project / repo layers
 - 🔐 [Explicit enforce selection & the unlock window](docs/cli-reference.md#choosing-what-blocks) — enforce setup starts with nothing blocking and you pick the set; `prismor allow` makes narrow exceptions, and `prismor unlock` opens a password-gated, time-boxed window in which an agent may edit policy (never the self-protection rules that guard Prismor itself)
 - 📡 [Live Telemetry](docs/live-telemetry.md) covers the optional enterprise control-plane link — device enrollment, signed remote policy, and redacted telemetry streamed to a self-hosted org dashboard
-- 🔌 [Telemetry Sinks](docs/telemetry-sinks.md) forward every finding to what you already run — an OpenTelemetry collector (OTLP/HTTP logs), Splunk HEC, Datadog, syslog, a webhook, or a local file in JSON/CEF/OCSF — dispatched before the blocking decision and never able to stall a tool call
+- 🔌 [Telemetry Sinks](docs/telemetry-sinks.md) forward every finding to what you already run — an OpenTelemetry collector (OTLP/HTTP logs), Splunk HEC, Microsoft Sentinel, Datadog, Elasticsearch/OpenSearch, an S3 bucket, syslog, a webhook, or a local file in JSON/CEF/OCSF — dispatched before the blocking decision and never able to stall a tool call
 - 📊 [Dashboard](docs/dashboard.md) covers the terminal and local web dashboards plus session forensics, with `prismor tokens` breaking down where a session's context and token spend actually went
 - 🩺 [Health and Recovery](docs/cli-reference.md) — `prismor doctor` health-checks every subsystem (hooks, policy signature, enrollment, telemetry sink, chain state), and `prismor pause` / `pause-hard` suspends *enforcement only* for a human during an incident while observe-mode logging keeps running
 - 🧾 [Signed Audit Trail](docs/audit-trail.md) hash-chains and Ed25519-signs every agent action locally, so `prismor trail verify` proves the history hasn't been edited, deleted, or rewritten
@@ -216,7 +221,7 @@ subgraph EVAL["Stage 2  ·  Evaluated before the call executes"]
     direction TB
     D(["<b>Tool-call dispatcher</b>"])
     P["<b>Policy engine</b><br/>YAML rules · per-rule observe / enforce<br/>layered org → project → repo · non-overridable floor"]
-    CHK["<b>Pre-execution checks</b><br/>Semantic guard · Egress control · MCP guardrails · Tool tags<br/>IAM and agent controls · Scoped session rules<br/>Script-content inspection · Docker sandbox"]
+    CHK["<b>Pre-execution checks</b><br/>Semantic guard · Egress control · MCP guardrails · Tool tags<br/>IAM and agent controls · Scoped session rules<br/>Script-content inspection · OS sandbox"]
     SEC["<b>Secret and supply-chain protection</b><br/>Cloak placeholders + output scrub · Env guard · Sweep<br/>Canary tripwires · Skill scanner<br/>Supply-chain scoring → npm · pip · cargo · go"]
 end
 
@@ -303,7 +308,7 @@ Three modules from [Capabilities](#capabilities), with setup, output, and result
 
 ### Hybrid Semantic Prompt-Injection Defense<a name="hybrid-semantic-prompt-injection-defense" />
 
-Regex rules catch known injection shapes. The semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to an LLM judge that owns the verdict either way — it confirms paraphrased attacks the regex only half-saw and clears benign text that tripped an authority-claim signal. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex.
+Regex rules catch known injection shapes. The semantic guard adds an intent-aware layer: a heuristic pre-screen handles clear-cut cases in <1 ms, and uncertain inputs escalate to an LLM judge that owns the verdict either way — it confirms paraphrased attacks the regex only half-saw and clears benign text that tripped an authority-claim signal. Tested across 800+ cases — **+30% recall** with no added false positives, including paraphrased and in-file injections that bypass regex. (Measured outside the repo with the LLM judge; that corpus is not checked in. `python3 scripts/bench_policy.py` reproduces the deterministic layers on the in-repo corpus; see [docs/residual-risk.md](docs/residual-risk.md).)
 
 ![Semantic Guard Results](assets/semantic-guard-results.png)
 
@@ -336,6 +341,10 @@ prismor dashboard            # opens http://127.0.0.1:7070 in your browser
 prismor dashboard --port 8080
 prismor dashboard --no-open  # headless server only (was: prismor serve)
 ```
+
+Prefer the terminal? `prismor traces` browses the same sessions without a
+browser: their event timelines with findings marked, token cost, and each
+event in full.
 
 Sessions, findings, threat categories, agent breakdowns, and a live event feed - all from local workspace DBs. No cloud.
 
@@ -423,7 +432,7 @@ This does **not** affect policy rules set to `mode: enforce` in `.prismor/policy
 
 ### 3. Clear a session's scoped-agent rules
 
-[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`** — a tool in `deny_tools` is hardcoded to `action: block` / `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it blocks even when hooks are installed with `--mode observe`. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
+[Scoped Agent](docs/scoped-agent.md) synthesizes a per-session `allowed_tools`/`deny_tools` list at `.prismor/scoped/{session_id}.json`. **This check is independent of hook `--mode`** — a scope finding is hardcoded to `mode: enforce` in `prismor/runtime/scoped_agent.py`, so it applies even when hooks are installed with `--mode observe`. A call outside a *synthesized* scope is `action: step_up` (the agent asks you inline; surfaces that cannot ask refuse it); a scope you edited by hand blocks. Uninstalling hooks or switching to observe mode will not lift a scoped denial.
 
 ```bash
 prismor scope list                    # find the session ID
@@ -433,16 +442,6 @@ prismor scope edit ID                 # or hand-edit deny_tools in $EDITOR
 ```
 
 There's no bulk-clear — each session is cleared by ID individually. If a session was scoped before you ran `scope clear`, the cleanest fix is usually to start a fresh session rather than chase the existing one's cached state.
-
----
-
-## Benchmarks<a name="benchmarks" />
-
-Measured overhead is 0.8 ms per tool call across 10,000 simulated agent sessions, below the 1 ms threshold for every task category tested.
-
-![Prismor Simulation Results](assets/prismor-simulation.png)
-
-See [benchmark.md](benchmark.md) for the full methodology, per-category breakdown, and latency analysis.
 
 ---
 
@@ -458,6 +457,8 @@ The short version:
 - Open an issue first if you're unsure where something fits
 
 By participating you agree to the [Code of Conduct](./CODE_OF_CONDUCT.md).
+
+Found a vulnerability? Report it privately as described in [SECURITY.md](./SECURITY.md), not in a public issue.
 
 ---
 

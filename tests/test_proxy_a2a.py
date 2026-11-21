@@ -127,3 +127,95 @@ def test_unvaulted_vendor_key_in_a2a_datapart_is_masked(tmp_path):
         sent = copy.deepcopy(body)
         proxy_mod._mask_in_place(sent, screen.redact)
         assert key not in json.dumps(sent), mode
+
+
+# -- agent connections on the live lane ---------------------------------------------
+
+def _live(tmp_path, monkeypatch, agent_name, upstream_status=200):
+    """A proxy (enforce, real policy) in front of one fake A2A agent; returns (url, hits, close)."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import yaml
+    hits = []
+
+    class Agent(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            hits.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            body = json.dumps({"jsonrpc": "2.0", "id": "req-1", "result": {}}).encode()
+            self.send_response(upstream_status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    upstream = HTTPServer(("127.0.0.1", 0), Agent)
+    agent_url = f"http://127.0.0.1:{upstream.server_port}"
+    ws = tmp_path / "ws"
+    (ws / ".prismor").mkdir(parents=True)
+    (ws / ".prismor" / "policy.yaml").write_text(yaml.safe_dump({"settings": {"agent_connections": {
+        "mode": "enforce",
+        "agents": {"agt_deploy": {"name": "deploy-bot", "aliases": [f"a2a:{agent_url}"]},
+                   "agt_planner": {"name": "planner"}},
+        "allow": [{"from": "planner", "to": "deploy-bot"}]}}}))
+    monkeypatch.setattr(proxy_mod.ProxyHandler, "config", proxy_mod.ProxyConfig({"upstreams": {
+        "a2a": {"base_url": agent_url, "fallback": ["spare"]}, "spare": {"base_url": agent_url}}}))
+    monkeypatch.setattr(proxy_mod.ProxyHandler, "screen",
+                        Screen(workspace=ws, mode="enforce", session_id="live", agent_name=agent_name))
+    proxy = proxy_mod._ThreadingHTTPServer(("127.0.0.1", 0), proxy_mod.ProxyHandler)
+    for srv in (upstream, proxy):
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def close():
+        for srv in (upstream, proxy):
+            srv.shutdown()
+            srv.server_close()
+    return f"http://127.0.0.1:{proxy.server_port}", hits, close
+
+
+def _post(url, body):
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url + "/", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
+
+
+def test_a2a_task_methods_need_a_connection_too(tmp_path, monkeypatch):
+    url, hits, close = _live(tmp_path, monkeypatch, "research-crawler")
+    try:
+        for method in ("tasks/get", "tasks/cancel", "tasks/pushNotificationConfig/set"):
+            status, body = _post(url, {"jsonrpc": "2.0", "id": "req-1", "method": method, "params": {"id": "t1"}})
+            assert "no connection policy" in json.dumps(body), method
+        assert not hits
+    finally:
+        close()
+
+
+def test_a2a_caller_header_names_the_agent_not_the_upstream_key(tmp_path, monkeypatch):
+    from prismor.runtime import agent_connections as ac
+    signed = []
+    monkeypatch.setattr(ac, "sign_caller", lambda src, dst, *a, **k: signed.append((src, dst)) or None)
+    url, hits, close = _live(tmp_path, monkeypatch, "planner")
+    try:
+        status, _ = _post(url, {"jsonrpc": "2.0", "id": "req-1", "method": "tasks/get", "params": {"id": "t1"}})
+        assert status == 200 and hits
+        assert signed == [("planner", "agt_deploy")]
+    finally:
+        close()
+
+
+def test_a2a_upstream_5xx_is_relayed_not_swallowed(tmp_path, monkeypatch):
+    url, hits, close = _live(tmp_path, monkeypatch, "planner", upstream_status=503)
+    try:
+        status, body = _post(url, {"jsonrpc": "2.0", "id": "req-1", "method": "tasks/get", "params": {"id": "t1"}})
+        assert status == 503 and len(hits) == 1 and "all upstreams failed" not in json.dumps(body)
+    finally:
+        close()

@@ -57,10 +57,13 @@ lives in the proprietary control plane.
 ```
 prismor enroll <TOKEN>
 prismor enroll --token <TOKEN> --label "ci-runner-3" --api-base https://prismor.dev
+prismor enroll --token-file /path/to/token          # or: PRISMOR_ENROLL_TOKEN=<TOKEN> prismor enroll
 ```
 
 - **Token:** a one-time enrollment token from the dashboard (Admin → Devices →
-  Enroll), exchanged exactly once.
+  Enroll), exchanged exactly once. Use `--token-file` or
+  `PRISMOR_ENROLL_TOKEN` for a fleet token so it never shows up in `ps` or
+  shell history; the MDM packages pass it this way.
 - **What happens:** `identity.enroll()` POSTs `{token, label, platform,
   prismor_version}` to `/api/devices/enroll`; the server returns `device_id`,
   `org_id`, `user_id`, `device_key`, `org_name`.
@@ -81,7 +84,7 @@ rebuild.
 
 A deployed agent — a container, a serverless worker — has no machine to
 enroll. Instead an org admin mints an **agent key** in the dashboard
-(Connections → “SDK & deployed agents”, or Devices → Service identities) and
+(Connections → “SDK & deployed agents”, or Devices → Agent keys) and
 wires it into the deployment:
 
 ```
@@ -139,7 +142,7 @@ records via `telemetry.build_record()` and runs `assert_redacted()` before uploa
 - **Redacted mode (default):** metadata + enums + hashes only — severity,
   category, rule_id, event type, agent, verdict, a *static* rule title
   (paths/hosts/URLs/secrets stripped), a 16-char `evidence_hash`, tool_name,
-  managed-repo context, policy_scope, the policy layer that decided the mode (`policy_layer`: builtin, local, project, org, device or repo_exemption), the applied org policy version + profile id, device_id, session_id, subject (principal
+  managed-repo context, policy_scope, the policy layer that decided the mode (`policy_layer`: builtin, local, project, org, device or repo_exemption), on a session-scope finding who drew the scope (`scope_origin`: llm, static or operator), the applied org policy version + profile id, device_id, session_id, subject (principal
   ids), and the deployment labels `environment` / `release` (below). **Never sent:** commands, stdout/stderr, file paths, URLs, file contents,
   prompts, responses, payloads, matched evidence.
 - **Full capture (admin opt-in, per-org):** additionally ships evidence/content,

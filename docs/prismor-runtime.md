@@ -45,9 +45,50 @@ Commit the policy file to share rules across your team. CI picks it up automatic
 | `block`        | Deny the action — the default enforcement outcome.                                                                                                  |
 | `warn` / `log` | Surface the finding; the action still proceeds.                                                                                                     |
 | `step_up`      | Require inline human approval — Claude and Copilot emit an "ask" prompt. Surfaces without an approval prompt fail closed to `block`.                 |
-| `modify`       | Rewrite the tool input via a named `transform:` (e.g. `transform: sandbox` runs the command in the Docker sandbox). Surfaces that can't rewrite input fail closed to `block`. |
+| `modify`       | Rewrite the tool input via a named `transform:` (e.g. `transform: sandbox` runs the command under the [Prismor sandbox](sandbox.md)). Surfaces that can't rewrite input fail closed to `block`. |
+
+| `instruct`     | Allow the action and send the rule's `guidance:` to the agent before the tool runs. Never blocks. |
 
 Any verdict a surface cannot honor fails closed to a block, never a silent allow. `defer` is reserved (accepted by the validator, not yet emitted).
+
+### Telling the agent what to do instead
+
+`guidance:` is optional text on any rule. When the rule blocks, it is added to the reason the agent sees as `Instead: <guidance>`, so the agent can retry the safe way. The retry is checked against your policy like any other call.
+
+```yaml
+rules:
+  - id: no-force-push
+    severity: HIGH
+    category: change_control
+    title: Force push
+    event_types: [shell]
+    fields: [command]
+    patterns: ['\bgit\s+push\b.*\s--force\b(?!-with-lease)']
+    action: block
+    guidance: "use `git push --force-with-lease` so you cannot overwrite work you have not seen"
+
+  - id: prefer-trash
+    severity: LOW
+    category: hygiene
+    title: rm -r in the project
+    event_types: [shell]
+    fields: [command]
+    patterns: ['\brm\s+-[a-zA-Z]*r']
+    action: instruct
+    guidance: "next time, use `trash <path>` so the files can be restored"
+```
+
+An `instruct` rule needs `guidance:`. Its findings always resolve to observe, so it never blocks, and it cannot soften a block: if another rule blocks or asks for approval on the same call, that verdict wins and no guidance is sent. Telemetry records the finding as observed, with the text in a `guidance` field.
+
+Where the guidance goes:
+
+- Claude Code: `hookSpecificOutput.additionalContext` on PreToolUse. The call still goes through the normal permission prompt.
+- Other agents: their PreToolUse hook output has no verified way to add context. The call is allowed and the guidance is written to the hook's stderr log line.
+- SDK adapters, the MCP gateway and the proxy: the call is allowed; the guidance is on the finding only.
+
+Several default rules carry `guidance:` (for example `destructive-command`, `remote-execution`, `lockfile-deletion`). Overriding a rule by id in your project policy can replace that text.
+
+A rule cannot rewrite the command into a safer one by itself. Use `action: modify` with a named `transform:` for that.
 
 ### Custom guardrails for MCP tools
 
@@ -90,7 +131,7 @@ With no `fields:`, a rule matches the full `mcp__server__tool` tag, which is wha
 | `mcp_args`         | The serialized call arguments on either transport. Matches the pre-call only, never the tool's output.             |
 | `outbound_payload` | The raw remote-transport form of the arguments. Prefer `mcp_args` unless you want to match remote calls only.       |
 
-`action` decides what happens when a pattern hits. `block` denies the call, `step_up` asks a human, and `warn`/`log` record the call and let it through. A rule needs `mode: enforce` to gate anything; in observe mode every rule only logs.
+`action` decides what happens when a pattern hits. `block` denies the call, `step_up` asks a human, and `warn`/`log` record the call and let it through. A rule needs `mode: enforce` to gate anything; in observe mode every rule only logs. A rule you write with `action: warn` keeps reporting even under `default_mode: enforce`; give the rule its own `mode: enforce` if it should block.
 
 #### What it doesn't cover yet
 
@@ -119,6 +160,161 @@ See [`prismor/runtime/default_policy.yaml`](../prismor/runtime/default_policy.ya
 | Skill secret access       | HIGH     | Flags skills referencing `.env`, `.ssh/id_rsa`, `.aws/credentials` |
 | Skill overpermission      | MEDIUM   | Flags skills requesting wildcard filesystem or network access      |
 
+## Per-identity rate limits
+
+An optional SQLite-backed admission gate limits live tool-call attempts in an
+exact rolling 60-second window. Configure a workspace policy:
+
+```yaml
+version: "1.0"
+settings:
+  rate_limit:
+    requests_per_minute: 120
+    max_burst: 10
+rules:
+  - id: rate-limit-exceeded
+    mode: enforce
+  - id: rate-limit-unavailable
+    mode: enforce
+```
+
+Capacity is the sum: this example admits at most 130 attempts in any rolling
+minute, including an instantaneous burst of 130. `max_burst` defaults to zero;
+the minute limit must be a positive integer. Omit `rate_limit` to disable
+accounting. Modes follow the existing policy rules; use `observe` to report
+would-be denials before enforcing. An unavailable store/configuration reports
+`rate-limit-unavailable` and blocks when that rule is enforced.
+
+The quota is scoped to the canonical workspace, trusted principal (when
+verified), and host-configured agent identity. It spans sessions and processes
+sharing `$PRISMOR_HOME/prismor.db`. Unverified principal strings share a fallback
+bucket for that agent. The eval-server uses its configured workspace and fixed
+integration identity for accounting, even when a request selects another
+workspace or supplies another agent/session/user label. Its Prismor and AuthZEN
+evaluation routes share that quota. It applies the server's enforced rate rules
+regardless of a request's observe flag. A verified
+principal can have its own quota. This is local accounting, not a distributed
+cross-device quota, and is not a substitute for authenticating HTTP callers.
+Quota identity verification and exemptions use the server's own policy, even
+when the selected action workspace has different identity settings. Only the
+quota owner's policy or dashboard decisions can grant an exception. Asserted
+usernames and request-selected agent/session labels cannot select one.
+The server's quota sinks receive rate findings even if another action workspace
+selects different sinks. Additional owner reports contain quota metadata, not
+that workspace's tool arguments or command. Identical sink configurations
+receive one report.
+
+Quota reservation, expiry pruning, duplicate lookup and counting run in one
+SQLite write transaction with a 100 ms lock timeout. Accounting stores only
+workspace, identity/call fingerprints and timestamps. Lock contention beyond
+that timeout produces `rate-limit-unavailable` and follows its rule mode.
+Denied retries add no admission rows; ordinary findings/audit retention still
+applies. Expired rows
+for inactive identities are removed on subsequent writes. A later rejection by
+another guard does not refund an admission. A persisted clock high-water mark
+prevents clock rollback from freeing slots; forward wall-clock changes expire
+entries normally. Restarting the process does not reset usage.
+Invalid persisted clock values and commit, rollback or close failures produce
+an unavailable result. Session-log failures do not stop policy/rate evaluation;
+the current event is still checked, with whatever history remains readable.
+
+Local hook deliveries with the same host-issued call id and input share a
+reservation, while still re-evaluating policy. Calls without a trustworthy id
+count separately. Arbitrary HTTP ids do not waive accounting. Pre-action tool
+calls through local hooks, SDKs, MCP and the proxy count; local post-tool events,
+prompts, checks, discovery probes, historical analysis and transcript replay do not.
+The Copilot Studio channel counts its current planned tool, not prior transcript
+events. Inference-hook and ChatGPT-log transcript replay reserve no slots.
+An HTTP evaluation request is a live admission request even if its supplied
+event claims to be a prompt or post-action event; result redaction uses the
+separate `/v1/redact` endpoint and consumes no tool-call quota.
+With `PRISMOR_EVAL_URL`, accounting belongs to that evaluator: requests sent to
+its evaluation endpoint count there, including remotely forwarded inspections.
+Clients cannot request an accounting exemption through event/body fields.
+
+```bash
+prismor rate status
+prismor rate status --workspace /path/to/project --json
+```
+
+Status reads existing accounting without creating a database, reserving a slot
+or pruning. It reports configured capacity, rule modes, policy layer, active
+identity fingerprints, usage, remaining slots and retry timing. When a lowered
+limit requires several reservations to expire, retry timing accounts for all
+of them. `rate-limit-exceeded` and `rate-limit-unavailable` appear as standard
+`rate_limit` findings in sessions, the dashboard and configured sinks. Wait for
+capacity or ask the operator to review policy; changing session ids does not
+reset quota. The internal `rate_limit` policy event and `rate.*` conditions are
+populated by the live gate; supplied event metadata cannot manufacture them.
+
+## Allowed models and spend budgets
+
+Two optional settings cap what agents may use and spend. Configure a workspace
+policy:
+
+```yaml
+version: "1.0"
+settings:
+  models:
+    allow: ["claude-sonnet-*", "gpt-5*"]   # absent = every model
+    deny: ["*opus*"]                       # deny wins over allow
+  spend_budgets:
+    - {scope: session, usd: 5}                               # each session
+    - {scope: agent, usd: 50, period: daily}                 # each agent
+    - {scope: agent, usd: 10, period: daily, match: ci-bot}  # one agent
+    - {scope: user, usd: 200, period: monthly}               # each user
+    - {scope: device, usd: 500, period: monthly}             # this machine
+rules:
+  - id: model-not-allowed
+    mode: enforce
+  - id: spend-budget-exceeded
+    mode: enforce
+  - id: spend-budget-unavailable
+    mode: enforce
+```
+
+Model globs match the model id as sent and its normalized name
+(`anthropic/claude-sonnet-4-5` and `claude-sonnet-4-5[1m]` both match
+`claude-sonnet-*`).
+
+A budget is per seat, not a shared pool: `scope: user` gives every user their
+own cap. `period` is `daily`, `weekly` (from Monday) or `monthly` (the default).
+Periods reset at 00:00 UTC. A session budget covers the whole session. `usd: 0`
+blocks every call. When several budgets apply, the one closest to its cap is
+reported.
+
+| Scope | Counts the spend of |
+| --- | --- |
+| `session` | The current session. |
+| `agent` | The agent name (for example `claude-code`, or the proxy's `--agent-name`). |
+| `user` | The verified user, or the proxy virtual key's `subject`. With neither, the device's spend. |
+| `device` | Every agent on this machine (`$PRISMOR_HOME/prismor.db`). |
+
+Spend comes from the same token store as `prismor sessions` cost. A
+provider-reported cost is used first, then the list price. A model with no
+known price is counted at $5 / $25 per million input/output tokens, so it is
+never free.
+
+Where each check runs:
+
+- **LLM proxy.** It checks each request before the request goes to the
+  provider. In enforce mode the proxy refuses the request (403) with the reason.
+- **Hooks.** They check before each tool call and each prompt. A turn is priced
+  only when it ends, so a budget that a turn crosses blocks the next call, not
+  the turn itself. Hooks do not see the model on each call, so the model check
+  uses the model that the session's last turn used.
+
+```bash
+prismor spend status
+prismor spend status --workspace /path/to/project --agent ci-bot --json
+```
+
+Status lists each budget with this device's spend and the rule modes. The
+dashboard Logs page shows spend today and this month, each budget's use, and
+per model the requests, tokens, cost and median latency (proxy calls only).
+An invalid `models` or `spend_budgets` value is dropped. It then reports
+`spend-budget-unavailable` and does not pass calls without a check.
+
 ## Semantic Guard
 
 The regex rules above catch injection attempts that match known patterns. The semantic guard adds a second layer for paraphrased, social-engineered, and in-content injections.
@@ -135,6 +331,20 @@ settings:
 The hybrid mode (default) uses a local Claude Code CLI subagent for intent disambiguation — no API key needed. The heuristic pre-screen runs in under a millisecond; the LLM is only called for the uncertain zone.
 
 See [docs/semantic-guard.md](semantic-guard.md) for the full setup guide, configuration reference, and agent-specific instructions.
+
+## PII detection (Presidio)
+
+The `pii-exposure` rule matches formatted SSNs, card numbers and US phone numbers. Names, places and NHS numbers need a different detector. `settings.pii` is that detector: Microsoft Presidio, off unless you enable it, installed with `pip install "prismor[pii]"`. A missing install falls back to the regex detector. Findings use the `pii_exposure` category and never store the raw value.
+
+```yaml
+# .prismor/policy.yaml
+settings:
+  pii:
+    enabled: true
+    action: observe
+```
+
+See [PII detection](pii.md) for entities, redact/block, mask styles and the latency cost. The default hook path does not load the model.
 
 ## Session Logs
 

@@ -1,7 +1,9 @@
 # Mastra (TypeScript) integration
 
+> Published as `@prismor/mastra` from 0.2.0. Version 0.1.0 was published as `prismor-mastra`, which is deprecated; replace it with `npm install @prismor/mastra` and update the import path. The API is unchanged.
+
 Prismor adapter for **Mastra**. This is a genuinely separate npm package —
-`prismor-mastra` — since a Python wheel can't bundle TypeScript. Source
+`@prismor/mastra` — since a Python wheel can't bundle TypeScript. Source
 lives at [`adapters/mastra/`](../adapters/mastra/).
 Registry entry: `id: mastra` in
 [`prismor/runtime/integrations/registry.yaml`](../prismor/runtime/integrations/registry.yaml).
@@ -28,7 +30,7 @@ thrown error genuinely prevents the tool body from running.
 ## Install
 
 ```bash
-npm install prismor-mastra
+npm install @prismor/mastra
 ```
 
 Start the eval-server once, alongside your app:
@@ -52,7 +54,7 @@ Without a key the eval-server still enforces your local policy but reports nothi
 ```ts
 import { Agent } from "@mastra/core/agent";
 import { openai } from "@ai-sdk/openai";
-import { prismorTool } from "prismor-mastra";
+import { prismorTool } from "@prismor/mastra";
 
 const guardedRunShell = prismorTool("run_shell", runShell, {
   mode: "enforce",

@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from prismor.runtime.cloaking.encoded import variants
 from prismor.runtime.cloaking.secrets_store import secrets_dir
 
 # Escape form: a backslash before the colon (``@@SECRET\:name@@``) is not a
@@ -29,6 +30,50 @@ _READER_UTILS = frozenset({
     "rg", "ag", "base64", "xxd", "od", "hexdump", "strings", "nl", "tac",
     "sort", "uniq", "awk", "sed", "cut", "source", ".",
 })
+
+
+# The two shapes decloak.sh rewrites a Bash command into (see `wrapped=` there).
+# The scrubber tail carries PRISMOR_CLOAK_SESSION since #849; older hooks omit it.
+# A quoted word from `printf %q` is backslash escapes or a $'...' string.
+_Q = r"(?:\$'(?:\\.|[^'\\])*'|(?:\\.|[^\s\\])+)"
+_DECLOAK_TAIL_RE = re.compile(
+    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r"(?: PRISMOR_CLOAK_SESSION=(?:''|" + _Q + r"))? "
+    + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
+_DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)  # before the eval form
+_DECLOAK_EVAL_RE = re.compile(
+    r"\A\{ __prismor_cmd=(" + _Q + r"); eval \"\$__prismor_cmd\"\$'\\n'; \}\Z", re.DOTALL)
+_DECLOAK_RESOLVE_RE = re.compile(
+    r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _Q + r"decloak-exec\.sh\Z",
+    re.DOTALL)
+
+
+def unwrap_decloak(command: str) -> str:
+    """The command the agent asked for, if ``command`` is decloak.sh's rewrite of it.
+
+    The rewritten form names the vault directory and Prismor's own scripts,
+    so rules judging it flagged Prismor's plumbing (the vault guard fired on
+    every cloaked Bash call recorded after it ran). Anything that is not
+    exactly that wrapper comes back unchanged, and the inner command is still
+    judged in full, so spelling out a fake wrapper hides nothing.
+    """
+    import codecs
+    tail = _DECLOAK_TAIL_RE.search(command or "")
+    if not tail:
+        return command
+    runner = command[:tail.start()]
+    group = _DECLOAK_GROUP_RE.match(runner)
+    if group:
+        return group.group(1)
+    resolve = _DECLOAK_RESOLVE_RE.match(runner) or _DECLOAK_EVAL_RE.match(runner)
+    if not resolve:
+        return command
+    word = resolve.group(1)
+    try:
+        if word.startswith("$'"):
+            return codecs.escape_decode(word[2:-1].encode("utf-8"))[0].decode("utf-8")
+        return shlex.split(word)[0]
+    except (ValueError, IndexError, UnicodeDecodeError):
+        return command
 
 
 def placeholder_names(text: str) -> List[str]:
@@ -100,6 +145,11 @@ def decloak_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
 # output. Keep this in sync with the Bash `_prismor_scrubbable` helper in
 # cloaking/hooks/*.sh.
 _MIN_SCRUB_LEN = 8
+# A bare origin (`http://localhost:3000`, `https://app.example.com/`) is config,
+# not a credential: no userinfo, path or query that could carry a token. Masking
+# it blocked reads of every test and doc that used the same base URL (#930).
+# A URL with a path stays eligible: webhook URLs hold their token there.
+_BARE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?")
 
 
 def is_scrubbable_secret(value: str) -> bool:
@@ -115,7 +165,7 @@ def is_scrubbable_secret(value: str) -> bool:
     """
     v = value or ""
     n = len(v)
-    if n < _MIN_SCRUB_LEN:
+    if n < _MIN_SCRUB_LEN or _BARE_URL.fullmatch(v):
         return False
     if n >= 16:
         return True
@@ -129,9 +179,14 @@ def scrub_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
     """Replace registered raw secret values with placeholders."""
     secrets = _read_secret_map() if secrets is None else secrets
     out = text
-    for name, value in sorted(secrets.items(), key=lambda item: len(item[1]), reverse=True):
-        if is_scrubbable_secret(value):
-            out = out.replace(value, f"@@SECRET:{name}@@")
+    eligible = [(n, v) for n, v in secrets.items() if is_scrubbable_secret(v)]
+    for name, value in sorted(eligible, key=lambda item: len(item[1]), reverse=True):
+        out = out.replace(value, f"@@SECRET:{name}@@")
+    # Then its base64 / hex / URL-encoded / reversed forms (encoded.py).
+    encoded = [(v, n) for n, value in eligible for v in variants(value)]
+    for variant, name in sorted(encoded, key=lambda item: len(item[0]), reverse=True):
+        if variant in out:
+            out = out.replace(variant, f"@@SECRET:{name}@@")
     return out
 
 
@@ -241,6 +296,29 @@ def _codex_secret_read_reason(event: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _resolved_command_block(argv: List[str]) -> Optional[str]:
+    """Screen the command after placeholders are filled in.
+
+    The hook only sees the placeholder text. The resolved argv is what
+    actually runs, so it has to meet the same policy.
+    """
+    from prismor.runtime.hooks import should_block
+    from prismor.runtime.policy_engine import PolicyEngine
+
+    command = shlex.join(argv)
+    findings = PolicyEngine(workspace=Path.cwd()).evaluate(
+        {"type": "shell", "command": command}, index=0
+    )
+    # The secrets are meant to be in the resolved argv, so a secret rule fires
+    # on every `cloak run curl -H "Authorization: ..."`. The hook already ran
+    # those rules on the placeholder text; here only the action matters.
+    findings = [f for f in findings if f.get("category") != "secret_exfiltration"]
+    hit = should_block(findings, {"type": "shell", "agent_event": "PreToolUse"})
+    if hit is None:
+        return None
+    return str(hit.get("ruleId") or "blocked")
+
+
 def run_decloaked_command(argv: Iterable[str]) -> int:
     """Run a command with placeholders resolved locally and output scrubbed."""
     args = list(argv)
@@ -266,8 +344,25 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
             f"escape the colon: @@SECRET\\:{name}@@"
         ) from exc
 
+    from prismor.runtime.cloaking import bindings
+    bound = bindings.load(secrets_dir())
+    if bound:
+        names_in_env = {n for v in env_updates.values() for n in placeholder_names(v)}
+        if names_in_env & bound.keys():
+            sys.stderr.write("error: prismor cloak run refused: a secret bound to its hosts "
+                             "can't go into an environment variable\n")
+            return 2
+        why = bindings.check_argv(command_args, bound, {**os.environ, **env_updates})
+        if why:
+            sys.stderr.write(f"error: prismor cloak run refused: {why}\n")
+            return 2
+
     env = os.environ.copy()
     env.update(resolved_env)
+    blocked = _resolved_command_block(resolved)
+    if blocked is not None:
+        sys.stderr.write(f"error: prismor cloak run refused: {blocked}\n")
+        return 2
     proc = subprocess.run(
         resolved,
         capture_output=True,

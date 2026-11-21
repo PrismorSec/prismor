@@ -24,8 +24,8 @@ Prismor ships 13 framework adapters. The Python ones are inside the `prismor` pa
 | Google ADK | Python | `pip install "prismor[google-adk]"` | `before_tool_callback=make_before_tool_callback(...)` |
 | BeeAI Framework | Python | `pip install "prismor[beeai]"` | `guard_tool(tool)` / `guard_tools([...])` |
 | Claude Agent SDK | Python | `pip install "prismor[claude-agent-sdk]"` | `hooks={"PreToolUse": [prismor_hook_matcher(...)]}` |
-| Vercel AI SDK, LangChain JS / LangGraph JS | TypeScript | `npm install prismor-warden` | `prismorTools(tools)` / `prismorLangChainTools([...])` |
-| Mastra | TypeScript | `npm install prismor-mastra` | `prismorTool(name, tool)` |
+| Vercel AI SDK, LangChain JS / LangGraph JS | TypeScript | `npm install @prismor/vercel-ai` | `prismorTools(tools)` / `prismorLangChainTools([...])` |
+| Mastra | TypeScript | `npm install @prismor/mastra` | `prismorTool(name, tool)` |
 
 Anything else can call `prismor eval-server` over HTTP (`POST /v1/evaluate`); see [docs/decision-contract.md](docs/decision-contract.md). Default modes differ between adapters, so pass the mode explicitly; each framework's page has the details.
 

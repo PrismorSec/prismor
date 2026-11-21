@@ -198,14 +198,15 @@ class TestRealAgentSDK:
             asyncio.run(tool.on_invoke_tool(self._make_ctx(), json.dumps({"command": "echo hi"})))
 
     def test_handoff_call_carries_subagent_attribution(self, tmp_path, monkeypatch):
-        """ctx.agent identifies the SDK's active agent for this call. When it
-        differs from the top-level agent the tool was guarded under — a
-        handoff or an agent-as-tool nested run — the event must carry
-        subagent_id/subagent_type so telemetry attributes the action to the
-        subagent that actually took it, not the primary agent."""
+        """The first agent whose tool runs in a run is the main agent; an agent
+        reached by a handoff later in the same run is a subagent, and so is
+        every agent of a nested run (an agent used as a tool). Decided from
+        the run, not the `name=` label: an app-level label (or none) used to
+        make the main agent itself read as a subagent."""
         import asyncio
         import json
         from agents import Agent, function_tool
+        from agents.usage import Usage
         import prismor_openai as po
 
         captured = []
@@ -222,19 +223,77 @@ class TestRealAgentSDK:
             return f"ran: {command}"
 
         primary = Agent(name="primary", tools=[run_shell])
-        po.guard_agent(primary, workspace=tmp_path, name="primary", mode="observe", raise_on_block=True)
+        po.guard_agent(primary, workspace=tmp_path, name="support-bot", mode="observe", raise_on_block=True)
         tool = primary.tools[0]
-
-        # Call from the primary agent itself: no subagent.
-        asyncio.run(tool.on_invoke_tool(self._make_ctx(agent=primary), json.dumps({"command": "echo hi"})))
-        # Call from a handed-off-to / nested subagent: attributed.
         researcher = Agent(name="researcher")
-        asyncio.run(tool.on_invoke_tool(self._make_ctx(agent=researcher), json.dumps({"command": "echo hi"})))
+        run = Usage()  # one run: every ToolContext of it shares this object
 
-        assert len(captured) == 2
-        primary_meta = captured[0]["metadata"]
-        sub_meta = captured[1]["metadata"]
-        assert primary_meta["subagent_id"] is None
-        assert primary_meta["subagent_type"] is None
-        assert sub_meta["subagent_type"] == "researcher"
-        assert sub_meta["subagent_id"] is not None
+        def call(agent, usage):
+            ctx = self._make_ctx(agent=agent)
+            ctx.usage = usage
+            asyncio.run(tool.on_invoke_tool(ctx, json.dumps({"command": "echo hi"})))
+
+        call(primary, run)       # the main agent
+        call(researcher, run)    # handed off to, same run
+        call(primary, run)       # main again after control returns
+
+        # A nested run (agent as tool) has its own Usage but runs inside the
+        # parent's tool call.
+        token = po._RUNNING_AGENT.set((id(primary), "support-bot"))
+        try:
+            call(researcher, Usage())
+        finally:
+            po._RUNNING_AGENT.reset(token)
+
+        types = [e["metadata"]["subagent_type"] for e in captured]
+        assert types == [None, "researcher", None, "researcher"]
+        assert captured[1]["metadata"]["subagent_id"] is not None
+        assert captured[0]["metadata"]["subagent_id"] is None
+        # A subagent names the guard it runs under: its controls apply on top.
+        assert captured[1]["metadata"]["parent_agent_name"] == "support-bot"
+        assert captured[3]["metadata"]["parent_agent_name"] == "support-bot"
+        assert "parent_agent_name" not in captured[0]["metadata"]
+
+
+def test_guard_agent_also_guards_handoff_and_as_tool_agents(tmp_path):
+    """Guarding the main agent covers every agent it can run: an agent left
+    unguarded would run its tools with no policy at all."""
+    pytest.importorskip("agents")
+    from agents import Agent, function_tool, handoff
+    import prismor_openai as po
+
+    def mk():
+        @function_tool
+        def fetch_url(url: str) -> str:
+            return "ok"
+        return fetch_url
+
+    deep = Agent(name="deep", tools=[mk()])
+    researcher = Agent(name="researcher", tools=[mk()], handoffs=[deep])
+    summarizer = Agent(name="summarizer", tools=[mk()])
+    main = Agent(name="main", tools=[mk(), summarizer.as_tool(tool_name="ask", tool_description="x")],
+                 handoffs=[handoff(researcher)])
+    researcher.handoffs.append(main)   # a cycle must not loop
+    po.guard_agent(main, workspace=tmp_path)
+    for a in (main, researcher, summarizer, deep):
+        assert all(getattr(t, "__prismor_guarded__", False) for t in a.tools), a.name
+
+
+def test_as_tool_call_is_marked_as_a_handoff(tmp_path):
+    """An agent-as-tool's input is what its agent is handed: data_boundary.handoffs screens it."""
+    pytest.importorskip("agents")
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from agents import Agent
+    import prismor_openai as po
+    from prismor.runtime.runtime import Decision
+
+    tool = Agent(name="summarizer").as_tool(tool_name="ask", tool_description="x")
+    po._guard_function_tool(tool, subject=None, workspace=tmp_path, agent="openai-agents", mode="observe",
+                            session_id="s", event_type="shell", raise_on_block=False, name="main")
+    seen = []
+    with patch("prismor_openai.evaluate_tool_call",
+               lambda *, event, **kw: seen.append(event["metadata"]) or Decision(allow=False, reason="stop")):
+        asyncio.run(tool.on_invoke_tool(SimpleNamespace(context=None, usage=SimpleNamespace()), '{"input": "hi"}'))
+    assert seen[0]["handoff_to"] == "summarizer"

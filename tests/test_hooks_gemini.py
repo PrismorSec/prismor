@@ -161,8 +161,11 @@ class TestMergeGemini(unittest.TestCase):
                 self.assertTrue(pattern.match(tool), tool)
 
     def test_matcher_covers_mcp_tools(self):
+        # Gemini names MCP tools mcp_<server>_<tool> (docs/hooks/reference.md).
+        import re
         for entry in self.result["hooks"]["BeforeTool"]:
-            self.assertIn("mcp__", entry.get("matcher", ""))
+            pattern = re.compile(f"^(?:{entry.get('matcher', '')})$")
+            self.assertTrue(pattern.match("mcp_echosrv_echo"))
 
     def test_hook_type_is_command(self):
         for event_name, entries in self.result["hooks"].items():

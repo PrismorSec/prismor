@@ -270,7 +270,10 @@ def _give_back(home: Path) -> None:
         return  # profile ACLs are inherited; the user keeps full control
     st = home.stat()
     for f in home.iterdir():
-        if f.name.startswith(("telemetry-", "device-revoked")) or f.suffix == ".lock":
+        # Sink plugins spool to files named after their sink type.
+        from prismor.runtime.sinks import sink_plugins
+        owned = ("telemetry-", "device-revoked") + tuple(f"{kind}-" for kind in sink_plugins())
+        if f.name.startswith(owned) or f.suffix == ".lock":
             try:
                 os.chown(f, st.st_uid, st.st_gid)
             except OSError:
@@ -316,12 +319,20 @@ def sync() -> Dict[str, Any]:
             except Exception as exc:
                 out["errors"].append(f"{home}: {exc}")
             out["pending_after"] += telemetry_spool.pending_count()
+            # Sink plugins ship this user's spool while PRISMOR_HOME points at it.
+            from prismor.runtime.sinks import run_sink_hook
+            run_sink_hook("system_sync")
             _give_back(home)
     finally:
         if saved is None:
             os.environ.pop("PRISMOR_HOME", None)
         else:
             os.environ["PRISMOR_HOME"] = saved
+    try:
+        from prismor.runtime.inventory.runner import maybe_fleet_scan
+        out["inventory"] = maybe_fleet_scan()
+    except Exception as exc:
+        out["errors"].append(f"inventory: {exc.__class__.__name__}")
     return out
 
 

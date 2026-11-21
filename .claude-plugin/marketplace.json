@@ -1,0 +1,17 @@
+{
+  "name": "prismor",
+  "owner": {
+    "name": "Prismor",
+    "email": "arnav@prismor.dev"
+  },
+  "metadata": {
+    "description": "Prismor runtime security plugins for Claude Code."
+  },
+  "plugins": [
+    {
+      "name": "prismor",
+      "source": "./packaging/claude-code-plugin",
+      "description": "Runtime security for Claude Code: checks every prompt and tool call against your local Prismor policy and records a local audit trail."
+    }
+  ]
+}

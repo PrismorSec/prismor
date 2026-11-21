@@ -132,17 +132,19 @@ class TestPluginUnderOpenCodeCallShapes(unittest.TestCase):
                       {"tool": "bash", "sessionID": "s", "callID": "c"}, {"args": {"command": "x"}})
         self.assertEqual(r["threw"], "Prismor blocked this action")
 
-    def test_exit_0_and_exit_1_allow(self):
-        for status in (0, 1):
-            r = self._run(self._stub_plugin(status), "tool.execute.before",
-                          {"tool": "bash", "sessionID": "s", "callID": "c"}, {"args": {"command": "x"}})
-            self.assertIsNone(r["threw"], status)
+    def test_only_exit_0_allows(self):
+        r = self._run(self._stub_plugin(0), "tool.execute.before",
+                      {"tool": "bash", "sessionID": "s", "callID": "c"}, {"args": {"command": "x"}})
+        self.assertIsNone(r["threw"])
+        r = self._run(self._stub_plugin(1), "tool.execute.before",
+                      {"tool": "bash", "sessionID": "s", "callID": "c"}, {"args": {"command": "x"}})
+        self.assertIsNotNone(r["threw"])
 
-    def test_missing_dispatcher_fails_open(self):
+    def test_missing_dispatcher_fails_closed(self):
         plugin = self._plugin(_q(str(self.tmp / "does-not-exist")))
         r = self._run(plugin, "tool.execute.before",
                       {"tool": "bash", "sessionID": "s", "callID": "c"}, {"args": {"command": "x"}})
-        self.assertIsNone(r["threw"])
+        self.assertIsNotNone(r["threw"])
 
     def test_after_sends_result_and_args_from_input(self):
         self._run(self._stub_plugin(), "tool.execute.after",

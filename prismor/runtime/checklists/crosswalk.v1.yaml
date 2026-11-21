@@ -102,6 +102,9 @@ map:
   terraform-state-change:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T02
+  iac-destroy:
+    - owasp-llm-top10:LLM06
+    - owasp-agentic-t10:T02
   kubectl-cluster-change:
     - owasp-llm-top10:LLM06
     - owasp-agentic-t10:T02

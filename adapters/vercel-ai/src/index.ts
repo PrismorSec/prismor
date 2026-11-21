@@ -54,8 +54,18 @@ export interface PrismorOptions {
    * Per-instance agent name — used for the dashboard kill-switch and per-agent
    * mode/IAM controls. Distinct from `agent` (the framework). Example: "support-bot".
    * Default: same as `agent`.
+   *
+   * A toolset whose tools run inside another guarded tool (a subagent run from
+   * a tool's execute) reports as subagent type `agentName`, so give each
+   * agent's toolset its own name for `when: subagent.type == '…'` rules.
    */
   agentName?: string;
+  /**
+   * Tools that hand work to another agent, mapped to that agent's name
+   * (`{ ask_researcher: "researcher" }`). Their arguments are screened by
+   * `settings.data_boundary.handoffs` as what the subagent is handed.
+   */
+  handoffs?: Record<string, string>;
   /**
    * Map tool argument keys to a Prismor event type.
    * Default: "shell" (args serialised to command string).
@@ -154,8 +164,100 @@ export function useSubject<T>(subject: string, fn: () => T): T {
       "Pass prismorTools(tools, { subject }) per request instead.",
     );
   }
-  return storage.run(subject, fn);
+  // A request is a conversation: unless the caller already opened one with useSession(),
+  // its calls get a session of their own instead of the toolset's process-wide one.
+  return storage.run(subject, () => (currentSession() ? fn() : useSession(sessionId(), fn)));
 }
+
+// ── Ambient session context ──────────────────────────────────────────────────
+// Tools are wrapped once at module scope, so the toolset's own session id lives
+// as long as the process: on a server every user's calls landed in one session.
+// useSession() (and useSubject(), which opens one) scopes calls per request.
+
+let _sessionStorage: SubjectStorage | null | undefined;
+
+function sessionStorage(): SubjectStorage | null {
+  if (_sessionStorage !== undefined) return _sessionStorage;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { AsyncLocalStorage } = require("node:async_hooks");
+    _sessionStorage = new AsyncLocalStorage() as SubjectStorage;
+  } catch {
+    _sessionStorage = null;
+  }
+  return _sessionStorage;
+}
+
+function currentSession(): string | undefined {
+  return sessionStorage()?.getStore();
+}
+
+/**
+ * Group every Prismor-guarded tool call inside `fn` into session `id` - one
+ * conversation, one session in the console. Use your own conversation/thread id:
+ *
+ *   await useSession(`chat:${chatId}`, () => generateText({ model, tools, messages }));
+ *
+ * useSubject() opens a fresh session per call when none is active, so most
+ * servers need only that. Without AsyncLocalStorage this just runs `fn`: calls
+ * fall back to the toolset's session (grouping only, never a policy decision).
+ */
+export function useSession<T>(id: string, fn: () => T): T {
+  const storage = sessionStorage();
+  return storage && id ? storage.run(id, fn) : fn();
+}
+
+// ── Subagent context ─────────────────────────────────────────────────────────
+// In the AI SDK a subagent is an agent run from inside another agent's tool
+// (a tool whose execute calls generateText / an Agent). While a guarded tool
+// runs, the agent and tool call that launched it are kept here; a guarded tool
+// called underneath it belongs to a subagent: its type is that toolset's
+// agentName, its id the tool call that started it.
+
+// chain: agent names of every running guarded tool, outermost first;
+// root: the outermost guard's session, where the tree's subagents are counted
+interface Running { agentName: string; callId: string; chain: string[]; root: string }
+interface RunningStorage {
+  run<T>(store: Running, fn: () => T): T;
+  getStore(): Running | undefined;
+}
+let _runningStorage: RunningStorage | null | undefined;
+
+function runningStorage(): RunningStorage | null {
+  if (_runningStorage !== undefined) return _runningStorage;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { AsyncLocalStorage } = require("node:async_hooks");
+    _runningStorage = new AsyncLocalStorage() as RunningStorage;
+  } catch {
+    _runningStorage = null;  // no subagent attribution on this runtime
+  }
+  return _runningStorage;
+}
+
+let _callCounter = 0;
+
+/** Run `fn` as tool call `callId` of `agentName`, and say which subagent (if any) is calling. */
+function asRunning<T>(agentName: string, callId: string, sessionId: string, fn: () => T): T {
+  const storage = runningStorage();
+  if (!storage) return fn();
+  const store = storage.getStore();
+  const outer = store?.chain ?? [];
+  const chain = outer[outer.length - 1] === agentName ? outer : [...outer, agentName];
+  return storage.run({ agentName, callId, chain, root: store?.root ?? sessionId }, fn);
+}
+
+function currentSubagent(agentName: string): Subagent | undefined {
+  const parent = runningStorage()?.getStore();
+  if (!parent) return undefined;
+  const chain = parent.chain.filter((n) => n !== agentName);
+  return { id: `${parent.agentName}:${parent.callId}`, type: agentName, parent: parent.agentName,
+           depth: Math.max(chain.length, 1), chain, root: parent.root };
+}
+
+/** `parent`: the agent it runs under, whose per-agent controls also apply. */
+/** `depth`/`chain`: how deep it is nested, and the agents above it (outermost first). */
+export interface Subagent { id: string; type: string; parent?: string; depth?: number; chain?: string[]; root?: string }
 
 function resolveSubject(explicit: string): string {
   if (explicit) return explicit;
@@ -200,6 +302,7 @@ async function evaluate(
   args: Record<string, unknown>,
   opts: Required<PrismorOptions>,
   sessionId: string,
+  subagent?: Subagent,
 ): Promise<PrismorDecision> {
   const subject = resolveSubject(opts.subject);
   let res: Response;
@@ -223,6 +326,8 @@ async function evaluate(
         session_id: sessionId,
         subject,
         workspace: opts.workspace,
+        ...(subagent ? { subagent } : {}),
+        ...(opts.handoffs[toolName] ? { handoff_to: opts.handoffs[toolName] } : {}),
       }),
       signal: timeoutSignal(opts.timeoutMs),
     });
@@ -280,6 +385,7 @@ function resolveOpts(opts: PrismorOptions): Required<PrismorOptions> {
     agent,
     agentName: opts.agentName ?? agent,
     eventType: opts.eventType ?? "shell",
+    handoffs: opts.handoffs ?? {},
   };
 }
 
@@ -298,19 +404,20 @@ function sessionId(): string {
  */
 export function prismorTool<
   T extends { execute?: (...args: any[]) => any },
->(toolName: string, tool: T, opts: PrismorOptions = {}): T {
+>(toolName: string, tool: T, opts: PrismorOptions = {}, sid: string = sessionId()): T {
   if (!tool.execute) return tool;
   const resolved = resolveOpts(opts);
-  const sid = sessionId();
   const original = tool.execute;
 
   const guarded = async (args: Record<string, unknown>, ctx: unknown) => {
-    const decision = await evaluate(toolName, args, resolved, sid);
+    const session = currentSession() ?? sid;
+    const decision = await evaluate(toolName, args, resolved, session, currentSubagent(resolved.agentName));
     logObserveFindings(decision, resolved.mode, toolName);
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
-    return redactResult(await original(args, ctx), resolved);
+    const callId = String((ctx as { toolCallId?: string } | undefined)?.toolCallId ?? ++_callCounter);
+    return redactResult(await asRunning(resolved.agentName, callId, session, () => original(args, ctx)), resolved);
   };
 
   return { ...tool, execute: guarded };
@@ -327,8 +434,10 @@ export function prismorTool<
 export function prismorTools<
   T extends Record<string, { execute?: (...args: any[]) => any }>,
 >(tools: T, opts: PrismorOptions = {}): T {
+  // One toolset, one session: the subagents its tools launch are counted together.
+  const sid = sessionId();
   return Object.fromEntries(
-    Object.entries(tools).map(([name, t]) => [name, prismorTool(name, t, opts)]),
+    Object.entries(tools).map(([name, t]) => [name, prismorTool(name, t, opts, sid)]),
   ) as T;
 }
 
@@ -354,6 +463,21 @@ function langChainArgs(input: any): Record<string, unknown> {
 }
 
 /**
+ * The subagent a LangGraph JS tool call comes from. `langgraph_checkpoint_ns`
+ * is the graph path (`researcher:<uuid>|tools:<uuid>`): one segment is the
+ * top-level graph, the main agent even though its tool node is `tools`; more
+ * means an agent subgraph, named by the outer segment. Outside a graph, falls
+ * back to nesting inside another guarded tool.
+ */
+function langGraphSubagent(config: any, agentName: string): Subagent | undefined {
+  const ns = String(config?.metadata?.langgraph_checkpoint_ns ?? config?.configurable?.checkpoint_ns ?? "");
+  const parts = ns.split("|").filter(Boolean);
+  if (parts.length >= 2) return { id: parts[0], type: parts[0].split(":")[0] };
+  if (parts.length === 1) return undefined;
+  return currentSubagent(agentName);
+}
+
+/**
  * Guard a LangChain JS / LangGraph JS tool so every `invoke()` is evaluated by
  * Prismor first. Works on anything StructuredTool-shaped — `tool(fn, {...})`
  * from `@langchain/core/tools`, and therefore the tools LangGraph's
@@ -370,18 +494,22 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
   opts: PrismorOptions = {},
 ): T {
   if ((tool as any).__prismor_guarded__) return tool;
-  const resolved = resolveOpts(opts);
+  // LangChain / LangGraph JS reports under its own framework id, not vercel-ai.
+  const resolved = resolveOpts({ agent: "langchain", ...opts });
   const sid = sessionId();
   const toolName = tool.name || "tool";
   const original = tool.invoke.bind(tool);
 
   (tool as any).invoke = async (input: any, config?: any) => {
-    const decision = await evaluate(toolName, langChainArgs(input), resolved, sid);
+    const session = currentSession() ?? sid;
+    const decision = await evaluate(toolName, langChainArgs(input), resolved, session,
+      langGraphSubagent(config, resolved.agentName));
     logObserveFindings(decision, resolved.mode, toolName);
     if (!decision.allow) {  // honor the runtime decision (incl. org kill-switch), not the app-passed mode
       throw new PrismorBlocked(decision.reason ?? "policy violation", decision);
     }
-    return redactResult(await original(input, config), resolved);
+    const callId = String(input?.id ?? config?.toolCall?.id ?? ++_callCounter);
+    return redactResult(await asRunning(resolved.agentName, callId, session, () => original(input, config)), resolved);
   };
   (tool as any).__prismor_guarded__ = true;
   return tool;
@@ -392,7 +520,7 @@ export function prismorLangChainTool<T extends LangChainToolLike>(
  * Python adapters' `guard_tools([...])`. Returns the same array.
  *
  * @example
- * import { prismorLangChainTools, useSubject } from "prismor-warden";
+ * import { prismorLangChainTools, useSubject } from "@prismor/vercel-ai";
  * const tools = prismorLangChainTools([run_shell, fetch_url]);
  * const agent = createReactAgent({ llm, tools });
  * await useSubject(`user:${userId}`, () => agent.invoke({ messages }));

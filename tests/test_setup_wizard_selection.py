@@ -45,8 +45,9 @@ class TestRuleBanding(unittest.TestCase):
         self.assertTrue(rec, "some rules must be recommended")
         # A recommendation covering most of the list is not a recommendation.
         self.assertLess(len(rec), len(rules) / 2)
-        from prismor.runtime.policy_engine import _RECOMMENDED_RULE_IDS
-        self.assertTrue(all(r["floor"] or r["id"] in _RECOMMENDED_RULE_IDS for r in rec))
+        from prismor.runtime.policy_engine import _RECOMMENDED_ASK_RULE_IDS, _RECOMMENDED_RULE_IDS
+        self.assertTrue(all(r["floor"] or r["id"] in _RECOMMENDED_RULE_IDS | _RECOMMENDED_ASK_RULE_IDS
+                            for r in rec))
 
     def test_self_protection_rules_are_never_offered_as_a_choice(self):
         rules = setup_wizard._load_rules()

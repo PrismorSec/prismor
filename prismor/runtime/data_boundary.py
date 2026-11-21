@@ -42,6 +42,8 @@ that vendor was just fetched (the "follow the SKILL.md" shape).
 
 from __future__ import annotations
 
+import functools
+import json
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -57,7 +59,12 @@ from prismor.runtime.egress import (
     _split_host_port,
     _tokenize,
 )
-from prismor.runtime.shell_context import heredocs, is_inert_match, quoted_spans
+from prismor.runtime.shell_context import (
+    command_substitution_spans,
+    heredocs,
+    is_inert_match,
+    quoted_spans,
+)
 
 __all__ = [
     "CATEGORY",
@@ -77,6 +84,8 @@ RULE_SELF_EXTERNAL = "self-identity-to-external"
 RULE_SECRET_NONVENDOR = "secret-to-non-vendor"
 RULE_BULK = "bulk-pii-outbound"
 RULE_FILE_UPLOAD = "file-upload-to-external"
+RULE_PII_HANDOFF = "pii-to-subagent"
+RULE_SECRET_HANDOFF = "secret-to-subagent"
 
 ACTIONS = ("allow", "observe", "warn", "step_up", "redact", "block")
 _ACTION_LADDER = ["allow", "observe", "warn", "step_up", "redact", "block"]
@@ -316,6 +325,7 @@ SECRET_VENDORS: Dict[str, Tuple[str, ...]] = {
     "openai": ("openai.com",),
     "anthropic": ("anthropic.com",),
     "jwt": (),          # bearer of unknown origin — vendor cannot be inferred
+    "private_key": (),  # a private key has no legitimate destination
     "custom": (),
 }
 _SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -330,8 +340,22 @@ _SECRET_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'\bsk-ant-(?:api|admin)\d{2}-[A-Za-z0-9_\-]{80,}'), "anthropic"),
     # An AWS secret access key is 40 base64 chars with no prefix of its own, so
     # it is only recognisable by the name it is assigned to. Only the value
-    # (group "secret") is the match.
-    (re.compile(r'(?i)aws_?secret_?access_?key["\']?\s*[:=]\s*["\']?(?P<secret>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])'), "aws"),
+    # (group "secret") is the match. The name covers env/ini spelling
+    # (aws_secret_access_key) and the JSON key STS and ~/.aws/cli/cache print
+    # (SecretAccessKey).
+    (re.compile(r'(?i)(?:aws_?)?secret_?access_?key["\']?\s*[:=]\s*["\']?(?P<secret>[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])'), "aws"),
+    # ...or by sitting right after its access key id, as in the credentials
+    # CSV, `aws configure list` and "key AKIA…, secret …" pastes. The id may
+    # already be a cloak placeholder by the time this runs. Mixed case is
+    # required so a 40-hex git SHA after a key id is not taken for a secret.
+    (re.compile(r'(?:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|@@SECRET:[A-Za-z0-9_.\-]+@@)[^\n]{1,40}?'
+                r'(?<![A-Za-z0-9/+])(?P<secret>(?=[A-Za-z0-9/+]{0,39}[a-z])(?=[A-Za-z0-9/+]{0,39}[A-Z])'
+                r'[A-Za-z0-9/+]{40})(?![A-Za-z0-9/+=])'), "aws"),
+    # PEM / OpenSSH private keys: the body is the secret. The BEGIN line stays
+    # so a reader still sees what kind of key was there; a paste cut off before
+    # its END line is masked to the end of the base64 run.
+    (re.compile(r'-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----'
+                r'(?P<secret>[A-Za-z0-9+/=\s:,\-]{16,}?)(?=-----END |[^A-Za-z0-9+/=\s:,\-]|\Z)'), "private_key"),
     (re.compile(r'\beyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}'), "jwt"),
 ]
 
@@ -525,12 +549,20 @@ def _dest_from_url(url: str) -> Optional[Destination]:
 # command itself: `if x; then curl ...`, `for f in *; do curl ...`.
 _SHELL_KEYWORDS = frozenset({"if", "then", "elif", "else", "while", "until", "do", "!", "{"})
 
+# Builtins that only declare variables: `local code=$(curl ...)`.
+_DECLARE_BUILTINS = frozenset({"local", "export", "declare", "readonly", "typeset"})
+
 
 def _split_argv_prefix(tokens: List[str]) -> List[str]:
     while tokens:
         tok = tokens[0]
         if tok in _SHELL_KEYWORDS:
             tokens.pop(0)
+            continue
+        if tok in _DECLARE_BUILTINS:
+            tokens.pop(0)
+            while tokens and tokens[0].startswith("-"):
+                tokens.pop(0)
             continue
         if not _ENV_ASSIGN_RE.match(tok):
             break
@@ -580,6 +612,8 @@ def _all_print_only(text: str, spans) -> bool:
     bounds = [0] + [p for m in _SHELL_SEP_RE.finditer(bare) for p in (m.start(), m.end())] + [len(bare)]
     for s, e in zip(bounds[::2], bounds[1::2]):
         words = bare[s:e].split()
+        while words and _ENV_ASSIGN_RE.match(words[0]):
+            words.pop(0)  # `NO_COLOR=1 prismor ...`
         if not words:
             if text[s:e].strip():  # the whole command word was quoted
                 return False
@@ -621,6 +655,22 @@ def _split_segments(command: str) -> List[str]:
         start = m.end()
     out.append(command[start:])
     return out
+
+
+def _cut_substitutions(text: str) -> Tuple[str, List[str]]:
+    """Blank every `$(...)` and backtick substitution the shell runs (any not
+    inside single quotes) and return their bodies alongside."""
+    singles = [(s, e) for s, e, _payload, _closed in quoted_spans(text) if text[s] == "'"]
+    chars = list(text)
+    bodies: List[str] = []
+    for s, e in command_substitution_spans(text):
+        if any(qs < s <= qe for qs, qe in singles):
+            continue
+        open_len = 2 if text.startswith("$(", s) else 1
+        closed = e - s > open_len and text[e - 1] == (")" if open_len == 2 else "`")
+        bodies.append(text[s + open_len:e - 1 if closed else e])
+        chars[s:e] = " " * (e - s)
+    return "".join(chars), bodies
 
 
 def _query_text(url: str) -> str:
@@ -775,8 +825,16 @@ def extract_outbound(event: Dict[str, Any]) -> List[Outbound]:
     command = str(event.get("command") or "")
     if not command:
         return out
+    return _shell_outbound(command)
 
-    for sub in _split_segments(command):
+
+def _shell_outbound(command: str, depth: int = 0) -> List[Outbound]:
+    """Outbound calls in a shell command. Each command substitution is parsed
+    as a command of its own (it runs), and blanked in the outer one so its
+    words cannot become the outer argv0 (`code=$(curl ...)`, `$(curl ...)`)."""
+    out: List[Outbound] = []
+    text, inner = _cut_substitutions(command)
+    for sub in _split_segments(text):
         sub = sub.strip()
         if not sub:
             continue
@@ -796,6 +854,9 @@ def extract_outbound(event: Dict[str, Any]) -> List[Outbound]:
             ob = _generic_outbound(argv0, args, sub, vendor)
             if ob.parts or ob.files:
                 out.append(ob)
+    if depth < 8:
+        for body in inner:
+            out.extend(_shell_outbound(body, depth + 1))
     return out
 
 
@@ -862,7 +923,8 @@ class DataBoundaryPolicy:
     """Compiled ``settings.data_boundary``. Inert unless enabled."""
 
     __slots__ = ("enabled", "mode", "trusted", "classes", "per_domain", "bulk_threshold",
-                 "self_identity", "unknown_cli", "source", "errors", "_trusted_policy")
+                 "_self_identity", "_discover_self", "unknown_cli", "source", "errors",
+                 "_trusted_policy", "handoffs", "handoffs_per_subagent")
 
     def __init__(self) -> None:
         self.enabled = False
@@ -871,11 +933,38 @@ class DataBoundaryPolicy:
         self.classes: Dict[str, Dict[str, str]] = {k: dict(v) for k, v in _DEFAULT_CLASS_ACTIONS.items()}
         self.per_domain: Dict[str, Dict[str, str]] = {}
         self.bulk_threshold = 10
-        self.self_identity: List[str] = []
+        self._self_identity: List[str] = []
+        # Workspace whose git/enrolment identity still has to be merged in (see
+        # discover_self_later). Discovery forks git twice, and most events never
+        # reach a data-boundary check.
+        self._discover_self: Optional[Tuple[Any]] = None
         self.unknown_cli = "observe"
         self.source = ""
         self.errors: List[str] = []
         self._trusted_policy: Optional[EgressPolicy] = None
+        # What may be handed to a subagent: class -> action, plus per-type overrides.
+        self.handoffs: Dict[str, str] = {}
+        self.handoffs_per_subagent: Dict[str, Dict[str, str]] = {}
+
+    @property
+    def self_identity(self) -> List[str]:
+        if self._discover_self is not None:
+            (workspace,), self._discover_self = self._discover_self, None
+            try:
+                for ident in discover_self_identity(workspace):
+                    if ident not in self._self_identity:
+                        self._self_identity.append(ident)
+            except Exception:
+                pass
+        return self._self_identity
+
+    @self_identity.setter
+    def self_identity(self, value: List[str]) -> None:
+        self._self_identity = value
+
+    def discover_self_later(self, workspace: Any) -> None:
+        """Add the user's own git/enrolment emails on first read of self_identity."""
+        self._discover_self = (workspace,)
 
     @classmethod
     def from_settings(cls, settings: Dict[str, Any], *, source: str = "") -> "DataBoundaryPolicy":
@@ -914,6 +1003,17 @@ class DataBoundaryPolicy:
             pol.errors.append("bulk_threshold must be an integer")
         pol.self_identity = [str(s).strip().lower() for s in (raw.get("self_identity") or []) if str(s).strip()]
         pol.unknown_cli = _norm_action(raw.get("unknown_cli"), "observe")
+        ho = raw.get("handoffs")
+        if isinstance(ho, dict):
+            for key, val in ho.items():
+                if key == "per_subagent" and isinstance(val, dict):
+                    pol.handoffs_per_subagent = {
+                        str(t): {k: _norm_action(a) for k, a in cmap.items()}
+                        for t, cmap in val.items() if isinstance(cmap, dict)}
+                elif str(val).lower() in ACTIONS:
+                    pol.handoffs[str(key)] = _norm_action(val)
+                else:
+                    pol.errors.append(f"handoffs.{key}: unknown action {val!r}")
         # Compile the trusted list through the egress matcher for wildcard/CIDR support.
         pol._trusted_policy = EgressPolicy._from_dict({
             "enabled": True, "default": "deny", "allow_private": True,
@@ -1103,6 +1203,70 @@ class DataBoundaryPolicy:
             ))
         return findings
 
+    def evaluate_handoff(self, event: Dict[str, Any], index: int, *, session_id: str = "",
+                         default_mode: str = "observe", device_mode: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Screen what an agent hands to a subagent (``settings.data_boundary.handoffs``).
+
+        A handoff is a Claude Code launch (``subagent_spawn``: its prompt and
+        description) or a call an adapter marks with ``metadata.handoff_to``
+        (an ADK AgentTool, an OpenAI Agents SDK agent-as-tool, a BeeAI
+        HandoffTool, an eval-server caller): its arguments.
+        """
+        if not (self.enabled and (self.handoffs or self.handoffs_per_subagent)):
+            return []
+        meta = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        if str(event.get("type") or "") == "subagent_spawn":
+            target = str(event.get("subagent_type") or "")
+            text = "\n".join(str(event.get(k) or "") for k in ("description", "prompt"))
+        elif meta.get("handoff_to"):
+            target = str(meta["handoff_to"])
+            parts = {k: meta.get(k) for k in ("args", "kwargs", "raw_input") if meta.get(k)}
+            parts.update({k: event[k] for k in ("command", "content", "url") if event.get(k)})
+            text = json.dumps(parts, default=str)
+        else:
+            return []
+        by_kind: Dict[str, List[Match]] = {}
+        for m in classify(text, policy=self, context="body"):
+            if not m.synthetic:
+                by_kind.setdefault(m.kind, []).append(m)
+        override = self.handoffs_per_subagent.get(target, {})
+        action, kind = "allow", ""
+        for k in by_kind:
+            act = override.get(k, self.handoffs.get(k, "allow"))
+            if _ACTION_LADDER.index(act) > _ACTION_LADDER.index(action):
+                action, kind = act, k
+        if action == "allow":
+            return []
+        if action == "redact":
+            action = "step_up"  # a handoff's text is not rewritten
+        if action in ("observe", "warn"):
+            mode = "observe"
+        else:
+            mode = "enforce" if str(self.mode or device_mode or default_mode).lower() == "enforce" else "observe"
+        matches = [m for ms in by_kind.values() for m in ms]
+        rule_id = RULE_SECRET_HANDOFF if "secret" in by_kind else RULE_PII_HANDOFF
+        fid = f"{rule_id}-{index}"
+        finding: Dict[str, Any] = {
+            "id": f"{session_id}:{fid}" if session_id else fid,
+            "severity": "CRITICAL" if "secret" in by_kind else "HIGH",
+            "category": CATEGORY,
+            "title": f"Handoff gives subagent '{target or 'agent'}' {', '.join(sorted(by_kind))}",
+            "evidence": _truncate(", ".join(m.as_dict()["masked"] for m in matches)),
+            "eventIndex": index,
+            "ruleId": rule_id,
+            "action": {"observe": "warn", "warn": "warn", "step_up": "step_up", "block": "block"}[action],
+            "mode": mode,
+            "dataClasses": sorted(by_kind),
+            "dataSubject": "self" if any(m.is_self for m in matches) else "third_party",
+            "destTrust": "subagent",
+            "handoffTo": target,
+            "remediation": (f"Pass a reference instead of the value, or allow {kind} for this subagent "
+                            f"under settings.data_boundary.handoffs.per_subagent.{target or '<type>'}."),
+        }
+        if mode == "enforce" and self.source == "remote":
+            finding["authoritative"] = True
+        return [finding]
+
     def _finding(self, rule_id: str, severity: str, action: str, index: int, session_id: str,
                  event: Dict[str, Any], ob: Outbound, tier: str, matches: List[Match], *,
                  title: str, provenance: Optional[Dict[str, Any]], default_mode: str,
@@ -1155,6 +1319,8 @@ class DataBoundaryPolicy:
             "per_domain": self.per_domain, "bulk_threshold": self.bulk_threshold,
             "self_identity": [mask(s) for s in self.self_identity],
             "unknown_cli": self.unknown_cli, "source": self.source or "default",
+            "handoffs": {**self.handoffs, **({"per_subagent": self.handoffs_per_subagent}
+                                             if self.handoffs_per_subagent else {})},
             "errors": list(self.errors),
         }
 
@@ -1166,18 +1332,27 @@ def _truncate(value: str, max_length: int = 220) -> str:
 
 # ── Self identity discovery ───────────────────────────────────────────────────
 
-def discover_self_identity(workspace: Any = None) -> List[str]:
-    """Best-effort: the user's own email(s) from git config and enrolment."""
-    out: Set[str] = set()
+@functools.lru_cache(maxsize=64)
+def _git_emails(cwd: Optional[str]) -> Tuple[str, ...]:
+    """git's user.email (global, then repo). Cached per process: every policy
+    load asks, and a long-running server (the eval-server builds an engine per
+    request) would otherwise fork git twice a call."""
+    out: List[str] = []
     try:
         import subprocess
         for scope in (["--global"], []):
             r = subprocess.run(["git", "config", *scope, "user.email"], capture_output=True,
-                               text=True, timeout=2, cwd=str(workspace) if workspace else None)
+                               text=True, timeout=2, cwd=cwd)
             if r.returncode == 0 and r.stdout.strip():
-                out.add(r.stdout.strip().lower())
+                out.append(r.stdout.strip().lower())
     except Exception:
         pass
+    return tuple(out)
+
+
+def discover_self_identity(workspace: Any = None) -> List[str]:
+    """Best-effort: the user's own email(s) from git config and enrolment."""
+    out: Set[str] = set(_git_emails(str(workspace) if workspace else None))
     try:
         from prismor.runtime.enterprise.identity import load_identity
         ident = load_identity() or {}

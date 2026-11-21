@@ -8,9 +8,9 @@ event that produced it into a cloud telemetry record.
 Two modes:
 
 * **redacted** (default): only enum/metadata fields leave — severity, category,
-  rule id, event type, agent, verdict, a static rule title, and a *hash* of the
-  matched evidence. No raw commands, file paths, URLs, prompts, file contents,
-  or secrets are emitted. This is the default posture and the only mode an org
+  rule id, event type, agent, verdict, a static rule title, the workspace's
+  folder name, and a *hash* of the matched evidence. No raw commands, file
+  paths, URLs, prompts, file contents, or secrets are emitted. This is the default posture and the only mode an org
   gets unless an admin explicitly opts in. The rule *pattern* that fired
   (``matched_pattern``) is also forwarded in redacted mode: it is static policy
   configuration (the org's own rule text), never captured user data. Caveat:
@@ -41,7 +41,7 @@ SCHEMA = "prismor.runtime.telemetry.v1"
 _SENSITIVE_FINDING_FIELDS = ("evidence", "matched", "snippet", "context")
 _SENSITIVE_EVENT_FIELDS = (
     "command", "stdout", "stderr", "path", "url", "content",
-    "prompt", "response", "outbound_payload",
+    "prompt", "response", "outbound_payload", "reasoning",
 )
 
 _REDACTED = "[REDACTED]"
@@ -200,6 +200,28 @@ def _title_has_leak(title: Any) -> bool:
                 or _UNIXPATH_RE.search(title) or _HOST_RE.search(title))
 
 
+def _workspace_label(workspace: Any) -> Optional[str]:
+    """What redacted capture says about the workspace: its folder name
+    (``acme-app``), never the path to it. The home dir itself is ``~``, since
+    its name is the user's login."""
+    import os
+    from pathlib import PurePath
+
+    if not workspace:
+        return None
+    text = str(workspace).rstrip("/\\")
+    if not text:
+        return None
+    try:
+        if os.path.normcase(os.path.realpath(text)) == os.path.normcase(os.path.realpath(os.path.expanduser("~"))):
+            return "~"
+    except (OSError, ValueError):
+        pass
+    # Both separators, whichever OS produced the path.
+    name = PurePath(text.replace("\\", "/")).name
+    return name or None
+
+
 def build_record(
     finding: Dict[str, Any],
     event: Dict[str, Any],
@@ -230,8 +252,9 @@ def build_record(
         # Stable client-generated id → the control plane uses it as the row PK
         # with skip-duplicates, so a retried upload (network blip, pooler
         # connection reset mid-insert) can never create a duplicate event.
-        "event_id": _event_id(),
-        "ts": _now_iso(),
+        "event_id": finding.get("eventId") or _event_id(),
+        # Replayed records (chatgpt_logs) say when the action happened.
+        "ts": event.get("occurred_at") or _now_iso(),
         "session_id": extra.get("session_id"),
         "device_id": extra.get("device_id"),
         # End-user principal the tool call is attributed to ({source,user_id,
@@ -269,7 +292,9 @@ def build_record(
         # org policy). Only managed/company repos report, so the repo identifier
         # is org-owned context, not the developer's private data.
         "repo": extra.get("repo"),
-        "workspace_path": extra.get("workspace"),
+        # The full path names the user's home and directory layout, so redacted
+        # capture sends only the folder name (see _workspace_label).
+        "workspace_path": extra.get("workspace") if full_capture else _workspace_label(extra.get("workspace")),
         "policy_scope": extra.get("policy_scope") or "org",
         # Which layer decided this finding's mode: builtin | local | project |
         # org | device | repo_exemption (PolicyEngine.decision_layer). A static
@@ -297,7 +322,10 @@ def build_record(
         # own rule configuration), so it survives redaction — it lets the
         # dashboard's event inspector show WHY a call was flagged without
         # carrying any captured user content.
-        "matched_pattern": finding.get("pattern"),
+        # A rule with only a `when:` has no pattern; its condition is the reason
+        # instead, sent as "when: <expr>" (also static policy text).
+        "matched_pattern": finding.get("pattern") or (
+            f"when: {finding['when']}" if finding.get("when") else None),
         # Guard-eval duration (ms) and on-device session position, measured by
         # the runtime. Non-sensitive operational metadata.
         "eval_ms": extra.get("eval_ms"),
@@ -321,13 +349,36 @@ def build_record(
     # induced by external documentation. All are static labels/enums — no
     # captured values — so they survive redaction. The destination host and
     # the doc URL are free text and only ship under full capture.
-    if finding.get("dataClasses"):
-        record["data_classes"] = [str(c) for c in finding.get("dataClasses") or []]
+    # A pii-ner finding names its classes as `entities` (PERSON, US_SSN, ...);
+    # they are the same kind of static label, so they ride in data_classes too.
+    _classes = finding.get("dataClasses") or finding.get("entities")
+    if _classes:
+        record["data_classes"] = [str(c) for c in _classes][:20]
         record["data_subject"] = finding.get("dataSubject")
     if finding.get("destTrust"):
         record["dest_trust"] = finding.get("destTrust")
-    if finding.get("redactionApplied"):
+    # The rule's `guidance:` (what the agent was told to do instead). Static
+    # policy text like matched_pattern, so it survives redaction.
+    if finding.get("guidance"):
+        record["guidance"] = str(finding["guidance"])[:500]
+    # An enforced transform (pii_ner_redact, cloak, memory_redact) rewrote the
+    # call before it ran: that is a redaction even without the explicit flag.
+    if finding.get("redactionApplied") or (
+        finding.get("transform") and str(finding.get("mode", "")).lower() == "enforce"
+    ):
         record["redaction_applied"] = True
+    # Cloak ledger (cloaking/ledger.py): the vault NAME of the secret that was
+    # caught or used (auto_<hash> or the name the user registered) and what was
+    # done. A label the user already sees as @@SECRET:name@@, never the value.
+    if finding.get("secretName"):
+        record["secret_name"] = str(finding["secretName"])[:128]
+    if finding.get("cloakAction"):
+        record["cloak_action"] = str(finding["cloakAction"])[:20]
+    # Session-scope finding (scoped_agent.py): who drew the scope it hit.
+    # llm / static are synthesis misses, operator a human's deny. Kept apart
+    # from attack policy so a block-rate metric can leave them out (#257).
+    if finding.get("scopeOrigin"):
+        record["scope_origin"] = str(finding.get("scopeOrigin"))[:20]
     _prov = finding.get("provenance")
     if isinstance(_prov, dict) and _prov.get("kind"):
         record["provenance_kind"] = str(_prov.get("kind"))
@@ -355,6 +406,10 @@ def build_record(
         ev = finding.get("evidence")
         if isinstance(ev, str) and ev:
             detail["evidence"] = scrub(ev, scrubbers)
+        elif isinstance(ev, dict) and isinstance(ev.get("path"), str) and ev["path"]:
+            # Structured evidence (memory-integrity findings) has no command;
+            # the file path is what the console shows instead.
+            detail["path"] = scrub(ev["path"], scrubbers)
         for fld in _SENSITIVE_EVENT_FIELDS:
             val = event.get(fld)
             if isinstance(val, str) and val:
@@ -362,7 +417,23 @@ def build_record(
         if detail:
             record["detail"] = detail
 
+    # An MCP server whose gateway entry sets logPayloads: its call arguments
+    # and result ship (scrubbed, capped) even in redacted mode. The admin chose
+    # this per server, and the record says it is not redacted.
+    _payload = event.get("log_payloads")
+    if isinstance(_payload, dict):
+        detail = record.setdefault("detail", {})
+        for key in ("arguments", "result"):
+            val = _payload.get(key)
+            if isinstance(val, str) and val:
+                detail[key] = scrub(val[:LOG_PAYLOAD_MAX], scrubbers)
+        record["redacted"] = False
+
     return record
+
+
+#: Characters of a logPayloads argument or result kept per record.
+LOG_PAYLOAD_MAX = 4096
 
 
 def _tool_name(event: Dict[str, Any], extra: Dict[str, Any]) -> Optional[str]:
@@ -439,6 +510,9 @@ def assert_redacted(record: Dict[str, Any]) -> None:
             raise AssertionError(
                 "redacted telemetry matched_pattern equals the hashed evidence"
             )
+    wp = record.get("workspace_path")
+    if isinstance(wp, str) and ("/" in wp or "\\" in wp):
+        raise AssertionError("redacted telemetry workspace_path must be a folder name, not a path")
     # The title is the one free-text field that survives into a redacted record;
     # guard that it carries no path / host / URL / secret leak. (repo is allowed —
     # it's org-owned managed-repo context, not the developer's private data.)

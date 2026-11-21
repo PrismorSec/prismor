@@ -74,12 +74,16 @@ def test_parse_verdicts_keeps_braces_inside_reason_strings():
     assert got[0].reason == "Found injection in {target}"
 
 
-def test_batched_verdicts_are_cached_per_window(no_keys, tmp_path):
+def test_batched_verdicts_are_cached_per_window(no_keys, tmp_path, monkeypatch):
     cli, log = fake_claude(tmp_path, ARRAY)
     guard = SemanticGuardV2(cli_path=cli, provider="claude", low_threshold=0.0)
     guard.analyze(LONG)
     SemanticGuardV2(cli_path=cli, provider="claude", low_threshold=0.0).analyze(LONG)
     assert calls(log) == 1                       # second pass answered from the cache
+    from prismor.runtime import semantic_guard_v2 as sg2
+    monkeypatch.setattr(sg2, "_PRISMOR_CONTEXT", sg2._PRISMOR_CONTEXT + "\nUpdated guidance.")
+    guard.analyze(LONG)
+    assert calls(log) == 2                       # old prompt verdicts must not survive
 
 
 def test_parse_verdicts_reads_an_array_and_stops_at_the_count():

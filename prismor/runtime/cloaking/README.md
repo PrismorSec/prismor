@@ -54,8 +54,8 @@ This merges the hook entries into `.claude/settings.json` (preserving any Prismo
 | Event | Matcher | Script | Purpose |
 |---|---|---|---|
 | `PreToolUse` | `Bash\|Write\|Edit\|MultiEdit\|mcp__.*` | `secret-guard.sh` | Detect raw secrets in tool input, vault + deny |
-| `PreToolUse` | `Read` | `read-guard.sh` | Deny a Read of a file that holds a registered secret |
-| `PreToolUse` | `Read\|Bash` | `env-guard.sh` | Deny content access to a dotenv file until its entries are imported into the vault |
+| `PreToolUse` | `Read\|Grep\|Edit\|MultiEdit` | `read-guard.sh` | Deny a Read, a content-mode Grep, or an Edit (its result echoes nearby lines) of a file that holds a registered secret |
+| `PreToolUse` | `Read\|Bash\|Grep` | `env-guard.sh` | Deny content access to a dotenv file until its entries are imported into the vault |
 | `PreToolUse` | `Bash` | `decloak.sh` | Substitute placeholders, wrap output through `scrub-stream.sh` |
 | `PostToolUse` | `mcp__.*` | `recloak-mcp.sh` | Scrub real values from MCP responses |
 | `UserPromptSubmit` | — | `userprompt-guard.sh` | Soft-block + auto-cloak pasted secrets |
@@ -82,10 +82,15 @@ registered** in the vault. Without `env-guard.sh`, the very first thing an
 agent does in a fresh workspace — `cat .env` or `Read(.env)` — leaks every
 secret before any of them has a placeholder.
 
-`env-guard.sh` denies content access (built-in `Read`, or a Bash command that
-reads content: `cat`, `head`, `sed`, a bare `grep`, `< .env` redirection, …)
-to a dotenv-style file **while it holds values missing from the vault**, and
-the deny reason is itself the fix:
+`env-guard.sh` denies content access (built-in `Read`, a content-mode `Grep`,
+or a Bash command that names the file) to a dotenv-style file (`.env`,
+`.env.*`, `*.env`, `.envrc`) **while it holds values missing from the vault**,
+and the deny reason is itself the fix. The Bash check tokenizes the command
+(`env_guard.env_reads`) and is deny-by-default: any command naming such a file
+counts as reading it — however the command name is quoted or spelled, through
+a glob, a variable, a symlink, `$(...)`, or after a `cd` anywhere in the
+command — except metadata and write forms (`ls`, `stat`, `test -f`, `wc`,
+`>> .env`, `git add`) and the presence checks below:
 
 ```
 prismor cloak add --env-file .env
@@ -94,7 +99,13 @@ prismor cloak add --env-file .env
 That command parses the file in the CLI process and registers every entry as
 its own `@@SECRET:name@@` placeholder — only names and byte counts are ever
 printed, so the values never enter model context. Once every entry is
-imported, the guard stands down and the registration-based hooks take over.
+imported, the guard stands down for plain viewers (`cat`, `head`, `grep` ...)
+and the registration-based hooks take over. A Bash command that sends a vaulted
+env file anywhere else (piped into a non-viewer, redirected to a file,
+uploaded, `git add`ed, sourced, re-encoded) is still denied: the output scrub
+only sees the tool output, so the real values would leave unredacted.
+secret-guard likewise denies a raw vaulted value in a Write, Edit or MCP call,
+since decloak only runs for Bash.
 The unimported-entry check runs through the same parser the importer uses
 (`env_guard.py` → `secrets_store._parse_env_line`), so guard and importer can
 never disagree about what "fully imported" means.
@@ -248,9 +259,10 @@ Enumerated honestly so you know what to layer on top:
 1. **Hand-typed secrets shorter than ~16 chars.** No prefix, too short for entropy heuristics, indistinguishable from benign text.
 2. **Secrets generated mid-turn** (`openssl rand`, `aws iam create-access-key`, `ssh-keygen`). The `sed`-wrap scrubber only knows about values already in `$PRISMOR_SECRETS_DIR`, so a freshly minted value flows through the *generating* command's output unscrubbed. `secret-guard.sh` does catch it on the *next* tool call if the value matches a known pattern (e.g. a generated `AKIA…` reused in a later command) — but a value with no recognizable shape still slips through.
 3. **The secrets directory itself**, if committed, synced, or backed up without exclusion. Treat it as a single point of failure.
-4. **Built-in `Read` of secret-bearing files.** `PostToolUse` can only rewrite MCP tool output, not built-in Read, so a Read cannot be scrubbed after the fact. `read-guard.sh` (a `PreToolUse:Read` hook, on by default) closes this by *denying* a Read whose target file contains a registered secret and directing the model to the `@@SECRET:name@@` placeholder instead. Disable with `prismor cloak install --no-read-guard` if a deny is too strict for your workflow.
+4. **Built-in `Read` / `Grep` / `Edit` of secret-bearing files.** `PostToolUse` can only rewrite MCP tool output, not built-in tools, so a Read, a content-mode Grep, or an Edit result snippet cannot be scrubbed after the fact. `read-guard.sh` (a `PreToolUse:Read` hook, on by default) closes this by *denying* a Read whose target file contains a registered secret and directing the model to the `@@SECRET:name@@` placeholder instead. Disable with `prismor cloak install --no-read-guard` if a deny is too strict for your workflow.
 5. **Codex hook mutation.** Codex hooks can block, but cannot rewrite Bash commands or scrub Bash output. In Codex enforce mode, Prismor blocks commands containing `@@SECRET:name@@` so placeholders do not execute literally. Use `prismor cloak run -- <command>` for a first-class decloak + execute + scrub path.
-6. **Assistant-side narration.** If the model already saw a real value (through paste, Read, or a command that bypassed the wrapper), it can echo the value in prose. Hooks cannot filter assistant text. Use `/clear` immediately after any suspected leak.
+6. **Encoded or transformed output, and the exit code.** The scrubbers match a registered value verbatim (plus its JSON-escaped form for MCP output). A command that prints it base64-encoded, reversed, split, or one byte per call through its exit status (`exit $(printf %d "'${v:0:1}")`) is not masked.
+7. **Assistant-side narration.** If the model already saw a real value (through paste, Read, or a command that bypassed the wrapper), it can echo the value in prose. Hooks cannot filter assistant text. Use `/clear` immediately after any suspected leak.
 
 For residue that slips through despite all of the above, run:
 
@@ -292,8 +304,8 @@ prismor/runtime/cloaking/
 │   ├── _patterns.sh        # shared bash loader (sourced by the guards)
 │   ├── decloak.sh          # PreToolUse:Bash — placeholder substitution + output scrub
 │   ├── scrub-stream.sh     # stdin filter — masks registered secrets in command output
-│   ├── read-guard.sh       # PreToolUse:Read — deny reads of secret-bearing files
-│   ├── env-guard.sh        # PreToolUse:Read|Bash — deny access to unimported .env files
+│   ├── read-guard.sh       # PreToolUse:Read|Grep|Edit|MultiEdit — deny content of secret-bearing files
+│   ├── env-guard.sh        # PreToolUse:Read|Bash|Grep — deny access to unimported .env files
 │   ├── secret-guard.sh     # PreToolUse — detect raw secrets, vault + deny
 │   ├── recloak-mcp.sh      # PostToolUse:mcp__.*
 │   ├── userprompt-guard.sh # UserPromptSubmit soft-block

@@ -81,3 +81,28 @@ def test_format_table_and_prompt(db):
     assert out.splitlines()[0].split() == ["a", "b"]
     assert format_rows([], "table") == "(no rows)"
     assert str(db) in agent_prompt(db) and "prismor query" in agent_prompt(db)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT hex(evidence) AS v FROM findings WHERE finding_id = 'f1'",
+    "SELECT replace(evidence, 'sk_live_', 'x') AS v FROM findings WHERE finding_id = 'f1'",
+    "SELECT substr(evidence, 1, 40) || '|' || substr(evidence, 41) AS v FROM findings WHERE finding_id = 'f1'",
+    "SELECT hex(evidence) AS v FROM main.findings WHERE finding_id = 'f1'",
+])
+def test_sql_functions_cannot_reshape_a_secret_past_redaction(db, sql):
+    try:
+        rows = run_query(sql, db)
+    except QueryError:
+        return  # direct main.<table> reads are refused
+    v = rows[0]["v"]
+    assert KEY not in v and KEY.encode().hex().upper() not in v
+    assert "abcdefghij" * 4 not in v.replace("|", "")
+
+
+def test_redacted_views_keep_ordinary_queries_working(db):
+    rows = run_query("SELECT count(*) AS n, max(severity) AS s FROM findings WHERE session_id = 's1'", db)
+    assert rows == [{"n": 2, "s": "LOW"}]
+    rows = run_query("SELECT json_extract(enrichment_json, '$.ruleId') AS r FROM findings "
+                     "WHERE finding_id = 'f2'", db)
+    assert rows == [{"r": "x"}]
+    assert run_query("SELECT name FROM sqlite_master WHERE type = 'table'", db) == [{"name": "findings"}]

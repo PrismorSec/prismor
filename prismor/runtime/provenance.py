@@ -53,6 +53,7 @@ VIA_ARTIFACT = "via.artifact"
 
 _MAX_ENTRIES = 5000
 _MAX_READERS = 20
+_MAX_LABELS = 8
 
 
 def store_path() -> Path:
@@ -98,8 +99,15 @@ def record_write(
     tool: str,
     index: int = 0,
     cwd: Optional[Path] = None,
+    label: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Remember that ``session`` wrote ``path`` while holding ``tags``.
+
+    ``label`` is the writer's session label (``contracts.Label.carried``):
+    the audience and trust of what it had read. It follows the same rules the
+    tags do -- another writer's label stays alongside this one, and a session
+    rewriting its own file replaces what it said before -- so a note written
+    after reading ``team:billing`` carries that audience to whoever reads it.
 
     Tags accumulate across *different* writers: a file that once held untrusted
     content is not laundered by a second agent appending a line to it.
@@ -114,6 +122,11 @@ def record_write(
     its own earlier one. Another agent's contribution still survives, which is
     what stops this being a laundering path.
     """
+    if "$" in str(path):
+        # An unexpanded `$S/run.py` is not a file: its literal key is shared by
+        # every session that uses the same variable name in the same cwd, so
+        # one tainted session marked all the others' scratch scripts.
+        return
     key = resolve(path, cwd)
     if not key or key in ("/", "."):
         return
@@ -127,13 +140,38 @@ def record_write(
             entry = entries.get(key)
             if not isinstance(entry, dict):
                 entry = {"tags": [], "readers": []}
-            _prior = (entry.get("writer") or {}).get("session")
-            _keep: Set[str] = (
-                set() if (_prior and _prior == session)
-                else {str(t) for t in entry.get("tags") or []}
-            )
-            entry["tags"] = sorted(_keep | set(tags))
-            if not entry["tags"]:
+            # Tags are kept per writer, so a rewrite replaces only the writer's
+            # own: clearing on "last writer rewrote" also dropped every other
+            # writer's tags (A untrusted, B appends twice -> clean). An entry
+            # from before `tag_by` existed is all its last writer's.
+            _by = _tag_by(entry)
+            _by.pop(session, None)
+            if tags:
+                _by[session] = sorted(set(tags))
+            if len(_by) > _MAX_READERS:
+                # Too many writers to keep apart: fold the oldest into one
+                # bucket no session owns, so no rewrite can clear it.
+                _old = [s for s in _by if s][:len(_by) - _MAX_READERS + 1]
+                _by[""] = sorted(set(_by.get("", [])).union(*(_by.pop(s) for s in _old)))
+            entry["tag_by"] = _by
+            entry["tags"] = sorted({t for ts in _by.values() for t in ts})
+            # Each label remembers its writer, so a rewrite replaces only that
+            # writer's own: dropping another's would widen what readers inherit.
+            _labels = [
+                lab for lab in entry.get("labels") or []
+                if isinstance(lab, dict) and lab.get("by") != session
+            ]
+            if label:
+                _labels.append({**label, "by": session})
+            if len(_labels) > _MAX_LABELS:
+                # Too many writers to keep apart, and dropping one would widen
+                # what the next reader inherits. Readable by no one instead.
+                _labels = [{"audience": [], "trust": "untrusted", "by": ""}]
+            if _labels:
+                entry["labels"] = _labels
+            else:
+                entry.pop("labels", None)
+            if not entry["tags"] and not _labels:
                 # Nothing left to say about this file. Dropping it keeps an
                 # ordinary write from recording anything at all (the common
                 # case) and lets a same-session rewrite actually clear.
@@ -218,6 +256,26 @@ def record_read(
         pass
 
 
+def _tag_by(entry: Dict[str, Any]) -> Dict[str, List[str]]:
+    """``{writer session: its tags}``; a pre-``tag_by`` entry is all its last
+    writer's."""
+    by = entry.get("tag_by")
+    if isinstance(by, dict):
+        return {str(s): [str(t) for t in ts or []] for s, ts in by.items()}
+    tags = [str(t) for t in entry.get("tags") or []]
+    return {str((entry.get("writer") or {}).get("session") or ""): tags} if tags else {}
+
+
+def read_labels(entry: Dict[str, Any], session: str) -> List[Dict[str, Any]]:
+    """Session labels a reader inherits from an artifact's entry: every
+    writer's but its own, as with :func:`read_tags`."""
+    writer = entry.get("writer") or {}
+    if not writer:
+        return []
+    return [lab for lab in entry.get("labels") or []
+            if isinstance(lab, dict) and lab.get("by", writer.get("session")) != session]
+
+
 def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
     """Tags a reading session inherits from an artifact's entry.
 
@@ -226,9 +284,13 @@ def read_tags(entry: Dict[str, Any], session: str) -> Set[str]:
     in its ledger.
     """
     writer = entry.get("writer") or {}
-    if not writer or writer.get("session") == session:
+    if not writer:
         return set()
-    tags = {str(t) for t in entry.get("tags") or []}
+    # Every writer's tags but the reader's own: being the last writer does not
+    # make another session's untrusted content in the file this session's.
+    tags = {t for s, ts in _tag_by(entry).items() if s != session for t in ts}
+    if writer.get("session") == session:
+        return tags | {VIA_ARTIFACT} if tags else set()
     tags.add(VIA_ARTIFACT)
     if writer.get("agent"):
         tags.add(f"from.{writer['agent']}")
@@ -520,6 +582,8 @@ class _Scanner:
 
     def __init__(self, cwd: Optional[Path]) -> None:
         self.cwd = cwd
+        # False after `cd $S` / `cd -`: relative paths then name no known file.
+        self.cwd_known = True
         self.out = ShellScan(set(), set(), set())
         self.tainted: Set[str] = set()
         self.parts: List[Tuple[str, str]] = []
@@ -555,8 +619,16 @@ class _Scanner:
         or a deleted file, not to anything under /dev."""
         if not _word(tok) or tok.startswith("/dev/"):
             return ""
+        if not self.cwd_known and not tok.startswith(("/", "~")):
+            return ""
         key = resolve(tok, self.cwd)
         return "" if key.startswith("/dev/") else key
+
+    def cd(self, target: str) -> None:
+        if target == "-" or not _word(target) or "$" in target or "`" in target:
+            self.cwd_known = False
+        elif self.cwd_known or target.startswith(("/", "~")):
+            self.cwd, self.cwd_known = Path(resolve(target, self.cwd)), True
 
     def scan(self, command: str, depth: int) -> bool:
         """Scan ``command``. True when it puts fetched content on its output,
@@ -584,6 +656,10 @@ class _Scanner:
                     i += 1
                 cmd = os.path.basename(seg[i]) if i < len(seg) else ""
                 args = seg[i + 1:]
+                if cmd == "cd":
+                    # `cd dir && cat > x.py` writes dir/x.py, not <cwd>/x.py.
+                    # ponytail: a `( cd x; ... )` subshell's cd leaks past it.
+                    self.cd(args[0] if args else "~")
                 if cmd in _ASSIGN_CMDS:
                     for a in args:
                         m = _ASSIGN_RE.match(a)
@@ -654,6 +730,21 @@ class _Scanner:
                     fetched_any = True
                 carrying = seg_carries
         return fetched_any
+
+
+def segment_cwds(command: str, cwd: Optional[Path]) -> List[Tuple[str, Optional[Path]]]:
+    """``[(segment, cwd it runs in)]`` split at shell operators, following ``cd``.
+
+    The cwd is None after a ``cd`` to a place that cannot be known statically.
+    """
+    sc = _Scanner(cwd)
+    out: List[Tuple[str, Optional[Path]]] = []
+    for seg in re.split(r"\s*(?:;|&&|\|\||\||\n)\s*", command or ""):
+        words = seg.split()
+        if words and words[0] == "cd":
+            sc.cd(words[1].strip("\"'") if len(words) > 1 else "~")
+        out.append((seg, sc.cwd if sc.cwd_known else None))
+    return out
 
 
 def shell_paths(command: str, cwd: Optional[Path] = None) -> Tuple[Set[str], Set[str]]:

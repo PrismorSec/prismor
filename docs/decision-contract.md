@@ -46,6 +46,8 @@ A normalized event describes one thing an agent is about to do (or just did).
     "kwargs": {"command": "rm -rf /"},  # optional: raw arguments, read as `args.*`
     "resource": {"kind": "doc", "id": "d-1", "attr": {"owner": "alice"}},
                                # optional: the call's target, read as `resource.*`
+    "subagent_id": "Researcher-4411", "subagent_type": "Researcher",
+                               # optional: the subagent making the call, read as `subagent.*`
   },
 }
 ```
@@ -53,7 +55,13 @@ A normalized event describes one thing an agent is about to do (or just did).
 The eval-server also speaks [AuthZEN](authzen.md) for callers that use that
 standard instead.
 
-`kwargs` and `resource` feed [attribute conditions](attribute-conditions.md).
+`kwargs`, `resource` and the subagent fields feed
+[attribute conditions](attribute-conditions.md). On `POST /v1/evaluate` the
+subagent goes in the body as `"subagent": {"id": "...", "type": "...", "parent": "...", "depth": 2, "chain": ["..."]}`
+(`parent`, `depth` and `chain` optional; without them depth is 1 and the chain is the parent;
+`root` names the session the caller's subagents are counted in, for `subagent.number`).
+A call that hands work to a subagent can carry `"handoff_to": "<subagent type>"`, so
+`settings.data_boundary.handoffs` screens its arguments.
 Both are additive; the contract version is unchanged. A caller that passes
 `explain=True` also gets `Decision.explain`, a trace of the rules that matched
 (see [explaining a decision](attribute-conditions.md#explaining-a-decision)).
@@ -158,7 +166,9 @@ the file with the credential masked.
 
 Surfaces that see tool output share one implementation,
 [`prismor/runtime/redaction.py`](../prismor/runtime/redaction.py): cloak
-secrets first (an exact-value swap), then data-boundary classification.
+secrets first (an exact-value swap), then data-boundary classification. When
+`settings.pii` is enabled with `action: redact` and `mode: enforce`, a third
+pass masks Presidio hits. It is not imported otherwise. See [PII detection](pii.md).
 
 Redaction is best-effort by contract — it never raises and never fails a call
 closed. Pre-call policy has already had its say and the result scan still gets a
@@ -200,6 +210,13 @@ Prefer the `event` form when a field must stay addressable. The
 `tool_name` + `arguments` form joins every argument value into one string, which
 is fine for regex matching but loses the distinction between a `file_write`'s
 path and its content.
+
+Pass `session_id` to tie a caller's calls together: taint from an earlier call
+(an injection seen in a tool result) carries to later calls in the same session.
+A call that names no session gets one of its own, never another caller's. The
+server writes no session transcript; decisions reach the console as telemetry.
+It caps the semantic judge at 4s per call by default (`PRISMOR_SEMANTIC_BUDGET_MS`,
+or `budget_ms` in policy), under the adapters' 5s `PRISMOR_EVAL_TIMEOUT`.
 
 Bind beyond localhost only with `--api-key` (or `PRISMOR_EVAL_KEY`): anyone who
 can reach the port can otherwise evaluate against your policy.

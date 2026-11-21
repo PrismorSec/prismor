@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -41,12 +42,15 @@ class TestHookApprovals(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("PRISMOR_HOME", None)
 
-    def _hook(self, command, agent="codex"):
+    def _hook(self, command, agent="codex", call_id=None, workspace_flag=False):
         payload = {"hook_event_name": "PreToolUse", "session_id": "s1", "cwd": str(self.ws),
                    "tool_name": "Bash", "tool_input": {"command": command}}
+        if call_id:
+            payload["tool_use_id"] = call_id
+        ws_args = ["--workspace", str(self.ws)] if workspace_flag else []
         return subprocess.run(
             [sys.executable, "-m", "prismor.runtime.immunity_cli", "hook-dispatch",
-             "--agent", agent, "--mode", "enforce"],
+             "--agent", agent, "--mode", "enforce", *ws_args],
             input=json.dumps(payload), capture_output=True, text=True, cwd=self.ws,
             env=self.env, timeout=120)
 
@@ -65,6 +69,79 @@ class TestHookApprovals(unittest.TestCase):
         again = self._hook("echo approval-canary")
         self.assertEqual(again.returncode, 2, "an approval is spent by the call it lets through")
         self.assertNotEqual(self._pending()[0]["id"], req["id"])
+
+    def test_global_and_project_hook_share_one_approval(self):
+        # #752: a global hook (no --workspace) and a project hook both screen
+        # each call. The first spent the approval, the second blocked the same
+        # call under a new id, forever.
+        cmd = "echo approval-canary"
+        self.assertEqual(self._hook(cmd, call_id="t1").returncode, 2)
+        self.assertEqual(self._hook(cmd, call_id="t1", workspace_flag=True).returncode, 2)
+        (req,) = self._pending()
+        approvals_local.decide(req["id"], approve=True)
+        self.assertEqual(self._hook(cmd, call_id="t2").returncode, 0)
+        self.assertEqual(self._hook(cmd, call_id="t2", workspace_flag=True).returncode, 0)
+        self.assertEqual(self._hook(cmd, call_id="t3").returncode, 2, "still once only")
+
+    def test_nested_project_and_global_hook_share_one_approval(self):
+        # The global hook selects the Git root; --workspace selects the project.
+        (self.ws / ".git").mkdir()
+        self.ws = self.ws / "project"
+        (self.ws / ".prismor").mkdir(parents=True)
+        (self.ws / ".prismor" / "policy.yaml").write_text(_CANARY_POLICY)
+        cmd = "echo approval-canary"
+        for project in (False, True):
+            self.assertEqual(self._hook(cmd, agent="claude", call_id="t1",
+                                        workspace_flag=project).returncode, 2)
+        (req,) = self._pending()
+        approvals_local.decide(req["id"], approve=True)
+        for project in (True, False):
+            self.assertEqual(self._hook(cmd, agent="claude", call_id="t2",
+                                        workspace_flag=project).returncode, 0)
+        self.assertEqual(self._hook(cmd, agent="claude", call_id="t3").returncode, 2)
+
+    def test_fingerprint_keeps_action_and_session_boundaries(self):
+        payload = {"cwd": str(self.ws), "session_id": "s1", "tool_name": "Bash",
+                   "tool_input": {"command": "echo approval-canary"}}
+        fp = approvals_local.fingerprint("claude", self.ws, payload, {})
+        self.assertEqual(fp, approvals_local.fingerprint("claude", self.ws.parent, payload, {}))
+        for change in ({"cwd": str(self.ws / "other")}, {"session_id": "s2"},
+                       {"tool_name": "Other"}, {"tool_input": {"command": "another call"}}):
+            with self.subTest(change=change):
+                self.assertNotEqual(fp, approvals_local.fingerprint("claude", self.ws, payload | change, {}))
+        self.assertNotEqual(fp, approvals_local.fingerprint("codex", self.ws, payload, {}))
+        for change in ({"cwd": ""}, {"cwd": "relative"}, {"cwd": None}, {"session_id": ""}):
+            incomplete = payload | change
+            self.assertNotEqual(approvals_local.fingerprint("claude", self.ws, incomplete, {}),
+                                approvals_local.fingerprint("claude", self.ws.parent, incomplete, {}))
+
+    def test_hold_open_approval_is_shared_only_by_the_same_call(self):
+        req = approvals_local.request("fp", agent="claude", session_id="s1", finding={}, summary="test")
+        approvals_local.decide(req["id"], approve=True)
+        with patch.object(approvals_local.time, "sleep"):
+            self.assertTrue(approvals_local.wait(req["id"], 1, call_id="t1"))
+            self.assertTrue(approvals_local.wait(req["id"], 1, call_id="t1"))
+            self.assertFalse(approvals_local.wait(req["id"], 1, call_id="t2"))
+        self.assertIsNotNone(approvals_local.consume("fp", "t1"))
+        self.assertIsNone(approvals_local.consume("fp", "t2"))
+        req = approvals_local.request("expired", agent="claude", session_id="s1", finding={}, summary="test")
+        approvals_local.decide(req["id"], approve=True)
+        with patch.object(approvals_local.time, "sleep"), patch.object(
+            approvals_local.time, "time", return_value=approvals_local.time.time() + approvals_local.APPROVED_TTL + 1
+        ):
+            self.assertFalse(approvals_local.wait(req["id"], 1, call_id="t3"))
+            self.assertIsNone(approvals_local.consume("expired", "t3"))
+
+    def test_call_allowed_another_way_closes_its_request(self):
+        # Allowed in the agent's prompt, by `prismor allow` or a policy change:
+        # the call ran, so the dashboard must stop asking about it.
+        self._hook("echo approval-canary")
+        (req,) = self._pending()
+        self.assertEqual(req["tool"], "Bash")
+        self.assertEqual(Path(req["workspace"]).resolve(), self.ws.resolve())
+        (self.ws / ".prismor" / "policy.yaml").write_text("rules: []\n")
+        self.assertEqual(self._hook("echo approval-canary").returncode, 0)
+        self.assertEqual(self._pending(), [])
 
     def test_approval_is_for_that_exact_call(self):
         self._hook("echo approval-canary one")

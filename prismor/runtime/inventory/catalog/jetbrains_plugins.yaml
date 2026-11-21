@@ -1,0 +1,84 @@
+# JetBrains plugin ids. ``xmlId`` values were read from
+# https://plugins.jetbrains.com/api/plugins/<id> or the search API on 2026-11-03.
+# Continue has no current Marketplace hit for these search terms; it is omitted
+# rather than guessed.
+- id: jetbrains-ai
+  name: JetBrains AI Assistant
+  vendor: JetBrains
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: agent
+  match: {plugin_id: com.intellij.ml.llm}
+  marketplace_id: 22282
+  source_url: https://plugins.jetbrains.com/plugin/22282-jetbrains-ai-assistant
+  verified: true
+- id: junie
+  name: Junie
+  vendor: JetBrains
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: agent
+  match: {plugin_id: org.jetbrains.junie}
+  marketplace_id: 26104
+  source_url: https://plugins.jetbrains.com/plugin/26104-junie-the-ai-coding-agent-by-jetbrains
+  verified: true
+- id: copilot-jetbrains
+  name: GitHub Copilot
+  vendor: GitHub
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: agent
+  match: {plugin_id: com.github.copilot}
+  marketplace_id: 17718
+  source_url: https://plugins.jetbrains.com/plugin/17718-github-copilot--your-ai-pair-programmer
+  verified: true
+- id: windsurf-jetbrains
+  name: Windsurf
+  vendor: Windsurf
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: completion
+  match: {plugin_id: com.codeium.intellij}
+  marketplace_id: 20540
+  source_url: https://plugins.jetbrains.com/plugin/20540
+  verified: true
+- id: tabnine-jetbrains
+  name: Tabnine
+  vendor: Tabnine
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: completion
+  match: {plugin_id: com.tabnine.TabNine}
+  marketplace_id: 12798
+  source_url: https://plugins.jetbrains.com/plugin/12798--legacy-tabnine
+  verified: true
+- id: amazon-q-jetbrains
+  name: Amazon Q
+  vendor: Amazon Web Services
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: agent
+  match: {plugin_id: amazon.q}
+  marketplace_id: 24267
+  source_url: https://plugins.jetbrains.com/plugin/24267-amazon-q
+  verified: true
+- id: cody-jetbrains
+  name: Cody
+  vendor: Sourcegraph
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: chat
+  match: {plugin_id: com.sourcegraph.jetbrains}
+  marketplace_id: 9682
+  source_url: https://plugins.jetbrains.com/plugin/9682
+  verified: true
+- id: gemini-jetbrains
+  name: Gemini Code Assist
+  vendor: Google
+  kind: ide_extension
+  editor: jetbrains
+  ai_capability: completion
+  match: {plugin_id: com.google.tools.ij.aiplugin}
+  marketplace_id: 24198
+  source_url: https://plugins.jetbrains.com/plugin/24198-gemini-code-assist
+  verified: true

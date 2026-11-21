@@ -15,8 +15,8 @@ name: Release Adapters
 # documented the `prismor[...]` extras path, not a standalone install.)
 #
 # npm side: set an automation token as the NPM_TOKEN repo secret; the job
-# skips cleanly when it's absent. Publishes prismor-vercel and
-# prismor-mastra — genuinely separate packages since a Python wheel can't
+# skips cleanly when it's absent. Publishes @prismor/vercel-ai and
+# @prismor/mastra — genuinely separate packages since a Python wheel can't
 # bundle TypeScript.
 
 on:
@@ -54,7 +54,7 @@ jobs:
         if: env.NPM_TOKEN != ''
         working-directory: adapters/${{ matrix.adapter }}
         run: |
-          npm install
+          npm ci
           npm run build
           npm publish --access public
         env:

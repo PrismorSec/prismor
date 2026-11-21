@@ -276,11 +276,12 @@ class TestRefusals(unittest.TestCase):
             "prismor.runtime.enterprise.remote_policy.cached_policy_path",
             return_value=signed,
         ):
-            refusal = allow.check_allowed(
-                "risky-write", scope="pattern", workspace=ws, confirmed=True
-            )
-        self.assertIsNotNone(refusal)
-        self.assertIn("organization", refusal)
+            for rule_id in ("risky-write", "tag-rule:00d30a0689"):
+                refusal = allow.check_allowed(
+                    rule_id, scope="pattern", workspace=ws, confirmed=True
+                )
+                self.assertIsNotNone(refusal)
+                self.assertIn("organization", refusal)
 
     def test_managed_without_a_pushed_policy_still_allows_local_edits(self):
         # An org that has not configured repo scoping manages every workspace by

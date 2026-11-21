@@ -13,11 +13,13 @@ from prismor.runtime.feed_signature import (
 )
 
 CATEGORY_TO_FEED_TYPES = {
+    "rate_limit": {"model_denial_of_service"},
     "prompt_injection": {"prompt_injection", "jailbreak", "policy_bypass"},
     "destructive_command": {"unsafe_tool_execution", "policy_bypass"},
     "remote_execution": {"unsafe_tool_execution", "policy_bypass"},
     "secret_access": {"data_exfiltration", "policy_bypass"},
     "secret_exfiltration": {"data_exfiltration", "policy_bypass"},
+    "pii_exposure": {"data_exfiltration"},
     "risky_write": {"unsafe_tool_execution", "dependency_vulnerability"},
     "dependency_risk": {"dependency_vulnerability"},
     "dos_resource_exhaustion": {"model_denial_of_service"},

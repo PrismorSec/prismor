@@ -60,12 +60,14 @@ the agent it is supposed to be governing.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 from collections import OrderedDict
 import hmac
 import json
 import os
 import queue
+import struct
 import re
 import signal
 import ssl
@@ -73,23 +75,27 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from datetime import datetime, timezone
 from http.client import HTTPConnection, HTTPSConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
+
+from prismor.runtime.http_gate import browser_gate
 
 PROXY_AGENT = "prismor-proxy"
 SURFACE_ID = "llm-proxy"
 
 #: Path → provider. The client points its SDK at us with no other change, so
 #: the route has to be inferred from the request the SDK would have sent
-#: anyway. Unknown paths are forwarded to the default upstream unscreened but
-#: logged (auth handshakes, /v1/models, health checks).
+#: anyway. A generation path that is not in this list is refused in enforce
+#: mode. Health, model listing, and embeddings stay on the passthrough list.
 PROVIDER_ROUTES: Tuple[Tuple[str, str], ...] = (
     ("/v1/messages", "anthropic"),
+    ("/v1/completions", "openai"),
     ("/v1/complete", "anthropic"),
     ("/v1/chat/completions", "openai"),
     ("/v1/responses", "openai"),
@@ -99,18 +105,61 @@ PROVIDER_ROUTES: Tuple[Tuple[str, str], ...] = (
     # /publishers/google/models/... form with one entry each.
     (":generateContent", "google"),
     (":streamGenerateContent", "google"),
+    (":batchGenerateContent", "google"),
     # Bedrock InvokeModel carries the Anthropic messages shape in its body
     # (system + messages, content blocks out), so the anthropic normalizer and
     # every anthropic rule already fit it -- only the path needed naming.
-    # invoke-with-response-stream is deliberately absent: its response is AWS
-    # event-stream framing, not SSE, so it cannot be reframed and is forwarded
-    # (signed) but unscreened.
+    # The response is AWS event-stream framing, not SSE. The request is still
+    # screened; a tool call in it must not be forwarded unscreened.
+    ("/invoke-with-response-stream", "anthropic"),
     ("/invoke", "anthropic"),
     # Azure OpenAI puts the deployment in the path:
     # /openai/deployments/<d>/chat/completions?api-version=... -- so the
     # "/v1/chat/completions" suffix above never matches it.
     ("/chat/completions", "openai"),
 )
+
+# Not generation. Enforce mode forwards these and refuses every other
+# unlisted path, so a new completions URL cannot skip the screen.
+_PASSTHROUGH_PATHS = (
+    "/v1/models",
+    "/models",
+    "/health",
+    "/healthz",
+    "/readyz",
+    "/livez",
+    "/v1/embeddings",
+    "/embeddings",
+    "/v1/moderations",
+    "/countTokens",
+    ":countTokens",
+    "/count_tokens",
+    "/tokenize",
+)
+
+# GET /v1/models/<id> and Gemini /v1beta/models/<model>: a lookup, not a call.
+_MODEL_LOOKUP = re.compile(r"/models/[^/:]+$")
+
+
+def normalized_path(path: str) -> str:
+    """Path only, percent-decoded, no trailing slash."""
+    return unquote(urlsplit(path).path).rstrip("/") or "/"
+
+
+def generation_route(path: str):
+    """(suffix, provider) for a generation path, longest suffix first."""
+    norm = normalized_path(path)
+    hits = [item for item in PROVIDER_ROUTES if norm.endswith(item[0]) or norm == item[0]]
+    if not hits:
+        return None
+    return max(hits, key=lambda item: len(item[0]))
+
+
+def is_passthrough(path: str) -> bool:
+    norm = normalized_path(path)
+    if _MODEL_LOOKUP.search(norm):
+        return True
+    return any(norm.endswith(suffix) or norm == suffix for suffix in _PASSTHROUGH_PATHS)
 
 #: Substring → provider, for paths that are *routed* but not screened: token
 #: counting, model listing, embeddings, file uploads. The credential sniff in
@@ -155,7 +204,10 @@ _STRIP_REQUEST_HEADERS = frozenset({
     "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
     "te", "trailers", "transfer-encoding", "upgrade", "content-length",
     "accept-encoding",  # we do not decompress, so do not let the upstream compress
+    "origin",  # a browser's Origin is the proxy's business, not the provider's
 })
+# Request body cap. Generous: multimodal turns carry base64 images and PDFs.
+MAX_BODY_BYTES = 32 * 1024 * 1024
 _STRIP_RESPONSE_HEADERS = frozenset({
     "connection", "keep-alive", "transfer-encoding", "content-encoding",
     "content-length", "upgrade",
@@ -463,34 +515,63 @@ def conversation_key(body: Dict[str, Any]) -> str:
 
 def response_tool_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[str, Any]]:
     """``(tool_name, arguments)`` for every tool call in a completed response."""
-    calls: List[Tuple[str, Any]] = []
+    return [(name, args) for _, name, args in _response_calls(provider, body)]
+
+
+def _response_calls(provider: str, body: Dict[str, Any]) -> List[Tuple[Any, str, Any]]:
+    """``(call object, tool_name, arguments)`` for every tool call in a response.
+
+    The object is the dict ``_strip_blocked_calls`` later walks, so a verdict
+    keyed by ``id(obj)`` lands on exactly that call. Keying by tool name would
+    strip every parallel call that shares a name (``bash`` x2) with a denied one.
+    """
+    calls: List[Tuple[Any, str, Any]] = []
     if provider == "google":
         for candidate in body.get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             for part in content.get("parts") or []:
                 call = part.get("functionCall") if isinstance(part, dict) else None
                 if isinstance(call, dict):
-                    calls.append((str(call.get("name") or ""), call.get("args") or {}))
+                    calls.append((call, str(call.get("name") or ""), call.get("args") or {}))
         return calls
     if provider == "anthropic":
         for block in body.get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls.append((str(block.get("name") or ""), block.get("input")))
+                calls.append((block, str(block.get("name") or ""), block.get("input")))
         return calls
     for choice in body.get("choices") or []:
         message = (choice or {}).get("message") or {}
         for call in message.get("tool_calls") or []:
             fn = (call or {}).get("function") or {}
-            calls.append((str(fn.get("name") or ""), _loads(fn.get("arguments"))))
+            calls.append((call, str(fn.get("name") or ""), _loads(fn.get("arguments"))))
         legacy = message.get("function_call")
         if isinstance(legacy, dict) and legacy.get("name"):
-            calls.append((str(legacy.get("name") or ""), _loads(legacy.get("arguments"))))
+            calls.append((legacy, str(legacy.get("name") or ""), _loads(legacy.get("arguments"))))
     # Responses API
     for item in body.get("output") or []:
         call = _response_item_call(item)
         if call is not None:
-            calls.append(call)
+            calls.append((item, *call))
     return calls
+
+
+def _denial(blocked: Dict[Any, str], obj: Any, name: Any) -> Optional[str]:
+    """The refusal for this one call: by object, then Responses item id, then name.
+
+    The buffered path keys by ``id(obj)``; the streamed Responses path, which
+    sees the call again as a fresh object in ``response.completed``, keys by
+    ``item:<id>`` plus the tool name. A call that carries an id is matched by
+    id only, so an allowed sibling of the same name survives; one with no id
+    falls back to the name, which over-strips rather than letting a denied
+    call back through.
+    """
+    if id(obj) in blocked:
+        return blocked[id(obj)]
+    per_call = any(not isinstance(k, str) or k.startswith("item:") for k in blocked)
+    ids = [obj.get(f) for f in ("id", "call_id")] if isinstance(obj, dict) else []
+    if per_call and any(ids):
+        return next((blocked[f"item:{v}"] for v in ids if v and f"item:{v}" in blocked), None)
+    return blocked.get(name) if isinstance(name, str) else None
 
 
 def _response_item_call(item: Any) -> Optional[Tuple[str, Any]]:
@@ -538,12 +619,17 @@ def model_of(provider: str, path: str, body: Optional[Dict[str, Any]]) -> str:
 
 
 def is_streaming(provider: str, path: str, body: Optional[Dict[str, Any]]) -> bool:
-    """Gemini streams by *method name*; the others by a ``stream`` body flag."""
+    """Gemini and Bedrock stream by *path*; the others by a ``stream`` body flag."""
     if provider == "a2a":
         return False
     if provider == "google":
         return ":streamGenerateContent" in path
-    return bool((body or {}).get("stream"))
+    return bool((body or {}).get("stream")) or is_eventstream(path)
+
+
+def is_eventstream(path: str) -> bool:
+    """Bedrock InvokeModelWithResponseStream: AWS event-stream framing, not SSE."""
+    return path.rstrip("/").endswith("/invoke-with-response-stream")
 
 
 # ── the screen ───────────────────────────────────────────────────────────────
@@ -594,6 +680,16 @@ class Screen:
         )
         self._writer.start()
         Screen._all.append(self)
+        self._connections: Any = None
+        self._connections_at = 0.0
+
+    def connections(self) -> Any:
+        """The workspace's agent_connections, re-read every few seconds (~20ms a build)."""
+        if self._connections is None or time.monotonic() - self._connections_at > 5:
+            from prismor.runtime.policy_engine import PolicyEngine
+            self._connections = PolicyEngine(workspace=self.workspace).agent_connections
+            self._connections_at = time.monotonic()
+        return self._connections
 
     # -- events ----------------------------------------------------------
 
@@ -715,6 +811,9 @@ class Screen:
         event = self._base("PreToolUse", subject, session_id)
         event["metadata"].update({"provider": provider, "model": model,
                                   "tool_name": tool_name, "proposed": True})
+        if isinstance(arguments, dict):
+            # Structured arguments for contract selectors (`tool(arg:glob)`).
+            event["metadata"]["call_args"] = arguments
         try:
             from prismor.runtime import mirror
             shaped = mirror.shape_call_event(*_native_call(tool_name, arguments))
@@ -860,12 +959,38 @@ class Screen:
     def blocking(self, decision: Any) -> Optional[Dict[str, Any]]:
         """The finding that should stop this call, or None.
 
-        ``observe`` never blocks — it is the mode people switch the proxy on
-        in, and a proxy that blocks in observe mode gets switched off again.
+        ``observe`` never blocks on a detection — it is the mode people switch
+        the proxy on in, and a proxy that blocks in observe mode gets switched
+        off again. An operator's own switch (agent-control: agent disabled, a
+        denied tool) or an org-signed ``authoritative`` decision still blocks,
+        the same exemption the runtime gives the hook lane (#885).
         """
-        if decision is None or self.mode != "enforce":
-            return None
-        return getattr(decision, "blocking", None)
+        blocking = getattr(decision, "blocking", None) if decision is not None else None
+        if blocking is None and self.mode == "enforce" and decision is not None:
+            # The LLM request is a "prompt" event, never pre-action, so the
+            # runtime does not block it; a model or spend finding still must,
+            # before the request reaches the provider.
+            from prismor.runtime.contract import strongest
+            return strongest([
+                f for f in (getattr(decision, "findings", None) or [])
+                if f.get("category") == "spend_limit"
+                and str(f.get("mode", "observe")).lower() == "enforce"])
+        if blocking is None or self.mode == "enforce":
+            return blocking
+
+        def pinned(f: Dict[str, Any]) -> bool:
+            return f.get("category") == "agent-control" or bool(f.get("authoritative"))
+
+        if pinned(blocking):
+            return blocking
+        # On an enrolled machine the runtime's pick may be an ordinary
+        # detection sitting ahead of a pinned one; observe drops only the former.
+        from prismor.runtime.contract import strongest
+        return strongest([
+            f for f in (getattr(decision, "findings", None) or [])
+            if pinned(f) and not f.get("contextInert")
+            and str(f.get("mode", "observe")).lower() == "enforce"
+        ])
 
     def redact(self, text: str) -> str:
         """Mask cloak secrets and data-boundary values in model-bound text.
@@ -877,31 +1002,11 @@ class Screen:
         try:
             from prismor.runtime.redaction import redact_text
             out, _ = redact_text(text, workspace=self.workspace,
-                                 data_boundary=self.mode == "enforce",
-                                 engine=self._redact_engine())
+                                 data_boundary=self.mode == "enforce")
             return out
         except Exception:
             return text
 
-    #: How long one policy engine serves ``redact``. A request body is masked
-    #: string by string, and a coding agent's body holds thousands of strings
-    #: (system prompt, tool schemas, history). A fresh engine per string cost
-    #: two ``git config`` subprocesses each: ~100s of overhead on a one-word
-    #: Claude Code prompt. A few seconds keeps policy edits prompt.
-    _ENGINE_TTL = 5.0
-
-    def _redact_engine(self) -> Any:
-        cached = getattr(self, "_engine_cache", None)
-        now = time.monotonic()
-        if cached and now - cached[1] < self._ENGINE_TTL:
-            return cached[0]
-        try:
-            from prismor.runtime.policy_engine import PolicyEngine
-            engine = PolicyEngine(workspace=self.workspace)
-        except Exception:
-            return None  # redact_text builds its own; masking must not fail open
-        self._engine_cache = (engine, now)
-        return engine
 
 
 # ── cloud-provider credentials ───────────────────────────────────────────────
@@ -957,7 +1062,8 @@ def _canonical_query(query: str) -> str:
 def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
                   region: str, service: str, method: str, canonical_uri: str,
                   query: str, payload: bytes, host: str,
-                  now: Optional[datetime] = None) -> Dict[str, str]:
+                  now: Optional[datetime] = None,
+                  extra_signed: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """AWS SigV4 for one request, stdlib only.
 
     Pinned by a signature computed from the published AWS example credentials
@@ -970,16 +1076,25 @@ def sigv4_headers(*, access_key: str, secret_key: str, session_token: str,
     datestamp = now.strftime("%Y%m%d")
     payload_hash = hashlib.sha256(payload or b"").hexdigest()
 
-    # Canonical headers must be sorted by lowercased name; host, x-amz-date and
-    # x-amz-security-token already are.
-    canonical_headers = f"host:{host}\nx-amz-date:{amz_date}\n"
-    signed_headers = "host;x-amz-date"
+    # Canonical headers must be sorted by lowercased name. ``extra_signed``
+    # is for services that require more signed headers (S3 wants
+    # x-amz-content-sha256); the caller still sends them.
+    signed = {"host": host, "x-amz-date": amz_date}
     if session_token:
-        canonical_headers += f"x-amz-security-token:{session_token}\n"
-        signed_headers += ";x-amz-security-token"
+        signed["x-amz-security-token"] = session_token
+    for name, value in (extra_signed or {}).items():
+        signed[name.lower()] = value
+    canonical_headers = "".join(f"{n}:{signed[n]}\n" for n in sorted(signed))
+    signed_headers = ";".join(sorted(signed))
 
+    # SigV4 URI-encodes each path segment twice for every service but S3: the
+    # wire path's ``%3A`` (a Bedrock model id's colon) is signed as ``%253A``.
+    uri = aws_canonical_path(canonical_uri)
+    if service != "s3":
+        from urllib.parse import quote
+        uri = quote(uri, safe="/~")
     canonical_request = "\n".join([
-        method, aws_canonical_path(canonical_uri), _canonical_query(query),
+        method, uri, _canonical_query(query),
         canonical_headers, signed_headers, payload_hash,
     ])
     scope = f"{datestamp}/{region}/{service}/aws4_request"
@@ -1161,6 +1276,41 @@ def _refused_tool_block(provider: str, block: Dict[str, Any], message: str) -> D
 
 # ── streaming reframer ───────────────────────────────────────────────────────
 
+class _CarryMasker:
+    """Redacts streamed text with a held-back tail, so a secret split across
+    deltas (``"sk-ab"`` + ``"cdef..."``) is whole when it is masked.
+
+    Text is released only up to the last whitespace before the final
+    ``hold`` characters: a secret has no whitespace, so it is never cut. A
+    run longer than ``cap`` with no whitespace at all is released anyway.
+    """
+
+    def __init__(self, redact: Callable[[str], str], hold: int = 32, cap: int = 2048) -> None:
+        self.redact = redact
+        self.hold = hold
+        self.cap = cap
+        self.buf = ""
+
+    def feed(self, text: str) -> str:
+        buf = self.buf + text
+        cut = len(buf) - self.hold
+        if cut <= 0:
+            self.buf = buf
+            return ""
+        ws = max(buf.rfind(c, 0, cut) for c in " \n\t")
+        if ws >= 0:
+            cut = ws + 1
+        elif len(buf) < self.cap:
+            self.buf = buf
+            return ""
+        self.buf = buf[cut:]
+        return self.redact(buf[:cut])
+
+    def flush(self) -> str:
+        buf, self.buf = self.buf, ""
+        return self.redact(buf) if buf else ""
+
+
 class StreamScreen:
     """Rewrites an SSE stream in flight, holding tool calls until they can be judged.
 
@@ -1168,10 +1318,9 @@ class StreamScreen:
     in ``_pending`` and are released only once the block closes and policy has
     seen the whole thing. Both provider dialects are folded into that one rule.
 
-    ponytail: redaction runs per text delta, so a secret split across two
-    deltas can slip through. The PostToolUse scrubber has the same ceiling and
-    the same fix — carry a tail buffer of the longest cloak value — which is
-    worth doing when a real value survives a stream, not before.
+    Text is redacted through a ``_CarryMasker``, which holds back a tail so a
+    secret split across deltas is masked whole; any non-text frame first
+    releases what is held, as a text delta of its own.
     """
 
     def __init__(self, screen: Screen, provider: str, model: str,
@@ -1192,15 +1341,56 @@ class StreamScreen:
         self._tool_index: int = 0
         self._holding = False
         self._released = False            # an allowed tool call went out this turn
+        # chat/completions: the finish_reason a judged turn now ends with. Some
+        # upstreams (OpenRouter) repeat finish_reason on a trailing usage chunk
+        # that arrives after the judge, which would undo the rewrite.
+        self._finish_override: Optional[str] = None
         self._usage: Dict[str, Any] = {}
         self._usage_id: str = ""
-        self._denied: Dict[str, str] = {}    # Responses API: tool name -> refusal
+        self.strip_usage = False  # the proxy asked for usage, the client did not
+        self._denied: Dict[str, str] = {}    # Responses API: "item:<id>" (or name) -> refusal
         # chat/completions: parallel calls interleave by ``index``; each is
         # judged on its own, or their JSON concatenates and policy sees none.
         self._calls: Dict[int, Dict[str, Any]] = {}
         # The stream's id/model/etc., stamped on a synthesized refusal: the SDK
         # seeds its snapshot from the first chunk and asserts without them.
         self._chunk_meta: Dict[str, Any] = {}
+        self._carry = _CarryMasker(screen.redact)
+        self._fed_text = False
+        self._text_index = 0
+        self._text_key = "text"         # Anthropic: text/thinking; Gemini: text/thought
+        self._text_template: Dict[str, Any] = {}   # Responses API delta ids
+        # chat/completions with n>1: OpenAI interleaves the choices' argument
+        # fragments, every choice's call at tool index 0. One screen per extra
+        # choice keeps each call whole and judges it at its own finish.
+        self._choices: Optional[Dict[int, "StreamScreen"]] = {}
+
+    def _text(self, chunk: bytes, event: Dict[str, Any]) -> bytes:
+        self._fed_text = True
+        return _rewrite_text_delta(chunk, event, self._carry.feed, always=True)
+
+    def _flush_text(self) -> bytes:
+        """What the carry still holds, as one text delta in this stream's dialect."""
+        text = self._carry.flush()
+        if not text:
+            return b""
+        if self.provider == "anthropic":
+            return ("event: content_block_delta\ndata: " + json.dumps({
+                "type": "content_block_delta", "index": self._text_index,
+                "delta": {"type": f"{self._text_key}_delta", self._text_key: text}}) + "\n\n").encode()
+        if self.provider == "google":
+            part: Dict[str, Any] = {"text": text}
+            if self._text_key == "thought":
+                part["thought"] = True
+            payload: Dict[str, Any] = {"candidates": [{"index": 0, "content": {
+                "role": "model", "parts": [part]}}]}
+        elif self._text_template:
+            payload = {**self._text_template, "delta": text}
+            return (f"event: {payload.get('type')}\ndata: {json.dumps(payload)}\n\n").encode()
+        else:
+            payload = {**self._chunk_meta, "choices": [
+                {"index": 0, "delta": {"content": text}, "finish_reason": None}]}
+        return f"data: {json.dumps(payload)}\n\n".encode()
 
     def feed(self, chunk: bytes) -> bytes:
         """One SSE frame in, zero-or-more frames out."""
@@ -1228,14 +1418,21 @@ class StreamScreen:
         A held tool call was never judged. In enforce mode it is dropped, not
         released: a truncated call is unusable anyway, and releasing it is
         a bypass (cut the stream before the stop frame, skip the policy)."""
+        text = self._flush_text()
         out, self._pending = b"".join(self._pending), []
         holding, self._holding, self._calls = self._holding, False, {}
         if holding and out and self.screen.mode == "enforce":
             reason = "Blocked by Prismor: tool call cut off before it could be screened"
             self.blocked.append(reason)
             sys.stderr.write(f"[prismor-proxy] {reason}\n")
-            return b""
-        return out
+            out = b""
+        for index, child in (self._choices or {}).items():
+            seen = len(child.blocked)
+            out += _with_choice_index(child.flush(), index)
+            self.blocked.extend(child.blocked[seen:])
+        if self._choices:
+            self._choices = {}
+        return text + out
 
     def _capture_usage(self, event: Dict[str, Any]) -> None:
         """Accumulate the token-usage a stream carries, wherever it lands.
@@ -1281,6 +1478,9 @@ class StreamScreen:
                 model=self.model,
                 usage=self._usage,
                 message_id=self._usage_id or str(uuid.uuid4()),
+                subject=_subject_id(self.subject),
+                latency_ms=(int(1000 * (time.monotonic() - self.t0))
+                            if getattr(self, "t0", None) is not None else None),
             )
         except Exception:
             pass
@@ -1288,11 +1488,20 @@ class StreamScreen:
     # -- internals -------------------------------------------------------
 
     def _feed(self, chunk: bytes) -> bytes:
+        self._fed_text = False
+        out = self._feed_frame(chunk)
+        if not self._fed_text and self._carry.buf:
+            out = self._flush_text() + out
+        return out
+
+    def _feed_frame(self, chunk: bytes) -> bytes:
         event = _sse_payload(chunk)
         if event is None:
             return b"" if self._holding else chunk
 
         self._capture_usage(event)
+        if self.strip_usage and event.get("usage") and not event.get("choices"):
+            return b""  # usage-only chunk the client never asked for
 
         if "error" in event:
             # Anthropic's `event: error`, and OpenAI/Gemini in-stream errors.
@@ -1316,7 +1525,20 @@ class StreamScreen:
         """
         calls = response_tool_calls("google", event)
         if not calls:
-            return _rewrite_text_delta(chunk, event, self.screen.redact)
+            # Thought summaries are parts flagged ``thought``: release a held
+            # thought tail as a thought part before answer text, or it lands
+            # in the answer and the client shows thinking as the reply.
+            kind = "thought" if any(
+                (part or {}).get("thought") for c in event.get("candidates") or []
+                for part in ((c or {}).get("content") or {}).get("parts") or []) else "text"
+            lead = self._flush_text() if kind != self._text_key else b""
+            self._text_key = kind
+            if any((c or {}).get("finishReason") for c in event.get("candidates") or []):
+                # The last frame: nothing follows it to carry the tail.
+                self._fed_text = True
+                return lead + _rewrite_text_delta(
+                    chunk, event, lambda t: self._carry.feed(t) + self._carry.flush(), always=True)
+            return lead + self._text(chunk, event)
         for tool_name, arguments in calls:
             reason = self._verdict(tool_name, arguments)
             if reason is None:
@@ -1342,6 +1564,12 @@ class StreamScreen:
             return chunk
 
         if not self._holding:
+            delta = event.get("delta") or {}
+            if etype == "content_block_delta" and ("text" in delta or "thinking" in delta):
+                # Thinking streams in ~10-char deltas: it needs the carry too.
+                self._text_index = int(event.get("index") or 0)
+                self._text_key = "text" if "text" in delta else "thinking"
+                return self._text(chunk, event)
             if etype == "content_block_delta":
                 return _rewrite_text_delta(chunk, event, self.screen.redact)
             delta = event.get("delta") or {}
@@ -1373,8 +1601,33 @@ class StreamScreen:
                                 ("id", "object", "created", "model", "system_fingerprint")
                                 if k in event}
         choices = event.get("choices") or []
+        if len(choices) > 1:
+            # Everything below reads choices[0]; a tool call in choices[1] of a
+            # combined (n>1) chunk would pass unscreened. Feed them one by one.
+            return b"".join(
+                self._feed_openai(_sse_reframe(chunk, one), one)
+                for one in ({**event, "choices": [c]} for c in choices))
+        index = (choices[0] or {}).get("index") if choices else None
+        if isinstance(index, int) and index > 0 and self._choices is not None:
+            child = self._choices.get(index)
+            if child is None:
+                child = self._choices[index] = StreamScreen(
+                    self.screen, self.provider, self.model, self.subject,
+                    self.session_id, spoken=self.spoken)
+                child._choices = None            # it screens this one choice itself
+            seen = len(child.blocked)
+            out = _with_choice_index(child._feed(chunk), index)
+            self.blocked.extend(child.blocked[seen:])
+            return out
         delta = (choices[0] if choices else {}).get("delta") or {}
         finish = (choices[0] if choices else {}).get("finish_reason")
+        if (finish and not self._holding and self._finish_override
+                and finish != self._finish_override):
+            choice = {**choices[0], "finish_reason": self._finish_override}
+            if "native_finish_reason" in choice:
+                choice["native_finish_reason"] = self._finish_override
+            event = {**event, "choices": [choice]}
+            chunk, finish = _sse_reframe(chunk, event), self._finish_override
 
         legacy = delta.get("function_call")
         if isinstance(legacy, dict) and (legacy.get("name") or legacy.get("arguments")):
@@ -1407,6 +1660,8 @@ class StreamScreen:
         if self._holding:
             self._pending.append(chunk)
             return b""
+        if delta.get("content") and not finish:
+            return self._text(chunk, event)
         if delta.get("content"):
             return _rewrite_text_delta(chunk, event, self.screen.redact)
         return chunk
@@ -1457,10 +1712,18 @@ class StreamScreen:
                 if reason is None:
                     return held
                 self.blocked.append(reason)
-                self._denied[self._tool_name] = reason
+                for item_id in (item.get("id"), item.get("call_id")):
+                    if item_id:
+                        self._denied[f"item:{item_id}"] = reason
+                self._denied[self._tool_name] = reason   # for a recap item with no id
                 return _responses_refusal_frames(reason, self._tool_index)
             return b""
 
+        if etype == "response.output_text.delta" and isinstance(event.get("delta"), str):
+            self._fed_text = True
+            self._text_template = {k: v for k, v in event.items() if k not in ("delta", "sequence_number")}
+            event["delta"] = self._carry.feed(event["delta"])
+            return _sse_reframe(chunk, event)
         before = json.dumps(event)
         response = event.get("response")
         if self._denied and isinstance(response, dict):
@@ -1503,7 +1766,9 @@ class StreamScreen:
             refusals.append(reason)
             self.blocked.append(reason)
         if not refusals:
+            self._finish_override = None
             return held
+        self._finish_override = "tool_calls" if kept else "stop"
         delta: Dict[str, Any] = {"role": "assistant", "content": "\n".join(refusals)}
         if kept:
             # Re-emit the allowed calls whole, renumbered from 0 so a client
@@ -1565,19 +1830,26 @@ def _sse_payload(chunk: bytes) -> Optional[Dict[str, Any]]:
 
 
 def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
-                        redact: Callable[[str], str]) -> bytes:
-    """Re-emit a text delta with its text redacted, or unchanged if nothing changed."""
-    if "delta" in event and isinstance(event["delta"], dict) and "text" in event["delta"]:
-        original = str(event["delta"].get("text") or "")
+                        redact: Callable[[str], str], always: bool = False) -> bytes:
+    """Re-emit a text delta with its text redacted, or unchanged if nothing changed.
+
+    ``always`` re-emits even when nothing changed: a carrying redactor returns
+    a different slice of the text, not the same one."""
+    if "delta" in event and isinstance(event["delta"], dict) and (
+            "text" in event["delta"] or "thinking" in event["delta"]):
+        # Anthropic thinking deltas are model output like any text. Masking one
+        # invalidates its signature; the outbound mask would anyway, next turn.
+        key = "text" if "text" in event["delta"] else "thinking"
+        original = str(event["delta"].get(key) or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
-        event["delta"]["text"] = masked
+        event["delta"][key] = masked
     elif event.get("choices"):
         delta = (event["choices"][0] or {}).get("delta") or {}
         original = str(delta.get("content") or "")
         masked = redact(original)
-        if masked == original:
+        if masked == original and not always:
             return chunk
         delta["content"] = masked
     elif event.get("candidates"):
@@ -1587,13 +1859,43 @@ def _rewrite_text_delta(chunk: bytes, event: Dict[str, Any],
                 if not isinstance(part, dict) or not isinstance(part.get("text"), str):
                     continue
                 masked = redact(part["text"])
-                if masked != part["text"]:
+                if masked != part["text"] or always:
                     part["text"], changed = masked, True
         if not changed:
             return chunk
     else:
         return chunk
     return _sse_reframe(chunk, event)
+
+
+def _with_choice_index(sse: bytes, index: int) -> bytes:
+    """Frames a per-choice screen emitted, stamped with the choice they belong to
+    (its synthesized refusals and carried text are written as choice 0)."""
+    if not sse or index == 0:
+        return sse
+    out = b""
+    for frame in sse.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is not None and event.get("choices"):
+            for choice in event["choices"]:
+                choice["index"] = index
+            frame = _sse_reframe(frame, event)[:-2]
+        if frame:
+            out += frame + b"\n\n"
+    return out
+
+
+def _mask_sse(body: bytes, redact: Callable[[str], str]) -> bytes:
+    """A whole SSE body with every event's strings masked."""
+    out = []
+    for frame in body.split(b"\n\n"):
+        event = _sse_payload(frame)
+        if event is None:
+            out.append(frame)
+            continue
+        _mask_in_place(event, redact)
+        out.append(_sse_reframe(frame, event)[:-2])
+    return b"\n\n".join(out)
 
 
 def _sse_reframe(chunk: bytes, event: Dict[str, Any]) -> bytes:
@@ -1674,6 +1976,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     # -- entry points ----------------------------------------------------
 
+    def parse_request(self) -> bool:
+        # Every method, before anything is forwarded: the upstream may be
+        # signed with ambient AWS/GCP credentials, so a web page must not be
+        # able to drive it (CSRF) or read it back (DNS rebinding). A virtual
+        # key proves the caller, who may then use any Host name.
+        if not super().parse_request():
+            return False
+        refused = browser_gate(self, check_host=not self.config.keys)
+        if refused is None:
+            return True
+        self.close_connection = True  # the unread body would parse as the next request
+        self._json({"error": refused[1]}, status=refused[0])
+        return False
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/health":
             self._json({"status": "ok", "surface": SURFACE_ID,
@@ -1682,8 +1998,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self._forward(b"")
 
     def do_POST(self) -> None:  # noqa: N802
-        length = int(self.headers.get("Content-Length") or 0)
-        self._forward(self.rfile.read(length) if length else b"")
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length > MAX_BODY_BYTES:
+            self.close_connection = True
+            self._json({"error": "payload too large"}, status=413)
+            return
+        self._forward(self.rfile.read(length) if length > 0 else b"")
 
     do_PUT = do_POST
     do_DELETE = do_GET
@@ -1743,10 +2066,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _provider(self) -> str:
-        path = urlsplit(self.path).path
-        for prefix, provider in PROVIDER_ROUTES:
-            if path.endswith(prefix) or path == prefix:
-                return provider
+        routed = generation_route(self.path)
+        if routed is not None:
+            return routed[1]
+        path = normalized_path(self.path)
         for fragment, provider in PROVIDER_PREFIXES:
             if fragment in path:
                 return provider
@@ -1801,14 +2124,53 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if auth_error:
             self._refuse(provider, f"Blocked by Prismor: {auth_error}", status=401)
             return
+        # A2A: the calling agent (the key's `agent`, else this proxy's agent
+        # name) and the agent it calls (the upstream), for agent_connections.
+        self._a2a_from = (str(self._key_meta.get("agent") or "")
+                          or (self.screen.agent_name if self.screen is not None else "")) if a2a else ""
+        self._a2a_to = (upstream_override or provider) if a2a else ""
+        self._a2a_aud = self._a2a_to
+        if a2a and self.screen is not None:
+            try:  # sign for the agent the receiver knows, not this proxy's upstream key
+                pol = self.screen.connections()
+                url = self._a2a_url()
+                self._a2a_aud = (pol.resolve(url, "a2a") if url and pol.known(url, "a2a")
+                                 else pol.resolve(self._a2a_to))
+            except Exception:
+                pass
         self._spoken: Any = (self.headers.get("x-prismor-refusal") or "").strip().lower() == "spoken"
         if self._spoken:
             self._spoken = spoken_text(self.headers.get("x-prismor-refusal-text") or "") or True
 
+        routed = None if a2a else generation_route(path)
+        if (
+            self.screen is not None
+            and self.screen.mode == "enforce"
+            and not a2a
+            and routed is None
+            and not is_passthrough(path)
+        ):
+            self._refuse(
+                provider,
+                "Blocked by Prismor: this path is not a screened generation "
+                "route (fail-closed)",
+            )
+            return
+        if (
+            self.screen is not None
+            and self.screen.mode == "enforce"
+            and routed is not None
+            and body is None
+        ):
+            self._refuse(
+                provider,
+                "Blocked by Prismor: generation body is not a JSON object "
+                "(fail-closed)",
+            )
+            return
         screened = body is not None and (
             (a2a and a2a_method(body) in A2A_SCREENED_METHODS)
-            or (not a2a and any(
-                path.endswith(p) or path == p for p, _ in PROVIDER_ROUTES)))
+            or routed is not None)
         model = model_of(provider, path, body)
         streaming = is_streaming(provider, path, body)
 
@@ -1829,6 +2191,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         self._pending_verdict: Optional[Dict[str, Any]] = None
         self._t0 = time.monotonic()
+        if a2a and not screened and self.screen is not None:
+            # tasks/get, tasks/cancel, push-notification config... carry no new
+            # message to screen, but still reach another agent: the connection
+            # decides them too.
+            refusal = self._a2a_connection_refusal()
+            if refusal:
+                self._refuse(provider, refusal)
+                return
         if screened and self.screen is not None:
             parallel = ((self.headers.get("x-prismor-screening") or "").strip().lower() == "parallel"
                         and streaming and provider in ("openai", "anthropic"))
@@ -1852,6 +2222,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except ProxyConfigError as exc:
             self._refuse(provider, f"prismor-proxy: {exc}", status=502)
             return
+        if provider == "a2a":
+            # A fallback upstream is another agent, one the connection check
+            # above never looked at: A2A goes to the agent it named or nowhere.
+            chain = chain[:1]
 
         last_error: Optional[str] = None
         for attempt, upstream_name in enumerate(chain):
@@ -1972,6 +2346,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             provider, model, prompt, subject,
             session_id=self._session_id, parts=prompt_parts(body),
             agent_event="PreA2AMessage" if provider == "a2a" else "prompt")
+        if provider == "a2a":
+            # Always a handoff, even when the caller is unnamed: then the sender
+            # falls back to this proxy's agent, and with no connection it is
+            # refused in enforce rather than passed unchecked.
+            event["metadata"].update(handoff_to=self._a2a_to, a2a_url=self._a2a_url())
+            if self._a2a_from:
+                event["metadata"]["from_agent"] = self._a2a_from
         try:
             decision = self.screen.evaluate(event, subject)
         except Exception:
@@ -1985,6 +2366,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return refusal_reason(blocking, getattr(self, "_spoken", False))
         _mask_in_place(body, self.screen.redact)
         return None
+
+    def _a2a_url(self) -> str:
+        return str((self.config.upstreams.get(self._a2a_to) or {}).get("base_url") or "")
+
+    def _a2a_connection_refusal(self) -> Optional[str]:
+        """The refusal for an A2A call that carries no message, when no connection allows it."""
+        from prismor.runtime.agent_connections import agent_message
+        try:
+            pol = self.screen.connections()  # type: ignore[union-attr]
+        except Exception:
+            return "Blocked by Prismor: agent connection policy could not be loaded (fail-closed)"
+        if not pol.enabled:
+            return None
+        msg = agent_message({"metadata": {"handoff_to": self._a2a_to, "provider": "a2a",
+                                          "a2a_url": self._a2a_url(), "from_agent": self._a2a_from}}, pol)
+        # ponytail: an `ask` pair was approved on the message that opened the task.
+        if msg is None or pol.decide(msg["from"], msg["to"], "a2a") != "deny":
+            return None
+        reason = (f"no connection policy lets {pol.label(pol.resolve(msg['from']))} "
+                  f"call {pol.label(pol.resolve(msg['to']))}")
+        if pol.mode != "enforce":
+            sys.stderr.write(f"[prismor-proxy] agent_connections (observe) would refuse: {reason}\n")
+            return None
+        return f"Blocked by Prismor: {reason}"
 
     def _relay(self, upstream_name: str, provider: str, raw_body: bytes,
                model: str, streaming: bool, screened: bool,
@@ -2008,8 +2413,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # mode that would forward the *Prismor* key to Google and leave the
             # swap in _upstream_headers with nothing to override.
             query = "&".join(p for p in query.split("&") if not p.startswith("key="))
+        self._usage_injected = False
+        if streaming and provider == "openai" and base.hostname == "api.openai.com":
+            raw_body, self._usage_injected = _request_stream_usage(path, raw_body)
         headers = self._upstream_headers(spec, raw_body, host=base.netloc or base.hostname or "",
                                          path=path, query=query)
+        if provider == "a2a" and getattr(self, "_a2a_from", ""):
+            # Lets the receiving agent's guard check who is calling.
+            from prismor.runtime.agent_connections import HEADER, sign_caller
+            token = sign_caller(self._a2a_from, getattr(self, "_a2a_aud", "") or upstream_name, act=subject)
+            if token:
+                headers[HEADER] = token
         for attempt in (1, 2):
             conn, reused = UPSTREAM_POOL.get(scheme, base.hostname, base.port)
             try:
@@ -2024,7 +2438,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     continue          # the server closed an idle connection: one fresh try
                 raise _Retryable(f"{upstream_name}: {exc}") from exc
 
-        if resp.status >= 500 and self.config.chain(upstream_name)[1:]:
+        # A2A has no fallback agent (see _forward): its 5xx goes back as it came.
+        if resp.status >= 500 and provider != "a2a" and self.config.chain(upstream_name)[1:]:
             conn.close()
             raise _Retryable(f"{upstream_name}: HTTP {resp.status}")
 
@@ -2056,6 +2471,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # applied whenever the upstream asks for it -- virtual-key mode is
             # about swapping a key the client sent, and here there is none.
             headers = without_client_auth(headers)
+            if auth_mode == "aws-sigv4":
+                # A client that signed for itself (boto3, LiteLLM) sends its own
+                # x-amz-date / x-amz-security-token. AWS wants every x-amz-*
+                # header signed, so a stale copy beside ours fails the request.
+                # x-amzn-* (Bedrock guardrail/trace) are not signing headers.
+                headers = {k: v for k, v in headers.items()
+                           if not k.lower().startswith("x-amz-")}
             if auth_mode == "gcp-oauth":
                 headers["authorization"] = f"Bearer {gcp_access_token()}"
             else:
@@ -2098,7 +2520,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self._discard_upstream = True
             return
         if screened and self.screen is not None:
-            if resp.status < 400:
+            unparsed = resp.status < 400 and payload and _loads_object(payload) is None
+            if unparsed and provider == "a2a":
+                # message/stream answers in SSE. An agent's reply carries no tool
+                # call to judge, but it can carry a secret: mask every event.
+                payload = _mask_sse(payload, self.screen.redact)
+            elif unparsed and self.screen.mode == "enforce":
+                # Not JSON means no tool call could be found in it, which is not
+                # evidence there is none (Bedrock's event-stream framing was).
+                self._refuse(provider, "Blocked by Prismor: response could not be "
+                                       "screened (fail-closed)", status=502)
+                return
+            elif resp.status < 400:
                 payload = self._screen_response(provider, model, payload, subject)
             else:
                 body = _loads_object(payload)
@@ -2126,26 +2559,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = _loads_object(payload)
         if body is None:
             return payload
-        blocked: Dict[str, str] = {}
-        for tool_name, arguments in response_tool_calls(provider, body):
+        blocked: Dict[Any, str] = {}
+        for call_obj, tool_name, arguments in _response_calls(provider, body):
             event = self.screen.tool_event(tool_name, arguments, provider, model, subject,
                                            session_id=getattr(self, "_session_id", ""))
             try:
                 decision = self.screen.evaluate(event, subject)
             except Exception:
-                blocked[tool_name] = ("Blocked by Prismor: policy evaluation failed "
-                                      "(fail-closed)")
+                blocked[id(call_obj)] = ("Blocked by Prismor: policy evaluation failed "
+                                         "(fail-closed)")
                 continue
             self.screen.log(decision, tool_name)
             blocking = self.screen.blocking(decision)
             if blocking is not None:
-                blocked[tool_name] = refusal_reason(blocking, getattr(self, "_spoken", False))
+                blocked[id(call_obj)] = refusal_reason(blocking, getattr(self, "_spoken", False))
                 sys.stderr.write(
-                    f"[prismor-proxy] {blocked[tool_name]} (tool={tool_name})\n")
+                    f"[prismor-proxy] {blocked[id(call_obj)]} (tool={tool_name})\n")
         if blocked:
             body = _strip_blocked_calls(provider, body, blocked)
         _mask_in_place(body, self.screen.redact)
-        _meter(self.screen, body, model, getattr(self, "_session_id", ""))
+        _meter(self.screen, body, model, getattr(self, "_session_id", ""),
+               subject=subject, t0=getattr(self, "_t0", None))
         return json.dumps(body).encode()
 
     def _relay_stream(self, resp: Any, provider: str, model: str,
@@ -2173,14 +2607,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         stream = StreamScreen(self.screen, provider, model, subject,
                               getattr(self, "_session_id", ""),
                               spoken=getattr(self, "_spoken", False))
+        stream.strip_usage = getattr(self, "_usage_injected", False)
+        stream.t0 = getattr(self, "_t0", None)
         try:
-            for frame in _sse_frames(resp):
-                out = stream.feed(frame)
-                if out:
+            if is_eventstream(urlsplit(self.path).path):
+                for out in _eventstream_relay(stream, resp):
                     self._write_chunk(out)
-            tail = stream.flush()
-            if tail:
-                self._write_chunk(tail)
+            else:
+                for frame in _sse_frames(resp):
+                    out = stream.feed(frame)
+                    if out:
+                        self._write_chunk(out)
+                tail = stream.flush()
+                if tail:
+                    self._write_chunk(tail)
             stream.meter()
         finally:
             try:
@@ -2191,6 +2631,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def _write_chunk(self, data: bytes) -> None:
         self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
         self.wfile.flush()
+
+
+def _request_stream_usage(path: str, raw_body: bytes) -> Tuple[bytes, bool]:
+    """Ask OpenAI to put token usage on a streamed chat completion.
+
+    Without ``stream_options.include_usage`` the stream carries no usage at all
+    and the turn goes unmetered. Returns the body to send and whether it was
+    changed, so the extra usage-only chunk can be kept from the client.
+    Only for api.openai.com: other OpenAI-compatible servers may reject it."""
+    if not path.endswith("/chat/completions"):
+        return raw_body, False
+    body = _loads_object(raw_body)
+    if body is None or not body.get("stream"):
+        return raw_body, False
+    options = body.get("stream_options")
+    if isinstance(options, dict) and "include_usage" in options:
+        return raw_body, False
+    body["stream_options"] = {**(options if isinstance(options, dict) else {}), "include_usage": True}
+    return json.dumps(body).encode(), True
 
 
 class _UpstreamPool:
@@ -2255,6 +2714,120 @@ def _sse_frames(resp: Any) -> Iterator[bytes]:
         yield buffer
 
 
+# ── AWS event-stream (Bedrock InvokeModelWithResponseStream) ─────────────────
+#
+# A message is: total length, headers length, prelude CRC (3 x uint32), headers,
+# payload, message CRC. A ``chunk`` event's payload is ``{"bytes": base64}`` and
+# the base64 holds one Anthropic stream event, so each is unwrapped into an SSE
+# frame for the same StreamScreen and whatever it emits is wrapped back.
+
+_ES_VALUE_SIZES = {0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16}
+
+
+def _es_headers(raw: bytes) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    i = 0
+    while i < len(raw):
+        n = raw[i]
+        name = raw[i + 1:i + 1 + n].decode("utf-8", "replace")
+        kind = raw[i + 1 + n]
+        i += 2 + n
+        if kind in (6, 7):                       # bytes / string: uint16 length
+            (size,) = struct.unpack(">H", raw[i:i + 2])
+            value = raw[i + 2:i + 2 + size]
+            out[name] = value.decode("utf-8", "replace") if kind == 7 else value
+            i += 2 + size
+        else:
+            i += _ES_VALUE_SIZES[kind]
+    return out
+
+
+def _es_header(name: str, value: str) -> bytes:
+    n, v = name.encode(), value.encode()
+    return bytes([len(n)]) + n + b"\x07" + struct.pack(">H", len(v)) + v
+
+
+_ES_CHUNK_HEADERS = (_es_header(":event-type", "chunk")
+                     + _es_header(":content-type", "application/json")
+                     + _es_header(":message-type", "event"))
+
+
+def _es_encode(headers: bytes, payload: bytes) -> bytes:
+    prelude = struct.pack(">II", 16 + len(headers) + len(payload), len(headers))
+    prelude += struct.pack(">I", zlib.crc32(prelude))
+    message = prelude + headers + payload
+    return message + struct.pack(">I", zlib.crc32(message))
+
+
+def _es_messages(resp: Any) -> Iterator[Optional[Tuple[bytes, bytes]]]:
+    """``(headers, payload)`` per message; ``None`` once the framing breaks."""
+    buffer = b""
+    while True:
+        while len(buffer) >= 12:
+            total, hlen = struct.unpack(">II", buffer[:8])
+            if (struct.unpack(">I", buffer[8:12])[0] != zlib.crc32(buffer[:8])
+                    or total < 16 + hlen):
+                yield None
+                return
+            if len(buffer) < total:
+                break
+            message, buffer = buffer[:total], buffer[total:]
+            if struct.unpack(">I", message[-4:])[0] != zlib.crc32(message[:-4]):
+                yield None
+                return
+            yield message[12:12 + hlen], message[12 + hlen:-4]
+        chunk = resp.read(1024)
+        if not chunk:
+            if buffer:
+                yield None                       # cut mid-message
+            return
+        buffer += chunk
+
+
+def _eventstream_relay(stream: "StreamScreen", resp: Any) -> Iterator[bytes]:
+    """Bedrock's stream through the Anthropic StreamScreen, re-framed."""
+    enforce = stream.screen.mode == "enforce"
+
+    def wrap(sse: bytes) -> bytes:
+        out = b""
+        for frame in sse.split(b"\n\n"):
+            event = _sse_payload(frame + b"\n\n")
+            if event is not None:
+                data = base64.b64encode(json.dumps(event).encode()).decode()
+                out += _es_encode(_ES_CHUNK_HEADERS, json.dumps({"bytes": data}).encode())
+        return out
+
+    for message in _es_messages(resp):
+        if message is None:
+            sys.stderr.write("[prismor-proxy] bedrock event-stream framing broken\n")
+            if enforce:
+                stream.blocked.append("Blocked by Prismor: event stream could not be screened")
+                break
+            continue
+        raw_headers, payload = message
+        headers = _es_headers(raw_headers)
+        if headers.get(":message-type") != "event" or headers.get(":event-type") != "chunk":
+            # Exceptions (throttling, model errors) can echo the request: mask them.
+            masked = stream.screen.redact(payload.decode("utf-8", "replace")).encode()
+            yield _es_encode(raw_headers, masked)
+            continue
+        try:
+            inner = base64.b64decode(json.loads(payload)["bytes"])
+        except Exception:
+            sys.stderr.write("[prismor-proxy] bedrock chunk could not be decoded\n")
+            if enforce:                          # unread is not the same as safe
+                stream.blocked.append("Blocked by Prismor: stream chunk could not be screened")
+                continue
+            yield _es_encode(raw_headers, payload)
+            continue
+        out = stream.feed(b"data: " + inner + b"\n\n")
+        if out:
+            yield wrap(out)
+    tail = stream.flush()
+    if tail:
+        yield wrap(tail)
+
+
 def _loads_object(raw: bytes) -> Optional[Dict[str, Any]]:
     if not raw:
         return None
@@ -2282,17 +2855,21 @@ def _mask_in_place(node: Any, redact: Callable[[str], str]) -> None:
 
 
 def _strip_blocked_calls(provider: str, body: Dict[str, Any],
-                         blocked: Dict[str, str]) -> Dict[str, Any]:
-    """Replace denied tool calls with the refusal text, in place."""
+                         blocked: Dict[Any, str]) -> Dict[str, Any]:
+    """Replace denied tool calls with the refusal text, in place.
+
+    ``blocked`` is keyed per call (see ``_denial``) so a denied call never takes
+    an allowed sibling of the same name down with it.
+    """
     if provider == "google":
         for candidate in body.get("candidates") or []:
             content = (candidate or {}).get("content") or {}
             parts, kept_call = [], False
             for part in content.get("parts") or []:
                 call = part.get("functionCall") if isinstance(part, dict) else None
-                name = (call or {}).get("name")
-                if isinstance(call, dict) and name in blocked:
-                    parts.append({"text": blocked[name]})
+                reason = _denial(blocked, call, (call or {}).get("name")) if isinstance(call, dict) else None
+                if reason:
+                    parts.append({"text": reason})
                 else:
                     kept_call = kept_call or isinstance(call, dict)
                     parts.append(part)
@@ -2305,48 +2882,66 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
         return body
     if provider == "anthropic":
         content = []
-        for block in body.get("content") or []:
-            name = block.get("name") if isinstance(block, dict) else None
-            if isinstance(block, dict) and block.get("type") == "tool_use" and name in blocked:
-                content.append(_refused_tool_block(provider, block, blocked[name]))
+        body_blocks = list(body.get("content") or [])
+        for block in body_blocks:
+            reason = (_denial(blocked, block, block.get("name"))
+                      if isinstance(block, dict) and block.get("type") == "tool_use" else None)
+            if reason:
+                content.append(_refused_tool_block(provider, block, reason))
             else:
                 content.append(block)
         body["content"] = content
-        if any(isinstance(b, dict) and b.get("type") == "text" for b in content):
+        refused = any(
+            _denial(blocked, b, b.get("name")) for b in body_blocks
+            if isinstance(b, dict) and b.get("type") == "tool_use")
+        kept_tool = any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+        # Only end the turn when no call is left to run; a kept sibling still
+        # needs stop_reason tool_use or the client never executes it.
+        if refused and not kept_tool:
             body["stop_reason"] = "end_turn"
         return body
     for choice in body.get("choices") or []:
         message = (choice or {}).get("message") or {}
         kept, refusals = [], []
         for call in message.get("tool_calls") or []:
-            name = ((call or {}).get("function") or {}).get("name")
-            if name in blocked:
-                refusals.append(blocked[name])
+            reason = _denial(blocked, call, ((call or {}).get("function") or {}).get("name"))
+            if reason:
+                refusals.append(reason)
             else:
                 kept.append(call)
+        legacy = message.get("function_call")
+        legacy_reason = (_denial(blocked, legacy, legacy.get("name"))
+                         if isinstance(legacy, dict) else None)
+        if legacy_reason:
+            # The pre-tools function_call shape: judged above, so drop it too,
+            # or a denied call is logged as blocked and still handed over.
+            message.pop("function_call", None)
+            refusals.append(legacy_reason)
         if refusals:
-            message["tool_calls"] = kept
+            if "tool_calls" in message:
+                message["tool_calls"] = kept
             message["content"] = "\n".join(
                 filter(None, [message.get("content") or ""] + refusals))
             if not kept:
                 message.pop("tool_calls", None)
-                choice["finish_reason"] = "stop"
+                if "function_call" not in message:
+                    choice["finish_reason"] = "stop"
     # Responses API: tool calls are top-level output items, not inside a
     # message. Without this branch a denied call is recorded as blocked but
     # still handed back to the agent -- and gpt-6-luna forces this endpoint for
     # any request with tools, so enforce mode was silently a no-op for it.
     items = body.get("output")
 
-    def _denied_name(item: Any) -> Optional[str]:
+    def _denied_reason(item: Any) -> Optional[str]:
         call = _response_item_call(item)
-        return call[0] if call is not None and call[0] in blocked else None
+        return _denial(blocked, item, call[0]) if call is not None else None
 
-    if isinstance(items, list) and any(_denied_name(i) for i in items):
+    if isinstance(items, list) and any(_denied_reason(i) for i in items):
         kept_items, refusals = [], []
         for item in items:
-            name = _denied_name(item)
-            if name:
-                refusals.append(blocked[name])
+            reason = _denied_reason(item)
+            if reason:
+                refusals.append(reason)
             else:
                 kept_items.append(item)
         # A message item carrying the refusal, so an agent that reads output
@@ -2362,7 +2957,8 @@ def _strip_blocked_calls(provider: str, body: Dict[str, Any],
     return body
 
 
-def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "") -> None:
+def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "",
+           subject: Optional[str] = None, t0: Optional[float] = None) -> None:
     """Record token usage against the session. Best-effort, never fatal.
 
     ``session_id`` is this request's conversation, not the proxy's process
@@ -2385,9 +2981,22 @@ def _meter(screen: Screen, body: Dict[str, Any], model: str, session_id: str = "
             model=model,
             usage=usage,
             message_id=str(body.get("id") or body.get("responseId") or uuid.uuid4()),
+            subject=_subject_id(subject),
+            latency_ms=int(1000 * (time.monotonic() - t0)) if t0 is not None else None,
         )
     except Exception:
         pass
+
+
+def _subject_id(subject: Optional[str]) -> str:
+    """The user id a virtual key's subject resolves to (for per-user budgets)."""
+    if not subject:
+        return ""
+    try:
+        from prismor.runtime.principal import resolve_subject
+        return str(getattr(resolve_subject(subject), "user_id", "") or "")
+    except Exception:
+        return ""
 
 
 # ── entry point ──────────────────────────────────────────────────────────────
@@ -2462,6 +3071,7 @@ def install_background_sinks(maxsize: int = 10000) -> "queue.Queue[Any]":
         heartbeat.maybe_flush = maybe_flush
     except Exception:
         pass
+    sinks.run_sink_hook("start_background")
     return pending
 
 

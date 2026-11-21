@@ -116,3 +116,29 @@ def test_token_change_tells_the_host_to_relist(ws, monkeypatch):
         assert sum(m.get("method") == "notifications/tools/list_changed" for m in sent) == 1
     finally:
         g.close()
+
+
+def test_valid_token_passes_repeat_gate_and_invalid_token_cannot_spend(ws, monkeypatch):
+    policy = {**POLICY, "settings": {"mcp_tool_repeat_limits": {"shop": {"export_all_customers": 1}}},
+              "rules": POLICY["rules"] + [
+                  {"id": "mcp-repeat-limit-exceeded", "mode": "enforce"},
+                  {"id": "mcp-repeat-limit-unavailable", "mode": "enforce"}]}
+    (ws / ".prismor" / "policy.yaml").write_text(yaml.safe_dump(policy))
+    g = Gateway([UpstreamSpec(name="shop", command=[sys.executable, str(SERVER)])], workspace=ws, mode="enforce")
+    sent = []
+    g._send = sent.append
+    params = {"name": "shop__export_all_customers", "arguments": {}}
+    try:
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("carol", ["finance"]))
+        g._handle_tools_list(1, {})
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("carol", ["finance"], exp=-3600))
+        g._handle_tools_call_safe(2, params)
+        assert sent[-1]["result"]["isError"]
+        assert "identity-unverified" in json.dumps(sent[-1])
+        monkeypatch.setenv("PRISMOR_IDENTITY_TOKEN", tok("carol", ["finance"]))
+        g._handle_tools_call_safe(3, params)
+        assert not sent[-1]["result"].get("isError")
+        g._handle_tools_call_safe(4, params)
+        assert "mcp-repeat-limit-exceeded" in json.dumps(sent[-1])
+    finally:
+        g.close()

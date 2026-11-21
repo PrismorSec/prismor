@@ -84,7 +84,10 @@ def _mcp_call(ws: Path, sid: str, tool: str = POSTHOG_TOOL):
 
 
 def _blocked_by_scope(r: subprocess.CompletedProcess) -> bool:
-    return r.returncode == 2 and "scoped agent" in (r.stderr + r.stdout)
+    """Stopped by the scope: denied (exit 2), or, for a synthesised scope on
+    Claude, held for the user's OK (#257)."""
+    asked = '"permissionDecision": "ask"' in r.stdout
+    return (r.returncode == 2 or asked) and "scoped agent" in (r.stderr + r.stdout)
 
 
 # ── 1. `scope clear` sticks ───────────────────────────────────────────────

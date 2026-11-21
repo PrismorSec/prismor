@@ -7,6 +7,16 @@ version: "1.0"
 # Only rules you define there will override — the rest fall back to defaults.
 
 settings:
+  # Optional exact rolling-minute quota. No accounting while this is absent.
+  # rate_limit: {requests_per_minute: 120, max_burst: 10}
+  # Select rate-limit-exceeded and rate-limit-unavailable in enforce mode to block.
+  # Optional identical MCP calls per session in a rolling 60 seconds.
+  # mcp_tool_repeat_limits: {jobs: {get_status: 12}}
+  # Select mcp-repeat-limit-exceeded and mcp-repeat-limit-unavailable to enforce.
+  # Optional allowed models and spend caps (per session, agent, user, device).
+  # models: {allow: ["claude-sonnet-*"], deny: ["*opus*"]}
+  # spend_budgets: [{scope: session, usd: 5}, {scope: user, usd: 200, period: monthly}]
+  # Select model-not-allowed and spend-budget-exceeded in enforce mode to block.
   # Categories that trigger a blocking verdict in enforce mode.
   # Override in .prismor/policy.yaml to add or remove categories.
   block_categories:
@@ -122,29 +132,14 @@ settings:
   # moving these entries to `egress.allow` with `default: deny`.
   egress_allowlist: []
 
-  # Docker-backed shell sandboxing. Disabled by default so existing installs
-  # do not change behavior until an operator opts in. When enabled for Claude
-  # Code, Prismor evaluates the original Bash command first, then rewrites the
-  # allowed command to run through `immunity sandbox run`.
+  # OS sandbox for allowed shell commands (Seatbelt, macOS only for now). Off
+  # by default so existing installs do not change behavior until an
+  # operator runs `prismor sandbox on`. Prismor judges the original command
+  # first; allowed commands then run confined. See docs/sandbox.md.
   sandbox:
     enabled: false
-    backend: docker
-    mode: observe
-    image: python:3.12-slim
-    workdir: /workspace
-    network: none
-    workspace_mount: rw
-    read_only_root: true
-    tmpfs:
-      - /tmp:noexec,nosuid,size=256m
-    env_allowlist:
-      - NO_COLOR
-      - TERM
-    resource_limits:
-      cpus: "1.0"
-      memory: 1g
-      pids_limit: 256
-      timeout_seconds: 300
+    mode: enforce
+    ring: "2"     # workspace-write, network through settings.egress
 
   # Action for MCP remote-transport static findings raised by `prismor scan`:
   # cleartext transport (http://), raw-IP endpoints, endpoints not on the
@@ -195,6 +190,26 @@ settings:
                             # Declaring one REPLACES the defaults above, so
                             # `[untrusted_content, critical_action]` here blocks
                             # on the sequence alone, without the influence check.
+    # Per-tool contracts (docs/tool-contracts.md). A contract says what a
+    # tool's RESULT does to the session label (`delta`, `effects`) and what a
+    # CALL requires of it (`requires`). The label is an audience (who may see
+    # what the session has read; starts `public`) and a trust level (trusted >
+    # internal > untrusted). It only ever narrows. Honors `mode` above.
+    contracts: []           # e.g.
+                            #   - tool: mcp__github__get_file_contents(owner:acme, repo:billing*)
+                            #     delta: { audience: [org:acme] }
+                            #   - tool: mcp__github__create_issue
+                            #     requires: { audience_contains: [public], trust: internal }
+                            #     effects: [egress]
+                            #   - tool: mcp__gmail__send_email
+                            #     requires: { audience_contains: [$to] }
+    principals: {}          # static map, principal -> members:
+                            #   org:acme: [team:billing, "*@acme.com"]
+    contract_packs: {}      # what the built-in packs cannot see for themselves:
+                            #   github: { private: ["acme/*"] }
+                            #   slack:  { connect_channels: ["C0EXT*"] }
+    contract_defaults_enabled: true # built-in GitHub / Slack packs (deltas only)
+    meta_contracts_enabled: true    # honor _meta.prismor.contract from MCP servers
     # Tags a call can carry, beyond the ones an org defines:
     #   untrusted_content    content authored outside the trust boundary
     #   critical_action      irreversible or externally visible
@@ -251,13 +266,14 @@ settings:
   inspect_execution_targets: true
 
   # How findings from inspected content are treated:
-  #   observe (default) — reported with file:line provenance, never blocking.
-  #   enforce           — blocks exactly as the same finding would inline,
-  #                       including the non-overridable floor.
-  # Deliberately observe by default so upgrading an install cannot start
-  # breaking builds. Promote it once your telemetry shows the real
-  # false-positive rate for your repositories.
-  execution_target_action: observe
+  #   enforce (default) — each finding resolves its mode exactly as it would
+  #                       inline: the non-overridable floor blocks, every other
+  #                       rule follows its own mode (observe unless promoted).
+  #   observe           — reported with file:line provenance, never blocking.
+  # Observe here let an agent write `rm -rf /` into a script and run it, the
+  # one thing the floor exists to stop. Floor rules match little in real
+  # scripts, so this rarely touches a build.
+  execution_target_action: enforce
 
   supply_chain_install_check: true
 
@@ -285,7 +301,10 @@ settings:
   #
   # Benchmarked on 826 cases (OWASP LLM01-LLM10, Agentic T02-T04,
   # MITRE-ATLAS, nested-file injection): F1 0.697 -> 0.822, semantic-attack
-  # recall 8% -> 72%, LLM invoked on 1.8% of events.
+  # recall 8% -> 72%, LLM invoked on 1.8% of events. Measured outside the
+  # repo with the LLM judge; that corpus is not checked in. The in-repo
+  # benchmark of the deterministic layers is scripts/bench_policy.py
+  # (results: tests/fixtures/corpus/baseline.json, docs/residual-risk.md).
   semantic_guard:
     enabled: true            # heuristic pre-screen on every screened event
     mode: auto               # one of: auto | heuristic | hybrid | api
@@ -336,6 +355,56 @@ settings:
       - stdout
       - stderr
       - command
+
+  # ── NER PII (Microsoft Presidio) — optional, off by default ─────────────
+  # Names, locations and NHS numbers that the regex `pii-exposure` rule and
+  # the data-boundary classifier do not see. Nothing here runs until
+  # `enabled: true`, and Presidio is not imported until then, so a default
+  # hook stays on the regex budget (~1 ms). The analyzer is cached for the
+  # life of the process: the eval-server, MCP gateway and LLM proxy pay the
+  # spaCy load once; a coding-agent hook is a new process per call and pays
+  # it every time. Install with `pip install "prismor[pii]"` and
+  # `python -m spacy download en_core_web_sm`. A missing install falls back
+  # to the regex detector (no names or locations) and says so once on stderr.
+  #
+  # `action` is what a hit should do. `mode` is whether that action is live,
+  # same as every other rule: observe records a finding and leaves the call
+  # alone; enforce lets redact rewrite the text and block refuse the call.
+  # Evidence stored for the finding is masked. The raw value is not logged.
+  #
+  # See docs/pii.md.
+  pii:
+    enabled: false
+    backend: presidio       # presidio | regex. regex is the no-dependency fallback
+    language: en
+    model: en_core_web_sm    # small spaCy model. en_core_web_lg is not the default
+    score_threshold: 0.5     # drop hits below this. IP_ADDRESS regex scores 0.6
+    action: observe          # observe | redact | block
+    mode: observe            # observe | enforce. redact/block act only in enforce
+    mask_style: mask         # mask (•) | replace (<ENTITY>) | hash | redact ([REDACTED])
+    max_chars: 4000          # scan at most this many characters of each field
+    entities:
+      - PERSON               # spaCy NER; regex fallback cannot do these three
+      - LOCATION
+      - MEDICAL_LICENSE
+      - EMAIL_ADDRESS
+      - PHONE_NUMBER
+      - CREDIT_CARD
+      - IBAN_CODE
+      - US_SSN
+      - UK_NHS
+      - IP_ADDRESS
+    fields:
+      - prompt
+      - response
+      - content
+      - stdout
+      - stderr
+      - command
+      - mcp_args
+      - outbound_payload
+      - typed_text
+    allow_list: []           # values never reported, e.g. [Django, Jira, Claude]
 
   # Data boundary — what an outbound call SENDS, screened against where it is
   # going. Complements `egress` (which only decides whether a host may be
@@ -434,6 +503,64 @@ settings:
     - 'pom\.xml$|build\.gradle(\.kts)?$'
 
 rules:
+  - id: mcp-repeat-limit-exceeded
+    severity: HIGH
+    category: rate_limit
+    title: Identical MCP call limit exceeded
+    event_types: [mcp_repeat]
+    when: "rate.count > rate.limit"
+    action: block
+
+  - id: mcp-repeat-limit-unavailable
+    severity: HIGH
+    category: rate_limit
+    title: Repeated MCP call accounting unavailable
+    event_types: [mcp_repeat]
+    when: "rate.error != null"
+    action: block
+
+  - id: rate-limit-exceeded
+    severity: HIGH
+    category: rate_limit
+    title: Per-identity rolling-minute rate limit exceeded
+    event_types: [rate_limit]
+    when: "rate.count > rate.limit"
+    action: block
+
+  - id: rate-limit-unavailable
+    severity: HIGH
+    category: rate_limit
+    title: Rate-limit accounting unavailable
+    event_types: [rate_limit]
+    when: "rate.error != null"
+    action: block
+
+  # settings.models / settings.spend_budgets (see docs/spend-budgets.md).
+  # Like the rate limit, select these in enforce mode to block.
+  - id: model-not-allowed
+    severity: HIGH
+    category: spend_limit
+    title: Model not on the allowed list
+    event_types: [model_policy]
+    when: "rate.allowed == false"
+    action: block
+
+  - id: spend-budget-exceeded
+    severity: HIGH
+    category: spend_limit
+    title: Spend budget reached
+    event_types: [spend_budget]
+    when: "rate.error == null and rate.used >= rate.limit"
+    action: block
+
+  - id: spend-budget-unavailable
+    severity: HIGH
+    category: spend_limit
+    title: Spend accounting unavailable
+    event_types: [spend_budget, model_policy]
+    when: "rate.error != null"
+    action: block
+
   # ── CRITICAL: Destructive commands ────────────────────────────────────
   # Patterns target genuinely destructive rm invocations while allowing
   # routine cleanup (rm -rf ./node_modules, rm -rf /tmp/my-cache,
@@ -447,8 +574,13 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      # Root wipe: rm -rf /, rm -rf /*
-      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/["'']?(\s|\*|$)'
+      # Root wipe: rm -rf /, rm -rf /*, and a quoted "/" in a -c string.
+      - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/["'']*(\s|\*|$)'
+      # Root wipe handed to a shell-out call, closed by nested quotes:
+      # os.system('rm -rf /') or a nested f-string. Only after a
+      # sink, since a test's check("rm -rf /") reads the same.
+      # ponytail: argv lists (subprocess.run(["rm", ...])) are not covered.
+      - '\b(?:os\.(?:system|popen|exec\w*|spawn\w*)|subprocess\.\w+|(?<![\w.])(?:system|popen|exec\w*|spawn\w*|shell_exec|passthru))\s*\(\s*\[?\s*\\?["''`]\s*rm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|-[rR]\s+-[fF]|-[fF]\s+-[rR])\s+\\?["'']?/\*?\\?["''`]\s*[,)\]]'
       # System-critical paths — block at any depth (optional surrounding quotes)
       - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+["'']?/(etc|bin|boot|sys|proc|dev|sbin|lib(32|64)?)(/|["'']|\s|$)'
       # Top-level user/system dirs — block only when target IS the dir
@@ -461,6 +593,17 @@ rules:
       - '(?:^|(?<=[\s;&|(]))["'']?rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))[^\n;&|<>]*\s+\.\.(?:/\.\.)*/?(\s|$|&|;|\|)'
       # sudo elevates blast radius — always block sudo rm -rf (any flag form)
       - '(?:^|(?<=[\s;&|(]))["'']?sudo\s+rm\b(?=[^\n;&|<>]*(?:-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR]|\s-[rR](?=\s|$)[^\n;&|<>]*\s-[fF]\b|\s-[fF](?=\s|$)[^\n;&|<>]*\s-[rR]\b|--recursive\b[^\n;&|<>]*--force\b|--force\b[^\n;&|<>]*--recursive\b))'
+      # The same root / home / OS-dir wipe in other languages. Only the exact
+      # top-level target is blocked; a project subfolder is not
+      # (recursive-delete-home warns for folders under home).
+      # PowerShell: Remove-Item / ri / rd / rmdir / del with -Recurse.
+      - '(?:^|[\s;&|("''])(?:remove-item|ri|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?(?:(?:[a-z]:|[a-z]:\\windows|[a-z]:\\users(?:\\[^\\\s"'';|&]+)?|~|\$home|\$env:userprofile|\$env:systemroot)(?:\\\*?)?|/\*?)["'']?(?=\s|$|[;|&)"''])'
+      # cmd.exe: rd / rmdir / del /s.
+      - '(?:^|[\s;&|("''])(?:rmdir|rd|del|erase)\s+(?=(?:[^\n&|]*\s)?/s\b)[^\n&|]*?\s["'']?(?:[a-z]:|[a-z]:\\windows|[a-z]:\\users(?:\\[^\\\s"''&|]+)?|%userprofile%|%systemroot%|%homedrive%)(?:\\\*?)?["'']?(?=\s|$|[&|)"''])'
+      # Python: shutil.rmtree of /, ~, a home dir, a drive root or an OS dir.
+      - '\bshutil\.rmtree\(\s*(?:\\?["''](?:/|~/?|/(?:home|Users)/[^/"''\\]+/?|/(?:etc|usr|var|bin|opt|root|System|Library|Applications)/?|[a-z]:(?:\\\\?)*)\\?["'']|os\.path\.expanduser\(\s*\\?["'']~/?\\?["'']\s*\)|(?:pathlib\.)?Path\.home\(\)|os\.environ\[\s*\\?["'']HOME\\?["'']\s*\]|os\.(?:getenv|environ\.get)\(\s*\\?["'']HOME\\?["'']\s*\))\s*[,)]'
+      # Node: fs.rm / rmSync / rmdirSync with recursive on /, ~ or the home dir.
+      - '\b(?:rmSync|rmdirSync|rm|rmdir)\(\s*(?:\\?["''](?:/|~/?|/(?:home|Users)/[^/"''\\]+/?|[a-z]:(?:\\\\?)*)\\?["'']|(?:require\(\s*\\?["'']os\\?["'']\s*\)|os)\.homedir\(\)|process\.env\.HOME)\s*,[^)]*recursive\s*:\s*true'
       # World-writable chmod — numeric modes whose "other" digit grants write
       # (…2/3/6/7, e.g. 777, 666, 0777, 1777), any path — plus symbolic grants
       # of write to other/all (o+w, a+w, a+rwx). Group-only and read-only
@@ -482,6 +625,7 @@ rules:
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)shutdown\b'
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)reboot\b'
       - 'launchctl\s+unload\b'
+    guidance: "delete the specific path you mean (or move it with `trash`/`mv` to a scratch dir); never a root, system or home directory."
     action: block
 
   # ── HIGH (warn): Recursive delete of a directory under the home dir ──
@@ -505,6 +649,7 @@ rules:
       # cache folders and AppData\Local\Temp are skipped, as for rm -rf.
       - '(?:^|[\s;&|("''])(?:remove-item|ri|rm|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?(?:~|\$home|\$env:userprofile|[a-z]:\\users\\[^\\\s"'';|&]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"'';|&]+'
       - '(?:^|[\s;&|("''])(?:rmdir|rd|del|erase)\s+(?=(?:[^\n&|]*\s)?/s\b)[^\n&|]*?["'']?(?:%userprofile%|[a-z]:\\users\\[^\\\s"''&|]+)\\(?![^\s"'';|&]*\\(?:node_modules|dist|build|\.next|__pycache__|\.cache|target|coverage|out|\.venv|venv|\.pytest_cache|\.turbo)(?:\\|["''\s;|&]|$))(?!appdata\\local\\temp\b)[^\s"''&|]+'
+    guidance: "delete only the exact project or build directory you need, or move it aside with `trash`/`mv` so it can be restored."
     action: warn
 
   # ── CRITICAL: Secret exfiltration ─────────────────────────────────────
@@ -566,9 +711,14 @@ rules:
       # line (`python3 -c "print(1)" && grep subprocess x.py`) is not the code
       # being run.
       - 'python[23]?\s+-c\s+(?:"[^"]*|''[^'']*)(?:\bexec\s*\(|\beval\s*\(|os\.(?:system|popen|exec|spawn)|\bsubprocess\b|__import__|socket\.)'
-      - 'perl\s+-e\s+.*(?:socket|exec)'
-      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|\bexec\s*\()'
-      - 'ruby\s+-e\b[^\n]*(\bsystem\s*\(|\bexec\s*\(|IO\.popen|Open3)'
+      # Not `perl -e 'alarm N; exec @ARGV' cmd ...`: that is the stock macOS
+      # stand-in for `timeout` (no coreutils), and its exec runs the argv the
+      # same command line already shows, which the other rules judge.
+      - 'perl\s+-e\s+(?!["'']alarm\b[^"''\n]*;\s*exec\s+@ARGV\s*["''])[^\n]*(?:socket|exec)'
+      # A method call `re.exec(c)` is RegExp.prototype.exec, a regex loop, not
+      # a process: only a bare exec( (a destructured child_process import) runs one.
+      - 'node\s+-e\b[^\n]*(child_process|execSync|spawnSync|(?<![.\w])exec\s*\()'
+      - 'ruby\s+-e\b[^\n]*((?<![.\w])system\s*\(|(?<![.\w])exec\s*\(|IO\.popen|Open3)'
       - 'echo\s+.*\|\s*crontab'
       - '\*\s+\*\s+\*\s+\*\s+\*.*crontab'
       - '\b(ncat|socat)\b.*(?:exec|listen|EXEC)'
@@ -605,7 +755,20 @@ rules:
     fields: [combined_text]
     patterns:
       # Instruction override — direct phrase attacks
-      - '(ignore\s+(all\s+)?(any\s+)?((your|the|my)\s+)?((previous|prior|above)\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|exfiltrat(e|ion)|(?<!not\s)(?<!n''t\s)(?<!never\s)print\s+.*(secret|token|key|credential|password)|(?<!not\s)(?<!n''t\s)(?<!never\s)show\s+.*(token|secret|key|credential|password)|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?)|jailbreak)'
+      - '(ignore\s+(all\s+)?(any\s+)?((your|the|my)\s+)?((previous|prior|above)\s+)?instructions|reveal\s+(your|the)\s+system\s+prompt|developer\s+instructions|bypass(es|ed|ing)?\s+(safety\s+)?(restrictions?|guardrails?|safeguards?|controls?))'
+      # Directives need an object; bare "exfiltration" / "jailbreak" occur in security docs.
+      - '(?<!not\s)(?<!n''t\s)(?<!never\s)\bexfiltrat(?:e|es|ing)\s+\S+'
+      - '\b(?:perform|begin|start|carry\s+out|execute)\s+(?:(?:the|an?)\s+)?exfiltration\b'
+      - '\b(?:enter|enable|activate|switch\s+to|now\s+in)\s+(?:\w+\s+){0,2}jailbreak\b'
+      - '(?<!not\s)(?<!n''t\s)(?<!never\s)\bjailbreak\s+(?:yourself|(?:(?:the|this|that|your|our|a|an)\s+)?(?:models?|assistants?|system|chatbot|llm))\b'
+      # Keep print/show within a clause, allowing soft wraps and dotted identifiers.
+      # A request ending at secret names/IDs/counts does not request their values.
+      # The secret word must be a whole word: "key-a", key_id and keyboard are identifiers,
+      # not secrets (a Workers KV docs comment, `// Print the value of "key-a"`).
+      # Matching starts at a clause boundary; the prefix skips a negated verb list
+      # ("never read out, export or print") so only an un-negated print/show matches; the
+      # span must end at the list's last print/show so backtracking cannot shorten it.
+      - '(?:^|(?<=[.!?;\n]))(?:(?:\bnever|\bnot|n''t|\bcannot|\bavoid)\s+(?:ever\s+)?(?:(?!mind\b)[a-z]+(?:\s+out)?(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+))*(?:print|show)\b(?!(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+)(?:[a-z]+(?:\s+out)?(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+))*(?:print|show)\b)|(?!(?:\bnever|\bnot|n''t|\bcannot|\bavoid)\s+(?:ever\s+)?(?:(?!mind\b)[a-z]+(?:\s+out)?(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+))*(?:print|show)\b(?!(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+)(?:[a-z]+(?:\s+out)?(?:\s*,\s*(?:(?:or|and)\s+)?|\s+(?:or|and)\s+))*(?:print|show)\b))[^\n.!?;])*?\b(?:print|show)\s+(?:[^\n.!?;]|\.(?=\w)|\n(?![ \t\r]*\n))*(?:secret|token|key|credential|password)(?=s?\b)(?!s?[-_])(?!s?[ \t]+(?:names|ids|counts?)\b[ \t]*(?:[.!?;]|$))'
       # System-prompt / instruction extraction via non-trigger verbs (repeat, translate, summarize, print, extract, inspect…)
       - '(provide|share|reveal|disclose|show|give|repeat|translate|summari[sz]e|print|extract|inspect|dump|display|output)\s+.{0,60}((system|developer|initiali[sz]ation|internal)[\s-]*prompt|(your|hidden)\s+(instructions?|guidelines?|rules?|config\w*)|instructions?\s+you\s+(received|were\s+given)|internal\s+config\w*|conversation\s+history|hidden\s+context)'
       # Memory / persistence poisoning — durable state injection to subvert future sessions
@@ -665,7 +828,7 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '(?:^|[\n;&|({]\s*|\b(?:sudo|doas|then|do|else|exec|xargs|nohup|time|env)\s+(?:-\S+\s+)*|\b(?:ssh|sshpass|docker|podman|kubectl)\b[^\n;|]*?\s["'']|-c\s+["'']|\b(?:system|popen|exec\w*|run|call|check_output|Popen|spawn\w*)\s*\(\s*\[?\s*["''])(?:\w+=\S*\s+)*(curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+)?(bash|sh|zsh|dash|ksh)\b'
+      - '(?:^|[\n;&|({]\s*|\b(?:sudo|doas|then|do|else|exec|xargs|nohup|time|env)\s+(?:-\S+\s+)*|\b(?:ssh|sshpass|docker|podman|kubectl)\b[^\n;|]*?\s["'']|-c\s+["'']|\b(?:system|popen|exec\w*|run|call|check_output|Popen|spawn\w*)\s*\(\s*\[?\s*["''])(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+)?(bash|sh|zsh|dash|ksh)\b'
       # A fetch-and-run line that echo/printf hands to a shell or writes into a
       # script. The command-position anchor above skips it, since the fetch sits
       # inside the echo's quotes.
@@ -673,11 +836,14 @@ rules:
       # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
       - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
       # eval of remotely-fetched content: eval "$(curl ...)"
-      - '\beval\b[^\n]*\b(curl|wget)\b'
+      # The builtin is a word followed by whitespace: `eval-server`,
+      # `eval.log` and `run-eval` are names that merely contain it.
+      - '(?<![\w.\-/])eval\s+[^\n]*\b(curl|wget)\b'
       # PowerShell: iwr ... | iex, and iex (irm ...) / iex (New-Object Net.WebClient).DownloadString(...).
       # curl and wget are aliases of Invoke-WebRequest there.
       - '\b(?:iwr|irm|curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b[^|;\n]*\|\s*(?:iex|Invoke-Expression)\b'
       - '\b(?:iex|Invoke-Expression)\b[^\n]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b'
+    guidance: "download the script to a file, read it, then run it (`curl -fsSLo install.sh <url>`, inspect, `bash install.sh`)."
     action: block
 
   # ── HIGH: Sensitive file access ───────────────────────────────────────
@@ -689,7 +855,9 @@ rules:
     event_types: [file_read, file_write]
     fields: [path]
     patterns:
-      - '(^|/)(\.env(\..*)?|\.npmrc|\.pypirc|id_rsa|id_ed25519|known_hosts|authorized_keys|credentials|config\.json|secrets?)(/|$)|(^|/)\.(aws|ssh|gnupg)(/|$)'
+      - '(^|/)(\.env(?!\.(?:example|sample|template|dist|defaults|schema)(?:/|$))(\..*)?|\.npmrc|\.pypirc|id_rsa|id_ed25519|known_hosts|authorized_keys|credentials|config\.json|secrets?)(/|$)|(^|/)\.(aws|ssh|gnupg)(/|$)'
+      # CLI token stores and browser cookie/login DBs
+      - '(^|/)\.kube/config$|(^|/)\.config/gh/hosts\.ya?ml$|(^|/)\.config/gcloud/|(^|/)\.azure/|(^|/)\.git-credentials$|(^|/)\.netrc$|(^|/)(?-i:Cookies|cookies\.sqlite|Cookies\.binarycookies|Login Data|logins\.json|key4\.db)$'
     action: block
 
   # ── HIGH: Secret file dumped through the shell ────────────────────────
@@ -709,6 +877,102 @@ rules:
     patterns:
       - '(?:^|[;&|{]|(?<!\$)\(|\b(?:then|do|else|xargs|sudo|time|exec)\b)\s*(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|Get-Content|gc|type|sed(?![^\n;&|<>]*\s-i)|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
     action: block
+
+  # ── HIGH: Local credential stores read through the shell ───────────────
+  # secret-file-shell-read covers .env, SSH keys and .aws/credentials. The
+  # other places a dev machine keeps live tokens (kubeconfig, gh hosts file,
+  # gcloud/azure token caches, docker auths, git/netrc credentials, browser
+  # cookie and login DBs) were open: `cat ~/.kube/config` or `sqlite3 .../Cookies`
+  # put the token in the model context. Only reader,
+  # copier and uploader verbs; `kubectl --kubeconfig ~/.kube/config get pods`
+  # uses the file without printing it.
+  - id: credential-store-shell-read
+    severity: HIGH
+    category: secret_access
+    title: Flags printing or copying CLI token stores, kubeconfig or browser cookie DBs through the shell
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # reader / copier / uploader at command position, token store in its args.
+      # Browser DB names are matched case-sensitively: node_modules/.../cookies.js is code.
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|base64|sqlite3|cp|scp|rsync|tar|zip|7z|grep|egrep|rg|awk|sed|cut|jq|yq|curl|wget|Get-Content|gc|type)\b[^\n;&|]*?(?:\.kube[/\\]config\b|\.config[/\\]gh[/\\]hosts\.ya?ml|\.config[/\\]gcloud[/\\](?:credentials\.db|access_tokens\.db|application_default_credentials\.json|legacy_credentials)|\.azure[/\\](?:accessTokens\.json|msal_token_cache)|\.docker[/\\]config\.json|\.git-credentials|\.netrc\b|(?-i:[/\\](?:Cookies|Login Data)|cookies\.sqlite|Cookies\.binarycookies|logins\.json|key4\.db)(?![\w.-]))'
+      # uploaded or posted: curl -F f=@~/.aws/credentials, --data-binary @~/.ssh/id_rsa
+      - '(?:@|<\s*)[^\s;&|]*(?:\.aws[/\\]credentials|\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)\b(?!\.pub)|\.kube[/\\]config|\.config[/\\]gh[/\\]hosts\.ya?ml|\.npmrc|\.pypirc|\.git-credentials|\.netrc)\b'
+      # whole credential folders archived or copied as an argument: tar czf - -C ~ .aws .kube
+      # (not a path inside them: `rsync -e "ssh -i ~/.ssh/key.pem"` names a key file)
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:tar|zip|7z|rsync|cp\s+-[a-zA-Z]*[rR])\b[^\n;&|]*(?:\s|~/|\$HOME/|[\x27"])\.(?:aws|ssh|kube|gnupg|docker|azure|config/gh|config/gcloud)/?(?=[\s\x27"]|$)'
+    action: block
+
+  # ── HIGH: CLI commands that print a live credential ────────────────────
+  # The token never needs to be in a file the agent opens: these print it
+  # straight to the model context. Asks, because moving a credential on
+  # purpose is real work. Capturing it into a variable (`T="$(gh auth token)"`)
+  # never prints it and is not matched.
+  - id: credential-print
+    severity: HIGH
+    category: secret_access
+    title: Flags CLI commands that print a stored token, key or keychain password
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[;&|\n`]\s*|\b(?:sudo|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:gh\s+auth\s+token\b|aws\s+configure\s+(?:get\s+\S*(?:secret|token|key)\b|export-credentials\b)|gcloud\s+auth\s+(?:application-default\s+)?print-(?:access|identity)-token\b|az\s+account\s+get-access-token\b|(?:kubectl|oc)\s+config\s+view\b[^\n;&|]*\s--raw\b|security\s+(?:find-(?:generic|internet)-password\b[^\n;&|]*\s-[a-zA-Z]*[wg]\b|dump-keychain\b)|op\s+(?:read|item\s+get)\b|vault\s+(?:kv\s+get|read)\b)'
+    action: step_up
+
+  # ── MEDIUM: Reading the clipboard into the context ─────────────────────
+  # People copy tokens. Only flagged when the clipboard is printed back to the
+  # model (bare, or through a text filter); `pbpaste > file` or into another
+  # program is not.
+  - id: clipboard-read
+    severity: MEDIUM
+    category: secret_access
+    title: Printing the clipboard (often holds a copied token)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[;&|(\n`]\s*)(?:pbpaste|wl-paste|Get-Clipboard|(?:xclip|xsel)\b[^\n;&|]*\s-(?:[a-z]*o\b|-output\b))\s*(?:$|[;&\n)]|\|\s*(?:cat|head|tail|less|grep|egrep|sed|awk|cut|tr|sort|uniq|jq|base64|xxd|od|fold|rev)\b)'
+    action: step_up
+
+  # ── HIGH: Pulling secrets out of production ────────────────────────────
+  # Reading a prod box's env, a cluster secret or a prod database puts live
+  # production credentials in the model context or on the laptop.
+  # Routine prod work (tail logs, get pods, deploy) is not
+  # matched. "prod" is recognised by name (prod, production, prd) in the host,
+  # namespace or context.
+  - id: prod-secret-read
+    severity: HIGH
+    category: secret_access
+    title: Reading secrets from production (env over ssh, cluster secrets, prod databases, copying prod secret files)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # ssh <prod host> '<reads env or a secret file>'
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?ssh\b[^\n;&|]*?(?:^|[\s@.])(?:prod|production|prd)\b[\w.-]*[^\n;&|]*?(?:\bprintenv\b|(?<![\w.-])env(?:\s|$|[''"])|/proc/[\w/]*environ|\b(?:cat|head|tail|less|grep|strings|xxd)\b[^\n;&|]*(?:\.env\b|secret|credential|\.pem\b|\.key\b))'
+      # any cluster: secret values printed
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:kubectl|oc)\b[^\n;&|]*\bget\s+secrets?\b[^\n;&|]*(?:\s-o\s*=?\s*(?:yaml|json|jsonpath|go-template)|\s--output(?:=|\s))'
+      # exec into a pod and print its env or secret files
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:kubectl|oc)\b[^\n;&|]*\bexec\b[^\n;&|]*\s--\s*(?:\S+\s+)*?(?:printenv\b|env(?:\s|$)|cat\s+\S*(?:\.env\b|secret|/proc/[\w/]*environ))'
+      # prod database clients and dumps
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:psql|mysql|mariadb|mongosh|mongo|pg_dump|pg_dumpall|mysqldump|mongodump|redis-cli)\b[^\n;&|]*?(?:[\s@/.=]|^)(?:prod|production|prd)\b[\w.-]*'
+      # copy a secret file down from a prod host
+      - '(?:^|[;&|(\n`]\s*|\$\(\s*|\b(?:sudo|xargs|exec|then|do|time)\s+)(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:\S*/)?(?:scp|rsync)\b(?:\s+-\S+)*\s+\S*\b(?:prod|production|prd)\b[\w.-]*:\S*(?:\.env\b|secret|credential|\.pem\b|\.key\b)'
+    action: step_up
+
+  # ── HIGH: Agent mints a new credential ─────────────────────────────────
+  # A new access key or token is a standing credential that outlives the task
+  # and is printed straight into the context. Ask a human first.
+  - id: credential-mint
+    severity: HIGH
+    category: secret_access
+    title: Creating a new cloud access key, service-account key or cluster token
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\baws\s+iam\s+create-access-key\b'
+      - '\bgcloud\s+iam\s+service-accounts\s+keys\s+create\b'
+      - '\b(?:kubectl|oc)\s+create\s+token\b'
+      - '\baz\s+ad\s+sp\s+(?:credential\s+reset|create-for-rbac)\b'
+      - '\bgh\s+auth\s+refresh\b'
+    action: step_up
 
   # ── HIGH: Suspicious network destinations ─────────────────────────────
   - id: suspicious-network
@@ -789,6 +1053,26 @@ rules:
       - '\.(?:execute|executescript|executemany|exec|query|raw|run)\s*\(\s*(?:[rfbu]?[''\"`]{1,3})\s*\b(?:DROP\s+(?:TABLE|DATABASE)|TRUNCATE\s+TABLE|DELETE\s+FROM|UPDATE\s+\w+\s+SET|ALTER\s+TABLE|INSERT\s+INTO)\b'
     action: block
 
+  # ── HIGH: Datastore wipe — a whole database dropped or a cache flushed ──
+  # Narrower than db-modification above (no INSERT/UPDATE/ALTER), so
+  # `setup --recommended` can ask before it runs without asking on routine
+  # writes. Field test: DROP DATABASE ran unasked under --recommended, and
+  # dropdb / FLUSHALL were not detected at all.
+  - id: datastore-destroy
+    severity: HIGH
+    category: db_modification
+    title: Flags dropping a whole database or flushing a datastore (DROP DATABASE, dropdb, FLUSHALL)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '\b(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b[^\n]*?\bDROP\s+(?:DATABASE|SCHEMA)\b'
+      - '\bDROP\s+(?:DATABASE|SCHEMA)\b[^\n]*\|\s*(?:\S*/)?(?:psql|mysql|mariadb|sqlite3|duckdb|mongosh|clickhouse(?:-client)?|cqlsh|sqlcmd|cockroach\s+sql)\b'
+      - '(?:^|[;&]\s*)DROP\s+(?:DATABASE|SCHEMA)\b'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:dropdb|dropuser)\s'
+      - '\b(?:redis|valkey|keydb)-cli\b[^\n;&|]*\bFLUSH(?:ALL|DB)\b'
+      - '\.dropDatabase\s*\('
+    action: warn
+
   # ── HIGH: Database dumps / sensitive queries ──────────────────────────
   - id: db-access
     severity: HIGH
@@ -828,6 +1112,29 @@ rules:
     fields: [path]
     patterns:
       - '(^|/)(\.github/workflows/.+\.(yml|yaml)|Dockerfile|docker-compose\.ya?ml|package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|requirements.*\.txt|pyproject\.toml|Pipfile|Gemfile|go\.mod|Cargo\.toml|pom\.xml|build\.gradle(\.kts)?|terraform\.tfvars|\.env(\..*)?)$'
+    action: warn
+
+  # ── HIGH: CI workflow that pipes a remote script into a shell ─────────
+  # risky-write flags every workflow edit (MEDIUM). This is the one worth
+  # stopping for: the edit adds `curl ... | sh`, which runs with the
+  # repository's CI secrets on the next push.
+  - id: ci-workflow-remote-exec
+    severity: HIGH
+    category: risky_write
+    title: Flags a CI workflow edit that pipes a downloaded script into a shell
+    event_types: [file_write]
+    fields: [path, content]
+    patterns:
+      - '\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:\S*/)?(?:ba|z|da)?sh\b'
+      - '\b(?:ba|z)?sh\s+(?:-c\s+)?["\'']?(?:<\(|\$\()\s*(?:curl|wget)\b'
+    pattern_groups:
+      ci_file:
+        - '(^|/)\.github/workflows/[^/]+\.ya?ml$'
+        - '(^|/)\.gitlab-ci\.ya?ml$'
+        - '(^|/)\.circleci/config\.ya?ml$'
+        - '(^|/)(azure-pipelines|bitbucket-pipelines|\.travis)\.ya?ml$'
+        - '(^|/)Jenkinsfile$'
+    condition: "patterns and ci_file"
     action: warn
 
   # ── Network Isolation ──────────────────────────────────────────────
@@ -952,6 +1259,35 @@ rules:
       - 'forget\s+(everything|all|your)\s+(previous|prior|instructions)'
     action: block
 
+  # ── HIGH: Tool poisoning in an MCP tool definition or skill ─────────
+  # A tool's description is read by the model as instructions, so a server
+  # can hide orders in it that the user never sees (Invariant Labs' "tool
+  # poisoning" and "shadowing" attacks): keep this from the user, hide data in
+  # an extra argument, change how *other* servers' tools behave. The MCP
+  # gateway scans every tool definition as a skill_manifest event before
+  # listing it. Measured against 896 real tool definitions (GitHub's MCP
+  # server and the Docker MCP catalog): no matches.
+  - id: mcp-tool-poisoning
+    severity: HIGH
+    category: skill_risk
+    title: Tool or skill definition hides instructions from the user or overrides other tools
+    event_types: [skill_manifest]
+    fields: [combined_text]
+    patterns:
+      # Concealment: an honest tool has nothing to keep from the user.
+      - '\b(?:do\s+not|don[''\u2019]t|never|without)\s+(?:ever\s+)?(?:tell(?:ing)?|mention(?:ing)?|inform(?:ing)?|notify(?:ing)?|reveal(?:ing)?|disclos(?:e|ing)|alert(?:ing)?)\s+(?:this\s+|it\s+|that\s+|anything\s+)?(?:to\s+)?the\s+user\b'
+      - '\b(?:hide|conceal|keep)\s+(?:this|it|that)\s+(?:secret\s+)?from\s+the\s+user\b'
+      - '\bthe\s+user\s+(?:must|should|need)\s+(?:not|never)\s+(?:to\s+)?(?:know|see|be\s+told|find\s+out|notice)\b'
+      # Coercion that ties an unrelated action to the tool working at all.
+      - '\botherwise\s+(?:the|this)\s+tool\s+(?:will\s+not|won[''\u2019]t|cannot|can[''\u2019]t|will\s+fail\s+to)\s+work\b'
+      # Shadowing: a definition that rewrites how other tools or servers behave.
+      - '\bwhen(?:ever)?\s+this\s+tool\s+is\s+(?:available|present|loaded|installed|enabled|connected)\b'
+      - '\b(?:all|any|every)\s+other\s+(?:mcp\s+)?(?:tools?|servers?)\b[^.\n]{0,60}\b(?:must|should|has\s+to|have\s+to|needs?\s+to)\b'
+      - '\b(?:change|replace|redirect|switch)\s+the\s+(?:recipient|destination|to\s+address|phone\s+number|account)\s+to\b'
+      - '\b(?:instead\s+of|rather\s+than)\s+(?:to\s+)?the\s+(?:real|actual|intended|original|specified)\s+(?:recipient|address|user|destination|account)\b'
+      - '\b(?:send|forward|redirect|bcc|cc)\s+(?:all|every|each|any)\s+(?:\w+\s+){0,2}(?:emails?|messages?|mail|payments?|transfers?)\s+to\s+\S+@'
+    action: block
+
   # ── MEDIUM: Skill encodes behavior bias or covert steering ──────────
   # Scoped to skill_manifest only — these patterns are FP-prone in general
   # agent I/O but have no legitimate use in a skill definition.
@@ -1014,9 +1350,15 @@ rules:
     fields: [command]
     patterns:
       - '\b(tar|zip|7z|gzip)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
-      - '\b(cp|mv|rsync)\b[^\n;&|]*\s-[a-zA-Z]*[rRa][^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
-      - '\b(cp|mv|rsync)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude)\b[^\n;&|]*/tmp'
-      - '\b(cp|mv|rsync|scp)\b[^\n;&|]*(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/(?:\.claude/\.credentials\.json|\.aws/credentials|\.ssh/id_[a-z0-9]+(?!\.pub))\b'
+      # `(?<!-i )` / `(?<!-i=)`: a key passed as ssh's identity file
+      # (`rsync -e "ssh -i ~/.ssh/k.pem"`, `scp -i ...`) authenticates the
+      # transfer; it is not one of the files being copied.
+      - '\b(cp|mv|rsync)\b[^\n;&|]*\s-[a-zA-Z]*[rRa][^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?:/\.credentials\.json)?|credentials)(?=[/\s"'';&|]|$)'
+      # `.claude` here is the directory or its credential file, not any file
+      # under it: copying a screenshot out of ~/.claude/projects/.../tool-results
+      # to /tmp is not credential aggregation.
+      - '\b(cp|mv|rsync)\b[^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/\.(?:ssh|aws|gnupg|claude(?=/?\.credentials|/?[\s"'';&|]|/?$))\b[^\n;&|]*/tmp'
+      - '\b(cp|mv|rsync|scp)\b[^\n;&|]*(?<!-i )(?<!-i=)(?:~|\$\{?HOME\}?|/home/[^/\s]+|/Users/[^/\s]+|/root)/(?:\.claude/\.credentials\.json|\.aws/credentials|\.ssh/id_[a-z0-9]+(?!\.pub))\b'
     action: block
 
   # ── HIGH: Credential staging (encode to file without network) ─────
@@ -1123,6 +1465,19 @@ rules:
       - '(^|/)\.(bashrc|zshrc|profile|bash_profile|zprofile|zshenv)$'
     action: warn
 
+  # A shell write into authorized_keys grants a standing SSH login. A native
+  # Write to the same file is already blocked by secret-access.
+  - id: persistence-ssh-authorized-keys
+    severity: CRITICAL
+    category: persistence
+    title: Blocks shell writes into ~/.ssh/authorized_keys (redirect, tee, cp/mv)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:>>?|\btee\b(?:\s+-[a-z-]+)*)\s*["'']?[^\s"'';&|<>]*\.ssh/authorized_keys2?(?=["'']?(?:\s|$|[;&|)]))'
+      - '(?:^|[\s;&|(])(?:sudo\s+)?(?:cp|mv|install|ln)\b[^\n;&|]*\s["'']?[^\s"'';&|<>]*\.ssh/authorized_keys2?["'']?\s*(?:$|[;&|)])'
+    action: block
+
   # ── HIGH: Persistence — git hooks ─────────────────────────────────
   - id: persistence-git-hooks
     severity: HIGH
@@ -1173,6 +1528,14 @@ rules:
     # so without them the split would have opened a real gap.
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      # Every other host Prismor hooks into: deregistering the agent's own
+      # hook (or Codex's `[features] hooks`) is a total bypass for that host.
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\b(?:rm|mv|cp|tee|truncate|ln)\b[^\n;&|<>]*?[\s"''=]["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))'
+      # Interpreter writes (python -c, perl -i, node -e ...) need no shell
+      # verb and emit no file_write event, so they are matched on the line.
+      - '\b(?:python[0-9.]*|perl|ruby|node|deno|bun|php)[ \t]+(?:-\S+[ \t]+)*?-[ce]\b(?=[^\n]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))(?=[^\n]*(?:\.write|write_text|write_bytes|writefile|appendfile|os\.(?:replace|rename|remove|unlink|symlink)|shutil\.|\bunlink\b|\bopen\s*\([^)]*,\s*["''][wax+]))'
+      # perl -pi / ruby -i rewrite a file in place.
+      - '\b(?:perl|ruby)[ \t]+(?:-\S+[ \t]+)*?-\S*i\S*[^\n;&|]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)'
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
     action: block
 
@@ -1189,8 +1552,25 @@ rules:
     patterns:
       - '(^|/)\.claude/settings(\.local)?\.json$'
       - '(^|/)\.prismor(-warden)?/policy\.yaml$'
+      # The other hosts' hook registrations and the hook launcher itself.
+      - '(^|/)\.codex/(hooks\.json|config\.toml)$'
+      - '(^|/)\.cursor/hooks\.json$'
+      - '(^|/)\.gemini/(settings\.json|config/hooks\.json)$'
+      - '(^|/)\.github/hooks/prismor\.json$'
+      - '(^|/)\.(copilot|grok)/hooks/[^/]+\.json$'
+      - '(^|/)(\.windsurf|\.codeium/windsurf)/hooks\.json$'
+      - '(^|/)\.qwen/settings\.json$'
+      - '(^|/)\.kiro/agents/kiro_default\.json$'
+      - '(^|/)\.openhands/hooks\.json$'
+      - '(^|/)\.agents/(hooks\.json|plugins/prismor/)'
+      - '(^|/)\.?opencode/plugins/'
+      - '(^|/)\.openclaw/extensions/'
+      - '(^|/)hermes/plugins/'
+      - '(^|/)hook-dispatch\.py$'
       # A system install keeps the machine's selection in /etc/prismor.
       - '(^|/)etc/prismor/policy\.yaml$'
+      # Installed policy packs (written only by `prismor policy pack`).
+      - '(^|/)(\.prismor|etc/prismor)/packs/'
       - '(^|[/\\])programdata[/\\]prismor[/\\]policy\.yaml$'
       - '(^|/)library/application support/prismor/policy\.yaml$'
     action: block
@@ -1223,19 +1603,19 @@ rules:
       # `$PRISMOR_HOME`, any path under a directory called Prismor, and any
       # `git checkout -b feat/...-setup` run from one. Replaying 30 days of
       # real transcripts turned up 1057 such matches against ~30 genuine ones.
-      - '(^|[;&|{`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '(^|[;&|{`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # eval and ssh ProxyCommand run prismor without it sitting at a
       # statement boundary the anchor above can see.
-      - '\beval\s+[''"]?\s*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout)\b'
-      - '\bProxyCommand\b[^\n]*\b(prismor|immunity)(@\S+)?[ \t]+(allow|pause|pause-hard|resume|uninstall|uninstall-hooks|unlock|lock)\b'
-      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\beval\s+[''"]?\s*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|pause-hard|resume|uninstall|uninstall-hooks|setup|install-hooks|workspace|logout|sandbox[ \t]+off)\b'
+      - '\bProxyCommand\b[^\n]*\b(prismor|immunity)(@\S+)?[ \t]+(allow|pause|pause-hard|resume|uninstall|uninstall-hooks|unlock|lock|sandbox[ \t]+off)\b'
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+policy[ \t]+(edit|set|write|init|pack[ \t]+(?:add|update|remove))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+egress[ \t]+(allow|deny|rm|mode|default|enable|disable)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # The same CLI reached as a module or a script path.
-      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
-      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+\S*prismor/runtime/\S+\.py[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|agents[ \t]+set|mode[ \t]+apply|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # ...or wrapped in a shell, which is how the anchors above would
       # otherwise be stepped around: `bash -c "prismor allow ..."`.
-      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # Opting a command out of org governance through the environment
       # (`PRISMOR_WORKSPACE_SCOPE=personal claude -p ...`, `export ...=local`)
       # is the same escape as `prismor workspace personal`, one level down: the
@@ -1249,6 +1629,18 @@ rules:
       - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
+      # Pulling a secret from a manager into the vault picks which real secret a
+      # placeholder unlocks: a person's call (cloaking/sources.py). An agent
+      # may still `prismor cloak sync` the references a person set up.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+add\b[^;&|\n]*[ \t]--from-ref\b'
+      # Which hosts a secret may be sent to is the same kind of call
+      # (cloaking/bindings.py): an agent widening it would undo the binding.
+      # `prismor cloak hosts NAME` with nothing after it only shows them.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+hosts[ \t]+\S+[ \t]+[^;&|\n\s]'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+cloak[ \t]+hosts[ \t]+\S+[ \t]+[^;&|\n\s]'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+cloak[ \t]+hosts\b'
       # The unlock credential and grant. Reads matter as much as writes: the
       # credential file is what an offline guess would need, and the grant file
       # is what a forged window would be written to.
@@ -1263,6 +1655,24 @@ rules:
       # Safety-floor rules a human turned off with that password (floor_off.py).
       - '\bfloor-off\.json\b'
       - '(^|/)floor-off\.json$'
+      # The HMAC key a pause marker is signed with: reading it is the first
+      # half of forging a pause that silences every other rule.
+      - '\bpause\.key\b'
+      # The warm hook server's key and socket (hookd.py): a process holding
+      # both could answer hook calls in Prismor's place.
+      - '\bhookd\.key\b'
+      - '\bhookd-[0-9a-f]{12}\.sock\b'
+      # Ships the whole decision to another server (remote_eval.py).
+      - '\bPRISMOR_EVAL_URL='
+      # Approving a held MCP tool definition is the human's review of it; an
+      # agent approving (or rewriting the pins of) the tool that is steering it
+      # would make the review meaningless. Writes to the pin store go through
+      # the same file rule as the other Prismor state below.
+      - '(^|[;&|`]|\$\()[ \t]*(sudo[ \t]+)?([A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+mcp-gateway[ \t]+approve\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+mcp-gateway[ \t]+approve\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+mcp-gateway[ \t]+approve\b'
+      - '(^|/)mcp-tool-pins/[^/\s]+\.json$'
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)mcp-tool-pins/'
       # One-shot approvals (approvals_local.py): writing an approved record
       # into this file is approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
@@ -1270,8 +1680,18 @@ rules:
       # approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
       # Other Prismor state an agent has no legitimate reason to rewrite.
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install)\.json'
-      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install)\.json$'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
+      - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
+      # The runner index decloak.sh wraps sandboxed calls from: emptying it
+      # would let a call run unwrapped (sandbox.decloak_saw_runner).
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/sandbox/active\.tsv'
+      - '(^|/)\.prismor/sandbox/active\.tsv$'
+      # The cached org policy: a validly signed but older policy written back
+      # here (e.g. one carrying device_pause: paused) would be accepted.
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
+      - '(^|/)\.prismor/remote-policy(\.yaml|\.yaml\.sig|\.meta\.json|\.hwm\.json)$'
+      # Installed policy packs and their hash lockfile (policy_packs.py).
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)(?:\.prismor|etc/prismor)/packs/'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'
@@ -1281,11 +1701,22 @@ rules:
       # SQL writes are caught by db-modification, this catches the file.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|dd)\b[^\n;&|<>]*?)\bprismor\.db(?:-wal|-shm|-journal)?\b'
       # The local dashboard's write API (loopback, unauthenticated by design
-      # — it assumes only the human reaches it).
-      - '(curl|wget|http|nc)[^\n]*(127\.0\.0\.1|localhost)[^\n]*/api/(policy|tool-policy|agents|sessions|pause|update|approvals)'
+      # — it assumes only the human reaches it). Matched per shell segment.
+      # A curl/wget with no method, body, config or variable flag anywhere on
+      # the line is a GET, and every GET on these routes is read-only, so an
+      # agent may read its own sessions; anything else that reaches the
+      # routes (a write flag, `$FLAGS`, an interpreter, nc) is still blocked.
+      # Judged on the curl's own segment, and only an unquoted word that IS a
+      # variable or substitution counts: a quoted `-H "Bearer $T"` or a
+      # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
+      # put the `$` on the line, not in the request (replay: 92 such GETs).
+      # A flag counts quoted or not (`"-XPOST"` is still a method).
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions)'
+      # The same URL built by joining the path in the interpreter.
+      - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a
       # pty allocated around the CLI, so it must still name a real subcommand.
-      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough))\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
+      - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+(allow|approvals[ \t]+(?:approve|deny)|unlock|lock|pause|resume|uninstall|setup|install-hooks|workspace|logout|policy|egress|mirror[ \t]+(?:on|off|passthrough)|sandbox[ \t]+off)\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       # A pty wrapper is exactly how the CLI's "needs a terminal" check would be faked.
       - '\b(script|unbuffer|expect)\b[^\n]*[ \t](\S*/)?(prismor|immunity)(@\S+)?[ \t]+session[ \t]+share\b[^;&|\n]*[ \t]--public\b'
     action: block
@@ -1326,13 +1757,20 @@ rules:
     title: Blocks tampering with the signed audit trail and its signing key
     event_types: [shell, file_write]
     fields: [command, path]
-    # Any mention of these paths in a command is blocked — there is no
-    # legitimate agent operation on them (prismor's own writes don't go
-    # through hook dispatch).
+    # The signing key: any mention is blocked. Reading it is enough to forge
+    # receipts, and prismor's own writes don't go through hook dispatch.
+    #
+    # The trail and the chain: a WRITE is blocked -- a redirect into the path,
+    # or a mutating verb or interpreter earlier in the same command segment.
+    # Reading them (`tail trail.jsonl`, `ls ~/.prismor/audit`, `wc -l <`) is
+    # how a human or agent checks what was recorded; blocking every mention
+    # stopped 35 such reads in a replay of 293 real sessions and none that
+    # wrote. The bare-path pattern covers a Write tool's `path` field.
     patterns:
-      - '\.prismor/audit\b'
       - 'receipt_signing_key\.pem\b'
-      - 'telemetry_chain\.json\b'
+      - '>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.prismor/audit\b|telemetry_chain\.json\b)'
+      - '\b(?:rm|mv|cp|tee|truncate|shred|dd|ln|touch|chmod|chown|install|rsync|unlink|python[0-9.]*|node|perl|ruby|sed[ \t]+(?:-[a-zA-Z]*[ \t]+)*-i|sed[ \t]+--in-place)\b[^\n;&|]*(?:\.prismor/audit\b|telemetry_chain\.json\b)'
+      - '^[^\s;&|<>]*(?:\.prismor/audit\b|telemetry_chain\.json\b)[^\s;&|<>]*$'
     action: block
 
   # ── HIGH: Agent instruction-file tampering ────────────────────────
@@ -1347,12 +1785,21 @@ rules:
     fields: [command, path]
     patterns:
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?=$|[\s;&|)])'
-      - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
-      - '(^|/)\.cursorrules$'
-      - '(^|/)\.windsurfrules$'
-      - '(^|/)\.github/copilot-instructions\.md$'
-      - '(^|/)\.github/chatmodes/'
-      - '(^|/)\.mcp\.json$'
+      # Loop variable: `for f in CLAUDE.md AGENTS.md; do echo x >> "$f"; done`
+      # names the file in the word list and writes through `$f`.
+      - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
+      # Path patterns match a whole path value: absolute (spaces allowed) or a
+      # relative path with no spaces. Ending in `(^|/)CLAUDE.md$` alone they also
+      # matched any shell command that merely ends with the file name
+      # (`cat docs/CLAUDE.md`): 36 of 50 hits in a 30-day transcript replay.
+      # ponytail: a command that starts with an absolute binary path
+      # (`/bin/cat /x/CLAUDE.md`) still matches; split the rule by field if that bites.
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?(CLAUDE|AGENTS|GEMINI)\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.cursorrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.windsurfrules$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/copilot-instructions\.md$'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.github/chatmodes/'
+      - '^(?:(?:/|~|[A-Za-z]:[\\/])[^\n]*/|[^\s]*/)?\.mcp\.json$'
     action: warn
 
   # ── MEDIUM: Embedded directive in project-memory content (#153) ───────
@@ -1603,6 +2050,7 @@ rules:
       - '\bNODE_TLS_REJECT_UNAUTHORIZED\s*=\s*0\b'
       - '\bPYTHONHTTPSVERIFY\s*=\s*0\b'
       - '\bpip3?\s+install\b[^\n]*\s--trusted-host\b'
+    guidance: "keep certificate checks on; point the tool at the right CA bundle (e.g. `SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`) instead."
     action: warn
 
   # ── CRITICAL: Claude Code credential access ───────────────────────
@@ -1698,7 +2146,10 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))'
+      # Nor a remote that is a literal path on this machine (a bare repo in a
+      # test rig): nothing leaves the box. Variables are not resolved here, so
+      # `$U/x.git` still fires -- $U could hold a URL.
+      - '\bgit\s+remote\s+(set-url|add|rename)\b(?![^\n]*(?:github\.com|gitlab\.com|bitbucket\.org|dev\.azure\.com|git\.sr\.ht|codeberg\.org))(?!(?:\s+-\S+)*\s+[\w.-]+\s+["'']?(?:/|\.\.?/|~/|file://)[^\s;&|"'']*["'']?[ \t]*(?:$|[;&|\n]))'
       # A force push that names a protected branch. --force-with-lease and
       # --force-if-includes still rewrite that branch history, so they count
       # here; agents reach for the lease form on their own. -f and a +refspec
@@ -1706,6 +2157,7 @@ rules:
       - '\bgit\s+push\b(?=(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s(?:--force(?:-with-lease(?:=\S*)?|-if-includes)?|-[a-zA-Z]*f[a-zA-Z]*)(?=\s|$|[;&|)]))(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*[\s:+](?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
       - '\bgit\s+push\b(?:[^\n;&|''"]|''[^''\n]*''|"[^"\n]*")*\s\+(?:[^\s:;&|]*:)?(?:refs/heads/)?(?:main|master|trunk|production|release[\w/.-]*)(?=\s|$|[;&|)''\"])'
       - '\bgit\s+push(?=[^\n;&|]*\s--force(?!-with-lease|-if-includes)\b)(?:\s+-[\w-]+)*(?:\s+(?!-)[\w.-]+)?(?:\s+-[\w-]+)*(?:\s+\d?>\S*)*\s*(?:$|[;&|)])'
+    guidance: "push to a feature branch and open a pull request; do not force-push a protected branch or repoint a remote."
     action: warn
 
   # ── HIGH: Package manager registry poisoning ─────────────────────
@@ -1815,6 +2267,7 @@ rules:
     patterns:
       - '\b(vim?|nano|emacs|code|subl|sed|awk|perl)\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
       - '\b(echo|cat|printf)\b[^\n]*>\s*[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    guidance: "change the manifest and let the package manager regenerate the lockfile."
     action: warn
 
   # ── HIGH: Lockfile deletion ──────────────────────────────────────
@@ -1826,6 +2279,7 @@ rules:
     fields: [command]
     patterns:
       - '\brm\b[^\n]*(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Pipfile\.lock|Gemfile\.lock|Cargo\.lock|go\.sum|poetry\.lock|composer\.lock)'
+    guidance: "let the package manager update the lockfile (`npm install <pkg>`, `uv lock`, `cargo update -p <crate>`) instead of deleting it."
     action: block
 
   # ── HIGH: Dependency confusion indicators ────────────────────────
@@ -2130,6 +2584,7 @@ rules:
       # `+main`, `:main` (deletion). ponytail: a bare `git push` while checked
       # out on main is invisible to a regex; needs the hook to read the branch.
       - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?git(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+push\b[^\n;&|]*?[\s:+](?:refs/heads/)?(?:main|master)(?=\s|$|[;&|)])'
+    guidance: "push to a feature branch (`git push -u origin HEAD:<branch>`) and open a pull request."
     action: warn
 
   - id: terraform-state-change
@@ -2140,6 +2595,19 @@ rules:
     fields: [command]
     patterns:
       - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:apply|destroy|import|taint|untaint|force-unlock|state\s+(?:rm|mv|push|replace-provider)|workspace\s+delete|run-all\s+(?:apply|destroy))(?=\s|$|[;&|)])'
+    action: warn
+
+  # Teardown only, split out of terraform-state-change so `setup --recommended`
+  # can ask before a destroy without asking on every apply.
+  - id: iac-destroy
+    severity: HIGH
+    category: change_control
+    title: Flags infrastructure teardown (terraform/tofu/terragrunt/pulumi/cdk destroy, apply -destroy)
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:terraform|tofu|terragrunt)(?:\s+-{1,2}[\w.-]+(?:=\S*|\s+[^\s;&|-]\S*)?)*\s+(?:destroy|run-all\s+destroy|(?:apply|plan)\b[^\n;&|]*?\s-destroy)(?=\s|$|[;&|)])'
+      - '(?:^|[\n;&|(`]|\$\()\s*(?:(?:sudo|doas|env|time|nice|exec|command)(?:\s+-\S+)*\s+|\w+=\S*\s+)*(?:\S*/)?(?:npx\s+)?(?:pulumi|cdk|cdktf|sst)\s+(?:[^\n;&|]*?\s)?destroy(?=\s|$|[;&|)])'
     action: warn
 
   - id: kubectl-cluster-change
@@ -2200,7 +2668,7 @@ rules:
     fields: [command]
     patterns:
       # sudo -l/-v/-k and --help/--version do not elevate anything.
-      - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=\S*\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
+      - '(?:^|[\n;&(`]|(?<!\\)\||\$\()\s*(?:\w+=(?:"[^"]*"|''[^'']*''|[^\s"'']*)\s+)*(?:sudo|doas)\s+(?!-n\s+true\b|-[lvkKhV]\b|--(?:list|validate|reset-timestamp|remove-timestamp|help|version)\b)\S'
     action: warn
 
 allowlists: []

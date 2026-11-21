@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import functools
 import re
 import shutil
 import sqlite3
@@ -183,13 +184,63 @@ def _load_secret_map() -> List[tuple[str, str]]:
     return pairs
 
 
+@functools.lru_cache(maxsize=4)
+def _compile_secret_patterns(patterns: Tuple[str, ...]) -> Optional["re.Pattern[str]"]:
+    ok = []
+    for pat in patterns:
+        try:
+            re.compile(pat)
+            ok.append(f"(?:{pat})")
+        except re.error:
+            continue
+    return re.compile("|".join(ok)) if ok else None
+
+
+def mask_secret_patterns(text: str) -> str:
+    """Mask credentials that match a cloak detection pattern but were never
+    registered in the vault: a key pasted straight into a prompt otherwise
+    reaches the store, and the session title, in plaintext."""
+    if not isinstance(text, str) or not text:
+        return text
+    try:
+        from prismor.runtime.cloaking.patterns import all_patterns
+        rx = _compile_secret_patterns(tuple(all_patterns()))
+    except Exception:
+        rx = None
+    # Spans from both pattern sets are taken on the original text, then merged:
+    # masking in sequence would hide the key id the AWS id+secret pattern
+    # anchors on. The data_boundary set is what the proxy uses toward the
+    # upstream (URL passwords, AWS secret keys, PEM bodies) and goes beyond the
+    # cloak set, so the log never keeps what the upstream was spared.
+    spans = [m.span() for m in rx.finditer(text)] if rx else []
+    try:
+        from prismor.runtime.data_boundary import _SECRET_PATTERNS
+        from prismor.runtime.redaction import _URL_PASSWORD
+        spans += [m.span(2) for m in _URL_PASSWORD.finditer(text)]
+        for pat, _kind in _SECRET_PATTERNS:
+            grp = "secret" if "secret" in pat.groupindex else 0
+            spans += [m.span(grp) for m in pat.finditer(text) if m.group(grp)]
+    except Exception:
+        pass
+    if not spans:
+        return text
+    out, pos = [], 0
+    for start, end in sorted(spans):
+        if end <= pos:
+            continue
+        if start >= pos:
+            out.append(text[pos:start])
+            out.append("[REDACTED:secret]")
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
     """Replace any raw secret value with its placeholder across all string
-    fields of an event (recursively). Returns a scrubbed copy; the input is not
-    mutated. A no-op when the vault is empty or no value appears in the event."""
+    fields of an event (recursively), then mask anything else shaped like a
+    credential. Returns a scrubbed copy; the input is not mutated."""
     secret_map = _load_secret_map()
-    if not secret_map:
-        return event
 
     def scrub(obj: Any) -> Any:
         if isinstance(obj, str):
@@ -197,7 +248,7 @@ def _recloak_event(event: Dict[str, Any]) -> Dict[str, Any]:
             for real, placeholder in secret_map:
                 if real in s:
                     s = s.replace(real, placeholder)
-            return s
+            return mask_secret_patterns(s)
         if isinstance(obj, list):
             return [scrub(x) for x in obj]
         if isinstance(obj, dict):
@@ -414,20 +465,19 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
     project_dir = workspace / ".prismor"
     legacy_dir = workspace / _LEGACY_DATA_DIR
     previous_central_dir = _workspace_state_dir(workspace)
-    source_paths = [
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-        project_dir / "sessions",
-        legacy_dir / "sessions",
-        previous_central_dir / "sessions",
-        project_dir / "scoped",
-        legacy_dir / "scoped",
-        previous_central_dir / "scoped",
-        project_dir / "taint",
-        legacy_dir / "taint",
-        previous_central_dir / "taint",
+    roots = [project_dir, legacy_dir, previous_central_dir]
+    try:
+        # A workspace at $HOME has .prismor == Prismor home: that is the live
+        # store, not a legacy source. Its sessions/ changes every call, so the
+        # marker never verified and every hook re-merged the legacy DBs.
+        if project_dir.resolve() == data_dir.resolve():
+            roots.remove(project_dir)
+    except OSError:
+        pass
+    src_dbs = [
+        root / (_LEGACY_DB_NAME if root == legacy_dir else "prismor.db") for root in roots
     ]
+    source_paths = src_dbs + [root / child for child in ("sessions", "scoped", "taint") for root in roots]
 
     marker_dir = data_dir / "migrations" / "runtime-state"
     marker = marker_dir / f"{_workspace_state_id(workspace)}.json"
@@ -451,17 +501,12 @@ def _migrate_workspace_runtime_state(workspace: Path, data_dir: Path) -> None:
         except (OSError, ValueError, TypeError):
             pass
 
-    for src_db in (
-        project_dir / "prismor.db",
-        legacy_dir / _LEGACY_DB_NAME,
-        previous_central_dir / "prismor.db",
-    ):
+    for src_db in src_dbs:
         _merge_sqlite_db_once(src_db, data_dir / "prismor.db")
 
     for child in ("sessions", "scoped", "taint"):
-        _copy_tree_contents_once(project_dir / child, data_dir / child)
-        _copy_tree_contents_once(legacy_dir / child, data_dir / child)
-        _copy_tree_contents_once(previous_central_dir / child, data_dir / child)
+        for root in roots:
+            _copy_tree_contents_once(root / child, data_dir / child)
 
     try:
         marker_dir.mkdir(parents=True, exist_ok=True)
@@ -503,6 +548,15 @@ def get_db_path(workspace: Path) -> Path:
         except OSError:
             return legacy  # fall back to the legacy filename if the rename fails
     return new
+
+
+def existing_db_path() -> Optional[Path]:
+    """Resolve an existing store without migration, directory creation or writes."""
+    for name in ("prismor.db", _LEGACY_DB_NAME):
+        path = prismor_home() / name
+        if path.is_file():
+            return path.resolve()
+    return None
 
 
 def get_sessions_dir(workspace: Path) -> Path:
@@ -591,7 +645,8 @@ def read_session_events(workspace: Path, session_id: str) -> List[Dict[str, Any]
 # SQLite can't ADD COLUMN NOT NULL without a default, and fresh DBs already get
 # the constraint via CREATE TABLE.
 _EXPECTED_COLUMNS: Dict[str, List[tuple]] = {
-    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0")],
+    "token_usage": [("cache_1h_tokens", "INTEGER DEFAULT 0"), ("reported_cost_usd", "REAL"),
+                    ("agent", "TEXT"), ("subject", "TEXT"), ("latency_ms", "INTEGER")],
     "sessions": [
         ("session_id", "TEXT"), ("agent", "TEXT"), ("agent_name", "TEXT"),
         ("source", "TEXT"), ("workspace_path", "TEXT"), ("repo_url", "TEXT"),
@@ -707,6 +762,40 @@ def _canonicalize_workspace_paths_once(connection: sqlite3.Connection, db_path: 
         pass
 
 
+def _recloak_learning_rows_once(connection: sqlite3.Connection, db_path: Path) -> None:
+    """Re-cloak raw secrets that older versions wrote into the learning tables.
+
+    Before #808 the evasion and staged-execution detectors stored the decloaked
+    PostToolUse command verbatim.
+    """
+    marker = db_path.parent / "migrations" / "runtime-state" / "recloak-learning-rows-v1.json"
+    if marker.exists():
+        return
+    columns = {
+        "evasion_attempts": ("blocked_command", "evading_command"),
+        "staged_executions": ("created_path", "created_evidence", "executing_command"),
+    }
+    try:
+        if _load_secret_map():
+            for table, cols in columns.items():
+                try:
+                    rows = connection.execute(f"SELECT id, {', '.join(cols)} FROM {table}").fetchall()  # identifiers are constants  # nosec B608
+                except sqlite3.OperationalError:
+                    continue  # table not created yet
+                for row_id, *values in rows:
+                    scrubbed = _recloak_event(list(values))
+                    if scrubbed != values:
+                        connection.execute(
+                            f"UPDATE {table} SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",  # nosec B608
+                            (*scrubbed, row_id),
+                        )
+            connection.commit()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"version": 1}, indent=2) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def initialize_database(workspace: Path) -> Path:
     ensure_data_dirs(workspace)
     db_path = get_db_path(workspace)
@@ -784,7 +873,11 @@ def initialize_database(workspace: Path) -> Path:
                 output_tokens INTEGER,
                 cache_read_tokens INTEGER,
                 cache_creation_tokens INTEGER,
-                cache_1h_tokens INTEGER DEFAULT 0
+                cache_1h_tokens INTEGER DEFAULT 0,
+                reported_cost_usd REAL,
+                agent TEXT,
+                subject TEXT,
+                latency_ms INTEGER
             );
             CREATE TABLE IF NOT EXISTS tool_output_size (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -813,6 +906,7 @@ def initialize_database(workspace: Path) -> Path:
         _migrate_schema(connection)
         _dedupe_runtime_events_once(connection, db_path)
         _canonicalize_workspace_paths_once(connection, db_path)
+        _recloak_learning_rows_once(connection, db_path)
         connection.executescript(
             """
             CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
@@ -834,6 +928,8 @@ def initialize_database(workspace: Path) -> Path:
         initialize_learning_tables(connection)
         from prismor.runtime.judge_audit import DDL as _JUDGE_AUDIT_DDL
         connection.executescript(_JUDGE_AUDIT_DDL)
+        from prismor.runtime.ratelimit import DDL as _RATE_LIMIT_DDL
+        connection.executescript(_RATE_LIMIT_DDL)
 
         connection.commit()
     finally:
@@ -970,6 +1066,7 @@ def save_session_snapshot(
                             "action": finding.get("action"),
                             "mode": finding.get("mode"),
                             "pattern": finding.get("pattern"),
+                            "when": finding.get("when"),
                         }
                     ),
                 )
@@ -1071,6 +1168,9 @@ def persist_runtime_findings(
                     # the match path already; dropping it here left every
                     # blocked row saying only that some rule said no.
                     "pattern": finding.get("pattern"),
+                    "when": finding.get("when"),
+                    # Same id as the console's event row (see runtime.py).
+                    "eventId": finding.get("eventId"),
                     "source": "runtime",
                 }),
             ))
@@ -1308,6 +1408,7 @@ _EVENT_LANES = {
     "network": "network",
     "tool_result": "tools",
     "mcp_call": "mcp",
+    "assistant_response": "assistant",
 }
 
 
@@ -1342,10 +1443,23 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
     meta = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
     out: Dict[str, Any] = {}
 
-    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query"):
+    for key in ("prompt", "command", "description", "stdout", "stderr", "response", "content", "path", "url", "query",
+                "reasoning"):
         value = raw.get(key)
         if value not in (None, "", [], {}):
             out[key] = _clip(value)
+    # An unmapped tool's `response` is the whole hook envelope (policy screens
+    # all of it); the view shows the tool's own output, else its input.
+    hook = meta.get("raw") if isinstance(meta.get("raw"), dict) else {}
+    if meta.get("unmapped_tool") and hook:
+        body = hook.get("tool_response")
+        if body in (None, "", {}, []):
+            body = hook.get("tool_input")
+        if body not in (None, "", {}, []):
+            out["response"] = _clip(body if isinstance(body, str) else json.dumps(body, default=str))
+    # A reply's `response` is what the model said, not what a tool returned.
+    if raw.get("type") == "assistant_response" and "response" in out:
+        out["reply"] = out.pop("response")
 
     for key in ("mcp_server", "mcp_tool"):
         if raw.get(key):
@@ -1375,6 +1489,19 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
             {"title": str(f.get("title") or "")[:200], "severity": str(f.get("severity") or "")}
             for f in findings[:_ARTIFACT_LIST] if isinstance(f, dict)
         ]
+    # Who started the turn: a person, a parent session's brief, an app wrapper,
+    # or a Stop hook that sent the agent back to work (attribution.py). Prompts
+    # recorded before the hook tagged them are worked out here.
+    if raw.get("type") == "prompt" and not meta.get("origin") and isinstance(raw.get("prompt"), str):
+        from prismor.runtime.attribution import prompt_origin
+        origin, said = prompt_origin(raw["prompt"])
+        meta = {**meta, "origin": origin}
+        if said and said != raw["prompt"].strip() and "user_message" not in out:
+            out["user_message"] = _clip(said)
+    if meta.get("origin"):
+        out["origin"] = str(meta["origin"])[:20]
+    if isinstance(meta.get("triggered_by"), dict):
+        out["triggered_by"] = {k: str(v)[:500] for k, v in meta["triggered_by"].items()}
     if meta.get("has_invisible_controls"):
         out["has_invisible_controls"] = True
     if meta.get("truncated"):
@@ -1461,7 +1588,9 @@ def ensure_read_indexes() -> None:
     hook that waited on it would stall the agent.
 
     events(ts, type) lets the tool-call breakdown count from the index
-    instead of reading every event row (7 s -> 30 ms on a 500 MB store)."""
+    instead of reading every event row (7 s -> 30 ms on a 500 MB store).
+    The partial prompt index does the same for the Sessions search, which
+    otherwise reads every event to find the prompts (8 s -> 50 ms, 2.9 GB)."""
     for ws in _state_query_workspaces():
         db_path = get_db_path(ws)
         if not db_path.exists():
@@ -1470,6 +1599,8 @@ def ensure_read_indexes() -> None:
             conn = sqlite3.connect(db_path, timeout=30)
             try:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts_type ON events(ts, type)")
+                conn.execute("CREATE INDEX IF NOT EXISTS idx_events_prompt ON events(session_id) "
+                             "WHERE type = 'prompt'")
                 conn.commit()
             finally:
                 conn.close()
@@ -2017,8 +2148,8 @@ def get_sessions_page(
     """Return a paginated list of sessions across all registered workspaces.
 
     Filters apply before paging: ``agent`` and ``workspace`` match exactly,
-    ``search`` is a substring of the session id, ``findings`` is ``with`` or
-    ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
+    ``search`` is a substring of the session id or of any prompt in it,
+    ``findings`` is ``with`` or ``clean``, ``min_risk`` is a floor on the risk score and ``since_hours``
     keeps sessions active within that window. ``facets`` lists the agents and
     workspaces of the unfiltered set so a picker can offer every value.
     """
@@ -2082,13 +2213,11 @@ def get_sessions_page(
         and _active_since(r["_updatedRaw"])
     ]
 
-    titles: Dict[str, str] = {}
     if needle:
-        # Search the id or what the session was started to do (its first prompt);
-        # people remember "fix the login bug", not a uuid.
-        titles = _first_prompts([r["sessionId"] for r in rows], workspaces)
-        rows = [r for r in rows if needle in r["sessionId"].lower()
-                or needle in titles.get(r["sessionId"], "").lower()]
+        # Search the id or anything the session was asked; people remember
+        # "fix the login bug", not a uuid.
+        hits = _sessions_with_prompt(needle, workspaces)
+        rows = [r for r in rows if needle in r["sessionId"].lower() or r["sessionId"] in hits]
 
     rows.sort(key=lambda x: x["_sortRaw"] or "", reverse=reverse)
     total = len(rows)
@@ -2100,18 +2229,39 @@ def get_sessions_page(
     for r in items:
         r.pop("_sortRaw", None)
         r.pop("_updatedRaw", None)
-    if not needle:
-        titles = _first_prompts([r["sessionId"] for r in items], workspaces)
+    titles = _first_prompts([r["sessionId"] for r in items], workspaces)
     for r in items:
         r["title"] = titles.get(r["sessionId"], "")
 
     return {"items": items, "total": total, "page": page, "pages": pages, "limit": limit, "facets": facets}
 
 
+def _sessions_with_prompt(needle: str, workspaces: List[Path]) -> set:
+    """Session ids with any prompt containing ``needle`` (lowercased), not
+    just the first one: people search for something they asked mid-session."""
+    out: set = set()
+    for ws in workspaces:
+        conn = _connect_ro(get_db_path(ws))
+        if conn is None:
+            continue
+        try:
+            out.update(sid for (sid,) in conn.execute(
+                "SELECT DISTINCT session_id FROM events WHERE type = 'prompt' "
+                "AND instr(lower(content_text), ?) > 0",
+                (needle,),
+            ))
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return out
+
+
 def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, str]:
     """What each session was started to do: its first real prompt, one line.
     A person recognises "fix the login bug" where a session id says nothing.
     Slash-command wrappers and pasted tags are skipped."""
+    from prismor.runtime.attribution import prompt_origin
     want, out = set(session_ids), {}
     for ws in workspaces:
         if not want:
@@ -2122,12 +2272,19 @@ def _first_prompts(session_ids: List[str], workspaces: List[Path]) -> Dict[str, 
         try:
             for sid in list(want):
                 for (text,) in conn.execute(
-                    "SELECT substr(content_text, 1, 400) FROM events WHERE session_id = ? "
-                    "AND type = 'prompt' ORDER BY id LIMIT 5",
+                    "SELECT substr(content_text, 1, 20000) FROM events WHERE session_id = ? "
+                    "AND type = 'prompt' ORDER BY id LIMIT 20",
                     (sid,),
                 ):
-                    line = re.sub(r"<[^>]+>", " ", text or "")
-                    line = " ".join(line.split())
+                    # A finished background task or a subagent's hand-back is
+                    # a prompt row too; nobody typed it.
+                    if (text or "").lstrip().startswith(("<task-notification", "<agent-message")):
+                        continue
+                    # An app wrapper (<system-reminder>…) can fill the first KBs;
+                    # the title is what the person typed after it.
+                    line = re.sub(r"<[^>]+>", " ", prompt_origin(text or "")[1])
+                    # Rows stored before patterned masking still hold raw keys.
+                    line = " ".join(mask_secret_patterns(line).split())
                     if line and not line.startswith("/") and not line.lower().startswith(("caveat:", "clear")):
                         out[sid] = line[:140]
                         want.discard(sid)
@@ -2325,9 +2482,11 @@ _PKG_NAME_RE = re.compile(r"^(?:@[a-z0-9._-]+/)?[A-Za-z][A-Za-z0-9._-]{1,100}$")
 
 # Narrow the scan in SQL: a dependency always leaves one of these marks, and
 # the alternative is a json.loads() of every tool call ever recorded.
+# Pinned to the ts index like _NET_SQL: left to itself SQLite walks the id
+# order for the ORDER BY and reads the whole table (8s vs 1.6s on a 3GB store).
 _DEP_SQL = """
     SELECT session_id, ts, raw_json, command_text, url_text
-    FROM events
+    FROM events INDEXED BY idx_events_ts
     WHERE ts >= ? AND (
         raw_json LIKE '%mcp__%' OR raw_json LIKE '%"Skill"%'
         OR command_text LIKE '%@@SECRET:%' OR url_text LIKE '%@@SECRET:%'
@@ -3361,40 +3520,65 @@ def _insert_fail_open(workspace: Path, sql: str, params: tuple) -> int:
         return 0
 
 
-def record_token_usage(
-    *,
-    workspace: Path,
-    session_id: str,
-    ts: str,
-    message_id: str,
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-    cache_creation_tokens: int,
-    cache_1h_tokens: int = 0,
-) -> bool:
-    """Record one assistant turn's real Anthropic token usage. Fail-open.
+_TOKEN_UPSERT = """
+    INSERT INTO token_usage (
+        message_id, session_id, workspace_path, ts, model,
+        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
+        reported_cost_usd, agent, subject, latency_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(message_id) DO UPDATE SET
+        reported_cost_usd = COALESCE(excluded.reported_cost_usd, reported_cost_usd),
+        agent = COALESCE(agent, excluded.agent),
+        subject = COALESCE(subject, excluded.subject),
+        latency_ms = COALESCE(latency_ms, excluded.latency_ms),
+        input_tokens = MAX(COALESCE(input_tokens, 0), excluded.input_tokens),
+        output_tokens = MAX(COALESCE(output_tokens, 0), excluded.output_tokens),
+        cache_read_tokens = MAX(COALESCE(cache_read_tokens, 0), excluded.cache_read_tokens),
+        cache_creation_tokens = MAX(COALESCE(cache_creation_tokens, 0), excluded.cache_creation_tokens),
+        cache_1h_tokens = MAX(COALESCE(cache_1h_tokens, 0), excluded.cache_1h_tokens)
+    WHERE excluded.input_tokens > COALESCE(input_tokens, 0) OR excluded.output_tokens > COALESCE(output_tokens, 0)
+       OR excluded.cache_read_tokens > COALESCE(cache_read_tokens, 0)
+       OR excluded.cache_creation_tokens > COALESCE(cache_creation_tokens, 0)
+       OR excluded.cache_1h_tokens > COALESCE(cache_1h_tokens, 0)
+       OR (excluded.reported_cost_usd IS NOT NULL AND reported_cost_usd IS NOT excluded.reported_cost_usd)
+"""
 
-    Deduped on ``message_id`` — a single assistant turn can trigger several
+
+def record_token_usages(workspace: Path, session_id: str, rows: List[Dict[str, Any]]) -> List[bool]:
+    """Record assistant turns' token usage in one connection. Fail-open.
+
+    Deduped on ``message_id`` -- a single assistant turn can trigger several
     PostToolUse hooks (parallel tool calls), which would otherwise count the
-    same turn's usage multiple times. Returns True only for a new row.
+    same turn's usage multiple times. A repeat keeps the larger count per
+    bucket: subagent transcripts write one line per content block with
+    output_tokens still growing, so the first line seen undercounts.
+    Returns, per row, True for a new row or one whose counts grew.
     """
-    if not message_id:
-        return False
-    return bool(_insert_fail_open(
-        workspace,
-        """
-        INSERT OR IGNORE INTO token_usage (
-            message_id, session_id, workspace_path, ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            message_id, session_id, canonical_workspace_path(workspace), ts, model,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_1h_tokens,
-        ),
-    ))
+    rows = [r for r in rows if r.get("message_id")]
+    if not rows:
+        return []
+    ws = canonical_workspace_path(workspace)
+    try:
+        connection = sqlite3.connect(initialize_database(workspace))
+        try:
+            changed = [connection.execute(_TOKEN_UPSERT, (
+                r["message_id"], session_id, ws, r.get("ts") or "", r.get("model") or "",
+                r.get("input_tokens") or 0, r.get("output_tokens") or 0, r.get("cache_read_tokens") or 0,
+                r.get("cache_creation_tokens") or 0, r.get("cache_1h_tokens") or 0,
+                r.get("reported_cost_usd"), r.get("agent") or None, r.get("subject") or None,
+                r.get("latency_ms"),
+            )).rowcount > 0 for r in rows]
+            connection.commit()
+            return changed
+        finally:
+            connection.close()
+    except Exception:
+        return [False] * len(rows)
+
+
+def record_token_usage(*, workspace: Path, session_id: str, **row: Any) -> bool:
+    """One turn; see :func:`record_token_usages`."""
+    return any(record_token_usages(workspace, session_id, [row]))
 
 
 def record_tool_output_size(
@@ -3444,7 +3628,7 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
             "SELECT session_id, model, COALESCE(input_tokens,0) as input,"  # nosec B608 - only placeholders are interpolated
             "       COALESCE(output_tokens,0) as output, COALESCE(cache_read_tokens,0) as cache_read,"
             "       COALESCE(cache_creation_tokens,0) - COALESCE(cache_1h_tokens,0) as cache_5m,"
-            "       COALESCE(cache_1h_tokens,0) as cache_1h"
+            "       COALESCE(cache_1h_tokens,0) as cache_1h, reported_cost_usd as reported"
             f"  FROM token_usage WHERE session_id IN ({marks})"
             "   AND COALESCE(input_tokens,0) + COALESCE(output_tokens,0) + COALESCE(cache_read_tokens,0)"
             "       + COALESCE(cache_creation_tokens,0) > 0",  # older rows from zero-usage placeholder turns
@@ -3454,13 +3638,59 @@ def get_sessions_token_usage(session_ids: List[str]) -> Dict[str, Dict[str, Any]
             model = r["model"] or "unknown"
             req = {k: r[k] for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
             entry["turns"] += 1
-            entry["requests"].setdefault(model, []).append(req)
+            # provider-reported USD, when the response carried one
+            entry["requests"].setdefault(model, []).append({**req, "reported": r["reported"]})
             totals = entry["by_model"].setdefault(model, dict.fromkeys(req, 0))
             for k, v in req.items():
                 totals[k] += v
     finally:
         conn.close()
     return out
+
+
+def get_window_token_requests(hours: int, workspace: Optional[Path] = None) -> Dict[str, List[Dict[str, int]]]:
+    """{model: [per-request buckets]} for turns in the last ``hours``, so each
+    request can be priced at its own long-context tier."""
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return {}
+    sql = ("SELECT model, COALESCE(input_tokens,0) as input, COALESCE(output_tokens,0) as output,"
+           "       COALESCE(cache_read_tokens,0) as cache_read,"
+           "       COALESCE(cache_creation_tokens,0) - COALESCE(cache_1h_tokens,0) as cache_5m,"
+           "       COALESCE(cache_1h_tokens,0) as cache_1h, reported_cost_usd as reported"
+           "  FROM token_usage WHERE ts >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)")
+    args: List[Any] = [f"-{hours} hours"]
+    if workspace:
+        sql += " AND workspace_path IN (?, ?)"
+        args += [canonical_workspace_path(workspace), str(workspace)]
+    out: Dict[str, List[Dict[str, int]]] = {}
+    try:
+        for r in conn.execute(sql, args):
+            req = {k: r[k] for k in ("input", "output", "cache_read", "cache_5m", "cache_1h")}
+            if any(req.values()):
+                out.setdefault(r["model"] or "unknown", []).append({**req, "reported": r["reported"]})
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return out
+
+
+def get_active_sessions(hours: int) -> List[tuple]:
+    """(session_id, workspace_path) for sessions updated in the last ``hours``."""
+    conn = _connect_ro(prismor_home() / "prismor.db")
+    if conn is None:
+        return []
+    try:
+        return [(r[0], r[1]) for r in conn.execute(
+            "SELECT session_id, workspace_path FROM sessions"
+            " WHERE updated_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', ?)",
+            (f"-{hours} hours",),
+        )]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
 
 
 def get_token_stats(workspace: Optional[Path] = None, hours: int = 24, limit: int = 8) -> Dict[str, Any]:
@@ -4699,6 +4929,86 @@ def _attach_hook_runs(events: List[Dict[str, Any]], transcript: str) -> None:
             ev["hookRuns"] = sorted(by_call[ev["toolUseId"]], key=lambda r: (_TOOL_HOOK_EVENTS.index(r["event"]), r["ts"]))
 
 
+def transcript_refusals(transcript: str) -> List[Dict[str, str]]:
+    """The prompts the model provider's safety classifier refused, oldest
+    first: the refusal record's uuid and time, the classifier's category, and
+    the refused prompt's text. The agent ran nothing for them, and the person
+    usually edits and resends, so unmarked they read as near-identical empty
+    turns. Claude Code logs each as a system record naming the refused message."""
+    texts: Dict[str, str] = {}
+    found: List[Dict[str, str]] = []
+    try:
+        with open(transcript, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"type":"user"' not in line and "model_refusal_fallback" not in line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                if rec.get("subtype") == "model_refusal_fallback" and rec.get("refusedUserMessageUuid"):
+                    tag = re.search(r"Details: `\[([^\]]+)\]`", str(rec.get("content") or ""))
+                    found.append({"uuid": str(rec.get("uuid") or ""), "ts": str(rec.get("timestamp") or ""),
+                                  "category": tag[1] if tag else "policy",
+                                  "refused": str(rec["refusedUserMessageUuid"])})
+                elif rec.get("type") == "user" and isinstance((rec.get("message") or {}).get("content"), str):
+                    texts[str(rec.get("uuid"))] = rec["message"]["content"].strip()
+    except OSError:
+        return []
+    for r in found:
+        r["prompt"] = texts.get(r.pop("refused"), "")
+    return found
+
+
+_PRECHECK_CALL = re.compile(r"""\b(?:prismor|immunity)\s+check\s+(?:-\S+\s+)*(?:"([^"]*)"|'([^']*)'|([^\s;&|]+))""")
+_PRECHECK_FINDING = re.compile(
+    r"^\[(\w+)\] (.+?)  \((\w+)\)\n(?:  suppressed by .*\n)?  rule: (\S+)  evidence: (.*)$", re.M)
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _attach_prechecks(events: List[Dict[str, Any]]) -> None:
+    """Surface `prismor check "<cmd>"` dry runs an agent made from a shell call.
+
+    The agent asks what policy would do and then decides on its own, so the
+    verdict that stopped it lived only in the command's output: the trail
+    showed an allowed `ls; prismor check ...` row and no hint of why nothing
+    ran next. Nothing was blocked, so this never changes the row's verdict.
+    """
+    for ev in events:
+        arts = ev.get("artifacts") or {}
+        command = str(arts.get("command") or "")
+        if ev.get("type") != "shell" or "check" not in command:
+            continue
+        checked = [next(g for g in m.groups() if g is not None) for m in _PRECHECK_CALL.finditer(command)]
+        if not checked:
+            continue
+        out = _ANSI.sub("", "\n".join(str(arts.get(f) or "") for f in ("response", "stdout", "stderr")))
+        findings = [{"severity": s, "title": t, "verdict": v.lower(), "rule": r, "evidence": e.strip()}
+                    for s, t, v, r, e in _PRECHECK_FINDING.findall(out)]
+        verdicts = {f["verdict"] for f in findings}
+        ev["precheck"] = {
+            "checked": checked,
+            "findings": findings,
+            # Same order as the CLI's exit code: block beats warn beats a clean pass.
+            "verdict": "block" if "block" in verdicts else "warn" if findings else
+                       ("pass" if "PASS" in out else "unknown"),
+        }
+
+
+def _attach_refusals(events: List[Dict[str, Any]], transcript: str) -> None:
+    """Mark each prompt row the safety classifier refused with its category."""
+    if not transcript:
+        return
+    by_text = {r["prompt"]: r["category"] for r in transcript_refusals(transcript) if r["prompt"]}
+    for ev in events:
+        artifacts = ev.get("artifacts") or {}
+        text = str(artifacts.get("user_message") or artifacts.get("prompt") or "").strip()
+        if ev.get("type") == "prompt" and text in by_text:
+            artifacts["refused"] = by_text[text]
+
+
 def _attach_task_durations(
     events: List[Dict[str, Any]], tool_calls: Dict[str, Dict[str, str]]
 ) -> None:
@@ -4983,12 +5293,15 @@ def get_session_scoped_detail(workspace: Path, session_id: str) -> Dict[str, Any
                         "mode": enrichment.get("mode") or "",
                         "source": enrichment.get("source") or ("finding" if finding_id else ""),
                         "pattern": enrichment.get("pattern") or "",
+                        "when": enrichment.get("when") or "",
                     },
                 })
             recent_events = _merge_tool_phases(_drop_duplicate_events(recent_events))
             _attach_task_durations(recent_events, tool_calls)
             _attach_hook_runs(recent_events, transcript)
+            _attach_refusals(recent_events, transcript)
             _attach_matched_patterns(recent_events, workspace)
+            _attach_prechecks(recent_events)
             _slim_old_trail(recent_events)
             # Dedupe on the raw timestamp: recent_blocked carries it, while an
             # event's "ts" is relative ("1m ago"), so the two never matched and

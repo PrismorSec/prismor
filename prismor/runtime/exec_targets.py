@@ -154,6 +154,12 @@ def resolve_targets(command: str, cwd: Path) -> List[Target]:
         elif argv0 in _NODE_MANAGERS and rest and rest[0] in ("run", "run-script"):
             if len(rest) > 1:
                 targets.append(Target(cwd / "package.json", f"npm-script:{rest[1]}"))
+        elif argv0 in _NODE_MANAGERS and rest and rest[0] in ("install", "i", "add", "ci"):
+            # Installing a local package runs its lifecycle scripts.
+            for arg in rest[1:]:
+                if arg.startswith((".", "/", "file:")) and not arg.startswith("-"):
+                    pkg = cwd / arg.removeprefix("file:") / "package.json"
+                    targets.append(Target(pkg, "npm-script:preinstall,install,postinstall,prepare"))
         elif argv0 == "make":
             makefile = "Makefile"
             for i, tok in enumerate(rest):
@@ -245,7 +251,7 @@ def _npm_script_lines(text: str, label: str, wanted: str) -> List[Line]:
         return []
     out: List[Line] = []
     for name, body in scripts.items():
-        if wanted not in ("", "*") and name != wanted:
+        if wanted not in ("", "*") and name not in wanted.split(","):
             continue
         if isinstance(body, str) and body.strip():
             out.append(Line(body.strip(), f"{label}:scripts.{name}"))

@@ -138,15 +138,20 @@ def install(
     if target_dir.exists():
         shutil.rmtree(target_dir)
     shutil.copytree(_BUNDLED_PLUGIN_DIR, target_dir)
+    # The plugin resolves shell placeholders through the same resolver as the
+    # Claude hook; ship it beside the plugin so it works without prismor importable.
+    shutil.copy2(Path(__file__).resolve().parent / "hooks" / "decloak-exec.sh", target_dir / "decloak-exec.sh")
+    # Its host-binding check: without it a bound secret is refused outright.
+    shutil.copy2(Path(__file__).resolve().parent / "bindings.py", target_dir / "bindings.py")
 
     _enable_plugin_in_config(_PLUGIN_NAME)
 
-    # Determine secrets dir path — preserve OS-native format
-    env_secrets = os.environ.get("PRISMOR_SECRETS_DIR", "")
-    if env_secrets:
-        secrets_dir_path = Path(env_secrets)
-    else:
-        secrets_dir_path = Path.home() / ".prismor" / "secrets"
+    # Determine secrets dir path — preserve OS-native format. Pinned in the
+    # Hermes config only when chosen on purpose (see pinned_secrets_dir); the
+    # plugin resolves the default from HOME itself.
+    from prismor.runtime.cloaking.secrets_store import pinned_secrets_dir
+    pinned = pinned_secrets_dir()
+    secrets_dir_path = pinned or Path.home() / ".prismor" / "secrets"
     # The plugin auto-vaults pasted secrets under <secrets>/auto_vault.
     (secrets_dir_path / "auto_vault").mkdir(parents=True, exist_ok=True)
     for d in (secrets_dir_path, secrets_dir_path / "auto_vault"):
@@ -157,13 +162,20 @@ def install(
 
     config_path = _hermes_config_path()
     config = _read_yaml_config(config_path)
+    readable = bool(config) or not config_path.exists()  # never overwrite an unreadable config
     env = config.get("env", {})
     if not isinstance(env, dict):
         env = {}
     # Use os.path.normpath to preserve OS-appropriate separators
-    env["PRISMOR_SECRETS_DIR"] = os.path.normpath(str(secrets_dir_path))
-    config["env"] = env
-    if len(config) > 1 or not config_path.exists():  # never overwrite an unreadable config
+    if pinned is not None:
+        env["PRISMOR_SECRETS_DIR"] = os.path.normpath(str(pinned))
+    else:
+        env.pop("PRISMOR_SECRETS_DIR", None)
+    if env:
+        config["env"] = env
+    else:
+        config.pop("env", None)
+    if readable and (config or config_path.exists()):
         _write_yaml_config(config_path, config)
 
     return {

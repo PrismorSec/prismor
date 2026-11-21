@@ -164,8 +164,9 @@ def test_extract_event_fields_handles_plain_dict_file_actions():
     assert _extract_event_fields("save_as_pdf", {"path": "/tmp/out.pdf"}) == (
         "file_write", "path", "/tmp/out.pdf",
     )
+    # An upload sends a local file out: judged as the read it is.
     assert _extract_event_fields("upload_file", {"path": "/tmp/in.txt"}) == (
-        "file_write", "path", "/tmp/in.txt",
+        "file_read", "path", "/tmp/in.txt",
     )
 
 

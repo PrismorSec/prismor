@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prismor-ag2"
+version = "0.1.0"
+description = "Prismor adapter for AG2 — per-user runtime tool-call policy for production agents."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Prismor" }]
+keywords = ["ag2", "autogen", "multi-agent", "security", "policy", "guardrail", "prismor"]
+
+dependencies = [
+    "prismor>=1.13.0",
+]
+
+[project.optional-dependencies]
+ag2 = ["ag2>=0.9"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["prismor_ag2", "prismor"]

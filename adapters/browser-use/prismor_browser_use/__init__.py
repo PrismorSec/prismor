@@ -40,29 +40,19 @@ from typing import Any, Optional, Union
 
 from prismor.runtime.redaction import redact_tool_result
 from prismor.runtime.principal import Subject, resolve_subject, use_subject
-from prismor.runtime.runtime import Decision, evaluate_tool_call, log_observe_findings
+from prismor.runtime.runtime import _URL_VALUE, Decision, evaluate_tool_call, log_observe_findings
 
 __all__ = ["guard_controller", "use_subject", "PrismorBlocked"]
 
-# Actions whose primary risk is a network destination — map to event_type="network"
-# Includes both older ("go_to_url", "search_google", "save_pdf") and current
-# ("navigate", "search", "save_as_pdf") browser-use action names — the
-# registered action set has been renamed across releases (confirmed against
-# browser-use 0.13.3), and the old names may still be reachable via user code
-# targeting an older pinned version. See PrismorSec/prismor#135.
-_NETWORK_ACTIONS = {
-    "go_to_url", "navigate",
-    "search_google", "search",
-    "open_tab",
-}
-
-# Actions whose primary risk is a file path — map to event_type="file_write"
-_FILE_ACTIONS = {
-    "upload_file",
-    "save_pdf", "save_as_pdf",
-    "download_file",
-    "write_file", "replace_file",
-}
+# Action → event type. Old ("go_to_url", "search_google", "save_pdf") and
+# current ("navigate", "search", "save_as_pdf") names: the registered action
+# set has been renamed across releases (PrismorSec/prismor#135). The runtime
+# fills url/path/content from the action's params (current browser-use file
+# actions take ``file_name``; only upload_file takes ``path``).
+_NETWORK_ACTIONS = {"go_to_url", "navigate", "open_tab"}
+_SEARCH_ACTIONS = {"search_google", "search"}
+_READ_ACTIONS = {"read_file", "upload_file"}  # an upload sends a local file out: judged as its read
+_WRITE_ACTIONS = {"save_pdf", "save_as_pdf", "download_file", "write_file", "replace_file"}
 
 
 class PrismorBlocked(Exception):
@@ -85,17 +75,19 @@ def _extract_event_fields(action_name: str, params: Any) -> tuple[str, str, str]
     elif hasattr(params, "__dict__"):
         dump = vars(params)
 
+    if action_name in _SEARCH_ACTIONS:
+        # A query, not a destination: egress rules must not read it as a host.
+        return "network", "url", ""
     if action_name in _NETWORK_ACTIONS:
-        # go_to_url → params.url; search_google → params.query
-        url = dump.get("url") or dump.get("query") or ""
-        new_tab = dump.get("new_tab") or ""
-        if new_tab:
-            url = (str(url) + "\n" + str(new_tab)).strip()
-        return "network", "url", str(url or dump)
-
-    if action_name in _FILE_ACTIONS:
-        path = dump.get("path") or dump.get("file_path") or dump.get("filename") or str(dump)
-        return "file_write", "path", str(path)
+        # A URL in any other param (new_tab=) is a destination too.
+        urls = [str(dump.get("url") or "")] + [u for k, v in dump.items() if k != "url" and isinstance(v, str)
+                                              for u in _URL_VALUE.findall(v)]
+        return "network", "url", "\n".join(u for u in urls if u) or str(dump)
+    if action_name in _READ_ACTIONS | _WRITE_ACTIONS:
+        path = dump.get("path") or dump.get("file_name") or dump.get("file_path") or dump.get("filename")
+        return ("file_read" if action_name in _READ_ACTIONS else "file_write"), "path", str(path or dump)
+    if action_name == "evaluate":
+        return "shell", "command", str(dump.get("code") or "")  # page JavaScript the agent wrote
 
     # Everything else (click, type, scroll, extract, …) → shell with serialised args
     parts = [action_name]
@@ -125,10 +117,13 @@ def _build_event(
             "tool_name": action_name,
             "framework": "browser-use",
             "subject": subject.as_dict() if subject else None,
+            "kwargs": dict(params) if isinstance(params, dict) else {},
         },
     }
+    if action_name in _SEARCH_ACTIONS and isinstance(params, dict):
+        event["query"] = str(params.get("query") or "")
     if event_type == "file_write" and isinstance(params, dict):
-        event["content"] = str(params.get("content") or params.get("text") or "")
+        event["content"] = str(params.get("content") or params.get("text") or params.get("new_str") or "")
     return event
 
 

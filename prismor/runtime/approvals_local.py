@@ -11,8 +11,9 @@ So a block now carries a request id, and the human runs:
     prismor approvals deny <id>
 
 The approval matches only the same agent making the same tool call (tool name
-plus its exact input) in the same workspace, is used up by the first call it
-lets through, and lapses after APPROVED_TTL seconds if nothing uses it.
+plus its exact input) in the same session and working directory. Hooks without
+that context fall back to the policy workspace. It is used up by the first call
+it lets through, and lapses after APPROVED_TTL seconds if nothing uses it.
 
 How the agent gets going again, in order of preference:
 
@@ -90,29 +91,46 @@ def _expire(reqs: Dict[str, Dict[str, Any]]) -> None:
 
 
 def fingerprint(agent: str, workspace: Any, payload: Dict[str, Any], event: Dict[str, Any]) -> str:
-    """The exact action: same agent, workspace, tool and tool input."""
+    """Identify the action independently of which hook's policy screens it."""
     tool = payload.get("tool_name") or payload.get("toolName") or event.get("type") or ""
     inp = payload.get("tool_input") or payload.get("toolArgs") or payload.get("input")
     if not inp:
         inp = {k: event.get(k) for k in ("type", "command", "path", "url", "content") if event.get(k)}
-    raw = json.dumps([agent, str(workspace or ""), tool, inp], sort_keys=True, default=str)
+    scope: str | List[str] = str(workspace or "")
+    cwd = payload.get("cwd")
+    session = payload.get("session_id") or payload.get("sessionId")
+    # A global hook may use the Git root while a project hook uses a subdir.
+    # Both see the same call context. Without it, retain workspace isolation.
+    if isinstance(cwd, str) and Path(cwd).is_absolute() and isinstance(session, str) and session:
+        scope = [session, str(Path(cwd).resolve())]
+    raw = json.dumps([agent, scope, tool, inp], sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def consume(fp: str) -> Optional[Dict[str, Any]]:
-    """Spend an approval for this action. Returns it, or None if there is none."""
+def consume(fp: str, call_id: str = "") -> Optional[Dict[str, Any]]:
+    """Spend an approval for this action. Returns it, or None if there is none.
+
+    `call_id` is the agent's id for this one tool call. With a global and a
+    project install, two hooks screen the same call; the second must see the
+    approval the first just spent on that call, or it blocks it under a new id."""
     with _locked() as state:
         _expire(state["requests"])
         for rec in state["requests"].values():
-            if rec.get("fp") == fp and rec.get("status") == "approved":
+            if rec.get("fp") != fp:
+                continue
+            if rec.get("status") == "approved":
                 rec["status"] = "used"
                 rec["used_at"] = time.time()
+                rec["used_by"] = call_id
+                return dict(rec)
+            if call_id and rec.get("status") == "used" and rec.get("used_by") == call_id:
                 return dict(rec)
     return None
 
 
 def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
-            summary: str, waiting_seconds: int = 0) -> Dict[str, Any]:
+            summary: str, waiting_seconds: int = 0, workspace: str = "",
+            tool: str = "") -> Dict[str, Any]:
     """Open (or reuse) the pending request for this action."""
     with _locked() as state:
         _expire(state["requests"])
@@ -124,11 +142,15 @@ def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
                 rid = secrets.token_hex(3)
             rec = {
                 "id": rid, "fp": fp, "status": "pending", "created": time.time(),
-                "agent": agent, "session_id": session_id,
+                "agent": agent, "session_id": session_id, "workspace": workspace, "tool": tool,
                 "rule": str(finding.get("ruleId") or ""),
                 "severity": str(finding.get("severity") or ""),
                 "title": str(finding.get("title") or "")[:200],
-                "summary": summary[:300],
+                "summary": summary[:4000],
+                # Which pattern fired and on what text (#929), so an audit can
+                # tell a tag-rule false positive from a real catch.
+                "pattern": str(finding.get("pattern") or "")[:500],
+                "evidence": str(finding.get("evidence") or "")[:500],
             }
             state["requests"][rid] = rec
         rec["attempts"] = int(rec.get("attempts", 0)) + 1
@@ -136,19 +158,23 @@ def request(fp: str, *, agent: str, session_id: str, finding: Dict[str, Any],
         return dict(rec)
 
 
-def wait(rid: str, seconds: float) -> bool:
+def wait(rid: str, seconds: float, call_id: str = "") -> bool:
     """Hold the hook until the request is decided. True only on approval, and
     the approval is spent by this call."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         time.sleep(0.5)
         with _locked() as state:
+            _expire(state["requests"])
             rec = state["requests"].get(rid)
-            if rec is None or rec.get("status") in ("denied", "expired", "used"):
+            if rec is None or rec.get("status") in ("denied", "expired"):
                 return False
+            if rec.get("status") == "used":
+                return bool(call_id and rec.get("used_by") == call_id)
             if rec.get("status") == "approved":
                 rec["status"] = "used"
                 rec["used_at"] = time.time()
+                rec["used_by"] = call_id
                 rec["resumed"] = True
                 return True
     with _locked() as state:
@@ -156,6 +182,27 @@ def wait(rid: str, seconds: float) -> bool:
         if rec is not None:
             rec["waiting_until"] = 0
     return False
+
+
+def resolve(fp: str) -> bool:
+    """This exact call just ran without our approval (allowed in the agent's
+    own prompt, by `prismor allow`, or a policy change): close its pending
+    request. Runs on every allowed call, so read without the lock first and
+    only take it when there is something to close."""
+    try:
+        reqs = json.loads(path().read_text(encoding="utf-8")).get("requests") or {}
+    except (OSError, ValueError):
+        return False
+    if not any(r.get("fp") == fp and r.get("status") == "pending" for r in reqs.values()):
+        return False
+    hit = False
+    with _locked() as state:
+        for rec in state["requests"].values():
+            if rec.get("fp") == fp and rec.get("status") == "pending":
+                rec["status"] = "resolved"
+                rec["decided_at"] = time.time()
+                hit = True
+    return hit
 
 
 def decide(rid: str, approve: bool) -> Optional[Dict[str, Any]]:
@@ -181,6 +228,31 @@ def list_requests(include_done: bool = False) -> List[Dict[str, Any]]:
         recs = [dict(r) for r in state["requests"].values()
                 if include_done or r.get("status") in ("pending", "approved")]
     return sorted(recs, key=lambda r: float(r.get("created", 0)), reverse=True)
+
+
+def stats(since_days: Optional[float] = None) -> Dict[str, Any]:
+    """Audit numbers for the queue (#929): counts by status, rule and agent,
+    the share that expired unanswered, and the median minutes to a decision.
+    ponytail: only the newest _KEEP records survive pruning, so a long window
+    on a busy machine undercounts; move to the session store if that matters."""
+    import statistics
+    from collections import Counter
+    recs = list_requests(include_done=True)
+    if since_days is not None:
+        cutoff = time.time() - since_days * 86400
+        recs = [r for r in recs if float(r.get("created", 0)) >= cutoff]
+    n = len(recs)
+    status = Counter(r.get("status", "") for r in recs)
+    waits = [(float(r["decided_at"]) - float(r.get("created", 0))) / 60
+             for r in recs if r.get("decided_at") and r.get("status") in ("approved", "denied", "used")]
+    return {
+        "total": n,
+        "by_status": dict(status.most_common()),
+        "by_rule": dict(Counter(r.get("rule", "") for r in recs).most_common()),
+        "by_agent": dict(Counter(r.get("agent", "") for r in recs).most_common()),
+        "expired_share": round(status.get("expired", 0) / n, 3) if n else 0.0,
+        "median_minutes_to_decide": round(statistics.median(waits), 1) if waits else None,
+    }
 
 
 def wait_seconds(agent: str) -> int:
@@ -214,11 +286,22 @@ def _demo() -> None:
     r = request(fp, agent="codex", session_id="s", finding={"ruleId": "r"}, summary="rm -rf x")
     assert request(fp, agent="codex", session_id="s", finding={}, summary="")["id"] == r["id"]
     assert decide(r["id"], True)["status"] == "approved"
-    assert consume(fp)["id"] == r["id"] and consume(fp) is None  # once only
+    assert consume(fp, "t1")["id"] == r["id"] and consume(fp) is None  # once only
+    assert consume(fp, "t1")["id"] == r["id"]  # second hook on the same call
+    assert consume(fp, "t2") is None  # a later call is not covered
     r2 = request(fp, agent="codex", session_id="s", finding={}, summary="")
     assert r2["id"] != r["id"]
     decide(r2["id"], False)
     assert consume(fp) is None
+    r3 = request(fp, agent="codex", session_id="s", finding={}, summary="")
+    assert resolve(fp) and not resolve(fp)  # ran another way: closed once
+    assert all(r["id"] != r3["id"] for r in list_requests())
+    r4 = request("fp4", agent="claude", session_id="s",
+                 finding={"ruleId": "t", "pattern": "p", "evidence": "e"}, summary="x")
+    assert (r4["pattern"], r4["evidence"]) == ("p", "e")
+    s = stats()
+    assert s["total"] == 4 and s["by_status"]["pending"] == 1 and s["by_rule"]["r"] == 1
+    assert s["median_minutes_to_decide"] is not None and stats(since_days=0)["total"] == 0
     print("ok")
 
 

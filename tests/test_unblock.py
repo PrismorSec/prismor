@@ -294,16 +294,20 @@ class EgressOwnershipTest(unittest.TestCase):
 
 
 class TestTagRuleSteps(unittest.TestCase):
-    def test_tag_rule_block_never_suggests_prismor_allow(self):
-        # `prismor allow tag-rule:<id>` answered "No rule named ..." (live, 2026-10-14).
+    def test_tag_rule_block_suggests_expiring_exception(self):
         finding = {"ruleId": "tag-rule:00d30a0689", "category": "lethal_trifecta", "action": "block"}
         text = "\n".join(unblock.unblock_steps(finding))
-        self.assertNotIn("prismor allow tag-rule", text)
+        self.assertIn("prismor allow tag-rule:00d30a0689 --pattern", text)
+        self.assertIn("--expires 30m --yes", text)
+        self.assertNotIn("inference_enabled: false", text)
         self.assertIn("prismor tags rules", text)
+        managed = "\n".join(unblock.unblock_steps(finding, org_managed=True))
+        self.assertIn("prismor exempt request", managed)
+        self.assertNotIn("prismor allow", managed)
 
-    def test_allow_redirects_tag_rules(self):
+    def test_unknown_tag_rule_lists_rules(self):
         from prismor.runtime.allow import check_allowed
-        msg = check_allowed("tag-rule:00d30a0689", scope="pattern", workspace=Path("."))
+        msg = check_allowed("tag-rule:unknown", scope="pattern", workspace=Path("."))
         self.assertIn("prismor tags rules", msg)
 
 

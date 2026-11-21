@@ -8,11 +8,18 @@
 # the whole integration. See docs/n8n.md.
 services:
   prismor:
+    # Pulled from the release; `docker compose build` builds it from this
+    # checkout instead. Pin PRISMOR_VERSION to a release for production.
+    image: ghcr.io/prismorsec/prismor:${PRISMOR_VERSION:-latest}
     build:
       context: ../..
       dockerfile: packaging/docker/Dockerfile
-    # image: ghcr.io/prismorsec/prismor:latest   # once published, drop `build`
     command: ["proxy"]
+    # The surface writes only to its volume; everything else is immutable.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     env_file: [prismor.env]
     volumes:
       # Device identity, policy and session logs. Losing this volume means a

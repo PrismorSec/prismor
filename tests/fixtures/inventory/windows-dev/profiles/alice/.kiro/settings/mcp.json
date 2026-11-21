@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "kiro-docs": {
+      "command": "uvx",
+      "args": [
+        "mcp-server-git"
+      ]
+    }
+  }
+}

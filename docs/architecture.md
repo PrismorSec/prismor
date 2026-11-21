@@ -44,7 +44,7 @@ flowchart TD
 
     subgraph Eval["runtime.evaluate_tool_call()"]
         Scoped["Session-scoped rules · IAM<br/>cloak guard · exemptions"]
-        Engine["PolicyEngine.evaluate()<br/>YAML rules · egress · data boundary<br/>semantic guard · taint"]
+        Engine["PolicyEngine.evaluate()<br/>YAML rules · egress · data boundary<br/>semantic guard · optional PII · taint"]
         Scoped --> Engine
     end
 
@@ -57,7 +57,7 @@ flowchart TD
 
     Decision --> Sinks["Telemetry sinks<br/>+ signed audit trail"]
 
-    Out["Tool output"] --> Redact["Shared redaction<br/>cloak + data boundary"]
+    Out["Tool output"] --> Redact["Shared redaction<br/>cloak + data boundary<br/>+ optional PII"]
     Redact --> Model["Model context"]
     GW -.->|surfaces that carry the response| Out
 ```

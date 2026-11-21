@@ -24,6 +24,8 @@ set -uo pipefail
 
 # shellcheck source=_patterns.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_patterns.sh"
+# shellcheck source=_ledger.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_ledger.sh"
 
 SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
@@ -117,6 +119,7 @@ if [[ -n "$mentions" ]]; then
       prismor_scrubbable "$rv" || continue
       if grep -qF -- "$rv" "$fp" 2>/dev/null; then
         name="$(basename "$sf")"
+        prismor_cloak_event prompt_file blocked "$session_id" "$name"
         reason="Prismor cloaking: your prompt references @${mp}, and that file contains the registered secret '${name}'. Claude Code would attach its raw contents to the model context, bypassing cloaking. Remove the @-mention and reference @@SECRET:${name}@@ in a tool command instead — Prismor substitutes the real value at execution time and scrubs it from the output."
         jq -n --arg r "$reason" '{decision: "block", reason: $r}'
         exit 0
@@ -163,6 +166,8 @@ while IFS= read -r real_value; do
     printf '%s' "$real_value" > "$secret_file"
     chmod 600 "$secret_file" 2>/dev/null || true
   fi
+
+  prismor_cloak_event prompt redacted "$session_id" "$placeholder_name" "$(prismor_pattern_for "$real_value")"
 
   # Substitute every occurrence of this value in the sanitized prompt.
   sanitized="${sanitized//"$real_value"/$placeholder}"

@@ -167,5 +167,27 @@ import shutil  # noqa: E402
 shutil.rmtree(_HOME, ignore_errors=True)
 
 print(f"\n{_passed} passed, {_failed} failed")
+
+# A raw value already in the vault, outside Bash (no decloak there) → deny.
+_VAULTED = "pw-" + "Zq8" * 6
+(_HOME / "secrets").mkdir(parents=True, exist_ok=True)
+(_HOME / "secrets" / "DB_PASSWORD").write_text(_VAULTED)
+for tool, tin in (("Write", {"file_path": "/tmp/x.py", "content": f"PW = '{_VAULTED}'"}),
+                  ("Edit", {"file_path": "/tmp/x.py", "old_string": "a", "new_string": _VAULTED}),
+                  ("mcp__slack__post", {"text": f"pw {_VAULTED}"})):
+    r = run_guard({"tool_name": tool, "tool_input": tin})
+    d = (r or {}).get("hookSpecificOutput", {})
+    check(f"vaulted raw value in {tool} is denied", d.get("permissionDecision") == "deny", r)
+    check(f"{tool} deny names the existing placeholder, not the value",
+          "DB_PASSWORD" in d.get("permissionDecisionReason", "") and _VAULTED not in d.get("permissionDecisionReason", ""))
+r = run_guard({"tool_name": "Bash", "tool_input": {"command": f"psql -c {_VAULTED}"}})
+check("vaulted raw value in Bash still allowed (decloak path)", r is None, r)
+
 if __name__ == "__main__":
     sys.exit(1 if _failed else 0)
+
+
+def test_secret_guard_no_failures():
+    # The checks above run at import; this makes them fail the pytest run
+    # (CI collects this file via scripts/run_security_tests.sh).
+    assert _failed == 0, f"{_failed} secret-guard check(s) failed"

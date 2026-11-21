@@ -20,6 +20,11 @@ Two things make this hold up outside a demo:
   write to each other, so an agent acting on another agent's output inherits
   what that agent had read. See [Cross-agent flow](#cross-agent-flow).
 
+Tags describe a tool, not the arguments it was called with, and they have no
+notion of who may see what a session has read. For "after reading the private
+repo, no public issue" see [Tool Contracts](tool-contracts.md), which build on
+the same tiers, mode and provenance.
+
 ## How a tool gets its tags (precedence)
 
 | Tier | Source | Who controls it |
@@ -82,7 +87,8 @@ rule    :=  TAG ( then|with TAG )*  [ -> block|warn ]
   session is enough.
 - **`then`** — ordered sequence: the left step must occur *before* the right.
 - **`-> block`** (default) or **`-> warn`** — warn logs the finding but never
-  blocks, even in enforce mode.
+  blocks, even in enforce mode. It reports a sequence once, and again only
+  after its earlier steps recur (a new fetch, for the default rule).
 - The call completing the **final step** is the one blocked/warned.
 - `not`, `or`, `within`, `count` are reserved for future use.
 
@@ -109,6 +115,31 @@ untrusted_content then critical_action -> block    # read first, act later
 untrusted_content with private_data then external_comms -> block
 customer_pii then external_comms                   # implicit -> block
 ```
+
+### Allow one known-good call
+
+A human can make an exception for a `tag-rule:<id>` from their own terminal:
+
+```bash
+prismor allow tag-rule:<id> --pattern 'curl https://api.example.com/status' --expires 30m --yes
+```
+
+Use the ID from the block message. For tag rules, `--pattern` is the **complete
+literal command**, matched case-sensitively; appended commands or changed arguments
+need their own exception. For a structured tool call, pass its name and full
+arguments as JSON (key order and JSON spacing do not matter):
+
+```bash
+prismor allow tag-rule:<id> --pattern '{"tool":"mcp__mail__send","arguments":{"to":"team@example.com","body":"Approved update"}}' --expires 30m --yes
+```
+
+Use cloaked placeholders, never real credentials, in an exception. The exception
+applies in this workspace until its expiry; omit `--expires` only for a permanent
+exception. Inspect it with `prismor allow --list`, or remove it with
+`prismor allow --undo allow-tag-rule:<id>`. Session tags and provenance stay intact,
+and other matching tag rules and attack rules still apply. `--off` and `--observe`
+are not supported for tag rules. Organization-managed workspaces still require an
+admin exemption. Legacy `tool-category-crossover` rules keep their existing behavior.
 
 ### `with` vs `then`, concretely
 
@@ -160,7 +191,8 @@ rules:
   - "untrusted_content then critical_action -> warn"      # the sequence itself
 ```
 
-Replayed over 426 real development sessions with provenance active, the
+Replayed over 426 real development sessions with provenance active (a replay
+of private session logs, not checked in to this repo), the
 shipped defaults block **none** and warn on 4. The same corpus under the old
 rule blocked 213. Widening the replay's idea of a critical action well past
 what the engine actually tags -- counting every `git push`, `psql`, `rm -rf`
@@ -170,7 +202,8 @@ contain the phrase "git push origin" before the agent pushed its own branch.
 Against a suite of twelve cross-agent attacks (SQL through a note, a dropper,
 exfiltration, an authorized_keys append, a remote hijack, a three-hop chain, a
 subagent acting on its parent's read) and ten benign lookalikes, the defaults
-deny 8 attacks and 0 benign runs: precision 1.00, recall 0.67, FPR 0.00. The
+deny 8 attacks and 0 benign runs: precision 1.00, recall 0.67, FPR 0.00
+(measured outside the repo; that suite is not checked in). The
 four it does not deny are actions no rule tags critical at all -- see the
 limits below.
 
@@ -311,15 +344,27 @@ $ prismor tags rules                 # active rules (DSL + legacy + default)
 $ prismor tags rules add "untrusted_content then egress.offlist -> block"
 $ prismor tags rules rm 0
 $ prismor tags edit                  # interactive wizard (option 6 turns tool_tags on)
-$ prismor tags lint                  # validate every rule expression
+$ prismor tags lint                  # validate expressions + contracts, warn on broad blocking sequences
+$ prismor tags contracts             # tool contracts (see tool-contracts.md)
+$ prismor tags label [SESSION]       # a session's label and what narrowed it
+$ prismor tags coverage              # per MCP server: contract / tags only / neither
 ```
 
 Tags and rules do nothing while `tool_tags.enabled` is false (the shipped
 default); `tags set`, `tags rules add` and `tags rules` say so when that is the
 case. Prefer a narrow last step such as `egress.offlist` over the bare
-`untrusted_content then critical_action -> block`, which blocks every command
-for the rest of a session that read anything untrusted (see
+`untrusted_content then critical_action -> block`, which blocks later critical
+calls in a session that read anything untrusted (see
 [Influence](#influence-what-separates-a-sequence-from-an-attack) above for why the shipped default only warns on it).
+
+`tags lint` warns when a blocking sequence uses only `untrusted_content` and
+`critical_action`, in either order. Those rules can repeatedly block later
+calls without evidence that the untrusted content influenced the action.
+To block actions influenced by untrusted content, prefer
+`critical_action with untrusted_influence -> block` and keep the sequence at
+`-> warn`, as the shipped defaults do. The warning
+respects an `{expr, action}` map's action override. It is advisory: valid
+rules still exit successfully, and lint does not change policy or enforcement.
 
 Invalid expressions fail with a caret diagnostic:
 
@@ -355,7 +400,10 @@ tags → flip to `enforce`. An enforce block is terminal and non-overridable
 - Any number of same-tag calls is always allowed; only *completing* a
   forbidden combination fires.
 - A session that has entered the forbidden state stays restricted — every
-  later call carrying a final-step tag keeps firing.
+  later call carrying a final-step tag keeps firing a `block` or `redact`
+  rule. A `warn` rule fires again only once its earlier steps recur after the
+  call it last fired on, so one fetch does not turn every later action into
+  another warning.
 - A blocked call never executes, so its tags do not enter the session ledger
   (one denied call can't "use up" the rule).
 - `warn` rules log a `lethal_trifecta` finding but never block — even under a

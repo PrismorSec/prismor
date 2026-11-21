@@ -1,0 +1,55 @@
+name: tests
+
+# testscope (https://github.com/Ar9av/testscope) runs only the tests a change can reach.
+#   push to main: full run that also records the dependency map, saved to the Actions cache.
+#   pull requests: restore the newest map from main and run only the affected tests.
+#   nightly: plain full run, the safety net for anything selection misses.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install --quiet -e ".[dev]" -r pipeline/requirements.txt
+
+      - name: Full run + record map (main)
+        if: github.event_name == 'push'
+        run: python -m pytest -q -n auto --testscope-record tests
+      - name: Save map
+        if: github.event_name == 'push' && always()
+        uses: actions/cache/save@v4
+        with:
+          path: .testscope/map.json
+          key: testscope-${{ github.sha }}
+
+      - name: Restore newest map from main
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@v4
+        with:
+          path: .testscope/map.json
+          key: testscope-none
+          restore-keys: testscope-
+      - name: Affected tests only (PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -f .testscope/map.json ]; then
+            python -m pytest -q -n auto --testscope tests
+          else
+            python -m pytest -q -n auto tests
+          fi
+
+      - name: Full run (nightly / manual)
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python -m pytest -q -n auto tests

@@ -30,7 +30,7 @@ def env(tmp_path, monkeypatch):
 def test_coverage_flags_unguarded_agent(env):
     _home, ws = env
     cov = hooks.coverage(ws)
-    assert cov == {"claude": {"project": False, "global": False}}
+    assert cov == {"claude": {"project": False, "global": False, "foreign": False}}
     assert hooks.unguarded_agents(ws) == ["claude"]
 
 
@@ -61,6 +61,6 @@ def test_project_hook_counts_as_guarded_no_reassert(env):
     # a project-scoped install (e.g. the demo repo) — not machine-wide, but the
     # agent isn't fully unguarded, so self-heal leaves it alone.
     hooks.install_hooks(repo_root=REPO_ROOT, workspace=ws, agent="claude", scope="project", mode="observe")
-    assert hooks.coverage(ws)["claude"] == {"project": True, "global": False}
+    assert hooks.coverage(ws)["claude"] == {"project": True, "global": False, "foreign": False}
     assert hooks.unguarded_agents(ws) == []
     assert hooks.ensure_global_coverage(repo_root=REPO_ROOT, workspace=ws) == []

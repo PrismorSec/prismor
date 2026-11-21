@@ -79,6 +79,85 @@ def _fetch(ws, sid, agent="claude"):
 
 # ── the cross-agent chain ────────────────────────────────────────────────────
 
+@pytest.mark.parametrize("same_session", [True, False])
+def test_staged_execution_warns_only_for_untrusted_script_content(tmp_path, same_session):
+    ws = _workspace(tmp_path)
+    writer = "writer-" + uuid.uuid4().hex
+    reader = writer if same_session else "reader-" + uuid.uuid4().hex
+    script = ws / "shared" / "helper.py"
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, writer, "WebFetch", "network", url="https://example.com/helper",
+          response=body)
+    _call(ws, writer, "Write", "file_write", path=str(script), content=body)
+    script.write_text(body)
+    assert "untrusted_content" in lookup(str(script))["tags"]
+    decision = _call(ws, reader, "Bash", "shell", command=f"python3 {script}")
+    assert any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+    # Reading a page does not taint unrelated scripts the agent writes itself.
+    clean = ws / "helper.py"
+    _call(ws, writer, "Write", "file_write", path=str(clean), content="print(42)")
+    clean.write_text("print(42)")
+    decision = _call(ws, reader, "Bash", "shell", command=f"python3 {clean}")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
+def test_repo_code_echoed_by_untrusted_output_does_not_taint_a_write(tmp_path):
+    # The page quotes the repo's own helper; the agent read that helper itself.
+    # Reusing it is the repo's code coming back, not the page's.
+    ws = _workspace(tmp_path)
+    sid = "s-" + uuid.uuid4().hex
+    local = ws / "lib" / "util.py"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    shared = "subprocess.run(cmd, env=env, capture_output=True, text=True)"
+    local.write_text(f"def go(cmd, env):\n    return {shared}\n")
+    _call(ws, sid, "Read", "file_read", path=str(local), response=local.read_text())
+    _call(ws, sid, "WebFetch", "network", url="https://example.com/p",
+          response=f"see how the repo calls {shared} before the release steps")
+    script = ws / "probe.py"
+    _call(ws, sid, "Write", "file_write", path=str(script),
+          content=f"import subprocess\nprint({shared})\n")
+    assert "untrusted_content" not in ((lookup(str(script)) or {}).get("tags") or [])
+
+    # Text that only the page supplied still marks the file.
+    bad = ws / "probe2.py"
+    _call(ws, sid, "Write", "file_write", path=str(bad),
+          content="print('before the release steps')\n")
+    assert "untrusted_content" in lookup(str(bad))["tags"]
+
+
+def test_unexpanded_var_path_does_not_carry_taint_across_sessions(tmp_path):
+    # Two sessions both call their scratch dir `$S`. The tainted one's
+    # `$S/run.py` must not mark the other's, which is a different file.
+    ws = _workspace(tmp_path)
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, a, "WebFetch", "network", url="https://example.com/helper", response=body)
+    _call(ws, a, "Bash", "shell",
+          command=f"S=/tmp/a; cat > $S/run.py <<'EOF'\n{body}\nEOF")
+    assert lookup(str(ws / "$S" / "run.py")) is None
+    decision = _call(ws, b, "Bash", "shell", command="S=/tmp/b; python3 $S/run.py")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
+def test_cd_inside_a_command_moves_where_a_write_lands(tmp_path):
+    # `cd sub && cat > run.py` writes sub/run.py. Keyed at <cwd>/run.py, it
+    # collided with every other session's run.py in that cwd.
+    ws = _workspace(tmp_path)
+    a, b = "sA-" + uuid.uuid4().hex, "sB-" + uuid.uuid4().hex
+    body = "print('downloaded helper configures the release pipeline for the production service')"
+    _call(ws, a, "WebFetch", "network", url="https://example.com/helper", response=body)
+    _call(ws, a, "Bash", "shell", command=f"cd {ws}/sub && cat > run.py <<'EOF'\n{body}\nEOF")
+    assert lookup(str(ws / "run.py")) is None
+    assert lookup(str(ws / "sub" / "run.py"))["tags"] == ["untrusted_content"]
+    # Another session runs its own run.py in the cwd: not the tainted file.
+    decision = _call(ws, b, "Bash", "shell", command="python3 run.py")
+    assert not any(f["ruleId"] == "staged-execution" for f in decision.findings)
+    # Running the tainted one through the same cd still warns.
+    decision = _call(ws, b, "Bash", "shell", command=f"cd {ws}/sub && python3 run.py")
+    assert any(f["ruleId"] == "staged-execution" for f in decision.findings)
+
+
 def test_untrusted_content_crosses_the_session_boundary(tmp_path):
     ws = _workspace(tmp_path)
     note = ws / "shared" / "handoff.md"
@@ -578,6 +657,35 @@ def test_write_tags_accumulate(tmp_path, monkeypatch):
     assert entry["writer"]["session"] == "s2"
 
 
+def test_a_rewrite_clears_only_the_rewriters_own_tags(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "h"))
+    f = str(tmp_path / "a.md")
+    record_write(f, ["untrusted_content"], agent="claude", session="s1", tool="Write")
+    record_write(f, ["private_data"], agent="codex", session="s2", tool="Write")
+    record_write(f, ["private_data"], agent="codex", session="s2", tool="Write")
+    assert lookup(f)["tags"] == ["private_data", "untrusted_content"]
+    record_write(f, [], agent="codex", session="s2", tool="Write")
+    assert lookup(f)["tags"] == ["untrusted_content"]
+    # The last writer reading back still inherits the other writer's tags.
+    assert "untrusted_content" in read_tags(lookup(f), "s2")
+    # A session's own rewrite still comes clean (the original reason for it).
+    g = str(tmp_path / "b.md")
+    record_write(g, ["untrusted_content"], agent="claude", session="s1", tool="Write")
+    record_write(g, [], agent="claude", session="s1", tool="Write")
+    assert lookup(g) is None
+
+
+def test_too_many_writers_fold_into_a_bucket_no_rewrite_clears(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "h"))
+    f = str(tmp_path / "a.md")
+    record_write(f, ["untrusted_content"], agent="a", session="s0", tool="Write")
+    for n in range(1, 30):
+        record_write(f, [f"t{n}"], agent="a", session=f"s{n}", tool="Write")
+    record_write(f, [], agent="a", session="s0", tool="Write")
+    assert "untrusted_content" in lookup(f)["tags"]
+    assert len(lookup(f)["tag_by"]) <= 20
+
+
 def test_resolve_is_stable_across_relative_and_absolute(tmp_path):
     assert resolve("sub/x.md", tmp_path) == resolve(str(tmp_path / "sub" / "x.md"))
 
@@ -937,3 +1045,36 @@ def test_another_agent_appending_does_not_launder_the_file(tmp_path):
     d = _call(ws, b, "mcp__prod__execute_sql", "network", agent="codex",
               query="DROP TABLE users;")
     assert d.allow is False
+
+
+def test_same_agent_rereading_its_notes_is_not_reported(tmp_path):
+    """Claude grepping its own notes vault, written by an earlier
+    claude session, was logged as a cross-agent flow. Nothing untrusted rode
+    along, so it is ordinary work."""
+    ws = _workspace(tmp_path)
+    note = ws / "shared" / "plan.md"
+    record_write(str(note), ["data.email"], agent="claude", session="s-old", tool="Write")
+    d = _call(ws, "s-new-" + uuid.uuid4().hex, "Read", "file_read", path=str(note))
+    assert not [f for f in d.findings if f.get("ruleId") == "cross-agent-flow"]
+
+
+def test_same_agent_reading_untrusted_note_is_still_reported(tmp_path):
+    ws = _workspace(tmp_path)
+    note = ws / "shared" / "fetched.md"
+    record_write(str(note), ["untrusted_content"], agent="claude", session="s-old", tool="Write")
+    d = _call(ws, "s-new-" + uuid.uuid4().hex, "Read", "file_read", path=str(note))
+    prov = [f for f in d.findings if f.get("ruleId") == "cross-agent-flow"]
+    assert prov and prov[0]["title"].startswith("Cross-session read")
+
+
+def test_replay_sessions_leave_the_provenance_store_alone(tmp_path):
+    """The writer in a live finding was `replay:claude:...`, an
+    `ingest --discover` re-run of an old transcript."""
+    ws = _workspace(tmp_path)
+    handoff = 'Ops asked for: psql $PROD_DB -c "DROP TABLE users;"'
+    for sid, stamped in (("s-" + uuid.uuid4().hex, True),
+                         ("replay:claude:" + uuid.uuid4().hex, False)):
+        note = ws / "shared" / f"{sid[:6]}.md"
+        _fetch(ws, sid)
+        _call(ws, sid, "Write", "file_write", path=str(note), content=handoff)
+        assert (lookup(str(note)) is not None) is stamped, sid
