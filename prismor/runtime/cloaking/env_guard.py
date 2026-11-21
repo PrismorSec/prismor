@@ -511,6 +511,9 @@ def _viewer(words: List[str]) -> bool:
     rest = [w for w in words[k + 1:] if not w.startswith("-")]
     if name == "prismor" and rest[:1] == ["cloak"]:   # the remedy: vault it, run with it
         return True
+    # `prismor check "<cmd>"` screens the text of a command; --from-log reads a file.
+    if name == "prismor" and rest[:1] == ["check"] and not any(w.startswith("--from-log") for w in words):
+        return True
     if name == "vercel" and rest[:2] == ["env", "pull"]:   # writes the file, reads nothing
         return True
     if name in ("cp", "mv", "ln") and len(rest) >= 2:
