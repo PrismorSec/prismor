@@ -62,6 +62,27 @@ case "$tool_name" in
 esac
 [[ -n "$scan_text" ]] || exit 0
 
+# A vaulted value written raw into a file or MCP argument. decloak.sh only
+# substitutes placeholders in Bash, so outside Bash a real vaulted value can
+# only be one the model copied, and nothing redacts it once it is written or
+# sent. Checked against the vault itself, so values with no known shape (a DB
+# password) count too.
+if [[ "$kind" != "bash" ]]; then
+  for f in "$SECRETS_DIR"/*; do
+    [[ -f "$f" ]] || continue
+    v="$(cat "$f")"
+    prismor_scrubbable "$v" || continue
+    if [[ "$scan_text" == *"$v"* ]]; then
+      name="$(basename "$f")"
+      prismor_cloak_event tool_input redacted "$session_id" "$name" vaulted "$tool_name"
+      reason="Prismor cloaking: this ${tool_name} call holds the real value of a vaulted secret. It was NOT written or sent. Use @@SECRET"":${name}@@ (or an environment-variable reference) instead of the raw value."
+      jq -n --arg r "$reason" \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      exit 0
+    fi
+  done
+fi
+
 prismor_load_patterns
 [[ "${#PATTERNS[@]}" -gt 0 ]] || exit 0
 

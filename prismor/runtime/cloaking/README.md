@@ -99,7 +99,13 @@ prismor cloak add --env-file .env
 That command parses the file in the CLI process and registers every entry as
 its own `@@SECRET:name@@` placeholder — only names and byte counts are ever
 printed, so the values never enter model context. Once every entry is
-imported, the guard stands down and the registration-based hooks take over.
+imported, the guard stands down for plain viewers (`cat`, `head`, `grep` ...)
+and the registration-based hooks take over. A Bash command that sends a vaulted
+env file anywhere else (piped into a non-viewer, redirected to a file,
+uploaded, `git add`ed, sourced, re-encoded) is still denied: the output scrub
+only sees the tool output, so the real values would leave unredacted.
+secret-guard likewise denies a raw vaulted value in a Write, Edit or MCP call,
+since decloak only runs for Bash.
 The unimported-entry check runs through the same parser the importer uses
 (`env_guard.py` → `secrets_store._parse_env_line`), so guard and importer can
 never disagree about what "fully imported" means.

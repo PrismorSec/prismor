@@ -58,3 +58,12 @@ def test_large_response_is_fast(tmp_path):
     t = time.time()
     got = _run(tmp_path, big)
     assert got.endswith(" @@SECRET:A_KEY@@") and time.time() - t < 15
+
+
+def test_unvaulted_pattern_is_vaulted_and_scrubbed(tmp_path):
+    # A key the vault never saw (the MCP server read it from its own store).
+    tok = "ghp_" + "A1b2" * 9
+    got = _run(tmp_path, f"token={tok}")
+    assert tok not in got and got.startswith("token=@@SECRET:auto_")
+    names = [p.name for p in (tmp_path / "secrets dir").iterdir()]
+    assert any(n.startswith("auto_") for n in names)
