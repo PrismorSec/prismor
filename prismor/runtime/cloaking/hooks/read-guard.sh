@@ -72,15 +72,25 @@ file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
 
 # Does the target file contain any registered secret value verbatim?
 shopt -s nullglob
+contents=""; contents_loaded=0
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
   name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   prismor_scrubbable "$real" || continue
-  if grep -qF -- "$real" "$file_path" 2>/dev/null; then
-    what="Reading it"; [[ "$tool_name" == Read ]] || what="Editing it (the result shows the lines around the change)"
-    _deny "$name" "Prismor cloaking: '$file_path' contains the registered secret '$name'. $what would place the raw value in context. Reference it as @@SECRET:${name}@@ in a Bash command instead — Prismor substitutes the real value at execution time and scrubs it from the output."
+  if [[ "$real" == *$'\n'* ]]; then
+    # grep -F splits a multiline value into patterns (a blank line matches
+    # everything). Match the whole literal value, as scrub-stream.sh does.
+    if (( ! contents_loaded )); then
+      contents="$(cat -- "$file_path" 2>/dev/null)"
+      contents_loaded=1
+    fi
+    [[ "$contents" == *"$real"* ]] || continue
+  else
+    grep -qF -- "$real" "$file_path" 2>/dev/null || continue
   fi
+  what="Reading it"; [[ "$tool_name" == Read ]] || what="Editing it (the result shows the lines around the change)"
+  _deny "$name" "Prismor cloaking: '$file_path' contains the registered secret '$name'. $what would place the raw value in context. Reference it as @@SECRET:${name}@@ in a Bash command instead — Prismor substitutes the real value at execution time and scrubs it from the output."
 done
 
 exit 0
