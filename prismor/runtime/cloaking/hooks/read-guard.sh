@@ -72,20 +72,24 @@ file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
 
 # Does the target file contain any registered secret value verbatim?
 shopt -s nullglob
-contents=""; contents_loaded=0
 for secret_file in "$SECRETS_DIR"/*; do
   [[ -f "$secret_file" ]] || continue
   name="$(basename "$secret_file")"
   real="$(cat "$secret_file")"
   prismor_scrubbable "$real" || continue
+  # Compare without carriage returns so a CRLF file still matches a value
+  # registered with LF line endings (and the reverse).
+  real="${real//$'\r'/}"
+  [[ -n "$real" ]] || continue
   if [[ "$real" == *$'\n'* ]]; then
     # grep -F splits a multiline value into patterns (a blank line matches
-    # everything). Match the whole literal value, as scrub-stream.sh does.
-    if (( ! contents_loaded )); then
-      contents="$(cat -- "$file_path" 2>/dev/null)"
-      contents_loaded=1
-    fi
-    [[ "$contents" == *"$real"* ]] || continue
+    # everything), so match the whole literal value instead. Stream the file
+    # through tr/awk: bash string ops over a large file are slow (about 10s per
+    # 18MB under Git Bash) and $(cat) truncates at a NUL byte there. CR and NUL
+    # are dropped from the file so CRLF checkouts still match.
+    tr -d '\000\001\r' < "$file_path" 2>/dev/null \
+      | PRISMOR_PAT="$real" awk 'BEGIN { RS = "\001"; p = ENVIRON["PRISMOR_PAT"] } index($0, p) { f = 1 } END { exit f ? 0 : 1 }' \
+      || continue
   else
     grep -qF -- "$real" "$file_path" 2>/dev/null || continue
   fi

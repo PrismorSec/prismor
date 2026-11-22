@@ -214,6 +214,37 @@ def test_read_guard_matches_complete_multiline_values(vault, tmp_path, registrat
             assert denied(response) == block, (registration, tool, path.name)
 
 
+@pytest.mark.parametrize("secret_eol,file_eol,block", [
+    ("\n", "\r\n", True),     # LF secret, CRLF file (Windows checkout)
+    ("\r\n", "\n", True),     # secret registered from a CRLF file, LF target
+    ("\r\n", "\r\n", True),
+    ("\n", "\r\n", False),    # CRLF file with only the shared header
+], ids=["lf-secret-crlf-file", "crlf-secret-lf-file", "crlf-both", "crlf-clean"])
+def test_read_guard_ignores_line_ending_differences(vault, tmp_path, secret_eol, file_eol, block):
+    lines = ["SYNTHETIC HEADER", "", "SyntheticPayload927abcdef", "SYNTHETIC FOOTER"]
+    vault("MULTILINE", secret_eol.join(lines))
+    target = tmp_path / "source.txt"
+    body = lines if block else lines[:2] + ["ordinary content"]
+    target.write_bytes(("prefix" + file_eol + file_eol.join(body) + file_eol + "suffix" + file_eol).encode())
+    for tool in ("Read", "Edit", "MultiEdit"):
+        res = hook("read-guard.sh", {"tool_name": tool, "tool_input": {"file_path": str(target)}})
+        assert denied(res) == block, (tool, secret_eol, file_eol)
+
+
+def test_read_guard_crlf_single_line_secret(vault, tmp_path):
+    vault("ONE", "SyntheticSingleLine927abcdef\r")
+    target = tmp_path / "x.txt"
+    target.write_text("a SyntheticSingleLine927abcdef b\n")
+    assert denied(hook("read-guard.sh", {"tool_name": "Read", "tool_input": {"file_path": str(target)}}))
+
+
+def test_read_guard_multiline_secret_after_nul_bytes(vault, tmp_path):
+    value = vault("MULTILINE", "SYNTHETIC HEADER\n\nSyntheticPayload927abcdef")
+    target = tmp_path / "blob.bin"
+    target.write_bytes(b"\x00\x01prefix\n" + value.encode() + b"\x00suffix")
+    assert denied(hook("read-guard.sh", {"tool_name": "Read", "tool_input": {"file_path": str(target)}}))
+
+
 def test_env_guard_covers_grep_content(vault, tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
