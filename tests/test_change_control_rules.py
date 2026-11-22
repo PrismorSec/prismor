@@ -6,11 +6,42 @@ import os
 import sys
 import unittest
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from prismor.runtime.policy_engine import PolicyEngine
 
 HITS = {
+    "git-clean-force": [
+        "git clean -fdx",
+        "git clean -d -f -X",
+        "git clean --force --quiet -- build/",
+        'git -C "my repo" clean -ffdx',
+        "git -c color.ui=false clean -f",
+        "git clean -f -e -n",
+        "git clean -f --exclude=--dry-run",
+        "git clean -fe -n",
+        "git clean -e-n -f",
+        "git clean -fen",
+        'git clean -f -e"keep -n"',
+        "git clean -f --excl -n",
+        "git clean -f > -n",
+        "git clean -fdx>/dev/null 2>&1",
+        "git clean -fn --no-dry-run",
+        "bash -lc 'git clean -fdx'",
+        "git clean -f -- -n",
+        "git clean -ndx; git clean -fdx",
+        "echo 'git clean -n'; git clean -f",
+    ],
+    "git-stash-delete": [
+        "git stash drop",
+        "git stash drop -q 'stash@{0}'",
+        "git --no-pager stash clear",
+        "cd repo && git stash clear",
+        "git stash list; git stash drop",
+        "sh -c 'git stash clear'",
+    ],
     "git-push-protected-branch": [
         "git push origin main",
         "git push -u origin master",
@@ -69,6 +100,43 @@ HITS = {
 }
 
 MISSES = {
+    "git-clean-force": [
+        "git clean -ndx",
+        "git clean -fdxn",
+        "git clean --dry-run -fdx",
+        "git clean -fdx --dry-run",
+        'git clean -f "-n"',
+        "git clean -f --dry-r",
+        "git clean -f --no-dry-run -n",
+        "git clean -fn -e --no-dry-run",
+        "git clean -fn -- --no-dry-run",
+        "bash -lc 'git clean -fn'",
+        'git clean -f "build dir" -n',
+        "git clean -f -h",
+        "git clean --help",
+        "git --help clean -f",
+        "git clean -i",
+        "git clean -- -f",
+        "git clean -e -f",
+        "git clean > -f",
+        "git status --short",
+        "git diff",
+        'git commit -m "git clean -fdx"',
+    ],
+    "git-stash-delete": [
+        "git stash",
+        "git stash push -m 'drop old work'",
+        "git stash list",
+        "git stash show -p",
+        "git stash apply",
+        "git stash pop",
+        "git stash drop --help",
+        "git stash clear -h",
+        'git stash clear "--help"',
+        "git --help stash clear",
+        "sh -c 'git stash drop --help'",
+        'echo "git stash clear"',
+    ],
     "git-push-protected-branch": [
         "git push origin feature/main-fix",
         "git push origin main-2",
@@ -149,6 +217,34 @@ class ChangeControlRules(unittest.TestCase):
                 self.assertEqual(f["category"], "change_control")
                 self.assertEqual(f["action"], "warn")
         self.assertNotIn("change_control", self.engine.block_categories)
+
+
+@pytest.mark.parametrize("rule,command", [
+    ("git-clean-force", "git clean -fdx"),
+    ("git-stash-delete", "git stash clear"),
+])
+def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command):
+    from prismor.runtime.runtime import evaluate_tool_call
+
+    event = {"type": "shell", "agent_event": "PreToolUse", "command": command,
+             "metadata": {"tool_name": "Bash"}}
+
+    def check():
+        return evaluate_tool_call(event=event, workspace=tmp_path,
+                                  agent="claude", mode="enforce")
+
+    before = check()
+    assert before.allow
+    finding = next(f for f in before.findings if f["ruleId"] == rule)
+    assert finding["mode"] == "observe"
+    (tmp_path / ".prismor").mkdir(exist_ok=True)
+    (tmp_path / ".prismor" / "policy.yaml").write_text(
+        f"rules:\n  - id: {rule}\n    mode: enforce\n    action: step_up\n")
+    assert check().verdict == "step_up"
+    event["command"] = "git clean -ndx" if rule == "git-clean-force" else "git stash list"
+    assert check().allow
+    event["command"] = f"cat <<'EOF' > notes.txt\n{command}\nEOF"
+    assert check().allow
 
 
 if __name__ == "__main__":
