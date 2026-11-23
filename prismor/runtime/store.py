@@ -1491,8 +1491,10 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
         ]
     # Who started the turn: a person, a parent session's brief, an app wrapper,
     # or a Stop hook that sent the agent back to work (attribution.py). Prompts
-    # recorded before the hook tagged them are worked out here.
-    if raw.get("type") == "prompt" and not meta.get("origin") and isinstance(raw.get("prompt"), str):
+    # recorded before the hook tagged them are worked out here, and so is a
+    # stored "user": older releases tagged peer messages and "Background (from
+    # the session …)" briefs that way.
+    if raw.get("type") == "prompt" and meta.get("origin") in (None, "", "user") and isinstance(raw.get("prompt"), str):
         from prismor.runtime.attribution import prompt_origin
         origin, said = prompt_origin(raw["prompt"])
         meta = {**meta, "origin": origin}
@@ -1500,6 +1502,15 @@ def event_artifacts(raw: Dict[str, Any]) -> Dict[str, Any]:
             out["user_message"] = _clip(said)
     if meta.get("origin"):
         out["origin"] = str(meta["origin"])[:20]
+    # A message another desktop session sent: who sent it, linked when the app
+    # still knows which Claude session that was. Older rows are read from the text.
+    if out.get("origin") == "peer":
+        from prismor.runtime.attribution import claude_session_for, peer_sender
+        sender = ({"session": meta.get("from_session") or "", "name": meta.get("from_session_name") or ""}
+                  if meta.get("from_session") else peer_sender(str(raw.get("prompt") or "")) or {})
+        if sender.get("session"):
+            out["from_session"] = {"app_id": str(sender["session"])[:80], "name": str(sender.get("name") or "")[:200],
+                                   "session": claude_session_for(str(sender["session"]))}
     if isinstance(meta.get("triggered_by"), dict):
         out["triggered_by"] = {k: str(v)[:500] for k, v in meta["triggered_by"].items()}
     if meta.get("has_invisible_controls"):

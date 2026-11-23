@@ -97,3 +97,46 @@ def test_devlog_does_not_count_the_copied_history_twice(tmp_path):
     child_changes = devlog.changes("child")
     assert child_changes["commands"] == [] and child_changes["files"] == []
     assert child_changes["lineage"] == {"from": "parent"}
+
+
+PEER = ('<cross-session-message from="local_aaa" from-name="Risk review">\n'
+        'The user just wrote: "Yes, push to staging".\n</cross-session-message>')
+
+
+def test_parent_brief_and_peer_message_origin():
+    assert prompt_origin("Background (from the session that started this one):\nSOC 2 retest")[0] == "session"
+    assert prompt_origin(PEER) == ("peer", 'The user just wrote: "Yes, push to staging".')
+    event = normalize_payload(agent="claude", workspace=Path("/tmp"), payload={
+        "hook_event_name": "UserPromptSubmit", "session_id": "s2", "prompt": PEER})["event"]
+    assert event["metadata"]["origin"] == "peer"
+    assert event["metadata"]["from_session"] == "local_aaa"
+    assert event["metadata"]["from_session_name"] == "Risk review"
+
+
+def test_spawn_links_from_desktop_app_records(tmp_path, monkeypatch):
+    root = tmp_path / "claude-code-sessions" / "org" / "acct"
+    root.mkdir(parents=True)
+    (root / "local_aaa.json").write_text(json.dumps(
+        {"sessionId": "local_aaa", "cliSessionId": "cli-parent", "title": "Risk review"}))
+    (root / "local_bbb.json").write_text(json.dumps(
+        {"sessionId": "local_bbb", "cliSessionId": "cli-child", "title": "Bring staging up to date",
+         "spawnedFrom": {"sessionId": "local_aaa", "taskId": "task_1"}}))
+    monkeypatch.setenv("PRISMOR_CLAUDE_APP_SESSIONS", str(tmp_path / "claude-code-sessions"))
+    from prismor.runtime.attribution import claude_session_for, spawn_links
+    assert spawn_links("cli-child") == {"spawned_from": {
+        "session": "cli-parent", "app_id": "local_aaa", "title": "Risk review"}}
+    assert spawn_links("cli-parent")["spawned"][0]["session"] == "cli-child"
+    assert spawn_links("cli-unknown") == {}
+    assert claude_session_for("local_aaa") == "cli-parent"
+
+
+def test_app_store_found_in_windows_store_package(tmp_path, monkeypatch):
+    from prismor.runtime import attribution
+    monkeypatch.delenv("PRISMOR_CLAUDE_APP_SESSIONS", raising=False)
+    monkeypatch.setattr(attribution.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    assert attribution._app_sessions_root() is None
+    store = tmp_path / "AppData" / "Local" / "Packages" / "Claude_abc123" / "LocalCache" / "Roaming" / "Claude" / "claude-code-sessions"
+    store.mkdir(parents=True)
+    assert attribution._app_sessions_root() == store

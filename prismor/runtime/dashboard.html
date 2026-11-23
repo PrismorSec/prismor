@@ -5122,6 +5122,10 @@ async function loadSessionDev(sessionId) {
   if (lin.from || (lin.as||[]).length) h = '<div class="dev-row">' +
     (lin.from ? 'Continues session ' + link(lin.from) + ' <span class="dev-quiet">its copied history is not counted here</span>' : '') +
     ((lin.as||[]).length ? (lin.from ? ' · ' : '') + 'Continued as ' + lin.as.map(link).join(', ') : '') + '</div>' + h;
+  const ref = r => '<a href="#/session/'+encodeURIComponent(r.session)+'">'+safe(r.title || r.session.slice(0,8))+'</a>';
+  if (lin.spawned_from || (lin.spawned||[]).length) h = '<div class="dev-row">' +
+    (lin.spawned_from ? 'Started by session ' + ref(lin.spawned_from) : '') +
+    ((lin.spawned||[]).length ? (lin.spawned_from ? ' · ' : '') + 'Started ' + lin.spawned.map(ref).join(', ') : '') + '</div>' + h;
   el.innerHTML = h; el.hidden = false;
 }
 let _filesSel = '', _filesTimer = null;
@@ -7962,7 +7966,10 @@ function hookPhaseStats(runs){
 function originChip(ev){
   const a = ev.artifacts || {}, t = a.triggered_by;
   if (t) return '<span class="ext-cause" title="'+safeAttr((t.message||'').slice(0,300))+'">after '+safe(t.event||'Stop')+' hook'+(t.hook ? ': '+safe(t.hook) : '')+'</span>';
-  const label = {session:'from parent session', hook:'from hook', harness:'from app'}[a.origin];
+  const f = a.from_session;
+  if (a.origin === 'peer' && f) return '<span class="ext-cause" title="'+safeAttr(f.app_id||'')+'">message from session '+
+    (f.session ? '<a href="#/session/'+encodeURIComponent(f.session)+'">'+safe(f.name||f.session.slice(0,8))+'</a>' : safe(f.name||f.app_id||''))+'</span>';
+  const label = {session:'from parent session', peer:'from another session', hook:'from hook', harness:'from app'}[a.origin];
   return label ? '<span class="ext-cause">'+label+'</span>' : '';
 }
 function hookChip(ev){
