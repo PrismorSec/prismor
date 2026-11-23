@@ -197,18 +197,23 @@ def session_calls(session_id: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
     conn = _db()
     if conn is None:
         return [], {}
+    from prismor.runtime.attribution import lineage, spawn_links
     try:
+        # Which session started this one, and which it started (desktop app).
+        spawn = spawn_links(session_id)
         transcript = _transcript_path(conn, session_id)
         if transcript:
-            from prismor.runtime.attribution import lineage
             kin = lineage(transcript)
             calls, meta = _from_transcript(transcript, frozenset(kin.pop("inherited", ())))
+            kin.update(spawn)
             if kin:
                 meta["lineage"] = kin
             if calls or kin.get("from"):
                 calls.sort(key=lambda c: c["ts"])
                 return calls, {**meta, "source": "transcript"}
         calls, meta = _from_events(conn, session_id)
+        if spawn:
+            meta["lineage"] = spawn
         return calls, {**meta, "source": "events"}
     finally:
         conn.close()

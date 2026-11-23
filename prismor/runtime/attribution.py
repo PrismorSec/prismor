@@ -27,27 +27,131 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 _REMINDER = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 _SIDE_SESSION = "You are a session started from another session"
-_PARENT_TASK = "Task (from the session that started this one)"
+# "Task (from the session that started this one)", and since the app's late-2026
+# briefs, "Background (from the session …)".
+_PARENT_TASK = re.compile(r"^\w+ \(from the session that started this one\)")
+# A message one desktop session sent another (SendMessage between sessions).
+_PEER = re.compile(r'<cross-session-message from="([^"]*)"(?: from-name="([^"]*)")?[^>]*>(.*?)(?:</cross-session-message>|$)', re.S)
 _HOOK_FEEDBACK = re.compile(r"^(\w+) hook feedback:\s*\n?\[(.*?)\]:\s*(.*)", re.S)
 
 
 def prompt_origin(text: str) -> Tuple[str, str]:
     """``(origin, said)`` for a prompt: who sent it and its text minus wrappers.
 
-    origin is ``user`` (a person typed it), ``session`` (another agent session's
-    task brief), ``hook`` (an agent hook's feedback) or ``harness`` (the app
-    injected it and nobody typed anything).
+    origin is ``user`` (a person typed it), ``session`` (the brief of the session
+    that started this one), ``peer`` (a message another session sent), ``hook``
+    (an agent hook's feedback) or ``harness`` (the app injected it and nobody
+    typed anything).
     """
     text = text or ""
     hook = _HOOK_FEEDBACK.match(text.lstrip())
     if hook:
         return "hook", hook.group(3).strip()
     said = _REMINDER.sub(" ", text).strip()
-    if said.startswith(_PARENT_TASK):
+    peer = _PEER.search(said)
+    if peer:
+        return "peer", peer.group(3).strip()
+    if _PARENT_TASK.match(said):
         return "session", said
     if not said:
         return "harness", ""
     return "user", said
+
+
+def peer_sender(text: str) -> Optional[Dict[str, str]]:
+    """``{"session": local_id, "name": title}`` of the session that sent a peer message."""
+    m = _PEER.search(_REMINDER.sub(" ", text or ""))
+    if not m:
+        return None
+    return {"session": m.group(1)[:80], "name": (m.group(2) or "")[:200]}
+
+
+# --- spawn links (Claude desktop app) -------------------------------------
+#
+# The desktop app keeps one JSON record per session. A session another session
+# started carries ``spawnedFrom.sessionId`` (the parent's app id, ``local_…``)
+# and ``cliSessionId``, the Claude Code session id Prismor's hooks see. That is
+# the only place the parent is written down: the child's hooks get no parent
+# id, and the brief text names no session.
+
+def _app_sessions_root() -> Optional[Path]:
+    env = os.environ.get("PRISMOR_CLAUDE_APP_SESSIONS")
+    if env:
+        return Path(env)
+    home = Path.home()
+    # Only macOS is confirmed (read from a real app install). The rest are the
+    # app's usual per-OS data dirs: Windows %APPDATA%, the Store (MSIX) build,
+    # which keeps %APPDATA% inside its package folder, and Linux ~/.config.
+    # Neither the st3ve (Linux) nor the Windows test VM has the desktop app.
+    local = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
+    bases = [home / "Library" / "Application Support" / "Claude",
+             Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming") / "Claude",
+             *sorted((local / "Packages").glob("Claude_*/LocalCache/Roaming/Claude")),
+             home / ".config" / "Claude"]
+    for base in bases:
+        if (base / "claude-code-sessions").is_dir():
+            return base / "claude-code-sessions"
+    return None
+
+
+@lru_cache(maxsize=4096)
+def _app_record_at(path: str, _mtime: int) -> Tuple[str, Tuple[str, ...], str, str]:
+    """(app id, Claude session ids, parent app id, title) of one app record."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return "", (), "", ""
+    if not isinstance(d, dict):
+        return "", (), "", ""
+    clis = tuple(dict.fromkeys(str(d[k]) for k in ("cliSessionId", "lastAssistantCliSessionId") if d.get(k)))
+    parent = d.get("spawnedFrom") if isinstance(d.get("spawnedFrom"), dict) else {}
+    return str(d.get("sessionId") or ""), clis, str(parent.get("sessionId") or ""), str(d.get("title") or "")[:200]
+
+
+def _app_records() -> List[Tuple[str, Tuple[str, ...], str, str]]:
+    root = _app_sessions_root()
+    if root is None:
+        return []
+    out = []
+    # ponytail: stats every record on each call (json parse is cached per mtime);
+    # index by directory mtime if a session view ever gets slow on large app histories.
+    for p in root.glob("*/*/local_*.json"):
+        try:
+            out.append(_app_record_at(str(p), p.stat().st_mtime_ns))
+        except OSError:
+            continue
+    return [r for r in out if r[0]]
+
+
+def _ref(rec: Tuple[str, Tuple[str, ...], str, str]) -> Dict[str, str]:
+    return {"session": rec[1][0] if rec[1] else rec[0], "app_id": rec[0], "title": rec[3]}
+
+
+def spawn_links(session_id: str) -> Dict[str, Any]:
+    """``{"spawned_from": ref, "spawned": [ref, …]}`` for a Claude session id.
+
+    A ref is ``{"session": <Claude session id>, "app_id": "local_…", "title"}``.
+    Empty when the app keeps no record of the session (CLI, other machine).
+    """
+    recs = _app_records()
+    mine = next((r for r in recs if session_id in r[1] or session_id == r[0]), None)
+    if mine is None:
+        return {}
+    out: Dict[str, Any] = {}
+    if mine[2]:
+        parent = next((r for r in recs if r[0] == mine[2]), None)
+        out["spawned_from"] = _ref(parent) if parent else {"session": mine[2], "app_id": mine[2], "title": ""}
+    kids = [_ref(r) for r in recs if r[2] == mine[0]]
+    if kids:
+        out["spawned"] = kids
+    return out
+
+
+def claude_session_for(app_id: str) -> str:
+    """The Claude session id behind a desktop app id (``local_…``), or ``""``."""
+    rec = next((r for r in _app_records() if r[0] == app_id), None)
+    return rec[1][0] if rec and rec[1] else ""
 
 
 def hook_name(command: str) -> str:

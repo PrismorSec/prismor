@@ -986,10 +986,14 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
     # Who sent a prompt: a person, another session's task brief, or a wrapper
     # the app added around what the person typed (attribution.py).
     if isinstance(event, dict) and event.get("type") == "prompt" and isinstance(event.get("prompt"), str):
-        from prismor.runtime.attribution import prompt_origin
+        from prismor.runtime.attribution import peer_sender, prompt_origin
         origin, said = prompt_origin(event["prompt"])
         meta = event.setdefault("metadata", {})
         meta["origin"] = origin
+        if origin == "peer":
+            sender = peer_sender(event["prompt"]) or {}
+            meta["from_session"] = sender.get("session", "")
+            meta["from_session_name"] = sender.get("name", "")
         if said and said != event["prompt"].strip():
             meta.setdefault("user_message", said)
     # Which enforcement point saw this call. One agent can be governed by more
