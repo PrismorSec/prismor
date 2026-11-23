@@ -869,10 +869,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 duration_s = _pause.parse_duration(raw_duration)
             except ValueError:
                 print(f"  {_color('✗', _RED)} Could not read duration '{raw_duration}'. Use e.g. 30m, 2h, 1d.")
-                return
+                raise SystemExit(2)
             if duration_s <= 0:
                 print(f"  {_color('✗', _RED)} Duration must be positive.")
-                return
+                raise SystemExit(2)
         # Attribute the pause to the enrolled member when we know them.
         by = ""
         try:
