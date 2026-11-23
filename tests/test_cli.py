@@ -131,7 +131,7 @@ class TestPauseCli(unittest.TestCase):
     def test_pause_negative_duration(self):
         with tempfile.TemporaryDirectory() as tmp:
             env = {**os.environ, "PRISMOR_HOME": tmp}
-            r = self._run_pause("pause", "--for", "-5m", env=env)
+            r = self._run_pause("pause", "--for=-5m", env=env)
             self.assertEqual(r.returncode, 2)
             self.assertIn("Duration must be positive", r.stdout)
             self.assertFalse((Path(tmp) / "pause.json").exists())
