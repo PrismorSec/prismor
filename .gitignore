@@ -51,6 +51,7 @@ assets/*
 !assets/readme-demo.gif
 !assets/self-hosted-dashboard.png
 !assets/prismor-modes.png
+!assets/session-flow.png
 experiments/*
 .agents/*node_modules/
 node_modules/

@@ -351,7 +351,7 @@ Sessions, findings, threat categories, agent breakdowns, and a live event feed -
 
 <h3>Self hosted dashboard </h3>
 
-<img width="1500" height="771" alt="image" src="https://github.com/user-attachments/assets/258e4437-205d-495a-b33b-a2f5aeeae2ca" />
+<img src="assets/session-flow.png" width="90%" alt="Prismor dashboard: a session's flow with problems, changes and the tool-call detail panel showing a blocked command"/>
 
 
 ### Supply Chain Enforcement<a name="supply-chain-enforcement" />
