@@ -8,8 +8,8 @@
   <a href="https://deepwiki.com/PrismorSec/prismor"><img src="https://img.shields.io/badge/DeepWiki-prismor-blue?logo=bookstack&logoColor=white" alt="DeepWiki" /></a>
   <a href="https://discord.gg/FH2PRX754c"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
 </p>
-<h3 align="center">Runtime security for Claude Code, Codex, Langchain and other AI agents frameworks/harness.</h3>
-Prismor is highly customizable based on user's own policies. Observe or enforce mode to see and control agent activity in a local self-serve dashboard</h4>
+<h3 align="center">AI agent control plane with runtime security. Covers endpoint, production and browser agents</h3>
+Prismor is highly customizable based on user's own policies. Get inventory of shadow AI agents. Observe or enforce mode to see and control agent activity in a local self-serve dashboard</h4>
 
 
 
