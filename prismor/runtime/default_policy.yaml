@@ -2649,6 +2649,43 @@ rules:
     guidance: "push to a feature branch (`git push -u origin HEAD:<branch>`) and open a pull request."
     action: warn
 
+  - id: npm-publish
+    severity: HIGH
+    category: change_control
+    title: Publishes an npm package
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - |-
+        (?x-i:
+          # A separator starts another invocation only outside shell text and comments.
+          ^(?=[^\n]*\bnpm\b)[ \t]*(?:(?:sh|bash|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:(?:[^\n'"\\\#]|\\[^\n]|(?<=[^\s;&|()])\#|'[^'\n]*'|"(?:[^"\\\n]|\\[^\n])*")*?[;&|(`])?[ \t]*
+          # An inline npm dry-run setting is a preview unless the CLI overrides it.
+          (?:(?:sudo|doas|env|exec|command)[ \t]+|
+             (?!(?i:npm_config_dry_run)=['"]?true['"]?[ \t]
+                 (?![^\n;&|\#]*[ \t]['"]?(?:--no-dry-run|--dry-run(?:=|[ \t]+)false)['"]?(?=\s|$|[;&|)])))
+             \w+=[^\s;&|]+[ \t]+)*
+          (?:(?:sh|bash|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:[^\s;&|'"]*/)?npm
+          # Find the subcommand, allowing global flags and workspace selection.
+          (?=(?:[ \t]+--(?:dry-run|help|usage)[ \t]+(?:true|false)
+               |[ \t]+(?:--(?:workspace|prefix|registry|tag|access)|-[wC])[ \t]+(?:[^\s;&|'"]+|'[^'\n]*'|"[^"\n]*")
+               |[ \t]+-{1,2}[\w?-]+(?:=[^\s;&|]+)?)*[ \t]+publish(?=[\s;&|()<>'"]|$))
+          # A later explicit false cancels an earlier dry run in this invocation.
+          (?:(?:[ \t]+(?!['"]?(?:--|--(?:help|usage|versions?)(?:=true)?|-[vhH?])['"]?(?=[\s;&|)]|$))
+                    (?!\#)(?:[^\s;&|()<>'"\\]|\\[^\n]|'[^'\n]*'|"[^"\n]*")+
+              |[ \t]*\d*(?:>>?|<)(?:&\d+|[ \t]*(?:[^\s;&|()<>'"]+|'[^'\n]*'|"[^"\n]*"))(?=[\s;&|)'"]|$))*
+             [ \t]+['"]?(?:--no-dry-run|--dry-run(?:=|[ \t]+)false)['"]?(?=[\s;&|()<>'"]|$))?
+          # Consume whole arguments so help/dry-run text inside a value is inert.
+          (?:[ \t]+(?!['"]?(?:--|--(?:dry-run|help|usage|versions?)(?:=true)?|-[vhH?])['"]?(?=[\s;&|()<>'"]|$))
+                (?!\#)(?:[^\s;&|()<>'"\\]|\\[^\n]|'[^'\n]*'|"[^"\n]*")+
+            |[ \t]*\d*(?:>>?|<)(?:&\d+|[ \t]*(?:[^\s;&|()<>'"]+|'[^'\n]*'|"[^"\n]*"))(?=[\s;&|)'"]|$))*
+          (?=[ \t]+(?:\#|--(?=\s|$))|[ \t]*(?:$|[\n;&|)]|['"][ \t]*(?:$|[;&|)])))
+        )
+    guidance: "preview the release with npm publish --dry-run and confirm the package, version and registry."
+    action: warn
+
   - id: terraform-state-change
     severity: HIGH
     category: change_control

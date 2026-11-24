@@ -176,6 +176,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "git-remote-hijack",
     "git-clean-force",
     "git-stash-delete",
+    "npm-publish",
     "pkg-install-from-url",
     "secret-exfiltration",
     "credential-aggregation",
