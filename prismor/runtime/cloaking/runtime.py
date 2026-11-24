@@ -34,16 +34,28 @@ _READER_UTILS = frozenset({
 
 # The two shapes decloak.sh rewrites a Bash command into (see `wrapped=` there).
 # The scrubber tail carries PRISMOR_CLOAK_SESSION since #849; older hooks omit it.
-# A quoted word from `printf %q` is backslash escapes or a $'...' string.
-_Q = r"(?:\$'(?:\\.|[^'\\])*'|(?:\\.|[^\s\\])+)"
+# A `printf %q` word cannot contain bare shell syntax: stripping a wrapper
+# with a substitution or another command in its paths would hide that action.
+_BARE = r"(?:[A-Za-z0-9_%+./:=@~,#-]|[^\x00-\x7f]|\\[^\n])"
+_ANSI = r"(?:\\.|[^'\\])*"
+_Q = rf"(?:''|\$'{_ANSI}'|{_BARE}+)"
+
+
+def _script_path(name: str) -> str:
+    # With a control character in the install path, bash quotes the entire path.
+    suffix = "/" + re.escape(name)
+    return rf"(?:{_BARE}*{suffix}|\$'{_ANSI}{suffix}')"
+
+
 _DECLOAK_TAIL_RE = re.compile(
-    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r"(?: PRISMOR_CLOAK_SESSION=(?:''|" + _Q + r"))? "
-    + _Q + r"scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
+    r" 2>&1 \| PRISMOR_SECRETS_DIR=" + _Q + r"(?: PRISMOR_CLOAK_SESSION=" + _Q + r")? "
+    + _script_path("scrub-stream.sh") + r"; exit \$\{PIPESTATUS\[0\]\}\s*\Z")
 _DECLOAK_GROUP_RE = re.compile(r"\A\{\n:\n(.*)\n\n\}\Z", re.DOTALL)  # before the eval form
+_DECLOAK_INLINE_GROUP_RE = re.compile(r"\A\{ (.*); \}\Z", re.DOTALL)  # earliest hooks
 _DECLOAK_EVAL_RE = re.compile(
     r"\A\{ __prismor_cmd=(" + _Q + r"); eval \"\$__prismor_cmd\"\$'\\n'; \}\Z", re.DOTALL)
 _DECLOAK_RESOLVE_RE = re.compile(
-    r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _Q + r"decloak-exec\.sh\Z",
+    r"\APRISMOR_SECRETS_DIR=" + _Q + r" PRISMOR_CLOAK_CMD=(" + _Q + r") bash " + _script_path("decloak-exec.sh") + r"\Z",
     re.DOTALL)
 
 
@@ -66,6 +78,9 @@ def unwrap_decloak(command: str) -> str:
         return group.group(1)
     resolve = _DECLOAK_RESOLVE_RE.match(runner) or _DECLOAK_EVAL_RE.match(runner)
     if not resolve:
+        inline = _DECLOAK_INLINE_GROUP_RE.match(runner)
+        if inline:
+            return inline.group(1).strip()
         return command
     word = resolve.group(1)
     try:
