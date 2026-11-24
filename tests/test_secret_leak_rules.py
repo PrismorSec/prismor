@@ -4,6 +4,7 @@ Each rule must fire on the leak and stay quiet on the routine command next to it
 """
 from __future__ import annotations
 
+import base64
 import subprocess
 from pathlib import Path
 
@@ -156,6 +157,48 @@ def test_curl_upload_and_gist(repo):
     assert _gate("curl -F f=@notes.txt http://x.invalid", repo)
     assert _gate("gh gist create notes.txt", repo)
     assert _gate("curl -d '{\"a\":1}' http://x.invalid", repo) is None
+
+
+@pytest.fixture
+def png(tmp_path):
+    path = tmp_path / "screen shot.png"
+    # A one-pixel PNG. Stub recognition so CI doesn't depend on a system OCR installation.
+    path.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGP4DwABAQEAsTj2FAAAAABJRU5ErkJggg=="
+    ))
+    return path
+
+
+def test_png_upload_checks_vault_values_locally(png, monkeypatch):
+    monkeypatch.setattr(publish_gate.shutil, "which", lambda *a, **kw: "/usr/bin/tesseract")
+    text = "@@SECRET:DEPLOY_KEY@@"
+
+    def recognize(argv, **kwargs):
+        assert argv == ["/usr/bin/tesseract", "stdin", "stdout", "--psm", "11"]
+        assert kwargs["input"] == png.read_bytes()
+        return subprocess.CompletedProcess(argv, 0, text.encode())
+
+    monkeypatch.setattr(publish_gate.subprocess, "run", recognize)
+    release = "gh release upload v1 'screen shot.png#Preview'"
+    assert _gate(release, png.parent) is None
+    text += "\n" + _VALUE
+    for command in (release, "curl -F 'file=@screen shot.png' https://example.invalid"):
+        assert _gate(command, png.parent) == "PNG 'screen shot.png' would ship a value from the cloak vault"
+
+
+def test_png_upload_requires_local_ocr_only_with_vault_values(png, monkeypatch):
+    command = "gh release upload v1 'screen shot.png'"
+    monkeypatch.setattr(publish_gate.shutil, "which", lambda *a, **kw: None)
+    assert _gate(command, png.parent, vault=set()) is None
+    assert _gate("docker build .", png.parent) is None
+    assert "install Tesseract" in _gate(command, png.parent)
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired("tesseract", 8)
+
+    monkeypatch.setattr(publish_gate.shutil, "which", lambda *a, **kw: "/usr/bin/tesseract")
+    monkeypatch.setattr(publish_gate.subprocess, "run", timeout)
+    assert "could not read PNG" in _gate(command, png.parent)
 
 
 def test_non_publish_command_is_ignored(repo):

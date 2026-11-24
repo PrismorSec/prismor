@@ -124,6 +124,17 @@ with values, a vaulted value, or a string that looks like a key.
 | `curl -F/-T/--data-binary @file`, `wget --post-file` | the file named |
 | `aws s3 cp` / `gsutil cp` with a public ACL | the file named |
 
+For PNGs named directly in an upload, the gate uses local Tesseract OCR when
+the vault contains values to protect. It compares recognized text with those
+values. A screenshot showing only a placeholder such as `@@SECRET:DEPLOY_KEY@@`
+can pass. A match blocks the upload and identifies the file.
+
+Install Tesseract with English language data in a system binary directory,
+such as `/usr/bin`, `/usr/local/bin` or `/opt/homebrew/bin`.
+The gate blocks the PNG upload if OCR is unavailable, fails, or exceeds the
+eight-second budget for the upload. Each image is limited to 5 MiB and 32
+megapixels. OCR can misread text, so review sensitive screenshots before sharing.
+
 Example message:
 
 ```
