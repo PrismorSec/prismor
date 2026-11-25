@@ -34,14 +34,17 @@ prismor_load_patterns
 if [[ "${#PATTERNS[@]}" -gt 0 ]]; then
   _gargs=()
   for pat in "${PATTERNS[@]}"; do _gargs+=(-e "$pat"); done
-  if printf '%s' "$response" | grep -qE "${_gargs[@]}" 2>/dev/null; then
+  # LC_ALL=C: the patterns are ASCII and the bytes they match are the same in
+  # any locale, but GNU grep in a UTF-8 locale decodes every byte of a
+  # multi-MB response first: 4.4 s vs 0.12 s for the combined check on Linux.
+  if printf '%s' "$response" | LC_ALL=C grep -qE "${_gargs[@]}" 2>/dev/null; then
     mkdir -p "$SECRETS_DIR" && chmod 700 "$SECRETS_DIR" 2>/dev/null
     while IFS= read -r v; do
       [[ -n "$v" ]] || continue
       prismor_value_is_cloaked "$v" && continue
       f="$SECRETS_DIR/auto_$(printf '%s' "$v" | shasum -a 256 | cut -c1-8)"
       [[ -f "$f" ]] || { printf '%s' "$v" > "$f"; chmod 600 "$f" 2>/dev/null; }
-    done < <(for pat in "${PATTERNS[@]}"; do printf '%s' "$response" | grep -oE "$pat" || true; done | awk 'NF && !seen[$0]++')
+    done < <(for pat in "${PATTERNS[@]}"; do printf '%s' "$response" | LC_ALL=C grep -oE "$pat" || true; done | awk 'NF && !seen[$0]++')
   fi
 fi
 
