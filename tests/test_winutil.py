@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import codecs
+import types
 
 import pytest
 
@@ -98,8 +99,22 @@ def test_restrict_acl_is_noop_off_windows_and_never_raises(tmp_path, monkeypatch
     calls = []
     monkeypatch.setattr(winutil, "IS_WINDOWS", True)
     monkeypatch.setenv("USERNAME", "bob")
-    monkeypatch.setattr(winutil.subprocess, "run", lambda cmd, **k: calls.append(cmd))
-    winutil.restrict_to_current_user(f)
-    assert calls and calls[0][0] == "icacls" and "/inheritance:r" in calls[0]
+    monkeypatch.setenv("USERDOMAIN", "WORKGROUP")
+
+    def fake(cmd, **k):
+        calls.append(cmd)
+        if cmd[0] == "whoami":
+            return types.SimpleNamespace(stdout='"HOST\\\\bob","S-1-5-21-1-2-3-1001"\n', returncode=0)
+        # WORKGROUP\\bob is the wrong domain in an ssh session: icacls says 1332.
+        return types.SimpleNamespace(returncode=1332 if "WORKGROUP" in cmd[-1] else 0)
+    monkeypatch.setattr(winutil.subprocess, "run", fake)
+    assert winutil.restrict_to_current_user(f) is True
+    ic = [c for c in calls if c[0] == "icacls"]
+    assert ic and "/inheritance:r" in ic[0] and ic[0][-1] == "*S-1-5-21-1-2-3-1001:F"
+    # No SID: fall back to DOMAIN\\user, then the bare name, and report the failure.
+    calls.clear()
+    monkeypatch.setattr(winutil.subprocess, "run", lambda cmd, **k: calls.append(cmd) or types.SimpleNamespace(stdout="", returncode=1332))
+    assert winutil.restrict_to_current_user(f) is False
+    assert [c[-1] for c in calls if c[0] == "icacls"] == ["WORKGROUP\\bob:F", "bob:F"]
     monkeypatch.setattr(winutil.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
     winutil.restrict_to_current_user(f)
