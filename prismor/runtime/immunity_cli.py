@@ -168,10 +168,15 @@ def _hook_dispatch_fail_closed(rest: List[str]) -> None:
         raw = getattr(sys.stdin, "buffer", None)
         data = raw.read().decode("utf-8-sig", errors="replace") if raw else sys.stdin.read()
         sys.stdin = io.StringIO(data)
-        from prismor.runtime.cli import main as prismor_main
-        from prismor.runtime.hooks import refresh_dispatch_shim
-        refresh_dispatch_shim(sys.argv[0])  # an upgrade replaces an old fail-open launcher
-        prismor_main(["hook-dispatch", *rest])
+        from prismor.runtime.hook_failclosed import arm_watchdog
+        disarm = arm_watchdog(rest, data)  # answer inside the time budget, whatever the payload
+        try:
+            from prismor.runtime.cli import main as prismor_main
+            from prismor.runtime.hooks import refresh_dispatch_shim
+            refresh_dispatch_shim(sys.argv[0])  # an upgrade replaces an old fail-open launcher
+            prismor_main(["hook-dispatch", *rest])
+        finally:
+            disarm()
         return
     except SystemExit:
         raise

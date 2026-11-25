@@ -506,6 +506,10 @@ def evaluate_tool_call(
     _agent_name = agent_name or agent
 
     _retype_adapter_file_call(event)
+    # Cut oversize fields to head+tail windows before anything reads them
+    # (see payload_bounds): the hook must answer inside its time budget.
+    from prismor.runtime import payload_bounds
+    _cuts = payload_bounds.bound_event(event)
     if event.get("type") == "shell" and event.get("command"):
         from prismor.runtime.cloaking.runtime import unwrap_decloak
         from prismor.runtime.sandbox import unwrap_command as _unwrap_sandbox
@@ -1205,6 +1209,8 @@ def evaluate_tool_call(
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
 
     findings.extend(_host_rate_findings)
+    if _cuts:
+        findings.extend(payload_bounds.findings_for(_cuts, session_id, _session_seq))
 
     _eval_ms = int((time.perf_counter() - _guard_t0) * 1000)
     perf.lap("scoped_iam_learning")

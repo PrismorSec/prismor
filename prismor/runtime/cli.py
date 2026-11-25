@@ -1982,6 +1982,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         _perf.lap()
         from prismor.runtime.winutil import read_stdin_text
         payload = json.loads(read_stdin_text() or "{}")
+        # A hook with nothing on stdin cannot say what it is screening. Enforce
+        # fails closed (same as unparseable JSON; every agent sends a JSON
+        # object, even for events without a tool); observe stays open.
+        if not payload and args.mode == "enforce":
+            raise ValueError("empty hook payload on stdin")
         _hook_claimed = True   # set for real just before evaluation
         # The session is over: nothing to screen, and no later hook in it will
         # run the heartbeat tick, so ship the outbox now. Claude kills SessionEnd
