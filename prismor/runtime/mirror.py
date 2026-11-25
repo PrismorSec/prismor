@@ -40,6 +40,8 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import urllib.error
 import urllib.parse
@@ -104,8 +106,10 @@ class MirrorError(RuntimeError):
 
 _DEFS: List[Tuple[str, str, Dict[str, Any]]] = [
     ("Bash",
-     "Executes a bash command in the workspace and returns its combined output. "
-     "Use for running builds, tests, git, and other shell work.",
+     "Executes a shell command in the workspace and returns its combined output. "
+     "Use for running builds, tests, git, and other shell work. On Windows the "
+     "command runs in PowerShell (pwsh when installed), not cmd.exe; set "
+     "PRISMOR_MIRROR_SHELL to choose another shell.",
      {"type": "object",
       "properties": {
           "command": {"type": "string", "description": "The command to execute"},
@@ -500,26 +504,44 @@ def native_call(tool_name: str, arguments: Any) -> Tuple[str, Any]:
     return tool, args
 
 
-def shape_call_event(tool: str, arguments: Any) -> Optional[Dict[str, Any]]:
-    """Native-shaped PreToolUse body for a mirrored tool, or None if unknown."""
+def _abs_path(raw: str, workspace: Optional[Path]) -> str:
+    """``raw`` made absolute against ``workspace`` for the policy engine.
+
+    A path that is absolute in either OS flavour (``/x``, ``\\x``, ``C:\\x``)
+    or starts with ``~`` is returned exactly as given: no lowercasing, no
+    separator conversion — the engine normalises.
+    """
+    if not raw or workspace is None or raw[0] in "/\\~" or raw[1:3] in (":\\", ":/"):
+        return raw
+    return os.path.join(str(workspace), raw)
+
+
+def shape_call_event(tool: str, arguments: Any,
+                     workspace: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Native-shaped PreToolUse body for a mirrored tool, or None if unknown.
+
+    With ``workspace``, relative file paths are made absolute so a rule on
+    ``.prismor/policy.yaml`` or ``.aws/credentials`` sees the real target.
+    """
     args = arguments if isinstance(arguments, dict) else {}
+    ap = lambda v: _abs_path(str(v or ""), workspace)  # noqa: E731
     if tool == "Bash":
         return {"type": "shell", "command": str(args.get("command") or "")}
     if tool == "Read":
-        return {"type": "file_read", "path": str(args.get("file_path") or "")}
+        return {"type": "file_read", "path": ap(args.get("file_path"))}
     if tool == "Write":
         return {"type": "file_write",
-                "path": str(args.get("file_path") or ""),
+                "path": ap(args.get("file_path")),
                 "content": str(args.get("content") or "")}
     if tool == "Edit":
         # A single Edit has no "content" key; new_string is the written text.
         # Missing this makes every content-based check blind to edits.
         return {"type": "file_write",
-                "path": str(args.get("file_path") or ""),
+                "path": ap(args.get("file_path")),
                 "content": str(args.get("new_string") or "")}
     if tool in ("Glob", "Grep"):
         return {"type": "file_read",
-                "path": str(args.get("path") or args.get("pattern") or "")}
+                "path": ap(args.get("path") or args.get("pattern"))}
     if tool == "WebFetch":
         # Same shape hooks.py gives a native WebFetch, so the egress rules and
         # the cloaked-secret-in-URL check apply unchanged.
@@ -641,6 +663,24 @@ def _decloak_env(command: str) -> Optional[Dict[str, str]]:
 _DECLOAK_RESOLVER = Path(__file__).parent / "cloaking" / "hooks" / "decloak-exec.sh"
 
 
+def _shell_argv(command: str) -> Optional[List[str]]:
+    """argv for the Bash tool's shell, or None to use the platform default.
+
+    ``PRISMOR_MIRROR_SHELL`` (e.g. ``"bash -c"``) is a command prefix; the
+    command is appended as the last argument. On Windows the default is
+    PowerShell (pwsh when installed), not cmd.exe, so cmdlets work and the
+    exit code of a native command is kept.
+    """
+    custom = os.environ.get("PRISMOR_MIRROR_SHELL", "").strip()
+    if custom:
+        return shlex.split(custom, posix=os.name != "nt") + [command]
+    if os.name == "nt":
+        exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
+        return [exe, "-NoProfile", "-NonInteractive", "-Command",
+                command + "; exit $LASTEXITCODE"]
+    return None
+
+
 def _run_bash(args: Dict[str, Any], workspace: Path) -> str:
     command = str(args.get("command") or "")
     if not command.strip():
@@ -657,8 +697,10 @@ def _run_bash(args: Dict[str, Any], workspace: Path) -> str:
                                   capture_output=True, text=True, timeout=timeout_s,
                                   env=decloak_env)
         else:
-            proc = subprocess.run(command, shell=True, cwd=str(workspace),  # mirrors the agent's Bash tool  # nosec B602
+            argv = _shell_argv(command)
+            proc = subprocess.run(argv or command, shell=argv is None, cwd=str(workspace),  # mirrors the agent's Bash tool  # nosec B602
                                   capture_output=True, text=True, timeout=timeout_s,
+                                  encoding="utf-8", errors="replace",
                                   env=dict(os.environ))
     except FileNotFoundError:
         raise MirrorError("resolving secret placeholders requires bash on PATH")
@@ -701,13 +743,13 @@ def _run_read(args: Dict[str, Any], workspace: Path) -> str:
 
 def _run_write(args: Dict[str, Any], workspace: Path) -> str:
     path = _resolve(args.get("file_path") or "", workspace)
-    content = str(args.get("content") or "")
+    data = str(args.get("content") or "").encode("utf-8")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_bytes(data)  # exact bytes: text mode would turn \n into CRLF on Windows
     except OSError as exc:
         raise MirrorError(f"could not write {path}: {exc}")
-    return f"Wrote {len(content)} bytes to {path}"
+    return f"Wrote {len(data)} bytes to {path}"
 
 
 def _run_edit(args: Dict[str, Any], workspace: Path) -> str:
@@ -719,9 +761,12 @@ def _run_edit(args: Dict[str, Any], workspace: Path) -> str:
     if not old:
         raise MirrorError("old_string is required and must not be empty")
     try:
-        src = path.read_text(errors="replace", encoding="utf-8")
+        src = path.read_bytes().decode("utf-8", "replace")  # keep CRLF as stored
     except OSError as exc:
         raise MirrorError(f"could not read {path}: {exc}")
+    if "\r\n" in src and "\r\n" not in old:
+        # The model sees "\n" lines (Read normalises): match and write CRLF.
+        old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
     count = src.count(old)
     if count == 0:
         raise MirrorError("old_string not found in file")
@@ -731,7 +776,7 @@ def _run_edit(args: Dict[str, Any], workspace: Path) -> str:
             "context or set replace_all")
     updated = src.replace(old, new) if args.get("replace_all") else src.replace(old, new, 1)
     try:
-        path.write_text(updated, encoding="utf-8")
+        path.write_bytes(updated.encode("utf-8"))
     except OSError as exc:
         raise MirrorError(f"could not write {path}: {exc}")
     return f"Edited {path} ({count if args.get('replace_all') else 1} replacement(s))"
