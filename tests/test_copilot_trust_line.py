@@ -39,3 +39,12 @@ def test_unknown_trust_still_warns(tmp_path, monkeypatch):
     ws.mkdir()
     _install(ws)
     assert "cannot tell" in cli.copilot_trust_line(ws)
+
+
+def test_setup_skips_second_codex_copy_when_global_exists(tmp_path, monkeypatch):
+    from prismor.runtime import hooks, setup_wizard
+    monkeypatch.setattr(hooks, "hook_health", lambda ws: [
+        {"agent": "codex", "scope": "global", "configured": True, "mode": "enforce"}])
+    assert setup_wizard._global_hook_covers(tmp_path, "codex", "enforce")
+    assert not setup_wizard._global_hook_covers(tmp_path, "codex", "observe")
+    assert not setup_wizard._global_hook_covers(tmp_path, "claude", "enforce")
