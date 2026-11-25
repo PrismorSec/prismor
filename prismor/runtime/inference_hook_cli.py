@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -152,7 +153,11 @@ def cmd_test(
             if bearer:
                 headers["Authorization"] = f"Bearer {bearer}"
             elif secret and not unsigned:
-                headers.update(signature_headers(secret, message_id=str(frame.get("request_id") or label), body=body))
+                try:
+                    headers.update(signature_headers(secret, message_id=str(frame.get("request_id") or label), body=body))
+                except ValueError as exc:
+                    sys.stderr.write(f"[prismor] inference-hook test: {exc}\n")
+                    return 2
             wire = _post(url, body, headers, timeout)
         else:
             cfg: ChannelConfig = resolve_config(tenant, workspace=workspace)

@@ -3351,6 +3351,9 @@ def run_proxy(host: str = "127.0.0.1", port: int = 7080,
         judge_budget_ms=judge_budget_ms, judge=judge)
     base = f"http://{host}:{port}"
     print(f"[prismor] proxy listening on {base}  (mode: {mode})")
+    sys.stderr.write(f"[prismor] listening on {base} mode={mode}\n")
+    sys.stderr.flush()
+    sys.stdout.flush()
     print(f"[prismor] workspace: {ws}")
     print(f"[prismor] warmed up in {warm:.1f}s")
     if os.environ.get("PRISMOR_SEMANTIC_PROVIDER"):
