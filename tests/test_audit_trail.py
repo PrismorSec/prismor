@@ -355,3 +355,33 @@ def test_checkpoint_exposes_truncation(trail):
     report = trail.verify_trail()
     assert report["status"] == "ok"  # locally undetectable...
     assert cp["seq"] > report["head"]["seq"]  # ...but the anchored head proves it
+
+
+_WORKER = (
+    "import sys\n"
+    "from prismor.runtime.enterprise import audit_trail as t\n"
+    "for i in range(int(sys.argv[1])):\n"
+    "    t._append({'record_type': 'action', 'ts': 'x', 'n': i})\n"
+)
+
+
+def test_concurrent_processes_do_not_fork_chain(tmp_path, monkeypatch):
+    """N processes appending at once must yield one linear, verifiable chain
+    (no duplicate seq): the whole read-state/append/write-state section holds a
+    real cross-process lock (fcntl on POSIX, msvcrt on Windows)."""
+    import os
+    import subprocess
+
+    env = dict(os.environ, PRISMOR_HOME=str(tmp_path), PYTHONPATH=str(_REPO))
+    procs = [
+        subprocess.Popen([sys.executable, "-c", _WORKER, "15"], env=env, cwd=str(_REPO))
+        for _ in range(6)
+    ]
+    assert all(p.wait(timeout=120) == 0 for p in procs)
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
+    for mod in ("prismor.runtime.enterprise.audit_trail", "prismor.runtime.enterprise.identity"):
+        sys.modules.pop(mod, None)
+    from prismor.runtime.enterprise import audit_trail
+    rep = audit_trail.verify_trail()
+    assert rep["records"] == 90
+    assert rep["status"] in ("ok",), rep["errors"][:3]

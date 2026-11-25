@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
@@ -119,11 +120,12 @@ def next_link(record: Dict[str, Any]) -> Tuple[int, str, str]:
         seq = int(state["seq"]) + 1
         prev_hash = str(state.get("last_hash") or GENESIS)
         digest = compute_hash(record, seq, prev_hash)
-        tmp = path.with_suffix(".tmp")
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps({"seq": seq, "last_hash": digest}), encoding="utf-8"
         )
-        tmp.replace(path)
+        from prismor.runtime.winutil import replace_retry
+        replace_retry(tmp, path)
         return seq, prev_hash, digest
 
 

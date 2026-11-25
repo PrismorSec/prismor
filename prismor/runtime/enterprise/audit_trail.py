@@ -147,12 +147,13 @@ def _append(record: Dict[str, Any]) -> Dict[str, Any]:
         record["seq"] = int(state["seq"]) + 1
         record["prev_hash"] = str(state.get("last_hash") or GENESIS)
         record["hash"] = compute_hash(record)
-        tmp = state_file.with_suffix(".tmp")
+        tmp = state_file.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps({"seq": record["seq"], "last_hash": record["hash"]}),
             encoding="utf-8",
         )
-        tmp.replace(state_file)
+        from prismor.runtime.winutil import replace_retry
+        replace_retry(tmp, state_file)
         _signing.sign_record(record)  # no-op without `cryptography`
         line = json.dumps(
             record, sort_keys=True, separators=(",", ":"), ensure_ascii=False

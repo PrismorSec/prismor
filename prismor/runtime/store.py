@@ -15,6 +15,10 @@ try:  # POSIX advisory locks; absent on Windows.
     import fcntl
 except ImportError:  # pragma: no cover - platform dependent
     fcntl = None  # type: ignore[assignment]
+try:  # Windows byte-range locks.
+    import msvcrt
+except ImportError:  # pragma: no cover - platform dependent
+    msvcrt = None  # type: ignore[assignment]
 
 
 @contextmanager
@@ -26,6 +30,30 @@ def _locked(handle) -> Iterator[None]:
     than failing the caller. Logging an event must never break the tool call it
     is recording.
     """
+    if fcntl is None and msvcrt is not None:
+        import time
+        handle.seek(0)
+        deadline = time.monotonic() + 30
+        got = False
+        while True:
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                got = True
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    break  # best effort: proceed unserialized
+                time.sleep(0.005)
+        try:
+            yield
+        finally:
+            if got:
+                try:
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        return
     if fcntl is None:
         yield
         return
@@ -107,7 +135,8 @@ def locked_json_update(path: Path) -> Iterator[Dict[str, Any]]:
             tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
             try:
                 tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-                os.replace(tmp, path)
+                from prismor.runtime.winutil import replace_retry
+                replace_retry(tmp, path)
             except OSError:
                 try:
                     tmp.unlink()
