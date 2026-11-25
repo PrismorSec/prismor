@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -559,6 +560,37 @@ def test_would_block_uses_the_live_enforcement_decision(claude_home, tmp_path):
     assert len(blocked) + len(warned) == result.total_findings
     # The destructive `rm -rf /` is an enforce-mode rule in the shipped policy.
     assert any(b.get("ruleId") == "destructive-command" for b in blocked)
+
+
+@pytest.mark.parametrize("command,blocked", [
+    ("rm -rf / # @@SECRET:KEY@@", True),
+    ("printf 'hello\\n'", False),
+])
+def test_sweep_evaluates_cloaked_commands(tmp_path, monkeypatch, command, blocked):
+    """Replay the real hook's rewrite without executing the wrapped command."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "KEY").write_text("fake-value-for-transcript-test")
+    monkeypatch.setenv("PRISMOR_SECRETS_DIR", str(vault))
+    hook = Path(__file__).resolve().parents[1] / "prismor/runtime/cloaking/hooks/decloak.sh"
+    rewritten = subprocess.run(
+        ["bash", str(hook)],
+        input=json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}),
+        capture_output=True, text=True, check=True,
+    )
+    wrapped = json.loads(rewritten.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    tool_use = {"type": "tool_use", "name": "Bash", "input": {"command": wrapped}}
+    _write_jsonl(tmp_path / "projects/demo/s1.jsonl", [
+        {"type": "assistant", "sessionId": "s1", "message": {"content": [tool_use]}},
+    ])
+
+    session, = sweep(_options(tmp_path, retain_events=True)).sessions
+    assert session.events[0]["command"] == command
+    if blocked:
+        assert any(f["ruleId"] == "destructive-command" for f in session.would_block)
+    else:
+        assert not session.findings
 
 
 def test_since_window_filters_and_is_reported(claude_home, tmp_path):

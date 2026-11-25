@@ -41,6 +41,12 @@ def test_anything_else_is_untouched():
         assert unwrap_decloak(cmd) == cmd
 
 
+def test_unquoted_session_field_is_kept_for_policy():
+    wrapped = "{\n:\nprintf ok\n\n}" + _tail("s1")
+    malformed = wrapped.replace("PRISMOR_CLOAK_SESSION=s1", "PRISMOR_CLOAK_SESSION=*")
+    assert unwrap_decloak(malformed) == malformed
+
+
 def test_vault_read_inside_a_wrapper_is_still_seen():
     inner = "cat ~/.prismor/secrets/KEY"
     assert unwrap_decloak("{\n:\n" + inner + "\n\n}" + _tail()) == inner
