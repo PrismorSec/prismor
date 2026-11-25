@@ -205,7 +205,7 @@ class HookDispatchForSubagents(unittest.TestCase):
              mock.patch.dict(os.environ, {"PRISMOR_HOME": str(self.root / "home" / ".prismor")}):
             cli.main(["hook-dispatch", "--agent", "claude", "--workspace", str(self.ws), "--mode", "observe"])
         clear.assert_called_once()
-        flush.assert_called_once_with(force=True, timeout=6.0)
+        flush.assert_called_once_with(force=True, timeout=1.0)
         evaluate.assert_not_called()
 
     def test_claude_install_registers_session_end(self):

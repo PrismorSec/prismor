@@ -1036,6 +1036,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.enterprise import workspace_scope as _scope
         from prismor.runtime.enterprise import identity as _identity
         action = getattr(args, "action", None)
+        if action in ("managed", "personal") and not _identity.load_identity():
+            sys.stderr.write(f"prismor workspace {action}: this machine is not enrolled, so a scope override "
+                             "has no effect until it is. Run `prismor enroll <token>` first. Nothing was changed.\n")
+            raise SystemExit(1)
         if action in ("managed", "personal", "auto"):
             _scope.set_override(workspace, None if action == "auto" else action)
             print(f"Set scope override for this workspace → {action}")
@@ -1110,15 +1114,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         ident = _identity.load_identity()
         if not ident:
             print("This machine is not enrolled. Run `prismor enroll <token>` first.")
-            return
+            raise SystemExit(1)
         remote = _scope.detect_git_remote(workspace)
         if not remote:
             print("Not a git repo (no origin remote) — can't request an exemption here.")
-            return
+            raise SystemExit(1)
         reason = getattr(args, "reason", None)
         if not reason:
             print("A reason is required: prismor exempt request --reason \"why this repo needs it\"")
-            return
+            raise SystemExit(1)
         import json as _json, urllib.request, urllib.error
         from prismor.runtime import http_ua as _http_ua
         base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
@@ -1907,6 +1911,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("Portable: the hook finds `prismor` at run time, so this file is safe to commit. "
                   "Install prismor in the cloud environment's setup script.")
         _print_codex_trust_note([item["agent"] for item in results], workspace)
+        if any(item["agent"] == "copilot" for item in results):
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_cp_line}")
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=True)
         return
 
@@ -1975,6 +1983,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.winutil import read_stdin_text
         payload = json.loads(read_stdin_text() or "{}")
         _hook_claimed = True   # set for real just before evaluation
+        # The session is over: nothing to screen, and no later hook in it will
+        # run the heartbeat tick, so ship the outbox now. Claude kills SessionEnd
+        # hooks as it exits (`claude -p` ended with "Hook cancelled"), so this
+        # runs before workspace registration and drift checks, exits quietly on
+        # SIGTERM, and caps the flush at 1s: a late flush is retried by the
+        # next hook, a slow one is a cancelled hook. Never fails the exit.
+        if str(payload.get("hook_event_name") or "") == "SessionEnd":
+            try:
+                import signal
+                signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+            except (ImportError, ValueError, OSError, AttributeError):
+                pass
+            try:
+                from prismor.runtime.enterprise import heartbeat as _heartbeat
+                from prismor.runtime.enterprise import telemetry_spool as _spool
+                _spool.clear_backoff()
+                _heartbeat.maybe_flush(force=True, timeout=1.0)
+            except BaseException:
+                pass
+            return
+
         # A global (~/.claude) hook carries no --workspace: attribute the call
         # to the repo the agent is actually running in (payload cwd → git root),
         # not to whichever directory `setup --scope global` happened to run
@@ -1992,20 +2021,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             hook_drift.report(workspace, from_hook=True)
         except Exception:
             pass
-
-        # The session is over: nothing to screen, and no later hook in it will
-        # run the heartbeat tick, so ship the outbox now. Clear the backoff an
-        # earlier cold-start timeout left behind: this is the last chance, and a
-        # failure sets it again. Never blocks the exit on an error.
-        if str(payload.get("hook_event_name") or "") == "SessionEnd":
-            try:
-                from prismor.runtime.enterprise import heartbeat as _heartbeat
-                from prismor.runtime.enterprise import telemetry_spool as _spool
-                _spool.clear_backoff()
-                _heartbeat.maybe_flush(force=True, timeout=6.0)
-            except Exception:
-                pass
-            return
 
         # The model's reply for the turn (Claude/Codex Stop, Cursor
         # afterAgentResponse, Gemini AfterAgent, ...): recorded in observe mode
@@ -2969,7 +2984,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg)
+                # No OS sandbox on this platform (Windows): a config written
+                # elsewhere must not block every command, so it is not strict.
+                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
                 _sandbox_on = _sandbox_strict and _sandbox.supported()
                 _sandbox_root = _sandbox.project_root(payload, workspace)
                 _sandbox_cmd = str(event.get("command") or "")
@@ -3109,6 +3126,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
+            if want and not _sandbox.supported():
+                sys.stderr.write(
+                    f"prismor sandbox on: no OS sandbox exists for {sys.platform} (macOS and "
+                    "Linux only). Nothing was changed; commands keep running as before, "
+                    "with policy screening, egress and cloaking in force.\n")
+                raise SystemExit(1)
             if not want and not sys.stdin.isatty():
                 # Turning containment off is a person's call: an agent's shell has
                 # no terminal. An open `prismor unlock` window also counts.
@@ -6176,6 +6199,47 @@ def codex_trust_line(workspace: Path) -> Optional[str]:
             "prompt (headless runs: `codex exec --dangerously-bypass-hook-trust`).")
 
 
+def _copilot_trusted_folders() -> Optional[List[str]]:
+    """``trusted_folders`` from Copilot's ~/.copilot/config.json, or None if unreadable."""
+    try:
+        raw = (Path.home() / ".copilot" / "config.json").read_text(encoding="utf-8-sig")
+        # The file may open with // comment lines.
+        data = json.loads("\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("//")))
+        folders = data.get("trusted_folders", data.get("trustedFolders"))
+        return [str(f) for f in folders] if isinstance(folders, list) else None
+    except Exception:
+        return None
+
+
+def copilot_trust_line(workspace: Path) -> Optional[str]:
+    """A warning when Copilot may skip this workspace's repository hooks, else None.
+
+    Copilot ignores .github/hooks in a folder it has not trusted ("Skipped
+    repository hooks ... because the folder is not trusted"), so `status` can
+    say enforce while nothing runs. Global hooks (~/.copilot/hooks) are not
+    affected, so a global install needs no warning.
+    """
+    from prismor.runtime.hooks import hook_installed
+    try:
+        if not hook_installed("copilot", "project", workspace):
+            return None
+    except Exception:
+        return None
+    folders = _copilot_trusted_folders()
+    if folders is not None:
+        here = os.path.normcase(os.path.abspath(workspace))
+        for f in folders:
+            base = os.path.normcase(os.path.abspath(os.path.expanduser(f)))
+            if here == base or here.startswith(base.rstrip("\\/") + os.sep):
+                return None
+        why = "this folder is not in Copilot's trusted_folders"
+    else:
+        why = "Prismor cannot tell whether Copilot trusts this folder"
+    return (f"Copilot skips repository hooks (.github/hooks) in a folder it has not trusted, so it may "
+            f"NOT run them: {why}. Trust the folder when Copilot asks (or add it to trusted_folders in "
+            "~/.copilot/config.json), or install globally: prismor install-hooks --agent copilot --scope global.")
+
+
 def _print_status_quota(engine: Any) -> None:
     """The `Prismor API:` line in `prismor status`: what is left of this month.
 
@@ -6866,6 +6930,10 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add("fail", "codex trust", _trust_line)
         else:
             add("ok", "codex trust", "Codex has trusted the installed hooks")
+    if "copilot" in agents_with_hooks:
+        _cp_line = copilot_trust_line(workspace)
+        if _cp_line:
+            add("warn", "copilot trust", _cp_line)
 
     # 2. Policy engine loads.
     try:
@@ -7166,6 +7234,10 @@ def _print_status_overview(workspace: Path) -> None:
             _codex_line = codex_trust_line(workspace)
             if _codex_line:
                 print(f"  {_color('Codex:', _YELLOW)}       {_codex_line}")
+        if "copilot" in agents_with_hooks:
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_color('Copilot:', _YELLOW)}     {_cp_line}")
         _both = sorted(set(hooks_by_scope["project"]) & set(hooks_by_scope["global"]))
         if _both:
             print(f"  {_color('Note:', _YELLOW)}        {', '.join(_both)} hooked at both scopes — each tool call is "

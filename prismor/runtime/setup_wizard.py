@@ -1562,6 +1562,16 @@ def _write_selection_policy(target: Path, selected: List[str], scope: str) -> No
         user_policy.write_text(text, encoding="utf-8")
 
 
+def _global_hook_covers(target: Path, agent: str, mode: str) -> bool:
+    """True when ``agent`` already has a global Prismor hook in ``mode``."""
+    try:
+        from prismor.runtime.hooks import hook_health
+        return any(c["agent"] == agent and c["scope"] == "global" and c["configured"]
+                   and c.get("mode") == mode for c in hook_health(target))
+    except Exception:
+        return False
+
+
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
     _STEP_FAILURES.clear()
     if not _PLAIN:
@@ -1700,6 +1710,9 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     for agent in agents:
         def _install_hook(a: str = agent):
             try:
+                if scope == "project" and a == "codex" and _global_hook_covers(target, a, mode):
+                    # A second copy would run every hook twice (Codex shows each line twice).
+                    return True, "already hooked globally, not installing a second copy"
                 results = install_hooks(
                     repo_root=_REPO_ROOT,
                     workspace=target,
@@ -1720,6 +1733,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         # Codex runs nothing until the human trusts the hooks; installed is not screened.
         from prismor.runtime.cli import codex_trust_line
         _line = codex_trust_line(target)
+        if _line:
+            print(f"  {_w(_line, YEL)}")
+            print()
+
+    if "copilot" in agents:
+        from prismor.runtime.cli import copilot_trust_line
+        _line = copilot_trust_line(target)
         if _line:
             print(f"  {_w(_line, YEL)}")
             print()

@@ -752,3 +752,12 @@ def test_server_gives_the_judge_a_budget_inside_the_turn_timeout(monkeypatch):
     monkeypatch.setenv("PRISMOR_SEMANTIC_BUDGET_MS", "250")
     srv._budget_judge(3.0)
     assert os.environ["PRISMOR_SEMANTIC_BUDGET_MS"] == "250"     # operator's choice wins
+
+
+def test_cli_test_with_a_bad_secret_is_a_one_line_error(capsys):
+    from prismor.runtime.inference_hook_cli import cmd_test
+    rc = cmd_test(url="http://127.0.0.1:9/x", secret="whsec_not*base64!", samples=["clean"],
+                  frame_path=None, tenant="t", application="claude-ai", bearer=None,
+                  unsigned=False, timeout=1, workspace=None, as_json=False, expect=None)
+    err = capsys.readouterr().err
+    assert rc == 2 and "not valid base64" in err and "Traceback" not in err
