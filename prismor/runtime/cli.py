@@ -272,15 +272,21 @@ def _run_skills(args) -> None:
     workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "skills_subcommand", None) or "audit"
     if sub == "approve":
-        entry = approve_skill(workspace, Path(args.file))
-        print(f"approved: {args.file} — baseline {entry['sha256'][:12]}…")
+        from prismor.runtime.skills_audit import resolve_skill
+        try:
+            target = resolve_skill(workspace, args.file)
+            entry = approve_skill(workspace, target)
+        except OSError as exc:
+            print(f"prismor skills approve: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"approved: {target} — baseline {entry['sha256'][:12]}…")
         return
     rows = audit_skills(workspace, record=True)
     if getattr(args, "json", False):
         print(json.dumps(rows, indent=2))
     else:
         print(format_audit(rows))
-    if any(r["status"] == "changed" or r["findings"] for r in rows):
+    if any(r["status"] in ("changed", "new") or r["findings"] for r in rows):
         raise SystemExit(1)
 
 
@@ -1315,6 +1321,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
+            # Same exit code as text mode: 2 when any finding blocks.
+            if any(f.get("action") == "block" for f in result["findings"]):
+                raise SystemExit(2)
             return
 
         configs = result["configs"]
