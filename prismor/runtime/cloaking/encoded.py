@@ -66,7 +66,7 @@ def _scrubbable(v: str) -> bool:
     # importable without the package. tests/test_cloak_bindings.py pins them equal.
     import re
     n = len(v)
-    if n < 8 or re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?", v):
+    if n < 8 or n > 65536 or re.fullmatch(r"[A-Za-z][A-Za-z0-9+.-]*://[A-Za-z0-9.-]+(?::[0-9]+)?/?", v):
         return False
     if n >= 16:
         return True

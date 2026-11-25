@@ -2095,7 +2095,8 @@ def plugin_load_warning(agent: str, scope: str, workspace: Path, plugin: str = _
             if row is None:
                 return "Hermes does not list the Prismor plugin (hermes plugins list)."
             if row[0] != "enabled":
-                return f"Hermes lists the Prismor plugin as {row[0]}; run: hermes plugins enable {plugin}"
+                state = "not enabled" if row[0] == "not" else row[0]
+                return f"Hermes lists the Prismor plugin as {state}; run: hermes plugins enable {plugin}"
     if agent == "opencode" and shutil.which("opencode"):
         return _opencode_plugin_load_warning(scope, workspace)
     return None
