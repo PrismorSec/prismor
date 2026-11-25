@@ -193,6 +193,20 @@ def _canonical_argv(argv: List[str]) -> List[str]:
     return [binary, *argv[1:]]
 
 
+_PASSTHROUGH_TOOLS = {"npx", "pnpx", "bunx", "pipx", "node", "deno", "corepack", "python", "python3", "py",
+                      "gradle", "gradlew", "rustc", "rustup", "pdm", "pipenv", "conda", "mamba"}
+
+
+def is_known_manager(argv: List[str]) -> bool:
+    """True when argv[0] is a package manager (or its runner) this wrapper handles."""
+    if not argv:
+        return False
+    first = _canonical_argv(argv)[0]
+    first = re.sub(r"\.(exe|cmd|bat)$", "", first)
+    managers = {b for b, _ in _INSTALL_MAP} | {re.sub(r"\.(exe|cmd|bat)$", "", b) for b in _MAVEN_BINARIES}
+    return first in managers or first in _PASSTHROUGH_TOOLS or bool(_PY_RE.match(first))
+
+
 def detect_install(argv: List[str]) -> Optional[InstallEvent]:
     """Parse argv (e.g. ['npm', 'install', 'express']) → InstallEvent or None.
 

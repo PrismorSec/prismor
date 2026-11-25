@@ -273,7 +273,7 @@ Run `prismor supplychain harden` once when bootstrapping a project, and use the 
 
 ### Caveats
 
-- `pip.conf` is not auto-read from the project root. Activate with `export PIP_CONFIG_FILE=pip.conf` or place it at `$VIRTUAL_ENV/pip.conf` after creating the venv. The hardener prints this reminder.
+- `pip.conf` (`pip.ini` on Windows) is not auto-read from the project root. Activate with `export PIP_CONFIG_FILE=pip.conf` (PowerShell: `$env:PIP_CONFIG_FILE = "pip.ini"`) or place it at `$VIRTUAL_ENV/pip.conf` after creating the venv. The hardener prints this reminder.
 - `ignore-scripts` will break packages that legitimately need install scripts (e.g. `node-gyp` native modules). Allow them per-package via `npm rebuild <pkg> --foreground-scripts` or pnpm's `onlyBuiltDependencies` allowlist in `package.json`.
 
 ---
