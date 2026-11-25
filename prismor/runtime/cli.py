@@ -996,7 +996,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception:
             pass
         print()
-        print(f"  {_color('⏸  Prismor paused', _YELLOW)} — enforcement is off; observe-mode screening keeps running.")
+        print(f"  {_color('⏸  Prismor paused', _YELLOW)} — policy enforcement is off; observe-mode screening keeps running.")
+        print(f"  {_pause.FLOOR_NOTE}")
         if rec.get("until"):
             until_local = datetime.fromtimestamp(float(rec["until"])).strftime("%H:%M")
             print(f"  {_color('Auto-resumes at ' + until_local, _DIM)}" + (f" (in {raw_duration})." if raw_duration else " (24h)."))
@@ -2184,7 +2185,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                         _why = f" ({_pstate.get('reason')})" if _pstate.get("reason") else ""
                         sys.stderr.write(
                             f"[prismor] enforcement paused by your organization{_why} — "
-                            "screening and telemetry continue; blocking is off.\n"
+                            "screening and telemetry continue; only floor rules still block.\n"
                         )
                     elif _pstate is None and _was is not None:
                         sys.stderr.write("[prismor] enforcement resumed by your organization.\n")
@@ -2688,6 +2689,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "this exact call once. Do not try a different way around the block."
                     + (f"\n\n{unblock_text}" if unblock_text else "")
                 )
+            if _pstate is not None:
+                # Only a floor rule reaches here while paused. unblock_text is the
+                # one part every agent's block message carries.
+                unblock_text = ("Prismor is paused, but this is a floor rule: a pause does not lift it."
+                                + (f"\n\n{unblock_text}" if unblock_text else ""))
             if unblock_text:
                 reason += f"\n\n{unblock_text}"
             # The host shows this to the human: no raw ESC/bidi from tool input.
@@ -6067,8 +6073,8 @@ def _pause_note() -> str:
     try:
         from prismor.runtime import pause as _pause
         if _pause.active_state() is not None:
-            return _color("Paused:", _YELLOW) + " enforcement is suspended right now, so nothing is " \
-                "blocked until `prismor resume` (findings are still recorded)."
+            return _color("Paused:", _YELLOW) + " policy enforcement is suspended until `prismor resume` " \
+                f"(findings are still recorded). {_pause.FLOOR_NOTE}"
     except Exception:
         pass
     return ""
@@ -7296,6 +7302,7 @@ def _print_status_overview(workspace: Path) -> None:
         if _pstate.get("reason"):
             _pmsg += f"  ({_pstate['reason']})"
         print(f"  {_color('Paused:', _YELLOW)}      {_color(_pmsg, _YELLOW)}")
+        print(f"               {_pause.FLOOR_NOTE}")
 
     # Cloaking — lazy import so the cloaking subsystem stays optional
     cloak_state = "unknown"

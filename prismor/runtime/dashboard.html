@@ -9345,7 +9345,7 @@ function renderRuntime(r) {
   if (!p) return;
   const until = r.paused_until ? 'Paused until ' + new Date(r.paused_until * 1000).toLocaleString() : 'Paused';
   p.innerHTML = !r.paused
-    ? '<button class="upgrade-btn" title="Pause Prismor on this machine, for every agent and session: nothing is blocked for 24 h; screening and telemetry keep running" onclick="togglePause(true)"><svg class="icon"><use href="#i-pause"/></svg> Pause all</button>'
+    ? '<button class="upgrade-btn" title="Pause Prismor on this machine, for every agent and session: only floor rules block for 24 h; screening and telemetry keep running" onclick="togglePause(true)"><svg class="icon"><use href="#i-pause"/></svg> Pause all</button>'
     : r.paused_by_org
       ? '<span class="upgrade-btn rt-paused" title="' + safeAttr(until) + '. Only an org admin can resume it.">Paused by org</span>'
       : '<button class="upgrade-btn rt-paused" title="' + safeAttr(until) + '. Click to resume." onclick="togglePause(false)"><span class="rt-dot off"></span>All paused · Resume</button>';
@@ -9354,7 +9354,7 @@ async function loadRuntime() {
   try { renderRuntime(await apiFetch('/api/runtime')); } catch(e) { console.error('[prismor] runtime:', e); }
 }
 async function togglePause(paused) {
-  if (paused && !(await askConfirm('Pause Prismor on this machine?\n\nNothing is blocked for 24 hours (or until you resume). Screening and telemetry keep running.'))) return;
+  if (paused && !(await askConfirm('Pause Prismor on this machine?\n\nOnly floor rules block for 24 hours (or until you resume). Screening and telemetry keep running.'))) return;
   try {
     renderRuntime(await apiFetch('/api/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({paused})}));
     toast(paused ? 'Prismor paused for 24 h' : 'Prismor resumed');

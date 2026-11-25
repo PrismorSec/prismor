@@ -142,9 +142,13 @@ def _dispatch(tmp_path, command):
 
 def test_pause_keeps_floor_blocking(tmp_path, monkeypatch):
     from prismor.runtime import pause
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))  # the hook's home
     pause.set_paused(600, reason="test")
     assert pause.active_state() is not None
-    assert _dispatch(tmp_path, "rm -rf /").returncode == 2
+    run = _dispatch(tmp_path, "rm -rf /")
+    assert run.returncode == 2
+    out = run.stdout + run.stderr
+    assert "a pause does not lift it" in str(out)
 
 
 # ── asserted subject on a device surface ──────────────────────────────────

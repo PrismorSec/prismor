@@ -191,6 +191,7 @@ class TestCheckMatchesTheHook(unittest.TestCase):
         from prismor.runtime import cli
         with mock.patch("prismor.runtime.pause.active_state", return_value={"source": "local"}):
             self.assertIn("suspended", cli._pause_note())
+            self.assertIn("Floor rules still block", cli._pause_note())
         with mock.patch("prismor.runtime.pause.active_state", return_value=None):
             self.assertEqual(cli._pause_note(), "")
 

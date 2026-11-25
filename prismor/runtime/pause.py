@@ -123,6 +123,10 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+# Shown wherever a pause is reported, so nobody reads "paused" as "all off".
+FLOOR_NOTE = ("Floor rules still block (destructive commands, secret exfiltration, "
+              "reverse shells, Prismor self-protection).")
+
 _DEFAULT_DURATION_SECONDS = 86400  # `prismor pause` auto-resumes after 24h unless --for overrides it
 
 
