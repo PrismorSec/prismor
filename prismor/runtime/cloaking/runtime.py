@@ -160,6 +160,8 @@ def decloak_text(text: str, *, secrets: Optional[Dict[str, str]] = None) -> str:
 # output. Keep this in sync with the Bash `_prismor_scrubbable` helper in
 # cloaking/hooks/*.sh.
 _MIN_SCRUB_LEN = 8
+# A value this large is not a credential; matching it stalls every hook.
+_MAX_SCRUB_LEN = 64 * 1024
 # A bare origin (`http://localhost:3000`, `https://app.example.com/`) is config,
 # not a credential: no userinfo, path or query that could carry a token. Masking
 # it blocked reads of every test and doc that used the same base URL (#930).
@@ -180,7 +182,7 @@ def is_scrubbable_secret(value: str) -> bool:
     """
     v = value or ""
     n = len(v)
-    if n < _MIN_SCRUB_LEN or _BARE_URL.fullmatch(v):
+    if n < _MIN_SCRUB_LEN or n > _MAX_SCRUB_LEN or _BARE_URL.fullmatch(v):
         return False
     if n >= 16:
         return True
@@ -378,16 +380,23 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
     if blocked is not None:
         sys.stderr.write(f"error: prismor cloak run refused: {blocked}\n")
         return 2
-    proc = subprocess.run(
-        resolved,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        check=False,
-        env=env,
-    )
+    proc = subprocess.run(resolved, capture_output=True, check=False, env=env)
     if proc.stdout:
-        sys.stdout.write(scrub_text(proc.stdout, secrets=secrets))
+        sys.stdout.write(scrub_bytes(proc.stdout, secrets))
     if proc.stderr:
-        sys.stderr.write(scrub_text(proc.stderr, secrets=secrets))
+        sys.stderr.write(scrub_bytes(proc.stderr, secrets))
     return int(proc.returncode)
+
+
+def scrub_bytes(raw: bytes, secrets: Dict[str, str]) -> str:
+    """Decode command output and scrub it, including UTF-16 (PowerShell, Windows
+    tools) forms of each secret, which a utf-8 decode would turn into NUL-laced text."""
+    for name, value in secrets.items():
+        if is_scrubbable_secret(value):
+            for codec in ("utf-16-le", "utf-16-be"):
+                raw = raw.replace(value.encode(codec), f"@@SECRET:{name}@@".encode(codec))
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8", errors="replace")
+    return scrub_text(text, secrets=secrets)

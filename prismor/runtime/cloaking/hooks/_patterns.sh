@@ -69,7 +69,7 @@ prismor_value_is_cloaked() {
   [[ -d "$dir" ]] || return 1
   for f in "$dir"/*; do
     [[ -f "$f" ]] || continue
-    if [[ "$(cat "$f")" == "$value" ]]; then
+    if [[ "$(<"$f")" == "$value" ]]; then
       return 0
     fi
   done
@@ -90,5 +90,50 @@ prismor_scrubbable() {
   [[ "$v" == *[[:digit:]]* ]] && return 0
   [[ "$v" == *[![:alnum:]]* ]] && return 0
   [[ "$v" == *[[:lower:]]* && "$v" == *[[:upper:]]* ]] && return 0
+  return 1
+}
+
+# prismor_find_matches <text>
+# Unique pattern matches in <text>, one per line. One grep over every pattern:
+# the old per-pattern loop forked grep ~90 times, 25+ s on Git Bash for Windows.
+# If grep rejects the combined set (one bad custom pattern) fall back to
+# per-pattern runs so the good patterns still work.
+prismor_find_matches() {
+  local text="$1" pat out rc args=()
+  for pat in "${PATTERNS[@]}"; do args+=(-e "$pat"); done
+  out="$(printf '%s' "$text" | LC_ALL=C grep -oE "${args[@]}" 2>/dev/null)"; rc=$?
+  if (( rc >= 2 )); then
+    out="$(for pat in "${PATTERNS[@]}"; do printf '%s' "$text" | LC_ALL=C grep -oE -e "$pat" 2>/dev/null || true; done)"
+  fi
+  printf '%s\n' "$out" | awk 'NF && !seen[$0]++'
+}
+
+# prismor_sha8 <value> — first 8 hex of sha256. Git Bash has no shasum; try each
+# tool, then python. Prints nothing and returns 1 if none works: the caller must
+# fail loudly, never name a vault entry from an empty hash.
+prismor_sha8() {
+  local h=""
+  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum | cut -c1-8)"
+  elif command -v shasum >/dev/null 2>&1; then h="$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
+  elif command -v openssl >/dev/null 2>&1; then h="$(printf '%s' "$1" | openssl dgst -sha256 | sed 's/.*= *//' | cut -c1-8)"
+  else
+    local py; py="$(command -v python3 || command -v python || command -v py)"
+    [[ -n "$py" ]] && h="$(printf '%s' "$1" | "$py" -c 'import sys,hashlib;print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:8])' 2>/dev/null)"
+  fi
+  [[ "$h" =~ ^[0-9a-f]{8}$ ]] || return 1
+  printf '%s' "$h"
+}
+
+# prismor_benign_match <value> — 0 for look-alikes of a secret that are really
+# documentation: a DB URL whose password is a placeholder word or template.
+prismor_benign_match() {
+  local v="$1" pw
+  if [[ "$v" =~ ^[A-Za-z][A-Za-z0-9+.-]*://[^:/@[:space:]]*:([^@/[:space:]]*)@ ]]; then
+    pw="${BASH_REMATCH[1]}"
+    pw="$(printf '%s' "$pw" | tr 'A-Z' 'a-z')"
+    case "$pw" in
+      password|pass|passwd|pwd|secret|changeme|change-me|example|test|admin|root|postgres|123456|xxx*|\**|your*|\<*|\$*|\{*|%*|...) return 0 ;;
+    esac
+  fi
   return 1
 }

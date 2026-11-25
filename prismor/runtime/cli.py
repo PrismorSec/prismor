@@ -56,6 +56,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import contextlib
 import io
@@ -3544,6 +3545,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(f"Installed Hermes Agent cloaking plugin at {h_result['pluginDir']}")
                 for label in h_result["hooksInstalled"]:
                     print(f"  + {label}")
+            if not shutil.which("jq"):
+                _fix = ("winget install jqlang.jq   (or: scoop install jq)" if os.name == "nt"
+                        else "brew install jq   (or: apt install jq)")
+                sys.stderr.write("warning: jq is not on PATH. The cloaking hooks need it and will BLOCK every "
+                                 f"guarded tool call until it is installed: {_fix}\n")
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()
@@ -3584,6 +3590,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 result = cloak_status(workspace=workspace, scope=_sc)
                 if result["installed"]:
                     break
+            else:  # nowhere installed: show the scope the user would install into
+                result = cloak_status(workspace=workspace, scope=scopes[0])
+                _sc = scopes[0]
             state = "installed" if result["installed"] else "not installed"
             if result["installed"] and not args.scope:
                 state += " (project)" if _sc == "project" else " (global)"
@@ -3620,6 +3629,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             except ValueError as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(2)
+            except OSError as exc:
+                sys.stderr.write(f"error: cannot run command: {exc}\n")
+                raise SystemExit(127)
             raise SystemExit(code)
 
         if sub == "add":
@@ -3673,24 +3685,29 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             if args.value_file:
                 try:
-                    value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                    from prismor.runtime.cloaking.secrets_store import decode_text, strip_one_newline
+                    value = strip_one_newline(decode_text(Path(args.value_file).read_bytes()))
                 except (OSError, ValueError) as exc:
                     sys.stderr.write(f"error: {exc}\n")
                     raise SystemExit(1)
             else:
                 # Read from stdin (so the value never appears in argv / history).
-                if sys.stdin.isatty():
+                from prismor.runtime.cloaking.secrets_store import is_console, strip_one_newline
+                if is_console(sys.stdin):
                     from getpass import getpass
                     value = getpass(f"Enter value for @@SECRET:{name}@@ (input hidden): ")
                 else:
                     from prismor.runtime.winutil import read_stdin_text
-                    value = read_stdin_text().rstrip("\n")
+                    value = strip_one_newline(read_stdin_text())
+                    if "\ufffd" in value or re.search(r"\?{3,}", value):
+                        sys.stderr.write("warning: the piped value has U+FFFD or a run of '?': the shell likely "
+                                         "re-encoded non-ASCII text (PowerShell 5.1). Use --from-file instead.\n")
             try:
                 path = add_secret(name, value)
             except (OSError, ValueError) as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(1)
-            print(f"Registered @@SECRET:{name}@@ ({len(value)} bytes) at {path}")
+            print(f"Registered @@SECRET:{name}@@ ({len(value.encode('utf-8'))} bytes) at {path}")
             print("The model can now reference this secret in tool calls as:")
             print(f"  {_color(f'@@SECRET:{name}@@', _CYAN)}")
             _warn_unscrubbable(name, value)
@@ -3797,7 +3814,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             if str(load_sources().get(args.name, {}).get("ref", "")).startswith("prismor://"):
                 print(f"@@SECRET:{args.name}@@ comes from your org vault. It comes back on the next sync "
                       "unless an admin removes your access in the console.")
-            removed = remove_secret(args.name)
+            try:
+                removed = remove_secret(args.name)
+            except ValueError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                raise SystemExit(1)
             forget(args.name)
             from prismor.runtime.cloaking import bindings
             if args.name in bindings.load(secrets_dir()):

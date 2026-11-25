@@ -26,6 +26,64 @@ from typing import Dict, List, Optional
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
+_RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
+)
+# A registered secret is matched against every hook payload; a huge one made
+# each hook hang. Real credentials are far smaller (private keys ~4 KB).
+MAX_SECRET_BYTES = 64 * 1024
+
+
+def is_console(stream) -> bool:
+    """True only for a real terminal. Windows isatty() is True for NUL."""
+    try:
+        if not stream.isatty():
+            return False
+        if os.name == "nt":
+            import ctypes
+            import msvcrt
+            mode = ctypes.c_uint32()
+            h = msvcrt.get_osfhandle(stream.fileno())
+            return bool(ctypes.windll.kernel32.GetConsoleMode(h, ctypes.byref(mode)))
+        return True
+    except Exception:
+        return False
+
+
+def decode_text(raw: bytes) -> str:
+    """Decode file bytes, honouring a UTF-8 / UTF-16 BOM (PowerShell writes UTF-16)."""
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig")
+
+
+def strip_one_newline(value: str) -> str:
+    """Drop a single trailing CRLF or LF (what `echo` / a file adds)."""
+    for nl in ("\r\n", "\n"):
+        if value.endswith(nl):
+            return value[: -len(nl)]
+    return value
+
+
+def restrict_acl(path: Path) -> None:
+    """Windows: drop inherited ACLs and grant only the current user (best effort)."""
+    if os.name != "nt":
+        return
+    try:
+        import subprocess
+        user = os.environ.get("USERNAME")
+        if not user:
+            return
+        dom = os.environ.get("USERDOMAIN")
+        who = f"{dom}\\{user}" if dom else user
+        perm = "(OI)(CI)F" if Path(path).is_dir() else "F"
+        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:{perm}"],
+                       capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+
 def secrets_dir() -> Path:
     """Return the secrets directory path, honoring $PRISMOR_SECRETS_DIR."""
     override = os.environ.get("PRISMOR_SECRETS_DIR")
@@ -58,13 +116,14 @@ def pinned_secrets_dir() -> Optional[Path]:
 
 def _ensure_dir() -> Path:
     path = secrets_dir()
+    fresh = not path.exists()
     path.mkdir(parents=True, exist_ok=True)
     try:
         path.chmod(0o700)
     except PermissionError:
         pass
-    from prismor.runtime.winutil import restrict_to_current_user
-    restrict_to_current_user(path)
+    if fresh:
+        restrict_acl(path)
     return path
 
 
@@ -73,6 +132,8 @@ def _validate_name(name: str) -> str:
         raise ValueError(
             f"Invalid secret name {name!r}: must match {_NAME_RE.pattern}"
         )
+    if name.lower() in _RESERVED_NAMES:
+        raise ValueError(f"Invalid secret name {name!r}: reserved Windows device name")
     return name
 
 
@@ -85,8 +146,12 @@ def add_secret(name: str, value: str) -> Path:
     _validate_name(name)
     if not value:
         raise ValueError("Secret value is empty — refusing to store.")
+    if len(value.encode("utf-8")) > MAX_SECRET_BYTES:
+        raise ValueError(f"Secret value is over {MAX_SECRET_BYTES} bytes — refusing to store "
+                         "(it would stall every hook). Store a path or a token instead.")
     path = _ensure_dir() / name
-    path.write_text(value, encoding="utf-8")
+    with open(path, "w", encoding="utf-8", newline="") as fh:  # no LF->CRLF rewrite on Windows
+        fh.write(value)
     try:
         path.chmod(0o600)
     except PermissionError:
@@ -128,7 +193,7 @@ def _parse_env_line(raw_line: str, line_no: int) -> tuple[str, str] | None:
 def parse_env_file(path: Path) -> Dict[str, str]:
     """Parse a dotenv-style file into placeholder -> secret mappings."""
     parsed: "OrderedDict[str, str]" = OrderedDict()
-    for line_no, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_no, raw_line in enumerate(decode_text(path.read_bytes()).splitlines(), start=1):
         item = _parse_env_line(raw_line, line_no)
         if item is None:
             continue

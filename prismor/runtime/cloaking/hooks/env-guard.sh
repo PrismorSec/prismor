@@ -32,7 +32,10 @@ _HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # hooks/ → cloaking/ → runtime/ → prismor/ → the dir importable as `prismor`.
 _PKG_ROOT="$(cd "$_HOOK_DIR/../../../.." && pwd)"
 
-command -v jq >/dev/null 2>&1 || exit 0   # no jq → silent no-op; decloak fails loud
+if ! command -v jq >/dev/null 2>&1; then   # fail closed: without jq this hook cannot read the call
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Prismor cloaking requires jq and it is not on PATH, so this call was blocked. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux). Then restart the agent."}}\n'
+  exit 0
+fi
 
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
@@ -97,30 +100,32 @@ _deny_if_unprotected() {
 }
 
 # ── Read: deny reads of env files with unimported entries ───────────────────
+# The path may be a Windows spelling of the file (`.env.`, `.env::$DATA`, an 8.3
+# name, `C:\x`, `/c/x`): Python resolves it. Bash only skips paths that cannot
+# be an env file, to keep the hot path off Python.
 if [[ "$tool_name" == "Read" ]]; then
   file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
-  [[ -n "$file_path" && -f "$file_path" ]] || exit 0
-  if [[ -L "$file_path" ]]; then   # notes.txt -> .env reads .env
-    _py="$(_guard_python)"
-    [[ -n "$_py" ]] && file_path="$("$_py" -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$file_path")"
-  fi
-  _is_env_basename "$file_path" || exit 0
-  _deny_if_unprotected "reading" "$file_path"
+  [[ -n "$file_path" ]] || exit 0
+  _lc="$(printf '%s' "$file_path" | tr '[:upper:]' '[:lower:]')"
+  [[ "$_lc" == *env* || -L "$file_path" ]] || exit 0
+  _py="$(_guard_python)"
+  [[ -n "$_py" ]] || exit 0
+  report="$(PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$_py" -c \
+    'from prismor.runtime.cloaking.env_guard import read_main; read_main()' "$file_path" "$cwd" 2>/dev/null)" || exit 0
+  _deny_report "reading" "$report"
   exit 0
 fi
 
 # ── Grep: a content-mode search prints matching lines of every file in scope ─
 if [[ "$tool_name" == "Grep" ]]; then
   [[ "$(printf '%s' "$input" | jq -r '.tool_input.output_mode // "files_with_matches"')" == "content" ]] || exit 0
-  gpath="$(printf '%s' "$input" | jq -r '.tool_input.path // empty')"
-  [[ -n "$gpath" ]] || gpath="$cwd"
-  [[ "$gpath" == /* ]] || gpath="$cwd/$gpath"
+  gpath="$(printf '%s' "$input" | jq -r '.tool_input.path // empty')"   # empty, relative, C:\x or /c/x: Python resolves it against cwd
   py="$(_guard_python)"
   [[ -n "$py" ]] || exit 0
   report="$(PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$py" -c \
     'from prismor.runtime.cloaking.env_guard import grep_main; grep_main()' "$gpath" \
     "$(printf '%s' "$input" | jq -r '.tool_input.glob // empty')" \
-    "$(printf '%s' "$input" | jq -r '.tool_input.type // empty')" 2>/dev/null)" || exit 0
+    "$(printf '%s' "$input" | jq -r '.tool_input.type // empty')" "$cwd" 2>/dev/null)" || exit 0
   _deny_report "a content-mode Grep would print lines of" "$report"
   exit 0
 fi

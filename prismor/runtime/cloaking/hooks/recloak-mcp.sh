@@ -42,9 +42,11 @@ if [[ "${#PATTERNS[@]}" -gt 0 ]]; then
     while IFS= read -r v; do
       [[ -n "$v" ]] || continue
       prismor_value_is_cloaked "$v" && continue
-      f="$SECRETS_DIR/auto_$(printf '%s' "$v" | shasum -a 256 | cut -c1-8)"
+      prismor_benign_match "$v" && continue
+      h="$(prismor_sha8 "$v")" || continue   # no sha256 tool: leave it unvaulted rather than name it auto_
+      f="$SECRETS_DIR/auto_$h"
       [[ -f "$f" ]] || { printf '%s' "$v" > "$f"; chmod 600 "$f" 2>/dev/null; }
-    done < <(for pat in "${PATTERNS[@]}"; do printf '%s' "$response" | LC_ALL=C grep -oE "$pat" || true; done | awk 'NF && !seen[$0]++')
+    done < <(prismor_find_matches "$response")
   fi
 fi
 
