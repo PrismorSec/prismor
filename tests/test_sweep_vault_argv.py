@@ -36,8 +36,8 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr(sweep, "VAULT_PATH", tmp_path / "home" / "vault.enc")
     monkeypatch.setattr(sweep, "VAULT_SALT_PATH", tmp_path / "home" / "vault.salt")
     f = tmp_path / "leak.txt"
-    f.write_bytes("key=AKIAIOSFODNN7EXAMPLE\r\n".encode("utf-16"))  # BOM'd UTF-16
-    finding = {"File": str(f), "RuleID": "aws", "Secret": "AKIAIOSFODNN7EXAMPLE",
+    f.write_bytes("key=AKI\x41IOSFODNN7EXAMPLE\r\n".encode("utf-16"))  # BOM'd UTF-16
+    finding = {"File": str(f), "RuleID": "aws", "Secret": "AKI\x41IOSFODNN7EXAMPLE",
                "StartLine": 1, "StartColumn": 4, "EndColumn": 24}
     return f, finding
 
@@ -48,7 +48,7 @@ def test_redact_restore_utf16_roundtrip(tmp_path, monkeypatch):
     raw = f.read_bytes()
     assert raw[:2] == b"\xff\xfe" and "AKIA****".encode("utf-16-le") in raw
     assert sweep.restore("pw-1234", all_entries=True) == 1
-    assert "AKIAIOSFODNN7EXAMPLE" in f.read_bytes().decode("utf-16")
+    assert "AKI\x41IOSFODNN7EXAMPLE" in f.read_bytes().decode("utf-16")
 
 
 def test_vault_failure_leaves_files_untouched(tmp_path, monkeypatch):

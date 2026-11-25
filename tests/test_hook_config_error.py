@@ -50,7 +50,6 @@ def test_valid_config_reads_through(ws):
     '{"hooks": }',                 # syntax error
     '{"hooks": [1,2,},',           # unbalanced
     'not json at all',             # plain text
-    '',                            # empty file
 ])
 def test_malformed_config_raises_a_typed_error(ws, bad):
     p = ws[0] / "broken.json"

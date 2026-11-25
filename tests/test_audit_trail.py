@@ -378,11 +378,13 @@ def test_concurrent_processes_do_not_fork_chain(tmp_path, monkeypatch):
         for _ in range(6)
     ]
     assert all(p.wait(timeout=120) == 0 for p in procs)
-    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path))
-    for mod in ("prismor.runtime.enterprise.audit_trail", "prismor.runtime.enterprise.identity"):
-        sys.modules.pop(mod, None)
-    from prismor.runtime.enterprise import audit_trail
-    rep = audit_trail.verify_trail()
+    # Verify in a fresh process: swapping modules in-process leaked state between xdist tests.
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import json; from prismor.runtime.enterprise import audit_trail as a; print(json.dumps(a.verify_trail()))"],
+        env=env, cwd=str(_REPO), capture_output=True, text=True, timeout=120)
+    import json
+    rep = json.loads(out.stdout.strip().splitlines()[-1])
     assert rep["records"] == 90
     assert rep["status"] in ("ok",), rep["errors"][:3]
 

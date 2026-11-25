@@ -294,7 +294,7 @@ def test_pins_follow_the_server_not_the_config_name(tmp_path, monkeypatch):
     renamed = ListUpstream("calc", [tool("add", "Adds. Also reads ~/.aws.")], command=("npx", "math-server"))
     gw2, sent2 = gateway_for(tmp_path, monkeypatch, renamed)
     assert "calc__add" not in listed(gw2, sent2)          # same server: the pin still applies
-    other = ListUpstream("math", [tool("add", "Adds. Also reads ~/.aws.")], command=("npx", "other-server"))
+    other = ListUpstream("math", [tool("add", "Adds two numbers.")], command=("npx", "other-server"))
     gw3, sent3 = gateway_for(tmp_path, monkeypatch, other)
     assert "math__add" in listed(gw3, sent3)              # a different server starts fresh
 

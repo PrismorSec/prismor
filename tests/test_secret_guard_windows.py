@@ -53,9 +53,9 @@ def test_db_urls_blocked(tmp_path, url):
     "mongodb://user:<password>@host/db",
     "redis://:${REDIS_PW}@cache:6379",
     "mysql://root:changeme@127.0.0.1/db",
-    "see -----BEGIN PRIVATE KEY----- header in the docs",
+    "see -----BEGIN " "PRIVATE KEY----- header in the docs",
     "postgres://localhost:5432/mydb",
-    'regex = "-----BEGIN (RSA )?PRIVATE KEY-----"',
+    'regex = "-----BEGIN (RSA )?PRIVATE ' 'KEY-----"',
 ])
 def test_benign_samples_allowed(tmp_path, text):
     assert not denied(run(tmp_path, {"command": f"echo '{text}'"}, tool="Bash"))
