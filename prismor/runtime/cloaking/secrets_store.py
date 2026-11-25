@@ -63,6 +63,8 @@ def _ensure_dir() -> Path:
         path.chmod(0o700)
     except PermissionError:
         pass
+    from prismor.runtime.winutil import restrict_to_current_user
+    restrict_to_current_user(path)
     return path
 
 

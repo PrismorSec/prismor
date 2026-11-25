@@ -158,10 +158,15 @@ def _append(record: Dict[str, Any]) -> Dict[str, Any]:
         line = json.dumps(
             record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
+        first = not trail_path().exists()
         with open(trail_path(), "a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if first:  # Windows: drop inherited ACLs once, when the files appear
+            from prismor.runtime.winutil import restrict_to_current_user
+            restrict_to_current_user(trail_path())
+            restrict_to_current_user(state_file)
     return record
 
 

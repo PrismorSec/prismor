@@ -89,3 +89,17 @@ def test_quote_path_and_learn_plain_when_piped(monkeypatch):
     out = subprocess.run([sys.executable, "-c", "from prismor.runtime import learning as l;print(repr(l._BOLD))"],
                          capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
     assert out.stdout.strip() == "''"
+
+
+def test_restrict_acl_is_noop_off_windows_and_never_raises(tmp_path, monkeypatch):
+    f = tmp_path / "k.pem"
+    f.write_text("x")
+    winutil.restrict_to_current_user(f)  # no-op on POSIX
+    calls = []
+    monkeypatch.setattr(winutil, "IS_WINDOWS", True)
+    monkeypatch.setenv("USERNAME", "bob")
+    monkeypatch.setattr(winutil.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    winutil.restrict_to_current_user(f)
+    assert calls and calls[0][0] == "icacls" and "/inheritance:r" in calls[0]
+    monkeypatch.setattr(winutil.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+    winutil.restrict_to_current_user(f)
