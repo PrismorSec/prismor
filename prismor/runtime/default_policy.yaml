@@ -843,6 +843,9 @@ rules:
       # curl and wget are aliases of Invoke-WebRequest there.
       - '\b(?:iwr|irm|curl|wget|Invoke-WebRequest|Invoke-RestMethod)\b[^|;\n]*\|\s*(?:iex|Invoke-Expression)\b'
       - '\b(?:iex|Invoke-Expression)\b[^\n]*\b(?:iwr|irm|Invoke-WebRequest|Invoke-RestMethod|DownloadString)\b'
+      # Download to a file then run it in the same command line:
+      # `iwr u -OutFile x.ps1; .\x.ps1`, `curl -o x.sh u && bash x.sh`.
+      - '\b(?:iwr|irm|curl|wget|Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer)\b[^\n|]*?\s(?:-OutFile|-Destination|-o|-O|--output)[\s=]+["'']?(?:\.[\\/])?(?P<dlfile>[\w.~$:\\/-]+)["'']?[^\n]*?(?:[;&\n]|\|\|)\s*(?:&\s*|\.\s+|(?:Start-Process|start|call|powershell|pwsh|cmd|python3?|py|node|bash|sh|wscript|cscript|rundll32|regsvr32|msiexec)(?:\.exe)?\s+(?:-\w+(?:\s+\w+)?\s+|/\w+\s+)*)?["'']?(?:\.[\\/])?(?P=dlfile)\b'
     guidance: "download the script to a file, read it, then run it (`curl -fsSLo install.sh <url>`, inspect, `bash install.sh`)."
     action: block
 
@@ -875,7 +878,11 @@ rules:
     event_types: [shell]
     fields: [command]
     patterns:
-      - '(?:^|[;&|{]|(?<!\$)\(|\b(?:then|do|else|xargs|sudo|time|exec)\b)\s*(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|Get-Content|gc|type|sed(?![^\n;&|<>]*\s-i)|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
+      - '(?:^|[;&|{]|(?<!\$)\(|\b(?:then|do|else|xargs|sudo|time|exec)\b|\bcmd(?:\.exe)?\s+/[ck]|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n;&|]*?\s-c(?:ommand)?)\s*["'']?(?:cat|tac|head|tail|less|more|bat|nl|strings|xxd|od|hexdump|sort|uniq|awk|Get-Content|gc|type|findstr(?![^\n;&|<>]*\s/m\b)|(?:Select-String|sls)(?![^\n;&|<>]*\s-q(?:uiet)?\b)|Import-Csv|ConvertFrom-StringData|sed(?![^\n;&|<>]*\s-i)|cut(?![^\n;&|<>]*-f\s*1\b)|(?:grep|egrep|rg)(?![^\n;&|<>]*\s-[a-zA-Z]*[qclLo]))\b(?!\s*[<>])[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
+      # .NET file reads, `copy <secret> CON`, and certutil encode/decode of a secret file.
+      - '\[(?:System\.)?IO\.File\]::(?:ReadAll\w+|ReadLines|OpenRead|OpenText|Open)\s*\([^\n)]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
+      - '\b(?:x?copy)\b[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)\s+(?:/\w+\s+)*con\b'
+      - '\bcertutil(?:\.exe)?\b[^\n;&|<>]*?-(?:encode|encodehex|decode)\w*(?=\s)[^\n;&|<>]*?(?:^|[\s"''=/]|(?<=[\w~:.])\\)(?:\.env(?!\.(?:example|sample|template|dist|defaults|schema)\b)(?:\.[\w-]+)?|\.npmrc|\.pypirc|\.netrc|id_rsa|id_ed25519|\.aws[/\\]credentials)(?=$|[\s"'';&|)])'
     action: block
 
   # ── HIGH: Local credential stores read through the shell ───────────────
