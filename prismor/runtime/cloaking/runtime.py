@@ -361,6 +361,16 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
             f"escape the colon: @@SECRET\\:{name}@@"
         ) from exc
 
+    from prismor.runtime.agent_env import caller_agents
+    from prismor.runtime.cloaking.secrets_store import agent_allowed
+    me = caller_agents()
+    names = {n for a in args for n in placeholder_names(a)}
+    denied = sorted(n for n in names if not agent_allowed(n, me))
+    if denied:
+        sys.stderr.write(f"error: prismor cloak run refused: {', '.join(denied)} is not shared with "
+                         f"{' / '.join(me) or 'this agent'} (Vault in the dashboard)\n")
+        return 2
+
     from prismor.runtime.cloaking import bindings
     bound = bindings.load(secrets_dir())
     if bound:
