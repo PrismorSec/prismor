@@ -349,8 +349,11 @@ settings:
 If the hooks and the `prismor` you run in your terminal are different versions,
 `prismor doctor` warns and prints the command to upgrade the hooks' copy.
 
-On some agents a hook that times out or crashes lets the action through rather
-than blocking it (this is the agent's behaviour, not Prismor's). See
+On some agents a hook that times out lets the action through rather than
+blocking it (this is the agent's behaviour, not Prismor's). A hook that
+*crashes* or cannot load `prismor` is different: when it is installed in
+`enforce` mode it denies the call, except for reads, Stop and prompt events, so
+a broken install does not silently stop screening. See
 [Agent integrations](../AGENT_INTEGRATIONS.md) and
 [Semantic Guard](semantic-guard.md).
 

@@ -153,73 +153,47 @@ def _force_utf8_streams() -> None:
             pass
 
 
-# Tools that only look. A crashed enforce hook still lets these run so the
-# person can see what broke; everything else is denied.
-_READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "LS", "view", "read", "read_file", "grep", "glob", "list_dir"}
-
-
 def _hook_dispatch_fail_closed(rest: List[str]) -> None:
     """Run hook-dispatch; turn a crash into a deny when the hook enforces.
 
-    Exit-code hosts read any nonzero exit other than 2 as "hook errored" and run
-    the tool, and JSON-on-stdout hosts allow when nothing is printed, so an
-    input that makes the hook raise would otherwise open every call.
+    Reading stdin and importing the CLI sit inside the guard on purpose: an
+    ImportError there is the likeliest crash (a broken or half-upgraded
+    install), and outside the guard it exited 1, which exit-code hosts treat
+    as "hook errored" and run the tool.
     """
     import io
-    import json
-    data = sys.stdin.read()
-    sys.stdin = io.StringIO(data)
-    from prismor.runtime.cli import main as prismor_main
+    data = None
     try:
+        data = sys.stdin.read()
+        sys.stdin = io.StringIO(data)
+        from prismor.runtime.cli import main as prismor_main
+        from prismor.runtime.hooks import refresh_dispatch_shim
+        refresh_dispatch_shim(sys.argv[0])  # an upgrade replaces an old fail-open launcher
         prismor_main(["hook-dispatch", *rest])
         return
     except SystemExit:
         raise
     except Exception as exc:
         crash = exc
-    try:
-        payload = json.loads(data or "{}")
-    except ValueError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-    agent = rest[rest.index("--agent") + 1] if "--agent" in rest[:-1] else ""
-    mode = rest[rest.index("--mode") + 1] if "--mode" in rest[:-1] else "observe"
-    event = str(payload.get("hook_event_name") or payload.get("hookEventName")
-                or payload.get("event") or "").lower()
-    tool = str(payload.get("tool_name") or payload.get("toolName") or "")
-    msg = f"Prismor hook failed ({type(crash).__name__}: {crash}); "
-    if (mode != "enforce" or tool in _READ_ONLY_TOOLS
-            or any(k in event for k in ("stop", "prompt", "session", "post", "after", "notification"))):
-        # Observe, a read, or not a pre-tool event: denying here would swallow
-        # a prompt or loop a Stop hook ("keep going") forever.
-        sys.stderr.write(msg + "this call was not screened.\n")
-        raise SystemExit(1)
-    reason = msg + "blocked because this hook enforces and could not decide."
-    sys.stderr.write(reason + "\n")
-    if agent == "copilot":
-        sys.stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": reason}) + "\n")
-    elif agent == "qwen" or (agent == "codex" and os.name == "nt"):
-        # Codex on Windows reports exit 2 as 1 through powershell; the JSON
-        # deny with exit 0 is what it honors there.
-        sys.stdout.write(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny",
-            "permissionDecisionReason": reason}}) + "\n")
-    elif agent in ("antigravity", "grok"):
-        sys.stdout.write(json.dumps({"decision": "deny", "reason": reason}) + "\n")
-    elif agent == "cursor":
-        sys.stdout.write(reason + "\n")
-    raise SystemExit(0 if agent in ("copilot", "qwen", "antigravity") or (agent == "codex" and os.name == "nt") else 2)
+    from prismor.runtime.hook_failclosed import handle_crash
+    handle_crash(rest, crash, data)
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    _force_utf8_streams()
-    from prismor.runtime.happy_eyeballs import install as _race_ip_families
-    _race_ip_families()
     if argv is None:
         argv = sys.argv[1:]
-
-    _deprecation_notice()
+    try:
+        _force_utf8_streams()
+        from prismor.runtime.happy_eyeballs import install as _race_ip_families
+        _race_ip_families()
+        _deprecation_notice()
+    except Exception as exc:
+        if argv[:1] != ["hook-dispatch"]:
+            raise
+        # Same rule as a crash inside the dispatch: an enforcing hook must not
+        # let the call through because start-up work failed.
+        from prismor.runtime.hook_failclosed import handle_crash
+        handle_crash(argv[1:], exc)
     if argv and argv[0] != "hook-dispatch":
         _update_notice()
 
