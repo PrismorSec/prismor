@@ -150,9 +150,10 @@ def export(out: Path, *, session: Optional[str] = None, since: Optional[str] = N
 def verify_pack(pack: Path, pubkey_b64: Optional[str] = None) -> Dict[str, Any]:
     errors: List[str] = []
     try:
-        manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+        from prismor.runtime.winutil import read_text_file
+        manifest = json.loads(read_text_file(pack / "manifest.json"))
     except (OSError, ValueError) as exc:
-        return {"ok": False, "errors": [f"manifest.json unreadable: {exc}"]}
+        return {"ok": False, "unreadable": True, "errors": [f"manifest.json unreadable: {exc}"]}
     sig = _att.verify_bundle(manifest, pubkey_b64)
     errors += sig["errors"]
     listed = manifest.get("files") or {}

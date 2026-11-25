@@ -457,6 +457,14 @@ def verify_trail(
     can_verify = bool(getattr(_signing, "_HAVE_CRYPTO", False))
 
     if not trail.exists():
+        if report["state"]["seq"] >= 0:
+            report["errors"].append({
+                "line": None, "seq": None, "kind": "trail_missing",
+                "detail": f"trail missing, state says {report['state']['seq'] + 1} records",
+            })
+            report["status"] = "tampered"
+            report["ok"] = False
+            return report
         report["status"] = "empty"
         report["ok"] = True
         return report
@@ -466,7 +474,8 @@ def verify_trail(
     expected_prev: Optional[str] = GENESIS
     last: Optional[Dict[str, Any]] = None
 
-    with open(trail, "r", encoding="utf-8") as f:
+    # utf-8-sig: a BOM (PowerShell redirects, editors) is not tampering.
+    with open(trail, "r", encoding="utf-8-sig") as f:
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:

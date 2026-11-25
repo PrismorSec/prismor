@@ -385,3 +385,18 @@ def test_concurrent_processes_do_not_fork_chain(tmp_path, monkeypatch):
     rep = audit_trail.verify_trail()
     assert rep["records"] == 90
     assert rep["status"] in ("ok",), rep["errors"][:3]
+
+
+def test_deleted_trail_with_nonzero_state_fails(trail):
+    trail._append({"record_type": "action", "ts": "x"})
+    trail.trail_path().unlink()
+    rep = trail.verify_trail()
+    assert rep["status"] == "tampered" and not rep["ok"]
+    assert "trail missing" in rep["errors"][0]["detail"]
+
+
+def test_bom_in_trail_is_not_tampering(trail):
+    trail._append({"record_type": "action", "ts": "x"})
+    p = trail.trail_path()
+    p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+    assert trail.verify_trail()["status"] == "ok"

@@ -6446,6 +6446,8 @@ def _run_trail(args) -> None:
             rep = _pack.verify_pack(Path(args.verify), pubkey_b64=args.pubkey)
             if args.json:
                 print(json.dumps(rep, indent=2))
+            elif rep.get("unreadable"):
+                print(f"✗ evidence pack {args.verify}: not a readable pack")
             else:
                 print(f"{'✓' if rep['ok'] else '✗'} evidence pack {args.verify}: "
                       f"{rep.get('decisions')} decisions, {rep.get('records')} records"
@@ -6498,6 +6500,9 @@ def _run_trail(args) -> None:
                   f"compare against a saved checkpoint (prismor trail checkpoint) to tell them apart")
         for err in report["errors"]:
             where = f"seq {err['seq']}" if err.get("seq") is not None else f"line {err.get('line')}"
+            if err.get("seq") is None and err.get("line") is None:
+                print(f"  ✗ {err['kind']}: {err['detail']}")
+                continue
             print(f"  ✗ {err['kind']} at {where}: {err['detail']}")
         _fails = report["sig_failures"]
         for seq in _fails[:_cap]:
@@ -6621,7 +6626,8 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
 
     if sub == "verify":
         try:
-            bundle = json.loads(Path(args.bundle).read_text(encoding="utf-8"))
+            from prismor.runtime.winutil import read_text_file
+            bundle = json.loads(read_text_file(args.bundle))
         except (OSError, ValueError) as exc:
             print(f"✗ cannot read bundle: {exc}")
             raise SystemExit(2)
@@ -8570,9 +8576,13 @@ def parse_jsonl(text: str) -> List[Dict[str, Any]]:
 
 
 def read_text(input_path: str) -> str:
+    from prismor.runtime.winutil import read_stdin_text, read_text_file
     if input_path == "-":
-        return sys.stdin.read()
-    return Path(input_path).read_text(encoding="utf-8")
+        return read_stdin_text()
+    try:
+        return read_text_file(input_path)
+    except ValueError as exc:
+        raise SystemExit(f"analyze: {exc}") from None
 
 
 def emit(payload: Any, *, as_json: bool, formatter=None) -> None:
