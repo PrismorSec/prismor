@@ -355,3 +355,50 @@ def test_checkpoint_exposes_truncation(trail):
     report = trail.verify_trail()
     assert report["status"] == "ok"  # locally undetectable...
     assert cp["seq"] > report["head"]["seq"]  # ...but the anchored head proves it
+
+
+_WORKER = (
+    "import sys\n"
+    "from prismor.runtime.enterprise import audit_trail as t\n"
+    "for i in range(int(sys.argv[1])):\n"
+    "    t._append({'record_type': 'action', 'ts': 'x', 'n': i})\n"
+)
+
+
+def test_concurrent_processes_do_not_fork_chain(tmp_path, monkeypatch):
+    """N processes appending at once must yield one linear, verifiable chain
+    (no duplicate seq): the whole read-state/append/write-state section holds a
+    real cross-process lock (fcntl on POSIX, msvcrt on Windows)."""
+    import os
+    import subprocess
+
+    env = dict(os.environ, PRISMOR_HOME=str(tmp_path), PYTHONPATH=str(_REPO))
+    procs = [
+        subprocess.Popen([sys.executable, "-c", _WORKER, "15"], env=env, cwd=str(_REPO))
+        for _ in range(6)
+    ]
+    assert all(p.wait(timeout=120) == 0 for p in procs)
+    # Verify in a fresh process: swapping modules in-process leaked state between xdist tests.
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import json; from prismor.runtime.enterprise import audit_trail as a; print(json.dumps(a.verify_trail()))"],
+        env=env, cwd=str(_REPO), capture_output=True, text=True, timeout=120)
+    import json
+    rep = json.loads(out.stdout.strip().splitlines()[-1])
+    assert rep["records"] == 90
+    assert rep["status"] in ("ok",), rep["errors"][:3]
+
+
+def test_deleted_trail_with_nonzero_state_fails(trail):
+    trail._append({"record_type": "action", "ts": "x"})
+    trail.trail_path().unlink()
+    rep = trail.verify_trail()
+    assert rep["status"] == "tampered" and not rep["ok"]
+    assert "trail missing" in rep["errors"][0]["detail"]
+
+
+def test_bom_in_trail_is_not_tampering(trail):
+    trail._append({"record_type": "action", "ts": "x"})
+    p = trail.trail_path()
+    p.write_bytes(b"\xef\xbb\xbf" + p.read_bytes())
+    assert trail.verify_trail()["status"] == "ok"

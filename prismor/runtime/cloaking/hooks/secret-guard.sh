@@ -33,7 +33,10 @@ SECRETS_DIR="$(prismor_secrets_dir)"
 mkdir -p "$SECRETS_DIR"
 chmod 700 "$SECRETS_DIR" 2>/dev/null || true
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then   # fail closed: without jq this hook cannot read the call
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Prismor cloaking requires jq and it is not on PATH, so this call was blocked. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux). Then restart the agent."}}\n'
+  exit 0
+fi
 
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
@@ -70,7 +73,7 @@ esac
 if [[ "$kind" != "bash" ]]; then
   for f in "$SECRETS_DIR"/*; do
     [[ -f "$f" ]] || continue
-    v="$(cat "$f")"
+    v="$(<"$f")"
     prismor_scrubbable "$v" || continue
     if [[ "$scan_text" == *"$v"* ]]; then
       name="$(basename "$f")"
@@ -86,20 +89,9 @@ fi
 prismor_load_patterns
 [[ "${#PATTERNS[@]}" -gt 0 ]] || exit 0
 
-# One grep over every pattern first: most calls carry no secret, and the loop
-# below forks grep once per pattern. Only a definite no-match (exit 1) skips
-# it; a match or a grep error (one bad custom pattern) runs the loop as before.
-grep_args=()
-for pat in "${PATTERNS[@]}"; do grep_args+=(-e "$pat"); done
-printf '%s' "$scan_text" | grep -qE "${grep_args[@]}" 2>/dev/null
-[[ $? -eq 1 ]] && exit 0
-
-# Collect unique matches across all patterns.
-matches="$(
-  for pat in "${PATTERNS[@]}"; do
-    printf '%s' "$scan_text" | grep -oE "$pat" || true
-  done | awk 'NF && !seen[$0]++'
-)"
+# One pass over every pattern. Newlines become spaces so a PEM block (header
+# and base64 body on separate lines) is one match.
+matches="$(prismor_find_matches "$(printf '%s' "$scan_text" | tr '\n\r' '  ')")"
 [[ -n "$matches" ]] || exit 0
 
 # Vault each NEW (uncloaked) match; collect placeholders to report.
@@ -107,14 +99,26 @@ reported=""
 new_count=0
 while IFS= read -r real_value; do
   [[ -z "$real_value" ]] && continue
+  # The match came from the flattened text: put back the newlines it had in
+  # the call, or a PEM key is vaulted (and later decloaked) with spaces. The
+  # value goes through the environment, the text through stdin, never argv.
+  if [[ "$real_value" == *" "* && "$scan_text" == *[$'\n\r']* ]] && command -v perl >/dev/null 2>&1; then
+    real_value="$(PRISMOR_M="$real_value" perl -e '
+      local $/; my $t = <STDIN>; my $m = $ENV{PRISMOR_M};
+      my $re = join("[ \r\n]", map { quotemeta } split(/ /, $m, -1));
+      print(($t =~ /($re)/) ? $1 : $m);' <<< "$scan_text")"
+  fi
 
   # Already in the vault (e.g. decloak just substituted it, or it was
   # registered manually) → legitimate use, do not flag.
-  if prismor_value_is_cloaked "$real_value"; then
+  if prismor_value_is_cloaked "$real_value" || prismor_benign_match "$real_value"; then
     continue
   fi
 
-  hash="$(printf '%s' "$real_value" | shasum -a 256 | awk '{print $1}' | cut -c1-8)"
+  if ! hash="$(prismor_sha8 "$real_value")"; then
+    jq -n '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Prismor cloaking: a raw secret was detected but no sha256 tool (sha256sum, shasum, openssl, python) is available to name its vault entry, so it was NOT vaulted. The call was blocked. Install one of them and retry."}}'
+    exit 0
+  fi
   placeholder_name="auto_${hash}"
   secret_file="$SECRETS_DIR/$placeholder_name"
   if [[ ! -f "$secret_file" ]]; then

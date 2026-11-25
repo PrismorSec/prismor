@@ -264,7 +264,13 @@ def run_supply(argv: Optional[List[str]] = None) -> None:
         _cmd_harden(argv[1:])
         return
 
-    from supplychain.ecosystems.detector import detect_install
+    from supplychain.ecosystems.detector import detect_install, is_known_manager
+    if not is_known_manager(argv):
+        sys.stderr.write(
+            f"prismor supplychain: unknown package manager `{argv[0]}` — "
+            "expected npm, pnpm, yarn, bun, pip, uv, poetry, cargo, go, gem, bundle, composer or mvn "
+            "(or `harden`).\n")
+        sys.exit(2)
     event = detect_install(argv)
 
     # Not a recognised install command — hand off transparently

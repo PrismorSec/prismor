@@ -58,7 +58,8 @@ def _load_policy_file(workspace: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        from prismor.runtime.policy_engine import _read_policy_text
+        data = yaml.safe_load(_read_policy_text(path))
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
@@ -70,6 +71,7 @@ def _save_policy_file(workspace: Path, data: Dict[str, Any]) -> None:
     path = _policy_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     data.setdefault("version", "1.0")
+    data.setdefault("rules", [])
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
 
 

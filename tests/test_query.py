@@ -106,3 +106,15 @@ def test_redacted_views_keep_ordinary_queries_working(db):
                      "WHERE finding_id = 'f2'", db)
     assert rows == [{"r": "x"}]
     assert run_query("SELECT name FROM sqlite_master WHERE type = 'table'", db) == [{"name": "findings"}]
+
+
+@pytest.mark.parametrize("expr", ["count(*)", "count(1)", "count(finding_id)"])
+def test_bare_count_is_allowed_with_redaction(db, expr):
+    rows = run_query(f"SELECT {expr} AS n FROM findings", db, redact=True)
+    assert rows == [{"n": 2}]
+
+
+def test_negative_limit_rejected():
+    from prismor.runtime import cli
+    with pytest.raises(SystemExit):
+        cli.main(["query", "--limit", "-5", "select 1"])

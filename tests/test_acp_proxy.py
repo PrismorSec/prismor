@@ -513,3 +513,13 @@ def test_unadvertised_client_method_is_answered_not_forwarded(ws):
         assert ed.methods() == []
     finally:
         ed.close()
+
+
+def test_client_call_events_keep_windows_paths_as_given():
+    tool, ev = acp_proxy.client_call_event(
+        "fs/read_text_file", {"path": r"C:\Users\Me\.aws\credentials"})
+    assert (tool, ev) == ("Read", {"type": "file_read", "path": r"C:\Users\Me\.aws\credentials"})
+    tool, ev = acp_proxy.client_call_event(
+        "fs/write_text_file", {"path": r"C:\Windows\System32\evil.txt", "content": "x"})
+    assert tool == "Write" and ev["type"] == "file_write"
+    assert ev["path"] == r"C:\Windows\System32\evil.txt"

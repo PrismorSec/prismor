@@ -1078,3 +1078,9 @@ def test_replay_sessions_leave_the_provenance_store_alone(tmp_path):
         _fetch(ws, sid)
         _call(ws, sid, "Write", "file_write", path=str(note), content=handoff)
         assert (lookup(str(note)) is not None) is stamped, sid
+
+
+def test_windows_redirect_target_keeps_backslashes():
+    from prismor.runtime.provenance import shell_paths
+    _, writes = shell_paths(r"echo x > C:\work\evidence\proj\leak.txt")
+    assert any(w.endswith(r"C:\work\evidence\proj\leak.txt") for w in writes), writes

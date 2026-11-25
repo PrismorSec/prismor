@@ -9,7 +9,7 @@ Supported targets:
   .npmrc               npm / pnpm / bun
   .yarnrc              Yarn Classic
   .yarnrc.yml          Yarn Berry (2/3/4)
-  pip.conf             pip  (requires PIP_CONFIG_FILE=pip.conf or venv)
+  pip.conf / pip.ini   pip  (pip.ini on Windows; needs PIP_CONFIG_FILE or venv)
   .cargo/config.toml   Cargo / Rust
 """
 from __future__ import annotations
@@ -59,6 +59,10 @@ class HardeningResult:
     @property
     def any_changes(self) -> bool:
         return bool(self.applied)
+
+
+def _is_windows() -> bool:
+    return sys.platform == "win32"
 
 
 # ── String helpers ────────────────────────────────────────────────────────────
@@ -128,7 +132,7 @@ def _harden_npmrc(root: Path, dry_run: bool) -> Optional[HardeningResult]:
             applied.append(HardeningChange(key=key, value=value, reason=reason))
 
     if new_lines and not dry_run:
-        block = "# prismor harden\n" + "\n".join(new_lines)
+        block = "# prismor supplychain harden\n" + "\n".join(new_lines)
         path.write_text(_append_block(existing, block))
 
     notes: List[str] = []
@@ -170,7 +174,7 @@ def _harden_yarnrc_classic(root: Path, dry_run: bool) -> Optional[HardeningResul
             reason="blocks Yarn Classic lifecycle scripts",
         ))
         if not dry_run:
-            block = "# prismor harden\n--ignore-scripts true"
+            block = "# prismor supplychain harden\n--ignore-scripts true"
             path.write_text(_append_block(existing, block))
 
     return HardeningResult(
@@ -200,7 +204,7 @@ def _harden_yarnrc_yml(root: Path, dry_run: bool) -> Optional[HardeningResult]:
             reason="disables Yarn Berry lifecycle scripts (Berry's equivalent of npm ignore-scripts)",
         ))
         if not dry_run:
-            block = "# prismor harden\nenableScripts: false"
+            block = "# prismor supplychain harden\nenableScripts: false"
             path.write_text(_append_block(existing, block))
 
     return HardeningResult(
@@ -227,7 +231,12 @@ _PIPCONF_MANIFESTS = ("requirements.txt", "pyproject.toml", "setup.py", "setup.c
 
 def _harden_pip(root: Path, dry_run: bool) -> Optional[HardeningResult]:
     has_manifest = any((root / f).exists() for f in _PIPCONF_MANIFESTS)
-    path = root / "pip.conf"
+    # pip reads pip.ini on Windows and pip.conf elsewhere; keep whichever exists.
+    if (root / "pip.conf").exists():
+        name = "pip.conf"
+    else:
+        name = "pip.ini" if (root / "pip.ini").exists() or _is_windows() else "pip.conf"
+    path = root / name
     if not has_manifest and not path.exists():
         return None
 
@@ -245,13 +254,14 @@ def _harden_pip(root: Path, dry_run: bool) -> Optional[HardeningResult]:
             applied.append(HardeningChange(key=key, value=value, reason=reason))
 
     if new_lines and not dry_run:
-        block = "[global]\n# prismor harden\n" + "\n".join(new_lines)
+        block = "[global]\n# prismor supplychain harden\n" + "\n".join(new_lines)
         path.write_text(_append_block(existing, block))
 
+    activate = (f'$env:PIP_CONFIG_FILE = "{name}"' if _is_windows() else f"export PIP_CONFIG_FILE={name}")
     notes = [
-        "pip.conf is not auto-read from the project root. Activate with:"
-        "  export PIP_CONFIG_FILE=pip.conf"
-        "  (or copy to $VIRTUAL_ENV/pip.conf after creating a venv).",
+        f"{name} is not auto-read from the project root. Activate with:"
+        f"  {activate}"
+        f"  (or copy to $VIRTUAL_ENV/{name} after creating a venv).",
         "For stronger pip hardening, generate hashes (pip-compile --generate-hashes)"
         " and set require-hashes = true under [install] in pip.conf.",
     ]
@@ -296,7 +306,7 @@ def _harden_cargo(root: Path, dry_run: bool) -> Optional[HardeningResult]:
         if not dry_run:
             if not config_path.parent.exists():
                 config_path.parent.mkdir(parents=True, exist_ok=True)
-            block = "# prismor harden\n" + _CARGO_NET_BLOCK.rstrip()
+            block = "# prismor supplychain harden\n" + _CARGO_NET_BLOCK.rstrip()
             config_path.write_text(_append_block(existing, block))
 
     return HardeningResult(

@@ -19,6 +19,9 @@ from getpass import getpass
 from pathlib import Path
 from typing import Optional
 
+from prismor.runtime.cloaking.secrets_store import is_console
+from prismor.runtime.winutil import decode_bytes, restrict_to_current_user
+
 # ── Constants ───────────────────────────────────────────────────────────
 
 PRISMOR_HOME = Path(os.environ.get("PRISMOR_HOME", Path.home() / ".prismor"))
@@ -112,38 +115,70 @@ def err(msg: str) -> None:
     print(_c("[sweep]", _RED) + f" {msg}", file=sys.stderr)
 
 
-# ── Vault crypto (openssl CLI) ──────────────────────────────────────────
+# ── Vault crypto ────────────────────────────────────────────────────────
+# Native implementation of the `openssl enc -aes-256-cbc -pbkdf2 -salt` file
+# format ("Salted__" + 8-byte salt + CBC ciphertext; PBKDF2-HMAC-SHA256, 10000
+# iterations -> 32-byte key + 16-byte IV), so existing vaults stay readable and
+# no openssl binary or POSIX-only pass_fds is needed (Windows).
 
-def _openssl_with_pass(args: list, data: bytes, passphrase: str) -> subprocess.CompletedProcess:
-    """Run openssl with the passphrase on a pipe fd, never in argv (visible in ps)."""
-    r, w = os.pipe()
-    try:
-        os.write(w, passphrase.encode() + b"\n")
-    finally:
-        os.close(w)
-    try:
-        return subprocess.run(
-            ["openssl", *args, "-pass", f"fd:{r}"],
-            input=data, capture_output=True, pass_fds=(r,),
-        )
-    finally:
-        os.close(r)
+_OSSL_MAGIC = b"Salted__"
+_OSSL_ITER = 10000
+
+
+def _ossl_key_iv(passphrase: str, salt: bytes) -> tuple[bytes, bytes]:
+    import hashlib
+    d = hashlib.pbkdf2_hmac("sha256", passphrase.encode(), salt, _OSSL_ITER, 48)
+    return d[:32], d[32:]
 
 
 def _vault_encrypt(plaintext: bytes, passphrase: str) -> bytes:
-    """Encrypt bytes with AES-256-CBC + PBKDF2 via openssl."""
-    proc = _openssl_with_pass(["enc", "-aes-256-cbc", "-pbkdf2", "-salt"], plaintext, passphrase)
-    if proc.returncode != 0:
-        raise RuntimeError(f"openssl encrypt failed: {proc.stderr.decode()}")
-    return proc.stdout
+    """Encrypt bytes with AES-256-CBC + PBKDF2 (openssl enc compatible)."""
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    salt = os.urandom(8)
+    key, iv = _ossl_key_iv(passphrase, salt)
+    padder = padding.PKCS7(128).padder()
+    enc = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    ct = enc.update(padder.update(plaintext) + padder.finalize()) + enc.finalize()
+    return _OSSL_MAGIC + salt + ct
 
 
 def _vault_decrypt(ciphertext: bytes, passphrase: str) -> bytes:
-    """Decrypt AES-256-CBC + PBKDF2 via openssl."""
-    proc = _openssl_with_pass(["enc", "-d", "-aes-256-cbc", "-pbkdf2"], ciphertext, passphrase)
-    if proc.returncode != 0:
+    """Decrypt AES-256-CBC + PBKDF2 (openssl enc compatible)."""
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    try:
+        if ciphertext[:8] != _OSSL_MAGIC or (len(ciphertext) - 16) % 16:
+            raise ValueError("bad header")
+        key, iv = _ossl_key_iv(passphrase, ciphertext[8:16])
+        dec = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        padded = dec.update(ciphertext[16:]) + dec.finalize()
+        unp = padding.PKCS7(128).unpadder()
+        return unp.update(padded) + unp.finalize()
+    except Exception:
         raise RuntimeError("Wrong passphrase or corrupted vault.")
-    return proc.stdout
+
+
+def _read_text(filepath: str) -> str:
+    """Read a file BOM-aware (PowerShell writes UTF-16); remember its encoding."""
+    raw = Path(filepath).read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        _ENC[filepath] = "utf-16"
+    elif raw[:3] == b"\xef\xbb\xbf":
+        _ENC[filepath] = "utf-8-sig"
+    try:
+        return decode_bytes(raw, strict=True)
+    except UnicodeDecodeError:
+        return raw.decode("utf-8", errors="replace")
+
+
+_ENC: dict[str, str] = {}
+
+
+def _write_text(filepath: str, text: str) -> None:
+    # newline="" keeps the file's line endings; the original BOM/encoding is kept.
+    with open(filepath, "w", encoding=_ENC.get(filepath, "utf-8"), newline="") as fh:
+        fh.write(text)
 
 
 def _vault_exists() -> bool:
@@ -168,14 +203,19 @@ def _write_vault(entries: list[dict], passphrase: str) -> None:
     PRISMOR_HOME.mkdir(parents=True, exist_ok=True)
     plaintext = json.dumps(entries, indent=2).encode()
     ciphertext = _vault_encrypt(plaintext, passphrase)
-    VAULT_PATH.write_bytes(ciphertext)
+    if _vault_decrypt(ciphertext, passphrase) != plaintext:
+        raise RuntimeError("vault self-check failed; nothing written")
+    tmp = VAULT_PATH.with_name(VAULT_PATH.name + ".tmp")
+    tmp.write_bytes(ciphertext)
+    os.replace(tmp, VAULT_PATH)
+    restrict_to_current_user(PRISMOR_HOME)
     # Mark vault as initialized
     VAULT_SALT_PATH.touch()
 
 
 def _prompt_passphrase(confirm: bool = False) -> str:
     """Prompt user for vault passphrase. If confirm=True, ask twice (new vault)."""
-    if not sys.stdin.isatty():
+    if not is_console(sys.stdin):
         env_pass = os.environ.get("PRISMOR_SWEEP_PASS")
         if env_pass:
             return env_pass
@@ -311,23 +351,22 @@ def _fallback_scan(directory: Path) -> list[dict]:
                 continue
             filepath = os.path.join(root, filename)
             try:
-                with open(filepath, 'r', encoding='utf-8', errors='replace') as fh:
-                    for lineno, line in enumerate(fh, 1):
-                        for rule_id, pattern in _FALLBACK_PATTERNS:
-                            m = pattern.search(line)
-                            if not m:
-                                continue
-                            secret = m.group(1) if m.lastindex else m.group(0)
-                            findings.append({
-                                "File": filepath,
-                                "RuleID": rule_id,
-                                "Secret": secret,
-                                "StartLine": lineno,
-                                "StartColumn": m.start(),
-                                "EndColumn": m.end(),
-                                "Match": line.strip()[:200],
-                                "Description": "basic-mode finding (gitleaks not installed)",
-                            })
+                for lineno, line in enumerate(_read_text(filepath).splitlines(), 1):
+                    for rule_id, pattern in _FALLBACK_PATTERNS:
+                        m = pattern.search(line)
+                        if not m:
+                            continue
+                        secret = m.group(1) if m.lastindex else m.group(0)
+                        findings.append({
+                            "File": filepath,
+                            "RuleID": rule_id,
+                            "Secret": secret,
+                            "StartLine": lineno,
+                            "StartColumn": m.start(),
+                            "EndColumn": m.end(),
+                            "Match": line.strip()[:200],
+                            "Description": "basic-mode finding (gitleaks not installed)",
+                        })
             except (OSError, PermissionError):
                 pass
 
@@ -469,6 +508,7 @@ def redact(findings: list[dict], passphrase: str, purge: bool = False) -> int:
         vault_entries = _read_vault(passphrase) if _vault_exists() else []
 
     redacted_count = 0
+    pending: list[tuple[str, str, int]] = []
     now = datetime.now(timezone.utc).isoformat()
 
     # Group findings by file for efficient processing
@@ -481,7 +521,7 @@ def redact(findings: list[dict], passphrase: str, purge: bool = False) -> int:
             continue
 
         try:
-            content = Path(filepath).read_text(errors="replace", encoding="utf-8")
+            content = _read_text(filepath)
         except (OSError, PermissionError) as e:
             warn(f"Cannot read {filepath}: {e}")
             continue
@@ -514,19 +554,27 @@ def redact(findings: list[dict], passphrase: str, purge: bool = False) -> int:
             modified = modified.replace(secret, mask)
             redacted_count += 1
 
-        # Write back
         if modified != content:
-            try:
-                Path(filepath).write_text(modified, encoding="utf-8")
-                short = filepath.replace(str(Path.home()), "~")
-                count = len(file_findings)
-                print(f"  {_c('✓', _GREEN)} Redacted {count} secret(s) in {_c(short, _DIM)}")
-            except (OSError, PermissionError) as e:
-                warn(f"Cannot write {filepath}: {e}")
+            pending.append((filepath, modified, len(file_findings)))
 
-    # Save vault
+    # Write and verify the vault BEFORE touching any file: a failure here must
+    # leave every secret where it is (the vault is the only copy afterwards).
     if not purge and redacted_count > 0:
-        _write_vault(vault_entries, passphrase)
+        try:
+            _write_vault(vault_entries, passphrase)
+        except Exception as e:
+            err(f"Could not write the vault ({e}). No files were modified.")
+            raise SystemExit(1)
+
+    for filepath, modified, count in pending:
+        try:
+            _write_text(filepath, modified)
+            short = filepath.replace(str(Path.home()), "~")
+            print(f"  {_c('✓', _GREEN)} Redacted {count} secret(s) in {_c(short, _DIM)}")
+        except (OSError, PermissionError) as e:
+            warn(f"Cannot write {filepath}: {e}")
+
+    if not purge and redacted_count > 0:
         ok(f"Vault updated: {len(vault_entries)} total entries")
         short_vault = str(VAULT_PATH).replace(str(Path.home()), "~")
         print(f"  {_c(short_vault, _DIM)}")
@@ -575,7 +623,7 @@ def restore(passphrase: str, target_file: Optional[str] = None, all_entries: boo
             continue
 
         try:
-            content = Path(filepath).read_text(errors="replace", encoding="utf-8")
+            content = _read_text(filepath)
         except (OSError, PermissionError):
             continue
 
@@ -584,7 +632,7 @@ def restore(passphrase: str, target_file: Optional[str] = None, all_entries: boo
 
         if mask in content:
             content = content.replace(mask, secret, 1)
-            Path(filepath).write_text(content, encoding="utf-8")
+            _write_text(filepath, content)
             short = filepath.replace(str(Path.home()), "~")
             print(f"  {_c('✓', _GREEN)} Restored {entry['rule']} in {_c(short, _DIM)}:{entry['line']}")
             restored += 1
@@ -628,6 +676,12 @@ def clean(findings: list[dict], passphrase: str) -> int:
                 "action": "deleted",
             })
 
+    try:  # vault first: the file is the only other copy of the secret
+        _write_vault(vault_entries, passphrase)
+    except Exception as e:
+        err(f"Could not write the vault ({e}). Nothing was deleted.")
+        raise SystemExit(1)
+
     deleted = 0
     for filepath in files:
         try:
@@ -639,7 +693,6 @@ def clean(findings: list[dict], passphrase: str) -> int:
             warn(f"Cannot delete {filepath}: {e}")
 
     if deleted:
-        _write_vault(vault_entries, passphrase)
         ok(f"Deleted {deleted} file(s). Secrets saved to vault before deletion.")
 
     return deleted

@@ -1562,6 +1562,16 @@ def _write_selection_policy(target: Path, selected: List[str], scope: str) -> No
         user_policy.write_text(text, encoding="utf-8")
 
 
+def _global_hook_covers(target: Path, agent: str, mode: str) -> bool:
+    """True when ``agent`` already has a global Prismor hook in ``mode``."""
+    try:
+        from prismor.runtime.hooks import hook_health
+        return any(c["agent"] == agent and c["scope"] == "global" and c["configured"]
+                   and c.get("mode") == mode for c in hook_health(target))
+    except Exception:
+        return False
+
+
 def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], cloak: bool = False, scope: str = "project", mirror_agents: Optional[List[str]] = None, gov_mode: Optional[str] = None, judge: tuple = ("", "")) -> None:
     _STEP_FAILURES.clear()
     if not _PLAIN:
@@ -1700,6 +1710,9 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
     for agent in agents:
         def _install_hook(a: str = agent):
             try:
+                if scope == "project" and a == "codex" and _global_hook_covers(target, a, mode):
+                    # A second copy would run every hook twice (Codex shows each line twice).
+                    return True, "already hooked globally, not installing a second copy"
                 results = install_hooks(
                     repo_root=_REPO_ROOT,
                     workspace=target,
@@ -1720,6 +1733,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
         # Codex runs nothing until the human trusts the hooks; installed is not screened.
         from prismor.runtime.cli import codex_trust_line
         _line = codex_trust_line(target)
+        if _line:
+            print(f"  {_w(_line, YEL)}")
+            print()
+
+    if "copilot" in agents:
+        from prismor.runtime.cli import copilot_trust_line
+        _line = copilot_trust_line(target)
         if _line:
             print(f"  {_w(_line, YEL)}")
             print()
@@ -1846,8 +1866,18 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             print(f"  {_w('Blocking:', YEL)}  {_w('none — enforce is on but no rules are opted in, so nothing is stopped yet.', YEL)}")
             print(f"             {_w('Add them: prismor setup --mode enforce --recommended', DIM)}")
     if "codex" in agents:
-        _info("Codex",  "hooks run only after you trust them — accept the hook-trust prompt in the Codex TUI once,")
-        print(f"          {_w('or pass --dangerously-bypass-hook-trust to `codex exec` for headless runs', DIM)}")
+        # Only say "accept the prompt" when Codex has not already trusted the
+        # hooks setup just wrote (it records their hashes in config.toml).
+        try:
+            from prismor.runtime.hooks import codex_hook_trust
+            _codex_untrusted = codex_hook_trust(target)["status"] == "untrusted"
+        except Exception:
+            _codex_untrusted = True
+        if _codex_untrusted:
+            _info("Codex",  "hooks run only after you trust them — accept the hook-trust prompt in the Codex TUI once,")
+            print(f"          {_w('or pass --dangerously-bypass-hook-trust to `codex exec` for headless runs', DIM)}")
+        else:
+            _info("Codex",  "hooks are trusted and will run")
     if "codex" in agents and _chatgpt_app():
         _info("ChatGPT", "the app's Codex and Cowork modes run on these Codex hooks; chat itself runs on")
         _chat_note = "OpenAI's servers (Enterprise: prismor chatgpt-logs sync, see docs/chatgpt.md)"

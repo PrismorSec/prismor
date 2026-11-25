@@ -37,7 +37,10 @@ STASH_DIR="${PRISMOR_PROMPT_STASH_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/prompt_st
 # unrelated later conversation. Seconds; overridable for tests.
 STASH_TTL="${PRISMOR_PROMPT_STASH_TTL:-1800}"
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then   # fail closed
+  printf '{"decision":"block","reason":"Prismor cloaking requires jq and it is not on PATH, so this prompt was blocked. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux)."}\n'
+  exit 0
+fi
 
 input="$(cat)"
 prompt="$(printf '%s' "$input" | jq -r '.prompt // empty')"
@@ -139,11 +142,7 @@ prismor_load_patterns
 scan_text="$(printf '%s' "$prompt" | sed 's/@@SECRET:[^@]*@@//g')"
 
 # Collect unique matches across all patterns.
-matches="$(
-  for pat in "${PATTERNS[@]}"; do
-    printf '%s' "$scan_text" | grep -oE "$pat" || true
-  done | awk 'NF && !seen[$0]++'
-)"
+matches="$(prismor_find_matches "$scan_text")"
 
 # Clean prompt: pass through, reloading any stashed sanitized prompt first.
 [[ -n "$matches" ]] || { prismor_emit_stash_context; exit 0; }
@@ -156,7 +155,10 @@ while IFS= read -r real_value; do
 
   # Deterministic placeholder name from value hash (first 8 hex chars).
   # Same value → same placeholder across sessions (no duplicate registration).
-  hash="$(printf '%s' "$real_value" | shasum -a 256 | awk '{print $1}' | cut -c1-8)"
+  hash="$(prismor_sha8 "$real_value")" || {
+    jq -n '{decision: "block", reason: "Prismor cloaking: a secret was detected in your prompt but no sha256 tool (sha256sum, shasum, openssl, python) is available to vault it, so the prompt was blocked. Install one and resubmit."}'
+    exit 0
+  }
   placeholder_name="auto_${hash}"
   placeholder="@@SECRET:${placeholder_name}@@"
   secret_file="$SECRETS_DIR/$placeholder_name"

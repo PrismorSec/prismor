@@ -219,6 +219,18 @@ def session_calls(session_id: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]
         conn.close()
 
 
+def default_session_id(sessions: List[Dict[str, Any]]) -> Optional[str]:
+    """The session to act on when none is named: the newest live one with
+    calls; failing that the newest live one, else the newest of any kind (a
+    `replay:` run is a policy test and says nothing about real work)."""
+    ids = [s["sessionId"] for s in sessions]
+    live = [i for i in ids if not i.startswith("replay:")]
+    for sid in live[:20]:
+        if session_calls(sid)[0]:
+            return sid
+    return (live or ids or [None])[0]
+
+
 def _tokens_between(session_id: str, start: str, end: str) -> int:
     conn = _db()
     if conn is None:

@@ -44,7 +44,8 @@ def _fail(exc, payload, agent):
 
 def run():
     agent = sys.argv[sys.argv.index("--agent") + 1] if "--agent" in sys.argv[:-1] else ""
-    data = sys.stdin.read()
+    raw = getattr(sys.stdin, "buffer", None)  # UTF-8, never the locale codec
+    data = raw.read().decode("utf-8-sig", errors="replace") if raw else sys.stdin.read()
     try:
         payload = json.loads(data or "{}")
     except ValueError:

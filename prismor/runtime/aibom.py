@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -136,7 +137,8 @@ def to_cyclonedx(inv: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict
             "type": "application", "bom-ref": ref, "name": s["name"],
             "properties": _props(
                 kind="mcp_server", transport=s.get("transport"), remote=s.get("remote"),
-                governed=bool(s.get("managed")), gateway=s.get("is_gateway"), risk=s.get("risk"),
+                governed=bool(s.get("managed")), gateway=s.get("is_gateway"),
+                risk=s.get("schema_risk", s.get("risk")),
                 config=_rel(s.get("source")), command=" ".join(redact_command(s.get("command") or [])),
                 status=led.get("status"), findings=len(s.get("findings") or []) or None),
         }
@@ -250,7 +252,12 @@ def run(workspace: Path, *, fmt: str = "cyclonedx", output: Optional[str] = None
     bom = to_cyclonedx(collect(workspace))
     text = to_markdown(bom) if fmt == "markdown" else json.dumps(bom, indent=2)
     if output:
-        Path(output).write_text(text + "\n", encoding="utf-8")
+        try:
+            Path(output).parent.mkdir(parents=True, exist_ok=True)
+            Path(output).write_text(text + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"prismor aibom: cannot write {output}: {exc}", file=sys.stderr)
+            return 1
         n = len(bom["components"])
         print(f"Wrote {n} components to {output}")
     else:

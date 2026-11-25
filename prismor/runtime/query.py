@@ -124,7 +124,8 @@ def _install_redacted_views(conn: sqlite3.Connection, redact: Any) -> None:
 
     def authorize(action, arg1, arg2, db, view):
         # A read of a real table must come from one of the views above.
-        if action == sqlite3.SQLITE_READ and db == "main" and view is None and arg1 in wrapped:
+        # An empty column name is count(*)/count(1): it reads no cell values.
+        if action == sqlite3.SQLITE_READ and db == "main" and view is None and arg1 in wrapped and arg2:
             return sqlite3.SQLITE_DENY
         return sqlite3.SQLITE_OK
     conn.set_authorizer(authorize)

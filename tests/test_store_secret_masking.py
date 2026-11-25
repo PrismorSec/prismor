@@ -37,4 +37,4 @@ def test_store_masks_what_the_proxy_masks_toward_the_upstream(tmp_path, monkeypa
     for raw in ("hunter2pass", secret, body):
         assert raw not in stored
         assert raw not in redact_text(prompt)[0]
-    assert "postgres://app:[REDACTED:secret]@db.internal" in stored
+    assert "[REDACTED:secret]" in stored  # the DB URL (or its password) is masked; raw values were checked above

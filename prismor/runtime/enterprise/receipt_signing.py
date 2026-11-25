@@ -117,6 +117,8 @@ def _load_or_create_key() -> Any:
             tmp.chmod(0o600)
         except (PermissionError, OSError):
             pass
+        from prismor.runtime.winutil import restrict_to_current_user
+        restrict_to_current_user(tmp)  # Windows: chmod does not drop inherited ACLs
         tmp.replace(path)
         _CACHED_KEY = key
         return key

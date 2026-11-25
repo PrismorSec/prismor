@@ -11,7 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
+from prismor.runtime.winutil import norm_eol
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,16 +87,26 @@ def _current_commit(repo_root: Path) -> Optional[str]:
 # ── Core functions ────────────────────────────────────────────────────────
 
 
-def compute_file_hash(path: Path) -> str:
-    """SHA-256 hex digest of the full file bytes.
+def compute_file_hash(path: Path, normalize: bool = True) -> str:
+    """SHA-256 hex digest of the file bytes (CRLF normalised to LF).
 
-    Returns an empty string on any error — the caller treats this as
-    ``unable_to_verify`` rather than crashing the session.
+    ``normalize=False`` gives the raw-bytes digest older baselines stored;
+    comparisons accept either. Returns an empty string on any error — the
+    caller treats this as ``unable_to_verify`` rather than crashing.
     """
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        data = path.read_bytes()
+        return hashlib.sha256(norm_eol(data) if normalize else data).hexdigest()
     except Exception:
         return ""
+
+
+def hash_hint(path: Path) -> str:
+    """The shell command that prints this file's SHA-256 on this OS."""
+    if os.name == "nt":
+        return f'Get-FileHash -Algorithm SHA256 "{path}"'
+    import shutil
+    return f"sha256sum {path}" if shutil.which("sha256sum") else f"shasum -a 256 {path}"
 
 
 def load_trust_store(workspace: Path) -> dict:
@@ -207,7 +219,7 @@ def _classify_change(
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             show = None
         if show and show.returncode == 0:
-            committed_hash = hashlib.sha256(show.stdout).hexdigest()
+            committed_hash = hashlib.sha256(norm_eol(show.stdout)).hexdigest()
             if committed_hash == current_hash:
                 commit_sha = _current_commit(repo_root) or "HEAD"
                 return (
@@ -252,6 +264,7 @@ def verify_memory_files(
     reads: List[Any],
     workspace: Path,
     session_log_dir: Optional[Path] = None,
+    record: bool = True,
 ) -> List[dict]:
     """Core integrity check for auto-loaded instruction files.
 
@@ -259,7 +272,9 @@ def verify_memory_files(
     ``MemoryRead``-like objects):
 
     1. Compute SHA-256 if not already provided.
-    2. If first-seen → TOFU: record baseline, mode=trusted, no finding.
+    2. If first-seen → TOFU: record baseline, mode=trusted, no finding
+       (``record=False`` is the read-only mode: nothing is written, and a
+       never-trusted file is reported as having no baseline).
     3. If hash matches trust store → no finding.
     4. If mismatch → classify change origin, emit a ``memory_integrity`` finding.
 
@@ -322,6 +337,17 @@ def verify_memory_files(
 
         stored = store["files"].get(str(file_path))
 
+        if stored is None and not record:
+            findings.append({
+                "ruleId": "memory-integrity-mismatch",
+                "severity": "LOW",
+                "category": "memory_integrity",
+                "title": f"{file_path.name} has no trust baseline — run `prismor memory trust {file_path}` after reviewing it",
+                "evidence": {"path": str(file_path), "origin": "no_baseline"},
+                "action": "warn",
+            })
+            continue
+
         if stored is None:
             # ── TOFU: first time seeing this file ──────────────────
             now = datetime.now(timezone.utc).isoformat()
@@ -345,12 +371,12 @@ def verify_memory_files(
                 f"recording baseline sha256:{short_hash}... [trusted]\n"
             )
             sys.stderr.write(
-                f"         verify out-of-band: md5sum {file_path}\n"
+                f"         verify out-of-band: {hash_hint(file_path)}\n"
             )
             continue
 
-        if stored.get("sha256") == final_hash:
-            # Match — no finding.
+        if stored.get("sha256") in (final_hash, compute_file_hash(file_path, False)):
+            # Match (normalised or legacy raw-bytes hash) — no finding.
             continue
 
         # ── Hash mismatch — classify the change origin ──────────────
@@ -358,6 +384,9 @@ def verify_memory_files(
             file_path, final_hash, stored, session_log_dir
         )
 
+        if stored.get("mode") == "signed":
+            # A signed file changing is a tamper, whatever git says about it.
+            severity, message = "HIGH", f"signed file {message}"
         findings.append({
             "ruleId": "memory-integrity-mismatch",
             "severity": severity,
@@ -504,3 +533,45 @@ def format_trust_status(workspace: Path) -> str:
     if store["signing"].get("enabled"):
         lines.append("  Signed mode: enabled")
     return "\n".join(lines)
+
+
+# ── Content scan (prismor memory scan) ────────────────────────────────────
+
+_B64_RUN_RE = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{80,}={0,2}(?![A-Za-z0-9+/=])")
+
+
+def _base64_text_blocks(text: str) -> List[str]:
+    """Long base64 runs that decode to mostly printable text (a hidden
+    payload). Binary blobs, hashes and data: URIs are not reported."""
+    import base64
+    out = []
+    for m in _B64_RUN_RE.finditer(text):
+        if text[max(0, m.start() - 8):m.start()].endswith("base64,"):
+            continue
+        run = m.group(0)
+        try:
+            raw = base64.b64decode(run + "=" * (-len(run) % 4), validate=True)
+        except Exception:
+            continue
+        if len(raw) >= 40 and sum(32 <= b < 127 or b in (9, 10, 13) for b in raw) / len(raw) >= 0.9:
+            out.append(raw[:60].decode("ascii", "replace"))
+    return out
+
+
+def scan_memory_text(engine: Any, path: str, text: str) -> List[dict]:
+    """Findings for one instruction file's decoded text, the way SessionStart
+    screens it (a ``memory`` event) plus the structural checks the hook feeds
+    in as facts: invisible/bidi/tag characters and base64 payload blocks."""
+    from prismor.runtime.hooks import strip_prismor_managed, _INVISIBLE_CONTROL_RE
+    findings = engine.evaluate(
+        {"type": "memory", "path": path, "content": strip_prismor_managed(text),
+         "metadata": {"has_invisible_controls": bool(_INVISIBLE_CONTROL_RE.search(text))}}, 0)
+    seen = {g.get("ruleId") for g in findings}
+    findings += [f for f in engine.check_text(text) if f.get("ruleId") not in seen]
+    for preview in _base64_text_blocks(text)[:3]:
+        findings.append({
+            "ruleId": "memory-encoded-payload", "severity": "MEDIUM", "category": "memory_poisoning",
+            "title": "Instruction file contains a base64 block that decodes to text (possible hidden payload)",
+            "evidence": f"decodes to: {preview!r}", "action": "warn",
+        })
+    return findings

@@ -93,9 +93,11 @@ def run_client():
     if os.environ.get("PRISMOR_HOOKD") != "1" or not hasattr(os, "fork") or sys.argv[1:2] != ["hook-dispatch"]:
         return None
     import io
-    enc, errs = getattr(sys.stdin, "encoding", None) or "utf-8", getattr(sys.stdin, "errors", None) or "strict"
+    enc, errs = "utf-8", "replace"  # never the locale codec (cp1252 on Windows)
     if hasattr(sys.stdin, "buffer"):
         data = sys.stdin.buffer.read()
+        if data.startswith(b"\xef\xbb\xbf"):
+            data = data[3:]
         # The in-process fallback reads the same bytes, decoded as it would have.
         sys.stdin = io.TextIOWrapper(io.BytesIO(data), encoding=enc, errors=errs, newline="\n")
     else:  # already text (scripts/dev-hook.py hands over a StringIO)

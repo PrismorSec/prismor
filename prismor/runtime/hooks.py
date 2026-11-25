@@ -2095,7 +2095,8 @@ def plugin_load_warning(agent: str, scope: str, workspace: Path, plugin: str = _
             if row is None:
                 return "Hermes does not list the Prismor plugin (hermes plugins list)."
             if row[0] != "enabled":
-                return f"Hermes lists the Prismor plugin as {row[0]}; run: hermes plugins enable {plugin}"
+                state = "not enabled" if row[0] == "not" else row[0]
+                return f"Hermes lists the Prismor plugin as {state}; run: hermes plugins enable {plugin}"
     if agent == "opencode" and shutil.which("opencode"):
         return _opencode_plugin_load_warning(scope, workspace)
     return None
@@ -3115,12 +3116,26 @@ def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: Notepad and PowerShell 5.1 `Set-Content -Encoding UTF8` write a BOM.
+        text = path.read_text(encoding="utf-8-sig")
     except (ValueError, OSError) as exc:
+        raise HookConfigError(f"{path} could not be read: {exc}") from exc
+    if not text.strip():
+        return {}  # an empty file holds nothing to lose
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
         # Never fall back to {}: this value is merged and written straight back
         # out, so an unparseable config would be silently replaced by one
         # containing nothing but Prismor's own hook.
         raise HookConfigError(f"{path} is not valid JSON: {exc}") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise HookConfigError(f"{path} must hold a JSON object, not {type(data).__name__}")
+    if "hooks" in data and data["hooks"] is None:
+        data = {k: v for k, v in data.items() if k != "hooks"}  # `"hooks": null` means none
+    return data
 
 
 # ── MCP tool-call classification ─────────────────────────────────────────────

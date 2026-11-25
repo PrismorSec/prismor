@@ -353,14 +353,16 @@ def format_iam_profile_box(agent_id: str, profile: Dict[str, Any]) -> str:
     max_width = max(len(line) for line in content_lines) + 4
     border = max_width + 2
 
+    # Colour only on a terminal (and never with NO_COLOR): piped output is text.
+    cyan, nc = (_CYAN, _NC) if (sys.stdout.isatty() and not os.environ.get("NO_COLOR")) else ("", "")
     lines = []
     header = " Prismor IAM — active agent policy "
     pad = border - 2 - len(header)
-    lines.append(f"{_CYAN}┌─{header}" + "─" * pad + f"┐{_NC}")
+    lines.append(f"{cyan}┌─{header}" + "─" * pad + f"┐{nc}")
     for cl in content_lines:
         padding = border - 2 - len(cl)
-        lines.append(f"{_CYAN}│{_NC}{cl}" + " " * padding + f"{_CYAN}│{_NC}")
-    lines.append(f"{_CYAN}└" + "─" * border + f"┘{_NC}")
+        lines.append(f"{cyan}│{nc}{cl}" + " " * padding + f"{cyan}│{nc}")
+    lines.append(f"{cyan}└" + "─" * border + f"┘{nc}")
     return "\n".join(lines)
 
 

@@ -92,7 +92,7 @@ def _claude_settings_path(workspace: Path, scope: str) -> Path:
 def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _write_json(path: Path, data: Dict[str, Any]) -> None:

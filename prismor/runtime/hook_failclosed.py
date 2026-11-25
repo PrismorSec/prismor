@@ -30,7 +30,8 @@ def handle_crash(rest: List[str], crash: BaseException, data: Optional[str] = No
     """
     if data is None:
         try:
-            data = sys.stdin.read()
+            raw = getattr(sys.stdin, "buffer", None)
+            data = raw.read().decode("utf-8-sig", errors="replace") if raw else sys.stdin.read()
         except Exception:
             data = ""
     try:

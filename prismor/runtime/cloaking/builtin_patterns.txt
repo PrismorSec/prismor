@@ -85,6 +85,17 @@ ntn_[0-9]{11}[A-Za-z0-9]{35}
 PMAK-[a-f0-9]{24}-[a-f0-9]{34}
 ATATT3[A-Za-z0-9_=-]{100,}
 
+# --- Private keys, DB URLs, cloud keys ---
+# PEM: header plus the start of the base64 body (the hooks flatten newlines to
+# spaces first). A bare header with no body, as in docs or detector source, does not match.
+-----BEGIN ([A-Z0-9]+ )*PRIVATE KEY-----.{0,4}[A-Za-z0-9+/=]{40,}
+# DB URLs with a password. The hooks skip placeholder passwords (password, changeme, <pw>, ${PW}).
+(postgres(ql)?|mysql|mariadb|mongodb(\+srv)?|rediss?|amqps?)://[^:/@ '"]+:[^@/ '"]{3,}@[^ '"]+
+pk_live_[0-9a-zA-Z]{24,}
+AccountKey=[A-Za-z0-9+/]{86}==
+SharedAccessKey=[A-Za-z0-9+/]{43}=
+[A-Za-z0-9_~.-]{3}[78]Q~[A-Za-z0-9_~.-]{31,34}
+
 # --- Core (original set) ---
 sk_live_[0-9a-zA-Z]{16,}
 sk_test_[0-9a-zA-Z]{16,}

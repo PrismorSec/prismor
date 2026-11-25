@@ -13,6 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prismor.runtime.policy_engine import PolicyEngine
 
 HITS = {
+    "git-reset-hard": [
+        "git reset --hard",
+        "git reset --hard HEAD~3",
+        "git reset HEAD~1 --hard",
+        "cd repo && git reset --hard origin/main",
+        'git -C "my repo" reset --hard',
+    ],
     "git-branch-force-delete": [
         "git branch -D topic",
         'git -C "my repo" branch --delete topic --force',
@@ -115,6 +122,10 @@ HITS = {
 }
 
 MISSES = {
+    "git-reset-hard": [
+        "git reset --soft HEAD~1", "git reset HEAD file.txt", "git reset --mixed",
+        'git commit -m "never git reset --hard"', "git status", "git reset --hard-ish",
+    ],
     "git-branch-force-delete": [
         "git branch -d topic", "git branch --delete topic",
         "git branch --list", "git branch --list -- -D",

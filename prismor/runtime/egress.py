@@ -171,6 +171,22 @@ def _resolution_enabled() -> bool:
 
 # ── Destinations ──────────────────────────────────────────────────────────────
 
+_DOC_NETS = tuple(ipaddress.ip_network(n) for n in (
+    "2001:db8::/32", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24"))
+
+
+def _idna(host: str) -> str:
+    """ASCII (punycode) form of a hostname, so ``bücher.example`` and
+    ``xn--bcher-kva.example`` are one destination. Unencodable input is kept."""
+    host = host.lower().strip(".")
+    if host.isascii():
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
 class Destination:
     """One outbound destination extracted from an event."""
 
@@ -184,7 +200,7 @@ class Destination:
         origin: str = "",
         evidence: str = "",
     ) -> None:
-        self.host = host.lower().strip(".")
+        self.host = _idna(host)
         self.port = port
         self.scheme = (scheme or "").lower()
         self.origin = origin          # how we found it: "url", "ssh", "raw", …
@@ -256,6 +272,11 @@ class Destination:
             return False
         ip = self.ip
         if ip is not None:
+            # Python files the documentation ranges under "private", but they
+            # are not internal networks: a test or a typo'd literal in one must
+            # still be screened like any other public address.
+            if any(ip in net for net in _DOC_NETS if net.version == ip.version):
+                return False
             return bool(
                 ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
             )
@@ -277,7 +298,7 @@ class Destination:
 _URL_RE = re.compile(
     r'\b([a-zA-Z][a-zA-Z0-9+.\-]{1,15})://'
     r'(?:[^\s/@"\']*@)?'
-    r'(\[[0-9A-Fa-f:]+\]|[A-Za-z0-9._\-]+)'
+    r'(\[[0-9A-Fa-f:]+\]|[\w.\-]+)'
     r'(?::(\d{1,5}))?'
 )
 
@@ -314,6 +335,17 @@ _GIT_LOCAL_SUBCOMMANDS = frozenset({
     "config", "commit", "log", "blame", "shortlog", "tag", "notes", "var",
 })
 
+# \\host\share (also \\host@SSL\DavWWWRoot): SMB/WebDAV, a connection out.
+_UNC_RE = re.compile(r'(?<![\w\\])\\\\([\w.\-]+)(?:@(?:SSL|\d+))*(?=\\)')
+# PowerShell/Windows cmdlets that take a destination host (positionally or by
+# one of these parameters) and an optional port.
+_PS_HOST_CMDS = frozenset({
+    "test-netconnection", "tnc", "test-connection", "resolve-dnsname",
+    "enter-pssession", "new-pssession", "invoke-command",
+})
+_PS_HOST_PARAMS = frozenset({"-computername", "-cn", "-name", "-targetname", "-remotehost"})
+_PS_PORT_PARAMS = frozenset({"-port", "-remoteport"})
+
 _IPV4_RE = re.compile(r'^\d{1,3}(?:\.\d{1,3}){3}$')
 _HOSTNAME_RE = re.compile(r'^[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?'
                           r'(\.[A-Za-z0-9]([A-Za-z0-9\-]*[A-Za-z0-9])?)*$')
@@ -339,7 +371,7 @@ def _looks_like_host(token: str) -> bool:
     """Conservative hostname test for a bare (schemeless) shell token."""
     if not token or token.startswith("-"):
         return False
-    token = token.strip('"\'')
+    token = _idna(token.strip('"\''))
     if _IPV4_RE.match(token):
         return all(0 <= int(o) <= 255 for o in token.split("."))
     if token in ("localhost",):
@@ -561,6 +593,13 @@ def extract_destinations(event: Dict[str, Any]) -> List[Destination]:
     _scan_url_text(reachable, seen, command)
 
     for sub in _SHELL_SEP_RE.split(body_free):
+        # UNC paths first: shlex would eat their backslashes.
+        if "\\\\" in sub:
+            first = sub.split(None, 1)[0].rsplit("/", 1)[-1].lower() if sub.strip() else ""
+            if first not in _NO_DESTINATION_CMDS:
+                for m in _UNC_RE.finditer(sub):
+                    if _looks_like_host(m.group(1)):
+                        _add(seen, Destination(m.group(1), 445, "smb", "unc", sub))
         tokens = _tokenize(sub)
         while tokens and _ENV_ASSIGN_RE.match(tokens[0]):
             tokens.pop(0)
@@ -614,6 +653,24 @@ def extract_destinations(event: Dict[str, Any]) -> List[Destination]:
                     _add(seen, Destination(head, 22, "ssh", "ssh-cmd", sub))
                 elif argv0 in ("ssh", "mosh", "autossh") and _looks_like_host(tok):
                     _add(seen, Destination(tok, 22, "ssh", "ssh-cmd", sub))
+        elif argv0 in _PS_HOST_CMDS:
+            ps_host: Optional[str] = None
+            ps_port: Optional[int] = None
+            it = iter(args)
+            for tok in it:
+                low = tok.lower().split(":", 1)[0] if tok.startswith("-") else ""
+                if low in _PS_HOST_PARAMS or low in _PS_PORT_PARAMS:
+                    val = tok.split(":", 1)[1] if ":" in tok else next(it, "")
+                    if low in _PS_PORT_PARAMS:
+                        ps_port = int(val) if val.isdigit() else ps_port
+                    else:
+                        ps_host = val
+                elif not tok.startswith("-") and ps_host is None:
+                    ps_host = tok
+            if ps_host:
+                h, p = _split_host_port(ps_host.split(",")[0])
+                if _looks_like_host(h):
+                    _add(seen, Destination(h, ps_port or p, "", "ps-cmd", sub))
         elif argv0 in _HOSTPORT_CMDS:
             positional = [t for t in args if not t.startswith("-")]
             for i, tok in enumerate(positional):
@@ -655,10 +712,10 @@ class EgressEntry:
         self.any_host = host == "*"
         self.wildcard_suffix: Optional[str] = None
         self.network: Optional[Any] = None
-        self.host = host.lower()
+        self.host = _idna(host) if "/" not in host else host.lower()
 
         if host.startswith("*."):
-            self.wildcard_suffix = host[2:].lower()
+            self.wildcard_suffix = _idna(host[2:])
         elif "/" in host:
             try:
                 self.network = ipaddress.ip_network(host, strict=False)

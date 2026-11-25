@@ -56,6 +56,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import contextlib
 import io
@@ -99,7 +100,7 @@ except ImportError:
     sys.exit(1)
 
 from prismor.runtime.feed import load_feed, match_advisories
-from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
+from prismor.runtime.hooks import _SUPPORTED_AGENTS, HookConfigError, install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, drop_post_twin_findings, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.tui_format import safe_text
@@ -269,18 +270,24 @@ def _run_skills(args) -> None:
     """Dispatch ``prismor skills {audit,approve}``."""
     from prismor.runtime.skills_audit import audit_skills, approve_skill, format_audit
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "skills_subcommand", None) or "audit"
     if sub == "approve":
-        entry = approve_skill(workspace, Path(args.file))
-        print(f"approved: {args.file} — baseline {entry['sha256'][:12]}…")
+        from prismor.runtime.skills_audit import resolve_skill
+        try:
+            target = resolve_skill(workspace, args.file)
+            entry = approve_skill(workspace, target)
+        except OSError as exc:
+            print(f"prismor skills approve: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"approved: {target} — baseline {entry['sha256'][:12]}…")
         return
     rows = audit_skills(workspace, record=True)
     if getattr(args, "json", False):
         print(json.dumps(rows, indent=2))
     else:
         print(format_audit(rows))
-    if any(r["status"] == "changed" or r["findings"] for r in rows):
+    if any(r["status"] in ("changed", "new") or r["findings"] for r in rows):
         raise SystemExit(1)
 
 
@@ -288,7 +295,7 @@ def _run_extensions(args) -> None:
     """Dispatch ``prismor extensions {list,why,approve,report,wrap-hooks,unwrap-hooks}``."""
     from prismor.runtime import extensions as ext
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "extensions_subcommand", None) or "list"
     as_json = getattr(args, "json", False)
     if sub == "approve":
@@ -339,7 +346,7 @@ def _run_memory(args) -> None:
         format_trust_status,
     )
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "memory_subcommand", None)
 
     if sub == "status":
@@ -359,29 +366,28 @@ def _run_memory(args) -> None:
     if sub == "verify":
         from prismor.runtime.memory_guard import verify_memory_files
         file_path = Path(args.file)
-        findings = verify_memory_files([{"path": str(file_path)}], workspace)
+        if not file_path.is_file():
+            print(f"prismor memory verify: no such file: {file_path}", file=sys.stderr)
+            raise SystemExit(1)
+        # Read-only: never records a baseline (use `memory trust` for that).
+        findings = verify_memory_files([{"path": str(file_path)}], workspace, record=False)
         if findings:
             for f in findings:
                 print(f"[{f['severity']}] {f['title']}")
                 print(f"  origin: {f.get('evidence', {}).get('origin', '?')}")
-        else:
-            print(f"clean: {file_path} — hash matches trust baseline")
+            raise SystemExit(1)
+        print(f"clean: {file_path} — hash matches trust baseline")
         return
 
     if sub == "scan":
         from prismor.runtime.policy_engine import PolicyEngine
+        from prismor.runtime.memory_guard import scan_memory_text
+        from prismor.runtime.winutil import read_text_file
         engine = PolicyEngine()
+        errors = 0
         for fpath in args.file:
             try:
-                text = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                # Screen it the way SessionStart does: as a "memory" event,
-                # which is what the memory_poisoning rules match on. A "text"
-                # event reported "clean" on a line the session notice flagged.
-                from prismor.runtime.hooks import strip_prismor_managed
-                findings = engine.evaluate(
-                    {"type": "memory", "path": str(fpath), "content": strip_prismor_managed(text)}, 0)
-                findings += [f for f in engine.check_text(text)
-                             if f.get("ruleId") not in {g.get("ruleId") for g in findings}]
+                findings = scan_memory_text(engine, str(fpath), read_text_file(fpath))
                 if findings:
                     print(f"\n{fpath}:")
                     for f in findings:
@@ -389,7 +395,10 @@ def _run_memory(args) -> None:
                 else:
                     print(f"\n{fpath}: clean")
             except Exception as e:
+                errors += 1
                 print(f"{fpath}: error — {e}")
+        if errors:
+            raise SystemExit(1)
         return
 
     if sub == "sign":
@@ -968,10 +977,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 duration_s = _pause.parse_duration(raw_duration)
             except ValueError:
                 print(f"  {_color('✗', _RED)} Could not read duration '{raw_duration}'. Use e.g. 30m, 2h, 1d.")
-                return
+                raise SystemExit(2)
             if duration_s <= 0:
                 print(f"  {_color('✗', _RED)} Duration must be positive.")
-                return
+                raise SystemExit(2)
         # Attribute the pause to the enrolled member when we know them.
         by = ""
         try:
@@ -1027,6 +1036,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.enterprise import workspace_scope as _scope
         from prismor.runtime.enterprise import identity as _identity
         action = getattr(args, "action", None)
+        if action in ("managed", "personal") and not _identity.load_identity():
+            sys.stderr.write(f"prismor workspace {action}: this machine is not enrolled, so a scope override "
+                             "has no effect until it is. Run `prismor enroll <token>` first. Nothing was changed.\n")
+            raise SystemExit(1)
         if action in ("managed", "personal", "auto"):
             _scope.set_override(workspace, None if action == "auto" else action)
             print(f"Set scope override for this workspace → {action}")
@@ -1101,15 +1114,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         ident = _identity.load_identity()
         if not ident:
             print("This machine is not enrolled. Run `prismor enroll <token>` first.")
-            return
+            raise SystemExit(1)
         remote = _scope.detect_git_remote(workspace)
         if not remote:
             print("Not a git repo (no origin remote) — can't request an exemption here.")
-            return
+            raise SystemExit(1)
         reason = getattr(args, "reason", None)
         if not reason:
             print("A reason is required: prismor exempt request --reason \"why this repo needs it\"")
-            return
+            raise SystemExit(1)
         import json as _json, urllib.request, urllib.error
         from prismor.runtime import http_ua as _http_ua
         base = str(ident.get("api_base") or _identity.api_base()).rstrip("/")
@@ -1202,6 +1215,19 @@ def main(argv: Optional[List[str]] = None) -> None:
         _align_check_with_hook(engine, findings, workspace, args.type)
         _paused = _pause_note()
 
+        if engine.project_policy_error and not engine.project_policy_fallback:
+            # The project's rules are not loaded: PASS here would be a verdict
+            # on the built-in floor alone. Say so and do not exit 0.
+            sys.stderr.write(
+                f"[prismor] WARNING: project policy is invalid, so only built-in and org rules "
+                f"were checked: {engine.project_policy_error}\n"
+                "          Fix it, then: prismor policy validate\n")
+            if not any(_blocks(f) for f in findings):
+                if findings:
+                    _print_findings(findings, engine=engine, explain=args.explain,
+                                    suggest=args.suggest_allowlist, input_value=args.value)
+                raise SystemExit(2)
+
         if not findings:
             print(_color("PASS", _GREEN) + f"  {args.value}")
             if _paused:
@@ -1239,7 +1265,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
                 )
                 raise SystemExit(1)
-            text = sys.stdin.read()
+            try:  # bytes, so a UTF-16 (PowerShell 5.1) pipe is decoded by its BOM
+                from prismor.runtime.winutil import decode_bytes
+                text = decode_bytes(sys.stdin.buffer.read())
+            except AttributeError:
+                text = sys.stdin.read()
         if not text or not text.strip():
             sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
@@ -1315,6 +1345,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
+            # Same exit code as text mode: 2 when any finding blocks.
+            if any(f.get("action") == "block" for f in result["findings"]):
+                raise SystemExit(2)
             return
 
         configs = result["configs"]
@@ -1396,10 +1429,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.deps import scan_workspace as deps_scan
         feed = load_feed(repo_root)
         result = deps_scan(workspace, feed, osv=not getattr(args, "offline", False))
+        # One exit code for text and JSON: 1 on a known-bad dependency, a HIGH
+        # integrity issue, or a manifest that could not be parsed.
+        _deps_exit = 1 if (
+            result["feed_matches"] or result.get("parse_errors")
+            or any(i["severity"] == "HIGH" for i in result.get("integrity_issues", []))
+        ) else 0
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
-            return
+            raise SystemExit(_deps_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  dependency check")
@@ -1408,7 +1447,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         manifests = result["manifests"]
         if not manifests:
-            print(f"  {_color('No dependency manifests found.', _DIM)}")
+            print(f"  {_color('No dependency manifests or lockfiles found.', _DIM)}")
             print()
             return
 
@@ -1416,6 +1455,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Manifest:', _GREEN)}  [{m['ecosystem']}] {m['path']}")
         print(f"  {_color('Dependencies:', _GREEN)} {result['dependencies']} total")
         print()
+        for pe in result.get("parse_errors", []):
+            print(f"  {_color('ERROR', _RED)}  could not parse {pe['path']}: {pe['error']}")
+        if result.get("parse_errors"):
+            print()
 
         feed_matches = result["feed_matches"]
         lockfile_issues = result["lockfile_issues"]
@@ -1423,9 +1466,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         integrity_issues = result.get("integrity_issues", [])
 
         if not feed_matches and not lockfile_issues and not integrity_issues:
-            print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
-            print()
-            return
+            if not result.get("parse_errors"):
+                print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
+                print()
+            raise SystemExit(_deps_exit)
 
         if feed_matches:
             print(f"  {_color('Known vulnerable or malicious dependencies:', _BOLD)}")
@@ -1460,9 +1504,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"  {total_issues} issue(s) found")
         print()
 
-        if feed_matches or any(i["severity"] == "HIGH" for i in integrity_issues):
-            raise SystemExit(1)
-        return
+        raise SystemExit(_deps_exit)
 
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit" and getattr(args, "target", None) == "judge":
@@ -1499,9 +1541,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
 
+        # Exit code, shared by text and JSON: 2 critical, 1 high/medium, 0 clean.
+        _audit_exit = 2 if any(f.severity == "CRITICAL" for f in findings) else (
+            1 if any(f.severity in ("HIGH", "MEDIUM") for f in findings) else 0)
+
         if getattr(args, "json", False):
             print(json.dumps([f.to_dict() for f in findings], indent=2))
-            return
+            raise SystemExit(_audit_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  security audit")
@@ -1598,11 +1644,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"    {_color('No fixes were applied.', _DIM)}")
             print()
 
-        # Exit code: 2 for critical, 1 for high/medium, 0 for clean
-        if any(f.severity == "CRITICAL" for f in findings):
-            raise SystemExit(2)
-        if any(f.severity in ("HIGH", "MEDIUM") for f in findings):
-            raise SystemExit(1)
+        if _audit_exit:
+            raise SystemExit(_audit_exit)
         return
 
     # ── status: one-shot health check (mode, hooks, cloak, latest session) ──
@@ -1713,9 +1756,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             events = load_input_events(args.input, workspace=workspace)
         else:
             # Find most recent session in current workspace
-            sessions = list_sessions(workspace, limit=1)
+            from prismor.runtime import devlog as _devlog
+            sessions = list_sessions(workspace, limit=50)
             if not sessions:
                 raise SystemExit("No sessions found in this workspace. Use --input to analyze a file, or run a session first.")
+            _sid = _devlog.default_session_id(sessions)
+            sessions = [{"sessionId": _sid}]
             session = get_session(workspace, sessions[0]["sessionId"])
             if not session:
                 raise SystemExit(f"Could not load session {sessions[0]['sessionId']}")
@@ -1811,7 +1857,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime import devlog
         if args.command == "rca":
             sid = (devlog.resolve_session_id(args.session_id) if args.session_id
-                   else next((s["sessionId"] for s in list_sessions(workspace, 1)), None))
+                   else devlog.default_session_id(list_sessions(workspace, 50)))
             if not sid:
                 raise SystemExit("rca: " + (_sessions_elsewhere_hint(workspace)
                                             or "no sessions recorded yet")
@@ -1843,14 +1889,18 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── install-hooks ──────────────────────────────────────────────────
     if args.command == "install-hooks":
-        results = install_hooks(
-            repo_root=repo_root,
-            workspace=workspace,
-            agent=args.agent,
-            scope=args.scope,
-            mode=args.mode,
-            portable=getattr(args, "portable", False),
-        )
+        try:
+            results = install_hooks(
+                repo_root=repo_root,
+                workspace=workspace,
+                agent=args.agent,
+                scope=args.scope,
+                mode=args.mode,
+                portable=getattr(args, "portable", False),
+            )
+        except (HookConfigError, OSError) as exc:
+            print(f"prismor install-hooks: {exc}\nNothing was changed. Fix or remove that file, then run it again.", file=sys.stderr)
+            raise SystemExit(1)
         register_workspace(workspace)
         for item in results:
             if item.get("loadWarning"):
@@ -1861,6 +1911,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("Portable: the hook finds `prismor` at run time, so this file is safe to commit. "
                   "Install prismor in the cloud environment's setup script.")
         _print_codex_trust_note([item["agent"] for item in results], workspace)
+        if any(item["agent"] == "copilot" for item in results):
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_cp_line}")
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=True)
         return
 
@@ -1926,8 +1980,30 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Interpreter start + imports, from the shim's stamp to here.
         _perf.STAGES["startup"] = (time.time() - _HOOK_T0) * 1000
         _perf.lap()
-        payload = json.loads(sys.stdin.read() or "{}")
+        from prismor.runtime.winutil import read_stdin_text
+        payload = json.loads(read_stdin_text() or "{}")
         _hook_claimed = True   # set for real just before evaluation
+        # The session is over: nothing to screen, and no later hook in it will
+        # run the heartbeat tick, so ship the outbox now. Claude kills SessionEnd
+        # hooks as it exits (`claude -p` ended with "Hook cancelled"), so this
+        # runs before workspace registration and drift checks, exits quietly on
+        # SIGTERM, and caps the flush at 1s: a late flush is retried by the
+        # next hook, a slow one is a cancelled hook. Never fails the exit.
+        if str(payload.get("hook_event_name") or "") == "SessionEnd":
+            try:
+                import signal
+                signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+            except (ImportError, ValueError, OSError, AttributeError):
+                pass
+            try:
+                from prismor.runtime.enterprise import heartbeat as _heartbeat
+                from prismor.runtime.enterprise import telemetry_spool as _spool
+                _spool.clear_backoff()
+                _heartbeat.maybe_flush(force=True, timeout=1.0)
+            except BaseException:
+                pass
+            return
+
         # A global (~/.claude) hook carries no --workspace: attribute the call
         # to the repo the agent is actually running in (payload cwd → git root),
         # not to whichever directory `setup --scope global` happened to run
@@ -1945,20 +2021,6 @@ def main(argv: Optional[List[str]] = None) -> None:
             hook_drift.report(workspace, from_hook=True)
         except Exception:
             pass
-
-        # The session is over: nothing to screen, and no later hook in it will
-        # run the heartbeat tick, so ship the outbox now. Clear the backoff an
-        # earlier cold-start timeout left behind: this is the last chance, and a
-        # failure sets it again. Never blocks the exit on an error.
-        if str(payload.get("hook_event_name") or "") == "SessionEnd":
-            try:
-                from prismor.runtime.enterprise import heartbeat as _heartbeat
-                from prismor.runtime.enterprise import telemetry_spool as _spool
-                _spool.clear_backoff()
-                _heartbeat.maybe_flush(force=True, timeout=6.0)
-            except Exception:
-                pass
-            return
 
         # The model's reply for the turn (Claude/Codex Stop, Cursor
         # afterAgentResponse, Gemini AfterAgent, ...): recorded in observe mode
@@ -2922,7 +2984,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg)
+                # No OS sandbox on this platform (Windows): a config written
+                # elsewhere must not block every command, so it is not strict.
+                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
                 _sandbox_on = _sandbox_strict and _sandbox.supported()
                 _sandbox_root = _sandbox.project_root(payload, workspace)
                 _sandbox_cmd = str(event.get("command") or "")
@@ -3062,6 +3126,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
+            if want and not _sandbox.supported():
+                sys.stderr.write(
+                    f"prismor sandbox on: no OS sandbox exists for {sys.platform} (macOS and "
+                    "Linux only). Nothing was changed; commands keep running as before, "
+                    "with policy screening, egress and cloaking in force.\n")
+                raise SystemExit(1)
             if not want and not sys.stdin.isatty():
                 # Turning containment off is a person's call: an agent's shell has
                 # no terminal. An open `prismor unlock` window also counts.
@@ -3340,11 +3410,27 @@ def main(argv: Optional[List[str]] = None) -> None:
             if mode_val:
                 fields["mode"] = mode_val
             iam_val = getattr(args, "iam_profile", None)
-            if iam_val is not None:
+            if getattr(args, "clear_iam_profile", False):
+                # PowerShell 5.1 drops an empty-string argument, so `--iam-profile ""` cannot clear.
+                fields["iam_profile"] = None
+            elif iam_val is not None:
                 fields["iam_profile"] = iam_val or None
             if not fields:
-                sys.stderr.write("error: specify at least one of --enabled, --disabled, --mode, --iam-profile\n")
+                sys.stderr.write("error: specify at least one of --enabled, --disabled, --mode, --iam-profile, --clear-iam-profile\n")
                 raise SystemExit(1)
+            # The name becomes a YAML key and shows up in paths and logs.
+            if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", agent_name_arg)
+                    or ".." in agent_name_arg):
+                sys.stderr.write(f"error: invalid agent name {agent_name_arg!r}: use letters, digits, '.', '_' and '-' "
+                                 "(no path separators or '..')\n")
+                raise SystemExit(2)
+            if fields.get("iam_profile"):
+                _known = _list_agent_ids_for_check(workspace)
+                if fields["iam_profile"] not in _known:
+                    sys.stderr.write(
+                        f"error: IAM profile {fields['iam_profile']!r} is not defined "
+                        f"(known: {', '.join(_known) or 'none'}). Define it in iam.yaml (prismor iam init) first.\n")
+                    raise SystemExit(2)
             ctl = _upsert_agent(agent_name_arg, workspace, **fields)
             print(f"Updated '{agent_name_arg}': enabled={ctl.enabled}, mode={ctl.mode or '(global)'}, iam_profile={ctl.iam_profile or '(none)'}")
             return
@@ -3482,6 +3568,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(f"Installed Hermes Agent cloaking plugin at {h_result['pluginDir']}")
                 for label in h_result["hooksInstalled"]:
                     print(f"  + {label}")
+            if not shutil.which("jq"):
+                _fix = ("winget install jqlang.jq   (or: scoop install jq)" if os.name == "nt"
+                        else "brew install jq   (or: apt install jq)")
+                sys.stderr.write("warning: jq is not on PATH. The cloaking hooks need it and will BLOCK every "
+                                 f"guarded tool call until it is installed: {_fix}\n")
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()
@@ -3522,6 +3613,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 result = cloak_status(workspace=workspace, scope=_sc)
                 if result["installed"]:
                     break
+            else:  # nowhere installed: show the scope the user would install into
+                result = cloak_status(workspace=workspace, scope=scopes[0])
+                _sc = scopes[0]
             state = "installed" if result["installed"] else "not installed"
             if result["installed"] and not args.scope:
                 state += " (project)" if _sc == "project" else " (global)"
@@ -3558,6 +3652,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             except ValueError as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(2)
+            except OSError as exc:
+                sys.stderr.write(f"error: cannot run command: {exc}\n")
+                raise SystemExit(127)
             raise SystemExit(code)
 
         if sub == "add":
@@ -3611,23 +3708,30 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             if args.value_file:
                 try:
-                    value = Path(args.value_file).read_text(encoding="utf-8").rstrip("\n")
+                    from prismor.runtime.cloaking.secrets_store import strip_one_newline
+                    from prismor.runtime.winutil import decode_bytes
+                    value = strip_one_newline(decode_bytes(Path(args.value_file).read_bytes(), strict=True))
                 except (OSError, ValueError) as exc:
                     sys.stderr.write(f"error: {exc}\n")
                     raise SystemExit(1)
             else:
                 # Read from stdin (so the value never appears in argv / history).
-                if sys.stdin.isatty():
+                from prismor.runtime.cloaking.secrets_store import is_console, strip_one_newline
+                if is_console(sys.stdin):
                     from getpass import getpass
                     value = getpass(f"Enter value for @@SECRET:{name}@@ (input hidden): ")
                 else:
-                    value = sys.stdin.read().rstrip("\n")
+                    from prismor.runtime.winutil import read_stdin_text
+                    value = strip_one_newline(read_stdin_text())
+                    if "\ufffd" in value or re.search(r"\?{3,}", value):
+                        sys.stderr.write("warning: the piped value has U+FFFD or a run of '?': the shell likely "
+                                         "re-encoded non-ASCII text (PowerShell 5.1). Use --from-file instead.\n")
             try:
                 path = add_secret(name, value)
             except (OSError, ValueError) as exc:
                 sys.stderr.write(f"error: {exc}\n")
                 raise SystemExit(1)
-            print(f"Registered @@SECRET:{name}@@ ({len(value)} bytes) at {path}")
+            print(f"Registered @@SECRET:{name}@@ ({len(value.encode('utf-8'))} bytes) at {path}")
             print("The model can now reference this secret in tool calls as:")
             print(f"  {_color(f'@@SECRET:{name}@@', _CYAN)}")
             _warn_unscrubbable(name, value)
@@ -3734,7 +3838,11 @@ def main(argv: Optional[List[str]] = None) -> None:
             if str(load_sources().get(args.name, {}).get("ref", "")).startswith("prismor://"):
                 print(f"@@SECRET:{args.name}@@ comes from your org vault. It comes back on the next sync "
                       "unless an admin removes your access in the console.")
-            removed = remove_secret(args.name)
+            try:
+                removed = remove_secret(args.name)
+            except ValueError as exc:
+                sys.stderr.write(f"error: {exc}\n")
+                raise SystemExit(1)
             forget(args.name)
             from prismor.runtime.cloaking import bindings
             if args.name in bindings.load(secrets_dir()):
@@ -4698,7 +4806,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("sql", nargs="?", help="A SELECT / WITH / EXPLAIN statement")
     query_parser.add_argument("--schema", action="store_true", help="List tables and columns instead")
     query_parser.add_argument("--workspace", help="Workspace whose store to open (default: the shared $PRISMOR_HOME store)")
-    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (0 = no cap; default 200)")
+    query_parser.add_argument("--limit", type=_nonneg_int, default=200, help="Max rows (0 = no cap; default 200)")
     query_parser.add_argument("--format", choices=["json", "jsonl", "table"], default="json")
     query_parser.add_argument("--path", action="store_true", help="Print the store path and exit")
 
@@ -5627,9 +5735,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Dismissal count to flag false positives (default: 5)")
     learn_parser.add_argument("--json", action="store_true", dest="json_output",
                               help="Output raw JSON instead of formatted report")
-    learn_parser.add_argument("--apply", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--apply", metavar="ID", type=int,
                               help="Accept a candidate rule and append to project policy")
-    learn_parser.add_argument("--reject", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--reject", metavar="ID", type=int,
                               help="Reject a candidate rule")
     learn_parser.add_argument("--candidates", action="store_true",
                               help="List pending candidate rules")
@@ -5699,6 +5807,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-agent mode override (observe or enforce)",
     )
     agents_set.add_argument(
+        "--clear-iam-profile", action="store_true", dest="clear_iam_profile", default=False,
+        help="Remove the IAM profile binding (use instead of an empty --iam-profile)",
+    )
+    agents_set.add_argument(
         "--iam-profile",
         dest="iam_profile",
         default=None,
@@ -5713,7 +5825,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "AI agents: run `prismor setup` with no flags first. With no terminal it installs "
             "nothing and prints the questions to ask the user (mode, cloaking, scope, agents) "
-            "plus the exact command for their answers. Don't pick these for the user: "
+            "plus the exact command for their answers. Outside an agent (scripts, CI), a bare run "
+            "with no terminal installs the defaults. Don't pick these for the user: "
             "--scope global changes every project on the machine."
         ),
     )
@@ -6087,6 +6200,47 @@ def codex_trust_line(workspace: Path) -> Optional[str]:
             "prompt (headless runs: `codex exec --dangerously-bypass-hook-trust`).")
 
 
+def _copilot_trusted_folders() -> Optional[List[str]]:
+    """``trusted_folders`` from Copilot's ~/.copilot/config.json, or None if unreadable."""
+    try:
+        raw = (Path.home() / ".copilot" / "config.json").read_text(encoding="utf-8-sig")
+        # The file may open with // comment lines.
+        data = json.loads("\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("//")))
+        folders = data.get("trusted_folders", data.get("trustedFolders"))
+        return [str(f) for f in folders] if isinstance(folders, list) else None
+    except Exception:
+        return None
+
+
+def copilot_trust_line(workspace: Path) -> Optional[str]:
+    """A warning when Copilot may skip this workspace's repository hooks, else None.
+
+    Copilot ignores .github/hooks in a folder it has not trusted ("Skipped
+    repository hooks ... because the folder is not trusted"), so `status` can
+    say enforce while nothing runs. Global hooks (~/.copilot/hooks) are not
+    affected, so a global install needs no warning.
+    """
+    from prismor.runtime.hooks import hook_installed
+    try:
+        if not hook_installed("copilot", "project", workspace):
+            return None
+    except Exception:
+        return None
+    folders = _copilot_trusted_folders()
+    if folders is not None:
+        here = os.path.normcase(os.path.abspath(workspace))
+        for f in folders:
+            base = os.path.normcase(os.path.abspath(os.path.expanduser(f)))
+            if here == base or here.startswith(base.rstrip("\\/") + os.sep):
+                return None
+        why = "this folder is not in Copilot's trusted_folders"
+    else:
+        why = "Prismor cannot tell whether Copilot trusts this folder"
+    return (f"Copilot skips repository hooks (.github/hooks) in a folder it has not trusted, so it may "
+            f"NOT run them: {why}. Trust the folder when Copilot asks (or add it to trusted_folders in "
+            "~/.copilot/config.json), or install globally: prismor install-hooks --agent copilot --scope global.")
+
+
 def _print_status_quota(engine: Any) -> None:
     """The `Prismor API:` line in `prismor status`: what is left of this month.
 
@@ -6159,6 +6313,15 @@ def _hooks_by_scope(workspace: Path, checks: Optional[List[Dict[str, Any]]] = No
         if check["configured"]:
             out[check["scope"]][check["agent"]] = check["mode"]
     return out
+
+
+def _list_agent_ids_for_check(workspace: Path) -> List[str]:
+    """IAM profile names defined for this workspace (project + global iam.yaml)."""
+    from prismor.runtime.iam import list_agent_ids, load_iam_config
+    try:
+        return list_agent_ids(load_iam_config(workspace))
+    except Exception:
+        return []
 
 
 def _git_root_or_self(path: Path) -> Path:
@@ -6429,6 +6592,22 @@ def _run_docs(args) -> None:
     print((root / name).read_text(encoding="utf-8"))
 
 
+def _quote_path(p: Any) -> str:
+    """A path as typed into the user's shell: double quotes on Windows, POSIX quoting elsewhere."""
+    t = str(p)
+    if os.name == "nt":
+        return f'"{t}"' if re.search(r"[\s&()^%!]", t) else t
+    import shlex
+    return shlex.quote(t)
+
+
+def _nonneg_int(v: str) -> int:
+    n = int(v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return n
+
+
 def _run_trail(args) -> None:
     """`prismor trail` — the signed, hash-chained audit trail of agent actions.
 
@@ -6446,6 +6625,8 @@ def _run_trail(args) -> None:
             rep = _pack.verify_pack(Path(args.verify), pubkey_b64=args.pubkey)
             if args.json:
                 print(json.dumps(rep, indent=2))
+            elif rep.get("unreadable"):
+                print(f"✗ evidence pack {args.verify}: not a readable pack")
             else:
                 print(f"{'✓' if rep['ok'] else '✗'} evidence pack {args.verify}: "
                       f"{rep.get('decisions')} decisions, {rep.get('records')} records"
@@ -6461,7 +6642,7 @@ def _run_trail(args) -> None:
                   f"({'signed' if man.get('signature') else 'unsigned: pip install prismor[signing]'})")
             if man["missing_authority"]:
                 print(f"  ⚠ {len(man['missing_authority'])} authority snapshot(s) not found on this device")
-            print(f"  verify: prismor trail export --verify {args.out}")
+            print(f"  verify: prismor trail export --verify {_quote_path(args.out)}")
         return
 
     if sub == "verify":
@@ -6498,6 +6679,9 @@ def _run_trail(args) -> None:
                   f"compare against a saved checkpoint (prismor trail checkpoint) to tell them apart")
         for err in report["errors"]:
             where = f"seq {err['seq']}" if err.get("seq") is not None else f"line {err.get('line')}"
+            if err.get("seq") is None and err.get("line") is None:
+                print(f"  ✗ {err['kind']}: {err['detail']}")
+                continue
             print(f"  ✗ {err['kind']} at {where}: {err['detail']}")
         _fails = report["sig_failures"]
         for seq in _fails[:_cap]:
@@ -6621,7 +6805,8 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
 
     if sub == "verify":
         try:
-            bundle = json.loads(Path(args.bundle).read_text(encoding="utf-8"))
+            from prismor.runtime.winutil import read_text_file
+            bundle = json.loads(read_text_file(args.bundle))
         except (OSError, ValueError) as exc:
             print(f"✗ cannot read bundle: {exc}")
             raise SystemExit(2)
@@ -6669,7 +6854,7 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
             print("  unsigned: install prismor[signing] (adds `cryptography`) to sign bundles")
         print(f"  {n_agents} agents · {n_findings} audit findings · "
               f"trail anchor seq {(bundle.get('trail_checkpoint') or {}).get('seq')}")
-        print(f"  re-verify with:  prismor attest verify {out}")
+        print(f"  re-verify with:  prismor attest verify {_quote_path(out)}")
     else:
         print(text)
     if not bundle.get("signature"):
@@ -6746,6 +6931,10 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add("fail", "codex trust", _trust_line)
         else:
             add("ok", "codex trust", "Codex has trusted the installed hooks")
+    if "copilot" in agents_with_hooks:
+        _cp_line = copilot_trust_line(workspace)
+        if _cp_line:
+            add("warn", "copilot trust", _cp_line)
 
     # 2. Policy engine loads.
     try:
@@ -7046,6 +7235,10 @@ def _print_status_overview(workspace: Path) -> None:
             _codex_line = codex_trust_line(workspace)
             if _codex_line:
                 print(f"  {_color('Codex:', _YELLOW)}       {_codex_line}")
+        if "copilot" in agents_with_hooks:
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_color('Copilot:', _YELLOW)}     {_cp_line}")
         _both = sorted(set(hooks_by_scope["project"]) & set(hooks_by_scope["global"]))
         if _both:
             print(f"  {_color('Note:', _YELLOW)}        {', '.join(_both)} hooked at both scopes — each tool call is "
@@ -7231,6 +7424,16 @@ settings:
 
 def _policy_validate(path: Path) -> None:
     """Validate a policy YAML and print errors."""
+    if path.is_dir():
+        # A directory is taken to mean "the policy in it": the workspace root or its .prismor folder.
+        for cand in (path / ".prismor" / "policy.yaml", path / "policy.yaml"):
+            if cand.is_file():
+                path = cand
+                break
+        else:
+            print(_color("INVALID", _RED) + f"  {path}")
+            print("  - is a directory with no policy.yaml (or .prismor/policy.yaml) in it")
+            raise SystemExit(1)
     errors = validate_policy(path)
     if not errors:
         print(_color("VALID", _GREEN) + f"  {path}")
@@ -8570,9 +8773,13 @@ def parse_jsonl(text: str) -> List[Dict[str, Any]]:
 
 
 def read_text(input_path: str) -> str:
+    from prismor.runtime.winutil import read_stdin_text, read_text_file
     if input_path == "-":
-        return sys.stdin.read()
-    return Path(input_path).read_text(encoding="utf-8")
+        return read_stdin_text()
+    try:
+        return read_text_file(input_path)
+    except ValueError as exc:
+        raise SystemExit(f"analyze: {exc}") from None
 
 
 def emit(payload: Any, *, as_json: bool, formatter=None) -> None:

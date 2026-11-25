@@ -185,14 +185,74 @@ _sig(r"(remember\s+(this\s+)?(forever|permanently|always)|always\s+(trust|obey|f
 # ("a contractor could export all customer data") is not asking for it.
 _sig(r"(?:^|[\n.!?:;]\s*|\b(?:please|now|must|to)\s+)(output|export|dump|list|generate|include|compile|extract)\s+.{0,40}(all|every|each|the\s+full|complete)\s+.{0,30}(employee|customer|user|client|personnel|staff|member|patient)\w*\s+.{0,20}(record|email|salary|salaries|address|phone|ssn|data|details?|info\w*|pii)", 0.55, "bulk_pii_exfil")
 
+# Obfuscated / structural injection shapes (Windows-testing follow-up).
+# A markdown image whose URL carries a data placeholder is the zero-click
+# exfil channel: the client fetches the "image" and the query leaks the data.
+_sig(r"!\[[^\]]*\]\(\s*https?://[^)\s]+[?&][\w.-]+=(?:<[^>]*(?:data|secret|key|token|password|content|conversation|history|chat|env|credential|base64|b64|summary|output|user|api)[^>]*>"
+     r"|\{\{?[^}]*(?:data|secret|key|token|password|content|conversation|history|chat|env|credential|base64|b64|summary|output|user|api)[^}]*\}\}?"
+     r"|\$\{?\w*(?:data|secret|key|token|password|content|conversation|history|chat|env|credential|summary|output)\w*)", 0.80, "markdown_image_exfil")
+# A forged end-of-tool-result followed by a fake user/assistant turn.
+_sig(r"</\s*(?:tool_result|function_results?|tool_response|function_response|tool_output)\s*>\s*(?:Human|User|Assistant|System)\s*:", 0.80, "fake_conversation_turn")
+# Instructions to the model tucked into an HTML comment (rendered invisible).
+_sig(r"<!--(?:(?!-->).){0,600}?(?:(?:ignore|disregard|forget)\s+(?:all\s+)?(?:any\s+)?(?:previous|prior|above)"
+     r"|(?:note|message|instructions?|attention)\s+(?:for|to)\s+(?:the\s+)?(?:ai|assistant|agent|llm|claude|model)\b"
+     r"|(?:do\s+not|don'?t|never)\s+(?:tell|mention|reveal|show|inform)\s+(?:the\s+)?user"
+     r"|system\s+prompt|exfiltrat\w*|(?:send|post|upload)\s+[^\n>]{0,40}\s+to\s+https?://)(?:(?!-->).)*-->", 0.75, "html_comment_instruction")
+# Invariant-style tool-description payload: <IMPORTANT> ... read/send/pass ... </IMPORTANT>
+_sig(r"<\s*IMPORTANT\s*>(?:(?!<\s*/\s*IMPORTANT).){0,600}?\b(?:read|cat|send|pass|include|attach|upload|before\s+using|do\s+not\s+(?:tell|mention)|don'?t\s+(?:tell|mention)|sidenote|\.ssh|\.env|credentials?)\b", 0.80, "important_tag_payload")
+
+
+_OVERRIDE_RE = next(p for p, _, lbl in _SIGNALS if lbl == "instruction_override")
+_LEET = str.maketrans("013457@$", "oieastas")
+_MENTION_BEFORE_RE = re.compile(
+    r"(?:phrases?|strings?|text|words?|payloads?|prompts?|attacks?|injections?|examples?|such\s+as|e\.g\.?|"
+    r"for\s+instance|like|contains?|containing|detects?|flags?|matches|quot(?:e|es|ed|ing)|saying|says?|"
+    r"reads?|literal|keyword|pattern|string)\W{0,4}$", re.IGNORECASE)
+
+
+# Text that acts, not describes: with any of this present a quoted "mention"
+# is a disguised payload, so the exemption below does not apply.
+_ACTION_RE = re.compile(
+    r"\b(?:now|follow|obey|instead|send|post|upload|print|cat|curl|wget|exfiltrat\w*|email|reveal|"
+    r"output|run|execute|read|attach|forward)\b|https?://|~[/\\]|\.ssh\b|\.env\b|id_rsa|"
+    r"api[_ -]?keys?\b|tokens?\b|passwords?\b|secrets?\b|credentials?\b", re.IGNORECASE)
+
+
+def _is_quoted_mention(text: str, m: "re.Match") -> bool:
+    """True when the match sits inside quotes/backticks right after a word that
+    marks it as a mention ("the phrase \"ignore previous instructions\""), and
+    the text around it asks for nothing (no action verb, path, URL or secret)."""
+    if _ACTION_RE.search(text[:m.start()] + " " + text[m.end():]):
+        return False
+    before = text[max(0, m.start() - 60):m.start()]
+    after = text[m.end():m.end() + 30]
+    quoted = bool(re.search(r"[\"'`\u201c\u2018]\s*$", before)) and bool(re.match(r"[^\n]{0,25}?[\"'`\u201d\u2019]", after))
+    return quoted and bool(_MENTION_BEFORE_RE.search(before))
+
+
+def _leet_override_hit(text: str, pattern: "re.Pattern") -> bool:
+    """'1gn0re pr3v10us instructions': the override phrase after de-leeting.
+    Only text that actually mixes digits/symbols into words is retried."""
+    if not re.search(r"[A-Za-z][013457@$][A-Za-z]|[013457@$][A-Za-z]{2}", text):
+        return False
+    folded = text.translate(_LEET)
+    return folded != text and any(not _is_quoted_mention(folded, m) for m in pattern.finditer(folded)) \
+        and not pattern.search(text)
+
 
 def _heuristic_analyze(text: str) -> SemanticRisk:
     t0 = time.perf_counter_ns()
     triggered: List[Tuple[float, str]] = []
 
     for pattern, weight, label in _SIGNALS:
-        if pattern.search(text):
+        if label == "instruction_override":
+            # A documentation sentence that quotes the phrase is not the phrase.
+            if any(not _is_quoted_mention(text, m) for m in pattern.finditer(text)):
+                triggered.append((weight, label))
+        elif pattern.search(text):
             triggered.append((weight, label))
+    if not any(lbl == "instruction_override" for _, lbl in triggered) and _leet_override_hit(text, _OVERRIDE_RE):
+        triggered.append((0.85, "instruction_override"))
 
     if not triggered:
         return SemanticRisk(

@@ -30,7 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-__all__ = ["audit_skills", "approve_skill", "discover_skill_files", "format_audit"]
+from prismor.runtime.winutil import decode_bytes as decode_text, norm_eol
+
+__all__ = ["audit_skills", "approve_skill", "resolve_skill", "discover_skill_files", "format_audit"]
 
 _SKILL_URL_RE = re.compile(r'https?://[^\s)\'"<>]+/SKILL\.md', re.IGNORECASE)
 _FRONTMATTER_RE = re.compile(r'\A---\s*\n(.*?)\n---\s*\n', re.DOTALL)
@@ -181,14 +183,16 @@ def _save_json(p: Path, data: Dict[str, Any]) -> None:
     tmp.replace(p)
 
 
-def _sha256(path: Path) -> str:
+def _sha256(path: Path, normalize: bool = True) -> str:
+    """Hash of the file. ``normalize=False`` is the pre-normalisation scheme,
+    still accepted when comparing against an old baseline."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
-        h.update(fh.read(_MAX_BYTES))
+        h.update((norm_eol if normalize else bytes)(fh.read(_MAX_BYTES)))
     return h.hexdigest()
 
 
-def _tree_sha256(skill_md: Path) -> str:
+def _tree_sha256(skill_md: Path, normalize: bool = True) -> str:
     """Hash of every file beside SKILL.md (names + bytes).
 
     The agent runs the skill's scripts, not just reads its SKILL.md, so a swapped
@@ -205,7 +209,7 @@ def _tree_sha256(skill_md: Path) -> str:
         h.update(os.path.relpath(f, root).encode() + b"\0")
         try:
             with f.open("rb") as fh:
-                h.update(fh.read(_MAX_BYTES))
+                h.update((norm_eol if normalize else bytes)(fh.read(_MAX_BYTES)))
         except OSError:
             pass
         h.update(b"\0")
@@ -289,11 +293,12 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
 
     for idx, path in enumerate(discover_skill_files(workspace)):
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")[:_MAX_BYTES]
+            text = decode_text(path.read_bytes()[:_MAX_BYTES])
         except OSError:
             continue
         digest = _sha256(path)
         tree = _tree_sha256(path)
+        old_digest, old_tree = _sha256(path, False), _tree_sha256(path, False)
         fm = _frontmatter(text)
         key = str(path)
         prior = baseline.get(key) if isinstance(baseline.get(key), dict) else None
@@ -302,8 +307,9 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
             if record:
                 baseline[key] = {"sha256": digest, "tree_sha256": tree, "first_seen": now, "approved": False}
                 changed_baseline = True
-        elif prior.get("sha256") == digest and prior.get("tree_sha256", tree) == tree:
-            status = "approved" if prior.get("approved") else "unchanged"
+        elif prior.get("sha256") in (digest, old_digest) and prior.get("tree_sha256", tree) in (tree, old_tree):
+            # A skill stays NEW until `skills approve`; seeing it twice is not review.
+            status = "approved" if prior.get("approved") else "new"
             if record and "tree_sha256" not in prior:
                 # Baselines from before the tree hash: adopt the current tree
                 # once rather than flag every reviewed skill as changed.
@@ -356,6 +362,19 @@ def audit_skills(workspace: Path, *, engine: Any = None, record: bool = True) ->
     return rows
 
 
+def resolve_skill(workspace: Path, ref: str) -> Path:
+    """A SKILL.md path, a skill directory, or an installed skill's name."""
+    p = Path(ref).expanduser()
+    if p.is_dir() and (p / "SKILL.md").is_file():
+        p = p / "SKILL.md"
+    if p.is_file():
+        return p
+    for cand in discover_skill_files(workspace):
+        if ref in (cand.parent.name, _frontmatter(decode_text(cand.read_bytes()[:_MAX_BYTES])).get("name")):
+            return cand
+    raise FileNotFoundError(f"no skill found for {ref!r} (not a path, and no installed skill has that name)")
+
+
 def approve_skill(workspace: Path, path: Path) -> Dict[str, Any]:
     """Re-baseline one skill after review: current hash becomes the trusted one."""
     baseline = _load_baseline(workspace)
@@ -402,5 +421,5 @@ def format_audit(rows: List[Dict[str, Any]]) -> str:
         for f in r["findings"]:
             lines.append(f"           - [{f.get('severity')}] {f.get('title')} ({f.get('ruleId')})")
     lines.append("")
-    lines.append("prismor skills approve <path>   # accept a NEW/CHANGED skill after review")
+    lines.append("prismor skills approve <path>   # accept a NEW/CHANGED skill after review (path, folder or skill name)")
     return "\n".join(lines)

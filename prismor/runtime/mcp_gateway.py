@@ -38,6 +38,7 @@ import os
 import fnmatch
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -52,6 +53,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from prismor.runtime.hooks import _extract_mcp_response_text, _mcp_endpoint_meta
 from prismor.runtime.tui_format import safe_text as _safe_text
+from prismor.runtime.stdio_lines import stdin_lines, write_line
 
 PROTOCOL_VERSION_FALLBACK = "2025-03-26"
 GATEWAY_AGENT = "mcp-gateway"
@@ -414,14 +416,20 @@ class UpstreamStdio(Upstream):
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
             kwargs["start_new_session"] = True
+        argv = list(self.spec.command or [])
+        if argv and os.name == "nt":
+            # CreateProcess ignores PATHEXT: bare `npx` is `npx.cmd` there.
+            argv[0] = shutil.which(argv[0], path=env.get("PATH")) or argv[0]
         try:
             self._proc = subprocess.Popen(
-                self.spec.command,
+                argv,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=sys.stderr,
                 env=env,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
                 **kwargs,
             )
@@ -1026,7 +1034,7 @@ class Gateway:
 
     def serve_stdio(self) -> int:
         try:
-            for line in sys.stdin:
+            for line in stdin_lines():
                 line = line.strip()
                 if not line:
                     continue
@@ -1051,8 +1059,7 @@ class Gateway:
 
     def _send(self, msg: Dict[str, Any]) -> None:
         with self._stdout_lock:
-            sys.stdout.write(json.dumps(msg) + "\n")
-            sys.stdout.flush()
+            write_line(json.dumps(msg))
 
     def _reply(self, req_id: Any, result: Dict[str, Any]) -> None:
         self._send({"jsonrpc": "2.0", "id": req_id, "result": result})
@@ -2147,7 +2154,7 @@ class Gateway:
             # mirrored tool is screened by the real command and path rules
             # rather than the generic MCP-payload path.
             from prismor.runtime import mirror
-            shaped = mirror.shape_call_event(route.tool, arguments)
+            shaped = mirror.shape_call_event(route.tool, arguments, self.workspace)
             if shaped is not None:
                 return {**base, **shaped}
         mcp_meta = {"mcp_server": route.server, "mcp_tool": route.tool}
@@ -2160,7 +2167,7 @@ class Gateway:
             from prismor.runtime import mirror
             native, native_args = mirror.native_call(route.tool, arguments)
             if mirror.native_tool(route.tool, arguments):
-                shaped = mirror.shape_call_event(native, native_args)
+                shaped = mirror.shape_call_event(native, native_args, self.workspace)
                 if shaped is not None:
                     return {**base, **shaped, **mcp_meta}
         try:
