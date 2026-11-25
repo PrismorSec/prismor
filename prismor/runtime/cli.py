@@ -1714,9 +1714,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             events = load_input_events(args.input, workspace=workspace)
         else:
             # Find most recent session in current workspace
-            sessions = list_sessions(workspace, limit=1)
+            from prismor.runtime import devlog as _devlog
+            sessions = list_sessions(workspace, limit=50)
             if not sessions:
                 raise SystemExit("No sessions found in this workspace. Use --input to analyze a file, or run a session first.")
+            _sid = _devlog.default_session_id(sessions)
+            sessions = [{"sessionId": _sid}]
             session = get_session(workspace, sessions[0]["sessionId"])
             if not session:
                 raise SystemExit(f"Could not load session {sessions[0]['sessionId']}")
@@ -1812,7 +1815,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime import devlog
         if args.command == "rca":
             sid = (devlog.resolve_session_id(args.session_id) if args.session_id
-                   else next((s["sessionId"] for s in list_sessions(workspace, 1)), None))
+                   else devlog.default_session_id(list_sessions(workspace, 50)))
             if not sid:
                 raise SystemExit("rca: " + (_sessions_elsewhere_hint(workspace)
                                             or "no sessions recorded yet")
