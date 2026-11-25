@@ -9,6 +9,7 @@ for the hosted judge.
 ```bash
 prismor pause                    # stop blocking for 24h, keep screening and logging
 prismor pause --for 2h --reason "release hotfix"
+prismor pause --hard             # also lift the floor rules (needs the unlock password)
 prismor pause-hard               # stop blocking until you run prismor resume
 prismor resume                   # start blocking again
 ```
@@ -22,6 +23,17 @@ The non-overridable floor keeps blocking while paused: destructive commands,
 secret exfiltration, remote execution, privilege escalation and Prismor's own
 self-protection rules (an agent rewriting its hooks or policy). A pause is for
 getting work past a rule that is in your way, not for running `rm -rf /`.
+
+`prismor pause --hard` lifts the floor too, for when you really need it (for
+example, generating a dataset of attack commands). Prismor's self-protection
+rules stay on, so an agent still cannot rewrite its hooks, policy, pause marker
+or audit trail while you are paused. It needs:
+
+- a real terminal: an agent cannot run it, even inside a `prismor unlock` window;
+- the unlock password, typed each time (set one with `prismor unlock --set-password`).
+
+It expires like `pause` (24 hours, or `--for`), the console shows the device as
+paused with the floor off, and an org pause never lifts the floor.
 
 - `pause` auto-resumes after 24 hours, or after `--for` (`30m`, `2h`, `1d`). The
   expiry is checked on every hook call, so protection comes back even if nobody

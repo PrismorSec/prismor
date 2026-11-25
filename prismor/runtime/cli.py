@@ -965,7 +965,8 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     if args.command in ("pause", "pause-hard"):
         from prismor.runtime import pause as _pause
-        refused = _pause_refusal(args.command, workspace)
+        _floor = bool(getattr(args, "hard", False))
+        refused = _pause_refusal(args.command, workspace, floor=_floor)
         if refused:
             print(refused)
             raise SystemExit(1)
@@ -989,7 +990,8 @@ def main(argv: Optional[List[str]] = None) -> None:
             by = ident.get("user_id") or ident.get("label") or ""
         except Exception:
             pass
-        rec = _pause.set_paused(duration_seconds=duration_s, reason=getattr(args, "reason", "") or "", by=by, hard=hard)
+        rec = _pause.set_paused(duration_seconds=duration_s, reason=getattr(args, "reason", "") or "", by=by, hard=hard,
+                                floor=_floor)
         # Fire one heartbeat now so the console flips to "paused" within ~30s.
         try:
             _pause.beat(agent="claude", state=rec)
@@ -997,7 +999,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             pass
         print()
         print(f"  {_color('⏸  Prismor paused', _YELLOW)} — policy enforcement is off; observe-mode screening keeps running.")
-        print(f"  {_pause.FLOOR_NOTE}")
+        if _floor:
+            print(f"  {_color(_pause.HARD_NOTE, _YELLOW)}")
+        else:
+            print(f"  {_pause.FLOOR_NOTE} To lift them too: prismor pause --hard")
         if rec.get("until"):
             until_local = datetime.fromtimestamp(float(rec["until"])).strftime("%H:%M")
             print(f"  {_color('Auto-resumes at ' + until_local, _DIM)}" + (f" (in {raw_duration})." if raw_duration else " (24h)."))
@@ -2566,7 +2571,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         _paused = _pstate is not None
         if _paused and blocking is not None:
             from prismor.runtime.policy_engine import _NON_OVERRIDABLE_RULE_IDS
-            _paused = str(blocking.get("ruleId") or "") not in _NON_OVERRIDABLE_RULE_IDS
+            from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS as _SP_FLOOR
+            from prismor.runtime import pause as _pause_floor
+            _rid = str(blocking.get("ruleId") or "")
+            if _rid in _NON_OVERRIDABLE_RULE_IDS:
+                # `pause --hard` lifts the floor, never the rules guarding Prismor.
+                _paused = _pause_floor.lifts_floor(_pstate) and _rid not in _SP_FLOOR
 
         # One-shot human approval (approvals_local.py): a person ran
         # `prismor approvals approve <id>` for exactly this call. Not for
@@ -2692,7 +2702,13 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _pstate is not None:
                 # Only a floor rule reaches here while paused. unblock_text is the
                 # one part every agent's block message carries.
-                unblock_text = ("Prismor is paused, but this is a floor rule: a pause does not lift it."
+                from prismor.runtime import pause as _pause_note_mod
+                _pnote = ("Prismor is hard-paused, but this rule protects Prismor itself and stays on."
+                          if _pause_note_mod.lifts_floor(_pstate) else
+                          "Prismor is paused, but this is a floor rule: a pause does not lift it. "
+                          "Only the person at the keyboard can lift floor rules, with "
+                          "`prismor pause --hard` and the unlock password.")
+                unblock_text = (_pnote
                                 + (f"\n\n{unblock_text}" if unblock_text else ""))
             if unblock_text:
                 reason += f"\n\n{unblock_text}"
@@ -5551,6 +5567,9 @@ def build_parser() -> argparse.ArgumentParser:
     pause_p.add_argument("--for", dest="duration", metavar="DURATION",
                          help="Auto-resume after this long, e.g. 30m, 2h, 1d (default: 24h)")
     pause_p.add_argument("--reason", help="Why you're pausing — shown in the console next to the device")
+    pause_p.add_argument("--hard", action="store_true",
+                         help="Lift the floor rules too (destructive commands, secret exfiltration, ...), "
+                              "except Prismor's self-protection. Needs a terminal and the unlock password.")
     pause_hard_p = subparsers.add_parser("pause-hard", help="Pause local ENFORCEMENT indefinitely, until you run `prismor resume` (observe mode stays on)")
     pause_hard_p.add_argument("--reason", help="Why you're pausing — shown in the console next to the device")
     subparsers.add_parser("resume", help="Resume enforcement after `prismor pause` / `prismor pause-hard`")
@@ -6074,7 +6093,8 @@ def _pause_note() -> str:
         from prismor.runtime import pause as _pause
         if _pause.active_state() is not None:
             return _color("Paused:", _YELLOW) + " policy enforcement is suspended until `prismor resume` " \
-                f"(findings are still recorded). {_pause.FLOOR_NOTE}"
+                f"(findings are still recorded). " + (_pause.HARD_NOTE if _pause.lifts_floor(_pause.active_state())
+                                                       else _pause.FLOOR_NOTE)
     except Exception:
         pass
     return ""
@@ -7302,7 +7322,7 @@ def _print_status_overview(workspace: Path) -> None:
         if _pstate.get("reason"):
             _pmsg += f"  ({_pstate['reason']})"
         print(f"  {_color('Paused:', _YELLOW)}      {_color(_pmsg, _YELLOW)}")
-        print(f"               {_pause.FLOOR_NOTE}")
+        print(f"               {_pause.HARD_NOTE if _pause.lifts_floor(_pstate) else _pause.FLOOR_NOTE}")
 
     # Cloaking — lazy import so the cloaking subsystem stays optional
     cloak_state = "unknown"
@@ -7537,7 +7557,7 @@ def _policy_test(workspace: Path, test_file: Optional[str] = None, policy_file: 
         raise SystemExit(1)
 
 
-def _pause_refusal(command: str, workspace: Path) -> Optional[str]:
+def _pause_refusal(command: str, workspace: Path, floor: bool = False) -> Optional[str]:
     """Why `prismor pause`/`pause-hard` may not run here, or None.
 
     Pausing turns enforcement off for every agent on the machine, so it gets
@@ -7558,6 +7578,17 @@ def _pause_refusal(command: str, workspace: Path) -> Optional[str]:
         how = "an Administrator shell" if _sys.IS_WINDOWS else f"sudo prismor {command}"
         return (f"This machine has a system-wide Prismor install; `prismor {command}` is "
                 f"admin-only here ({how}), or ask your org admin to pause it from the console.")
+    if floor:
+        # `pause --hard` lifts the floor, so an unlock window is not enough: a
+        # person types the password at a real terminal, every time.
+        if not sys.stdin.isatty():
+            return ("prismor pause --hard needs a terminal: run it yourself, not through an agent. "
+                    "An unlock window does not cover it.")
+        if not _unlock.is_configured():
+            return ("prismor pause --hard needs the unlock password, and none is set.\n"
+                    "Set one first: prismor unlock --set-password")
+        ok, msg = _unlock.verify(getpass.getpass("Prismor unlock password (lifts floor rules): "))
+        return None if ok else msg
     try:
         if _unlock.remaining_seconds(workspace):
             return None

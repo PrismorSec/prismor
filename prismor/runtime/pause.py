@@ -98,6 +98,9 @@ def _ensure_key() -> bytes:
 
 def _mac(record: Dict[str, Any], key: bytes) -> str:
     body = {k: record.get(k) for k in _MAC_FIELDS}
+    # Signed only when present, so markers written before `--hard` still verify.
+    if "floor" in record:
+        body["floor"] = record.get("floor")
     blob = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key, blob, hashlib.sha256).hexdigest()
 
@@ -123,6 +126,17 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+HARD_NOTE = ("Floor rules are off too, except the rules that protect Prismor itself "
+             "(its hooks, policy, pause marker and audit trail).")
+
+
+def lifts_floor(state: Optional[Dict[str, Any]]) -> bool:
+    """True when ``state`` is a local `prismor pause --hard`, which lifts the
+    floor rules too. Only a signed local marker carries ``floor``; an org pause
+    never does, and self-protection rules stay on either way (the caller checks)."""
+    return bool(state) and state.get("source", "local") == "local" and state.get("floor") is True
+
+
 # Shown wherever a pause is reported, so nobody reads "paused" as "all off".
 FLOOR_NOTE = ("Floor rules still block (destructive commands, secret exfiltration, "
               "reverse shells, Prismor self-protection).")
@@ -130,7 +144,8 @@ FLOOR_NOTE = ("Floor rules still block (destructive commands, secret exfiltratio
 _DEFAULT_DURATION_SECONDS = 86400  # `prismor pause` auto-resumes after 24h unless --for overrides it
 
 
-def set_paused(duration_seconds: Optional[int] = None, reason: str = "", by: str = "", hard: bool = False) -> Dict[str, Any]:
+def set_paused(duration_seconds: Optional[int] = None, reason: str = "", by: str = "", hard: bool = False,
+               floor: bool = False) -> Dict[str, Any]:
     """Write the pause marker. ``hard=True`` (from `prismor pause-hard`) pauses
     indefinitely; otherwise defaults to 24h unless ``duration_seconds`` overrides
     it. Enforcement only — observe-mode screening/telemetry stays on regardless.
@@ -150,6 +165,9 @@ def set_paused(duration_seconds: Optional[int] = None, reason: str = "", by: str
         "by": (by or "")[:120],
         "last_beat": 0.0,
     }
+    if floor:
+        # `prismor pause --hard`: floor rules are lifted too (see lifts_floor).
+        record["floor"] = True
     record["mac"] = _mac(record, _ensure_key())
     from prismor.runtime import system_install
     system_install.write_shared(pause_path(), json.dumps(record, indent=2))
@@ -371,6 +389,7 @@ def beat(agent: Optional[str] = None, state: Optional[Dict[str, Any]] = None) ->
             "pausedAt": _iso(float(rec.get("at") or now)),
             "pausedUntil": _iso(float(until)) if until else None,
             "reason": rec.get("reason") or None,
+            "floorOff": rec.get("floor") is True,
         },
     }
     try:

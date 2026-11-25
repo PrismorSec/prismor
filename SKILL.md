@@ -66,7 +66,7 @@ Read the output line by line:
 - **`Hooks: claude  (enforce, project; configured)`** → the hook configuration requests enforcement. It is followed by `Note: agent invocation not verified; run prismor doctor for configuration checks`: this line alone does not prove the agent invokes the hook. Read any `Hook health:` warnings.
 - **`Note:` lines** → status reports its own misconfigurations: the same agent hooked at *both* project and global scope (every call screened twice), or the two scopes disagreeing on mode. These are the user's to fix, and the printed command is the fix. Relay it, don't run it.
 - **`Workspace:`** → check this is the repo you're actually working in. A hook installed against a different workspace evaluates your calls under *that* repo's policy, which is a real misconfiguration worth raising.
-- **`Paused: yes`** → policy enforcement is suspended (logging continues), but floor rules still block, so do not retry a floor block because of a pause. Say so before relying on a clean run; a command that passes while paused may block when it resumes.
+- **`Paused: yes`** → policy enforcement is suspended (logging continues), but floor rules still block, so do not retry a floor block because of a pause. Only the user can lift them, with `prismor pause --hard` in their own terminal; never run it yourself. Say so before relying on a clean run; a command that passes while paused may block when it resumes.
 - **`Cloaking: not installed`** → secret-prevention layer is off. Only required if the user works with API keys / tokens through the agent. If they do, run `prismor cloak install` then register secrets per [Safe-command map](#4-safe-command-map).
 - **`LATEST SESSION` shows findings** → surface them to the user before starting new work.
 

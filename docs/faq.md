@@ -70,7 +70,8 @@ More: [Making exceptions](cli-reference.md#making-exceptions) and
 
 Pause it. Pausing stops blocking but keeps checking and recording, so your
 history has no gaps. The floor (destructive commands, secret exfiltration,
-reverse shells, Prismor self-protection) keeps blocking.
+reverse shells, Prismor self-protection) keeps blocking. `prismor pause --hard`
+lifts the floor too, except self-protection; it needs your unlock password.
 
 ```bash
 prismor pause                                     # stop blocking for 24 hours
