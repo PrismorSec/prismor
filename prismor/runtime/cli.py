@@ -99,7 +99,7 @@ except ImportError:
     sys.exit(1)
 
 from prismor.runtime.feed import load_feed, match_advisories
-from prismor.runtime.hooks import _SUPPORTED_AGENTS, install_hooks, normalize_payload, uninstall_hooks
+from prismor.runtime.hooks import _SUPPORTED_AGENTS, HookConfigError, install_hooks, normalize_payload, uninstall_hooks
 from prismor.runtime.policy_engine import PolicyEngine, drop_post_twin_findings, validate_policy
 from prismor.runtime.runtime import evaluate_tool_call
 from prismor.runtime.tui_format import safe_text
@@ -1843,14 +1843,18 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     # ── install-hooks ──────────────────────────────────────────────────
     if args.command == "install-hooks":
-        results = install_hooks(
-            repo_root=repo_root,
-            workspace=workspace,
-            agent=args.agent,
-            scope=args.scope,
-            mode=args.mode,
-            portable=getattr(args, "portable", False),
-        )
+        try:
+            results = install_hooks(
+                repo_root=repo_root,
+                workspace=workspace,
+                agent=args.agent,
+                scope=args.scope,
+                mode=args.mode,
+                portable=getattr(args, "portable", False),
+            )
+        except (HookConfigError, OSError) as exc:
+            print(f"prismor install-hooks: {exc}\nNothing was changed. Fix or remove that file, then run it again.", file=sys.stderr)
+            raise SystemExit(1)
         register_workspace(workspace)
         for item in results:
             if item.get("loadWarning"):
@@ -5713,7 +5717,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "AI agents: run `prismor setup` with no flags first. With no terminal it installs "
             "nothing and prints the questions to ask the user (mode, cloaking, scope, agents) "
-            "plus the exact command for their answers. Don't pick these for the user: "
+            "plus the exact command for their answers. Outside an agent (scripts, CI), a bare run "
+            "with no terminal installs the defaults. Don't pick these for the user: "
             "--scope global changes every project on the machine."
         ),
     )
