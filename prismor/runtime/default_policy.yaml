@@ -1855,6 +1855,9 @@ rules:
       # Suppression — silencing the very signals that would expose the above.
       - 'suppress\s+(?:all\s+)?(?:warnings?|errors?|alerts?)\s+from\b'
       - 'hide\s+any\s+(?:errors?|warnings?|alerts?)\s+about\b'
+      # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
+      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\|\s*(?:iex|invoke-expression)\b'
     action: warn
 
   # ── MEDIUM: Exfiltration directive in project-memory content (#153) ───
@@ -2003,6 +2006,9 @@ rules:
       - 'do\s+not\s+(?:mention|disclose|tell|reveal|show|warn|report)\b[^\n]{0,40}\b(?:the\s+)?user\b'
       - '(?:append|include|add|insert)\s+(?:this|the\s+following)\s+(?:line\s+)?(?:to|in)\s+(?:every|each|all)\s+(?:response|message|reply|output|commit)'
       - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
+      # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
+      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\|\s*(?:iex|invoke-expression)\b'
     pattern_groups:
       instruction_file:
         - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'

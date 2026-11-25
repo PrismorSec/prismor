@@ -365,29 +365,28 @@ def _run_memory(args) -> None:
     if sub == "verify":
         from prismor.runtime.memory_guard import verify_memory_files
         file_path = Path(args.file)
-        findings = verify_memory_files([{"path": str(file_path)}], workspace)
+        if not file_path.is_file():
+            print(f"prismor memory verify: no such file: {file_path}", file=sys.stderr)
+            raise SystemExit(1)
+        # Read-only: never records a baseline (use `memory trust` for that).
+        findings = verify_memory_files([{"path": str(file_path)}], workspace, record=False)
         if findings:
             for f in findings:
                 print(f"[{f['severity']}] {f['title']}")
                 print(f"  origin: {f.get('evidence', {}).get('origin', '?')}")
-        else:
-            print(f"clean: {file_path} — hash matches trust baseline")
+            raise SystemExit(1)
+        print(f"clean: {file_path} — hash matches trust baseline")
         return
 
     if sub == "scan":
         from prismor.runtime.policy_engine import PolicyEngine
+        from prismor.runtime.memory_guard import scan_memory_text
+        from prismor.runtime.paths import read_text_auto
         engine = PolicyEngine()
+        errors = 0
         for fpath in args.file:
             try:
-                text = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                # Screen it the way SessionStart does: as a "memory" event,
-                # which is what the memory_poisoning rules match on. A "text"
-                # event reported "clean" on a line the session notice flagged.
-                from prismor.runtime.hooks import strip_prismor_managed
-                findings = engine.evaluate(
-                    {"type": "memory", "path": str(fpath), "content": strip_prismor_managed(text)}, 0)
-                findings += [f for f in engine.check_text(text)
-                             if f.get("ruleId") not in {g.get("ruleId") for g in findings}]
+                findings = scan_memory_text(engine, str(fpath), read_text_auto(fpath))
                 if findings:
                     print(f"\n{fpath}:")
                     for f in findings:
@@ -395,7 +394,10 @@ def _run_memory(args) -> None:
                 else:
                     print(f"\n{fpath}: clean")
             except Exception as e:
+                errors += 1
                 print(f"{fpath}: error — {e}")
+        if errors:
+            raise SystemExit(1)
         return
 
     if sub == "sign":
