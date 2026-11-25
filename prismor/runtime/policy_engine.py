@@ -176,6 +176,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "git-remote-hijack",
     "git-branch-force-delete",
     "git-clean-force",
+    "git-reset-hard",
     "git-stash-delete",
     "npm-publish",
     "pkg-install-from-url",
@@ -5082,6 +5083,23 @@ def _expand_braces(cmd: str) -> str:
     )
 
 
+_WIN_BS_RE = re.compile(r"(?<=[\w.~:%)])\\+(?=[\w.$%~])")
+
+
+def _winpath_in_command(cmd: str) -> str:
+    """Backslash paths in a command spelled with ``/`` (``.claude\\settings.json``).
+
+    PowerShell and cmd write ``.claude\\settings.json``; the path rules are
+    written with ``/``. Matched next to the original, so it only adds matches.
+    """
+    if "\\" not in cmd and "::$" not in cmd:
+        return cmd
+    cmd = re.sub(r"^(\\\\[?.]\\)|(?<=[\s\"'=(])\\\\[?.]\\", "", cmd)
+    cmd = re.sub(r"(?<=[\s\"'=(;|&>])\\\\(?=\w)", "//", cmd)
+    cmd = _WIN_BS_RE.sub("/", cmd)
+    return re.sub(r":{1,2}\$DATA\b", "", cmd)
+
+
 def _equate_shell(cmd: str) -> str:
     """Rewrite shell forms that are the same action as a pattern the floor already has.
 
@@ -5114,6 +5132,7 @@ def _equate_shell(cmd: str) -> str:
         cmd,
     )
     cmd = _expand_braces(cmd)
+    cmd = _winpath_in_command(cmd)
     cmd = cmd.replace("./*", "*")
     of_disk = re.search(
         r"\bof=(/dev/(?!null\b|zero\b|stdout\b|stderr\b|tty\b|fd/)[^\s;&|]+)",
@@ -5441,24 +5460,64 @@ def _executable_lines(body: str) -> Tuple[List[Tuple[int, str]], bool]:
     return out, truncated
 
 
+_WIN_ENV_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%|\$\{?env:([A-Za-z_][A-Za-z0-9_]*)\}?", re.IGNORECASE)
+
+
+def _winpath_canon(path: str) -> str:
+    """Windows spelling of a path folded to the POSIX form the rules match.
+
+    ``C:\\ws\\.claude\\settings.json`` and ``C:/ws/.claude/settings.json`` are
+    one file, and so are ``\\\\?\\C:\\...``, ``.env:stream``, ``.env::$DATA``,
+    ``.env `` and ``.env.`` (NTFS drops trailing dots/spaces and ignores the
+    stream suffix). ``%VAR%``, ``$env:VAR`` and a leading ``~`` are expanded.
+    Rules are case-insensitive, so case needs no folding here.
+    """
+    p = path
+    if p.startswith(("\\\\?\\UNC\\", "\\\\.\\UNC\\")):
+        p = "\\\\" + p[8:]
+    elif p.startswith(("\\\\?\\", "\\\\.\\", "//?/", "//./")):
+        p = p[4:]
+
+    def _env(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name) or os.environ.get(name.upper()) or m.group(0)
+
+    p = _WIN_ENV_RE.sub(_env, p)
+    if p[:2] in ("~\\", "~/") or p == "~":
+        p = os.path.expanduser(p[:1]) + p[1:]
+    p = p.replace("\\", "/")
+    parts = p.split("/")
+    out = []
+    for i, comp in enumerate(parts):
+        if comp.strip(". ") and not (i == 0 and re.fullmatch(r"[A-Za-z]:", comp)):
+            # NTFS ignores trailing dots/spaces and a ``:stream[:$DATA]`` suffix.
+            comp = comp.split(":", 1)[0].rstrip(". ")
+        out.append(comp)
+    return "/".join(out)
+
+
 def _resolve_path(path: str) -> str:
     """Resolve symlinks so path-based rules match the real target.
 
     A symlink like ``config/auth.json -> ~/.claude/.credentials.json``
     would bypass rules that match ``.credentials.json`` if we only check
-    the apparent path.  Returns both the original and resolved path
-    separated by a newline so either can match.
+    the apparent path.  Returns the original, its Windows-canonical form and
+    the resolved path separated by newlines so any of them can match.
     """
     if not path:
         return path
     from pathlib import Path as _Path
+    seen = [path]
+    canon = _winpath_canon(path)
+    if canon != path:
+        seen.append(canon)
     try:
-        resolved = str(_Path(path).resolve())
+        resolved = str(_Path(canon).resolve())
     except (OSError, ValueError):
-        return path
-    if resolved != path:
-        return f"{path}\n{resolved}"
-    return path
+        resolved = ""
+    if resolved and resolved not in seen:
+        seen.append(resolved)
+    return "\n".join(seen)
 
 
 def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
@@ -5919,6 +5978,20 @@ except Exception:  # pragma: no cover
 _WARNED_PROJECT_ERRORS: set = set()
 
 
+def _read_policy_text(path: Path) -> str:
+    """Policy file text, BOM-aware.
+
+    PowerShell 5.1 ``>`` / ``Out-File`` write UTF-16LE with a BOM and Notepad
+    writes UTF-8 with one; both used to make a valid policy "invalid".
+    """
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    if len(raw) >= 4 and raw[1:2] == b"\x00" and raw[3:4] == b"\x00":  # BOM-less UTF-16LE
+        return raw.decode("utf-16-le")
+    return raw.decode("utf-8-sig")
+
+
 def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """Load a YAML file. Falls back to basic parsing if PyYAML is missing.
 
@@ -5927,7 +6000,7 @@ def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """
     if not path.exists():
         return None
-    text = path.read_text(encoding="utf-8")
+    text = _read_policy_text(path)
     if yaml is not None:
         import copy as _copy
         import hashlib as _hashlib
@@ -5977,8 +6050,10 @@ def validate_policy(path: Path) -> List[str]:
     elif raw["version"] != "1.0":
         errors.append(f"Unsupported version: {raw['version']} (expected 1.0)")
 
-    if "rules" not in raw:
-        errors.append("Missing required field: rules")
+    # `rules` is optional: a settings-only policy (what `prismor egress ...`
+    # writes) is valid and adds no rules.
+    if not isinstance(raw.get("rules", []), list):
+        errors.append("'rules' must be a list")
         return errors
 
     if "mcp_tool_repeat_limits" in (raw.get("settings") or {}):
@@ -5999,7 +6074,7 @@ def validate_policy(path: Path) -> List[str]:
     errors.extend(cond_errors)
 
     seen_ids: set[str] = set()
-    for i, rule in enumerate(raw.get("rules", [])):
+    for i, rule in enumerate(raw.get("rules") or []):
         prefix = f"rules[{i}]"
         rule_id = rule.get("id", "")
         # A rule is either FULL (defines its own patterns) or a sparse OVERLAY

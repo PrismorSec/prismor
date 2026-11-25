@@ -625,6 +625,14 @@ rules:
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)shutdown\b'
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)reboot\b'
       - 'launchctl\s+unload\b'
+      # Windows: wipe a drive or volume, drop restore points, power off, and a
+      # recursive delete of an OS dir at any depth in any flag order (the
+      # PowerShell form above only matched the bare drive or top-level dir).
+      - '(?:^|[\n;&|({]\s*)format(?:\.com)?\s+[a-z]:(?=\s|$|/)'
+      - '\b(?:Format-Volume|Clear-Disk|Initialize-Disk)\b'
+      - '(?:^|[\s;&|("''])(?:remove-item|ri|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?[a-z]:\\windows(?:\\[^\s"'';|&]*)?["'']?(?=\s|$|[;|&)"''])'
+      - '\bvssadmin(?:\.exe)?\s+delete\s+shadows\b|\bwmic\b[^\n]*\bshadowcopy\s+delete\b|\bbcdedit\b[^\n]*\brecoveryenabled\s+no\b'
+      - '(?:^|[\n;&|({]\s*)(?:Stop-Computer|Restart-Computer)\b'
     guidance: "delete the specific path you mean (or move it with `trash`/`mv` to a scratch dir); never a root, system or home directory."
     action: block
 
@@ -741,6 +749,10 @@ rules:
       - 'usermod\s+.*-[a-zA-Z]*G\s+.*sudo'
       - 'usermod\b[^\n]*--groups\b[^\n]*\bsudo\b'
       - '\b(useradd|adduser)\b'
+      # Windows: a new local account, membership of Administrators, a new
+      # service, or a process started through WMI.
+      - '\bnet1?(?:\.exe)?\s+user\b[^\n]*\s/add\b|\bnet1?(?:\.exe)?\s+localgroup\s+"?administrators"?\s[^\n]*\s/add\b|\b(?:New-LocalUser|Add-LocalGroupMember)\b'
+      - '\bsc(?:\.exe)?\s+(?:\\\\\S+\s+)?create\b|\bNew-Service\b|\bwmic\b[^\n]*\bprocess\s+call\s+create\b'
       - '\bnsenter\b'
       - '\bpkexec\b'
       - 'chattr\s+\+i\b'
@@ -835,6 +847,13 @@ rules:
       - '\b(?:echo|printf)\b[^\n]*\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|zsh|dash|ksh)\b[^\n]*(?:\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|>{1,2}\s*\S+\.(?:sh|bash|zsh)\b)'
       # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
       - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
+      # Windows download-and-run and script-host abuse: bitsadmin /transfer,
+      # mshta or rundll32 handed a URL or script, and a PowerShell command that
+      # arrives base64-encoded (-e, -ec, -enc, -EncodedCommand).
+      - '\bbitsadmin(?:\.exe)?\b[^\n]*\s/transfer\b'
+      - '\bmshta(?:\.exe)?\s+["'']?(?:https?:|vbscript:|javascript:)'
+      - '\brundll32(?:\.exe)?\s+["'']?javascript:'
+      - '\b(?:powershell|pwsh)(?:\.exe)?\s+(?:\S+\s+){0,8}?-(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)\s+["'']?[A-Za-z0-9+/=]{8,}'
       # eval of remotely-fetched content: eval "$(curl ...)"
       # The builtin is a word followed by whitespace: `eval-server`,
       # `eval.log` and `run-eval` are names that merely contain it.
@@ -1536,16 +1555,16 @@ rules:
     # the bare-path form below, which is exactly the over-match being removed,
     # so without them the split would have opened a real gap.
     patterns:
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json|\b(?:rm|mv|cp|tee|truncate|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?::[^\s;&|]*|\.+)?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.claude/settings(?:\.local)?\.json["\'']?(?=[ \t]*(?:$|[;&|<>])))'
       # Every other host Prismor hooks into: deregistering the agent's own
       # hook (or Codex's `[features] hooks`) is a total bypass for that host.
-      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\b(?:rm|mv|cp|tee|truncate|ln)\b[^\n;&|<>]*?[\s"''=]["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))'
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\b(?:rm|mv|cp|tee|truncate|ln|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?[\s"''=]["'']?[^\s;&|<>"'']*(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?(?:\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))'
       # Interpreter writes (python -c, perl -i, node -e ...) need no shell
       # verb and emit no file_write event, so they are matched on the line.
       - '\b(?:python[0-9.]*|perl|ruby|node|deno|bun|php)[ \t]+(?:-\S+[ \t]+)*?-[ce]\b(?=[^\n]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py))(?=[^\n]*(?:\.write|write_text|write_bytes|writefile|appendfile|os\.(?:replace|rename|remove|unlink|symlink)|shutil\.|\bunlink\b|\bopen\s*\([^)]*,\s*["''][wax+]))'
       # perl -pi / ruby -i rewrite a file in place.
       - '\b(?:perl|ruby)[ \t]+(?:-\S+[ \t]+)*?-\S*i\S*[^\n;&|]*(?:\.claude/settings|\.prismor(?:-warden)?/|pause\.(?:json|key)|\.codex/(?:hooks\.json|config\.toml)|\.cursor/hooks\.json|\.gemini/(?:settings\.json|config/hooks\.json)|\.github/hooks/prismor\.json|\.(?:copilot|grok)/hooks/[^\s;&|<>"'']+|windsurf/hooks\.json|\.qwen/settings\.json|\.kiro/agents/kiro_default\.json|\.openhands/hooks\.json|\.agents/(?:hooks\.json|plugins/prismor/)|opencode/plugins/|\.openclaw/extensions/|hermes/plugins/|hook-dispatch\.py)'
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml|\b(?:rm|mv|cp|tee|truncate|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?::[^\s;&|]*|\.+)?(?=$|[\s;&|)])|\bsed\b[^\n;&|<>]*?\s-i\S*[^\n;&|<>]*?[\s"\''=]["\'']?[^\s;&|<>"\'']*\.prismor(?:-warden)?/policy\.yaml["\'']?(?=[ \t]*(?:$|[;&|<>])))'
     action: block
 
   # The same protection for the file-write surface, where the field IS a bare
@@ -1681,7 +1700,7 @@ rules:
       - '\bpython[0-9.]*[ \t]+(-\S+[ \t]+)*-m[ \t]+prismor\.\S+[ \t]+mcp-gateway[ \t]+approve\b(?![^;&|\n]*\s(?:-h|--help)(?:\s|$))'
       - '\b(ba|z|k|da)?sh[ \t]+(-\S+[ \t]+)*-c[ \t]+[''"]?[ \t]*(\S*/)?(prismor|immunity)(@\S+)?[ \t]+mcp-gateway[ \t]+approve\b'
       - '(^|/)mcp-tool-pins/[^/\s]+\.json$'
-      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)mcp-tool-pins/'
+      - '(?:>{1,2}\|?[ \t]*["'']?[^\s;&|<>"'']*|\b(?:rm|mv|cp|truncate|tee|shred|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)mcp-tool-pins/'
       # One-shot approvals (approvals_local.py): writing an approved record
       # into this file is approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
@@ -1689,18 +1708,18 @@ rules:
       # approving your own blocked call.
       - '\bapprovals\.(json|lock|tmp)\b'
       # Other Prismor state an agent has no legitimate reason to rewrite.
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
       # The runner index decloak.sh wraps sandboxed calls from: emptying it
       # would let a call run unwrapped (sandbox.decloak_saw_runner).
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/sandbox/active\.tsv'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)\.prismor/sandbox/active\.tsv'
       - '(^|/)\.prismor/sandbox/active\.tsv$'
       # The cached org policy: a validly signed but older policy written back
       # here (e.g. one carrying device_pause: paused) would be accepted.
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)\.prismor/remote-policy[\w.-]*'
       - '(^|/)\.prismor/remote-policy(\.yaml|\.yaml\.sig|\.meta\.json|\.hwm\.json)$'
       # Installed policy packs and their hash lockfile (policy_packs.py).
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln)\b[^\n;&|<>]*?)(?:\.prismor|etc/prismor)/packs/'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)(?:\.prismor|etc/prismor)/packs/'
       # System install: world-readable so every user's hook can load it, which
       # makes the device key one `Read` away from any agent on the box.
       - '(^|/)etc/prismor/(pause|identity)\.json$'
@@ -1793,7 +1812,7 @@ rules:
     event_types: [shell, file_write]
     fields: [command, path]
     patterns:
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?=$|[\s;&|)])'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?::[^\s;&|]*|\.+)?(?=$|[\s;&|)])'
       # Loop variable: `for f in CLAUDE.md AGENTS.md; do echo x >> "$f"; done`
       # names the file in the word list and writes through `$f`.
       - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
@@ -2574,6 +2593,12 @@ rules:
       - '\biptables\s+-F\b'
       - '\biptables\s+-P\s+\w+\s+ACCEPT\b'
       - '\bnft\s+flush\s+ruleset\b'
+      # Windows: Defender or the firewall off, event logs cleared.
+      - '\bSet-MpPreference\b[^\n]*-Disable\w+'
+      - '\bnetsh(?:\.exe)?\s+advfirewall\s+set\s+\w+\s+state\s+off\b'
+      - '\bSet-NetFirewallProfile\b[^\n]*-Enabled\s+(?:False|0|\$false)\b'
+      - '\b(?:Stop-Service|Set-Service)\b[^\n]*\b(?:WinDefend|MpsSvc|EventLog)\b|\bsc(?:\.exe)?\s+(?:stop|config)\s+(?:WinDefend|MpsSvc|EventLog)\b'
+      - '\bwevtutil(?:\.exe)?\s+(?:cl|clear-log)\b|\bClear-EventLog\b'
     action: block
 
   # ── HIGH (warn): Change control — shared infra, prod branches, cloud ──
@@ -2628,6 +2653,17 @@ rules:
           [ \t]*(?=$|[\n;&|)]|['"][ \t]*(?:$|[;&|)]))
         )
     guidance: "preview the files with `git clean -n` and confirm what can be removed."
+    action: warn
+
+  - id: git-reset-hard
+    severity: HIGH
+    category: change_control
+    title: Discards uncommitted work with git reset --hard
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()[ \t]*(?:(?:sudo|doas|env|time|nice|exec|command)[ \t]+(?:-\S+[ \t]+)*|\w+=\S+[ \t]+)*(?:[^\s;&|]*/)?git(?:[ \t]+(?:--no-pager|-[Cc][ \t]+(?:[^\s;&|''"]+|''[^''\n]*''|"[^"\n]*")))*[ \t]+reset(?:[ \t]+[^\s;&|]+)*?[ \t]+--hard(?=\s|$|[;&|)])'
+    guidance: "check `git status` and `git stash` first; --hard throws away uncommitted changes."
     action: warn
 
   - id: git-branch-force-delete
