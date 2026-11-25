@@ -151,6 +151,12 @@ def test_pause_keeps_floor_blocking(tmp_path, monkeypatch):
     assert "a pause does not lift it" in str(out)
 
 
+def test_session_pause_keeps_floor_blocking(tmp_path):
+    from prismor.runtime.store import update_session_control
+    update_session_control(tmp_path, "s1", "pause")  # _dispatch's session id
+    assert _dispatch(tmp_path, "rm -rf /").returncode == 2
+
+
 # ── asserted subject on a device surface ──────────────────────────────────
 # An agent can spawn a child agent with PRISMOR_SUBJECT=user:<someone>. On a
 # hook/mirror surface the enrolled device is the actor, so that asserted

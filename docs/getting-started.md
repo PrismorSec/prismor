@@ -103,8 +103,8 @@ The pages are listed in the sidebar on the left.
   have been, which rules fired, where agents connected to on the internet, and
   where they keep failing. Start here.
 - **Sessions.** Every agent run, one row each. Open one to see what the agent
-  did step by step. For a live session you can pause Prismor or clear its
-  session scope from here.
+  did step by step. For a live session you can pause or clear its session
+  scope from here. Policy and floor rules still apply.
 - **Files.** Every file an agent wrote, and the session that changed it. Use it
   to answer "which agent edited this, and why?"
 - **Agents.** Each coding agent Prismor has seen. You can switch one off
