@@ -53,3 +53,29 @@ def test_analyze_utf16_input(tmp_path):
     f = tmp_path / "e.jsonl"
     f.write_bytes('{"type":"shell"}\n'.encode("utf-16"))
     assert cli.parse_jsonl(cli.read_text(str(f))) == [{"type": "shell"}]
+
+
+def test_stdin_decoded_as_utf8_not_locale(monkeypatch):
+    import io
+    import sys
+    raw = '{"cmd":"echo café 🚀"}'.encode("utf-8")
+    fake = io.TextIOWrapper(io.BytesIO(codecs.BOM_UTF8 + raw), encoding="cp1252")
+    monkeypatch.setattr(sys, "stdin", fake)
+    assert winutil.read_stdin_text() == '{"cmd":"echo café 🚀"}'
+
+
+def test_hook_dispatch_stdin_utf8(tmp_path):
+    """End to end: UTF-8 bytes piped to hook-dispatch under a cp1252 locale."""
+    import os
+    import subprocess
+    import sys
+    code = (
+        "import io,sys,json;"
+        "sys.stdin=io.TextIOWrapper(sys.stdin.buffer,encoding='cp1252');"
+        "from prismor.runtime.winutil import read_stdin_text as r;"
+        "print(json.dumps(json.loads(r()),ensure_ascii=True))"
+    )
+    out = subprocess.run([sys.executable, "-c", code], input='{"c":"café"}'.encode(),
+                         capture_output=True, env=dict(os.environ, PYTHONUTF8="0"),
+                         cwd=os.path.dirname(os.path.dirname(__file__)))
+    assert out.stdout.decode().strip() == '{"c": "caf\\u00e9"}'

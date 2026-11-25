@@ -1239,7 +1239,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
                 )
                 raise SystemExit(1)
-            text = sys.stdin.read()
+            from prismor.runtime.winutil import read_stdin_text
+            text = read_stdin_text()
         if not text or not text.strip():
             sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
@@ -1926,7 +1927,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Interpreter start + imports, from the shim's stamp to here.
         _perf.STAGES["startup"] = (time.time() - _HOOK_T0) * 1000
         _perf.lap()
-        payload = json.loads(sys.stdin.read() or "{}")
+        from prismor.runtime.winutil import read_stdin_text
+        payload = json.loads(read_stdin_text() or "{}")
         _hook_claimed = True   # set for real just before evaluation
         # A global (~/.claude) hook carries no --workspace: attribute the call
         # to the repo the agent is actually running in (payload cwd → git root),
@@ -3621,7 +3623,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     from getpass import getpass
                     value = getpass(f"Enter value for @@SECRET:{name}@@ (input hidden): ")
                 else:
-                    value = sys.stdin.read().rstrip("\n")
+                    from prismor.runtime.winutil import read_stdin_text
+                    value = read_stdin_text().rstrip("\n")
             try:
                 path = add_secret(name, value)
             except (OSError, ValueError) as exc:
