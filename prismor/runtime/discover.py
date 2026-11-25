@@ -83,6 +83,9 @@ class McpRecord:
     #: config — i.e. it arrived with the code. See ``_is_workspace_scoped``.
     workspace_scoped: bool = False
     risk: str = "none"
+    #: The static audit's band alone (what `prismor scan` reports), before
+    #: discover's workspace/remote floors; the AIBOM uses this one.
+    schema_risk: str = "none"
     findings: List[str] = field(default_factory=list)
     #: Filled by ``add_footprint`` (``discover mcp`` only): live copies of a
     #: stdio server, their resident memory, and how many agent sessions in the
@@ -1002,6 +1005,8 @@ def _score_mcp(record: McpRecord, entry: Dict[str, Any]) -> None:
                 risk = band
     except Exception:
         pass
+
+    record.schema_risk = risk
 
     # An ungoverned remote server is the shape that actually moves data off the
     # machine, so it floors at medium even when the schema audit is clean.

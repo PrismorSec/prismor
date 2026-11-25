@@ -23,9 +23,10 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore[no-redef]
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from prismor.runtime.paths import read_text_auto
 from prismor.runtime.policy_engine import PolicyEngine, _has_suspicious_unicode
 
 # Maximum size of skill source files to read (100 KB).
@@ -258,6 +259,12 @@ def _cursor_configs(workspace: Path) -> List[Path]:
     return [p for p in _dedupe(candidates) if p.exists()]
 
 
+def _vscode_configs(workspace: Path) -> List[Path]:
+    # VS Code's MCP file declares servers under "servers" (handled by
+    # _extract_mcp_servers); discover/aibom already list it.
+    return [p for p in [workspace / ".vscode" / "mcp.json"] if p.exists()]
+
+
 def _windsurf_configs(workspace: Path) -> List[Path]:
     home = Path.home()
     candidates = [
@@ -353,6 +360,7 @@ def _dedupe(paths: List[Path]) -> List[Path]:
 _AGENT_DISCOVERERS = {
     "claude": _claude_configs,
     "cursor": _cursor_configs,
+    "vscode": _vscode_configs,
     "windsurf": _windsurf_configs,
     "openclaw": _openclaw_configs,
     "hermes": _hermes_configs,
@@ -474,13 +482,13 @@ def parse_config(config_path: Path, agent: Optional[str] = None) -> List[Dict[st
 
     if config_path.name == "SKILL.md":
         try:
-            text = config_path.read_text(encoding="utf-8")
+            text = read_text_auto(config_path)
         except OSError:
             return []
         entries = [_extract_skill_manifest(text, config_path)]
     else:
         try:
-            text = config_path.read_text(encoding="utf-8")
+            text = read_text_auto(config_path)
             if config_path.suffix == ".toml":
                 data = tomllib.loads(text)
             elif config_path.suffix == ".jsonc" or agent == "opencode":
@@ -843,6 +851,80 @@ def _looks_like_hardcoded_secret(key: str, value: str) -> bool:
     return False
 
 
+_SHELL_MCP_RE = re.compile(
+    r"(?:server-shell|mcp-server-commands|mcp-shell-server|mcp-server-shell|shell-mcp|server-commands)",
+    re.IGNORECASE)
+_LAUNCHERS = {"npx", "bunx", "uvx", "pipx", "pnpx"}
+_GIT_DEP_RE = re.compile(r"^(?:github:|gitlab:|bitbucket:|git\+|git://|ssh://git@)", re.IGNORECASE)
+_PIPE_TO_IEX_RE = re.compile(r"\|\s*(?:iex|invoke-expression)\b", re.IGNORECASE)
+
+
+def _launcher_package(tokens: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    """(launcher, package spec) for ``npx -y pkg`` / ``uvx pkg`` / ``cmd /c npx ...``."""
+    for i, tok in enumerate(tokens):
+        base = re.split(r"[\\/]", tok.strip())[-1].lower()
+        base = re.sub(r"\.(cmd|exe|bat)$", "", base)
+        if base not in _LAUNCHERS and not (base == "pnpm" and tokens[i + 1:i + 2] == ["dlx"]):
+            continue
+        rest = tokens[i + 1:]
+        if base == "pipx" and rest[:1] == ["run"]:
+            rest = rest[1:]
+        if base == "pnpm":
+            rest = rest[1:]
+        j = 0
+        while j < len(rest):
+            if rest[j] in ("--from", "-p", "--package") and j + 1 < len(rest):
+                return base, rest[j + 1]
+            if not rest[j].startswith("-"):
+                return base, rest[j]
+            j += 1
+        return base, None
+    return None, None
+
+
+def _is_pinned(spec: str) -> bool:
+    if re.search(r"(==|===|~=)\s*\d", spec):
+        return True
+    at = spec.rfind("@")
+    return at > 0 and spec[at + 1:].lower() not in ("", "latest", "next")
+
+
+def _audit_stdio_launch(name: str, cfg: Dict[str, Any], args: List[Any]) -> List[Dict[str, Any]]:
+    """Shell-exec servers, unpinned npx/uvx packages, git dependencies and
+    PowerShell pipe-to-iex in the launch command of a stdio MCP server."""
+    command = cfg.get("command")
+    tokens = ([str(c) for c in command] if isinstance(command, list)
+              else [str(command)] if command else []) + [str(a) for a in args]
+    if not tokens:
+        return []
+    line = " ".join(tokens)
+
+    def f(kind: str, sev: str, title: str, rule: str) -> Dict[str, Any]:
+        return {"id": f"mcp-{kind}-{name}", "severity": sev, "category": "skill_risk",
+                "title": title, "evidence": line[:200], "eventIndex": 0,
+                "ruleId": rule, "action": "warn", "skillName": name}
+
+    out: List[Dict[str, Any]] = []
+    if _SHELL_MCP_RE.search(line):
+        out.append(f("shell-exec", "HIGH",
+                     f"MCP server '{name}' is a shell-execution server — the model can run arbitrary commands",
+                     "mcp-shell-exec-server"))
+    launcher, spec = _launcher_package(tokens)
+    if spec and not _is_pinned(spec) and not _GIT_DEP_RE.match(spec):
+        out.append(f("unpinned", "MEDIUM",
+                     f"MCP server '{name}' runs '{launcher} {spec}' without a pinned version — every launch can fetch new code",
+                     "mcp-unpinned-package"))
+    if any(_GIT_DEP_RE.match(t) for t in tokens):
+        out.append(f("git-dep", "MEDIUM",
+                     f"MCP server '{name}' installs from a git source (github:/git+) — unpinned, unreviewed code",
+                     "mcp-git-dependency"))
+    if _PIPE_TO_IEX_RE.search(line):
+        out.append(f("pipe-iex", "HIGH",
+                     f"MCP server '{name}' pipes a download into Invoke-Expression",
+                     "mcp-pipe-to-shell"))
+    return out
+
+
 def _audit_remote_transport(
     name: str,
     cfg: Dict[str, Any],
@@ -912,24 +994,24 @@ def _audit_remote_transport(
                 "skillName": name,
             })
 
-    if is_remote:
-        for block_key in ("headers", "env"):
-            block = cfg.get(block_key)
-            if not isinstance(block, dict):
-                continue
-            for k, v in block.items():
-                if _looks_like_hardcoded_secret(str(k), str(v)):
-                    findings.append({
-                        "id": f"mcp-secret-{name}-{block_key}-{k}",
-                        "severity": "MEDIUM",
-                        "category": "skill_risk",
-                        "title": f"MCP server '{name}' has a hardcoded secret in {block_key} ('{k}') — use ${{ENV}} or cloaking instead",
-                        "evidence": f"{block_key}.{k}: [redacted literal value]",
-                        "eventIndex": 0,
-                        "ruleId": "mcp-hardcoded-secret",
-                        "action": action,
-                        "skillName": name,
-                    })
+    # A literal credential in env is a finding for stdio servers too.
+    for block_key in (("headers", "env") if is_remote else ("env",)):
+        block = cfg.get(block_key)
+        if not isinstance(block, dict):
+            continue
+        for k, v in block.items():
+            if _looks_like_hardcoded_secret(str(k), str(v)):
+                findings.append({
+                    "id": f"mcp-secret-{name}-{block_key}-{k}",
+                    "severity": "MEDIUM",
+                    "category": "skill_risk",
+                    "title": f"MCP server '{name}' has a hardcoded secret in {block_key} ('{k}') — use ${{ENV}} or cloaking instead",
+                    "evidence": f"{block_key}.{k}: [redacted literal value]",
+                    "eventIndex": 0,
+                    "ruleId": "mcp-hardcoded-secret",
+                    "action": action,
+                    "skillName": name,
+                })
 
     return findings
 
@@ -1222,6 +1304,8 @@ def audit_mcp_schema(
             "action": "warn",
             "skillName": name,
         })
+
+    findings.extend(_audit_stdio_launch(name, cfg, args))
 
     # Over-broad allow-lists
     for list_key in ("allowedPaths", "allowedDomains", "permissions"):

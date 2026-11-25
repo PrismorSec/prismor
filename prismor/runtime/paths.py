@@ -101,3 +101,15 @@ def is_within(inner: Union[str, Path, None], outer: Union[str, Path, None]) -> b
     except (OSError, ValueError):
         return False
     return a == b or b in a.parents
+
+
+def decode_text(data: bytes) -> str:
+    """Decode file bytes BOM-aware: UTF-16 (PowerShell 5.1 ``>``) and UTF-8
+    with or without BOM. Invalid bytes are replaced, never raised."""
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return data.decode("utf-16", errors="replace")
+    return data.decode("utf-8-sig", errors="replace")
+
+
+def read_text_auto(path: Union[str, Path]) -> str:
+    return decode_text(Path(path).read_bytes())

@@ -272,15 +272,21 @@ def _run_skills(args) -> None:
     workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "skills_subcommand", None) or "audit"
     if sub == "approve":
-        entry = approve_skill(workspace, Path(args.file))
-        print(f"approved: {args.file} — baseline {entry['sha256'][:12]}…")
+        from prismor.runtime.skills_audit import resolve_skill
+        try:
+            target = resolve_skill(workspace, args.file)
+            entry = approve_skill(workspace, target)
+        except OSError as exc:
+            print(f"prismor skills approve: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        print(f"approved: {target} — baseline {entry['sha256'][:12]}…")
         return
     rows = audit_skills(workspace, record=True)
     if getattr(args, "json", False):
         print(json.dumps(rows, indent=2))
     else:
         print(format_audit(rows))
-    if any(r["status"] == "changed" or r["findings"] for r in rows):
+    if any(r["status"] in ("changed", "new") or r["findings"] for r in rows):
         raise SystemExit(1)
 
 
@@ -359,29 +365,28 @@ def _run_memory(args) -> None:
     if sub == "verify":
         from prismor.runtime.memory_guard import verify_memory_files
         file_path = Path(args.file)
-        findings = verify_memory_files([{"path": str(file_path)}], workspace)
+        if not file_path.is_file():
+            print(f"prismor memory verify: no such file: {file_path}", file=sys.stderr)
+            raise SystemExit(1)
+        # Read-only: never records a baseline (use `memory trust` for that).
+        findings = verify_memory_files([{"path": str(file_path)}], workspace, record=False)
         if findings:
             for f in findings:
                 print(f"[{f['severity']}] {f['title']}")
                 print(f"  origin: {f.get('evidence', {}).get('origin', '?')}")
-        else:
-            print(f"clean: {file_path} — hash matches trust baseline")
+            raise SystemExit(1)
+        print(f"clean: {file_path} — hash matches trust baseline")
         return
 
     if sub == "scan":
         from prismor.runtime.policy_engine import PolicyEngine
+        from prismor.runtime.memory_guard import scan_memory_text
+        from prismor.runtime.paths import read_text_auto
         engine = PolicyEngine()
+        errors = 0
         for fpath in args.file:
             try:
-                text = Path(fpath).read_text(encoding="utf-8", errors="replace")
-                # Screen it the way SessionStart does: as a "memory" event,
-                # which is what the memory_poisoning rules match on. A "text"
-                # event reported "clean" on a line the session notice flagged.
-                from prismor.runtime.hooks import strip_prismor_managed
-                findings = engine.evaluate(
-                    {"type": "memory", "path": str(fpath), "content": strip_prismor_managed(text)}, 0)
-                findings += [f for f in engine.check_text(text)
-                             if f.get("ruleId") not in {g.get("ruleId") for g in findings}]
+                findings = scan_memory_text(engine, str(fpath), read_text_auto(fpath))
                 if findings:
                     print(f"\n{fpath}:")
                     for f in findings:
@@ -389,7 +394,10 @@ def _run_memory(args) -> None:
                 else:
                     print(f"\n{fpath}: clean")
             except Exception as e:
+                errors += 1
                 print(f"{fpath}: error — {e}")
+        if errors:
+            raise SystemExit(1)
         return
 
     if sub == "sign":
@@ -1239,7 +1247,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
                 )
                 raise SystemExit(1)
-            text = sys.stdin.read()
+            try:  # bytes, so a UTF-16 (PowerShell 5.1) pipe is decoded by its BOM
+                from prismor.runtime.paths import decode_text
+                text = decode_text(sys.stdin.buffer.read())
+            except AttributeError:
+                text = sys.stdin.read()
         if not text or not text.strip():
             sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
@@ -1315,6 +1327,9 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
+            # Same exit code as text mode: 2 when any finding blocks.
+            if any(f.get("action") == "block" for f in result["findings"]):
+                raise SystemExit(2)
             return
 
         configs = result["configs"]
@@ -1396,10 +1411,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.deps import scan_workspace as deps_scan
         feed = load_feed(repo_root)
         result = deps_scan(workspace, feed, osv=not getattr(args, "offline", False))
+        # One exit code for text and JSON: 1 on a known-bad dependency, a HIGH
+        # integrity issue, or a manifest that could not be parsed.
+        _deps_exit = 1 if (
+            result["feed_matches"] or result.get("parse_errors")
+            or any(i["severity"] == "HIGH" for i in result.get("integrity_issues", []))
+        ) else 0
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
-            return
+            raise SystemExit(_deps_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  dependency check")
@@ -1408,7 +1429,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         manifests = result["manifests"]
         if not manifests:
-            print(f"  {_color('No dependency manifests found.', _DIM)}")
+            print(f"  {_color('No dependency manifests or lockfiles found.', _DIM)}")
             print()
             return
 
@@ -1416,6 +1437,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Manifest:', _GREEN)}  [{m['ecosystem']}] {m['path']}")
         print(f"  {_color('Dependencies:', _GREEN)} {result['dependencies']} total")
         print()
+        for pe in result.get("parse_errors", []):
+            print(f"  {_color('ERROR', _RED)}  could not parse {pe['path']}: {pe['error']}")
+        if result.get("parse_errors"):
+            print()
 
         feed_matches = result["feed_matches"]
         lockfile_issues = result["lockfile_issues"]
@@ -1423,9 +1448,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         integrity_issues = result.get("integrity_issues", [])
 
         if not feed_matches and not lockfile_issues and not integrity_issues:
-            print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
-            print()
-            return
+            if not result.get("parse_errors"):
+                print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
+                print()
+            raise SystemExit(_deps_exit)
 
         if feed_matches:
             print(f"  {_color('Known vulnerable or malicious dependencies:', _BOLD)}")
@@ -1460,9 +1486,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"  {total_issues} issue(s) found")
         print()
 
-        if feed_matches or any(i["severity"] == "HIGH" for i in integrity_issues):
-            raise SystemExit(1)
-        return
+        raise SystemExit(_deps_exit)
 
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit" and getattr(args, "target", None) == "judge":
@@ -1499,9 +1523,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
 
+        # Exit code, shared by text and JSON: 2 critical, 1 high/medium, 0 clean.
+        _audit_exit = 2 if any(f.severity == "CRITICAL" for f in findings) else (
+            1 if any(f.severity in ("HIGH", "MEDIUM") for f in findings) else 0)
+
         if getattr(args, "json", False):
             print(json.dumps([f.to_dict() for f in findings], indent=2))
-            return
+            raise SystemExit(_audit_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  security audit")
@@ -1598,11 +1626,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"    {_color('No fixes were applied.', _DIM)}")
             print()
 
-        # Exit code: 2 for critical, 1 for high/medium, 0 for clean
-        if any(f.severity == "CRITICAL" for f in findings):
-            raise SystemExit(2)
-        if any(f.severity in ("HIGH", "MEDIUM") for f in findings):
-            raise SystemExit(1)
+        if _audit_exit:
+            raise SystemExit(_audit_exit)
         return
 
     # ── status: one-shot health check (mode, hooks, cloak, latest session) ──

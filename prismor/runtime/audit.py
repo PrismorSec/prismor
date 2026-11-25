@@ -103,6 +103,38 @@ def apply_fixes(findings: List[AuditFinding]) -> List[str]:
 
 # ── Individual checks ───────────────────────────────────────────────────────
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _json_has_hook(node: Any, key: str = "") -> bool:
+    """True if a string naming the dispatcher sits outside an MCP server block."""
+    if key in ("mcpServers", "mcp_servers", "servers", "mcp"):
+        return False
+    if isinstance(node, str):
+        return "hook-dispatch" in node
+    if isinstance(node, dict):
+        return any(_json_has_hook(v, k) for k, v in node.items())
+    if isinstance(node, list):
+        return any(_json_has_hook(v) for v in node)
+    return False
+
+
+def _has_hook_entry(agent: str, scope: str, workspace: Path) -> bool:
+    from prismor.runtime.hooks import _config_path
+    try:
+        path = _config_path(agent, scope, workspace)
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, ValueError):
+        return False
+    if path.suffix != ".json":
+        return True  # plugin-style installs (js/py/toml): the text check stands
+    try:
+        return _json_has_hook(json.loads(text))
+    except ValueError:
+        return "hook-dispatch" in text
+
+
 def _check_hooks(workspace: Path, repo_root: Path) -> List[AuditFinding]:
     """Check hook installation across agents, in both project and global scope."""
     from prismor.runtime.hooks import coverage, _config_path
@@ -112,7 +144,9 @@ def _check_hooks(workspace: Path, repo_root: Path) -> List[AuditFinding]:
     installed: List[str] = []
     mode_found: Optional[str] = None
     for agent, scopes in coverage(workspace).items():
-        hit = [sc for sc, ok in scopes.items() if ok]
+        # Only the scopes (not the "foreign" flag), and only when the config
+        # holds a real hook entry rather than a stray mention of the dispatcher.
+        hit = [sc for sc in ("project", "global") if scopes.get(sc) and _has_hook_entry(agent, sc, workspace)]
         if not hit:
             continue
         installed.append(agent if "project" in hit else f"{agent} (global)")
@@ -234,7 +268,19 @@ def _check_cloaking(workspace: Path) -> List[AuditFinding]:
         if result["installed"]:
             break
 
-    if not result["installed"]:
+    # The cloak hooks are shell scripts: Claude Code runs them through sh. On
+    # Windows without Git Bash/sh they cannot run, so do not write them.
+    import shutil
+    shell_ok = not _is_windows() or bool(shutil.which("bash") or shutil.which("sh"))
+
+    if not result["installed"] and not shell_ok:
+        findings.append(AuditFinding(
+            severity="HIGH",
+            category="cloaking",
+            message="Cloaking hooks not installed — they are shell scripts and need Git Bash or sh on PATH "
+                    "(not found), so `audit --fix` does not write them on this machine",
+        ))
+    elif not result["installed"]:
         def _fix_install_cloak() -> str:
             from prismor.runtime.cloaking import install as cloak_install
             cloak_install(workspace=workspace, scope="project")

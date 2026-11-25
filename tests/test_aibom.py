@@ -66,3 +66,20 @@ class TestAibom(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_output_into_missing_dir_is_created(tmp_path, monkeypatch):
+    from prismor.runtime import aibom
+    monkeypatch.setattr(aibom, "collect", lambda ws: {"agents": [], "mcp": [], "extensions": [],
+                                                      "models": [], "instructions": []})
+    out = tmp_path / "new" / "dir" / "bom.json"
+    assert aibom.run(tmp_path, output=str(out)) == 0 and out.is_file()
+
+
+def test_output_unwritable_returns_1_without_traceback(tmp_path, monkeypatch, capsys):
+    from prismor.runtime import aibom
+    monkeypatch.setattr(aibom, "collect", lambda ws: {"agents": [], "mcp": [], "extensions": [],
+                                                      "models": [], "instructions": []})
+    (tmp_path / "f").write_text("x")  # a file where a directory is needed
+    assert aibom.run(tmp_path, output=str(tmp_path / "f" / "bom.json")) == 1
+    assert "cannot write" in capsys.readouterr().err

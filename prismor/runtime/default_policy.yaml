@@ -1222,6 +1222,7 @@ rules:
     patterns:
       - 'base64\s*-?d'
       - '\\x[0-9a-fA-F]{20,}'
+      - '\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:enc|ec|encodedcommand)\b'
       - 'eval\(atob\('
       - 'fromCharCode\(\d+,\d+,\d+'
     action: block
@@ -1234,7 +1235,13 @@ rules:
     event_types: [skill_manifest]
     fields: [combined_text]
     patterns:
-      - '\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|python)\b'
+      # Pipe-to-shell, except well-known first-party installers (https only).
+      - '\b(curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(bash|sh|python)\b'
+      # PowerShell: download | iex, and the Windows living-off-the-land downloaders.
+      - '\|\s*(?:iex|invoke-expression)\b'
+      - '\bcertutil(?:\.exe)?\b[^\n]*-urlcache'
+      - '\bbitsadmin(?:\.exe)?\b[^\n]*/(?:transfer|addfile)'
+      - '\bmshta(?:\.exe)?\s+[''"]?(?:https?:|vbscript:|javascript:)'
       # Real command substitution only — a bare `` `[^`]+` `` alternative used
       # to also match here, which fires on ANY markdown inline-code span
       # (near-universal in a Skill's prose/docs body) now that skill_manifest
@@ -1318,8 +1325,10 @@ rules:
     event_types: [skill_manifest]
     fields: [combined_text]
     patterns:
-      - '(^|/)\.env(\.|/|$)|\.ssh/id_(rsa|ed25519)|\.aws/credentials'
-      - '\.npmrc|\.pypirc|\.docker/config\.json'
+      # [/\\]+ accepts Windows separators, including JSON-escaped (\\\\) ones.
+      - '(^|[/\\])\.env(\.|[/\\]|$)|\.ssh[/\\]+id_(rsa|ed25519|ecdsa|dsa)|\.aws[/\\]+credentials'
+      - '(?:%USERPROFILE%|%HOMEPATH%|\$env:(?:USERPROFILE|HOME|APPDATA)|\$HOME|~)[/\\]+\.(?:ssh|aws|gnupg)\b'
+      - '\.npmrc|\.pypirc|\.docker[/\\]+config\.json'
       - '/etc/(passwd|shadow|sudoers)'
     action: block
 
@@ -1846,6 +1855,9 @@ rules:
       # Suppression — silencing the very signals that would expose the above.
       - 'suppress\s+(?:all\s+)?(?:warnings?|errors?|alerts?)\s+from\b'
       - 'hide\s+any\s+(?:errors?|warnings?|alerts?)\s+about\b'
+      # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
+      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\|\s*(?:iex|invoke-expression)\b'
     action: warn
 
   # ── MEDIUM: Exfiltration directive in project-memory content (#153) ───
@@ -1994,6 +2006,9 @@ rules:
       - 'do\s+not\s+(?:mention|disclose|tell|reveal|show|warn|report)\b[^\n]{0,40}\b(?:the\s+)?user\b'
       - '(?:append|include|add|insert)\s+(?:this|the\s+following)\s+(?:line\s+)?(?:to|in)\s+(?:every|each|all)\s+(?:response|message|reply|output|commit)'
       - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
+      # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
+      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\|\s*(?:iex|invoke-expression)\b'
     pattern_groups:
       instruction_file:
         - '(^|/)(CLAUDE|AGENTS|GEMINI)\.md$'
