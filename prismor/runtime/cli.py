@@ -968,10 +968,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 duration_s = _pause.parse_duration(raw_duration)
             except ValueError:
                 print(f"  {_color('✗', _RED)} Could not read duration '{raw_duration}'. Use e.g. 30m, 2h, 1d.")
-                return
+                raise SystemExit(2)
             if duration_s <= 0:
                 print(f"  {_color('✗', _RED)} Duration must be positive.")
-                return
+                raise SystemExit(2)
         # Attribute the pause to the enrolled member when we know them.
         by = ""
         try:
@@ -3353,11 +3353,27 @@ def main(argv: Optional[List[str]] = None) -> None:
             if mode_val:
                 fields["mode"] = mode_val
             iam_val = getattr(args, "iam_profile", None)
-            if iam_val is not None:
+            if getattr(args, "clear_iam_profile", False):
+                # PowerShell 5.1 drops an empty-string argument, so `--iam-profile ""` cannot clear.
+                fields["iam_profile"] = None
+            elif iam_val is not None:
                 fields["iam_profile"] = iam_val or None
             if not fields:
-                sys.stderr.write("error: specify at least one of --enabled, --disabled, --mode, --iam-profile\n")
+                sys.stderr.write("error: specify at least one of --enabled, --disabled, --mode, --iam-profile, --clear-iam-profile\n")
                 raise SystemExit(1)
+            # The name becomes a YAML key and shows up in paths and logs.
+            if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", agent_name_arg)
+                    or ".." in agent_name_arg):
+                sys.stderr.write(f"error: invalid agent name {agent_name_arg!r}: use letters, digits, '.', '_' and '-' "
+                                 "(no path separators or '..')\n")
+                raise SystemExit(2)
+            if fields.get("iam_profile"):
+                _known = _list_agent_ids_for_check(workspace)
+                if fields["iam_profile"] not in _known:
+                    sys.stderr.write(
+                        f"error: IAM profile {fields['iam_profile']!r} is not defined "
+                        f"(known: {', '.join(_known) or 'none'}). Define it in iam.yaml (prismor iam init) first.\n")
+                    raise SystemExit(2)
             ctl = _upsert_agent(agent_name_arg, workspace, **fields)
             print(f"Updated '{agent_name_arg}': enabled={ctl.enabled}, mode={ctl.mode or '(global)'}, iam_profile={ctl.iam_profile or '(none)'}")
             return
@@ -5712,6 +5728,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-agent mode override (observe or enforce)",
     )
     agents_set.add_argument(
+        "--clear-iam-profile", action="store_true", dest="clear_iam_profile", default=False,
+        help="Remove the IAM profile binding (use instead of an empty --iam-profile)",
+    )
+    agents_set.add_argument(
         "--iam-profile",
         dest="iam_profile",
         default=None,
@@ -6172,6 +6192,15 @@ def _hooks_by_scope(workspace: Path, checks: Optional[List[Dict[str, Any]]] = No
         if check["configured"]:
             out[check["scope"]][check["agent"]] = check["mode"]
     return out
+
+
+def _list_agent_ids_for_check(workspace: Path) -> List[str]:
+    """IAM profile names defined for this workspace (project + global iam.yaml)."""
+    from prismor.runtime.iam import list_agent_ids, load_iam_config
+    try:
+        return list_agent_ids(load_iam_config(workspace))
+    except Exception:
+        return []
 
 
 def _git_root_or_self(path: Path) -> Path:
@@ -7244,6 +7273,16 @@ settings:
 
 def _policy_validate(path: Path) -> None:
     """Validate a policy YAML and print errors."""
+    if path.is_dir():
+        # A directory is taken to mean "the policy in it": the workspace root or its .prismor folder.
+        for cand in (path / ".prismor" / "policy.yaml", path / "policy.yaml"):
+            if cand.is_file():
+                path = cand
+                break
+        else:
+            print(_color("INVALID", _RED) + f"  {path}")
+            print("  - is a directory with no policy.yaml (or .prismor/policy.yaml) in it")
+            raise SystemExit(1)
     errors = validate_policy(path)
     if not errors:
         print(_color("VALID", _GREEN) + f"  {path}")

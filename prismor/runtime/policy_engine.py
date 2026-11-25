@@ -6035,8 +6035,10 @@ def validate_policy(path: Path) -> List[str]:
     elif raw["version"] != "1.0":
         errors.append(f"Unsupported version: {raw['version']} (expected 1.0)")
 
-    if "rules" not in raw:
-        errors.append("Missing required field: rules")
+    # `rules` is optional: a settings-only policy (what `prismor egress ...`
+    # writes) is valid and adds no rules.
+    if not isinstance(raw.get("rules", []), list):
+        errors.append("'rules' must be a list")
         return errors
 
     if "mcp_tool_repeat_limits" in (raw.get("settings") or {}):
@@ -6057,7 +6059,7 @@ def validate_policy(path: Path) -> List[str]:
     errors.extend(cond_errors)
 
     seen_ids: set[str] = set()
-    for i, rule in enumerate(raw.get("rules", [])):
+    for i, rule in enumerate(raw.get("rules") or []):
         prefix = f"rules[{i}]"
         rule_id = rule.get("id", "")
         # A rule is either FULL (defines its own patterns) or a sparse OVERLAY
