@@ -5067,6 +5067,23 @@ def _expand_braces(cmd: str) -> str:
     )
 
 
+_WIN_BS_RE = re.compile(r"(?<=[\w.~:%)])\\+(?=[\w.$%~])")
+
+
+def _winpath_in_command(cmd: str) -> str:
+    """Backslash paths in a command spelled with ``/`` (``.claude\\settings.json``).
+
+    PowerShell and cmd write ``.claude\\settings.json``; the path rules are
+    written with ``/``. Matched next to the original, so it only adds matches.
+    """
+    if "\\" not in cmd and "::$" not in cmd:
+        return cmd
+    cmd = re.sub(r"^(\\\\[?.]\\)|(?<=[\s\"'=(])\\\\[?.]\\", "", cmd)
+    cmd = re.sub(r"(?<=[\s\"'=(;|&>])\\\\(?=\w)", "//", cmd)
+    cmd = _WIN_BS_RE.sub("/", cmd)
+    return re.sub(r":{1,2}\$DATA\b", "", cmd)
+
+
 def _equate_shell(cmd: str) -> str:
     """Rewrite shell forms that are the same action as a pattern the floor already has.
 
@@ -5099,6 +5116,7 @@ def _equate_shell(cmd: str) -> str:
         cmd,
     )
     cmd = _expand_braces(cmd)
+    cmd = _winpath_in_command(cmd)
     cmd = cmd.replace("./*", "*")
     of_disk = re.search(
         r"\bof=(/dev/(?!null\b|zero\b|stdout\b|stderr\b|tty\b|fd/)[^\s;&|]+)",
@@ -5426,24 +5444,64 @@ def _executable_lines(body: str) -> Tuple[List[Tuple[int, str]], bool]:
     return out, truncated
 
 
+_WIN_ENV_RE = re.compile(r"%([A-Za-z_][A-Za-z0-9_]*)%|\$\{?env:([A-Za-z_][A-Za-z0-9_]*)\}?", re.IGNORECASE)
+
+
+def _winpath_canon(path: str) -> str:
+    """Windows spelling of a path folded to the POSIX form the rules match.
+
+    ``C:\\ws\\.claude\\settings.json`` and ``C:/ws/.claude/settings.json`` are
+    one file, and so are ``\\\\?\\C:\\...``, ``.env:stream``, ``.env::$DATA``,
+    ``.env `` and ``.env.`` (NTFS drops trailing dots/spaces and ignores the
+    stream suffix). ``%VAR%``, ``$env:VAR`` and a leading ``~`` are expanded.
+    Rules are case-insensitive, so case needs no folding here.
+    """
+    p = path
+    if p.startswith(("\\\\?\\UNC\\", "\\\\.\\UNC\\")):
+        p = "\\\\" + p[8:]
+    elif p.startswith(("\\\\?\\", "\\\\.\\", "//?/", "//./")):
+        p = p[4:]
+
+    def _env(m: "re.Match[str]") -> str:
+        name = m.group(1) or m.group(2)
+        return os.environ.get(name) or os.environ.get(name.upper()) or m.group(0)
+
+    p = _WIN_ENV_RE.sub(_env, p)
+    if p[:2] in ("~\\", "~/") or p == "~":
+        p = os.path.expanduser(p[:1]) + p[1:]
+    p = p.replace("\\", "/")
+    parts = p.split("/")
+    out = []
+    for i, comp in enumerate(parts):
+        if comp.strip(". ") and not (i == 0 and re.fullmatch(r"[A-Za-z]:", comp)):
+            # NTFS ignores trailing dots/spaces and a ``:stream[:$DATA]`` suffix.
+            comp = comp.split(":", 1)[0].rstrip(". ")
+        out.append(comp)
+    return "/".join(out)
+
+
 def _resolve_path(path: str) -> str:
     """Resolve symlinks so path-based rules match the real target.
 
     A symlink like ``config/auth.json -> ~/.claude/.credentials.json``
     would bypass rules that match ``.credentials.json`` if we only check
-    the apparent path.  Returns both the original and resolved path
-    separated by a newline so either can match.
+    the apparent path.  Returns the original, its Windows-canonical form and
+    the resolved path separated by newlines so any of them can match.
     """
     if not path:
         return path
     from pathlib import Path as _Path
+    seen = [path]
+    canon = _winpath_canon(path)
+    if canon != path:
+        seen.append(canon)
     try:
-        resolved = str(_Path(path).resolve())
+        resolved = str(_Path(canon).resolve())
     except (OSError, ValueError):
-        return path
-    if resolved != path:
-        return f"{path}\n{resolved}"
-    return path
+        resolved = ""
+    if resolved and resolved not in seen:
+        seen.append(resolved)
+    return "\n".join(seen)
 
 
 def _extract_fields(event: Dict[str, Any]) -> Dict[str, str]:
