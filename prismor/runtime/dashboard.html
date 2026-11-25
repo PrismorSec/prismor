@@ -3323,6 +3323,32 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .logs-opt input { appearance: none; -webkit-appearance: none; width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--sui-border-emph); background: var(--sui-surface); display: grid; place-content: center; cursor: pointer; }
   .logs-opt input:checked { background: var(--sui-fg); border-color: var(--sui-fg); }
   .logs-opt input:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--sui-surface); border-bottom: 2px solid var(--sui-surface); transform: translateY(-1px) rotate(-45deg); }
+
+  /* Design pass: last in the sheet so it wins over the earlier phone rules. */
+  .docs-search #docsSearch { border: 0; background: none; box-shadow: none; }
+  .logs-toolbar { flex-wrap: wrap; }
+  @media (max-width: 1100px) {
+    /* The top bar scrolls sideways; the fade says there is more, the padding lets the last item clear it. */
+    .topbar-right { padding-right: 24px; -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent); }
+  }
+  @media (max-width: 640px) {
+    /* Bottom nav: all ten tabs share the width instead of three hiding past the edge. */
+    .tab-nav { gap: 0 !important; padding-left: 4px !important; padding-right: 4px !important; }
+    .tab-nav .tab-btn { flex: 1 1 0 !important; width: auto !important; min-width: 26px; }
+    /* The live dot is the earlier rule's intent too; the top bar's mode chip carries status on a phone. */
+    .tab-nav-footer #statusBadge { display: none !important; }
+    /* Tap targets: 44px tall on a phone. */
+    :is(.fbtn, .pg-btn, .pg-num, .sess-act-btn, .logs-fbtn, .btn-line, .btn-ghost, .btn-ok, .inline-link-btn, .fsel, .finput, .sel-btn, .vsel-btn, .en-toggle, .vault-act, .policy-scope-btn, .rules-search, .btn-primary, .docs-collapse, #docsAskAgent) { min-height: 44px !important; max-height: none !important; }
+    .pg-num, .docs-collapse { min-width: 44px; }
+    /* Wide tables scroll sideways rather than breaking names into stacks of fragments. */
+    [style*="overflow-x:auto"] > table :is(th, td), .logs-spend table :is(th, td) { white-space: nowrap; }
+    .logs-spend { overflow-x: auto; }
+    /* Extension rows: the name gets its own line; the chips wrap under it. */
+    .ext-head { flex-wrap: wrap; row-gap: 6px; }
+    .ext-head .ext-name { order: -1; flex: 1 0 100%; }
+    .logs-toolbar .finput { flex: 1 1 100%; min-width: 0; }
+    .ring-legend { align-self: stretch; min-width: 0; }
+  }
 </style>
 </head>
 <body>
@@ -6952,6 +6978,8 @@ function tsCell(rel, abs, color) {
   return '<span class="ts-hover" style="color:' + c + '" title="' + safeAttr(abs) + '">' + safe(rel) + '</span>';
 }
 function fmtNum(n) {
+  if (n >= 1e9) return (n/1e9).toFixed(1).replace(/\.0$/,'') + 'B';
+  if (n >= 1e6) return (n/1e6).toFixed(1).replace(/\.0$/,'') + 'M';
   if (n >= 1000) return (n/1000).toFixed(1).replace(/\.0$/,'') + 'k';
   return n.toLocaleString();
 }
@@ -9578,7 +9606,7 @@ function applyPolicyEditable(data) {
     const enroll = document.getElementById('enrollBanner');
     if (enroll) enroll.innerHTML = '';
     wsBanner.innerHTML = '<div class="banner banner-warn"><span>' +
-      '<strong>Policy managed by your organization</strong>' +
+      '<strong style="display:block;margin-bottom:2px">Policy managed by your organization</strong>' +
       'This device is enrolled in your organization, which sets this workspace\'s policy. ' +
       'Local edits would be overwritten by the next signed policy pull. ' +
       'Change it in the Prismor console, or request an exemption: ' +
