@@ -382,12 +382,12 @@ def _run_memory(args) -> None:
     if sub == "scan":
         from prismor.runtime.policy_engine import PolicyEngine
         from prismor.runtime.memory_guard import scan_memory_text
-        from prismor.runtime.paths import read_text_auto
+        from prismor.runtime.winutil import read_text_file
         engine = PolicyEngine()
         errors = 0
         for fpath in args.file:
             try:
-                findings = scan_memory_text(engine, str(fpath), read_text_auto(fpath))
+                findings = scan_memory_text(engine, str(fpath), read_text_file(fpath))
                 if findings:
                     print(f"\n{fpath}:")
                     for f in findings:
@@ -1266,8 +1266,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
                 raise SystemExit(1)
             try:  # bytes, so a UTF-16 (PowerShell 5.1) pipe is decoded by its BOM
-                from prismor.runtime.paths import decode_text
-                text = decode_text(sys.stdin.buffer.read())
+                from prismor.runtime.winutil import decode_bytes
+                text = decode_bytes(sys.stdin.buffer.read())
             except AttributeError:
                 text = sys.stdin.read()
         if not text or not text.strip():
@@ -3708,8 +3708,9 @@ def main(argv: Optional[List[str]] = None) -> None:
                 return
             if args.value_file:
                 try:
-                    from prismor.runtime.cloaking.secrets_store import decode_text, strip_one_newline
-                    value = strip_one_newline(decode_text(Path(args.value_file).read_bytes()))
+                    from prismor.runtime.cloaking.secrets_store import strip_one_newline
+                    from prismor.runtime.winutil import decode_bytes
+                    value = strip_one_newline(decode_bytes(Path(args.value_file).read_bytes(), strict=True))
                 except (OSError, ValueError) as exc:
                     sys.stderr.write(f"error: {exc}\n")
                     raise SystemExit(1)

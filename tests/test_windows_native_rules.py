@@ -16,6 +16,10 @@ HITS = {
         r"Remove-Item -Recurse -Force C:\Windows",
         r"Remove-Item C:\Windows\System32 -Recurse -Force",
         r"ri -Recurse -Force 'C:\Windows\System32\drivers'",
+        r"rd /s /q C:\Windows\System32", r"del /s /q C:\Windows\Temp\x",
+    ],
+    "agent-instruction-tampering": [
+        'Set-Content CLAUDE.md "x"', "Remove-Item AGENTS.md", "Out-File -FilePath .cursorrules",
     ],
     "privilege-escalation": [
         "net user x /add", "net1 user hacker P@ss /add", "net localgroup administrators x /add",
@@ -44,7 +48,7 @@ QUIET = [
     "powershell -File build.ps1", "powershell -NoProfile -Command Get-Date", "pwsh -Command 'echo enc'",
     "mshta --version", "bitsadmin /list", "rundll32 shell32.dll,Control_RunDLL",
     r"Remove-Item -Force -Recurse .\build", r"Remove-Item -Recurse C:\work\Windows-notes",
-    r"rd /s /q build", "Restart-Service MyApp", "Get-ComputerInfo", "git status", "git reset --soft HEAD~1",
+    r"rd /s /q build", r"rd /s /q C:\work\build", "cat CLAUDE.md", "Get-Content AGENTS.md", "Restart-Service MyApp", "Get-ComputerInfo", "git status", "git reset --soft HEAD~1",
 ]
 
 

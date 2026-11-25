@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from prismor.runtime.paths import decode_text
+from prismor.runtime.winutil import decode_bytes as decode_text, norm_eol
 
 __all__ = ["audit_skills", "approve_skill", "resolve_skill", "discover_skill_files", "format_audit"]
 
@@ -183,18 +183,12 @@ def _save_json(p: Path, data: Dict[str, Any]) -> None:
     tmp.replace(p)
 
 
-def _norm(data: bytes, normalize: bool) -> bytes:
-    """CRLF -> LF for text files so a line-ending-only edit (git autocrlf, an
-    editor on Windows) is not a content change. Binary data is left alone."""
-    return data.replace(b"\r\n", b"\n") if normalize and b"\0" not in data else data
-
-
 def _sha256(path: Path, normalize: bool = True) -> str:
     """Hash of the file. ``normalize=False`` is the pre-normalisation scheme,
     still accepted when comparing against an old baseline."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
-        h.update(_norm(fh.read(_MAX_BYTES), normalize))
+        h.update((norm_eol if normalize else bytes)(fh.read(_MAX_BYTES)))
     return h.hexdigest()
 
 
@@ -215,7 +209,7 @@ def _tree_sha256(skill_md: Path, normalize: bool = True) -> str:
         h.update(os.path.relpath(f, root).encode() + b"\0")
         try:
             with f.open("rb") as fh:
-                h.update(_norm(fh.read(_MAX_BYTES), normalize))
+                h.update((norm_eol if normalize else bytes)(fh.read(_MAX_BYTES)))
         except OSError:
             pass
         h.update(b"\0")

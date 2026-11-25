@@ -32,7 +32,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set
 
-from prismor.runtime.cloaking.secrets_store import _parse_env_line, decode_text, secrets_dir
+from prismor.runtime.cloaking.secrets_store import _parse_env_line, secrets_dir
+from prismor.runtime.winutil import decode_bytes
 
 # Values shorter than this are ignored, mirroring read-guard.sh's minimum —
 # tiny values ("1", "true", "dev") are config, not secrets, and matching them
@@ -107,7 +108,7 @@ def vault_values() -> Set[str]:
         if not child.is_file():
             continue
         try:
-            values.add(decode_text(child.read_bytes()))
+            values.add(decode_bytes(child.read_bytes(), strict=True))
         except (OSError, UnicodeDecodeError):
             continue
     return values
@@ -118,7 +119,7 @@ def unprotected_entries(path: Path, vault: Set[str] | None = None) -> List[str]:
     if vault is None:
         vault = vault_values()
     try:
-        text = decode_text(path.read_bytes())   # BOM / UTF-16 files too
+        text = decode_bytes(path.read_bytes(), strict=True)   # BOM / UTF-16 files too
     except (OSError, UnicodeDecodeError):
         return []
     names: List[str] = []
@@ -723,7 +724,7 @@ def bash_main() -> None:
     for p in dict.fromkeys(named):
         if not p.startswith(UNKNOWN) and p not in files and not unprotected_entries(Path(p), vault):
             try:
-                holds = any(len(v) >= MIN_VALUE_LEN and v in decode_text(Path(p).read_bytes()) for v in vault)
+                holds = any(len(v) >= MIN_VALUE_LEN and v in decode_bytes(Path(p).read_bytes(), strict=True) for v in vault)
             except (OSError, UnicodeDecodeError):
                 holds = False
             if holds:   # an env file with no secrets in it is no one's concern

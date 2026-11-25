@@ -13,6 +13,7 @@ import json
 import os
 import re
 import subprocess
+from prismor.runtime.winutil import norm_eol
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,11 +87,6 @@ def _current_commit(repo_root: Path) -> Optional[str]:
 # ── Core functions ────────────────────────────────────────────────────────
 
 
-def _norm_eol(data: bytes) -> bytes:
-    """CRLF -> LF for text, so a line-ending-only edit is not a change."""
-    return data if b"\0" in data else data.replace(b"\r\n", b"\n")
-
-
 def compute_file_hash(path: Path, normalize: bool = True) -> str:
     """SHA-256 hex digest of the file bytes (CRLF normalised to LF).
 
@@ -100,7 +96,7 @@ def compute_file_hash(path: Path, normalize: bool = True) -> str:
     """
     try:
         data = path.read_bytes()
-        return hashlib.sha256(_norm_eol(data) if normalize else data).hexdigest()
+        return hashlib.sha256(norm_eol(data) if normalize else data).hexdigest()
     except Exception:
         return ""
 
@@ -223,7 +219,7 @@ def _classify_change(
         except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
             show = None
         if show and show.returncode == 0:
-            committed_hash = hashlib.sha256(_norm_eol(show.stdout)).hexdigest()
+            committed_hash = hashlib.sha256(norm_eol(show.stdout)).hexdigest()
             if committed_hash == current_hash:
                 commit_sha = _current_commit(repo_root) or "HEAD"
                 return (

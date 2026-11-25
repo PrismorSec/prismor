@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from prismor.runtime.paths import read_text_auto
+from prismor.runtime.winutil import decode_bytes
 from prismor.runtime.policy_engine import PolicyEngine, _has_suspicious_unicode
 
 # Maximum size of skill source files to read (100 KB).
@@ -482,13 +482,13 @@ def parse_config(config_path: Path, agent: Optional[str] = None) -> List[Dict[st
 
     if config_path.name == "SKILL.md":
         try:
-            text = read_text_auto(config_path)
+            text = decode_bytes(config_path.read_bytes())
         except OSError:
             return []
         entries = [_extract_skill_manifest(text, config_path)]
     else:
         try:
-            text = read_text_auto(config_path)
+            text = decode_bytes(config_path.read_bytes())
             if config_path.suffix == ".toml":
                 data = tomllib.loads(text)
             elif config_path.suffix == ".jsonc" or agent == "opencode":

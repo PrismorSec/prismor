@@ -17,7 +17,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-from prismor.runtime.paths import read_text_auto
+from prismor.runtime.winutil import decode_bytes
 
 
 # Manifest file patterns (kept in sync with default_policy.yaml).
@@ -230,7 +230,7 @@ def parse_dependencies(
     `lockfile_map` is npm-only today and threaded through `_parse_package_json`.
     """
     try:
-        text = read_text_auto(manifest)
+        text = decode_bytes(manifest.read_bytes())
     except OSError as exc:
         raise ManifestParseError(f"{manifest}: cannot read ({exc})")
 

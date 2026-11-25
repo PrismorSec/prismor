@@ -1,53 +1,19 @@
-"""Regressions from the PR #1010 review: rule bypasses, symlink resolve, cloak decode."""
+"""Regressions from the PR #1010 review (Windows rule cases live in test_windows_native_rules)."""
 from __future__ import annotations
 
 import os
 import re
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-from prismor.runtime.policy_engine import PolicyEngine, _resolve_path
+from prismor.runtime.policy_engine import _resolve_path
 from prismor.runtime.semantic_guard import _heuristic_analyze
 
 ROOT = Path(__file__).resolve().parents[1]
-_ENGINE = PolicyEngine()
-
-
-def _ids(cmd: str) -> set:
-    return {f.get("ruleId") for f in _ENGINE.evaluate({"type": "shell", "command": cmd}, 0)}
-
-
-@pytest.mark.parametrize("cmd", [
-    r"rd /s /q C:\Windows\System32",
-    r"del /s /q C:\Windows\Temp\x",
-])
-def test_cmd_recursive_delete_under_windows_dir_blocks(cmd):
-    assert "destructive-command" in _ids(cmd)
-
-
-def test_cmd_recursive_delete_of_project_dir_is_not_destructive():
-    assert "destructive-command" not in _ids(r"rd /s /q C:\work\build")
-
-
-@pytest.mark.parametrize("cmd", [
-    'Set-Content CLAUDE.md "x"',
-    "Remove-Item AGENTS.md",
-    "Out-File -FilePath .cursorrules",
-])
-def test_powershell_writes_to_instruction_files_are_flagged(cmd):
-    assert "agent-instruction-tampering" in _ids(cmd)
-
-
-@pytest.mark.parametrize("cmd", ["cat CLAUDE.md", "Get-Content AGENTS.md"])
-def test_reading_instruction_files_is_not_tampering(cmd):
-    assert "agent-instruction-tampering" not in _ids(cmd)
-
-
 _INSTALLER_PATTERNS = [
     p for r in yaml.safe_load((ROOT / "prismor/runtime/default_policy.yaml").read_text())["rules"]
     for p in r.get("patterns", []) if "get\\.docker" in p

@@ -15,19 +15,24 @@ from typing import Any, Optional, Union
 IS_WINDOWS = os.name == "nt"
 
 
-def decode_bytes(data: bytes) -> str:
-    """Decode file/stdin bytes: BOM-aware (UTF-8/16/32), else UTF-8, else
-    UTF-8 with replacement. Never raises."""
+def decode_bytes(data: bytes, strict: bool = False) -> str:
+    """Decode file/stdin bytes BOM-aware (UTF-8/16/32, PowerShell 5.1 writes
+    UTF-16), else UTF-8. Invalid bytes are replaced, or raise when ``strict``
+    (secret values must never be stored with U+FFFD in them)."""
+    errors = "strict" if strict else "replace"
     if data.startswith(codecs.BOM_UTF8):
-        return data[3:].decode("utf-8", errors="replace")
+        return data[3:].decode("utf-8", errors)
     if data.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
-        return data.decode("utf-32", errors="replace")
+        return data.decode("utf-32", errors)
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return data.decode("utf-16", errors="replace")
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return data.decode("utf-8", errors="replace")
+        return data.decode("utf-16", errors)
+    return data.decode("utf-8", errors)
+
+
+def norm_eol(data: bytes) -> bytes:
+    """CRLF -> LF for text (binary left alone), so a line-ending-only edit
+    (git autocrlf, a Windows editor) does not change a content hash."""
+    return data if b"\0" in data else data.replace(b"\r\n", b"\n")
 
 
 def read_text_file(path: Union[str, Path]) -> str:
@@ -86,8 +91,9 @@ def restrict_to_current_user(path: Union[str, Path]) -> None:
             return
         domain = os.environ.get("USERDOMAIN")
         who = f"{domain}\\{user}" if domain else user
+        perm = "(OI)(CI)F" if Path(path).is_dir() else "F"
         subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:F"],
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:{perm}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, timeout=10, check=False,
         )

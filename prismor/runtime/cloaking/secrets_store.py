@@ -22,6 +22,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from prismor.runtime.winutil import decode_bytes, restrict_to_current_user
+
 # Valid placeholder names mirror the regex used by the decloak hook.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
@@ -51,37 +53,12 @@ def is_console(stream) -> bool:
         return False
 
 
-def decode_text(raw: bytes) -> str:
-    """Decode file bytes, honouring a UTF-8 / UTF-16 BOM (PowerShell writes UTF-16)."""
-    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        return raw.decode("utf-16")
-    return raw.decode("utf-8-sig")
-
-
 def strip_one_newline(value: str) -> str:
     """Drop a single trailing CRLF or LF (what `echo` / a file adds)."""
     for nl in ("\r\n", "\n"):
         if value.endswith(nl):
             return value[: -len(nl)]
     return value
-
-
-def restrict_acl(path: Path) -> None:
-    """Windows: drop inherited ACLs and grant only the current user (best effort)."""
-    if os.name != "nt":
-        return
-    try:
-        import subprocess
-        user = os.environ.get("USERNAME")
-        if not user:
-            return
-        dom = os.environ.get("USERDOMAIN")
-        who = f"{dom}\\{user}" if dom else user
-        perm = "(OI)(CI)F" if Path(path).is_dir() else "F"
-        subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:{perm}"],
-                       capture_output=True, timeout=10)
-    except Exception:
-        pass
 
 
 def secrets_dir() -> Path:
@@ -123,7 +100,7 @@ def _ensure_dir() -> Path:
     except PermissionError:
         pass
     if fresh:
-        restrict_acl(path)
+        restrict_to_current_user(path)
     return path
 
 
@@ -193,7 +170,7 @@ def _parse_env_line(raw_line: str, line_no: int) -> tuple[str, str] | None:
 def parse_env_file(path: Path) -> Dict[str, str]:
     """Parse a dotenv-style file into placeholder -> secret mappings."""
     parsed: "OrderedDict[str, str]" = OrderedDict()
-    for line_no, raw_line in enumerate(decode_text(path.read_bytes()).splitlines(), start=1):
+    for line_no, raw_line in enumerate(decode_bytes(path.read_bytes(), strict=True).splitlines(), start=1):
         item = _parse_env_line(raw_line, line_no)
         if item is None:
             continue

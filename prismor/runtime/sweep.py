@@ -19,7 +19,8 @@ from getpass import getpass
 from pathlib import Path
 from typing import Optional
 
-from prismor.runtime.cloaking.secrets_store import decode_text, is_console, restrict_acl
+from prismor.runtime.cloaking.secrets_store import is_console
+from prismor.runtime.winutil import decode_bytes, restrict_to_current_user
 
 # ── Constants ───────────────────────────────────────────────────────────
 
@@ -166,7 +167,7 @@ def _read_text(filepath: str) -> str:
     elif raw[:3] == b"\xef\xbb\xbf":
         _ENC[filepath] = "utf-8-sig"
     try:
-        return decode_text(raw)
+        return decode_bytes(raw, strict=True)
     except UnicodeDecodeError:
         return raw.decode("utf-8", errors="replace")
 
@@ -207,7 +208,7 @@ def _write_vault(entries: list[dict], passphrase: str) -> None:
     tmp = VAULT_PATH.with_name(VAULT_PATH.name + ".tmp")
     tmp.write_bytes(ciphertext)
     os.replace(tmp, VAULT_PATH)
-    restrict_acl(PRISMOR_HOME)
+    restrict_to_current_user(PRISMOR_HOME)
     # Mark vault as initialized
     VAULT_SALT_PATH.touch()
 
