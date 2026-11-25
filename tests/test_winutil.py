@@ -79,3 +79,13 @@ def test_hook_dispatch_stdin_utf8(tmp_path):
                          capture_output=True, env=dict(os.environ, PYTHONUTF8="0"),
                          cwd=os.path.dirname(os.path.dirname(__file__)))
     assert out.stdout.decode().strip() == '{"c": "caf\\u00e9"}'
+
+
+def test_quote_path_and_learn_plain_when_piped(monkeypatch):
+    from prismor.runtime import cli
+    assert cli._quote_path("/tmp/a b/x.json") == "'/tmp/a b/x.json'"
+    assert cli._quote_path("/tmp/x.json") == "/tmp/x.json"
+    import subprocess, sys, os
+    out = subprocess.run([sys.executable, "-c", "from prismor.runtime import learning as l;print(repr(l._BOLD))"],
+                         capture_output=True, text=True, cwd=os.path.dirname(os.path.dirname(__file__)))
+    assert out.stdout.strip() == "''"

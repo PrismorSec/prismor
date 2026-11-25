@@ -5633,9 +5633,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Dismissal count to flag false positives (default: 5)")
     learn_parser.add_argument("--json", action="store_true", dest="json_output",
                               help="Output raw JSON instead of formatted report")
-    learn_parser.add_argument("--apply", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--apply", metavar="ID", type=int,
                               help="Accept a candidate rule and append to project policy")
-    learn_parser.add_argument("--reject", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--reject", metavar="ID", type=int,
                               help="Reject a candidate rule")
     learn_parser.add_argument("--candidates", action="store_true",
                               help="List pending candidate rules")
@@ -6435,6 +6435,15 @@ def _run_docs(args) -> None:
     print((root / name).read_text(encoding="utf-8"))
 
 
+def _quote_path(p: Any) -> str:
+    """A path as typed into the user's shell: double quotes on Windows, POSIX quoting elsewhere."""
+    t = str(p)
+    if os.name == "nt":
+        return f'"{t}"' if re.search(r"[\s&()^%!]", t) else t
+    import shlex
+    return shlex.quote(t)
+
+
 def _nonneg_int(v: str) -> int:
     n = int(v)
     if n < 0:
@@ -6476,7 +6485,7 @@ def _run_trail(args) -> None:
                   f"({'signed' if man.get('signature') else 'unsigned: pip install prismor[signing]'})")
             if man["missing_authority"]:
                 print(f"  ⚠ {len(man['missing_authority'])} authority snapshot(s) not found on this device")
-            print(f"  verify: prismor trail export --verify {args.out}")
+            print(f"  verify: prismor trail export --verify {_quote_path(args.out)}")
         return
 
     if sub == "verify":
@@ -6688,7 +6697,7 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
             print("  unsigned: install prismor[signing] (adds `cryptography`) to sign bundles")
         print(f"  {n_agents} agents · {n_findings} audit findings · "
               f"trail anchor seq {(bundle.get('trail_checkpoint') or {}).get('seq')}")
-        print(f"  re-verify with:  prismor attest verify {out}")
+        print(f"  re-verify with:  prismor attest verify {_quote_path(out)}")
     else:
         print(text)
     if not bundle.get("signature"):
