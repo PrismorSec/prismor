@@ -4713,9 +4713,24 @@ def _has_invisible_chars(text: str) -> bool:
     Unlike ``_has_suspicious_unicode``, this fires on invisible chars alone —
     no ASCII co-presence required. Used for skill content where zero-width
     characters have no legitimate purpose and indicate hidden payload injection.
+
+    One legitimate use is tolerated: a joiner/non-joiner (U+200C/U+200D)
+    between two non-ASCII characters (emoji ZWJ sequences,
+    Indic and Persian scripts). A joiner touching ASCII is still flagged.
     """
-    return any(ord(ch) in _INVISIBLE_CODEPOINTS or 0xE0000 <= ord(ch) <= 0xE007F
-               for ch in text)
+    n = len(text)
+    for i, ch in enumerate(text):
+        cp = ord(ch)
+        if 0xE0000 <= cp <= 0xE007F:
+            return True
+        if cp not in _INVISIBLE_CODEPOINTS:
+            continue
+        if cp in (0x200C, 0x200D) and 0 < i < n - 1 \
+                and ord(text[i - 1]) > 0x7F and ord(text[i + 1]) > 0x7F \
+                and ord(text[i + 1]) not in _INVISIBLE_CODEPOINTS:
+            continue
+        return True
+    return False
 
 
 def _has_suspicious_unicode(text: str) -> bool:

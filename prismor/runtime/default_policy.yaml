@@ -1222,6 +1222,7 @@ rules:
     patterns:
       - 'base64\s*-?d'
       - '\\x[0-9a-fA-F]{20,}'
+      - '\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*\s-(?:enc|ec|encodedcommand)\b'
       - 'eval\(atob\('
       - 'fromCharCode\(\d+,\d+,\d+'
     action: block
@@ -1234,7 +1235,13 @@ rules:
     event_types: [skill_manifest]
     fields: [combined_text]
     patterns:
-      - '\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|python)\b'
+      # Pipe-to-shell, except well-known first-party installers (https only).
+      - '\b(curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(bash|sh|python)\b'
+      # PowerShell: download | iex, and the Windows living-off-the-land downloaders.
+      - '\|\s*(?:iex|invoke-expression)\b'
+      - '\bcertutil(?:\.exe)?\b[^\n]*-urlcache'
+      - '\bbitsadmin(?:\.exe)?\b[^\n]*/(?:transfer|addfile)'
+      - '\bmshta(?:\.exe)?\s+[''"]?(?:https?:|vbscript:|javascript:)'
       # Real command substitution only — a bare `` `[^`]+` `` alternative used
       # to also match here, which fires on ANY markdown inline-code span
       # (near-universal in a Skill's prose/docs body) now that skill_manifest
@@ -1318,8 +1325,10 @@ rules:
     event_types: [skill_manifest]
     fields: [combined_text]
     patterns:
-      - '(^|/)\.env(\.|/|$)|\.ssh/id_(rsa|ed25519)|\.aws/credentials'
-      - '\.npmrc|\.pypirc|\.docker/config\.json'
+      # [/\\]+ accepts Windows separators, including JSON-escaped (\\\\) ones.
+      - '(^|[/\\])\.env(\.|[/\\]|$)|\.ssh[/\\]+id_(rsa|ed25519|ecdsa|dsa)|\.aws[/\\]+credentials'
+      - '(?:%USERPROFILE%|%HOMEPATH%|\$env:(?:USERPROFILE|HOME|APPDATA)|\$HOME|~)[/\\]+\.(?:ssh|aws|gnupg)\b'
+      - '\.npmrc|\.pypirc|\.docker[/\\]+config\.json'
       - '/etc/(passwd|shadow|sudoers)'
     action: block
 

@@ -136,7 +136,8 @@ def to_cyclonedx(inv: Dict[str, Any], *, now: Optional[datetime] = None) -> Dict
             "type": "application", "bom-ref": ref, "name": s["name"],
             "properties": _props(
                 kind="mcp_server", transport=s.get("transport"), remote=s.get("remote"),
-                governed=bool(s.get("managed")), gateway=s.get("is_gateway"), risk=s.get("risk"),
+                governed=bool(s.get("managed")), gateway=s.get("is_gateway"),
+                risk=s.get("schema_risk", s.get("risk")),
                 config=_rel(s.get("source")), command=" ".join(redact_command(s.get("command") or [])),
                 status=led.get("status"), findings=len(s.get("findings") or []) or None),
         }
