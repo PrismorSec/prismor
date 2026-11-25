@@ -33,7 +33,7 @@ RESOLVER="$_HOOK_DIR/decloak-exec.sh"
 
 # Require jq — hook scripts are shell-only for speed. Fail closed if missing.
 if ! command -v jq >/dev/null 2>&1; then
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Prismor cloaking requires jq (brew install jq)"}}\n'
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Prismor cloaking requires jq. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux)"}}\n'
   exit 0
 fi
 

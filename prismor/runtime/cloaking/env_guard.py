@@ -32,12 +32,69 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set
 
-from prismor.runtime.cloaking.secrets_store import _parse_env_line, secrets_dir
+from prismor.runtime.cloaking.secrets_store import _parse_env_line, decode_text, secrets_dir
 
 # Values shorter than this are ignored, mirroring read-guard.sh's minimum —
 # tiny values ("1", "true", "dev") are config, not secrets, and matching them
 # against the vault would be noise either way.
 MIN_VALUE_LEN = 4
+
+
+# ── Windows path handling ───────────────────────────────────────────────────
+# Git Bash hands this module `C:\work\x`, `/c/work/x`, `.\.env`, 8.3 names,
+# `.env.` and `.env::$DATA`; Windows opens all of them as the same file.
+def _win() -> bool:
+    return os.name == "nt"   # tests patch this to exercise the Windows branch on any OS
+
+
+def _drive_root(letter: str) -> str:
+    return f"{letter.upper()}:/"   # tests patch this to point a drive at a tmp dir
+
+
+_MSYS_RE = re.compile(r"^/(?:cygdrive/)?([A-Za-z])(?=/|$)/?(.*)$")
+_WIN_PREFIX = r"(?:[A-Za-z]:|\.{1,2}|[\w-]+~\d+)"
+_WIN_QUOTED = re.compile(r"([\"'])(" + _WIN_PREFIX + r"\\[^\"'\n]*?)\1")
+_WIN_BARE = re.compile(r"(?<![\w\\/\"'])(" + _WIN_PREFIX + r"\\[^\s;&|()<>\"']*)")
+_WIN_REL = re.compile(r"(?<![\w\\/\"'.~-])([\w.~-]+(?:\\[\w.~*?-]+)+)")
+
+
+def winslash(command: str) -> str:
+    """``command`` with backslash paths turned to ``/`` (shlex would eat the
+    backslashes: `cat .\\.env` lexes as `cat ..env`). Only path-shaped words move:
+    a drive or `.\\` / `..\\` / 8.3 prefix, or a relative path ending in an env
+    file name. `\\cat`, `a\\ b` and other escapes are left alone."""
+    if not _win() or "\\" not in command:
+        return command
+    fwd = lambda m: m.group(0).replace("\\", "/")  # noqa: E731
+    command = _WIN_QUOTED.sub(fwd, command)
+    command = _WIN_BARE.sub(fwd, command)
+    return _WIN_REL.sub(lambda m: m.group(0).replace("\\", "/")
+                        if is_env_basename(m.group(1).replace("\\", "/")) else m.group(0), command)
+
+
+def native_path(p: str) -> str:
+    """Resolve the spellings Windows treats as one file: MSYS `/c/x`, `\\`,
+    trailing dots/spaces, `::$DATA` / `:stream`, 8.3 short names."""
+    if not _win() or not p:
+        return p
+    p = p.replace("\\", "/")
+    m = _MSYS_RE.match(p) or re.match(r"^([A-Za-z]):/+(.*)$", p)
+    if m:
+        p = _drive_root(m.group(1)) + m.group(2)
+    head, _, base = p.rpartition("/")
+    if ":" in base and not (not head and len(base) == 2):
+        base = base.split(":", 1)[0]
+    parts = (head + "/" + base if head or p.startswith("/") else base).split("/")
+    p = "/".join(c if c in ("", ".", "..") or (len(c) == 2 and c[1] == ":") else c.rstrip(". ") for c in parts)
+    if "~" in p and os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(32768)
+            if ctypes.windll.kernel32.GetLongPathNameW(p, buf, len(buf)):
+                p = buf.value.replace("\\", "/")
+        except Exception:
+            pass
+    return p
 
 
 def vault_values() -> Set[str]:
@@ -50,7 +107,7 @@ def vault_values() -> Set[str]:
         if not child.is_file():
             continue
         try:
-            values.add(child.read_text(encoding="utf-8"))
+            values.add(decode_text(child.read_bytes()))
         except (OSError, UnicodeDecodeError):
             continue
     return values
@@ -61,7 +118,7 @@ def unprotected_entries(path: Path, vault: Set[str] | None = None) -> List[str]:
     if vault is None:
         vault = vault_values()
     try:
-        text = path.read_text(encoding="utf-8")
+        text = decode_text(path.read_bytes())   # BOM / UTF-16 files too
     except (OSError, UnicodeDecodeError):
         return []
     names: List[str] = []
@@ -144,7 +201,7 @@ def _tokens(command: str):
     when it does not lex (unbalanced quotes)."""
     import shlex
     try:
-        lex = shlex.shlex(_FD_RE.sub("", _IFS_RE.sub(" ", command)), posix=True, punctuation_chars=_PUNCT)
+        lex = shlex.shlex(_FD_RE.sub("", _IFS_RE.sub(" ", winslash(command))), posix=True, punctuation_chars=_PUNCT)
         lex.whitespace = " \t\r"
         lex.whitespace_split = True
         lex.commenters = ""   # a comment swallowed the newline that ends it
@@ -328,7 +385,7 @@ def candidate_paths_main() -> None:
 _SAFE_CMDS = {"ls", "stat", "test", "[", "[[", "touch", "rm", "rmdir", "chmod", "chown",
               "echo", "printf", "wc", "file", "mkdir", "du", "realpath", "readlink",
               "basename", "dirname", "tee", "true", "false", ":", "exit", "cd", "pushd",
-              "popd", "which", "type"}
+              "popd", "which"}   # not `type`: cmd's `type .env` prints the file
 _SAFE_GIT = {"add", "rm", "check-ignore", "ls-files", "status"}
 _PRESENCE_RE = re.compile(r"^(-[A-Za-z]*[qclL][A-Za-z]*|--(quiet|silent|count|files-with-matches|files-without-match))$")
 # These run text they are fed: an env path a "safe" command prints into them
@@ -404,19 +461,28 @@ def _pattern_hits(word: str, d: str, out: List[str]) -> None:
             out.append(UNKNOWN + word)
         return
     if head:
-        head = os.path.expanduser(head)
+        head = os.path.expanduser(native_path(head))
         d = head if os.path.isabs(head) else os.path.join(d, head)
     elif d == UNKNOWN:
         return
-    for n in _env_files_in(d):
-        # A variable may hold a dotfile name; a bare glob `*` skips dotfiles.
-        if fnmatch.fnmatchcase(n, pat) and (dynamic or not n.startswith(".") or pat.startswith(".")):
-            out.append(os.path.join(d, n))
+    if any(c in d for c in "*?["):   # `proj*/.env`: every directory the glob names
+        import glob
+        dirs = [x for x in glob.glob(d)[:200] if os.path.isdir(x)]
+    else:
+        dirs = [d]
+    for d in dirs:
+        for n in _env_files_in(d):
+            # A variable may hold a dotfile name; a bare glob `*` skips dotfiles.
+            if fnmatch.fnmatchcase(n, pat) and (dynamic or not n.startswith(".") or pat.startswith(".")):
+                out.append(os.path.join(d, n))
 
 
 def _word_hits(word: str, d: str, out: List[str], *, dynamic: bool) -> None:
-    for m in _WORD.finditer(word):
-        tok = m.group(0)
+    toks = [m.group(0) for m in _WORD.finditer(word)]
+    if _win() or " " in word:   # `"C:/my dir/.env"`: a quoted path is one word, not several
+        toks.insert(0, word)
+    for tok in toks:
+        tok = native_path(tok)
         path = os.path.expanduser(tok)
         if not os.path.isabs(path):
             if d == UNKNOWN:
@@ -637,8 +703,8 @@ def bash_main() -> None:
     Prints ``{"files": {path: [names]}, "total": N, "unknown": word,
     "vaulted_flow": path}``; ``vaulted_flow`` names a fully vaulted env file
     the command sends somewhere other than the scrubbed tool output."""
-    cwd = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-    command = local_text(sys.stdin.read())
+    cwd = native_path(sys.argv[1]) if len(sys.argv) > 1 else os.getcwd()
+    command = local_text(winslash(sys.stdin.read()))
     reads = env_reads(command, cwd)
     unknown = next((p[1:] for p in reads if p.startswith(UNKNOWN)), "")
     vault = vault_values()
@@ -657,7 +723,7 @@ def bash_main() -> None:
     for p in dict.fromkeys(named):
         if not p.startswith(UNKNOWN) and p not in files and not unprotected_entries(Path(p), vault):
             try:
-                holds = any(len(v) >= MIN_VALUE_LEN and v in Path(p).read_text(encoding="utf-8") for v in vault)
+                holds = any(len(v) >= MIN_VALUE_LEN and v in decode_text(Path(p).read_bytes()) for v in vault)
             except (OSError, UnicodeDecodeError):
                 holds = False
             if holds:   # an env file with no secrets in it is no one's concern
@@ -694,10 +760,30 @@ def grep_targets(path: str, glob: str = "", ftype: str = "", limit: int = 20000)
     return out
 
 
+def _resolve(path: str, cwd: str) -> str:
+    path = os.path.expanduser(native_path(path)) if path else ""
+    cwd = native_path(cwd) or os.getcwd()
+    return path if path and os.path.isabs(path) else os.path.join(cwd, path) if path else cwd
+
+
 def grep_main() -> None:
-    """argv: path [glob [type]] -> same report shape as ``main``."""
-    a = sys.argv[1:] + ["", "", ""]
-    main(grep_targets(a[0], a[1], a[2]))
+    """argv: path glob type cwd -> same report shape as ``main``. An empty or
+    relative path means the session cwd, as the Grep tool treats it."""
+    a = sys.argv[1:] + ["", "", "", ""]
+    main(grep_targets(_resolve(a[0], a[3]), a[1], a[2]))
+
+
+def read_main() -> None:
+    """argv: file_path cwd. The Read tool's file, under every spelling Windows
+    resolves to it (`.env.`, `.env::$DATA`, 8.3 names, `C:\\x`, `/c/x`), or a
+    symlink to an env file."""
+    a = sys.argv[1:] + ["", ""]
+    p = _resolve(a[0], a[1])
+    real = os.path.realpath(p) if os.path.lexists(p) else p
+    if os.path.isfile(real) and (is_env_basename(p) or is_env_basename(real)):
+        main([real])
+    else:
+        print(json.dumps({"files": {}, "total": 0}))
 
 
 if __name__ == "__main__":

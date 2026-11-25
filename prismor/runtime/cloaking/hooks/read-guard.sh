@@ -17,7 +17,10 @@ set -uo pipefail
 
 SECRETS_DIR="${PRISMOR_SECRETS_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/secrets}"
 
-command -v jq >/dev/null 2>&1 || exit 0   # no jq → silent no-op; decloak fails loud
+if ! command -v jq >/dev/null 2>&1; then   # fail closed: without jq this hook cannot read the call
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Prismor cloaking requires jq and it is not on PATH, so this call was blocked. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux). Then restart the agent."}}\n'
+  exit 0
+fi
 
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
@@ -70,6 +73,11 @@ case "$tool_name" in Read|Edit|MultiEdit) ;; *) exit 0 ;; esac
 file_path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty')"
 [[ -n "$file_path" && -f "$file_path" ]] || exit 0
 
+# A UTF-16 file (PowerShell redirects write one) has NULs between the bytes of a
+# value; matching needs them dropped. Only files with a NUL in the head pay for it.
+_nuls="$(head -c 4096 "$file_path" 2>/dev/null | LC_ALL=C tr -cd '\000' | wc -c)"
+utf16=0; (( _nuls > 0 )) && utf16=1
+
 # Does the target file contain any registered secret value verbatim?
 shopt -s nullglob
 for secret_file in "$SECRETS_DIR"/*; do
@@ -91,7 +99,8 @@ for secret_file in "$SECRETS_DIR"/*; do
       | PRISMOR_PAT="$real" awk 'BEGIN { RS = "\001"; p = ENVIRON["PRISMOR_PAT"] } index($0, p) { f = 1 } END { exit f ? 0 : 1 }' \
       || continue
   else
-    grep -qF -- "$real" "$file_path" 2>/dev/null || continue
+    grep -qF -- "$real" "$file_path" 2>/dev/null \
+      || { (( utf16 )) && LC_ALL=C tr -d '\000\r' < "$file_path" 2>/dev/null | LC_ALL=C grep -qaF -- "$real"; } || continue
   fi
   what="Reading it"; [[ "$tool_name" == Read ]] || what="Editing it (the result shows the lines around the change)"
   _deny "$name" "Prismor cloaking: '$file_path' contains the registered secret '$name'. $what would place the raw value in context. Reference it as @@SECRET:${name}@@ in a Bash command instead — Prismor substitutes the real value at execution time and scrubs it from the output."

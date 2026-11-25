@@ -37,7 +37,10 @@ STASH_DIR="${PRISMOR_PROMPT_STASH_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/prompt_st
 # unrelated later conversation. Seconds; overridable for tests.
 STASH_TTL="${PRISMOR_PROMPT_STASH_TTL:-1800}"
 
-command -v jq >/dev/null 2>&1 || exit 0
+if ! command -v jq >/dev/null 2>&1; then   # fail closed
+  printf '{"decision":"block","reason":"Prismor cloaking requires jq and it is not on PATH, so this prompt was blocked. Install it: winget install jqlang.jq or scoop install jq (Windows), brew install jq (macOS), apt install jq (Linux)."}\n'
+  exit 0
+fi
 
 input="$(cat)"
 prompt="$(printf '%s' "$input" | jq -r '.prompt // empty')"
