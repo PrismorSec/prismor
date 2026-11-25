@@ -1523,9 +1523,13 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.audit import run_audit, apply_fixes
         findings = run_audit(workspace=workspace, repo_root=repo_root)
 
+        # Exit code, shared by text and JSON: 2 critical, 1 high/medium, 0 clean.
+        _audit_exit = 2 if any(f.severity == "CRITICAL" for f in findings) else (
+            1 if any(f.severity in ("HIGH", "MEDIUM") for f in findings) else 0)
+
         if getattr(args, "json", False):
             print(json.dumps([f.to_dict() for f in findings], indent=2))
-            return
+            raise SystemExit(_audit_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  security audit")
@@ -1622,11 +1626,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 print(f"    {_color('No fixes were applied.', _DIM)}")
             print()
 
-        # Exit code: 2 for critical, 1 for high/medium, 0 for clean
-        if any(f.severity == "CRITICAL" for f in findings):
-            raise SystemExit(2)
-        if any(f.severity in ("HIGH", "MEDIUM") for f in findings):
-            raise SystemExit(1)
+        if _audit_exit:
+            raise SystemExit(_audit_exit)
         return
 
     # ── status: one-shot health check (mode, hooks, cloak, latest session) ──
