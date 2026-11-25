@@ -182,7 +182,7 @@ the tool-call guard.
   ask the model to hardcode a live secret — store the placeholder or an env-var
   reference instead.
 - **Protect the vault directory.** `~/.prismor/secrets/` is plaintext on disk
-  (file permissions are its only guard). Exclude it from git, backups, and sync
+  (file permissions are its only guard; on Windows Prismor drops inherited ACLs with `icacls` when it creates the directory, best effort). Exclude it from git, backups, and sync
   (Time Machine, iCloud, Dropbox). Add a Claude `permissions.deny` rule for
   `Read(~/.prismor/secrets/**)` for defense in depth.
 - **`/clear` after any suspected leak.** If the model ever saw a raw value, it can

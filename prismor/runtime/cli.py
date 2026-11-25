@@ -56,6 +56,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import contextlib
 import io
@@ -3482,6 +3483,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     print(f"Installed Hermes Agent cloaking plugin at {h_result['pluginDir']}")
                 for label in h_result["hooksInstalled"]:
                     print(f"  + {label}")
+            if not shutil.which("jq"):
+                _fix = ("winget install jqlang.jq   (or: scoop install jq)" if os.name == "nt"
+                        else "brew install jq   (or: apt install jq)")
+                sys.stderr.write("warning: jq is not on PATH. The cloaking hooks need it and will BLOCK every "
+                                 f"guarded tool call until it is installed: {_fix}\n")
             _sdir = (result if cloak_agent in ("claude", "all") else h_result).get("secretsDir", str(Path.home() / ".prismor" / "secrets"))
             print(f"Secrets directory: {_sdir}")
             print()

@@ -82,3 +82,14 @@ def test_install_reads_bom_settings(vault, tmp_path):
     s = tmp_path / "s.json"
     s.write_bytes(b"\xef\xbb\xbf{\"a\": 1}")
     assert installer._read_json(s) == {"a": 1}
+
+
+def test_install_warns_when_jq_missing(vault, tmp_path):
+    import os
+    bin_ = tmp_path / "bin"
+    bin_.mkdir()
+    env = {**os.environ, "PRISMOR_SECRETS_DIR": str(vault / "v"), "PRISMOR_HOME": str(vault / "h"),
+           "PATH": str(bin_), "PYTHONPATH": str(__import__("pathlib").Path(__file__).resolve().parent.parent)}
+    r = subprocess.run([sys.executable, "-m", "prismor.runtime.cli", "cloak", "install", "--scope", "project"],
+                       capture_output=True, text=True, env=env, cwd=str(tmp_path), timeout=60)
+    assert "jq is not on PATH" in r.stderr, r.stderr[-500:]
