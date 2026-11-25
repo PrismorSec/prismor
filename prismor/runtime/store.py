@@ -336,6 +336,16 @@ def infer_default_workspace(cwd: Path) -> Path:
     # workspace is the repo root two levels up.
     if resolved.name == "runtime" and resolved.parent.name == "prismor":
         return resolved.parent.parent
+    # Run from a subdirectory, the workspace is the nearest ancestor that holds
+    # a project policy (.prismor/policy.yaml) or a git checkout (.git): the
+    # closest one wins. $HOME is never a workspace just because ~/.prismor
+    # (Prismor's own state) lives there.
+    home = Path.home().resolve()
+    for cand in (resolved, *resolved.parents):
+        if cand == home:
+            break
+        if (cand / ".prismor" / "policy.yaml").is_file() or (cand / ".git").exists():
+            return cand
     return resolved
 
 

@@ -269,7 +269,7 @@ def _run_skills(args) -> None:
     """Dispatch ``prismor skills {audit,approve}``."""
     from prismor.runtime.skills_audit import audit_skills, approve_skill, format_audit
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "skills_subcommand", None) or "audit"
     if sub == "approve":
         entry = approve_skill(workspace, Path(args.file))
@@ -288,7 +288,7 @@ def _run_extensions(args) -> None:
     """Dispatch ``prismor extensions {list,why,approve,report,wrap-hooks,unwrap-hooks}``."""
     from prismor.runtime import extensions as ext
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "extensions_subcommand", None) or "list"
     as_json = getattr(args, "json", False)
     if sub == "approve":
@@ -339,7 +339,7 @@ def _run_memory(args) -> None:
         format_trust_status,
     )
 
-    workspace = Path(args.workspace) if getattr(args, "workspace", None) else Path.cwd()
+    workspace = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
     sub = getattr(args, "memory_subcommand", None)
 
     if sub == "status":
@@ -1201,6 +1201,19 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         _align_check_with_hook(engine, findings, workspace, args.type)
         _paused = _pause_note()
+
+        if engine.project_policy_error and not engine.project_policy_fallback:
+            # The project's rules are not loaded: PASS here would be a verdict
+            # on the built-in floor alone. Say so and do not exit 0.
+            sys.stderr.write(
+                f"[prismor] WARNING: project policy is invalid, so only built-in and org rules "
+                f"were checked: {engine.project_policy_error}\n"
+                "          Fix it, then: prismor policy validate\n")
+            if not any(_blocks(f) for f in findings):
+                if findings:
+                    _print_findings(findings, engine=engine, explain=args.explain,
+                                    suggest=args.suggest_allowlist, input_value=args.value)
+                raise SystemExit(2)
 
         if not findings:
             print(_color("PASS", _GREEN) + f"  {args.value}")

@@ -5962,6 +5962,20 @@ except Exception:  # pragma: no cover
 _WARNED_PROJECT_ERRORS: set = set()
 
 
+def _read_policy_text(path: Path) -> str:
+    """Policy file text, BOM-aware.
+
+    PowerShell 5.1 ``>`` / ``Out-File`` write UTF-16LE with a BOM and Notepad
+    writes UTF-8 with one; both used to make a valid policy "invalid".
+    """
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    if len(raw) >= 4 and raw[1:2] == b"\x00" and raw[3:4] == b"\x00":  # BOM-less UTF-16LE
+        return raw.decode("utf-16-le")
+    return raw.decode("utf-8-sig")
+
+
 def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """Load a YAML file. Falls back to basic parsing if PyYAML is missing.
 
@@ -5970,7 +5984,7 @@ def _load_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """
     if not path.exists():
         return None
-    text = path.read_text(encoding="utf-8")
+    text = _read_policy_text(path)
     if yaml is not None:
         import copy as _copy
         import hashlib as _hashlib
