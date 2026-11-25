@@ -123,6 +123,13 @@ These rules inspect command text; they do not resolve Git aliases or read
 their scope. Approval uses the same surface support and fail-closed behavior
 described below.
 
+### Approval before publishing an npm package
+
+`npm-publish` reports explicit publish commands by default. Set `mode: enforce`
+and `action: step_up` on the rule to require approval. `npm pack`, help and
+explicit dry runs stay quiet. In `npm publish --dry-run && npm publish`, the
+second command requires approval. The rule reads options from the command line.
+
 ### Custom guardrails for MCP tools
 
 Say you want a human to sign off before the agent merges a PR through the GitHub MCP, and you want the production database MCP off-limits entirely. Write a rule with the `mcp` event type and Prismor gates the call before it runs:

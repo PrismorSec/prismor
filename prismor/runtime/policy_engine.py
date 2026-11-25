@@ -177,6 +177,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "git-branch-force-delete",
     "git-clean-force",
     "git-stash-delete",
+    "npm-publish",
     "pkg-install-from-url",
     "secret-exfiltration",
     "credential-aggregation",

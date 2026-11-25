@@ -57,6 +57,14 @@ HITS = {
         "cd repo && git push origin main",
         "git -C ../repo push origin main --tags",
     ],
+    "npm-publish": [
+        "npm publish", "npm publish ./package.tgz --access public",
+        "npm --workspace app publish --tag next",
+        "npm publish --dry-run && npm publish",
+        "npm publish --dry-run --no-dry-run",
+        "npm publish --dry-run=false",
+        "npm publish # --help", "npm publish -- --dry-run",
+    ],
     "terraform-state-change": [
         "terraform apply -auto-approve",
         "terraform -chdir=infra destroy",
@@ -161,6 +169,16 @@ MISSES = {
         "git push",
         "git pull origin main",
         'git commit -m "git push origin main later"',
+    ],
+    "npm-publish": [
+        "npm publish --dry-run", "npm --dry-run publish",
+        "npm publish --tag next '--dry-run=true'",
+        "npm pack", "npm run publish",
+        "npm help publish", "npm publish --help", "npm publish -h",
+        "NPM_CONFIG_DRY_RUN=true npm publish",
+        "npm publish --no-dry-run --dry-run",
+        "npm pack # release later; npm publish",
+        "npm publish --dry-run && npm pack", 'echo "npm publish"',
     ],
     "terraform-state-change": [
         "terraform plan -destroy",
