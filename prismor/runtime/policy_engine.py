@@ -174,6 +174,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "remote-execution",
     "rce-canary",
     "git-remote-hijack",
+    "git-branch-force-delete",
     "git-clean-force",
     "git-stash-delete",
     "pkg-install-from-url",

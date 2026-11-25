@@ -90,16 +90,24 @@ Several default rules carry `guidance:` (for example `destructive-command`, `rem
 
 A rule cannot rewrite the command into a safer one by itself. Use `action: modify` with a named `transform:` for that.
 
-### Approval before deleting untracked files or stashes
+### Approval before deleting untracked files, stashes or local branches
 
 `git-clean-force` reports forced `git clean` calls, including combined flags
 such as `-fdx`. `git-stash-delete` reports `git stash drop` and `git stash clear`.
-Both follow the existing change-control policy: they report by default and
+`git-branch-force-delete` reports `git branch -D` and explicit delete-plus-force
+forms such as `git branch --delete --force`. It detects the request to skip
+Git's merge check without inspecting whether the branch is merged. It recognizes
+short and long deletion flags, including quiet and verbose forms. Other branch
+options and remote-tracking branches are outside this rule.
+These rules follow the existing change-control policy: they report by default and
 are not safety-floor rules. To require approval, a human can add:
 
 ```yaml
 rules:
   - id: git-clean-force
+    mode: enforce
+    action: step_up
+  - id: git-branch-force-delete
     mode: enforce
     action: step_up
   - id: git-stash-delete

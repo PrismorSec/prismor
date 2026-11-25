@@ -13,6 +13,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prismor.runtime.policy_engine import PolicyEngine
 
 HITS = {
+    "git-branch-force-delete": [
+        "git branch -D topic",
+        'git -C "my repo" branch --delete topic --force',
+        "git branch --force -d topic",
+        "git branch -qfd -- topic other",
+        "git branch --list; git branch -D topic",
+    ],
     "git-clean-force": [
         "git clean -fdx",
         "git clean -d -f -X",
@@ -100,6 +107,16 @@ HITS = {
 }
 
 MISSES = {
+    "git-branch-force-delete": [
+        "git branch -d topic", "git branch --delete topic",
+        "git branch --list", "git branch --list -- -D",
+        "git branch -m old new", "git branch -M old new",
+        "git branch -f topic HEAD", "git branch -dr origin/topic",
+        "git branch -D -r origin/topic", "git branch -D --help",
+        "git branch -d topic && git branch -f other HEAD",
+        "git branch -d topic -- -f",
+        'git commit -m "git branch -D topic"',
+    ],
     "git-clean-force": [
         "git clean -ndx",
         "git clean -fdxn",
@@ -219,11 +236,12 @@ class ChangeControlRules(unittest.TestCase):
         self.assertNotIn("change_control", self.engine.block_categories)
 
 
-@pytest.mark.parametrize("rule,command", [
-    ("git-clean-force", "git clean -fdx"),
-    ("git-stash-delete", "git stash clear"),
+@pytest.mark.parametrize("rule,command,safe_command", [
+    ("git-clean-force", "git clean -fdx", "git clean -ndx"),
+    ("git-stash-delete", "git stash clear", "git stash list"),
+    ("git-branch-force-delete", "git branch -D topic", "git branch -d topic"),
 ])
-def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command):
+def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command, safe_command):
     from prismor.runtime.runtime import evaluate_tool_call
 
     event = {"type": "shell", "agent_event": "PreToolUse", "command": command,
@@ -241,7 +259,7 @@ def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command):
     (tmp_path / ".prismor" / "policy.yaml").write_text(
         f"rules:\n  - id: {rule}\n    mode: enforce\n    action: step_up\n")
     assert check().verdict == "step_up"
-    event["command"] = "git clean -ndx" if rule == "git-clean-force" else "git stash list"
+    event["command"] = safe_command
     assert check().allow
     event["command"] = f"cat <<'EOF' > notes.txt\n{command}\nEOF"
     assert check().allow

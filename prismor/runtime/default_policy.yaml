@@ -2615,6 +2615,36 @@ rules:
     guidance: "preview the files with `git clean -n` and confirm what can be removed."
     action: warn
 
+  - id: git-branch-force-delete
+    severity: HIGH
+    category: change_control
+    title: Force-deletes a local Git branch
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      # -D implies both delete and force. Git options are case-sensitive.
+      - |-
+        (?x-i:
+          (?:^|[\n;&|(`]|\$\()[ \t]*
+          (?:(?:sudo|doas|env|time|nice|exec|command)(?:[ \t]+-\S+)*[ \t]+|\w+=\S+[ \t]+)*
+          (?:(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:[^\s;&|]*/)?git
+          (?:[ \t]+(?:--no-pager|--(?:git-dir|work-tree)=[^\s;&|]+|-[Cc][ \t]+(?:[^\s;&|'"]+|'[^'\n]*'|"[^"\n]*")))*
+          [ \t]+branch
+          # Both options must belong to this invocation and precede the -- delimiter.
+          (?=(?:[ \t]+(?!['"]?--['"]?(?:\s|$))[^\s;&|()<>`#]+)*?[ \t]+['"]?(?:-[qvdfD]*[dD][qvdfD]*|--delete)['"]?(?=\s|$|[;&|)<>]))
+          (?=(?:[ \t]+(?!['"]?--['"]?(?:\s|$))[^\s;&|()<>`#]+)*?[ \t]+['"]?(?:-[qvdfD]*[fD][qvdfD]*|--force)['"]?(?=\s|$|[;&|)<>]))
+          # Require a target and accept only flags for local deletion.
+          (?=(?:[ \t]+['"]?(?:-[qvdfD]+|--(?:delete|force|quiet|verbose))['"]?)*[ \t]+
+            (?:--[ \t]+(?=[^\s;&|()<>#])|['"]?[^-\s;&|()<>#'"]))
+          (?:[ \t]+['"]?(?:-[qvdfD]+|--(?:delete|force|quiet|verbose)|[^-\s;&|()<>#'"][^\s;&|()<>'"]*)['"]?)*
+          (?:[ \t]+--(?:[ \t]+['"]?[^\s;&|()<>#'"][^\s;&|()<>'"]*['"]?)*)?
+          (?:[ \t]*\d*(?:>>?|<)(?:&\d+|[ \t]*(?:[^\s;&|()<>'"]+|'[^'\n]*'|"[^"\n]*"))(?=[\s;&|)'"]|$))*
+          (?=[ \t]+\#|[ \t]*(?:$|[\n;&|)]|['"][ \t]*(?:$|[;&|)])))
+        )
+    guidance: "use git branch -d to keep Git's merge check, or inspect the branch before forcing deletion."
+    action: warn
+
   - id: git-stash-delete
     severity: HIGH
     category: change_control
