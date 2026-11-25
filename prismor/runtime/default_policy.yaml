@@ -631,6 +631,8 @@ rules:
       - '(?:^|[\n;&|({]\s*)format(?:\.com)?\s+[a-z]:(?=\s|$|/)'
       - '\b(?:Format-Volume|Clear-Disk|Initialize-Disk)\b'
       - '(?:^|[\s;&|("''])(?:remove-item|ri|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?[a-z]:\\windows(?:\\[^\s"'';|&]*)?["'']?(?=\s|$|[;|&)"''])'
+      # cmd.exe: rd / rmdir / del /s anywhere under the Windows dir.
+      - '(?:^|[\s;&|("''])(?:rmdir|rd|del|erase)\s+(?=(?:[^\n&|]*\s)?/s\b)[^\n&|]*?\s["'']?[a-z]:\\windows(?:\\[^\s"'';|&]*)?["'']?(?=\s|$|[;|&)"''])'
       - '\bvssadmin(?:\.exe)?\s+delete\s+shadows\b|\bwmic\b[^\n]*\bshadowcopy\s+delete\b|\bbcdedit\b[^\n]*\brecoveryenabled\s+no\b'
       - '(?:^|[\n;&|({]\s*)(?:Stop-Computer|Restart-Computer)\b'
     guidance: "delete the specific path you mean (or move it with `trash`/`mv` to a scratch dir); never a root, system or home directory."
@@ -1262,7 +1264,7 @@ rules:
     fields: [combined_text]
     patterns:
       # Pipe-to-shell, except well-known first-party installers (https only).
-      - '\b(curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(bash|sh|python)\b'
+      - '\b(curl|wget)\b(?!(?:\s+-[^\s:/|;=]+(?:\s+[^\s:/.|;\-][^\s:/.|;]*)?)*\s+["'']?https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:/[^\s''"|;]*)?["'']?(?:\s+-[^\s:/|;=]+)*\s*\|)[^|;\n]*\|\s*(bash|sh|python)\b'
       # PowerShell: download | iex, and the Windows living-off-the-land downloaders.
       - '\|\s*(?:iex|invoke-expression)\b'
       - '\bcertutil(?:\.exe)?\b[^\n]*-urlcache'
@@ -1819,10 +1821,10 @@ rules:
     event_types: [shell, file_write]
     fields: [command, path]
     patterns:
-      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?::[^\s;&|]*|\.+)?(?=$|[\s;&|)])'
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?[\s"\''=/]|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?[\s"\''=/])(?:[^\s;&|<>"\'']*/)?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|\.github/copilot-instructions\.md)["\'']?(?::[^\s;&|]*|\.+)?(?=$|[\s;&|)])'
       # Loop variable: `for f in CLAUDE.md AGENTS.md; do echo x >> "$f"; done`
       # names the file in the word list and writes through `$f`.
-      - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
+      - '\bfor\s+(?P<iw_var>\w+)\s+in\b[^;\n]*?(?:CLAUDE\.md|AGENTS\.md|GEMINI\.md|\.cursorrules|\.windsurfrules|\.mcp\.json|copilot-instructions\.md)[\s\S]{0,300}?(?:>{1,2}\|?|\b(?:rm|mv|cp|truncate|tee|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?|\bsed\b[^\n;&|<>]*?\s-i[^\n;&|<>]*?)[ \t]*["\'']?\$\{?(?P=iw_var)\b'
       # Path patterns match a whole path value: absolute (spaces allowed) or a
       # relative path with no spaces. Ending in `(^|/)CLAUDE.md$` alone they also
       # matched any shell command that merely ends with the file name
@@ -1882,7 +1884,7 @@ rules:
       - 'suppress\s+(?:all\s+)?(?:warnings?|errors?|alerts?)\s+from\b'
       - 'hide\s+any\s+(?:errors?|warnings?|alerts?)\s+about\b'
       # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
-      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\b(?:curl|wget)\b(?!(?:\s+-[^\s:/|;=]+(?:\s+[^\s:/.|;\-][^\s:/.|;]*)?)*\s+["'']?https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:/[^\s''"|;]*)?["'']?(?:\s+-[^\s:/|;=]+)*\s*\|)[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
       - '\|\s*(?:iex|invoke-expression)\b'
     action: warn
 
@@ -2033,7 +2035,7 @@ rules:
       - '(?:append|include|add|insert)\s+(?:this|the\s+following)\s+(?:line\s+)?(?:to|in)\s+(?:every|each|all)\s+(?:response|message|reply|output|commit)'
       - '(?:gradually|subtly|silently|quietly|covertly)\s+(?:steer|guide|push|nudge|send|forward|transmit|exfiltrat|modify|change)'
       # Pipe-to-shell (installer hosts below are exempt), PowerShell download | iex
-      - '\b(?:curl|wget)\b(?![^|;\n]*https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:[/\s''"]|$))[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
+      - '\b(?:curl|wget)\b(?!(?:\s+-[^\s:/|;=]+(?:\s+[^\s:/.|;\-][^\s:/.|;]*)?)*\s+["'']?https://(?:get\.docker\.com|sh\.rustup\.rs|install\.python-poetry\.org|astral\.sh|bun\.sh|get\.helm\.sh|deb\.nodesource\.com|ohmyz\.sh)(?:/[^\s''"|;]*)?["'']?(?:\s+-[^\s:/|;=]+)*\s*\|)[^|;\n]*\|\s*(?:sudo\s+)?(?:ba|z|da)?sh\b'
       - '\|\s*(?:iex|invoke-expression)\b'
     pattern_groups:
       instruction_file:

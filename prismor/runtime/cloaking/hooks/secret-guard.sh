@@ -99,6 +99,15 @@ reported=""
 new_count=0
 while IFS= read -r real_value; do
   [[ -z "$real_value" ]] && continue
+  # The match came from the flattened text: put back the newlines it had in
+  # the call, or a PEM key is vaulted (and later decloaked) with spaces. The
+  # value goes through the environment, the text through stdin, never argv.
+  if [[ "$real_value" == *" "* && "$scan_text" == *[$'\n\r']* ]] && command -v perl >/dev/null 2>&1; then
+    real_value="$(PRISMOR_M="$real_value" perl -e '
+      local $/; my $t = <STDIN>; my $m = $ENV{PRISMOR_M};
+      my $re = join("[ \r\n]", map { quotemeta } split(/ /, $m, -1));
+      print(($t =~ /($re)/) ? $1 : $m);' <<< "$scan_text")"
+  fi
 
   # Already in the vault (e.g. decloak just substituted it, or it was
   # registered manually) → legitimate use, do not flag.

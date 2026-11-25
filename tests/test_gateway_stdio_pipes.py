@@ -65,7 +65,7 @@ def test_shell_is_powershell_on_windows(monkeypatch):
     monkeypatch.setattr(mirror.os, "name", "nt")
     argv = mirror._shell_argv("Remove-Item x")
     assert argv[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
-    assert argv[4] == "Remove-Item x; exit $LASTEXITCODE"
+    assert argv[4] == "Remove-Item x\nexit $LASTEXITCODE"
     monkeypatch.setenv("PRISMOR_MIRROR_SHELL", "bash -c")
     assert mirror._shell_argv("ls") == ["bash", "-c", "ls"]
 

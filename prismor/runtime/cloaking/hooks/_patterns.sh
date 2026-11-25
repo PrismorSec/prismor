@@ -102,7 +102,10 @@ prismor_find_matches() {
   local text="$1" pat out rc args=()
   for pat in "${PATTERNS[@]}"; do args+=(-e "$pat"); done
   out="$(printf '%s' "$text" | LC_ALL=C grep -oE "${args[@]}" 2>/dev/null)"; rc=$?
-  if (( rc >= 2 )); then
+  # rc>=2: grep rejected the combined set. rc==0: something matched, and one
+  # grep returns only non-overlapping matches, so a broad pattern can hide a
+  # specific one inside it; rerun per pattern (slow path, only on a hit).
+  if (( rc >= 2 )) || [[ -n "$out" ]]; then
     out="$(for pat in "${PATTERNS[@]}"; do printf '%s' "$text" | LC_ALL=C grep -oE -e "$pat" 2>/dev/null || true; done)"
   fi
   printf '%s\n' "$out" | awk 'NF && !seen[$0]++'

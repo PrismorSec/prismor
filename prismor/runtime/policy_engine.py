@@ -5511,12 +5511,15 @@ def _resolve_path(path: str) -> str:
     canon = _winpath_canon(path)
     if canon != path:
         seen.append(canon)
-    try:
-        resolved = str(_Path(canon).resolve())
-    except (OSError, ValueError):
-        resolved = ""
-    if resolved and resolved not in seen:
-        seen.append(resolved)
+    # Resolve the path as given AND its canonical form: on POSIX `notes.` is a
+    # real name, and a symlink by that name must still expose its target.
+    for cand in dict.fromkeys((path, canon)):
+        try:
+            resolved = str(_Path(cand).resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved not in seen:
+            seen.append(resolved)
     return "\n".join(seen)
 
 

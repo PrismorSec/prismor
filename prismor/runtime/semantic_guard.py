@@ -210,9 +210,20 @@ _MENTION_BEFORE_RE = re.compile(
     r"reads?|literal|keyword|pattern|string)\W{0,4}$", re.IGNORECASE)
 
 
+# Text that acts, not describes: with any of this present a quoted "mention"
+# is a disguised payload, so the exemption below does not apply.
+_ACTION_RE = re.compile(
+    r"\b(?:now|follow|obey|instead|send|post|upload|print|cat|curl|wget|exfiltrat\w*|email|reveal|"
+    r"output|run|execute|read|attach|forward)\b|https?://|~[/\\]|\.ssh\b|\.env\b|id_rsa|"
+    r"api[_ -]?keys?\b|tokens?\b|passwords?\b|secrets?\b|credentials?\b", re.IGNORECASE)
+
+
 def _is_quoted_mention(text: str, m: "re.Match") -> bool:
     """True when the match sits inside quotes/backticks right after a word that
-    marks it as a mention ("the phrase \"ignore previous instructions\"")."""
+    marks it as a mention ("the phrase \"ignore previous instructions\""), and
+    the text around it asks for nothing (no action verb, path, URL or secret)."""
+    if _ACTION_RE.search(text[:m.start()] + " " + text[m.end():]):
+        return False
     before = text[max(0, m.start() - 60):m.start()]
     after = text[m.end():m.end() + 30]
     quoted = bool(re.search(r"[\"'`\u201c\u2018]\s*$", before)) and bool(re.match(r"[^\n]{0,25}?[\"'`\u201d\u2019]", after))

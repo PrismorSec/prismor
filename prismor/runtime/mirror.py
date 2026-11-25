@@ -677,7 +677,7 @@ def _shell_argv(command: str) -> Optional[List[str]]:
     if os.name == "nt":
         exe = shutil.which("pwsh") or shutil.which("powershell") or "powershell"
         return [exe, "-NoProfile", "-NonInteractive", "-Command",
-                command + "; exit $LASTEXITCODE"]
+                command + "\nexit $LASTEXITCODE"]  # own line: a trailing # comment must not eat it
     return None
 
 

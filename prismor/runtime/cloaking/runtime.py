@@ -391,12 +391,31 @@ def run_decloaked_command(argv: Iterable[str]) -> int:
 def scrub_bytes(raw: bytes, secrets: Dict[str, str]) -> str:
     """Decode command output and scrub it, including UTF-16 (PowerShell, Windows
     tools) forms of each secret, which a utf-8 decode would turn into NUL-laced text."""
+    import locale
+    # Windows console tools often print in the ANSI or OEM code page (cp1252,
+    # cp437), where a non-ASCII secret has other bytes than in UTF-8: scrub
+    # those byte forms too, before any decode can turn them into U+FFFD.
+    local = [locale.getpreferredencoding(False)]
+    if os.name == "nt":
+        try:
+            import ctypes
+            local.append(f"cp{ctypes.windll.kernel32.GetOEMCP()}")
+        except Exception:
+            pass
+    codecs_ = ["utf-16-le", "utf-16-be", *dict.fromkeys(c for c in local if c)]
     for name, value in secrets.items():
         if is_scrubbable_secret(value):
-            for codec in ("utf-16-le", "utf-16-be"):
-                raw = raw.replace(value.encode(codec), f"@@SECRET:{name}@@".encode(codec))
+            for codec in codecs_:
+                try:
+                    form = value.encode(codec)
+                except (UnicodeError, LookupError):
+                    continue
+                raw = raw.replace(form, f"@@SECRET:{name}@@".encode(codec, errors="replace"))
     if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
         text = raw.decode("utf-16", errors="replace")
     else:
-        text = raw.decode("utf-8", errors="replace")
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:  # not UTF-8: the tool wrote the local code page
+            text = raw.decode(local[0] or "utf-8", errors="replace")
     return scrub_text(text, secrets=secrets)

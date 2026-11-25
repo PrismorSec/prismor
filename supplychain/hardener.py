@@ -261,7 +261,7 @@ def _harden_pip(root: Path, dry_run: bool) -> Optional[HardeningResult]:
     notes = [
         f"{name} is not auto-read from the project root. Activate with:"
         f"  {activate}"
-        f"  (or copy to $VIRTUAL_ENV/{'Scripts/' if _is_windows() else ''}{name} after creating a venv).",
+        f"  (or copy to $VIRTUAL_ENV/{name} after creating a venv).",
         "For stronger pip hardening, generate hashes (pip-compile --generate-hashes)"
         " and set require-hashes = true under [install] in pip.conf.",
     ]
