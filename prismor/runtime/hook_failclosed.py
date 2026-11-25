@@ -52,7 +52,9 @@ def handle_crash(rest: List[str], crash: BaseException, data: Optional[str] = No
         # a prompt or loop a Stop hook ("keep going") forever.
         sys.stderr.write(msg + "this call was not screened.\n")
         raise SystemExit(1)
-    reason = msg + "blocked because this hook enforces and could not decide. Reinstall or upgrade prismor to fix it."
+    fix = ("Shorten the command or payload, or raise PRISMOR_HOOK_BUDGET_MS."
+           if isinstance(crash, TimeoutError) else "Reinstall or upgrade prismor to fix it.")
+    reason = msg + "blocked because this hook enforces and could not decide. " + fix
     sys.stderr.write(reason + "\n")
     codex_windows = agent == "codex" and os.name == "nt"
     if agent == "copilot":
@@ -68,3 +70,69 @@ def handle_crash(rest: List[str], crash: BaseException, data: Optional[str] = No
     elif agent == "cursor":
         sys.stdout.write(reason + "\n")
     raise SystemExit(0 if agent in _JSON_DENY_EXIT0 or codex_windows else 2)
+
+
+def hook_budget_ms() -> int:
+    """Wall-clock budget for one hook call (``PRISMOR_HOOK_BUDGET_MS``, default 8000; 0 = off)."""
+    try:
+        return max(int(os.environ.get("PRISMOR_HOOK_BUDGET_MS", "") or 8000), 0)
+    except ValueError:
+        return 8000
+
+
+def arm_watchdog(rest: List[str], data: Optional[str]):
+    """Make the hook answer inside its budget; returns a ``disarm()`` callable.
+
+    A hook that outlives the agent's own timeout is killed, and most agents then
+    run the tool, so a payload that makes the guard slow would switch it off.
+    On expiry the hook gives the same answer as a crash: deny when it enforces a
+    pre-tool call, not-screened (exit 1) otherwise.
+
+    POSIX uses SIGALRM (it also interrupts a long regex, which a thread cannot:
+    ``re`` holds the GIL). Elsewhere a daemon timer thread fires, which covers
+    Python-level loops only; a regex stuck in C on Windows is bounded by
+    ``payload_bounds`` instead.
+    """
+    ms = hook_budget_ms()
+    if not ms:
+        return lambda: None
+    state = {"live": True}
+
+    def expire(*_args) -> None:
+        if not state["live"]:
+            return
+        state["live"] = False
+        code: object = 1
+        try:
+            handle_crash(rest, TimeoutError(f"hook exceeded its {ms} ms time budget"), data or "")
+        except SystemExit as exc:
+            code = exc.code
+        except BaseException:
+            pass
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(code if isinstance(code, int) else 1)
+
+    try:
+        import signal
+        signal.signal(signal.SIGALRM, expire)
+        signal.setitimer(signal.ITIMER_REAL, ms / 1000.0)
+
+        def disarm() -> None:
+            state["live"] = False
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        return disarm
+    except (ImportError, AttributeError, ValueError, OSError):
+        pass  # no SIGALRM (Windows) or not the main thread
+    import threading
+    timer = threading.Timer(ms / 1000.0, expire)
+    timer.daemon = True
+    timer.start()
+
+    def disarm_thread() -> None:
+        state["live"] = False
+        timer.cancel()
+    return disarm_thread

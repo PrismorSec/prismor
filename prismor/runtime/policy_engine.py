@@ -5072,15 +5072,36 @@ def _floor_allowlist_rejected(rule_id: str, entry: "AllowlistEntry", rule: Optio
 
 def _expand_braces(cmd: str) -> str:
     """One level of `{a,b}` so `/ {bin,etc}` is the same path list the rules see."""
-    def repl(match: "re.Match[str]") -> str:
-        parts = match.group(2).split(",")
-        return " ".join(match.group(1) + part + match.group(3) for part in parts)
+    # Anchor on the brace group, then widen to the surrounding token by hand.
+    # A leading `(\S*)` in one regex is quadratic on a long brace-free token
+    # (a model padding a command with MBs of `a` hung the hook past its timeout).
+    out, pos = [], 0
+    ms = list(_BRACE_GROUP_RE.finditer(cmd))
+    i = 0
+    while i < len(ms):
+        m = ms[i]
+        e = m.end()
+        while e < len(cmd) and not cmd[e].isspace():
+            e += 1
+        # Same token, several groups: the greedy prefix picks the last one.
+        while i + 1 < len(ms) and ms[i + 1].start() < e:
+            i += 1
+            m = ms[i]
+        i += 1
+        a = pos
+        for j in range(m.start() - 1, pos - 1, -1):
+            if cmd[j].isspace():
+                a = j + 1
+                break
+        pre, suf = cmd[a:m.start()], cmd[m.end():e]
+        out.append(cmd[pos:a])
+        out.append(" ".join(pre + part + suf for part in m.group(1).split(",")))
+        pos = e
+    out.append(cmd[pos:])
+    return "".join(out)
 
-    return re.sub(
-        r"(\S*)\{([A-Za-z0-9_./+-]+(?:,[A-Za-z0-9_./+-]+)+)\}(\S*)",
-        repl,
-        cmd,
-    )
+
+_BRACE_GROUP_RE = re.compile(r"\{([A-Za-z0-9_./+-]+(?:,[A-Za-z0-9_./+-]+)+)\}")
 
 
 _WIN_BS_RE = re.compile(r"(?<=[\w.~:%)])\\+(?=[\w.$%~])")
