@@ -206,10 +206,24 @@ class TestUnsupportedPlatforms(unittest.TestCase):
             r = subprocess.run([sys.executable, "-c", shim], input=json.dumps(payload), cwd=ws, env=env,
                                capture_output=True, text=True, timeout=60)
             self.assertNotIn("updatedInput", r.stdout, r.stderr)
-            # enforce with no engine for this OS: the call is denied, not run unconfined
-            self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-            self.assertIn("Prismor sandbox: BLOCKED", r.stderr)
-            self.assertIn("prismor sandbox off", r.stderr)
+            # No engine for this OS: an enforce flag left in the state file
+            # must not block every command (`sandbox on` refuses to set it).
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("BLOCKED", r.stderr)
+
+    def test_sandbox_on_refuses_on_an_unsupported_os(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / ".git").mkdir()
+            env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
+            shim = ("import sys; sys.platform = 'freebsd14'; "
+                    "sys.argv = ['prismor', 'sandbox', '--workspace', %r, 'on']; "
+                    "from prismor.runtime.cli import main; main()" % str(ws))
+            r = subprocess.run([sys.executable, "-c", shim], cwd=ws, env=env,
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("no OS sandbox", r.stderr)
+            self.assertFalse((ws / ".prismor" / "policy.yaml").exists())
 
 
 class TestUnconfinedOnWindows(unittest.TestCase):

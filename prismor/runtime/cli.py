@@ -2922,7 +2922,9 @@ def main(argv: Optional[List[str]] = None) -> None:
             if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
-                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg)
+                # No OS sandbox on this platform (Windows): a config written
+                # elsewhere must not block every command, so it is not strict.
+                _sandbox_strict = _sandbox.enforcing(_sandbox_cfg) and _sandbox.supported()
                 _sandbox_on = _sandbox_strict and _sandbox.supported()
                 _sandbox_root = _sandbox.project_root(payload, workspace)
                 _sandbox_cmd = str(event.get("command") or "")
@@ -3062,6 +3064,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime.egress_cli import _org_managed_hint
 
             want = subcmd == "on"
+            if want and not _sandbox.supported():
+                sys.stderr.write(
+                    f"prismor sandbox on: no OS sandbox exists for {sys.platform} (macOS and "
+                    "Linux only). Nothing was changed; commands keep running as before, "
+                    "with policy screening, egress and cloaking in force.\n")
+                raise SystemExit(1)
             if not want and not sys.stdin.isatty():
                 # Turning containment off is a person's call: an agent's shell has
                 # no terminal. An open `prismor unlock` window also counts.
