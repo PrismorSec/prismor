@@ -1247,7 +1247,11 @@ def main(argv: Optional[List[str]] = None) -> None:
                     "  or pipe it via stdin:     echo \"<text>\" | prismor semantic-check\n"
                 )
                 raise SystemExit(1)
-            text = sys.stdin.read()
+            try:  # bytes, so a UTF-16 (PowerShell 5.1) pipe is decoded by its BOM
+                from prismor.runtime.paths import decode_text
+                text = decode_text(sys.stdin.buffer.read())
+            except AttributeError:
+                text = sys.stdin.read()
         if not text or not text.strip():
             sys.stderr.write("error: no text provided (pass as an argument or pipe via stdin)\n")
             raise SystemExit(1)
