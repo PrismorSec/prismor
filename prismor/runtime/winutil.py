@@ -80,22 +80,37 @@ def replace_retry(src: Any, dst: Any, attempts: int = 40, delay: float = 0.01) -
             time.sleep(min(delay * (i + 1), 0.1))
 
 
-def restrict_to_current_user(path: Union[str, Path]) -> None:
-    """Windows: drop inherited ACLs and grant only the current user.
-    No-op elsewhere; never raises."""
-    if not IS_WINDOWS:
-        return
+def _current_sid() -> str:
+    """SID of the current user (``whoami /user``), or "". A SID needs no domain:
+    ``USERDOMAIN`` is WORKGROUP in an ssh session but the account is MACHINE\\user."""
     try:
+        out = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"], capture_output=True,
+                             text=True, timeout=10, stdin=subprocess.DEVNULL).stdout
+        sid = out.strip().rsplit(",", 1)[-1].strip().strip('"')
+        return sid if sid.startswith("S-1-") else ""
+    except Exception:
+        return ""
+
+
+def restrict_to_current_user(path: Union[str, Path]) -> bool:
+    """Windows: drop inherited ACLs and grant only the current user.
+    No-op elsewhere; never raises. Returns False if icacls did not succeed."""
+    if not IS_WINDOWS:
+        return True
+    try:
+        sid = _current_sid()
         user = os.environ.get("USERNAME")
-        if not user:
-            return
         domain = os.environ.get("USERDOMAIN")
-        who = f"{domain}\\{user}" if domain else user
+        whos = ([f"*{sid}"] if sid else []) + ([f"{domain}\\{user}"] if user and domain else []) + ([user] if user else [])
         perm = "(OI)(CI)F" if Path(path).is_dir() else "F"
-        subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:{perm}"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=10, check=False,
-        )
+        for who in whos:
+            r = subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:{perm}"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=10, check=False,
+            )
+            if r.returncode == 0:
+                return True
     except Exception:
         pass
+    return False

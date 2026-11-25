@@ -5514,6 +5514,12 @@ def _winpath_canon(path: str) -> str:
             # NTFS ignores trailing dots/spaces and a ``:stream[:$DATA]`` suffix.
             comp = comp.split(":", 1)[0].rstrip(". ")
         out.append(comp)
+    # `.claude/./settings.json` and `.claude//settings.json` name the same file:
+    # drop "." and empty parts (keep a leading UNC `//`, a root `/` and a trailing `/`).
+    unc = p.startswith("//") and not p.startswith("///")
+    last = len(out) - 1
+    out = [c for i, c in enumerate(out)
+           if i in (0, last) or c not in ("", ".") or (unc and i == 1)]
     return "/".join(out)
 
 

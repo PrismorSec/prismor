@@ -142,3 +142,21 @@ def test_powershell_and_cmd_file_ops_on_protected_files_block(floor, cmd):
 def test_reading_and_unrelated_file_ops_are_not_self_protection_hits(floor, cmd):
     findings = floor.evaluate({"type": "shell", "command": cmd}, index=0)
     assert not [f for f in findings if f["ruleId"] in _SELF_PROTECTION_RULE_IDS], cmd
+
+
+@pytest.mark.parametrize("path,want", [
+    (r"C:\ws\.claude\.\settings.json", "C:/ws/.claude/settings.json"),
+    (r"C:\ws\.claude\\settings.json", "C:/ws/.claude/settings.json"),
+    ("/ws/.claude/./settings.json", "/ws/.claude/settings.json"),
+    (r".\.prismor\.\policy.yaml", "./.prismor/policy.yaml"),
+    (r"\\host\share\.\x", "//host/share/x"),
+    ("/ws/dir/", "/ws/dir/"),
+])
+def test_canon_drops_dot_and_empty_segments(path, want):
+    assert _winpath_canon(path) == want
+
+
+@pytest.mark.parametrize("path", [r"C:\ws\.claude\.\settings.json", r"C:\ws\.claude\\settings.json",
+                                  r".\.prismor\.\policy.yaml"])
+def test_dot_segments_do_not_dodge_self_protection(floor, path):
+    assert _blocked_by(floor, {"type": "file_write", "path": path}) is not None
