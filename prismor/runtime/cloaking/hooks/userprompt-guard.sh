@@ -139,11 +139,7 @@ prismor_load_patterns
 scan_text="$(printf '%s' "$prompt" | sed 's/@@SECRET:[^@]*@@//g')"
 
 # Collect unique matches across all patterns.
-matches="$(
-  for pat in "${PATTERNS[@]}"; do
-    printf '%s' "$scan_text" | grep -oE "$pat" || true
-  done | awk 'NF && !seen[$0]++'
-)"
+matches="$(prismor_find_matches "$scan_text")"
 
 # Clean prompt: pass through, reloading any stashed sanitized prompt first.
 [[ -n "$matches" ]] || { prismor_emit_stash_context; exit 0; }
@@ -156,7 +152,10 @@ while IFS= read -r real_value; do
 
   # Deterministic placeholder name from value hash (first 8 hex chars).
   # Same value → same placeholder across sessions (no duplicate registration).
-  hash="$(printf '%s' "$real_value" | shasum -a 256 | awk '{print $1}' | cut -c1-8)"
+  hash="$(prismor_sha8 "$real_value")" || {
+    jq -n '{decision: "block", reason: "Prismor cloaking: a secret was detected in your prompt but no sha256 tool (sha256sum, shasum, openssl, python) is available to vault it, so the prompt was blocked. Install one and resubmit."}'
+    exit 0
+  }
   placeholder_name="auto_${hash}"
   placeholder="@@SECRET:${placeholder_name}@@"
   secret_file="$SECRETS_DIR/$placeholder_name"

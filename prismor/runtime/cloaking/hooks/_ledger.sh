@@ -46,7 +46,7 @@ prismor_cloak_event() {
 prismor_pattern_for() {
   local pat
   for pat in "${PATTERNS[@]}"; do
-    if printf '%s' "$1" | grep -qE "$pat" 2>/dev/null; then
+    if [[ "$1" =~ $pat ]]; then  # in-shell: no fork per pattern
       printf '%s' "$pat"
       return 0
     fi

@@ -26,7 +26,7 @@ class TestCloakRescreen(unittest.TestCase):
         self.assertFalse(_ran(run, argv))
 
     def test_harmless_command_still_runs(self):
-        proc = subprocess.CompletedProcess(args=["printf", "ok"], returncode=0, stdout="ok", stderr="")
+        proc = subprocess.CompletedProcess(args=["printf", "ok"], returncode=0, stdout=b"ok", stderr=b"")
         with mock.patch("subprocess.run", return_value=proc) as run:
             code = run_decloaked_command(["printf", "ok"])
         self.assertEqual(code, 0)
@@ -35,7 +35,7 @@ class TestCloakRescreen(unittest.TestCase):
     def test_secret_in_a_header_still_runs(self):
         token = "ghp_" + "Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2"
         argv = ["curl", "-sS", "-H", "Authorization: Bearer " + token, "https://api.github.com/user"]
-        proc = subprocess.CompletedProcess(args=argv, returncode=0, stdout="{}", stderr="")
+        proc = subprocess.CompletedProcess(args=argv, returncode=0, stdout=b"{}", stderr=b"")
         with mock.patch("subprocess.run", return_value=proc) as run:
             code = run_decloaked_command(argv)
         self.assertEqual(code, 0)
