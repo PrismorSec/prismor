@@ -25,3 +25,15 @@ def test_enroll_uploads_device_status_for_the_workspace(tmp_path, monkeypatch):
     cli.main(["--workspace", str(ws), "enroll", "tok"])
     assert [r["type"] for r in sent] == ["device_status"]
     assert seen and seen[0].resolve() == ws.resolve()
+
+
+def test_exempt_and_workspace_managed_exit_1_when_not_enrolled(tmp_path):
+    import os, subprocess, sys
+    from pathlib import Path
+    repo = Path(__file__).resolve().parent.parent
+    env = dict(os.environ, PYTHONPATH=str(repo), PRISMOR_HOME=str(tmp_path / "home"),
+               HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    for argv in (["exempt", "request", "--reason", "x"], ["workspace", "managed"]):
+        r = subprocess.run([sys.executable, "-m", "prismor.runtime.immunity_cli", *argv],
+                           cwd=tmp_path, env=env, capture_output=True, text=True, timeout=60)
+        assert r.returncode == 1, (argv, r.stdout, r.stderr)
