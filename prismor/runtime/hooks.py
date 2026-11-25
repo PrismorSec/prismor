@@ -3115,12 +3115,26 @@ def _read_json(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: Notepad and PowerShell 5.1 `Set-Content -Encoding UTF8` write a BOM.
+        text = path.read_text(encoding="utf-8-sig")
     except (ValueError, OSError) as exc:
+        raise HookConfigError(f"{path} could not be read: {exc}") from exc
+    if not text.strip():
+        return {}  # an empty file holds nothing to lose
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
         # Never fall back to {}: this value is merged and written straight back
         # out, so an unparseable config would be silently replaced by one
         # containing nothing but Prismor's own hook.
         raise HookConfigError(f"{path} is not valid JSON: {exc}") from exc
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise HookConfigError(f"{path} must hold a JSON object, not {type(data).__name__}")
+    if "hooks" in data and data["hooks"] is None:
+        data = {k: v for k, v in data.items() if k != "hooks"}  # `"hooks": null` means none
+    return data
 
 
 # ── MCP tool-call classification ─────────────────────────────────────────────

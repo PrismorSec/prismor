@@ -1846,8 +1846,18 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             print(f"  {_w('Blocking:', YEL)}  {_w('none — enforce is on but no rules are opted in, so nothing is stopped yet.', YEL)}")
             print(f"             {_w('Add them: prismor setup --mode enforce --recommended', DIM)}")
     if "codex" in agents:
-        _info("Codex",  "hooks run only after you trust them — accept the hook-trust prompt in the Codex TUI once,")
-        print(f"          {_w('or pass --dangerously-bypass-hook-trust to `codex exec` for headless runs', DIM)}")
+        # Only say "accept the prompt" when Codex has not already trusted the
+        # hooks setup just wrote (it records their hashes in config.toml).
+        try:
+            from prismor.runtime.hooks import codex_hook_trust
+            _codex_untrusted = codex_hook_trust(target)["status"] == "untrusted"
+        except Exception:
+            _codex_untrusted = True
+        if _codex_untrusted:
+            _info("Codex",  "hooks run only after you trust them — accept the hook-trust prompt in the Codex TUI once,")
+            print(f"          {_w('or pass --dangerously-bypass-hook-trust to `codex exec` for headless runs', DIM)}")
+        else:
+            _info("Codex",  "hooks are trusted and will run")
     if "codex" in agents and _chatgpt_app():
         _info("ChatGPT", "the app's Codex and Cowork modes run on these Codex hooks; chat itself runs on")
         _chat_note = "OpenAI's servers (Enterprise: prismor chatgpt-logs sync, see docs/chatgpt.md)"
