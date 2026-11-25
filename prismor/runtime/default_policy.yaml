@@ -625,6 +625,14 @@ rules:
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)shutdown\b'
       - '(?:^|[\n;&|]\s*|\b(?:sudo|doas|systemctl)\s+)reboot\b'
       - 'launchctl\s+unload\b'
+      # Windows: wipe a drive or volume, drop restore points, power off, and a
+      # recursive delete of an OS dir at any depth in any flag order (the
+      # PowerShell form above only matched the bare drive or top-level dir).
+      - '(?:^|[\n;&|({]\s*)format(?:\.com)?\s+[a-z]:(?=\s|$|/)'
+      - '\b(?:Format-Volume|Clear-Disk|Initialize-Disk)\b'
+      - '(?:^|[\s;&|("''])(?:remove-item|ri|rmdir|rd|del|erase)\b(?=[^\n;|]*\s-r[a-z]*\b)[^\n;|]*?\s["'']?[a-z]:\\windows(?:\\[^\s"'';|&]*)?["'']?(?=\s|$|[;|&)"''])'
+      - '\bvssadmin(?:\.exe)?\s+delete\s+shadows\b|\bwmic\b[^\n]*\bshadowcopy\s+delete\b|\bbcdedit\b[^\n]*\brecoveryenabled\s+no\b'
+      - '(?:^|[\n;&|({]\s*)(?:Stop-Computer|Restart-Computer)\b'
     guidance: "delete the specific path you mean (or move it with `trash`/`mv` to a scratch dir); never a root, system or home directory."
     action: block
 
@@ -741,6 +749,10 @@ rules:
       - 'usermod\s+.*-[a-zA-Z]*G\s+.*sudo'
       - 'usermod\b[^\n]*--groups\b[^\n]*\bsudo\b'
       - '\b(useradd|adduser)\b'
+      # Windows: a new local account, membership of Administrators, a new
+      # service, or a process started through WMI.
+      - '\bnet1?(?:\.exe)?\s+user\b[^\n]*\s/add\b|\bnet1?(?:\.exe)?\s+localgroup\s+"?administrators"?\s[^\n]*\s/add\b|\b(?:New-LocalUser|Add-LocalGroupMember)\b'
+      - '\bsc(?:\.exe)?\s+(?:\\\\\S+\s+)?create\b|\bNew-Service\b|\bwmic\b[^\n]*\bprocess\s+call\s+create\b'
       - '\bnsenter\b'
       - '\bpkexec\b'
       - 'chattr\s+\+i\b'
@@ -835,6 +847,13 @@ rules:
       - '\b(?:echo|printf)\b[^\n]*\b(curl|wget)\b[^|;\n]*\|\s*(bash|sh|zsh|dash|ksh)\b[^\n]*(?:\|\s*(?:sudo\s+)?(?:ba|z|da|k)?sh\b|>{1,2}\s*\S+\.(?:sh|bash|zsh)\b)'
       # process substitution: bash <(curl ...) — no pipe, so the rule above missed it
       - '\b(bash|sh|zsh|dash|ksh)\b[^\n]*<\(\s*(curl|wget)\b'
+      # Windows download-and-run and script-host abuse: bitsadmin /transfer,
+      # mshta or rundll32 handed a URL or script, and a PowerShell command that
+      # arrives base64-encoded (-e, -ec, -enc, -EncodedCommand).
+      - '\bbitsadmin(?:\.exe)?\b[^\n]*\s/transfer\b'
+      - '\bmshta(?:\.exe)?\s+["'']?(?:https?:|vbscript:|javascript:)'
+      - '\brundll32(?:\.exe)?\s+["'']?javascript:'
+      - '\b(?:powershell|pwsh)(?:\.exe)?\s+(?:\S+\s+){0,8}?-(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)\s+["'']?[A-Za-z0-9+/=]{8,}'
       # eval of remotely-fetched content: eval "$(curl ...)"
       # The builtin is a word followed by whitespace: `eval-server`,
       # `eval.log` and `run-eval` are names that merely contain it.
@@ -2559,6 +2578,12 @@ rules:
       - '\biptables\s+-F\b'
       - '\biptables\s+-P\s+\w+\s+ACCEPT\b'
       - '\bnft\s+flush\s+ruleset\b'
+      # Windows: Defender or the firewall off, event logs cleared.
+      - '\bSet-MpPreference\b[^\n]*-Disable\w+'
+      - '\bnetsh(?:\.exe)?\s+advfirewall\s+set\s+\w+\s+state\s+off\b'
+      - '\bSet-NetFirewallProfile\b[^\n]*-Enabled\s+(?:False|0|\$false)\b'
+      - '\b(?:Stop-Service|Set-Service)\b[^\n]*\b(?:WinDefend|MpsSvc|EventLog)\b|\bsc(?:\.exe)?\s+(?:stop|config)\s+(?:WinDefend|MpsSvc|EventLog)\b'
+      - '\bwevtutil(?:\.exe)?\s+(?:cl|clear-log)\b|\bClear-EventLog\b'
     action: block
 
   # ── HIGH (warn): Change control — shared infra, prod branches, cloud ──
@@ -2613,6 +2638,17 @@ rules:
           [ \t]*(?=$|[\n;&|)]|['"][ \t]*(?:$|[;&|)]))
         )
     guidance: "preview the files with `git clean -n` and confirm what can be removed."
+    action: warn
+
+  - id: git-reset-hard
+    severity: HIGH
+    category: change_control
+    title: Discards uncommitted work with git reset --hard
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - '(?:^|[\n;&|(`]|\$\()[ \t]*(?:(?:sudo|doas|env|time|nice|exec|command)[ \t]+(?:-\S+[ \t]+)*|\w+=\S+[ \t]+)*(?:[^\s;&|]*/)?git(?:[ \t]+(?:--no-pager|-[Cc][ \t]+(?:[^\s;&|''"]+|''[^''\n]*''|"[^"\n]*")))*[ \t]+reset(?:[ \t]+[^\s;&|]+)*?[ \t]+--hard(?=\s|$|[;&|)])'
+    guidance: "check `git status` and `git stash` first; --hard throws away uncommitted changes."
     action: warn
 
   - id: git-branch-force-delete
