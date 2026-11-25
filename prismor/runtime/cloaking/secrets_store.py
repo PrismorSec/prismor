@@ -194,10 +194,63 @@ def remove_secret(name: str) -> bool:
     """Delete a registered secret. Returns True if something was removed."""
     _validate_name(name)
     path = secrets_dir() / name
+    set_agents(name, None)
     if path.exists():
         path.unlink()
         return True
     return False
+
+
+# Which agents may resolve a secret: one file per restricted secret under
+# .meta/agents/, one agent name per line. No file = every agent (the old
+# behavior). Plain lines so decloak-exec.sh can check with `grep -qxF`, no
+# Python or jq on that path.
+_AGENT_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+
+
+def _agents_file(name: str) -> Path:
+    return secrets_dir() / ".meta" / "agents" / _validate_name(name)
+
+
+def get_agents(name: str) -> Optional[List[str]]:
+    """Agents allowed to use ``name``, or None when every agent may."""
+    path = _agents_file(name)
+    if not path.exists():
+        return None
+    return [a for a in path.read_text(encoding="utf-8").split() if a]
+
+
+def set_agents(name: str, agents: Optional[List[str]]) -> None:
+    """Limit ``name`` to ``agents``; None lifts the limit. [] means no agent."""
+    path = _agents_file(name)
+    if agents is None:
+        path.unlink(missing_ok=True)
+        return
+    clean = sorted({a.strip() for a in agents if a.strip()})
+    for a in clean:
+        if not _AGENT_RE.fullmatch(a):
+            raise ValueError(f"Invalid agent name {a!r}")
+    _ensure_dir()
+    for d in (path.parent.parent, path.parent):  # parents=True would leave .meta 0755
+        d.mkdir(mode=0o700, exist_ok=True)
+    tmp = path.with_name(f".{name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+        fh.write("".join(a + "\n" for a in clean))
+    os.replace(tmp, path)
+
+
+def _agents_quiet(name: str) -> Optional[List[str]]:
+    try:
+        return get_agents(name)
+    except (ValueError, OSError):
+        return None
+
+
+def agent_allowed(name: str, agents: List[str]) -> bool:
+    """True when any of ``agents`` (the caller's identities) may use ``name``."""
+    allowed = get_agents(name)
+    return allowed is None or any(a in allowed for a in agents if a)
 
 
 def list_secrets() -> List[dict]:
@@ -222,6 +275,7 @@ def list_secrets() -> List[dict]:
                 "bytes": st.st_size,
                 "modified": int(st.st_mtime),
                 "auto": child.name.startswith("auto_"),
+                "agents": _agents_quiet(child.name),
             }
         )
     return entries

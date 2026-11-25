@@ -1718,6 +1718,9 @@ rules:
       - '\bapprovals\.(json|lock|tmp)\b'
       # Other Prismor state an agent has no legitimate reason to rewrite.
       - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)\.prismor/(?:pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json'
+      # Which agents may use a cloaked secret (Vault page): an agent adding
+      # itself would read a key it was not given. Same for host bindings.
+      - '(?:>{1,2}\|?[ \t]*["\'']?[^\s;&|<>"\'']*|\b(?:rm|mv|cp|truncate|tee|shred|ln|del|erase|rd|rmdir|ri|move|mi|copy|xcopy|ren|rename|ni|sc|ac|clc|Remove-Item|Set-Content|Add-Content|Out-File|Copy-Item|Move-Item|Rename-Item|New-Item|Clear-Content|Set-Item)\b[^\n;&|<>]*?)secrets/\.meta/'
       - '(^|/)\.prismor/(pause|identity|workspace-scopes|mirror|mirror-install|secret-sources|decisions)\.json$'
       # The runner index decloak.sh wraps sandboxed calls from: emptying it
       # would let a call run unwrapped (sandbox.decloak_saw_runner).
@@ -1748,7 +1751,7 @@ rules:
       # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
       # put the `$` on the line, not in the request (replay: 92 such GETs).
       # A flag counts quoted or not (`"-XPOST"` is still a method).
-      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions)'
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions|vault)'
       # The same URL built by joining the path in the interpreter.
       - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a

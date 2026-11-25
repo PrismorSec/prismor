@@ -37,6 +37,7 @@ Write endpoints (human-only — localhost):
     PUT /api/policy/global         → body: {yaml} — write ~/.prismor/policy.yaml
     PUT /api/policy/project        → body: {yaml, workspace} — write project policy
     POST /api/agents/:name         → body: {enabled?, mode?, iam_profile?}
+    GET /api/vault, POST /api/vault{,/agents,/remove} → cloaked secrets: names + agent access, never values
     PATCH /api/sessions/:id/control → body: {action, workspace, …data}
     POST /api/pause                → body: {paused} — `prismor pause` / `prismor resume`
     POST /api/update               → `prismor update`
@@ -1052,6 +1053,37 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             self._send_json(data)
             return
 
+        if path == "/api/vault":
+            # Names, sizes and agent access only. A value never leaves the vault.
+            from prismor.runtime.cloaking import secrets_store
+            seen: Dict[str, str] = {n: "" for n in ("claude", "codex", "cursor", "gemini")}
+            try:
+                from prismor.runtime.iam import list_agent_ids, load_iam_config
+                for a in get_agents_overview(0):
+                    seen[a["name"]] = str(a.get("last_seen") or "")
+                seen.update({n: seen.get(n, "") for n in list_agent_ids(load_iam_config(_SERVER_WORKSPACE or Path.cwd()))})
+            except Exception:
+                pass
+            items = [s for s in secrets_store.list_secrets() if not s["auto"]]
+            for it in items:
+                seen.update({n: seen.get(n, "") for n in it["agents"] or []})
+            # Active = seen within the last week. Timestamps come in mixed
+            # ISO forms (Z, +00:00, naive), so parse each defensively.
+            from datetime import timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+            def _active(ts: str) -> bool:
+                try:
+                    d = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)) >= cutoff
+                except ValueError:
+                    return False
+            # Only names a key's access list can hold ("Claude Code" has a space).
+            agents = [{"name": n, "last_seen": ts, "active": _active(ts)} for n, ts in sorted(seen.items())
+                      if secrets_store._AGENT_RE.fullmatch(n)]
+            self._send_json({"secrets": items, "agents": agents})
+            return
+
         if path == "/api/agents":
             try:
                 from prismor.runtime.agents import list_agents
@@ -1213,6 +1245,35 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 return
             floor_off.turn_off(rule_id, by=os.environ.get("USER", ""))
             self._send_json({"ok": True, "rule": rule_id, "off": True})
+            return
+
+        # POST /api/vault {name, value, agents?} adds or replaces a secret;
+        # /api/vault/agents {name, agents|null} changes who may use it;
+        # /api/vault/remove {name} deletes it. Write-only: no value comes back.
+        if path in ("/api/vault", "/api/vault/agents", "/api/vault/remove"):
+            from prismor.runtime.cloaking import secrets_store
+            try:
+                body = self._read_json_body()
+                name = str(body.get("name") or "")
+                agents = body.get("agents")
+                if agents is not None and not isinstance(agents, list):
+                    raise ValueError("agents must be a list or null")
+                if path == "/api/vault/remove":
+                    if not secrets_store.remove_secret(name):
+                        self._send_json({"error": f"no secret named {name}"}, status=404)
+                        return
+                elif path == "/api/vault/agents":
+                    if not (secrets_store.secrets_dir() / secrets_store._validate_name(name)).is_file():
+                        self._send_json({"error": f"no secret named {name}"}, status=404)
+                        return
+                    secrets_store.set_agents(name, agents)
+                else:
+                    secrets_store.add_secret(name, secrets_store.strip_one_newline(str(body.get("value") or "")))
+                    secrets_store.set_agents(name, agents)
+            except ValueError as exc:
+                self._send_json({"error": str(exc)}, status=400)
+                return
+            self._send_json({"ok": True, "name": name})
             return
 
         if path == "/api/pause":

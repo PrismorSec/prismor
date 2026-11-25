@@ -21,6 +21,30 @@ SECRETS_DIR="${PRISMOR_SECRETS_DIR:-${PRISMOR_HOME:-$HOME/.prismor}/secrets}"
 cmd="${PRISMOR_CLOAK_CMD:-}"
 [[ -n "$cmd" ]] || exit 0
 
+# Secrets shared with only some agents (Vault page, secrets_store.set_agents):
+# .meta/agents/<name> lists them, one per line. The caller is the agent kind
+# from its env marker (same list as agent_env.caller_agents) or its
+# PRISMOR_AGENT_ID. Not on the list, or unknown: refuse the whole command.
+if [[ -d "$SECRETS_DIR/.meta/agents" && "$cmd" == *"@@SECRET:"* ]]; then
+  _kind=""
+  if [[ -n "${CLAUDECODE:-}" ]]; then _kind=claude
+  elif [[ -n "${CODEX_THREAD_ID:-}${CODEX_SANDBOX:-}" ]]; then _kind=codex
+  elif [[ -n "${CURSOR_AGENT:-}" ]]; then _kind=cursor
+  elif [[ -n "${GEMINI_CLI:-}" ]]; then _kind=gemini
+  fi
+  _rest="$cmd"
+  while [[ "$_rest" =~ @@SECRET:([a-zA-Z0-9_-]+)@@ ]]; do
+    _n="${BASH_REMATCH[1]}"; _rest="${_rest#*"${BASH_REMATCH[0]}"}"
+    _acl="$SECRETS_DIR/.meta/agents/$_n"
+    [[ -f "$_acl" ]] || continue
+    if ! { [[ -n "$_kind" ]] && grep -qxF -- "$_kind" "$_acl"; } &&
+       ! { [[ -n "${PRISMOR_AGENT_ID:-}" ]] && grep -qxF -- "$PRISMOR_AGENT_ID" "$_acl"; }; then
+      echo "prismor cloak refused: secret '$_n' is not shared with ${_kind:-${PRISMOR_AGENT_ID:-this agent}} (Vault in the Prismor dashboard)" >&2
+      exit 126
+    fi
+  done
+fi
+
 # Secrets bound to hosts (bindings.py) resolve only into a curl/wget/http/xh
 # call to those hosts. Every shell path resolves here (Claude Code hook, MCP
 # mirror, ACP proxy, Hermes), so this is the one gate. The interpreter is the
