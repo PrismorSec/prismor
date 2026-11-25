@@ -1069,7 +1069,7 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 seen.update({n: seen.get(n, "") for n in it["agents"] or []})
             # Active = seen within the last week. Timestamps come in mixed
             # ISO forms (Z, +00:00, naive), so parse each defensively.
-            from datetime import datetime, timedelta, timezone
+            from datetime import timedelta
             cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
             def _active(ts: str) -> bool:
