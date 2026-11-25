@@ -1724,6 +1724,13 @@ def _do_install(target: Path, mode: str, rules: List[dict], agents: List[str], c
             print(f"  {_w(_line, YEL)}")
             print()
 
+    if "copilot" in agents:
+        from prismor.runtime.cli import copilot_trust_line
+        _line = copilot_trust_line(target)
+        if _line:
+            print(f"  {_w(_line, YEL)}")
+            print()
+
     # 3a. MCP mirror — only for agents explicitly opted in on the agent screen.
     # Deliberately after hooks: if this fails the machine still has working
     # governance, whereas a mirror installed without hooks would be the only

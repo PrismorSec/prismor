@@ -1861,6 +1861,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print("Portable: the hook finds `prismor` at run time, so this file is safe to commit. "
                   "Install prismor in the cloud environment's setup script.")
         _print_codex_trust_note([item["agent"] for item in results], workspace)
+        if any(item["agent"] == "copilot" for item in results):
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_cp_line}")
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=True)
         return
 
@@ -6095,6 +6099,47 @@ def codex_trust_line(workspace: Path) -> Optional[str]:
             "prompt (headless runs: `codex exec --dangerously-bypass-hook-trust`).")
 
 
+def _copilot_trusted_folders() -> Optional[List[str]]:
+    """``trusted_folders`` from Copilot's ~/.copilot/config.json, or None if unreadable."""
+    try:
+        raw = (Path.home() / ".copilot" / "config.json").read_text(encoding="utf-8-sig")
+        # The file may open with // comment lines.
+        data = json.loads("\n".join(l for l in raw.splitlines() if not l.lstrip().startswith("//")))
+        folders = data.get("trusted_folders", data.get("trustedFolders"))
+        return [str(f) for f in folders] if isinstance(folders, list) else None
+    except Exception:
+        return None
+
+
+def copilot_trust_line(workspace: Path) -> Optional[str]:
+    """A warning when Copilot may skip this workspace's repository hooks, else None.
+
+    Copilot ignores .github/hooks in a folder it has not trusted ("Skipped
+    repository hooks ... because the folder is not trusted"), so `status` can
+    say enforce while nothing runs. Global hooks (~/.copilot/hooks) are not
+    affected, so a global install needs no warning.
+    """
+    from prismor.runtime.hooks import hook_installed
+    try:
+        if not hook_installed("copilot", "project", workspace):
+            return None
+    except Exception:
+        return None
+    folders = _copilot_trusted_folders()
+    if folders is not None:
+        here = os.path.normcase(os.path.abspath(workspace))
+        for f in folders:
+            base = os.path.normcase(os.path.abspath(os.path.expanduser(f)))
+            if here == base or here.startswith(base.rstrip("\\/") + os.sep):
+                return None
+        why = "this folder is not in Copilot's trusted_folders"
+    else:
+        why = "Prismor cannot tell whether Copilot trusts this folder"
+    return (f"Copilot skips repository hooks (.github/hooks) in a folder it has not trusted, so it may "
+            f"NOT run them: {why}. Trust the folder when Copilot asks (or add it to trusted_folders in "
+            "~/.copilot/config.json), or install globally: prismor install-hooks --agent copilot --scope global.")
+
+
 def _print_status_quota(engine: Any) -> None:
     """The `Prismor API:` line in `prismor status`: what is left of this month.
 
@@ -6754,6 +6799,10 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
             add("fail", "codex trust", _trust_line)
         else:
             add("ok", "codex trust", "Codex has trusted the installed hooks")
+    if "copilot" in agents_with_hooks:
+        _cp_line = copilot_trust_line(workspace)
+        if _cp_line:
+            add("warn", "copilot trust", _cp_line)
 
     # 2. Policy engine loads.
     try:
@@ -7054,6 +7103,10 @@ def _print_status_overview(workspace: Path) -> None:
             _codex_line = codex_trust_line(workspace)
             if _codex_line:
                 print(f"  {_color('Codex:', _YELLOW)}       {_codex_line}")
+        if "copilot" in agents_with_hooks:
+            _cp_line = copilot_trust_line(workspace)
+            if _cp_line:
+                print(f"  {_color('Copilot:', _YELLOW)}     {_cp_line}")
         _both = sorted(set(hooks_by_scope["project"]) & set(hooks_by_scope["global"]))
         if _both:
             print(f"  {_color('Note:', _YELLOW)}        {', '.join(_both)} hooked at both scopes — each tool call is "
