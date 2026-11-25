@@ -4701,7 +4701,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("sql", nargs="?", help="A SELECT / WITH / EXPLAIN statement")
     query_parser.add_argument("--schema", action="store_true", help="List tables and columns instead")
     query_parser.add_argument("--workspace", help="Workspace whose store to open (default: the shared $PRISMOR_HOME store)")
-    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (0 = no cap; default 200)")
+    query_parser.add_argument("--limit", type=_nonneg_int, default=200, help="Max rows (0 = no cap; default 200)")
     query_parser.add_argument("--format", choices=["json", "jsonl", "table"], default="json")
     query_parser.add_argument("--path", action="store_true", help="Print the store path and exit")
 
@@ -6430,6 +6430,13 @@ def _run_docs(args) -> None:
         print(f"no doc named {name!r} — `prismor docs` lists them", file=sys.stderr)
         sys.exit(1)
     print((root / name).read_text(encoding="utf-8"))
+
+
+def _nonneg_int(v: str) -> int:
+    n = int(v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return n
 
 
 def _run_trail(args) -> None:
