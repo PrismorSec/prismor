@@ -1940,15 +1940,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             from prismor.runtime import system_install as _sys
             _sys.remove_sync_schedule()
         for item in results:
+            path = str(item["configPath"]).replace(str(Path.home()), "~")
             if item["removed"]:
-                print(f"Removed {item['agent']} hooks from {item['configPath']}")
+                print(f"\n  {_color('✓', _GREEN)} Removed {_color(item['agent'], _BOLD)} hooks")
+                print(f"    {_color(path, _DIM)}")
                 if item.get("cloakRemoved"):
-                    print(
-                        "  Also removed cloaking hooks — secrets are no longer protected "
-                        "at the tool boundary. Re-enable with: prismor cloak install"
-                    )
+                    print(f"    {_color('Cloaking hooks removed too: secrets are no longer protected.', _YELLOW)}")
+                    print(f"    Re-enable:  {_color('prismor cloak install', _CYAN)}")
             else:
-                print(f"No Prismor hooks found for {item['agent']} at {item['configPath']}")
+                print(f"\n  {_color('–', _DIM)} No Prismor hooks found for {_color(item['agent'], _BOLD)}")
+                print(f"    {_color(path, _DIM)}")
         _warn_other_scope_hooks(workspace, args.scope, [item["agent"] for item in results], installed=False)
         return
 
@@ -6303,11 +6304,12 @@ def _warn_other_scope_hooks(workspace: Path, scope: str, agents: List[str], *, i
     if not still:
         return
     if installed:
-        print(f"  Note: {', '.join(still)} also hooked at {other} scope — each tool call is now screened "
-              f"twice. Remove one: prismor uninstall-hooks --agent {still[0]} --scope {other}")
+        state, why = "also", "Each tool call is now screened twice. To remove one:"
     else:
-        print(f"  Note: {', '.join(still)} still hooked at {other} scope — Prismor keeps screening this "
-              f"workspace. To stop: prismor uninstall-hooks --agent {still[0]} --scope {other}")
+        state, why = "still", "Prismor keeps screening this workspace. To stop:"
+    print(f"\n  {_color('!', _YELLOW)} {_color(', '.join(still), _BOLD)} {state} hooked at {other} scope")
+    print(f"    {why}")
+    print(f"    {_color(f'prismor uninstall-hooks --agent {still[0]} --scope {other}', _CYAN)}\n")
 
 
 def _hooks_by_scope(workspace: Path, checks: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Dict[str, Optional[str]]]:
