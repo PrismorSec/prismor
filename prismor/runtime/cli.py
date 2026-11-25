@@ -1738,9 +1738,12 @@ def main(argv: Optional[List[str]] = None) -> None:
             events = load_input_events(args.input, workspace=workspace)
         else:
             # Find most recent session in current workspace
-            sessions = list_sessions(workspace, limit=1)
+            from prismor.runtime import devlog as _devlog
+            sessions = list_sessions(workspace, limit=50)
             if not sessions:
                 raise SystemExit("No sessions found in this workspace. Use --input to analyze a file, or run a session first.")
+            _sid = _devlog.default_session_id(sessions)
+            sessions = [{"sessionId": _sid}]
             session = get_session(workspace, sessions[0]["sessionId"])
             if not session:
                 raise SystemExit(f"Could not load session {sessions[0]['sessionId']}")
@@ -1836,7 +1839,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime import devlog
         if args.command == "rca":
             sid = (devlog.resolve_session_id(args.session_id) if args.session_id
-                   else next((s["sessionId"] for s in list_sessions(workspace, 1)), None))
+                   else devlog.default_session_id(list_sessions(workspace, 50)))
             if not sid:
                 raise SystemExit("rca: " + (_sessions_elsewhere_hint(workspace)
                                             or "no sessions recorded yet")
@@ -1955,7 +1958,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         # Interpreter start + imports, from the shim's stamp to here.
         _perf.STAGES["startup"] = (time.time() - _HOOK_T0) * 1000
         _perf.lap()
-        payload = json.loads(sys.stdin.read() or "{}")
+        from prismor.runtime.winutil import read_stdin_text
+        payload = json.loads(read_stdin_text() or "{}")
         _hook_claimed = True   # set for real just before evaluation
         # A global (~/.claude) hook carries no --workspace: attribute the call
         # to the repo the agent is actually running in (payload cwd → git root),
@@ -3650,7 +3654,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     from getpass import getpass
                     value = getpass(f"Enter value for @@SECRET:{name}@@ (input hidden): ")
                 else:
-                    value = sys.stdin.read().rstrip("\n")
+                    from prismor.runtime.winutil import read_stdin_text
+                    value = read_stdin_text().rstrip("\n")
             try:
                 path = add_secret(name, value)
             except (OSError, ValueError) as exc:
@@ -4727,7 +4732,7 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("sql", nargs="?", help="A SELECT / WITH / EXPLAIN statement")
     query_parser.add_argument("--schema", action="store_true", help="List tables and columns instead")
     query_parser.add_argument("--workspace", help="Workspace whose store to open (default: the shared $PRISMOR_HOME store)")
-    query_parser.add_argument("--limit", type=int, default=200, help="Max rows (0 = no cap; default 200)")
+    query_parser.add_argument("--limit", type=_nonneg_int, default=200, help="Max rows (0 = no cap; default 200)")
     query_parser.add_argument("--format", choices=["json", "jsonl", "table"], default="json")
     query_parser.add_argument("--path", action="store_true", help="Print the store path and exit")
 
@@ -5656,9 +5661,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Dismissal count to flag false positives (default: 5)")
     learn_parser.add_argument("--json", action="store_true", dest="json_output",
                               help="Output raw JSON instead of formatted report")
-    learn_parser.add_argument("--apply", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--apply", metavar="ID", type=int,
                               help="Accept a candidate rule and append to project policy")
-    learn_parser.add_argument("--reject", metavar="RULE_ID", type=int,
+    learn_parser.add_argument("--reject", metavar="ID", type=int,
                               help="Reject a candidate rule")
     learn_parser.add_argument("--candidates", action="store_true",
                               help="List pending candidate rules")
@@ -6459,6 +6464,22 @@ def _run_docs(args) -> None:
     print((root / name).read_text(encoding="utf-8"))
 
 
+def _quote_path(p: Any) -> str:
+    """A path as typed into the user's shell: double quotes on Windows, POSIX quoting elsewhere."""
+    t = str(p)
+    if os.name == "nt":
+        return f'"{t}"' if re.search(r"[\s&()^%!]", t) else t
+    import shlex
+    return shlex.quote(t)
+
+
+def _nonneg_int(v: str) -> int:
+    n = int(v)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return n
+
+
 def _run_trail(args) -> None:
     """`prismor trail` — the signed, hash-chained audit trail of agent actions.
 
@@ -6476,6 +6497,8 @@ def _run_trail(args) -> None:
             rep = _pack.verify_pack(Path(args.verify), pubkey_b64=args.pubkey)
             if args.json:
                 print(json.dumps(rep, indent=2))
+            elif rep.get("unreadable"):
+                print(f"✗ evidence pack {args.verify}: not a readable pack")
             else:
                 print(f"{'✓' if rep['ok'] else '✗'} evidence pack {args.verify}: "
                       f"{rep.get('decisions')} decisions, {rep.get('records')} records"
@@ -6491,7 +6514,7 @@ def _run_trail(args) -> None:
                   f"({'signed' if man.get('signature') else 'unsigned: pip install prismor[signing]'})")
             if man["missing_authority"]:
                 print(f"  ⚠ {len(man['missing_authority'])} authority snapshot(s) not found on this device")
-            print(f"  verify: prismor trail export --verify {args.out}")
+            print(f"  verify: prismor trail export --verify {_quote_path(args.out)}")
         return
 
     if sub == "verify":
@@ -6528,6 +6551,9 @@ def _run_trail(args) -> None:
                   f"compare against a saved checkpoint (prismor trail checkpoint) to tell them apart")
         for err in report["errors"]:
             where = f"seq {err['seq']}" if err.get("seq") is not None else f"line {err.get('line')}"
+            if err.get("seq") is None and err.get("line") is None:
+                print(f"  ✗ {err['kind']}: {err['detail']}")
+                continue
             print(f"  ✗ {err['kind']} at {where}: {err['detail']}")
         _fails = report["sig_failures"]
         for seq in _fails[:_cap]:
@@ -6651,7 +6677,8 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
 
     if sub == "verify":
         try:
-            bundle = json.loads(Path(args.bundle).read_text(encoding="utf-8"))
+            from prismor.runtime.winutil import read_text_file
+            bundle = json.loads(read_text_file(args.bundle))
         except (OSError, ValueError) as exc:
             print(f"✗ cannot read bundle: {exc}")
             raise SystemExit(2)
@@ -6699,7 +6726,7 @@ def _run_attest(args, workspace: Path, repo_root: Path) -> None:
             print("  unsigned: install prismor[signing] (adds `cryptography`) to sign bundles")
         print(f"  {n_agents} agents · {n_findings} audit findings · "
               f"trail anchor seq {(bundle.get('trail_checkpoint') or {}).get('seq')}")
-        print(f"  re-verify with:  prismor attest verify {out}")
+        print(f"  re-verify with:  prismor attest verify {_quote_path(out)}")
     else:
         print(text)
     if not bundle.get("signature"):
@@ -8600,9 +8627,13 @@ def parse_jsonl(text: str) -> List[Dict[str, Any]]:
 
 
 def read_text(input_path: str) -> str:
+    from prismor.runtime.winutil import read_stdin_text, read_text_file
     if input_path == "-":
-        return sys.stdin.read()
-    return Path(input_path).read_text(encoding="utf-8")
+        return read_stdin_text()
+    try:
+        return read_text_file(input_path)
+    except ValueError as exc:
+        raise SystemExit(f"analyze: {exc}") from None
 
 
 def emit(payload: Any, *, as_json: bool, formatter=None) -> None:

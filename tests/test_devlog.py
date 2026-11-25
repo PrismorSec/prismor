@@ -111,3 +111,12 @@ def test_asked_skips_injected_prompts():
                      (json.dumps({"metadata": {"raw": {"prompt": p}}}),))
     assert devlog._asked(conn, "s", 99) == "fix the > bug"
     assert devlog._asked(conn, "s", 1) == ""
+
+
+def test_default_session_skips_empty_replay(monkeypatch):
+    from prismor.runtime import devlog
+    monkeypatch.setattr(devlog, "session_calls", lambda sid: ([{"x": 1}] if sid == "live1" else [], {}))
+    sess = [{"sessionId": "replay:a"}, {"sessionId": "live0"}, {"sessionId": "live1"}]
+    assert devlog.default_session_id(sess) == "live1"
+    assert devlog.default_session_id([{"sessionId": "replay:a"}]) == "replay:a"
+    assert devlog.default_session_id([]) is None

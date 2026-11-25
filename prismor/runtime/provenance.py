@@ -496,10 +496,27 @@ def _split_operators(run: str) -> List[str]:
     return out
 
 
+_WIN_PATH = re.compile(r"[A-Za-z]:\\|\\\\\w")  # C:\ or \\server
+
+
+def _keep_windows_backslashes(command: str) -> str:
+    """POSIX shlex eats a backslash (``C:\\work`` -> ``C:work``). When the
+    command names a Windows path, double every backslash outside single quotes
+    (which shlex keeps literally) so the path survives tokenizing. A backslash
+    before a quote or newline is left as the shell's escape."""
+    if not _WIN_PATH.search(command):
+        return command
+    parts = re.split(r"('[^']*')", command)
+    return "".join(
+        p if i % 2 else re.sub(r"\\(?![\n\"'])", r"\\\\", p) for i, p in enumerate(parts))
+
+
 def _tokenize(command: str) -> List[str]:
     """shlex words, with every shell operator as a token of its own. Raises
     ``ValueError`` on an unbalanced quote, as ``shlex.split`` does."""
     import shlex
+
+    command = _keep_windows_backslashes(command)
 
     lex = shlex.shlex(command, posix=True, punctuation_chars=_PUNCT)
     lex.whitespace = " \t\r"  # a newline separates commands

@@ -241,8 +241,14 @@ def run(workspace: Path, *, all_workspaces: bool = False, limit: int = 200) -> i
     from prismor.runtime.token_usage import session_cost
 
     if _curses is None:
-        sys.stderr.write("prismor traces needs curses (on Windows: pip install windows-curses)\n")
-        return 2
+        # No curses (stock Windows Python): a plain, non-interactive listing.
+        sys.stderr.write("prismor traces: curses unavailable (pip install windows-curses for the "
+                         "interactive browser); printing a plain list\n")
+        sessions = list_sessions(workspace, limit, all_workspaces=all_workspaces)
+        print(f"Prismor traces — {len(sessions)} sessions")
+        for s in sessions:
+            print(session_line(s, 200))
+        return 0
     curses = _curses
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         sys.stderr.write("prismor traces needs a terminal; use `prismor sessions` / `prismor session <id>` in scripts\n")

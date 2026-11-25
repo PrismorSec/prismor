@@ -147,20 +147,26 @@ def _append(record: Dict[str, Any]) -> Dict[str, Any]:
         record["seq"] = int(state["seq"]) + 1
         record["prev_hash"] = str(state.get("last_hash") or GENESIS)
         record["hash"] = compute_hash(record)
-        tmp = state_file.with_suffix(".tmp")
+        tmp = state_file.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(
             json.dumps({"seq": record["seq"], "last_hash": record["hash"]}),
             encoding="utf-8",
         )
-        tmp.replace(state_file)
+        from prismor.runtime.winutil import replace_retry
+        replace_retry(tmp, state_file)
         _signing.sign_record(record)  # no-op without `cryptography`
         line = json.dumps(
             record, sort_keys=True, separators=(",", ":"), ensure_ascii=False
         )
+        first = not trail_path().exists()
         with open(trail_path(), "a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if first:  # Windows: drop inherited ACLs once, when the files appear
+            from prismor.runtime.winutil import restrict_to_current_user
+            restrict_to_current_user(trail_path())
+            restrict_to_current_user(state_file)
     return record
 
 
@@ -456,6 +462,14 @@ def verify_trail(
     can_verify = bool(getattr(_signing, "_HAVE_CRYPTO", False))
 
     if not trail.exists():
+        if report["state"]["seq"] >= 0:
+            report["errors"].append({
+                "line": None, "seq": None, "kind": "trail_missing",
+                "detail": f"trail missing, state says {report['state']['seq'] + 1} records",
+            })
+            report["status"] = "tampered"
+            report["ok"] = False
+            return report
         report["status"] = "empty"
         report["ok"] = True
         return report
@@ -465,7 +479,8 @@ def verify_trail(
     expected_prev: Optional[str] = GENESIS
     last: Optional[Dict[str, Any]] = None
 
-    with open(trail, "r", encoding="utf-8") as f:
+    # utf-8-sig: a BOM (PowerShell redirects, editors) is not tampering.
+    with open(trail, "r", encoding="utf-8-sig") as f:
         for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:

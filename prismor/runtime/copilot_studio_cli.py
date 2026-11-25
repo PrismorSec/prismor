@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -49,6 +50,10 @@ def cmd_test(samples: Optional[List[str]] = None, workspace: Optional[Path] = No
              user_messages: Optional[str] = None, as_json: bool = False) -> int:
     from prismor.runtime.copilot_studio import SAMPLES, analyze, sample_request
 
+    # The 1 s deadline is Copilot Studio's, not a local test's: the first call
+    # pays cold imports (slow on a loaded Windows host) and must not read as a
+    # fail-closed block. An explicit PRISMOR_COPILOT_STUDIO_BUDGET_MS still wins.
+    os.environ.setdefault("PRISMOR_COPILOT_STUDIO_BUDGET_MS", "10000")
     kinds = list(SAMPLES) if not samples or "all" in samples else samples
     ws = workspace or Path.cwd()
     for kind in kinds:

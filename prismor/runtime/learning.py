@@ -1171,12 +1171,20 @@ def reject_candidate_rule(workspace: Path, candidate_id: int) -> bool:
 
 # ── Report formatting ──────────────────────────────────────────────────────
 
-_BOLD = "\033[1m"
-_NC = "\033[0m"
-_CYAN = "\033[0;36m"
-_YELLOW = "\033[1;33m"
-_GREEN = "\033[0;32m"
-_DIM = "\033[37m"
+def _ansi(code: str) -> str:
+    """Escape only for an interactive stdout; piped output and NO_COLOR stay plain."""
+    import sys
+    if os.environ.get("NO_COLOR") or not getattr(sys.stdout, "isatty", lambda: False)():
+        return ""
+    return code
+
+
+_BOLD = _ansi("\033[1m")
+_NC = _ansi("\033[0m")
+_CYAN = _ansi("\033[0;36m")
+_YELLOW = _ansi("\033[1;33m")
+_GREEN = _ansi("\033[0;32m")
+_DIM = _ansi("\033[37m")
 
 
 def format_learning_report(

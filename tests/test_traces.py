@@ -116,3 +116,11 @@ def test_missing_session_stays_on_list():
     b = Browser(lambda: list(SESSIONS), lambda sid: None)
     b.handle("\n")
     assert b.view == "sessions" and "not found" in b.status
+
+
+def test_run_without_curses_lists_plain(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(traces, "_curses", None)
+    import prismor.runtime.store as store
+    monkeypatch.setattr(store, "list_sessions", lambda *a, **k: [])
+    assert traces.run(tmp_path) == 0
+    assert "0 sessions" in capsys.readouterr().out
