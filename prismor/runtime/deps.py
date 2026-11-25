@@ -17,6 +17,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from prismor.runtime.paths import read_text_auto
+
 
 # Manifest file patterns (kept in sync with default_policy.yaml).
 _MANIFEST_GLOBS = {
@@ -76,6 +78,10 @@ def _iter_workspace_files(workspace: Path, *patterns: str) -> Iterator[Path]:
     could report a single manifest alongside findings from five copies
     of it (PrismorSec/prismor#289).
     """
+    if workspace.is_file():  # a single lockfile passed to a read_*_full reader
+        if any(fnmatch(workspace.name, pattern) for pattern in patterns):
+            yield workspace
+        return
     for dirpath, dirnames, filenames in os.walk(workspace, followlinks=False):
         here = Path(dirpath)
         dirnames[:] = sorted(
@@ -139,6 +145,80 @@ def check_lockfile_presence(workspace: Path) -> List[Dict[str, Any]]:
     return findings
 
 
+class ManifestParseError(ValueError):
+    """A manifest exists but cannot be parsed; surfaced instead of "0 deps"."""
+
+
+# Lockfile name -> ecosystem, for directories that hold a lockfile but no manifest.
+_LOCKFILE_ECO = {
+    "package-lock.json": "npm", "yarn.lock": "npm", "pnpm-lock.yaml": "npm",
+    "poetry.lock": "pip", "uv.lock": "pip", "Pipfile.lock": "pip",
+    "Cargo.lock": "cargo", "go.sum": "go",
+}
+
+
+def _read_toml_lock(path: Path) -> Dict[str, str]:
+    """poetry.lock / uv.lock / Cargo.lock: [[package]] blocks with name+version."""
+    pins: Dict[str, str] = {}
+    name = None
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if line == "[[package]]":
+            name = None
+            continue
+        m = re.match(r'^(name|version)\s*=\s*"([^"]*)"', line)
+        if m and m.group(1) == "name":
+            name = m.group(2)
+        elif m and name:
+            pins[name] = m.group(2)
+            name = None
+    return pins
+
+
+def read_lockfile_deps(lock: Path) -> List[Dict[str, str]]:
+    """Resolved {name, version, ecosystem} entries of one lockfile."""
+    eco = _LOCKFILE_ECO[lock.name]
+    if lock.name in ("package-lock.json", "yarn.lock", "pnpm-lock.yaml"):
+        if lock.name == "package-lock.json":
+            try:
+                json.loads(lock.read_text(encoding="utf-8-sig"))
+            except json.JSONDecodeError as exc:
+                raise ManifestParseError(f"{lock.name} is not valid JSON ({exc})")
+        reader = {"package-lock.json": read_npm_lockfile_full, "yarn.lock": read_yarn_lockfile_full,
+                  "pnpm-lock.yaml": read_pnpm_lockfile_full}[lock.name]
+        return [{"name": n, "version": v, "ecosystem": eco} for n, v in reader(lock).items()]
+    if lock.name == "Pipfile.lock":
+        try:
+            data = json.loads(lock.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError as exc:
+            raise ManifestParseError(f"Pipfile.lock is not valid JSON ({exc})")
+        out = []
+        for section in ("default", "develop"):
+            for n, meta in (data.get(section) or {}).items():
+                if isinstance(meta, dict) and isinstance(meta.get("version"), str):
+                    out.append({"name": n, "version": meta["version"], "ecosystem": eco})
+        return out
+    if lock.name == "go.sum":
+        pins = {}
+        for line in lock.read_text(encoding="utf-8-sig").splitlines():
+            parts = line.split()
+            if len(parts) >= 2:
+                pins[parts[0]] = parts[1].split("/")[0]
+        return [{"name": n, "version": v, "ecosystem": eco} for n, v in pins.items()]
+    prefix = "=" if eco == "cargo" else "=="
+    return [{"name": n, "version": prefix + v, "ecosystem": eco} for n, v in _read_toml_lock(lock).items()]
+
+
+def find_lockfile_only(workspace: Path, manifests: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Lockfiles whose directory has no manifest of the same ecosystem."""
+    have = {(m["path"].parent, m["ecosystem"]) for m in manifests}
+    return [
+        {"path": lock, "name": lock.name, "ecosystem": _LOCKFILE_ECO[lock.name], "lockfile": True}
+        for lock in _iter_workspace_files(workspace, *_LOCKFILE_ECO)
+        if lock.is_file() and (lock.parent, _LOCKFILE_ECO[lock.name]) not in have
+    ]
+
+
 def parse_dependencies(
     manifest: Path,
     ecosystem: str,
@@ -150,9 +230,9 @@ def parse_dependencies(
     `lockfile_map` is npm-only today and threaded through `_parse_package_json`.
     """
     try:
-        text = manifest.read_text(encoding="utf-8")
-    except OSError:
-        return []
+        text = read_text_auto(manifest)
+    except OSError as exc:
+        raise ManifestParseError(f"{manifest}: cannot read ({exc})")
 
     if ecosystem == "npm":
         return _parse_package_json(text, lockfile_map)
@@ -173,8 +253,10 @@ def _parse_package_json(text: str, lockfile_map: Optional[Dict[str, str]] = None
     """
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
-        return []
+    except json.JSONDecodeError as exc:
+        raise ManifestParseError(f"package.json is not valid JSON ({exc})")
+    if not isinstance(data, dict):
+        raise ManifestParseError("package.json is not a JSON object")
 
     lockfile_map = lockfile_map or {}
     deps: List[Dict[str, Any]] = []
@@ -203,7 +285,7 @@ def _read_npm_lockfile(workspace: Path) -> Dict[str, str]:
     pins: Dict[str, str] = {}
     for lock in _iter_workspace_files(workspace, "package-lock.json"):
         try:
-            data = json.loads(lock.read_text(encoding="utf-8"))
+            data = json.loads(lock.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             continue
         packages = data.get("packages") or {}
@@ -238,7 +320,7 @@ def read_npm_lockfile_full(workspace: Path) -> Dict[str, str]:
     pins: Dict[str, str] = {}
     for lock in _iter_workspace_files(workspace, "package-lock.json"):
         try:
-            data = json.loads(lock.read_text(encoding="utf-8"))
+            data = json.loads(lock.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             continue
         packages = data.get("packages") or {}
@@ -286,7 +368,7 @@ def read_pnpm_lockfile_full(workspace: Path) -> Dict[str, str]:
         return pins
     for lock in _lockfiles(workspace, "pnpm-lock.yaml"):
         try:
-            data = yaml.safe_load(lock.read_text(encoding="utf-8"))
+            data = yaml.safe_load(lock.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         if not isinstance(data, dict):
@@ -317,7 +399,7 @@ def read_yarn_lockfile_full(workspace: Path) -> Dict[str, str]:
     pins: Dict[str, str] = {}
     for lock in _lockfiles(workspace, "yarn.lock"):
         try:
-            text = lock.read_text(encoding="utf-8")
+            text = lock.read_text(encoding="utf-8-sig")
         except OSError:
             continue
 
@@ -583,7 +665,7 @@ def check_floating_ranges(
         if not (pkg_json.parent / "package-lock.json").is_file():
             continue
         try:
-            data = json.loads(pkg_json.read_text(encoding="utf-8"))
+            data = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             continue
         for section in ("dependencies", "devDependencies"):
@@ -708,8 +790,8 @@ def check_lockfile_integrity(workspace: Path) -> List[Dict[str, Any]]:
         if not lock_path.is_file():
             continue
         try:
-            pkg = json.loads(pkg_json.read_text(encoding="utf-8"))
-            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            pkg = json.loads(pkg_json.read_text(encoding="utf-8-sig"))
+            lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
             continue
 
@@ -922,10 +1004,20 @@ def scan_workspace(
     manifests = find_manifests(workspace)
     lockfile_map = _read_npm_lockfile(workspace)
     all_deps: List[Dict[str, str]] = []
+    parse_errors: List[Dict[str, str]] = []
     for m in manifests:
         lock = lockfile_map if m["ecosystem"] == "npm" else None
-        deps = parse_dependencies(m["path"], m["ecosystem"], lockfile_map=lock)
-        all_deps.extend(deps)
+        try:
+            all_deps.extend(parse_dependencies(m["path"], m["ecosystem"], lockfile_map=lock))
+        except ManifestParseError as exc:
+            parse_errors.append({"path": str(m["path"]), "error": str(exc)})
+    # Lockfile-only directories (no manifest next to the lockfile).
+    for m in find_lockfile_only(workspace, manifests):
+        try:
+            all_deps.extend(read_lockfile_deps(m["path"]))
+        except (ManifestParseError, OSError) as exc:
+            parse_errors.append({"path": str(m["path"]), "error": str(exc)})
+        manifests.append(m)
 
     feed_matches = check_against_feed(all_deps, feed)
     # The signed feed carries no dependency_vulnerability advisories today, so
@@ -957,4 +1049,5 @@ def scan_workspace(
         "lockfile_issues": lockfile_issues,
         "integrity_issues": integrity_issues,
         "floating_ranges": floating_ranges,
+        "parse_errors": parse_errors,
     }

@@ -1396,10 +1396,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         from prismor.runtime.deps import scan_workspace as deps_scan
         feed = load_feed(repo_root)
         result = deps_scan(workspace, feed, osv=not getattr(args, "offline", False))
+        # One exit code for text and JSON: 1 on a known-bad dependency, a HIGH
+        # integrity issue, or a manifest that could not be parsed.
+        _deps_exit = 1 if (
+            result["feed_matches"] or result.get("parse_errors")
+            or any(i["severity"] == "HIGH" for i in result.get("integrity_issues", []))
+        ) else 0
 
         if getattr(args, "json", False):
             print(json.dumps(result, indent=2))
-            return
+            raise SystemExit(_deps_exit)
 
         print()
         print(f"  {_color('PRISMOR', _BOLD)}  dependency check")
@@ -1408,7 +1414,7 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         manifests = result["manifests"]
         if not manifests:
-            print(f"  {_color('No dependency manifests found.', _DIM)}")
+            print(f"  {_color('No dependency manifests or lockfiles found.', _DIM)}")
             print()
             return
 
@@ -1416,6 +1422,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('Manifest:', _GREEN)}  [{m['ecosystem']}] {m['path']}")
         print(f"  {_color('Dependencies:', _GREEN)} {result['dependencies']} total")
         print()
+        for pe in result.get("parse_errors", []):
+            print(f"  {_color('ERROR', _RED)}  could not parse {pe['path']}: {pe['error']}")
+        if result.get("parse_errors"):
+            print()
 
         feed_matches = result["feed_matches"]
         lockfile_issues = result["lockfile_issues"]
@@ -1423,9 +1433,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         integrity_issues = result.get("integrity_issues", [])
 
         if not feed_matches and not lockfile_issues and not integrity_issues:
-            print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
-            print()
-            return
+            if not result.get("parse_errors"):
+                print(f"  {_color('PASS', _GREEN)}  No known vulnerabilities or lockfile issues found.")
+                print()
+            raise SystemExit(_deps_exit)
 
         if feed_matches:
             print(f"  {_color('Known vulnerable or malicious dependencies:', _BOLD)}")
@@ -1460,9 +1471,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         print(f"  {total_issues} issue(s) found")
         print()
 
-        if feed_matches or any(i["severity"] == "HIGH" for i in integrity_issues):
-            raise SystemExit(1)
-        return
+        raise SystemExit(_deps_exit)
 
     # ── audit: full security posture check ──────────────────────────
     if args.command == "audit" and getattr(args, "target", None) == "judge":
