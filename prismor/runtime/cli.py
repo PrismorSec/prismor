@@ -2725,11 +2725,17 @@ def main(argv: Optional[List[str]] = None) -> None:
                 # Only a floor rule reaches here while paused. unblock_text is the
                 # one part every agent's block message carries.
                 from prismor.runtime import pause as _pause_note_mod
-                _pnote = ("Prismor is hard-paused, but this rule protects Prismor itself and stays on."
-                          if _pause_note_mod.lifts_floor(_pstate) else
-                          "Prismor is paused, but this is a floor rule: a pause does not lift it. "
-                          "Only the person at the keyboard can lift floor rules, with "
-                          "`prismor pause --hard` and the unlock password.")
+                from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS as _SP_NOTE
+                if blocking.get("ruleId") in _SP_NOTE:
+                    # No pause lifts these, not even --hard; only an unlock window.
+                    _pnote = ("Prismor is paused, but this rule protects Prismor itself: no pause "
+                              "lifts it, not even `prismor pause --hard`. Only an unlock window does.")
+                elif _pause_note_mod.lifts_floor(_pstate):
+                    _pnote = "Prismor is hard-paused, but this rule protects Prismor itself and stays on."
+                else:
+                    _pnote = ("Prismor is paused, but this is a floor rule: a pause does not lift it. "
+                              "Only the person at the keyboard can lift floor rules, with "
+                              "`prismor pause --hard` and the unlock password.")
                 unblock_text = (_pnote
                                 + (f"\n\n{unblock_text}" if unblock_text else ""))
             if unblock_text:
