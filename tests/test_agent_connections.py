@@ -342,6 +342,12 @@ def test_explicit_name_beats_another_agents_bare_alias():
     assert msg and pol.decide(msg["from"], msg["to"]) == "deny"
 
 
+def test_shared_name_is_silent(capsys):
+    pol = _pol({"agt_a": {"name": "cursor"}, "agt_b": {"name": "Cursor"}})
+    assert pol.resolve("cursor") == "agt_a" and pol.ambiguous("cursor")
+    assert capsys.readouterr().err == ""
+
+
 def test_shared_name_is_checked_not_dropped_as_self():
     pol = _pol({"agt_a": {"name": "worker"}, "agt_b": {"name": "deploy", "aliases": ["worker-2", "Worker"]}})
     assert pol.ambiguous("worker")
