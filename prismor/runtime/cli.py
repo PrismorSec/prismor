@@ -6584,27 +6584,6 @@ def _shown_evidence(finding: Dict[str, Any]) -> str:
     return str(finding["evidence"])
 
 
-def _print_status(session: Dict[str, Any]) -> None:
-    """Pretty-print the latest session status."""
-    risk = session.get("riskScore", 0)
-    findings_count = session.get("findingsCount", 0)
-    sid = session.get("sessionId", "?")
-
-    if findings_count == 0:
-        print("  " + _color("CLEAN", _GREEN) + f"  session={sid}  risk={risk}/100")
-        return
-
-    risk_color = _RED if risk >= 50 else _YELLOW if risk >= 20 else _GREEN
-    print("  " + _color(f"RISK {risk}/100", risk_color) + f"  session={sid}  findings={findings_count}")
-    print()
-    for finding in session.get("findings", []):
-        sev = finding.get("severity", "?")
-        color = _RED if sev == "CRITICAL" else _YELLOW if sev == "HIGH" else _DIM
-        print(f"  {_color(f'[{sev}]', color)} {finding['title']} ({finding['category']})")
-        if _shown_evidence(finding):
-            print(f"         {safe_text(_shown_evidence(finding))}")
-
-
 def _run_query(args) -> None:
     from prismor.runtime.query import QueryError, format_rows, resolve_db_path, run_query, schema
 
@@ -7224,13 +7203,33 @@ def _run_doctor(workspace: Path, as_json: bool = False, self_test: bool = False)
         raise SystemExit(1)
 
 
+def _policy_layers(engine: Any, workspace: Path) -> str:
+    """Which policy files are in effect, highest precedence first."""
+    from prismor.runtime import system_install
+    layers = []
+    if engine.remote_policy_meta:
+        version = engine.remote_policy_meta.get("version")
+        layers.append(f"org v{version}" if version is not None else "org")
+    project = workspace / ".prismor" / "policy.yaml"
+    user = system_install.policy_home() / "policy.yaml"
+    if project.exists() and not engine.project_policy_ignored and project.resolve() != user.resolve():
+        layers.append("project (.prismor/policy.yaml)")
+    if user.exists():
+        name = "system" if system_install.is_system_managed() else "user"
+        layers.append(f"{name} ({str(user).replace(str(Path.home()), '~')})")
+    layers.extend(f"pack {p}" for p in engine.packs_loaded)
+    layers.append("built-in defaults")
+    return " + ".join(layers)
+
+
 def _print_status_overview(workspace: Path) -> None:
-    """One-shot health check: mode, hooks, cloak, latest session.
+    """One-shot health check: hooks, pause, policy, cloak.
 
     Designed so an agent (or a human) can run `prismor status` once at
     session start instead of stitching together `info` + `cloak status` +
     the prior session-only `status`. Output is intentionally compact and
-    ends with the single next action that matters.
+    ends with the single next action that matters. Session findings are left
+    to `prismor sessions`: they made this too long to read without scrolling.
     """
     home = str(Path.home())
     ws_display = str(workspace).replace(home, "~")
@@ -7295,13 +7294,10 @@ def _print_status_overview(workspace: Path) -> None:
     if agents_with_hooks:
         mode_color = _GREEN if mode == "enforce" else _YELLOW
         mode_str = _color(mode or "unknown", mode_color) + mode_source
-        if hooks_by_scope["project"] and hooks_by_scope["global"]:
-            scope_str = "project + global"
-        elif hooks_by_scope["global"]:
-            scope_str = "global (~/)"
-        else:
-            scope_str = "project"
-        print(f"  {_color('Hooks:', _GREEN)}       {', '.join(agents_with_hooks)}  ({mode_str}, {scope_str}; configured)")
+        print(f"  {_color('Hooks:', _GREEN)}       installed  ({mode_str}; configured)")
+        for _scope_name, _label in (("project", "project:"), ("global", "global: ")):
+            _names = ", ".join(sorted(set(hooks_by_scope[_scope_name])))
+            print(f"               {_label} {_names or _color('not installed', _DIM)}")
         if "codex" in agents_with_hooks:
             _codex_line = codex_trust_line(workspace)
             if _codex_line:
@@ -7347,18 +7343,23 @@ def _print_status_overview(workspace: Path) -> None:
         _pstate = _pause.active_state()
     except Exception:
         _pstate = None
-    if _pstate is not None:
+    if _pstate is None:
+        print(f"  {_color('Paused:', _GREEN)}      no")
+    else:
         _by_org = _pstate.get("source") == "org"
+        _pmsg = "yes — by your organization" if _by_org else "yes"
         if _pstate.get("until"):
-            _until = datetime.fromtimestamp(float(_pstate["until"])).strftime("%H:%M")
-            _pmsg = f"yes — auto-resumes {_until}"
-            if _by_org:
-                _pmsg = f"by your organization — auto-resumes {_until}"
+            _end = float(_pstate["until"])
+            _mins = max(1, int((_end - time.time() + 59) // 60))
+            _hours, _mins = divmod(_mins, 60)
+            _left = f"{_hours}h {_mins}m" if _hours else f"{_mins}m"
+            _at = datetime.fromtimestamp(_end).strftime("%H:%M")
+            _pmsg += f", {_left} left (auto-resumes {_at})"
         elif _by_org:
             # `prismor resume` can't lift this one; don't suggest it.
-            _pmsg = "by your organization — ask an admin to resume it in the console"
+            _pmsg += ", no end time; ask an admin to resume it in the console"
         else:
-            _pmsg = "yes — run `prismor resume` to re-enable"
+            _pmsg += ", no end time; run `prismor resume` to re-enable"
         if _pstate.get("reason"):
             _pmsg += f"  ({_pstate['reason']})"
         print(f"  {_color('Paused:', _YELLOW)}      {_color(_pmsg, _YELLOW)}")
@@ -7393,6 +7394,7 @@ def _print_status_overview(workspace: Path) -> None:
         from prismor.runtime.policy_engine import _SELF_PROTECTION_RULE_IDS
         blocking = sum(1 for r in engine.rules
                        if r.id not in _SELF_PROTECTION_RULE_IDS and engine._resolve_mode(r) == "enforce")
+        print(f"  {_color('Policy:', _GREEN)}      {_policy_layers(engine, workspace)}")
         print(f"  {_color('Rules:', _GREEN)}       {len(engine.rules)} active, {blocking} block")
         if engine.project_policy_error:
             _kept = ("its last valid version is enforced" if engine.project_policy_fallback
@@ -7406,26 +7408,6 @@ def _print_status_overview(workspace: Path) -> None:
 
     _print_status_quota(engine)
 
-    # Latest session
-    sessions = [] if state_unreadable else list_sessions(workspace, 1)
-    print()
-    if state_unreadable:
-        print(f"  {_color('Latest session:', _GREEN)}  {_color('unavailable: ' + unreadable, _DIM)}")
-    elif not sessions:
-        _hint = _sessions_elsewhere_hint(workspace)
-        print(f"  {_color('Latest session:', _GREEN)}  "
-              f"{_color('none in this workspace' if _hint else 'none yet', _DIM)}")
-        if _hint:
-            print(f"  {_color(_hint, _DIM)}")
-    else:
-        latest = sessions[0]
-        session = get_session(workspace, latest["sessionId"])
-        if session is None:
-            print(f"  {_color('Latest session:', _GREEN)}  {_color('unavailable', _DIM)}")
-        else:
-            print(f"  {_color('LATEST SESSION', _BOLD)}")
-            _print_status(session)
-
     # Next-step nudge — one action, picked by current state
     print()
     if state_unreadable:
@@ -7437,10 +7419,6 @@ def _print_status_overview(workspace: Path) -> None:
         print(f"        prismor setup --mode enforce --recommended   (picks the rules that block)")
     elif mode == "enforce" and blocking == 0:
         print(f"  {_color('Next:', _CYAN)} prismor setup --mode enforce --recommended   (pick the rules that block)")
-    elif sessions and sessions[0].get("findingsCount", 0) > 0:
-        print(f"  {_color('Next:', _CYAN)} prismor sessions --findings-only")
-    else:
-        print(f"  {_color('OK:', _GREEN)}   workspace is clean")
     print()
 
 

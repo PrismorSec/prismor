@@ -256,7 +256,7 @@ We could not find any other documented tuning for dashboard speed.
 Check this machine:
 
 ```bash
-prismor status       # this project: hooks, mode, latest session
+prismor status       # this project: hooks, pause, policy
 prismor surfaces     # every agent, and what (if anything) is watching it
 prismor discover agents   # agents on this machine that Prismor does not cover
 ```
