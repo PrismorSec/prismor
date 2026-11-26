@@ -33,6 +33,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from prismor.runtime.sandbox_native import _parents
 
 DEFAULT_SANDBOX_CONFIG: Dict[str, Any] = {
+    # Inside another sandbox: "refuse" or "trust". Never read from a project policy.
+    "outer": "refuse",
     "enabled": False,
     "mode": "enforce",
     "network": "proxy",
@@ -134,6 +136,11 @@ def effective_config(raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 def enforcing(cfg: Dict[str, Any]) -> bool:
     return bool(cfg.get("enabled")) and cfg.get("mode") == "enforce"
+
+
+def outer_trusted(config: Dict[str, Any]) -> bool:
+    """A person said to rely on the sandbox this process already runs in."""
+    return config.get("outer") == "trust" and _inside_sandbox()
 
 
 def supported() -> bool:
@@ -430,9 +437,14 @@ def run(command: str, *, root: Path, config: Dict[str, Any], engine: Any = None,
     strict = enforcing(effective_config(config))
     if _inside_sandbox():
         # An agent's own Seatbelt sandbox: ours cannot nest inside it.
-        if strict:
+        if strict and not outer_trusted(effective_config(config)):
             return refuse("this shell already runs inside the agent's own sandbox, "
-                          "and the OS sandbox cannot nest inside another one")
+                          "and the OS sandbox cannot nest inside another one. To rely on "
+                          "that sandbox instead, set settings.sandbox.outer: trust in "
+                          "~/.prismor/policy.yaml")
+        if strict:
+            _note("relying on the outer sandbox (settings.sandbox.outer: trust). Prismor "
+                  "does not check what it allows; policy still applies.")
         return _exec_unconfined(command)
     status = backend_status()
     if not status["available"]:
@@ -690,9 +702,11 @@ def set_enabled(workspace: Path, enabled: bool) -> Path:
 def status_report(config: Dict[str, Any], *, egress_enabled: bool = False) -> Dict[str, Any]:
     cfg = effective_config(config)
     engine = backend_status()
-    on = engine["available"]
+    nested = _inside_sandbox()
+    on = engine["available"] and not nested
     net = cfg["network"]
     net_state = "open" if net == "open" else ("enforced" if on else "unavailable")
+    off = "not applied" if nested else "unavailable"
     return {
         "enabled": cfg["enabled"],
         "mode": cfg["mode"],
@@ -704,10 +718,12 @@ def status_report(config: Dict[str, Any], *, egress_enabled: bool = False) -> Di
         "hide": cfg["hide"],
         "direct_ports": cfg["direct_ports"] if net == "proxy" else [],
         "engine": engine,
+        "nested": nested,
+        "outer": "trust" if cfg.get("outer") == "trust" else "refuse",
         "controls": {
-            "files": "enforced" if on else "unavailable",
-            "credentials": "enforced" if on else "unavailable",
-            "network": net_state,
+            "files": "enforced" if on else off,
+            "credentials": "enforced" if on else off,
+            "network": off if nested else net_state,
         },
         "egress_allowlist": bool(egress_enabled),
         "legacy_keys": cfg["legacy_keys"],

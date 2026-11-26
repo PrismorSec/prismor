@@ -1844,6 +1844,20 @@ class PolicyEngine:
             {**a, "_source": source} if isinstance(a, dict) else a
             for a in override_raw.get("allowlists", []) or [])
         override_settings = dict(override_raw.get("settings", {}) or {})
+        # sandbox.outer: trust drops Prismor's confinement, so a repo may not set
+        # it, and a repo's own sandbox block must not erase the user's value.
+        # ponytail: with workspace == ~ the user file loads as "project", so the
+        # key is ignored there (fails closed).
+        if source == "project" and isinstance(override_settings.get("sandbox"), dict):
+            block = dict(override_settings["sandbox"])
+            if block.pop("outer", None) is not None:
+                sys.stderr.write(
+                    "[prismor] Ignoring settings.sandbox.outer from the project policy layer "
+                    "(set it in ~/.prismor/policy.yaml)\n")
+            earlier = settings.get("sandbox")
+            if isinstance(earlier, dict) and "outer" in earlier:
+                block["outer"] = earlier["outer"]
+            override_settings["sandbox"] = block
         # `selection: explicit` makes the safety floor opt-in, so it is a
         # local-only affordance for a developer's own machine. Arriving from the
         # signed org bundle (or a repo exemption overlay) it would mean an admin

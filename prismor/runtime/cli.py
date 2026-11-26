@@ -3064,7 +3064,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                 elif _sandbox_strict and _decloak_wraps and not _decloak_fresh:
                     _sandbox_gap = ("the sandbox settings for this project just changed, so the cloak "
                                     "hook may not have wrapped this call. Run the command again")
-                elif _sandbox_strict and not _decloak_wraps and not _hook_caps.supports_rewrite(args.agent):
+                elif (_sandbox_strict and not _decloak_wraps and not _hook_caps.supports_rewrite(args.agent)
+                      and not _sandbox.outer_trusted(_sandbox_cfg)):
                     _sandbox_gap = (f"{args.agent} hooks cannot rewrite a command to run it inside "
                                     "the sandbox")
                 if _sandbox_on and not _decloak_wraps and _hook_caps.supports_rewrite(args.agent):
@@ -3148,6 +3149,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"  {_color('─' * 50, _DIM)}")
             print()
             print(f"  {_color('Sandbox:', _GREEN)}      {on}")
+            if report["nested"]:
+                print(f"  {_color('Engine:', _YELLOW)}       not used: this runs inside an outer sandbox")
+                if report["enabled"] and report["mode"] == "enforce":
+                    print(f"  {_color('Outer:', _YELLOW)}        " + (
+                        "trusted: shell commands run without Prismor confinement"
+                        if report["outer"] == "trust" else
+                        "refused: shell commands are blocked (see docs/sandbox.md)"))
+                # Ring, files and network below describe limits Prismor is not applying.
+                print()
+                return
             if engine_st["available"]:
                 print(f"  {_color('Engine:', _GREEN)}       {engine_name}")
             else:
