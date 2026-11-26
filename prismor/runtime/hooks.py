@@ -2236,14 +2236,17 @@ def _merge_grok(config: Dict[str, Any], command: str) -> Dict[str, Any]:
         hooks.get("UserPromptSubmit", []),
         {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
     )
-    for event_name in ["PreToolUse", "PostToolUse"]:
+    # PostToolUse matches every tool ("" in Grok's docs): a named list left the
+    # output of list_dir, grep, monitor and any new tool unrecorded (verified
+    # live, 1.0.5 and 1.0.92). PreToolUse keeps its list, so what can be
+    # blocked does not change. Grok's MCP calls carry the `server__tool` name.
+    for event_name, matcher in (
+        ("PreToolUse", "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+"),
+        ("PostToolUse", ""),
+    ):
         hooks[event_name] = _merge_claude_entries(
             hooks.get(event_name, []),
-            {
-                # Grok's MCP calls carry the qualified `server__tool` name.
-                "matcher": "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+",
-                "hooks": [{"type": "command", "command": command}],
-            },
+            {"matcher": matcher, "hooks": [{"type": "command", "command": command}]},
         )
     return {**config, "hooks": hooks}
 
@@ -2758,6 +2761,16 @@ _GROK_EVENT_ALIASES = {
 
 
 def _normalize_grok(payload: Dict[str, Any], session_id: str, workspace: Path) -> Dict[str, Any]:
+    # Shell output and grep matches arrive as byte arrays. Decode them in place
+    # so rules, secret redaction and the stored event all see text.
+    # The same result is sent under both toolResult and tool_response.
+    for result in (payload.get("toolResult"), payload.get("tool_response")):
+        if not isinstance(result, dict):
+            continue
+        for key in ("output", "stdout", "stderr"):
+            value = result.get(key)
+            if isinstance(value, list) and all(isinstance(b, int) and 0 <= b < 256 for b in value):
+                result[key] = bytes(value).decode("utf-8", errors="replace")
     # Grok puts Claude's PascalCase event in `hook_event_name` and its own
     # snake_case one (`pre_tool_use`) in `hookEventName`; prefer the former.
     hook_event = payload.get("hook_event_name") or payload.get("hookEventName") or "unknown"
