@@ -3889,8 +3889,11 @@ class PolicyEngine:
         # surface that has a deadline of its own (`prismor proxy --judge-budget-ms`
         # in front of a voice agent that retries a turn after a few seconds).
         budget = float(cfg.get("budget_ms") or os.environ.get("PRISMOR_SEMANTIC_BUDGET_MS") or 0) / 1000
+        # Inside a hook the watchdog's deadline caps any of these (see _judge_window).
+        window = _judge_window()
         if _is_pre_action_event(event):
-            result = _analyze_within(guard, text, budget) if budget > 0 else guard.analyze(text)
+            limits = [b for b in (budget if budget > 0 else None, window) if b is not None]
+            result = _analyze_within(guard, text, min(limits)) if limits else guard.analyze(text)
         else:
             # The tool already ran: this verdict reports and taints, it cannot
             # block. A judge round trip on every tool result was ~0.6s p50 and
@@ -3903,10 +3906,11 @@ class PolicyEngine:
             else:
                 post = float(cfg.get("post_tool_budget_ms")
                              or os.environ.get("PRISMOR_SEMANTIC_POST_TOOL_BUDGET_MS") or 1500) / 1000
-                result = _analyze_within(guard, text, min(budget, post) if budget > 0 else post)
+                limits = [b for b in (budget if budget > 0 else None, post, window) if b is not None]
+                result = _analyze_within(guard, text, min(limits))
         # SemanticGuardV2 returns HybridRisk; v1 returns SemanticRisk directly.
         risk = getattr(result, "final", result)
-        if str(getattr(risk, "reason", "")).startswith("[LLM fallback]"):
+        if str(getattr(risk, "reason", "")).startswith(("[LLM fallback]", "[LLM skipped]")):
             _perf.degraded("semantic_judge:fallback")
         score = float(getattr(risk, "risk_score", 0.0))
 
@@ -5633,41 +5637,71 @@ def _instruction_file(path: str) -> bool:
     return any(fnmatch(p, g) or fnmatch(p, "*/" + g.lstrip("*/")) for g in _MEMORY_GLOBS)
 
 
+# Hook time kept back for what runs after the judge: the rest of policy
+# evaluation, the session record and the reply (about 0.5s measured; 1.5s spare).
+_HOOK_RESERVE_S = 1.5
+# A CLI judge spawns a process that answers in 4-20s: under this it cannot answer.
+_CLI_MIN_S = 3.0
+
+
+def _judge_window() -> Optional[float]:
+    """Seconds the judge may take in this call: the hook watchdog's time left
+    (less ``_HOOK_RESERVE_S``) or an enclosing ``judge_deadline``. None when
+    neither applies (a CLI check, a test, a server with no budget).
+
+    Without it a CLI judge ran its own 20s timeout inside an 8s hook: the
+    watchdog refused the call, the verdict was never cached and the session
+    analysis never moved past that event, so every later call refused too.
+    """
+    from prismor.runtime.hook_failclosed import time_left
+    from prismor.runtime.semantic_guard_v2 import judge_time_left
+    hook = time_left()
+    left = [v for v in (None if hook is None else hook - _HOOK_RESERVE_S, judge_time_left()) if v is not None]
+    return max(min(left), 0.0) if left else None
+
+
 def _analyze_within(guard: Any, text: str, budget_s: float) -> Any:
     """``guard.analyze(text)``, or the heuristic verdict if the judge overruns.
 
-    settings.semantic_guard.budget_ms: a slow judge must not push the hook
-    past the agent's timeout, where the call proceeds unscreened. The verdict
-    is made on time from the heuristic path and the degradation is recorded.
+    settings.semantic_guard.budget_ms, the post-tool budget and the hook's own
+    deadline: a slow judge must not push the hook past its watchdog or the
+    agent's timeout. The judge runs under ``judge_deadline(budget_s)``, so a CLI
+    judge is killed by its own caller at the budget (no orphan, no late verdict
+    in the cache), and the heuristic decides on time.
     """
+    import contextvars
     import threading
     from prismor.runtime.semantic_guard import _heuristic_analyze
-    from prismor.runtime.semantic_guard_v2 import CLI_TIMEOUT
-    # A CLI judge spawns a process that answers in 5-20s. Under a shorter budget
-    # it was abandoned every time: in a hook the process exited first and left
-    # the child running orphaned with its verdict thrown away, and in a server
-    # the late verdict landed in the cache, so the same text warned once and
-    # blocked the next time. The heuristic decided anyway; skip the spawn.
-    # ponytail: also skips a cached CLI verdict; pass a no-spawn flag if that matters.
-    if getattr(guard, "mode", "") == "hybrid_local_llm" and budget_s < CLI_TIMEOUT:
-        _perf.degraded("semantic_judge:cli_over_budget")
+    from prismor.runtime.semantic_guard_v2 import SemanticGuardV2, judge_deadline
+    # Too little time for a CLI process to answer, or none at all: call nothing.
+    # A verdict already cached (the session analysis often judged this same
+    # text a moment ago) still answers; anything else falls to the heuristic.
+    cli = getattr(guard, "mode", "") == "hybrid_local_llm"
+    if budget_s <= 0 or (cli and budget_s < _CLI_MIN_S):
+        _perf.degraded("semantic_judge:cli_over_budget" if cli else "semantic_judge:no_time")
+        if isinstance(guard, SemanticGuardV2):
+            with judge_deadline(0):
+                return guard.analyze(text)
         risk = _heuristic_analyze(text)
-        risk.reason = (f"[LLM skipped] a CLI judge cannot answer within {int(budget_s * 1000)}ms "
-                       f"(needs budget_ms >= {int(CLI_TIMEOUT * 1000)}); " + risk.reason)
+        risk.reason = (f"[LLM skipped] {int(budget_s * 1000)}ms left for the judge"
+                       + (f" (a CLI judge needs {int(_CLI_MIN_S * 1000)}ms)" if cli else "") + "; " + risk.reason)
         return risk
     box: List[Any] = []
-    # ponytail: the overrun judge thread is abandoned, not cancelled; the hook
-    # process exits right after, and a CLI judge's own timeout reaps its child.
+    # The judge's own timeouts stop it at the budget; the grace on join() lets a
+    # killed CLI be reaped before this returns. A judge that ignores its
+    # timeout is abandoned: the hook process exits right after.
     def _run() -> None:
         try:
-            box.append(guard.analyze(text))
+            with judge_deadline(budget_s):
+                box.append(guard.analyze(text))
         except Exception as exc:
             import sys
             sys.stderr.write(f"[prismor] semantic_guard judge error: {exc}\n")
 
-    t = threading.Thread(target=_run, daemon=True)
+    ctx = contextvars.copy_context()  # an outer judge_deadline still applies in the thread
+    t = threading.Thread(target=ctx.run, args=(_run,), daemon=True)
     t.start()
-    t.join(budget_s)
+    t.join(budget_s + 0.5)
     if box:
         return box[0]
     if t.is_alive():

@@ -15,10 +15,13 @@ STAGES: Dict[str, float] = {}
 # rule id -> [evaluations, matches, cumulative ms, errors]
 RULES: Dict[str, List[float]] = {}
 DEGRADED: List[str] = []
+LAST = ""  # the stage that last finished: the watchdog names it on a timeout
 _last = time.perf_counter()
 
 
 def reset() -> None:
+    global LAST
+    LAST = ""
     STAGES.clear()
     RULES.clear()
     DEGRADED.clear()
@@ -31,10 +34,11 @@ def lap(name: str = "") -> None:
     Sequential stages of one long function mark their ends with a lap instead of
     re-indenting each block under a ``with stage()``.
     """
-    global _last
+    global _last, LAST
     now = time.perf_counter()
     if name:
         STAGES[name] = STAGES.get(name, 0.0) + (now - _last) * 1000
+        LAST = name
     _last = now
 
 

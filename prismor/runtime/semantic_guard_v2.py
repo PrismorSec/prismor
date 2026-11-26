@@ -24,6 +24,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -77,6 +79,44 @@ def _is_structural_suspect(text: str) -> bool:
         if auth_pat.search(text) and directive_pat.search(text) and target_pat.search(text):
             return True
     return False
+
+
+# ── Judge deadline ─────────────────────────────────────────────────────────
+# A judge call inside a hook must end before the hook's watchdog does. When it
+# did not, the watchdog refused the call and the verdict was lost with the
+# process, so the session's next hook waited on the same judge again: one slow
+# verdict refused every later call. `judge_deadline` bounds every judge call
+# made inside it (CLI process and HTTP alike), and the caller's heuristic
+# decides when the judge runs out of time.
+_DEADLINE: ContextVar[Optional[float]] = ContextVar("prismor_judge_deadline", default=None)
+
+
+def judge_time_left() -> Optional[float]:
+    """Seconds left under the innermost ``judge_deadline``, or None when unbounded."""
+    deadline = _DEADLINE.get()
+    return None if deadline is None else max(deadline - time.monotonic(), 0.0)
+
+
+@contextmanager
+def judge_deadline(seconds: float):
+    """Bound the judge calls made inside to ``seconds`` from now. Never extends an outer bound."""
+    deadline = time.monotonic() + max(float(seconds), 0.0)
+    outer = _DEADLINE.get()
+    token = _DEADLINE.set(deadline if outer is None else min(deadline, outer))
+    try:
+        yield
+    finally:
+        _DEADLINE.reset(token)
+
+
+def _bounded(timeout: float) -> float:
+    """``timeout`` cut to the judge deadline; TimeoutError when none is left."""
+    left = judge_time_left()
+    if left is None:
+        return timeout
+    if left <= 0.05:
+        raise TimeoutError("no time left for the judge in this call")
+    return min(timeout, left)
 
 
 def _kill_group(proc: "subprocess.Popen") -> None:
@@ -276,14 +316,23 @@ def _parse_verdict(stdout: str, t0: int) -> Optional[SemanticRisk]:
     )
 
 
-# Agent hooks default to a 30s budget (UserPromptSubmit included), and the judge runs
-# inside one: a verdict that lands after the agent gave up is thrown away along with
-# the rest of the hook's output. With hooks off (see _claude_stdout) a CLI verdict
-# measured 4-6s, so 20s leaves headroom without outliving the caller.
+# The ceiling for one CLI verdict where nothing tighter applies (`prismor
+# semantic-check`, a server with no budget). With hooks off (see _claude_stdout) a
+# CLI verdict measured 4-6s, and 15-20s on a busy laptop. Inside a hook the
+# watchdog's deadline is tighter (PRISMOR_HOOK_BUDGET_MS, 8s by default) and wins
+# through `judge_deadline`, so the CLI is killed and the heuristic decides in time.
 CLI_TIMEOUT = 20.0
 
 
-def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEOUT) -> Tuple[str, Optional[int]]:
+def _cli_timeout(cli: str, timeout: Optional[float]) -> float:
+    """The CLI's timeout under the judge deadline; TimeoutExpired (nothing spawned) when none is left."""
+    try:
+        return _bounded(CLI_TIMEOUT if timeout is None else timeout)
+    except TimeoutError:
+        raise subprocess.TimeoutExpired(cli, 0)
+
+
+def _claude_stdout(prompt: str, cli: str, model: str, timeout: Optional[float] = None) -> Tuple[str, Optional[int]]:
     """Run the Claude Code CLI once, isolated from the workspace, and return what it printed.
 
     `claude -p` inherits its cwd's project config, so without this the evaluator boots that
@@ -291,6 +340,7 @@ def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEO
     --strict-mcp-config with no --mcp-config means no servers at all, a temp cwd means no
     project settings, and start_new_session lets us kill the whole process group.
     """
+    timeout = _cli_timeout(cli, timeout)
     proc = subprocess.Popen(
         [cli, "-p", prompt, "--output-format", "text",
          "--model", model if model.startswith("claude") else CLI_MODEL,
@@ -317,7 +367,7 @@ def _claude_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEO
     return stdout or "", getattr(proc, "returncode", None)
 
 
-def _codex_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEOUT) -> Tuple[str, Optional[int]]:
+def _codex_stdout(prompt: str, cli: str, model: str, timeout: Optional[float] = None) -> Tuple[str, Optional[int]]:
     """Run the Codex CLI once on the host's ChatGPT login and return its final message.
 
     --ephemeral (no session file), --ignore-user-config/--ignore-rules (no hooks, MCP servers
@@ -325,6 +375,7 @@ def _codex_stdout(prompt: str, cli: str, model: str, timeout: float = CLI_TIMEOU
     read-only sandbox, temp cwd, own process group. The final message is read from -o rather
     than stdout, which carries progress lines.
     """
+    timeout = _cli_timeout(cli, timeout)
     argv = [cli, "exec", "--ephemeral", "--skip-git-repo-check", "--ignore-user-config",
             "--ignore-rules", "-s", "read-only", "-C", tempfile.gettempdir()]
     if model and not model.startswith("claude"):
@@ -402,7 +453,7 @@ def _prismor_analyze(text: str, heuristic_score: float, signals: List[str], t0: 
                      "User-Agent": user_agent()},
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:  # fixed or operator-configured URL  # nosec B310
+            with urllib.request.urlopen(req, timeout=_bounded(10)) as resp:  # fixed or operator-configured URL  # nosec B310
                 verdict = _parse_verdict(resp.read().decode("utf-8"), t0)
             if verdict is not None:
                 verdict.mode = "api"
@@ -487,7 +538,7 @@ def _typesafe_analyze(windows: List[str], model: str, t0: int) -> List[SemanticR
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
         "User-Agent": user_agent()})
     try:
-        with urllib.request.urlopen(req, timeout=TYPESAFE_TIMEOUT) as resp:  # fixed URL  # nosec B310
+        with urllib.request.urlopen(req, timeout=_bounded(TYPESAFE_TIMEOUT)) as resp:  # fixed URL  # nosec B310
             answers = json.load(resp)["answers"]
         latency = (time.perf_counter_ns() - t0) / 1e6
         out: List[SemanticRisk] = []
@@ -869,7 +920,12 @@ class SemanticGuardV2:
         # A CLI judge pays per process, so the windows the cache cannot answer
         # travel together. Nothing missing means no process at all.
         batched: Dict[int, SemanticRisk] = {}
-        if self._provider == "typesafe":
+        # Out of time (a spent hook deadline, or backlog replayed under
+        # judge_deadline(0)): cached verdicts still answer, nothing is called.
+        no_time = judge_time_left() == 0
+        if no_time:
+            pass
+        elif self._provider == "typesafe":
             # One request for every uncached window, one question pair each.
             missing = [i for i, k in enumerate(keys) if k not in cache]
             if missing:
@@ -895,6 +951,9 @@ class SemanticGuardV2:
                                        str(hit["recommended_action"]), signals=[], mode=str(hit["mode"]))
             elif index in batched:
                 verdict = batched[index]
+            elif no_time:
+                verdict = _heuristic_analyze(window)
+                verdict.reason = "[LLM skipped] no time left for the judge; " + verdict.reason
             else:
                 verdict = _llm_analyze(
                     window, effective_score, h.signals,

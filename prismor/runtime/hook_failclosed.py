@@ -53,7 +53,8 @@ def handle_crash(rest: List[str], crash: BaseException, data: Optional[str] = No
         # a prompt or loop a Stop hook ("keep going") forever.
         sys.stderr.write(msg + "this call was not screened.\n")
         raise SystemExit(1)
-    fix = ("Shorten the command or payload, or raise PRISMOR_HOOK_BUDGET_MS."
+    fix = ("Shorten the command or payload, or raise PRISMOR_HOOK_BUDGET_MS. "
+           "`prismor query` on hook_timings shows which stage was slow."
            if isinstance(crash, TimeoutError) else "Reinstall or upgrade prismor to fix it.")
     reason = msg + "blocked because this hook enforces and could not decide. " + fix
     sys.stderr.write(reason + "\n")
@@ -81,6 +82,30 @@ def hook_budget_ms() -> int:
         return 8000
 
 
+# When the armed watchdog fires (time.monotonic()), or None when none is armed.
+_DEADLINE: Optional[float] = None
+
+
+def time_left() -> Optional[float]:
+    """Seconds until the watchdog fires, or None outside an armed hook.
+
+    The semantic judge reads this so a slow verdict gives way to the heuristic
+    instead of letting the watchdog refuse the call (and lose the verdict, so
+    the next call in the session waited on the same judge again).
+    """
+    if _DEADLINE is None:
+        return None
+    import time
+    return max(_DEADLINE - time.monotonic(), 0.0)
+
+
+def _stage_note() -> str:
+    """The hook stage that last finished, if perf is loaded: where the time went."""
+    perf = sys.modules.get("prismor.runtime.perf")
+    last = getattr(perf, "LAST", "") if perf else ""
+    return f" (last finished stage: {last})" if last else ""
+
+
 def arm_watchdog(rest: List[str], data: Optional[str]):
     """Make the hook answer inside its budget; returns a ``disarm()`` callable.
 
@@ -94,9 +119,12 @@ def arm_watchdog(rest: List[str], data: Optional[str]):
     Python-level loops only; a regex stuck in C on Windows is bounded by
     ``payload_bounds`` instead.
     """
+    global _DEADLINE
     ms = hook_budget_ms()
     if not ms:
         return lambda: None
+    import time
+    _DEADLINE = time.monotonic() + ms / 1000.0
     state = {"live": True}
 
     def expire(*_args) -> None:
@@ -105,7 +133,7 @@ def arm_watchdog(rest: List[str], data: Optional[str]):
         state["live"] = False
         code: object = 1
         try:
-            handle_crash(rest, TimeoutError(f"hook exceeded its {ms} ms time budget"), data or "")
+            handle_crash(rest, TimeoutError(f"hook exceeded its {ms} ms time budget{_stage_note()}"), data or "")
         except SystemExit as exc:
             code = exc.code
         except BaseException:
@@ -123,7 +151,9 @@ def arm_watchdog(rest: List[str], data: Optional[str]):
         signal.setitimer(signal.ITIMER_REAL, ms / 1000.0)
 
         def disarm() -> None:
+            global _DEADLINE
             state["live"] = False
+            _DEADLINE = None
             signal.setitimer(signal.ITIMER_REAL, 0)
         return disarm
     except (ImportError, AttributeError, ValueError, OSError):
@@ -134,6 +164,8 @@ def arm_watchdog(rest: List[str], data: Optional[str]):
     timer.start()
 
     def disarm_thread() -> None:
+        global _DEADLINE
         state["live"] = False
+        _DEADLINE = None
         timer.cancel()
     return disarm_thread

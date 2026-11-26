@@ -8505,12 +8505,21 @@ def analyze_events(
     session_id: str = "",
     start: int = 0,
     prior_findings: Optional[List[Dict[str, Any]]] = None,
+    judge_from: int = 0,
 ) -> Dict[str, Any]:
+    """Evaluate ``events[start:]``. Events before ``judge_from`` get no LLM judge
+    (the heuristic and the rules still run): see analyze_session_incremental."""
+    from contextlib import nullcontext
+    no_judge: Any = nullcontext
+    if start < judge_from:  # only then: the import costs ~10ms on a hook with no judge
+        from prismor.runtime.semantic_guard_v2 import judge_deadline
+        no_judge = lambda: judge_deadline(0)  # noqa: E731
     engine = PolicyEngine(workspace=workspace)
     findings: List[Dict[str, Any]] = list(prior_findings or [])
     for index in range(start, len(events)):
-        findings.extend(drop_post_twin_findings(
-            engine.evaluate(events[index], index, session_id=session_id), events, index, findings))
+        with no_judge() if index < judge_from else nullcontext():
+            found = engine.evaluate(events[index], index, session_id=session_id)
+        findings.extend(drop_post_twin_findings(found, events, index, findings))
 
     feed_matches = match_advisories(findings, load_feed(repo_root))
     summary = {
@@ -8546,7 +8555,13 @@ def analyze_session_incremental(
     this lock, so one can find a later call already analysed past its view.
     That view's findings are the sidecar's, cut to its length. Replaying the
     whole session here instead cost ~20s on a 1.5k-event session, under the
-    lock, and every other hook in the session queued behind it."""
+    lock, and every other hook in the session queued behind it.
+
+    Only the newest event may wait on the LLM judge. Earlier unanalysed events
+    are backlog (a hook that crashed or timed out, a parallel subagent's call
+    that has its own decision): their verdict cannot block anything now, and
+    judging them spent the live call's time budget. One slow verdict in the
+    backlog refused every later call in the session this way."""
     from prismor.runtime.store import locked_json_update, session_log_path
     sidecar = session_log_path(workspace, session_id).with_suffix(".analysis.json")
     with locked_json_update(sidecar) as state:
@@ -8560,7 +8575,8 @@ def analyze_session_incremental(
         if not (isinstance(done, int) and 0 < done <= len(events) and isinstance(prior, list)):
             done, prior = 0, []
         analysis = analyze_events(events, repo_root=repo_root, workspace=workspace,
-                                  session_id=session_id, start=done, prior_findings=prior)
+                                  session_id=session_id, start=done, prior_findings=prior,
+                                  judge_from=len(events) - 1)
         state["events"] = len(events)
         state["findings"] = analysis["findings"]
     return analysis
