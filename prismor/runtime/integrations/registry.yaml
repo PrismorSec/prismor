@@ -150,7 +150,7 @@ agents:
     blocking: exit-2
     normalizer: _normalize_grok
     sweep_dir: "~/.grok/"
-    notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Tool-name matchers assume Claude-Code-compatible tool names (Bash/Read/Edit/Write/...) by analogy; not yet verified against a live grok binary."
+    notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Verified live (2026-11, grok 1.0.5 and 1.0.92): the Claude names in the matcher alias run_terminal_command/read_file/write/search_replace. PostToolUse matches every tool and carries toolResult; PreToolUse screens monitor as a shell command and does not match list_dir or grep."
     sources: ["https://docs.x.ai/build/features/hooks", "https://docs.x.ai/build/overview"]
     mirror:
       status: possible
@@ -247,12 +247,12 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: "crush.json", user: "~/.config/crush/crush.json" }
-    events: [PreToolUse]
+    events: [PreToolUse, PostToolUse]
     event_types: [shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_crush
     sweep_dir: "~/.config/crush/"
-    notes: "Verified live (2026-07, crush v0.86.x): PreToolUse is the only hookable event (no PostToolUse/UserPromptSubmit hook surface exists despite the SDK's generic HookConfig type); a deny reason must come from stderr on exit 2, NOT a {\"decision\":\"block\"} stdout envelope (that shape is silently ignored — a different convention than several other agents in this table). Shell tool name is \"bash\"."
+    notes: "Verified live (2026-11, crush v0.102.0): PostToolUse carries the tool output in tool_response (added in v0.99; older builds ignore the entry); there is no prompt-submit event. Verified live (2026-07, crush v0.86.x): a deny reason must come from stderr on exit 2, NOT a {\"decision\":\"block\"} stdout envelope (that shape is silently ignored — a different convention than several other agents in this table). Shell tool name is \"bash\"."
     sources: ["https://github.com/charmbracelet/crush", "https://github.com/Ar9av/agent-manual/blob/main/tools/crush/README.md"]
     mirror:
       status: possible
@@ -265,12 +265,12 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".openhands/hooks.json" }
-    events: [PreToolUse, UserPromptSubmit]
+    events: [PreToolUse, PostToolUse, UserPromptSubmit]
     event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_openhands
     sweep_dir: "~/.openhands/"
-    notes: "Verified live (2026-07, openhands v1.21.0): PreToolUse fires and a non-zero exit genuinely blocks the tool call. Shell tool name is \"terminal\" (not \"execute_bash\"). Payload's event-name field is \"event_type\", NOT \"hook_event_name\" like the Claude/Codex-family agents — a real schema difference, not a typo. No documented global/user-level hooks.json path exists; a \"global\"-scope install falls back to ~/.openhands/hooks.json (matches where other OpenHands global state lives) but this is unverified."
+    notes: "Verified live (2026-07, openhands v1.21.0): PreToolUse fires and a non-zero exit genuinely blocks the tool call. PostToolUse carries the tool output in tool_response (verified live, 2026-11, CLI 1.16.0). Shell tool name is \"terminal\" (not \"execute_bash\"). Payload's event-name field is \"event_type\", NOT \"hook_event_name\" like the Claude/Codex-family agents — a real schema difference, not a typo. No documented global/user-level hooks.json path exists; a \"global\"-scope install falls back to ~/.openhands/hooks.json (matches where other OpenHands global state lives) but this is unverified."
     sources: ["https://docs.openhands.dev/", "https://github.com/Ar9av/agent-manual/blob/main/tools/openhands/README.md"]
     mirror:
       status: unsupported
@@ -306,7 +306,7 @@ agents:
     blocking: exit-2
     normalizer: _normalize_continue
     sweep_dir: "~/.continue/"
-    notes: "WARNING — verified live (2026-07, cn v1.5.47): hooks configured exactly per this (Claude-Code-compatible) schema, in every documented config location (project/global, custom/default config path), did NOT fire in headless (`cn -p`) mode for ANY event, including UserPromptSubmit which needs no tool call at all. Traced to runHeadlessMode() in the CLI's own source, which does call initializeServices() before running the prompt, so this isn't an obvious ordering bug — root cause not fully pinned down. Shipped anyway (interactive-mode users may still be covered; this config is inert, not harmful, if the bug is present) but do not treat an installed Continue CLI hook as confirmed-active without testing it in your actual invocation mode first."
+    notes: "WARNING: installed hooks do not run. Verified live (2026-11, cn 1.5.47): no event fired in headless (`cn -p`) or in the interactive TUI. The published build defines a hook service whose fireEvent has no caller. The config is inert; do not treat Continue CLI as protected."
     sources: ["https://docs.continue.dev/cli/quickstart", "https://github.com/Ar9av/agent-manual/blob/main/tools/continue-cli/README.md"]
 
   - id: goose

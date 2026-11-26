@@ -146,6 +146,7 @@ SAMPLES = {
          "tool_input": {"file_path": "a.py", "new_string": "y"}},
         {"event": "PreToolUse", "tool_name": "fetch", "tool_input": {"url": "https://example.com"}},
         {"event": "PreToolUse", "tool_name": "grep", "tool_input": {"pattern": "x"}},
+        {"event": "PostToolUse", "tool_name": "bash", "tool_input": {"command": "ls"}, "tool_response": "a.py"},
     ],
     # OpenHands' file_editor covers both view (file_read) and edits (file_write).
     "openhands": [
@@ -156,6 +157,8 @@ SAMPLES = {
         {"event_type": "PreToolUse", "tool_name": "file_editor",
          "tool_input": {"command": "str_replace", "path": "a.py", "new_str": "y"}},
         {"event_type": "PreToolUse", "tool_name": "task_tracker", "tool_input": {"command": "view"}},
+        {"event_type": "PostToolUse", "tool_name": "terminal", "tool_input": {"command": "ls"},
+         "tool_response": {"content": [{"type": "text", "text": "a.py"}], "exit_code": 0}},
     ],
     "qwen": [
         {"hook_event_name": "UserPromptSubmit", "prompt": "hi"},

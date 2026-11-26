@@ -182,10 +182,10 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 
 - **Config:** `~/.grok/hooks/prismor.json` (user) or `<repo>/.grok/hooks/prismor.json` (project). Grok reads a directory of independent hook files (`~/.grok/hooks/*.json` / `<repo>/.grok/hooks/*.json`), so Prismor owns a dedicated file instead of merging into a shared one.
 - **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PostToolUse`. `PreToolUse` is Grok's only blocking event.
-- **Matchers installed:** `Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*`. Grok's matcher maps these Claude names to its own, but the payload carries Grok's real names (`run_terminal_command`, `read_file`, `search_replace`, `web_search`) and puts its snake_case event (`pre_tool_use`) in `hookEventName` with the PascalCase one in `hook_event_name` ([grok-build hooks guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)). `_normalize_grok()` maps both back; before that, Grok shell commands fell through unscreened.
+- **Matchers installed:** `PreToolUse` matches `Bash|monitor|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+`; `PostToolUse` matches every tool (`""`). Grok's matcher maps the Claude names to its own, but the payload carries Grok's real names (`run_terminal_command`, `read_file`, `search_replace`, `web_search`) and puts its snake_case event (`pre_tool_use`) in `hookEventName` with the PascalCase one in `hook_event_name` ([grok-build hooks guide](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/10-hooks.md)).
 - **Blocking:** exit 2 from hook → block; stdout `{"decision": "deny", "reason": "..."}` supplies the reason shown to the user. Exit 0 → allow. Any other exit code, a crash, or a timeout fails **open** on Grok's side (documented behavior, not a Prismor choice).
 - **Sweep target:** `~/.grok/`.
-- **Not yet verified against a live `grok` install.** This integration is built entirely from [docs.x.ai/build/features/hooks](https://docs.x.ai/build/features/hooks) and [docs.x.ai/build/overview](https://docs.x.ai/build/overview) — no `grok` binary was available to smoke-test against at implementation time. Before relying on this in `enforce` mode, run `grok inspect` to confirm the real built-in tool names, and verify a deliberately blocked command is actually denied end to end (the same live check done for Codex above).
+- **Verified live (2026-11, grok 1.0.5 and 1.0.92):** tool output arrives in `toolResult`, with shell output and grep matches as byte arrays (Prismor decodes them). `monitor` runs a shell command, so `PreToolUse` screens it as one; a deny on it stops the command. `PreToolUse` does **not** match `list_dir` or `grep`.
 - **Project-hook trust:** Grok requires trust before running project-level hooks (`/hooks-trust` or `--trust` inside `grok`, recorded in `~/.grok/trusted_folders.toml`). This is a one-time manual step Prismor does not automate.
 - **Code:** `prismor/runtime/hooks.py` `_merge_grok()`, `_strip_grok()`, `_normalize_grok()`.
 
@@ -204,7 +204,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### Crush (Charmbracelet)
 
 - **Config:** `crush.json` (project root) or `~/.config/crush/crush.json` (user).
-- **Events hooked:** `PreToolUse` only. Verified live (2026-07, crush v0.86.x): Crush's own SDK exposes a generic `HookConfig` schema, but no `PostToolUse`/`UserPromptSubmit` hook is actually dispatched at runtime — only `PreToolUse` fires.
+- **Events hooked:** `PreToolUse`, `PostToolUse`. `PostToolUse` carries the tool output in `tool_response` (verified live 2026-11, crush v0.102.0, including a shell command that exited non-zero). It was added in v0.99; v0.86 and v0.98 ignore the entry and start normally. There is no prompt-submit event.
 - **Matcher:** an empty-string matcher (`""`) is used for full coverage — verified it fires for a non-bash tool, not just the shell tool.
 - **Blocking:** exit 2 blocks the tool call, with the reason read from **stderr only**. A `{"decision":"block","reason":"..."}` stdout envelope — the convention several other agents in this table use — was tested live and silently ignored; do not copy that pattern here.
 - **Tool-name taxonomy:** shell tool is `bash`. `view` reads a file; `write`/`edit`/`multiedit` write; `fetch`/`download`/`sourcegraph` are network.
@@ -214,7 +214,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### OpenHands
 
 - **Config:** `<repo>/.openhands/hooks.json` (project). No documented global path; a "global"-scope install falls back to `~/.openhands/hooks.json` (unverified — matches where OpenHands' other global state lives, but no official doc confirms a global hooks.json is ever read).
-- **Events hooked:** `PreToolUse`, `UserPromptSubmit`. Verified live (2026-07, openhands v1.21.0): a `PreToolUse` hook fires and a non-zero exit genuinely blocks the tool call (confirmed via the CLI's own `--headless` output).
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`. Verified live (2026-07, openhands v1.21.0): a `PreToolUse` hook fires and a non-zero exit genuinely blocks the tool call (confirmed via the CLI's own `--headless` output). `PostToolUse` carries the observation in `tool_response` (verified live 2026-11, OpenHands CLI 1.16.0).
 - **Tool-name taxonomy:** shell tool is `terminal` — **not** `execute_bash`, which is the name used elsewhere in this codebase's own docs for other agents and is easy to copy by mistake.
 - **Payload shape note:** the event-name field in the hook's stdin JSON is `event_type`, not `hook_event_name` like the Claude/Codex-family agents — a real schema difference between OpenHands and most of this table, not a typo.
 - **Blocking:** exit 2 from the hook blocks the tool call; falls into the same fail-closed `else` branch as Cursor/Windsurf/Codex/Kiro.
@@ -236,14 +236,14 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 - **Config:** `.continue/settings.json` (project) or `~/.continue/settings.json` (user). Continue CLI also reads `.claude/settings.json`/`~/.claude/settings.json` for cross-compatibility, but this integration targets its own native path.
 - **Events hooked:** `UserPromptSubmit`, `PreToolUse`, `PostToolUse` — schema is deliberately Claude-Code-compatible (same field names, same tool-name convention: `Bash`, `Read`, `Edit`, `MultiEdit`, `Write`).
 - **Blocking:** exit 2, same as Claude/Codex/Kiro — falls into the generic fail-closed `else` branch.
-- **⚠️ Known issue, not a Prismor bug:** verified live (2026-07, `cn` v1.5.47) that hooks configured exactly per this schema, in every documented config location (project/global, custom/default `--config` path), **did not fire at all in headless (`cn -p`) mode** — not just for `PreToolUse`, but for `UserPromptSubmit` too, which needs no tool call whatsoever to trigger. `runHeadlessMode()` in Continue's own source does call `initializeServices()` (which registers and eagerly initializes the hooks service) before running the prompt, so this isn't an obvious ordering bug — root cause not fully pinned down beyond that. **This integration is shipped anyway** because interactive-mode users may still be covered, and an installed-but-inert hook config does no harm — but **do not treat "hooks installed" as "hooks active" for Continue CLI** without testing your actual invocation mode first. Re-check this against newer `cn` releases before relying on it.
+- **⚠️ Installed hooks do not run:** verified live (2026-11, `cn` v1.5.47): no hook event fired in headless (`cn -p`) mode or in the interactive TUI. The published build defines a hook service whose `fireEvent` has no caller. Do not treat Continue CLI as protected.
 - **Sweep target:** `~/.continue/`.
 - **Code:** `prismor/runtime/hooks.py` `_merge_continue()`, `_strip_continue()`, `_normalize_continue()`.
 
 ### Goose (Agentic AI Foundation, formerly Block)
 
 - **Config:** a scaffolded plugin directory following goose's Open Plugins spec — `<repo>/.agents/plugins/prismor/hooks/hooks.json` (project) or `~/.agents/plugins/prismor/hooks/hooks.json` (user). Goose auto-discovers any directory under `.../plugins/<name>/` containing `hooks/hooks.json`; unlike OpenClaw/Hermes there's no central `"plugins": [...]` list to register — a static `plugin.json` manifest is scaffolded alongside the hooks file as a one-time side effect.
-- **Events hooked:** `PreToolUse`, `UserPromptSubmit`.
+- **Events hooked:** `PreToolUse`, `UserPromptSubmit`. Tool output is **not** captured: goose v1.61.1 fires `PostToolUse` but its payload has no output (`HookContext.tool_output` is declared and never set; verified live 2026-11), so it is not registered.
 - **Tool-name taxonomy:** the built-in shell tool's real name is `shell` — verified live (2026-07, goose v1.44.0) that this is **not** `developer__shell`, which is what goose's own official documentation example currently shows. A matcher copied straight from goose's docs would silently never fire; `".*"` is used here instead.
 - **Payload shape note:** the event-name field is `event`, not `hook_event_name`.
 - **Blocking:** exit 2 blocks (stderr reason), OR a `{"decision":"block","reason":"..."}` stdout envelope — both confirmed live. This fits the generic fail-closed `else` branch; no special-case needed in `cli.py`.
