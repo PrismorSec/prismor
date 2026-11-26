@@ -211,7 +211,7 @@ In enforce mode a shell command runs inside the sandbox or it does not run. When
 
 - The engine is missing or can't start (no `bwrap`, an AppArmor block, `sandbox-exec` fails).
 - The agent already runs inside another sandbox, and you have not chosen to rely on it (see [Running inside an outer sandbox](#running-inside-an-outer-sandbox)).
-- The agent's hooks can't rewrite a command (Codex and Qwen Code without `PRISMOR_REWRITE_AUTO_APPROVE=1`, Copilot CLI, OpenCode).
+- The agent's hooks can't rewrite a command (see [Agents](#agents)).
 - With Cloak installed, the sandbox settings for the project just changed. One call is blocked, and the agent is told to run it again.
 
 The agent sees this message:

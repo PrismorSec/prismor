@@ -810,8 +810,8 @@ class TestInsideOwnSandbox(unittest.TestCase):
 
 
 def _hook(ws: Path, command: str, *, agent: str = "claude", mode: str = "enforce",
-          platform: str = None, env_extra: dict = None):
-    payload = {"session_id": f"s-{agent}", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+          platform: str = None, env_extra: dict = None, payload: dict = None):
+    payload = payload or {"session_id": f"s-{agent}", "hook_event_name": "PreToolUse", "tool_name": "Bash",
                "tool_use_id": f"tu-{abs(hash(command))}", "cwd": str(ws),
                "tool_input": {"command": command, "description": "d"}}
     env = dict(os.environ, PYTHONPATH=str(REPO), PRISMOR_HOME=str(ws / "ph"))
@@ -848,6 +848,50 @@ class TestHookFailsClosed(unittest.TestCase):
         self.assertEqual(_hook(self.tmp, "echo hi", agent="codex", mode="observe").returncode, 0)
         _policy(self.tmp, "settings:\n  sandbox:\n    enabled: false\n")
         self.assertEqual(_hook(self.tmp, "echo hi", agent="codex").returncode, 0)
+
+    def test_agents_with_native_pre_shell_events_are_denied(self):
+        cmd, ws = "echo hi", str(self.tmp)
+        native = {
+            "cursor": [{"hook_event_name": "beforeShellExecution", "conversation_id": "c",
+                        "command": cmd, "cwd": ws, "workspace_roots": [ws]}],
+            "windsurf": [{"agent_action_name": "pre_run_command", "trajectory_id": "t",
+                          "tool_info": {"command_line": cmd, "cwd": ws}}],
+            # Kiro CLI 2.x sends camelCase, V3 PascalCase.
+            "kiro": [{"hook_event_name": e, "session_id": "k", "cwd": ws,
+                      "tool_name": "execute_bash", "tool_input": {"command": cmd}}
+                     for e in ("preToolUse", "PreToolUse")],
+            "hermes": [{"hookEvent": "PreToolUse", "sessionId": "h", "toolName": "terminal",
+                        "toolInput": {"command": cmd}}],
+            "openclaw": [{"hookEvent": e, "sessionId": "o", "toolName": "exec", "cwd": ws,
+                          "toolInput": {"command": cmd}} for e in ("PreToolUse", "before_tool_call")],
+            "openhands": [{"event_type": "PreToolUse", "session_id": "oh", "working_dir": ws,
+                           "tool_name": "terminal", "tool_input": {"command": cmd}}],
+        }
+        for agent, payloads in native.items():
+            for payload in payloads:
+                with self.subTest(agent=agent, payload=payload):
+                    r = _hook(self.tmp, cmd, agent=agent, payload=payload)
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn(f"{agent} hooks cannot rewrite", r.stderr)
+                    self.assertEqual(r.stderr.count("Prismor sandbox: BLOCKED"), 1, r.stderr)
+
+    def test_cursor_second_pre_event_and_post_events_are_not_gated(self):
+        # beforeShellExecution decides a Cursor shell call; preToolUse for the
+        # same call (and anything after it ran) must not deny it a second time.
+        for event, extra in (("preToolUse", {"tool_name": "Shell", "tool_input": {"command": "echo hi"}}),
+                             ("afterShellExecution", {"command": "echo hi", "output": "hi"})):
+            r = _hook(self.tmp, "echo hi", agent="cursor",
+                      payload={"hook_event_name": event, "conversation_id": "c",
+                               "cwd": str(self.tmp), **extra})
+            self.assertEqual(r.returncode, 0, event + r.stdout + r.stderr)
+            self.assertNotIn("BLOCKED", r.stdout + r.stderr, event)
+
+    def test_gemini_still_gets_the_rewrite(self):
+        r = _hook(self.tmp, "echo hi", agent="gemini", payload={
+            "hook_event_name": "BeforeTool", "session_id": "g", "cwd": str(self.tmp),
+            "tool_name": "run_shell_command", "tool_input": {"command": "echo hi"}})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("__PRISMOR_SANDBOX", r.stdout)
 
     def test_claude_still_gets_the_rewrite(self):
         r = _hook(self.tmp, "echo hi")
