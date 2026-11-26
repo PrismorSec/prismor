@@ -488,7 +488,7 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".agents/hooks.json", user: "~/.gemini/config/hooks.json" }
-    events: [PreToolUse]
+    events: [PreToolUse, PostInvocation, Stop]
     event_types: [shell, file_read, file_write, network, tool_result]
     blocking: json-permission
     normalizer: _normalize_antigravity

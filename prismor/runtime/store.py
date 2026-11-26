@@ -1212,7 +1212,8 @@ def persist_runtime_findings(
                 finding.get("severity"),
                 finding.get("category"),
                 finding.get("title"),
-                _truncate(finding.get("evidence", "")),
+                # Evidence quotes the event, and so any secret in it.
+                _truncate(_recloak_event({"e": finding.get("evidence", "")})["e"]),
                 json.dumps({
                     "ruleId": finding.get("ruleId") or finding.get("rule_id"),
                     "action": finding.get("action"),

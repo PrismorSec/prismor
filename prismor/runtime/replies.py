@@ -226,6 +226,51 @@ def reply_event(agent: str, payload: Dict[str, Any], session_id: str) -> Dict[st
     return event
 
 
+# ── Antigravity tool output ─────────────────────────────────────────────────
+# Antigravity hooks carry no tool output, and the transcript row for a call is
+# written only after its PostToolUse hook returns
+# (google-antigravity/antigravity-cli#1138; seen live on agy 1.5.17), so it is
+# read back by the next PreToolUse, PostInvocation or Stop. Rows already taken
+# are remembered per session by digest, not by a step_index high-water mark: a
+# rewound conversation reuses step numbers.
+# ponytail: same tail window as above.
+
+def antigravity_results(payload: Dict[str, Any], session_id: str) -> List[Dict[str, Any]]:
+    """``tool_result`` events for transcript rows not yet recorded, oldest first.
+    The caller marks them with ``mark_seen`` (``metadata.row``)."""
+    transcript = str(payload.get("transcriptPath") or "")
+    if not (transcript and session_id):
+        return []
+    seen = _seen(session_id)
+    roots = payload.get("workspacePaths") or [None]
+    out = []
+    for row in _tail_rows(transcript):
+        text = str(row.get("content") or "")
+        kind = row.get("type")
+        # GENERIC is a tool result; a background command's output arrives later
+        # as a system message. A call a hook denied ran nothing, and its "output"
+        # is the block reason, which reads like the attack it describes.
+        if not (kind == "GENERIC" or (kind == "SYSTEM_MESSAGE" and "finished with result:" in text)):
+            continue
+        if not text.strip() or str(row.get("error") or "").startswith("tool call denied by pre-tool hook"):
+            continue
+        d = _digest(f"{row.get('step_index')}|{row.get('created_at')}|{text}")
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append({
+            "ts": row.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
+            "agent": "antigravity",
+            "agent_event": "PostToolUse",
+            "type": "tool_result",
+            "response": text[:_TEXT_LIMIT],
+            "metadata": {"row": d, "step_index": row.get("step_index"), "status": row.get("status"),
+                         "cwd": roots[0], "transcript_path": transcript},
+        })
+    return out
+
+
 # ── Background-task notifications ───────────────────────────────────────────
 # A finished background agent, shell or Monitor reaches the model as a
 # ``<task-notification>`` user turn. The Claude CLI sends it through
@@ -255,12 +300,19 @@ def _seen_path(session_id: str) -> Path:
     return _ledger(session_id).with_suffix(".notified")
 
 
+def _seen(session_id: str) -> set:
+    try:
+        return set(_seen_path(session_id).read_text(encoding="utf-8").split())
+    except OSError:
+        return set()
+
+
 def _digest(text: str) -> str:
     import hashlib
     return hashlib.sha256(text.strip().encode("utf-8", "replace")).hexdigest()[:24]
 
 
-def _mark(session_id: str, digests: Iterable[str]) -> None:
+def mark_seen(session_id: str, digests: Iterable[str]) -> None:
     digests = list(digests)
     if not digests:
         return
@@ -276,7 +328,7 @@ def _mark(session_id: str, digests: Iterable[str]) -> None:
 def mark_notification(session_id: str, prompt: str) -> None:
     """A notification that arrived through UserPromptSubmit is already recorded."""
     if session_id and str(prompt or "").lstrip().startswith(_NOTICE_TAG):
-        _mark(session_id, [_digest(prompt)])
+        mark_seen(session_id, [_digest(prompt)])
 
 
 def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict[str, Any]]:
@@ -285,10 +337,7 @@ def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict
     transcript = str(payload.get("transcript_path") or "")
     if not (transcript and session_id):
         return []
-    try:
-        seen = set(_seen_path(session_id).read_text(encoding="utf-8").split())
-    except OSError:
-        seen = set()
+    seen = _seen(session_id)
     out, fresh = [], []
     for row in _tail_rows(transcript):
         if row.get("isSidechain"):
@@ -314,5 +363,5 @@ def pending_notifications(payload: Dict[str, Any], session_id: str) -> List[Dict
                     "transcript_path": transcript, "delivered_by": "transcript",
                     # tokens, tool uses and duration of the task, when the app sends them
                     "task_usage": att.get("usage")})
-    _mark(session_id, fresh)
+    mark_seen(session_id, fresh)
     return out

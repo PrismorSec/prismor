@@ -43,7 +43,8 @@ def handle_crash(rest: List[str], crash: BaseException, data: Optional[str] = No
     agent = rest[rest.index("--agent") + 1] if "--agent" in rest[:-1] else ""
     mode = rest[rest.index("--mode") + 1] if "--mode" in rest[:-1] else "observe"
     event = str(payload.get("hook_event_name") or payload.get("hookEventName")
-                or payload.get("event") or "").lower()
+                or payload.get("event")
+                or (rest[rest.index("--event") + 1] if "--event" in rest[:-1] else "")).lower()
     tool = str(payload.get("tool_name") or payload.get("toolName") or "")
     msg = f"Prismor hook failed ({type(crash).__name__}: {crash}); "
     if (mode != "enforce" or tool in READ_ONLY_TOOLS

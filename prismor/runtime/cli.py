@@ -2034,6 +2034,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception:
             pass
 
+        # Antigravity's hooks carry no tool output: record what the transcript
+        # gained since the last hook, before this call is judged. It already
+        # ran, so observe; PostInvocation and Stop exist only for this.
+        if args.agent == "antigravity":
+            try:
+                from prismor.runtime import replies as _replies
+                from prismor.runtime.hooks import payload_session_id
+                _sid = payload_session_id(args.agent, payload, workspace)
+                for _result in _replies.antigravity_results(payload, _sid):
+                    _row = _result["metadata"].pop("row")
+                    # Global + project installs fire together: one records.
+                    if _claim_hook_call({"tool_use_id": _row, "session_id": _sid}, args.agent):
+                        evaluate_tool_call(event=_result, workspace=workspace, agent=args.agent,
+                                           mode="observe", session_id=_sid, flush_at_exit=False)
+                    _replies.mark_seen(_sid, [_row])
+            except Exception as _result_exc:
+                sys.stderr.write(f"[prismor] tool output capture error: {_result_exc}\n")
+            if (args.event or payload.get("hookEventName")) in ("PostInvocation", "Stop"):
+                print("{}")  # no decision: the turn goes on, or ends, as it would
+                return
+
         # The model's reply for the turn (Claude/Codex Stop, Cursor
         # afterAgentResponse, Gemini AfterAgent, ...): recorded in observe mode
         # for the session view and never answered. Any decision or exit 2 here
@@ -4490,6 +4511,8 @@ def _add_hook_dispatch_parser(subparsers: Any) -> None:
     # left gemini and opencode out, so their hooks died in argparse with exit 2.
     hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
+    # For hooks whose payload may not name its event (Antigravity).
+    hook_dispatch.add_argument("--event", help="Hook event this command is registered under")
 
 
 def _hook_dispatch_parser() -> argparse.ArgumentParser:
