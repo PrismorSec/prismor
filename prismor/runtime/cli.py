@@ -7218,6 +7218,21 @@ def _print_status_overview(workspace: Path) -> None:
     print()
     print(f"  {_color('Workspace:', _GREEN)}   {ws_display}")
 
+    # A sandboxed shell can be denied Prismor's state folder. Everything below
+    # then reads as "missing", so say why before the reader believes it.
+    from prismor.runtime.store import prismor_home
+    state_dir = prismor_home()
+    unreadable = f"cannot read {state_dir} (sandboxed shell or file permissions)"
+    state_unreadable = False
+    try:
+        os.listdir(state_dir)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        state_unreadable = True
+        print(f"  {_color('Warning:', _YELLOW)}     {_color(unreadable, _YELLOW)}")
+        print("               Lines below may be wrong. Run prismor status in a normal terminal.")
+
     # Hooks + mode — at BOTH scopes. A global (~/.claude) hook screens this
     # workspace just as much as a project one; reporting "not installed" when
     # only the global hook exists sent people to install a second, project
@@ -7369,9 +7384,11 @@ def _print_status_overview(workspace: Path) -> None:
     _print_status_quota(engine)
 
     # Latest session
-    sessions = list_sessions(workspace, 1)
+    sessions = [] if state_unreadable else list_sessions(workspace, 1)
     print()
-    if not sessions:
+    if state_unreadable:
+        print(f"  {_color('Latest session:', _GREEN)}  {_color('unavailable: ' + unreadable, _DIM)}")
+    elif not sessions:
         _hint = _sessions_elsewhere_hint(workspace)
         print(f"  {_color('Latest session:', _GREEN)}  "
               f"{_color('none in this workspace' if _hint else 'none yet', _DIM)}")
@@ -7388,7 +7405,9 @@ def _print_status_overview(workspace: Path) -> None:
 
     # Next-step nudge — one action, picked by current state
     print()
-    if not agents_with_hooks:
+    if state_unreadable:
+        print(f"  {_color('Next:', _CYAN)} prismor status   (in a normal terminal)")
+    elif not agents_with_hooks:
         print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode enforce --recommended)")
     elif mode == "observe":
         print(f"  {_color('Tip:', _DIM)}  observe mode logs only. Switch with:")
