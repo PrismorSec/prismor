@@ -1692,6 +1692,12 @@ rules:
       # Safety-floor rules a human turned off with that password (floor_off.py).
       - '\bfloor-off\.json\b'
       - '(^|/)floor-off\.json$'
+      # Rules a human turned off (agent_approvals.py): editing it would let
+      # "turn back on" write a permission nobody held.
+      - '\ballow-rules-off\.json\b'
+      - '(^|/)allow-rules-off\.json$'
+      - '\ballow-rules-added\.json\b'
+      - '(^|/)allow-rules-added\.json$'
       # The HMAC key a pause marker is signed with: reading it is the first
       # half of forging a pause that silences every other rule.
       - '\bpause\.key\b'
@@ -1751,7 +1757,7 @@ rules:
       # `?q=$q` cannot add a method, and a `for i in $(seq 30); do curl` loop
       # put the `$` on the line, not in the request (replay: 92 such GETs).
       # A flag counts quoted or not (`"-XPOST"` is still a method).
-      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions|vault)'
+      - '(?:^|[;&|\n])(?![ \t]*(?:(?:do|then|else|time|nohup)[ \t]+)*(?:curl|wget)\b(?![^;&|\n]*\s["'']?(?-i:-[A-Za-z]*[XdFTKe]|--(?:request|data|json|form|upload-file|config|post|method|body|next)))(?!(?:[^;&|\n''"]|''[^''\n]*''|"[^"\n]*")*?(?:\s[$`]|\$\()))[^;&|\n]*(?:curl|wget|http|nc)[^;&|\n]*(?:127\.0\.0\.1|localhost)[^;&|\n]*/api/(?:policy|tool-policy|agents|sessions|pause|update|approvals|decisions|vault|allow-rules)'
       # The same URL built by joining the path in the interpreter.
       - '/api/["'']\s*\+\s*["''](?:policy|tool-policy|decisions)\b'
       # Wrappers whose only purpose here is to disguise one of the above — a

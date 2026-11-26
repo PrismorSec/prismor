@@ -3510,6 +3510,23 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     </div>
     <div id="mcpServersList"><div class="empty">Loading MCP servers…</div></div>
   </div>
+  <div id="allowPane" style="display:none">
+    <div class="mcp-toolbar">
+      <input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by rule, agent or project" oninput="_allowQ=this.value;renderAllowRules()" style="min-width:260px" />
+      <label class="hint"><input type="checkbox" onchange="_allowHigh=this.checked;renderAllowRules()"> High risk only</label>
+      <select class="fsel" style="margin-left:auto" onchange="_allowSort=this.value;renderAllowRules()"><option value="new">Newest first</option><option value="risk">Highest risk first</option></select>
+    </div>
+    <div class="mcp-toolbar">
+      <select class="fsel" id="addAgent" onchange="allowAddForm()"></select>
+      <select class="fsel" id="addKind"></select>
+      <select class="fsel" id="addProject" style="max-width:220px"></select>
+      <input class="finput" id="addRuleText" spellcheck="false" autocomplete="off" style="min-width:240px" onkeydown="if(event.key==='Enter')allowAdd()" />
+      <button class="btn-line" onclick="allowAdd()">Add rule</button>
+    </div>
+    <div id="allowAdded"></div>
+    <div id="allowList"><div class="empty">Reading agent settings…</div></div>
+    <div id="allowOff"></div>
+  </div>
   <div id="extSummary" class="ext-summary"></div>
   <div class="ext-views" id="extViews"></div>
   <div class="ext-layout" id="extLayout">
@@ -5635,6 +5652,128 @@ async function loadExtensions() {
     document.getElementById('extList').innerHTML = '<div class="empty" style="color:#b91c1c">Failed to load: ' + safe(e.message) + '</div>';
   }
 }
+// "Always Allow" rules held by the agents on this machine. Read-only.
+let _allowAddedRows = [], _allowAddable = {}, _allowSort = 'new', _allowOffRows = [], _allowTargets = {}, _allowShown = [], _allowRows = null, _allowQ = '', _allowHigh = false;
+async function loadAllowRules() {
+  const ws = _serverWorkspace || '';
+  try {
+    const d = await apiFetch('/api/allow-rules' + (ws ? '?workspace=' + encodeURIComponent(ws) : ''), {timeoutMs: 20000});
+    const by = new Map();
+    (d.rules || []).forEach(r => {
+      const key = [r.agent, r.scope, r.rule].join('\n');
+      if (!by.has(key)) by.set(key, Object.assign({risk: allowRisk(r.rule), projects: [], ids: []}, r));
+      const g = by.get(key);
+      g.ids.push(r.id);
+      if (r.added > g.added) g.added = r.added;
+      g.again = g.again || r.again;
+      g.asks = g.asks || r.asks;
+      if (r.project && !by.get(key).projects.includes(r.project)) by.get(key).projects.push(r.project);
+    });
+    _allowOffRows = d.off || [];
+    _allowTargets = d.targets || {};
+    _allowAddedRows = d.added || [];
+    _allowAddable = d.addable || {};
+    allowAddForm();
+    const order = {high: 0, review: 1, low: 2};
+    _allowRows = [...by.values()].sort((a, b) => order[a.risk] - order[b.risk] || a.rule.localeCompare(b.rule));
+    renderExtKindTabs();
+    renderAllowRules();
+  } catch (e) {
+    document.getElementById('allowList').innerHTML = '<div class="empty">Could not read allow rules: ' + safe(e.message) + '</div>';
+  }
+}
+const ALLOW_HINT = {claude: 'Bash(git push *)', cursor: 'Shell(rm)', antigravity: 'command(git push)', codex: 'git push'};
+// Keeps what was picked across refreshes; each agent has its own kinds and projects.
+function allowAddForm() {
+  const el = id => document.getElementById(id), agents = Object.keys(_allowAddable);
+  const fill = (id, options) => {
+    const was = el(id).value;
+    el(id).innerHTML = options.map(([v, l]) => '<option value="' + safeAttr(v) + '">' + safe(l) + '</option>').join('');
+    if (options.some(([v]) => v === was)) el(id).value = was;
+  };
+  fill('addAgent', agents.map(a => [a, a]));
+  const a = el('addAgent').value, spec = _allowAddable[a] || {kinds: [], projects: []};
+  fill('addKind', spec.kinds.map(k => [k, k === 'ask' ? 'Always ask' : 'Never allow']));
+  fill('addProject', [['', 'All projects']].concat(spec.projects.map(p => [p, p.split('/').slice(-2).join('/')])));
+  el('addRuleText').placeholder = ALLOW_HINT[a] || '';
+}
+async function allowPost(body) {
+  try {
+    const res = await fetch('/api/allow-rules', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(out.error || res.statusText);
+    return true;
+  } catch (e) { alert('Not changed: ' + e.message); return false; }
+  finally { loadAllowRules(); }
+}
+async function allowAdd() {
+  const v = id => document.getElementById(id).value;
+  const body = {action: 'add', agent: v('addAgent'), kind: v('addKind'), project: v('addProject'), rule: v('addRuleText').trim()};
+  if (!body.rule) return;
+  if (!confirm((body.kind === 'ask' ? 'Always ask' : 'Never allow') + ' for ' + body.agent + ' in ' + (body.project || 'all projects') + '?\n\n' + body.rule + '\n\nRestart the agent to apply it.')) return;
+  if (await allowPost(body)) document.getElementById('addRuleText').value = '';
+}
+async function allowRemove(i) {
+  const r = _allowAddedRows[i];
+  if (r && confirm('Remove this rule you added?\n\n' + r.agent + ': ' + r.rule)) await allowPost({action: 'remove', ids: [r.id]});
+}
+async function allowAct(action, i, project) {
+  const r = action === 'on' ? _allowOffRows[i] : _allowShown[i];
+  if (!r || (action === 'narrow' && !project)) return;
+  const n = (r.ids || []).length;
+  const ask = action === 'ask' ? 'Always ask for this' + (n > 1 ? ' in ' + n + ' places' : '') + '? "Don\'t ask again" will no longer stick. Use Turn on to undo.'
+    : action === 'off' ? 'Turn off this rule' + (n > 1 ? ' in ' + n + ' places' : '') + '? The agent will ask you again.'
+    : action === 'on' ? 'Turn this rule back on? The agent will stop asking.'
+    : 'Limit this rule to ' + project + '? Other projects will ask again. This cannot be widened again here.';
+  if (!confirm(ask + '\n\n' + r.agent + ': ' + r.rule + '\n\nRestart the agent to apply it.')) return;
+  try {
+    const res = await fetch('/api/allow-rules', {method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action, ids: r.ids || [r.id], project: project || ''})});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || res.statusText);
+  } catch (e) { alert('Not changed: ' + e.message); }
+  loadAllowRules();
+}
+// A label to sort by, not a verdict. Same words as the console's lib/agent-approvals.ts.
+function allowRisk(rule) {
+  if (/^(Read|Glob|Grep|LS|WebSearch|read_file|read_url)\b/.test(rule)) return 'low';
+  const inner = rule.replace(/^\w+\(([\s\S]*)\)$/, '$1');
+  return /^(Bash|Shell|command|unsandboxed)(\(\s*\*?\s*\))?$/i.test(rule)
+    || /\b(rm|sudo|chmod|chown|dd|mkfs|curl|wget|ssh|scp|eval|bash|sh|zsh|python3?|node|npx)\b/i.test(inner)
+    || /\b(push|publish|deploy|delete|drop|destroy|reset --hard)\b/i.test(inner) ? 'high' : 'review';
+}
+function renderAllowRules() {
+  if (!_allowRows) return;
+  const q = _allowQ.trim().toLowerCase();
+  const rows = _allowRows.filter(r => (!_allowHigh || r.risk === 'high') &&
+    (!q || [r.rule, r.agent, ...r.projects].some(v => v.toLowerCase().includes(q))));
+  // Stable, so equal dates (rules older than tracking) stay in risk order.
+  if (_allowSort === 'new') rows.sort((a, b) => (b.added || '').localeCompare(a.added || ''));
+  const pg = clientPage('allowPager', rows, 50, renderAllowRules, [q, _allowHigh, _allowSort, rows.length].join('|'));
+  _allowShown = pg.rows;
+  document.getElementById('allowAdded').innerHTML = !_allowAddedRows.length ? '' :
+    '<div class="card mcp-table-card" style="margin-bottom:14px"><table class="mcp-table"><thead><tr><th>Added here</th><th>Agent</th><th>Applies to</th><th>Does</th><th></th></tr></thead><tbody>' +
+    _allowAddedRows.map((r, i) => '<tr><td style="font-family:monospace;word-break:break-all">' + safe(r.rule) + '</td><td>' + safe(r.agent) + '</td><td>' +
+      safe(r.project || 'All projects') + '</td><td>' + (r.kind === 'ask' ? 'Always ask' : 'Never allow') +
+      '</td><td><button class="btn-line" onclick="allowRemove(' + i + ')">Remove</button></td></tr>').join('') + '</tbody></table></div>';
+  document.getElementById('allowOff').innerHTML = !_allowOffRows.length ? '' :
+    '<div class="card mcp-table-card" style="margin-top:14px"><table class="mcp-table"><thead><tr><th>Turned off here</th><th>Agent</th><th>Was for</th><th></th></tr></thead><tbody>' +
+    _allowOffRows.map((r, i) => '<tr><td style="font-family:monospace;word-break:break-all">' + safe(r.rule) + '</td><td>' + safe(r.agent) + '</td><td>' +
+      safe(r.scope === 'global' ? 'All projects' : r.project) + (r.ask ? ' <span class="hint">· always asks</span>' : '') + '</td><td><button class="btn-line" onclick="allowAct(\'on\',' + i + ')">Turn on</button></td></tr>').join('') +
+    '</tbody></table></div>';
+  document.getElementById('allowList').innerHTML = !rows.length ? '<div class="empty">No rules match.</div>' :
+    '<div class="card mcp-table-card"><table class="mcp-table"><thead><tr><th>Rule</th><th>Agent</th><th>Applies to</th><th title="When this dashboard first saw the rule">Added</th><th>Risk</th><th></th></tr></thead><tbody>' +
+    pg.rows.map((r, i) => '<tr><td title="' + safeAttr(r.source) + '" style="font-family:monospace;word-break:break-all">' + safe(r.rule) + (r.asks ? ' <span class="hint" title="An ask rule overrides this one, so Claude still asks">still asks</span>' : r.again ? ' <span class="hint" style="color:#b45309" title="You turned this off, then the agent saved it again">allowed again</span>' : '') + '</td><td>' + safe(r.agent) +
+      '</td><td title="' + safeAttr(r.projects.join(', ')) + '">' + safe(r.scope === 'global' ? 'All projects' : r.projects.length === 1 ? r.projects[0] : r.projects.length + ' projects') +
+      '</td><td style="white-space:nowrap">' + (r.added ? safe(extWhen(r.added)) : '<span class="hint">earlier</span>') +
+      '</td><td style="color:' + (r.risk === 'high' ? '#b91c1c' : r.risk === 'review' ? '#b45309' : 'var(--muted)') + '">' + r.risk + '</td><td style="white-space:nowrap"><button class="btn-line" onclick="allowAct(\'off\',' + i + ')">Turn off</button>' +
+      (r.agent === 'claude' && !r.asks ? ' <button class="btn-line" title="Keeps asking, even if you tell Claude to stop asking" onclick="allowAct(\'ask\',' + i + ')">Always ask</button>' : '') +
+      (r.scope === 'global' && (_allowTargets[r.agent] || []).length ? ' <select class="fsel" style="max-width:150px" onchange="allowAct(\'narrow\',' + i + ',this.value);this.value=\'\'"><option value="">Limit to…</option>' +
+        _allowTargets[r.agent].map(t => '<option value="' + safeAttr(t) + '">' + safe(t.split('/').slice(-2).join('/')) + '</option>').join('') + '</select>' : '') +
+      '</td></tr>').join('') +
+    '</tbody></table></div>' + pg.html;
+  pg.wire();
+}
 function extWhen(ts) { try { return new Date(ts).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); } catch (e) { return ts || ''; } }
 function extBy(by) { return !by ? '' : by === 'out-of-band' ? 'installed outside any agent session (a person, a script or another tool)' : by === 'baseline' ? 'already present when Prismor first looked' : by === 'observed' ? 'seen in use · no config file describes it' : typeof by === 'string' ? by : 'session ' + String(by.session || '').slice(0, 8) + ' ran: ' + (by.command || ''); }
 function extAgentName(a) { return a === 'any' || !a ? 'any agent' : a; }
@@ -5691,7 +5830,14 @@ function renderExtensions() {
   const mcp = _extTab === 'mcp';
   ['extSummary', 'extLayout'].forEach(id => { document.getElementById(id).style.display = mcp ? 'none' : ''; });
   document.getElementById('mcpPane').style.display = mcp ? '' : 'none';
-  if (mcp) { document.getElementById('extViews').style.display = 'none'; renderMcpServers(); return loadMcpServers(); }
+  if (mcp) { document.getElementById('extViews').style.display = 'none'; renderMcpServers(); }
+  const allow = _extTab === 'allowed';
+  document.getElementById('allowPane').style.display = allow ? '' : 'none';
+  if (allow) {
+    ['extSummary', 'extLayout', 'extViews'].forEach(id => { document.getElementById(id).style.display = 'none'; });
+    return loadAllowRules();
+  }
+  if (mcp) return loadMcpServers();
   if (_extTab === 'hook') return renderHookStats();
   if (_extTab !== 'all') return renderExtKind(_extTab);
   const sess = d.sessions || [], unrev = sess.filter(s => s.unreviewed).length;
@@ -5849,6 +5995,7 @@ function extKindNoun(kind) { return (EXT_KINDS.find(([k]) => k === kind) || [, k
 function renderExtKindTabs() {
   document.getElementById('extKinds').innerHTML = [['all', 'Overview', (_extCache || {rows: []}).rows.length]]
     .concat(EXT_KINDS.map(([k, l]) => [k, l, extItems(k).length]))
+    .concat([['allowed', 'Always allowed', _allowRows ? _allowRows.length : '']])
     .map(([k, l, n]) => '<button class="ext-view' + (_extTab === k ? ' on' : '') + '" onclick="_extTab=\'' + k + '\';_extQuery=\'\';renderExtensions()">' + l + '<small>' + n + '</small></button>').join('');
 }
 function renderExtKind(kind) {
