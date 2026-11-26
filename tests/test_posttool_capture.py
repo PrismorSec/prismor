@@ -56,13 +56,13 @@ def test_output_reaches_event_and_never_blocks(agent, payload, expected, tmp_pat
     assert should_block([{"mode": "enforce", "action": "block", "severity": "critical"}], event) is None
 
 
-def test_grok_post_matches_every_tool_and_pre_is_unchanged(tmp_path):
+def test_grok_post_matches_every_tool_and_pre_screens_monitor(tmp_path):
     kw = dict(repo_root=REPO_ROOT, workspace=tmp_path, agent="grok", scope="project", mode="enforce")
     install_hooks(**kw)
     install_hooks(**kw)
     hooks = _read_json(_config_path("grok", "project", tmp_path))["hooks"]
     assert [e["matcher"] for e in hooks["PostToolUse"]] == [""]
-    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+"]
+    assert [e["matcher"] for e in hooks["PreToolUse"]] == ["Bash|monitor|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+"]
 
 
 @pytest.mark.parametrize("tool,result", [
@@ -73,3 +73,10 @@ def test_grok_byte_output_is_decoded(tool, result, tmp_path):
     payload = {"hookEventName": "post_tool_use", "sessionId": "s", "toolName": tool,
                "toolInput": {"command": "echo"}, "toolResult": result, "tool_response": dict(result)}
     assert "SHELL_42" in normalize_payload(agent="grok", payload=payload, workspace=tmp_path)["event"]["response"]
+
+
+def test_grok_monitor_is_screened_as_a_shell_command(tmp_path):
+    payload = {"hookEventName": "pre_tool_use", "sessionId": "s", "toolName": "monitor",
+               "toolInput": {"command": "tail -f app.log", "description": "d"}}
+    event = normalize_payload(agent="grok", payload=payload, workspace=tmp_path)["event"]
+    assert (event["type"], event["command"]) == ("shell", "tail -f app.log")

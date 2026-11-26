@@ -2238,10 +2238,10 @@ def _merge_grok(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     )
     # PostToolUse matches every tool ("" in Grok's docs): a named list left the
     # output of list_dir, grep, monitor and any new tool unrecorded (verified
-    # live, 1.0.5 and 1.0.92). PreToolUse keeps its list, so what can be
-    # blocked does not change. Grok's MCP calls carry the `server__tool` name.
+    # live, 1.0.5 and 1.0.92). PreToolUse keeps a list: `monitor` is on it
+    # because it runs a shell command. Grok's MCP calls carry the `server__tool` name.
     for event_name, matcher in (
-        ("PreToolUse", "Bash|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+"),
+        ("PreToolUse", "Bash|monitor|Read|Edit|MultiEdit|Write|WebFetch|WebSearch|mcp__.*|.+__.+"),
         ("PostToolUse", ""),
     ):
         hooks[event_name] = _merge_claude_entries(
@@ -2743,6 +2743,7 @@ def _normalize_codex(payload: Dict[str, Any], session_id: str, workspace: Path) 
 # Grok's own tool and event names (xai-org/grok-build docs/user-guide/10-hooks.md).
 _GROK_TOOL_ALIASES = {
     "run_terminal_command": "Bash",
+    "monitor": "Bash",  # runs `command` in a shell, streaming its output
     "read_file": "Read",
     "search_replace": "Edit",
     "hashline_edit": "Edit",

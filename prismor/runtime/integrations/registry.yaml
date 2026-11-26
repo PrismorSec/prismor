@@ -150,7 +150,7 @@ agents:
     blocking: exit-2
     normalizer: _normalize_grok
     sweep_dir: "~/.grok/"
-    notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Verified live (2026-11, grok 1.0.5 and 1.0.92): the Claude names in the matcher alias run_terminal_command/read_file/write/search_replace. PostToolUse matches every tool and carries toolResult; PreToolUse does not match list_dir, grep or monitor."
+    notes: "Also natively reads .claude/settings.json and .cursor/hooks.json. Verified live (2026-11, grok 1.0.5 and 1.0.92): the Claude names in the matcher alias run_terminal_command/read_file/write/search_replace. PostToolUse matches every tool and carries toolResult; PreToolUse screens monitor as a shell command and does not match list_dir or grep."
     sources: ["https://docs.x.ai/build/features/hooks", "https://docs.x.ai/build/overview"]
     mirror:
       status: possible
