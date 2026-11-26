@@ -173,7 +173,7 @@ In enforce mode a shell command runs inside the sandbox or it does not run. When
 
 - The engine is missing or can't start (no `bwrap`, an AppArmor block, `sandbox-exec` fails).
 - The OS has no sandbox (Windows).
-- The agent already runs inside its own sandbox, and Seatbelt can't nest inside it.
+- The agent already runs inside another sandbox, and you have not chosen to rely on it (see [Running inside an outer sandbox](#running-inside-an-outer-sandbox)).
 - The agent's hooks can't rewrite a command (Codex and Qwen Code without `PRISMOR_REWRITE_AUTO_APPROVE=1`, Copilot CLI, OpenCode).
 - With Cloak installed, the sandbox settings for the project just changed. One call is blocked, and the agent is told to run it again.
 
@@ -191,6 +191,34 @@ A bare `cd` and read-only `prismor` commands (`prismor status`, `prismor check`)
 Only a person can turn the sandbox off. `prismor sandbox off` refuses to run without a terminal (an agent's shell has none), unless a `prismor unlock` window is open. The `prismor-self-edit` rule also blocks an agent that runs `prismor sandbox off` in any form, or writes the Cloak sandbox index. Inside the sandbox, `.prismor/` is read-only, so the policy file can't be changed from a command either.
 
 `settings.sandbox.mode: observe` keeps the old behavior: the runner says so on stderr and runs the command unconfined. Policy screening still applies. `prismor mode apply` on a host with no engine sets the mode's sandbox to `observe`, so a mode never blocks every command by accident.
+
+## Running inside an outer sandbox
+
+Some setups start the whole agent inside a sandbox. On macOS, Prismor detects this and, in enforce mode, blocks shell commands, because it usually cannot start its own sandbox inside another one.
+
+If you want the outer sandbox to be the OS limit, set this in your user policy, `~/.prismor/policy.yaml`:
+
+```yaml
+settings:
+  sandbox:
+    outer: trust      # default: refuse
+```
+
+With `trust`:
+
+- A command that is already inside a sandbox runs without Prismor's file, credential or network limits. Prismor does not check what the outer sandbox allows, so a weak one leaves the command weakly confined.
+- Policy rules, egress screening in the hook and cloaking still apply. The sandbox egress proxy does not run.
+- Outside an outer sandbox nothing changes: enforce still confines or blocks.
+
+The key is read from your user policy, a system policy or a signed organization policy. A project's `.prismor/policy.yaml` cannot set it. If the organization policy has its own `settings.sandbox` block, that block decides, so put the key there.
+
+Run `prismor sandbox status` from inside the outer sandbox to check. It prints `not used: this runs inside an outer sandbox`. From your own terminal it cannot see the agent's sandbox.
+
+Limits:
+
+- Detection works on macOS only. On Linux the key has no effect.
+- The outer sandbox must let Prismor's hooks read and write `~/.prismor`.
+- If your home directory is itself the workspace, the key is ignored.
 
 ## Agents
 

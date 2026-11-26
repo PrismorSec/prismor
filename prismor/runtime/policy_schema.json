@@ -257,6 +257,14 @@
               },
               "description": "Extra paths commands may not read, such as .env or ~/.ssh."
             },
+            "outer": {
+              "type": "string",
+              "enum": [
+                "refuse",
+                "trust"
+              ],
+              "description": "When already inside another sandbox (macOS): refuse blocks commands in enforce mode; trust runs them without Prismor confinement. Ignored in a project policy."
+            },
             "direct_ports": {
               "type": "array",
               "items": {

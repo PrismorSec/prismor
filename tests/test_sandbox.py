@@ -724,6 +724,36 @@ class TestRunFailsClosed(unittest.TestCase):
         self.assertIn("agent's own sandbox", err)
         self.unconfined.assert_not_called()
 
+    def test_trusted_outer_sandbox_runs(self):
+        self.inside.return_value = True
+        with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": ""}):
+            rc, err = self._run(config={**ENFORCE, "outer": "trust"})
+        self.assertEqual(rc, 0)
+        self.assertIn("relying on the outer sandbox", err)
+        self.unconfined.assert_called_once()
+
+    def test_unknown_outer_value_still_refuses(self):
+        self.inside.return_value = True
+        with mock.patch.dict(os.environ, {"PRISMOR_SANDBOX": ""}):
+            rc, err = self._run(config={**ENFORCE, "outer": "yes"})
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.assertIn("settings.sandbox.outer: trust", err)
+        self.unconfined.assert_not_called()
+
+    def test_trust_does_nothing_without_an_outer_sandbox(self):
+        with self._unavailable():
+            rc, _ = self._run(config={**ENFORCE, "outer": "trust"})
+        self.assertEqual(rc, sandbox.REFUSED)
+        self.unconfined.assert_not_called()
+
+    def test_status_says_nested_and_claims_no_controls(self):
+        self.inside.return_value = True
+        with self._unavailable():
+            report = sandbox.status_report({**ENFORCE, "outer": "trust"})
+        self.assertTrue(report["nested"])
+        self.assertEqual(report["outer"], "trust")
+        self.assertEqual(set(report["controls"].values()), {"not applied"})
+
     def test_nested_run_inside_our_own_sandbox_passes_through(self):
         with mock.patch.object(sandbox, "_inside_own_sandbox", return_value=True):
             rc, _ = self._run()
@@ -838,6 +868,31 @@ class TestHookFailsClosed(unittest.TestCase):
         second = _hook(self.tmp, "echo hi", env_extra=extra)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertNotIn("updatedInput", second.stdout)   # decloak.sh does the wrap
+
+
+class TestOuterKeyLayers(unittest.TestCase):
+    """Only the user (or org) layer may set sandbox.outer."""
+
+    def _config(self, user, project):
+        from prismor.runtime.policy_engine import PolicyEngine
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        for name, body in (("home", user), ("repo", project)):
+            d = tmp / name / ".prismor"
+            d.mkdir(parents=True)
+            (d / "policy.yaml").write_text(f"settings:\n  sandbox: {body}\n")
+        env = {"HOME": str(tmp / "home"), "PRISMOR_HOME": str(tmp / "home" / ".prismor")}
+        with mock.patch.dict(os.environ, env):
+            return PolicyEngine(workspace=tmp / "repo").sandbox_config
+
+    def test_project_cannot_set_it(self):
+        cfg = self._config("{enabled: true}", "{enabled: true, outer: trust}")
+        self.assertNotIn("outer", cfg)
+
+    def test_user_value_survives_a_project_block(self):
+        cfg = self._config("{outer: trust}", "{enabled: true, outer: refuse}")
+        self.assertEqual(cfg["outer"], "trust")
+        self.assertTrue(cfg["enabled"])
 
 
 class TestSandboxOffNeedsAPerson(unittest.TestCase):
