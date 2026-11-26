@@ -2115,20 +2115,30 @@ def main(argv: Optional[List[str]] = None) -> None:
         # show a call that started and never ended. Its error text is screened
         # like any other tool output.
         if payload.get("hook_event_name") == "PostToolUseFailure":
+            _loop = None
             try:
                 from prismor.runtime.devlog import on_failure
                 _loop = on_failure(payload)
-                if _loop:
-                    print(json.dumps(_loop))
             except Exception:
                 pass
             try:
                 if _claim_hook_call(payload, args.agent):
                     _failed = normalize_payload(agent=args.agent, payload=payload, workspace=workspace)["event"]
-                    evaluate_tool_call(event=_failed, workspace=workspace, agent=args.agent, mode="observe",
-                                       session_id=str(_failed.get("session_id") or ""), flush_at_exit=False)
+                    _verdict = evaluate_tool_call(
+                        event=_failed, workspace=workspace, agent=args.agent, mode="observe",
+                        session_id=str(_failed.get("session_id") or ""), flush_at_exit=False)
+                    from prismor.runtime.sandbox import explain_denial
+                    _why = [explain_denial(f) for f in _verdict.findings if f.get("ruleId") == "sandbox-denied"]
+                    if _why:
+                        # One JSON object per hook call: join the retry notice.
+                        _spec = (_loop or {}).get("hookSpecificOutput") or {}
+                        _loop = {"hookSpecificOutput": {
+                            "hookEventName": "PostToolUseFailure",
+                            "additionalContext": "\n\n".join(filter(None, [_spec.get("additionalContext"), *_why]))}}
             except Exception:
                 pass
+            if _loop:
+                print(json.dumps(_loop))
             sys.exit(0)
 
         # A mirrored built-in reaching the hook layer as mcp__<server>__Bash has
@@ -2538,6 +2548,10 @@ def main(argv: Optional[List[str]] = None) -> None:
                 )
                 _post_user = (f"Prismor flagged {_what} as a likely prompt injection; "
                               "the agent was told not to act on it.")
+        if _post_ctx_ok:
+            from prismor.runtime.sandbox import explain_denial
+            _post_ctx.extend(explain_denial(f) for f in current_findings
+                             if f.get("ruleId") == "sandbox-denied")
         _sub_lines = ""
         if _hook_claimed and _hook_event in ("PostToolUse", "UserPromptSubmit"):
             try:

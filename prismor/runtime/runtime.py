@@ -1209,6 +1209,13 @@ def evaluate_tool_call(
         sys.stderr.write(f"[prismor] rule-exemption error: {exc}\n")
 
     findings.extend(_host_rate_findings)
+    try:
+        from prismor.runtime.sandbox import denial_finding
+        _denied = denial_finding(event, engine.sandbox_config)
+        if _denied:
+            findings.append({**_denied, "id": f"{session_id}:sandbox-denied-{_session_seq}"})
+    except Exception as exc:
+        sys.stderr.write(f"[prismor] sandbox denial report failed: {exc}\n")
     if _cuts:
         findings.extend(payload_bounds.findings_for(_cuts, session_id, _session_seq))
 

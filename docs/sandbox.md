@@ -57,6 +57,15 @@ Error: EPERM: operation not permitted, open '/Users/you/.aws/credentials'
 
 The install still finishes, because the package itself downloaded from an allowed registry. Both attempts fail. The `[prismor] sandbox:` line is part of the tool output, so it's recorded with the session in the dashboard.
 
+## When the sandbox refuses something
+
+The kernel refuses inside the command's own process, so the agent only sees a line such as `Operation not permitted`. After each shell call, Prismor reads the output for sandbox refusals. When it finds one:
+
+- **The agent is told** that the sandbox most likely caused it, what the limits are, and not to retry or work around it. This needs an agent that accepts context after a tool call.
+- **It is recorded** as a `sandbox-denied` finding, so it shows in the session and the dashboard. It is a warning: the call is already over.
+
+This is a text match. A command that prints such a line for another reason is reported too. On Linux, a hidden credential store can fail as `Permission denied`, which is not matched.
+
 ## Try it before you turn it on
 
 `try` runs one command sandboxed, whatever the workspace setting is. If the command fails, it says why:
@@ -234,4 +243,4 @@ The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude
 - **Clients that ignore proxy variables can't reach the network in ring 2.** Add their port to `direct_ports`, or use ring 3.
 - **An existing corporate `HTTPS_PROXY` isn't chained yet.** Use ring 3 behind one.
 - **Background processes** that outlive the command lose the egress proxy when the command exits.
-- **Denials show up in the command's output**, not as separate dashboard events.
+- **Denials are read from the command's output** (see [When the sandbox refuses something](#when-the-sandbox-refuses-something)), so a program that swallows the error is missed.
