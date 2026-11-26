@@ -454,7 +454,6 @@ prismor audit --json                            # machine-readable output
 
 # View session findings
 prismor analyze                                 # analyze most recent session
-prismor status                                  # most recent session summary
 prismor sessions --findings-only                # flagged sessions, sorted by risk
 prismor sessions --findings-only --global       # across all projects
 prismor session --session-id <id>               # specific session

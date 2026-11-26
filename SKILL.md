@@ -61,14 +61,16 @@ prismor status
 
 Read the output line by line:
 
+- **`Hooks: installed`** is followed by a `project:` and a `global:` line naming the agents hooked at each scope.
 - **`Hooks: not installed`** → go to [Setup](#2-setup-run-once-per-workspace). Without hooks, Prismor sees nothing.
-- **`Hooks: claude  (observe, project; configured)`** → monitoring is on but only logging. Fine for the first session in a new repo. Recommend the user switch to `enforce` when they're ready (see [Setup](#2-setup-run-once-per-workspace)).
-- **`Hooks: claude  (enforce, project; configured)`** → the hook configuration requests enforcement. It is followed by `Note: agent invocation not verified; run prismor doctor for configuration checks`: this line alone does not prove the agent invokes the hook. Read any `Hook health:` warnings.
+- **`Hooks: installed  (observe; configured)`** → monitoring is on but only logging. Fine for the first session in a new repo. Recommend the user switch to `enforce` when they're ready (see [Setup](#2-setup-run-once-per-workspace)).
+- **`Hooks: installed  (enforce; configured)`** → the hook configuration requests enforcement. It is followed by `Note: agent invocation not verified; run prismor doctor for configuration checks`: this line alone does not prove the agent invokes the hook. Read any `Hook health:` warnings.
 - **`Note:` lines** → status reports its own misconfigurations: the same agent hooked at *both* project and global scope (every call screened twice), or the two scopes disagreeing on mode. These are the user's to fix, and the printed command is the fix. Relay it, don't run it.
 - **`Workspace:`** → check this is the repo you're actually working in. A hook installed against a different workspace evaluates your calls under *that* repo's policy, which is a real misconfiguration worth raising.
-- **`Paused: yes`** → policy enforcement is suspended (logging continues), but floor rules still block, so do not retry a floor block because of a pause. Only the user can lift them, with `prismor pause --hard` in their own terminal; never run it yourself. Say so before relying on a clean run; a command that passes while paused may block when it resumes.
+- **`Paused: yes, 42m left`** (`Paused: no` otherwise) → policy enforcement is suspended (logging continues), but floor rules still block, so do not retry a floor block because of a pause. Only the user can lift them, with `prismor pause --hard` in their own terminal; never run it yourself. Say so before relying on a clean run; a command that passes while paused may block when it resumes.
 - **`Cloaking: not installed`** → secret-prevention layer is off. Only required if the user works with API keys / tokens through the agent. If they do, run `prismor cloak install` then register secrets per [Safe-command map](#4-safe-command-map).
-- **`LATEST SESSION` shows findings** → surface them to the user before starting new work.
+- **`Policy:`** → which layers are in effect (org, project, user, packs, built-in defaults), highest precedence first.
+- Session findings are not part of `status`; run `prismor sessions --findings-only` and surface them to the user before starting new work.
 
 Two follow-ups when the answer matters:
 
@@ -385,7 +387,7 @@ pick the smallest tool that answers the question:
 
 | User intent | Command |
 |---|---|
-| "What happened in this session?" | `prismor status` (also covers state; see [Check state](#1-check-state-first-command-of-every-session)) |
+| "What happened in this session?" | `prismor sessions` |
 | "Show me every flagged session" | `prismor sessions --findings-only` |
 | "Drill into session X" | `prismor session <id>` |
 | "What did session X change?" | `prismor session <id> --changes` (files written as diffs, commands run, a drafted PR description) |

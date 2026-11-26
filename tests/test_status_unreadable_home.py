@@ -18,5 +18,4 @@ def test_status_reports_unreadable_state_dir(tmp_path, monkeypatch, capsys):
         home.chmod(0o700)
     out = capsys.readouterr().out
     assert "cannot read" in out
-    assert "unavailable" in out
-    assert "workspace is clean" not in out
+    assert "Run prismor status in a normal terminal" in out

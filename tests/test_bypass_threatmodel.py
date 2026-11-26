@@ -151,6 +151,18 @@ def test_pause_keeps_floor_blocking(tmp_path, monkeypatch):
     assert "a pause does not lift it" in str(out)
 
 
+def test_pause_note_on_self_protection_names_unlock_not_hard_pause(tmp_path, monkeypatch):
+    # pause --hard never lifts self-protection, so the note must not send the user there.
+    from prismor.runtime import pause
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    pause.set_paused(600, reason="test")
+    run = _dispatch(tmp_path, f"rm -f {tmp_path}/home/pause.key")
+    out = run.stdout + run.stderr
+    assert run.returncode == 2
+    assert "not even `prismor pause --hard`" in out
+    assert "lift floor rules, with" not in out
+
+
 def test_session_pause_keeps_floor_blocking(tmp_path):
     from prismor.runtime.store import update_session_control
     update_session_control(tmp_path, "s1", "pause")  # _dispatch's session id

@@ -35,7 +35,7 @@ across every project you've protected.
 ## Terminal: `prismor status` and `prismor status --all`
 
 ```bash
-prismor status        # THIS workspace: hooks, mode, cloak, latest session, next step
+prismor status        # THIS workspace: hooks, pause, policy, cloak, next step
 prismor status --all  # ALL workspaces: risk, findings, mode, last activity
 prismor status --perf # hook latency: p50/p95, slowest stages and rules
 ```
