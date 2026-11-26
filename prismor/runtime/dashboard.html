@@ -286,19 +286,18 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   }
   .finput:focus { border-color: var(--purple); }
   /* Page-title and inline icons */
-  .section h2 .sec-ico { width:18px; height:18px; margin-right:8px; vertical-align:-3px; color:var(--gray-500); }
+  .section h2 .sec-ico { width:20px; height:20px; margin-right:8px; vertical-align:-4px; color:var(--gray-500); }
   .btn-ok .icon, .btn-line .icon { margin-right:5px; }
   .logs-tt { width:13px; height:13px; margin-right:6px; color:var(--gray-400); vertical-align:-2px; }
   .logs-agent { display:inline-flex; align-items:center; white-space:nowrap; }
-  .agent-pill .agent-ico { width:13px; height:13px; margin-right:4px; vertical-align:-2px; }
+  .agent-pill .agent-ico { width:14px; height:14px; margin-right:4px; vertical-align:-3px; }
   .vsel-opt .agent-ico { width:14px; height:14px; margin:0; }
-  .vsel-opt.idle .agent-ico { opacity:.45; filter:grayscale(1); }
   /* Vault: multi-select agent picker */
   .vsel-btn { display:inline-flex; align-items:center; position:relative; width:190px; max-width:100%; min-height:30px; padding:3px 28px 3px 10px;
     text-align:left; font:inherit; font-size:12px; white-space:nowrap; cursor:pointer;
     background:var(--gray-50); color:var(--gray-800); border:1px solid var(--gray-200); border-radius:6px; }
   .vsel-btn:hover { border-color:var(--gray-400); }
-  .vsel-btn.open, .vsel-btn:focus-visible { border-color:var(--purple); outline:none; box-shadow:0 0 0 3px rgba(180,165,246,.25); }
+  .vsel-btn.open, .vsel-btn:focus-visible { border-color:var(--purple); outline:none; box-shadow:0 0 0 1px var(--sui-fg); }
   .vsel-btn::after { content:""; position:absolute; right:10px; top:50%; width:6px; height:6px; margin-top:-5px;
     border-right:1.5px solid var(--gray-500); border-bottom:1.5px solid var(--gray-500); transform:rotate(45deg); transition:transform .15s; }
   .vsel-btn.open::after { transform:rotate(-135deg); margin-top:-1px; }
@@ -416,7 +415,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .event-row .event-action { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px; color:var(--ink-2); }
   .event-row .event-meta { margin-top:3px; display:flex; flex-wrap:wrap; align-items:center; gap:2px 14px; font-size:12px; color:var(--muted); }
   .event-meta .ext-agent { padding:0; background:none; font-size:12px; font-weight:400; color:var(--ink-2); }
-  .event-meta .agent-ico { width:12px; height:12px; margin-right:4px; }
+  .event-meta .agent-ico { width:14px; height:14px; margin-right:4px; vertical-align:-3px; }
   .event-row .sev-badge { min-width:0; margin-top:1px; }
   #evtContainer .event-sess-link, #evtContainer .event-row:hover .event-sess-link { height:auto; padding:0 2px; border:0; background:none; box-shadow:none;
     font-size:12px; color:var(--muted); margin-top:1px; }
@@ -544,7 +543,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .user-meta { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 2px; font-size: 12px; color: var(--muted); }
   .user-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .user-meta .ext-agent { padding: 0; background: none; font-size: 12px; font-weight: 400; color: var(--ink-2); }
-  .user-meta .agent-ico { width: 12px; height: 12px; margin-right: 5px; vertical-align: -2px; }
+  .user-meta .agent-ico { width: 14px; height: 14px; margin-right: 5px; vertical-align: -3px; }
   .user-meta .user-seen { flex: none; }
   .user-bar { height: 3px; background: var(--gray-100); border-radius: 2px; margin-top: 9px; overflow: hidden; }
   .user-bar-fill { height: 100%; border-radius: 2px; background: var(--ink); opacity: .8; }
@@ -649,7 +648,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .policy-scope-btn {
     font-family: inherit; font-size: 12px; font-weight: 500; padding: 6px 14px;
     border: none; background: none; cursor: pointer; border-radius: 4px;
-    color: var(--gray-500); transition: all 0.15s;
+    color: var(--gray-500); transition:color .12s, background-color .12s, border-color .12s;
   }
   .policy-scope-btn:hover { color: var(--gray-900); }
   .policy-scope-btn.active { background: var(--surface); color: var(--gray-900); box-shadow: 0 1px 3px rgba(0,0,0,.1); }
@@ -708,7 +707,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .rule-sev.LOW      { background:var(--gray-100); color:var(--gray-500); }
   /* toggle switch */
   .rule-toggle { position:relative; display:inline-block; width:38px; height:22px; flex:0 0 auto; cursor:pointer; }
-  .en-toggle { font-family:var(--font-ui); font-size: 12px; font-weight:600; padding:5px 14px; border-radius:999px; border:1px solid; cursor:pointer; transition:all .12s; white-space:nowrap; }
+  .en-toggle { font-family:var(--font-ui); font-size: 12px; font-weight:600; padding:5px 14px; border-radius:999px; border:1px solid; cursor:pointer; transition:color .12s, background-color .12s, border-color .12s; white-space:nowrap; }
   .en-toggle.on  { background:#dcfce7; color:#15803d; border-color:#bbf7d0; }
   .en-toggle.on:hover  { background:#bbf7d0; }
   .en-toggle.off { background:#fee2e2; color:#b91c1c; border-color:#fecaca; }
@@ -730,7 +729,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   /* "More from Prismor" CTA */
   .prismor-cta {
     margin-top:20px; padding:18px 20px; border-radius:8px;
-    background:linear-gradient(135deg,#1e1b4b,#312e81); color:#e0e7ff;
+    color:#e0e7ff;
     display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;
   }
   .prismor-cta-text strong { display:block; font-size:14px; color:#fff; margin-bottom:3px; }
@@ -1099,7 +1098,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .view-back {
     display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600;
     color:var(--gray-500); background:var(--gray-50); border:1px solid var(--gray-200);
-    border-radius:8px; padding:7px 12px; cursor:pointer; transition:all .12s;
+    border-radius:8px; padding:7px 12px; cursor:pointer; transition:color .12s, background-color .12s, border-color .12s;
   }
   .view-back:hover { background:var(--surface); color:var(--gray-800); border-color:var(--gray-300); }
   .view-back .icon { width:13px; height:13px; }
@@ -1109,7 +1108,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .crumbs .sep { color:var(--gray-300); }
 
   /* clickable agent chip */
-  .agent-pill.link { cursor:pointer; transition:all .12s; }
+  .agent-pill.link { cursor:pointer; transition:color .12s, background-color .12s, border-color .12s; }
   .ext-agent.link, .sess-link { cursor:pointer; }
   .ext-agent.link:hover, .sess-link:hover { text-decoration: underline; }
   .sess-link { color: inherit; font-family: var(--font-mono); }
@@ -1119,7 +1118,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .agent-hero {
     display:flex; align-items:center; gap:16px; flex-wrap:wrap;
     padding:18px 20px; margin-bottom:18px;
-    background:linear-gradient(135deg,var(--surface), var(--gray-50));
+    background:var(--surface);
     border:1px solid var(--gray-200); border-radius:8px;
   }
   .agent-avatar {
@@ -1165,7 +1164,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .tp-grid .tp-row { padding:11px 16px; }
   .tp-grid { margin-bottom:4px; }
   .tp-btns { display:inline-flex; gap:4px; }
-  .tp-btn { font-family:var(--font-ui); font-size: 12px; font-weight:600; padding:4px 12px; border-radius:999px; border:1px solid var(--gray-200); background:var(--gray-50,#f8fafc); color:var(--gray-400); cursor:pointer; transition:all .12s; }
+  .tp-btn { font-family:var(--font-ui); font-size: 12px; font-weight:600; padding:4px 12px; border-radius:999px; border:1px solid var(--gray-200); background:var(--gray-50,#f8fafc); color:var(--gray-400); cursor:pointer; transition:color .12s, background-color .12s, border-color .12s; }
   .tp-btn:hover { border-color:var(--gray-300); color:var(--gray-600); }
   .tp-allow.on { background:#dcfce7; color:#15803d; border-color:#bbf7d0; }
   .tp-ask.on   { background:#fef9c3; color:#a16207; border-color:#fde68a; }
@@ -1540,7 +1539,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .na-label { font-size: 11px; font-weight: 600; text-transform: none; letter-spacing: 0; width:42px; flex-shrink:0; }
   .na-label.na-deny { color:#b91c1c; }
   .na-label.na-allow { color:#15803d; }
-  .na-btn { font-size: 12px; font-weight:600; padding:5px 10px; border-radius:6px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700); cursor:pointer; transition:all .12s; }
+  .na-btn { font-size: 12px; font-weight:600; padding:5px 10px; border-radius:6px; border:1px solid var(--gray-200); background:#fff; color:var(--gray-700); cursor:pointer; transition:color .12s, background-color .12s, border-color .12s; }
   .na-btn.deny:hover { background:#fef2f2; border-color:#fecaca; color:#b91c1c; }
   .na-btn.allow:hover { background:#f0fdf4; border-color:#bbf7d0; color:#15803d; }
   .na-btn.ask:hover { background:#fffbeb; border-color:#fde68a; color:#b45309; }
@@ -1931,6 +1930,8 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .sess-ext-all > summary { list-style: none; cursor: pointer; padding: 9px 0; margin: 0; }
   .sess-ext-all > summary::-webkit-details-marker { display: none; }
   .sess-ext-toggle { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--gray-500); }
+  .sess-ext-toggle:empty::after { content: 'Show'; }
+  details[open] > summary .sess-ext-toggle:empty::after { content: 'Hide'; }
   .sess-summary .sess-ext-head { display:grid; grid-template-columns:8px 92px minmax(0,1fr) auto; align-items:center; gap:12px; margin:0; }
   .sess-summary .sess-sum { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .sess-dot.none { background:transparent; }
@@ -2431,7 +2432,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .appr-meta .link, .appr-meta a { cursor:pointer; color:var(--ink-2); }
   .appr-meta .link:hover, .appr-meta a:hover { text-decoration:underline; text-underline-offset:2px; }
   .appr-meta code { font:11.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
-  .appr-meta .agent-ico { width:13px; height:13px; margin-right:5px; vertical-align:-2px; }
+  .appr-meta .agent-ico { width:14px; height:14px; margin-right:5px; vertical-align:-3px; }
   .appr-wait { color:#b45309; font-weight:600; }
   html[data-theme="dark"] .appr-wait { color:#fbbf24; }
   .appr-cmd { margin:10px 0 0; padding:9px 12px; border:1px solid var(--hairline); border-radius:6px; background:var(--gray-50);
@@ -3252,7 +3253,11 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .logs-table-card { padding: 0; overflow-x: auto; }
   .logs-table { width: 100%; min-width: 860px; table-layout: fixed; }
   .logs-table th:nth-child(1) { width: 14px; } .logs-table th:nth-child(2) { width: 132px; } .logs-table th:nth-child(4) { width: 110px; }
-  .logs-table th:nth-child(5) { width: 120px; } .logs-table th:nth-child(6) { width: 84px; } .logs-table th:nth-child(7) { width: 84px; }
+  .logs-table th:nth-child(5) { width: 120px; } .logs-table th:nth-child(6) { width: 132px; } .logs-table th:nth-child(7) { width: 92px; }
+  /* Agent and session never wrap or run into the next column; a long name ends in an ellipsis. */
+  .logs-table td:nth-child(6), .logs-table td:nth-child(7) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .logs-table td:nth-child(6) .logs-agent { display: flex; min-width: 0; }
+  .logs-table td:nth-child(7) { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; }
   .logs-table th { padding-left: 10px; }
   .logs-table td { vertical-align: top; padding: 10px; }
   .logs-table tr.clickable-row { cursor: pointer; }
@@ -3324,6 +3329,15 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   .logs-opt input:checked { background: var(--sui-fg); border-color: var(--sui-fg); }
   .logs-opt input:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--sui-surface); border-bottom: 2px solid var(--sui-surface); transform: translateY(-1px) rotate(-45deg); }
 
+  /* prismor-web product rules (DESIGN_SYSTEM.md): icons only at 16, 20 or 24px and never
+     squeezed; agent logos at 14px or more. Last in the sheet so it beats older sizes. */
+  svg.icon { flex-shrink: 0; }
+  :is(#refreshBtn, .btn-ok, .btn-line, .btn-ghost, .btn-primary, .sess-drawer-close, .up-modal-close, .docs-search, .agent-pill, .ext-agent, .logs-type, td code, .rule-lock, .scoped-tag) > svg.icon { width: 16px !important; height: 16px !important; }
+  .agent-ico { min-width: 14px; min-height: 14px; }
+  .kpi-live-dot { display: none; width: 6px; height: 6px; border-radius: 50%; background: var(--dot-ok); margin-right: 6px; vertical-align: 1px; animation: logsPulse 1.6s ease-in-out infinite; }
+  .is-live > .kpi-live-dot { display: inline-block; }
+  @media (prefers-reduced-motion: reduce) { .kpi-live-dot { animation: none; } }
+
   /* Design pass: last in the sheet so it wins over the earlier phone rules. */
   .docs-search #docsSearch { border: 0; background: none; box-shadow: none; }
   .logs-toolbar { flex-wrap: wrap; }
@@ -3338,7 +3352,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     /* The live dot is the earlier rule's intent too; the top bar's mode chip carries status on a phone. */
     .tab-nav-footer #statusBadge { display: none !important; }
     /* Tap targets: 44px tall on a phone. */
-    :is(.fbtn, .pg-btn, .pg-num, .sess-act-btn, .logs-fbtn, .btn-line, .btn-ghost, .btn-ok, .inline-link-btn, .fsel, .finput, .sel-btn, .vsel-btn, .en-toggle, .vault-act, .policy-scope-btn, .rules-search, .btn-primary, .docs-collapse, #docsAskAgent) { min-height: 44px !important; max-height: none !important; }
+    :is(.fbtn, .pg-btn, .pg-num, .sess-act-btn, .logs-fbtn, .btn-line, .btn-ghost, .btn-ok, .inline-link-btn, .fsel, .finput, .sel-btn, .vsel-btn, .en-toggle, .vault-act, .policy-scope-btn, .ext-view, .ext-filter, .rules-search, .btn-primary, .docs-collapse, #docsAskAgent) { min-height: 44px !important; max-height: none !important; }
     .pg-num, .docs-collapse { min-width: 44px; }
     /* Wide tables scroll sideways rather than breaking names into stacks of fragments. */
     [style*="overflow-x:auto"] > table :is(th, td), .logs-spend table :is(th, td) { white-space: nowrap; }
@@ -3369,6 +3383,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 <!-- ═══ ICON SPRITE (Lucide, inlined, no external requests) ══════ -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="i-lock" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
   <symbol id="i-bot" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
   <symbol id="i-building" viewBox="0 0 24 24"><path d="M6 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18Z"/><path d="M6 12H4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h2"/><path d="M18 9h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-2"/><path d="M10 6h4"/><path d="M10 10h4"/><path d="M10 14h4"/><path d="M10 18h4"/></symbol>
@@ -3471,7 +3486,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div class="ext-layout files-layout">
     <div class="card">
       <div style="display:flex;gap:6px;margin-bottom:8px">
-        <input id="filesSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by path…" style="flex:1;min-width:0" />
+        <input id="filesSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter by path" style="flex:1;min-width:0" />
         <button class="fbtn active" data-fview="tree" onclick="setFilesView('tree')">Tree</button>
         <button class="fbtn" data-fview="recent" onclick="setFilesView('recent')">Recent</button>
       </div>
@@ -3489,7 +3504,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   <div id="mcpPane" style="display:none">
     <div id="mcpSummary" class="kpi-strip mcp-summary" hidden></div>
     <div class="mcp-toolbar">
-      <input id="mcpSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search servers or tools…" oninput="_mcpFilter.q=this.value;renderMcpServers()" />
+      <input id="mcpSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search servers or tools" oninput="_mcpFilter.q=this.value;renderMcpServers()" />
       <div id="mcpKinds" class="mcp-kinds"></div>
       <button class="btn-line" style="margin-left:auto" onclick="openMcpGuide()">Govern more servers</button>
     </div>
@@ -3523,7 +3538,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
   </div>
   <div class="card">
     <div class="bar" style="margin-bottom:10px">
-      <input id="vaultSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter keys or agents…" oninput="renderVault()" />
+      <input id="vaultSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter keys or agents" oninput="renderVault()" />
       <span id="vaultCount" class="result-count"></span>
       <span class="vault-sort-wrap"><select id="vaultSort" class="fsel" aria-label="Sort keys" onchange="_vaultSort=this.value;renderVault()">
         <option value="name:asc">Name A to Z</option><option value="name:desc">Name Z to A</option>
@@ -3594,8 +3609,6 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="ring-legend">
         <div><span class="sw" style="background:var(--ok)"></span>Allowed<b id="ringPassed">-</b></div>
         <div><span class="sw" style="background:var(--bad)"></span>Blocked<b id="ringBlocked">-</b></div>
-        <div class="ring-legend-sep"></div>
-        <div title="Every policy rule that matched a call in this window, including warn-only rules that did not block anything.">Rules fired <i class="help">?</i><b id="ringFindings">-</b></div>
       </div>
     </div>
   </section>
@@ -3604,14 +3617,14 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     <span class="kpi-label">Agent activity · <span id="hintActivity">last 7 days</span></span>
   </div>
   <div class="kpi-strip">
-    <div><div class="kpi-label" title="Tool calls that went through a Prismor hook and got a decision.">Calls screened <i class="help">?</i></div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta neutral"></div></div>
+    <div><div class="kpi-label" id="kpiCallsLabel" title="Tool calls that went through a Prismor hook and got a decision."><span class="kpi-live-dot" title="An agent made a call in the last 5 minutes"></span>Calls screened <i class="help">?</i></div><div id="kpiToolCalls" class="kpi-big">-</div><div id="kpiToolsDelta" class="kpi-sub kpi-delta neutral"></div></div>
     <div><div class="kpi-label" title="Calls a rule stopped before they ran. Warn-only matches are not counted here.">Blocked <i class="help">?</i></div><div id="kpiDangerous" class="kpi-big">-</div><div id="kpiDangerousDelta" class="kpi-sub kpi-delta"></div></div>
     <div><div class="kpi-label" title="Sessions with at least one call in this window.">Sessions <i class="help">?</i></div><div id="kpiSessions" class="kpi-big">-</div><div class="kpi-sub"><span id="kpiAgentCount">–</span> agents registered</div></div>
     <div><div class="kpi-label" title="Every rule match, blocking or not, by the severity the rule carries. One call can fire several rules.">Rules fired <i class="help">?</i></div><div id="kpiFindings" class="kpi-big">-</div><div class="kpi-sub"><span id="sevCritical">-</span> critical · <span id="sevHigh">-</span> high · <span id="sevMedium">-</span> medium · <span id="sevLow">-</span> low</div></div>
   </div>
 
   <details class="how-it-works">
-  <summary class="steps-label">How Prismor decides one tool call <span class="sess-ext-toggle">show</span></summary>
+  <summary class="steps-label">How Prismor decides one tool call <span class="sess-ext-toggle"></span></summary>
   <div class="steps">
     <div class="step"><div class="step-n">01</div><div class="step-t">Request</div><div class="step-d">The agent asks. Nothing has run yet.</div><div class="step-f" id="stepReq">–</div></div>
     <div class="step"><div class="step-n">02</div><div class="step-t">Identity</div><div class="step-d">Which agent, which session, which workspace.</div><div class="step-f" id="stepId">–</div></div>
@@ -3815,7 +3828,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
         </select>
         <label>Category</label>
         <select id="fCat" class="fsel"><option value="">All</option></select>
-        <input id="fSearch" class="finput" type="text" placeholder="search title or evidence…" />
+        <input id="fSearch" class="finput" type="text" placeholder="Search title or evidence" />
         <div class="bar-right">
           <span id="findCount" class="result-count"></span>
           <label>Per page</label>
@@ -3910,7 +3923,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="logs-toolbar">
         <button class="btn-line" onclick="loadLogs()" title="Load the newest events"><svg class="icon"><use href="#i-refresh"/></svg> Refresh</button>
         <button class="btn-line" id="logsLiveBtn" onclick="setLogsLive(!_logs.live)" aria-pressed="false" title="Fetch new events every 5 seconds">Live</button>
-        <input id="logsSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search commands, paths, URLs, tools…" />
+        <input id="logsSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search commands, paths, URLs, tools" />
         <span id="logsNote" class="logs-note"></span>
       </div>
       <div id="logsFilterBar" class="logs-filterbar" aria-label="Log filters"></div>
@@ -3937,7 +3950,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 
 
   <div class="bar sess-filters" id="sessFilters">
-    <input id="sfSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search prompt or session id…" />
+    <input id="sfSearch" class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Search prompt or session id" />
     <select id="sfAgent" class="fsel"><option value="">All agents</option></select>
     <select id="sfWorkspace" class="fsel"><option value="">All workspaces</option></select>
     <select id="sfFindings" class="fsel">
@@ -4225,7 +4238,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
     </div>
     <div class="rules-toolbar">
       <input id="rulesSearch" class="rules-search" type="text" spellcheck="false"
-             placeholder="Search rules by name, category, or description…" />
+             placeholder="Search rules" />
       <div class="rules-filters" id="rulesFilters">
         <button class="fbtn active" data-rf="all">All</button>
         <button class="fbtn" data-rf="blocks">Blocking</button>
@@ -4408,7 +4421,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       </div>
     </div>
     <textarea id="effectivePolicyEditor" class="yaml-editor" readonly spellcheck="false"
-      placeholder="# Loading effective policy…"></textarea>
+      placeholder="# Loading effective policy"></textarea>
     <div class="policy-actions">
       <span style="font-size: 12px;color:var(--gray-400)">Read-only: edit Global or Project to change this.</span>
     </div>
@@ -4489,7 +4502,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div class="up-modal-overlay" id="apprOverlay" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="up-modal" role="dialog" aria-modal="true" aria-labelledby="apprTitle">
     <div class="up-modal-hero">
-      <button class="up-modal-close" onclick="closeApprovals()" aria-label="Close">✕</button>
+      <button class="up-modal-close" onclick="closeApprovals()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
       <h3 id="apprTitle">Waiting for you<span class="appr-count" id="apprCount"></span></h3>
       <p>Blocked calls that need a decision. Approving lets that one call run once; nothing in the policy changes.</p>
     </div>
@@ -4503,7 +4516,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div class="up-modal-overlay" id="clModalOverlay" onclick="if(event.target===this)this.classList.remove('open')">
   <div class="up-modal" role="dialog" aria-modal="true" aria-label="Update Prismor">
     <div class="up-modal-hero">
-      <button class="up-modal-close" onclick="document.getElementById('clModalOverlay').classList.remove('open')" aria-label="Close">✕</button>
+      <button class="up-modal-close" onclick="document.getElementById('clModalOverlay').classList.remove('open')" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
       <h3 id="clTitle">Update Prismor</h3>
       <p>What changed since your installed version. Updating runs <code>prismor update</code>; restart the dashboard and your agents afterwards.</p>
     </div>
@@ -4520,7 +4533,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
 <div class="up-modal-overlay" id="upModalOverlay" onclick="if(event.target===this)closeUpgradeModal()">
   <div class="up-modal" role="dialog" aria-modal="true" aria-label="Prismor Enterprise">
     <div class="up-modal-hero">
-      <button class="up-modal-close" onclick="closeUpgradeModal()" aria-label="Close">✕</button>
+      <button class="up-modal-close" onclick="closeUpgradeModal()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
       <img src="/static/prismor-logo.png" alt="" />
       <h3>Prismor Enterprise</h3>
       <p>Everything in the open-source agent, plus an org control plane for security teams. Cloud or self-hosted.</p>
@@ -4564,7 +4577,7 @@ body:has(#page-docs.page.active) .prismor-cta{display:none}
       <div class="sess-drawer-sessid" id="sessDrawerSessId"></div>
       <div style="margin-top:6px;display:flex;gap:6px;align-items:center" id="sessDrawerPills"></div>
     </div>
-    <button class="sess-drawer-close" onclick="closeSessDrawer()">✕</button>
+    <button class="sess-drawer-close" onclick="closeSessDrawer()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button>
   </div>
   <div class="sess-drawer-body" id="sessDrawerBody">
     <div class="empty">Loading…</div>
@@ -5376,7 +5389,7 @@ function vselMenu() {
   let m = document.getElementById('vselMenu');
   if (!m) {
     m = document.createElement('div'); m.id = 'vselMenu'; m.hidden = true; m.setAttribute('role', 'listbox'); m.setAttribute('aria-multiselectable', 'true');
-    m.innerHTML = '<input class="vsel-search" placeholder="Search or add an agent…" spellcheck="false" autocomplete="off">' +
+    m.innerHTML = '<input class="vsel-search" placeholder="Search or add an agent" spellcheck="false" autocomplete="off">' +
       '<div class="vsel-tabs"></div><div class="vsel-list"></div><div class="vsel-foot">Type a name to add an identity set with PRISMOR_AGENT_ID.</div>';
     const q = m.querySelector('input');
     q.addEventListener('input', () => { _vselHl = 0; vselRender(); });
@@ -5765,7 +5778,7 @@ async function extApprove(id) {
     if (_sessionViewState && _sessExt && document.getElementById('page-session')?.classList.contains('active')) loadSessionExtensions(_sessionViewState.sessionId, _sessionViewState.workspace);
     else if (document.getElementById('page-extension')?.classList.contains('active')) openExtension(id, true);
     else loadExtensions();
-  } catch (e) { toast('✗ ' + e.message, true); }
+  } catch (e) { toast(e.message, true); }
 }
 
 // ── Extensions by kind: the ledger (what is installed) joined with
@@ -5854,7 +5867,7 @@ function renderExtKind(kind) {
     .map(([n, label, sub, cls]) => '<div class="ext-stat ' + (cls || '') + '" style="cursor:default"><b>' + n + '</b><span>' + label + '</span><small>' + safe(sub) + '</small></div>').join('');
   document.getElementById('extViews').style.display = 'none';
   document.getElementById('extFilters').innerHTML =
-    '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter ' + safeAttr(extKindNoun(kind)) + '…" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderExtKindList()" style="min-width:220px" />';
+    '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter ' + safeAttr(extKindNoun(kind)) + '" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderExtKindList()" style="min-width:220px" />';
   renderExtKindList();
   if (ledgerKind) renderExtEvents({events: ((_extCache || {}).events || []).filter(e => e.kind === kind)});
   else document.getElementById('extEvents').innerHTML = '<div class="empty">' + (kind === 'secret'
@@ -5868,7 +5881,7 @@ async function renderHookStats() {
   const ext = document.getElementById('extList');
   document.getElementById('extViews').style.display = 'none';
   document.getElementById('extFilters').innerHTML =
-    '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter hooks…" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderHookList()" style="min-width:220px" />';
+    '<input class="finput" type="search" spellcheck="false" autocomplete="off" placeholder="Filter hooks" value="' + safeAttr(_extQuery) + '" oninput="_extQuery=this.value;renderHookList()" style="min-width:220px" />';
   renderExtEvents({events: ((_extCache || {}).events || []).filter(e => e.kind === 'hook')});
   if (!_hookStats || _hookStatsDays !== _depDays) {
     ext.innerHTML = '<div class="empty">Reading hook runs from agent transcripts…</div>';
@@ -6199,7 +6212,7 @@ function renderMcpDrawer() {
     '<span class="mcp-drawer-nav">' +
       '<button class="sess-drawer-close" title="Previous server (↑ or k)" ' + (i > 0 ? 'onclick="mcpStep(-1)"' : 'disabled') + '>↑</button>' +
       '<button class="sess-drawer-close" title="Next server (↓ or j)" ' + (i >= 0 && i < _mcpVisible.length - 1 ? 'onclick="mcpStep(1)"' : 'disabled') + '>↓</button>' +
-      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()">✕</button></span>';
+      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button></span>';
 
   let html = '';
   if (s.kind === 'direct') {
@@ -6260,7 +6273,7 @@ function renderMcpDrawer() {
 // "Govern more servers": the setup commands in the same panel.
 function openMcpGuide() {
   _mcpSel = null;
-  document.getElementById('mcpDrawerHead').innerHTML = '<div class="mcp-drawer-title">Govern more servers</div><span class="mcp-drawer-nav"><button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()">✕</button></span>';
+  document.getElementById('mcpDrawerHead').innerHTML = '<div class="mcp-drawer-title">Govern more servers</div><span class="mcp-drawer-nav"><button class="sess-drawer-close" title="Close (Esc)" onclick="closeMcpDrawer()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button></span>';
   document.getElementById('mcpDrawerBody').innerHTML = mcpSetupHelp();
   document.getElementById('mcpDrawerOverlay').classList.add('open');
   document.getElementById('mcpDrawer').classList.add('open');
@@ -6295,8 +6308,8 @@ async function mcpOverrideSet(server, current) {
     const s = _mcpServersCache.find(x => x.name === server);
     if (s) s.override = r.override;
     renderMcpServers();
-    toast('✓ ' + server + (r.override ? ' governing built-ins' : ' passing through (ungoverned)'));
-  } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
+    toast(server + (r.override ? ' governing built-ins' : ' passing through (ungoverned)'));
+  } catch(e){ toast(e.message, true); loadMcpServers(); }
 }
 
 async function mcpToolEnable(server, tool, current) {
@@ -6309,8 +6322,8 @@ async function mcpToolEnable(server, tool, current) {
     const s = _mcpServersCache.find(x => x.name === server);
     if (s) (s.tools||[]).forEach(t => { if (t.name === tool) t.enabled = !dis.has(tool); });
     renderMcpServers();
-    toast('✓ ' + tool + (current ? ' removed' : ' added'));
-  } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
+    toast(tool + (current ? ' removed' : ' added'));
+  } catch(e){ toast(e.message, true); loadMcpServers(); }
 }
 async function mcpToolSet(tag, action) {
   try {
@@ -6324,8 +6337,8 @@ async function mcpToolSet(tag, action) {
       if (t.tag === tag) t.state = deny.has(tag) ? 'deny' : (ask.has(tag) ? 'ask' : 'allow');
     }));
     renderMcpServers();
-    toast('✓ ' + tag + ': ' + action);
-  } catch(e){ toast('✗ ' + e.message, true); loadMcpServers(); }
+    toast(tag + ': ' + action);
+  } catch(e){ toast(e.message, true); loadMcpServers(); }
 }
 
 // ── Toast (non-blocking feedback; replaces alert()) ──────────────────────
@@ -6673,7 +6686,7 @@ function renderScopeEditor(container, scoped) {
 
   function tagX(list, t, cls) {
     return '<span class="tag-removable ' + cls + '" data-tool="' + safeAttr(t) + '" data-list="' + list + '">' +
-      safe(t) + '<span class="tag-x" onclick="scopeRemoveTool(\'' + list + '\',\'' + safeAttr(t) + '\')">✕</span></span>';
+      safe(t) + '<span class="tag-x" onclick="scopeRemoveTool(\'' + list + '\',\'' + safeAttr(t) + '\')"><svg class="icon" style="width:12px;height:12px"><use href="#i-x"/></svg></span></span>';
   }
 
   // Available tools not yet in either list. Include any concrete tool tags we
@@ -6705,7 +6718,7 @@ function renderScopeEditor(container, scoped) {
         '</div>' +
         '<div class="tool-add-row">' +
           '<select class="tool-add-select" id="addToolAllow"><option value="">+ add tool…</option>' + addOpts('allow') + '</select>' +
-          '<input class="tool-add-select" id="addToolAllowCustom" placeholder="or type tool tag…" style="min-width:170px" />' +
+          '<input class="tool-add-select" id="addToolAllowCustom" placeholder="or type tool tag" style="min-width:170px" />' +
           '<button class="tool-add-do" onclick="scopeAddTool(\'allow\')">Allow</button>' +
         '</div>' +
       '</div>' +
@@ -6719,7 +6732,7 @@ function renderScopeEditor(container, scoped) {
         '</div>' +
         '<div class="tool-add-row">' +
           '<select class="tool-add-select" id="addToolDeny"><option value="">+ add tool…</option>' + addOpts('deny') + '</select>' +
-          '<input class="tool-add-select" id="addToolDenyCustom" placeholder="or type tool tag…" style="min-width:170px" />' +
+          '<input class="tool-add-select" id="addToolDenyCustom" placeholder="or type tool tag" style="min-width:170px" />' +
           '<button class="tool-add-do" onclick="scopeAddTool(\'deny\')">Deny</button>' +
         '</div>' +
       '</div>' +
@@ -6729,7 +6742,7 @@ function renderScopeEditor(container, scoped) {
     '<div class="drawer-rule-row" style="margin-top:10px">' +
       '<span class="drawer-rule-label">Network</span>' +
       '<button class="net-toggle-btn ' + (netOk ? 'allowed' : 'denied') + '" id="netToggleBtn" onclick="scopeToggleNet()">' +
-        (netOk ? '✓ Allowed' : '✕ Denied') +
+        (netOk ? 'Allowed' : 'Denied') +
       '</button>' +
     '</div>' +
     // Save/Cancel
@@ -6802,7 +6815,7 @@ function scopeToggleNet() {
   if (!btn) return;
   const allowed = !_drawerScoped.deny_network;
   btn.className = 'net-toggle-btn ' + (allowed ? 'allowed' : 'denied');
-  btn.textContent = allowed ? '✓ Allowed' : '✕ Denied';
+  btn.textContent = allowed ? 'Allowed' : 'Denied';
 }
 
 async function scopeSave() {
@@ -6826,7 +6839,7 @@ async function scopeSave() {
     if (sessId !== _drawerSessId) return;
     renderDrawerContent(sessId, ws, { scoped: result.scoped || _drawerScoped, recent_blocked: [] });
   } catch(e) {
-    if (statusEl) { statusEl.textContent = '✗ ' + e.message; statusEl.style.color = '#b91c1c'; }
+    if (statusEl) { statusEl.textContent = e.message; statusEl.style.color = '#b91c1c'; }
   }
 }
 
@@ -6854,7 +6867,7 @@ async function drawerAction(action) {
   } catch(e) {
     document.querySelectorAll('#sessDrawerFooter button').forEach(b => { b.disabled = false; b.style.opacity = ''; });
     const statusEl = document.getElementById('drawerActionStatus');
-    if (statusEl) { statusEl.textContent = '✗ ' + e.message; statusEl.style.color = '#b91c1c'; }
+    if (statusEl) { statusEl.textContent = e.message; statusEl.style.color = '#b91c1c'; }
   }
 }
 
@@ -7329,14 +7342,14 @@ async function toolPolicySet(agent, tool, action){
     if (!agent) {
       if (_agentsCache) { _agentsCache.global_deny_tools = r.deny_tools || []; _agentsCache.global_ask_tools = r.ask_tools || []; }
       renderGlobalTools();
-      toast('✓ '+tool+': '+action+' for every agent');
+      toast(tool+': '+action+' for every agent');
       return;
     }
     const a = (_agentsCache?.agents||[]).find(x=>x.name===agent);
     if (a){ a.deny_tools = r.deny_tools || []; a.ask_tools = r.ask_tools || []; }
     renderAgentControls(agent);
-    toast('✓ '+tool+': '+action);
-  } catch(e){ toast('✗ '+e.message, true); loadAgents(); }
+    toast(tool+': '+action);
+  } catch(e){ toast(e.message, true); loadAgents(); }
 }
 // An agent page is keyed on the instance label, which for a hooked agent is
 // the framework id and for a surface is the name it was started with
@@ -7531,9 +7544,9 @@ async function sessViewAction(action){
       method:'PATCH', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({action, workspace: ws}),
     });
-    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action]||'✓ Done');
+    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action]||'Done');
     openSessionView(sid, ws);
-  } catch(e){ toast('✗ '+e.message, true); }
+  } catch(e){ toast(e.message, true); }
 }
 // A session is a tree, not a list. Grouping is turn -> lane -> event: a turn
 // begins at each model request, and lanes keep a hundred shell calls from
@@ -8503,6 +8516,16 @@ document.getElementById('evtLimit').addEventListener('change',e=>{evtState.limit
 // ── Stats ─────────────────────────────────────────────────────────────────
 // What needs a person, first. Numbers describe; this list says what to do.
 let _attn = {ext: null};
+// Live = the newest screened call is under 5 minutes old. One small request, separate
+// from the feed so its filters cannot hide the newest call.
+async function markLiveCalls(){
+  try{
+    const d = await apiFetch('/api/events?page=1&limit=1&days=1', {timeoutMs:10000});
+    const ts = d.items && d.items[0] && d.items[0].tsAbs;
+    const t = ts ? Date.parse(ts.replace(' UTC', 'Z').replace(' ', 'T')) : NaN;
+    document.getElementById('kpiCallsLabel').classList.toggle('is-live', Date.now() - t < 5 * 60 * 1000);
+  }catch(e){ /* the dot just stays off */ }
+}
 function renderAttention(k){
   const items = [];
   const win = String(k.days)==='1' ? 'last 24 hours' : 'last '+k.days+' days';
@@ -8539,6 +8562,7 @@ async function loadStats(){
     const k=data.kpis||{};
     document.getElementById('kpiSessions').textContent=fmtNum(k.activeSessions||0);
     document.getElementById('kpiToolCalls').textContent=fmtNum(k.toolCallsInspected24h||0);
+    markLiveCalls();
     document.getElementById('kpiDangerous').textContent=fmtNum(k.dangerousCommandsPrevented24h||0);
     const d=k.deltas||{};
     if(d.tools!==undefined){const cls=d.tools>0?'up':'down';document.getElementById('kpiToolsDelta').innerHTML='<span class="'+cls+'">'+(d.tools>0?'+':'')+d.tools+'%</span> vs yesterday';}
@@ -8554,14 +8578,13 @@ async function loadStats(){
     document.getElementById('ringPct').innerHTML=total?pctText.replace('%','<small>%</small>'):'–';
     document.getElementById('ringPassed').textContent=fmtNum(passed);
     document.getElementById('ringBlocked').textContent=fmtNum(blocked);
-    document.getElementById('ringFindings').textContent=fmtNum(findings);
     document.getElementById('kpiFindings').textContent=fmtNum(findings);
     renderAttention({blocked, total, findings, days});
     // The whole window in one sentence a newcomer can read without the charts.
     const sess=k.activeSessions||0, winTxt=String(days)==='1'?'the last 24 hours':'the last '+days+' days';
     document.getElementById('attnSub').textContent = total
-      ? 'In '+winTxt+' Prismor checked '+fmtNum(total)+' agent action'+(total===1?'':'s')+' across '+fmtNum(sess)+' session'+(sess===1?'':'s')+'. '+
-        (blocked ? fmtNum(blocked)+' '+(blocked===1?'was':'were')+' stopped before running; the rest were allowed.' : 'Nothing needed stopping.')
+      ? 'Prismor checked '+fmtNum(total)+' agent action'+(total===1?'':'s')+' across '+fmtNum(sess)+' session'+(sess===1?'':'s')+
+        (blocked ? '. Everything else was allowed.' : ' in '+winTxt+'. Nothing needed stopping.')
       : 'Prismor checks every action an agent takes (commands, file edits, web requests) before it runs.';
     ringChart.data.datasets[0].data=total?[passed,blocked]:[1,0];
     ringChart.update();
@@ -8929,10 +8952,10 @@ async function agentSet(name, fields) {
       if (document.getElementById('page-agent')?.classList.contains('active')) { renderAgentHero(name); renderAgentControls(name); }
     }
     if (fields.enabled === false)      toast(name + ' blocked: all tool calls denied');
-    else if (fields.enabled === true)  toast('✓ ' + name + ' unblocked');
-    else                               toast('✓ ' + name + ' updated');
+    else if (fields.enabled === true)  toast(name + ' unblocked');
+    else                               toast(name + ' updated');
   } catch (e) {
-    toast('✗ ' + e.message, true);
+    toast(e.message, true);
     loadAgents(); // re-sync UI with server state
   }
 }
@@ -9157,9 +9180,9 @@ async function sessAction(sessId, action, workspace, idx) {
       const pill = document.getElementById('pill-' + idx);
       if (pill) pill.innerHTML = statusPill({blockCount:(data.recent_blocked||[]).length}, data.scoped);
     }
-    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
+    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action] || 'Done');
   } catch(e) {
-    toast('✗ ' + e.message, true);
+    toast(e.message, true);
   }
 }
 
@@ -9864,7 +9887,7 @@ async function egressAction(payload) {
     if (result && result.ok) {
       _egress = result.egress || _egress;
       renderEgress();
-      setPolicySaveStatus('egressAddStatus', '✓ Saved · live agents pick it up within 30 s', 'status-ok');
+      setPolicySaveStatus('egressAddStatus', 'Saved · live agents pick it up within 30 s', 'status-ok');
     } else {
       setPolicySaveStatus('egressAddStatus', (result && result.error) || 'Save failed', 'status-err');
     }
@@ -9910,15 +9933,15 @@ document.getElementById('rulesSave').addEventListener('click', async () => {
       const ignored = Array.isArray(result.ignored) ? result.ignored.length : 0;
       setPolicySaveStatus(
         'rulesSaveStatus',
-        '✓ Saved · ' + disabled.length + ' requested off' + (ignored ? ' · ' + ignored + ' pinned and kept on' : ''),
+        'Saved · ' + disabled.length + ' requested off' + (ignored ? ' · ' + ignored + ' pinned and kept on' : ''),
         'status-ok'
       );
       renderRules();
     } else {
-      setPolicySaveStatus('rulesSaveStatus', '✗ ' + (result.error || 'Save failed'), 'status-err');
+      setPolicySaveStatus('rulesSaveStatus', (result.error || 'Save failed'), 'status-err');
     }
   } catch (e) {
-    setPolicySaveStatus('rulesSaveStatus', '✗ ' + e, 'status-err');
+    setPolicySaveStatus('rulesSaveStatus', e, 'status-err');
   }
 });
 
@@ -9934,11 +9957,11 @@ document.getElementById('globalPolicySave').addEventListener('click', async () =
     });
     if (result.ok) {
       _globalPolicyOriginal = yaml;
-      setPolicySaveStatus('globalPolicySaveStatus', '✓ Saved to ' + (result.path||''), 'status-ok');
+      setPolicySaveStatus('globalPolicySaveStatus', 'Saved to ' + (result.path||''), 'status-ok');
     } else {
-      setPolicySaveStatus('globalPolicySaveStatus', '✗ ' + (result.error||'Save failed'), 'status-err');
+      setPolicySaveStatus('globalPolicySaveStatus', (result.error||'Save failed'), 'status-err');
     }
-  } catch(e) { setPolicySaveStatus('globalPolicySaveStatus', '✗ ' + e.message, 'status-err'); }
+  } catch(e) { setPolicySaveStatus('globalPolicySaveStatus', e.message, 'status-err'); }
 });
 document.getElementById('globalPolicyDiscard').addEventListener('click', () => {
   document.getElementById('globalPolicyEditor').value = _globalPolicyOriginal || DEFAULT_GLOBAL_YAML;
@@ -9962,11 +9985,11 @@ document.getElementById('projectPolicySave').addEventListener('click', async () 
     });
     if (result.ok) {
       _projectPolicyOriginal = yaml;
-      setPolicySaveStatus('projectPolicySaveStatus', '✓ Saved to ' + (result.path||''), 'status-ok');
+      setPolicySaveStatus('projectPolicySaveStatus', 'Saved to ' + (result.path||''), 'status-ok');
     } else {
-      setPolicySaveStatus('projectPolicySaveStatus', '✗ ' + (result.error||'Save failed'), 'status-err');
+      setPolicySaveStatus('projectPolicySaveStatus', (result.error||'Save failed'), 'status-err');
     }
-  } catch(e) { setPolicySaveStatus('projectPolicySaveStatus', '✗ ' + e.message, 'status-err'); }
+  } catch(e) { setPolicySaveStatus('projectPolicySaveStatus', e.message, 'status-err'); }
 });
 document.getElementById('projectPolicyDiscard').addEventListener('click', () => {
   document.getElementById('projectPolicyEditor').value = _projectPolicyOriginal || DEFAULT_PROJECT_YAML;
@@ -10204,7 +10227,7 @@ function toggleLogsPop(k) {
   _logsPop = { k, q: '' };
   const label = (LOG_FACETS.find(f => f[0] === k) || [k, k])[1];
   const pop = document.getElementById('logsPop');
-  pop.innerHTML = '<input class="finput logs-pop-q" type="search" spellcheck="false" autocomplete="off" placeholder="Search ' + label.toLowerCase() + '…" ' +
+  pop.innerHTML = '<input class="finput logs-pop-q" type="search" spellcheck="false" autocomplete="off" placeholder="Search ' + label.toLowerCase() + '" ' +
     'oninput="_logsPop.q=this.value;renderLogsPopList()"><div class="logs-pop-list" id="logsPopList"></div><div class="logs-pop-foot" id="logsPopFoot"></div>';
   pop.hidden = false;
   renderLogsFilterBar(); placeLogsPop(); renderLogsPopList();
@@ -10267,7 +10290,7 @@ async function openLogEvent(id) {
     '<span class="mcp-drawer-nav">' +
       '<button class="sess-drawer-close" title="Newer (↑ or k)" ' + (i > 0 ? 'onclick="logStep(-1)"' : 'disabled') + '>↑</button>' +
       '<button class="sess-drawer-close" title="Older (↓ or j)" ' + (i >= 0 && i < items.length - 1 ? 'onclick="logStep(1)"' : 'disabled') + '>↓</button>' +
-      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeLogDrawer()">✕</button></span>';
+      '<button class="sess-drawer-close" title="Close (Esc)" onclick="closeLogDrawer()" aria-label="Close"><svg class="icon"><use href="#i-x"/></svg></button></span>';
   const body = document.getElementById('logDrawerBody');
   body.innerHTML = '<div class="mcp-hint">Loading the record…</div>';
   let e;
@@ -10380,7 +10403,7 @@ function openSelMenu(s) {
   _selOpen = { s, btn: s._btn, q: '', act: Math.max(0, s.selectedIndex) };
   const m = selMenuEl();
   m.innerHTML = (opts.length > 8 ? '<div class="sel-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>' +
-      '<input type="search" spellcheck="false" autocomplete="off" placeholder="Search…" aria-label="Search options"></div>' : '') +
+      '<input type="search" spellcheck="false" autocomplete="off" placeholder="Search" aria-label="Search options"></div>' : '') +
     '<div class="sel-list" role="listbox"></div>';
   m.hidden = false;
   s._btn.setAttribute('aria-expanded', 'true'); s._btn.classList.add('open');

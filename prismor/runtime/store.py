@@ -225,6 +225,10 @@ def _compile_secret_patterns(patterns: Tuple[str, ...]) -> Optional["re.Pattern[
     return re.compile("|".join(ok)) if ok else None
 
 
+_URL_IN_TEXT = re.compile(r"(?:https?|wss?)://[^\s\"'<>`]+")
+_URL_PARAM = re.compile(r"[?&;]([A-Za-z0-9_.\-]+)=([^&;#\s\"'<>`]+)")
+
+
 def mask_secret_patterns(text: str) -> str:
     """Mask credentials that match a cloak detection pattern but were never
     registered in the vault: a key pasted straight into a prompt otherwise
@@ -242,6 +246,17 @@ def mask_secret_patterns(text: str) -> str:
     # upstream (URL passwords, AWS secret keys, PEM bodies) and goes beyond the
     # cloak set, so the log never keeps what the upstream was spared.
     spans = [m.span() for m in rx.finditer(text)] if rx else []
+    # A key in a URL parameter (``?exaApiKey=<uuid>``) has no recognisable
+    # shape, only a recognisable name. MCP servers put keys there routinely.
+    if "://" in text:
+        try:
+            from prismor.runtime.discover import _query_key_is_secret
+            for u in _URL_IN_TEXT.finditer(text):
+                for m in _URL_PARAM.finditer(u.group(0)):
+                    if _query_key_is_secret(m.group(1)):
+                        spans.append((u.start() + m.start(2), u.start() + m.end(2)))
+        except Exception:
+            pass
     try:
         from prismor.runtime.data_boundary import _SECRET_PATTERNS
         from prismor.runtime.redaction import _URL_PASSWORD
