@@ -100,6 +100,7 @@ _STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".png": "image/png"}
 # Routes whose JSON carries raw event text (commands, URLs, prompts, results).
 _EVENT_TEXT_ROUTES = frozenset({
     "/api/events", "/api/logs", "/api/logs/event", "/api/findings", "/api/approvals", "/api/sessions",
+    "/api/allow-rules",
 })
 
 
@@ -781,6 +782,18 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": str(exc)}, status=500)
             return
 
+        if path == "/api/allow-rules":
+            workspace = self._resolve_workspace(qs) or Path.cwd()
+            try:
+                from prismor.runtime import agent_approvals as aa
+                self._send_json({"rules": aa.collect(workspace), "off": aa.off_rules(), "added": aa.added_rules(),
+                                 "addable": {a: {"kinds": k, "projects": sorted(p for p in aa.add_targets(workspace, a) if p)}
+                                             for a, k in aa.ADDABLE.items()},
+                                 "targets": {a: sorted(t) for a, t in aa.targets(workspace).items()}})
+            except Exception as exc:
+                self._send_json({"error": str(exc)}, status=500)
+            return
+
         if path == "/api/extensions":
             workspace = self._resolve_workspace(qs) or Path.cwd()
             try:
@@ -1219,6 +1232,39 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "No such request (it may have expired)."}, status=404)
                 return
             self._send_json({"ok": True, "status": rec.get("status"), "was_waiting": bool(rec.get("was_waiting"))})
+            return
+
+        if path == "/api/allow-rules":
+            # Turn an agent's Always Allow rule off (or always-ask), back on, or narrow it to one
+            # project. Agents are kept off this route by prismor-self-edit; "on"
+            # grants, so like an approval it is refused while unlocked.
+            from prismor.runtime import agent_approvals as aa, unlock
+            try:
+                body = self._read_json_body()
+                action = str(body.get("action") or "")
+                ids = [str(i) for i in body.get("ids") or []][:500]
+                workspace = _SERVER_WORKSPACE or Path.cwd()
+                if action in ("on", "remove") and unlock.is_open():
+                    self._send_json({"error": "An unlock window is open. Close it, then try again."}, status=403)
+                    return
+                if action == "add":
+                    aa.add_rule(workspace, str(body.get("kind") or ""), str(body.get("rule") or ""),
+                                str(body.get("project") or ""), str(body.get("agent") or ""))
+                    ids = []
+                for ident in ids:
+                    if action == "remove":
+                        aa.remove_added(ident)
+                    elif action in ("off", "ask"):
+                        aa.turn_off(workspace, ident, always_ask=action == "ask")
+                    elif action == "on":
+                        aa.turn_on(ident)
+                    elif action == "narrow":
+                        aa.narrow(workspace, ident, str(body.get("project") or ""))
+                    else:
+                        raise ValueError("unknown action")
+                self._send_json({"ok": True, "changed": len(ids)})
+            except (KeyError, ValueError, OSError) as exc:
+                self._send_json({"error": str(exc).strip("'\"")}, status=400)
             return
 
         if path == "/api/policy/floor-off":
