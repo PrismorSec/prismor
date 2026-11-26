@@ -6639,7 +6639,7 @@ function renderDrawerContent(sessId, ws, data) {
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   } else {
     footerEl.innerHTML =
-      '<button class="drawer-toggle pause" title="Stop screening this session: nothing is blocked or flagged until you resume." onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause this session</button>' +
+      '<button class="drawer-toggle pause" title="Suspend this session&#39;s scoped rules until you resume. Policy and floor rules still block, and findings are still recorded." onclick="drawerAction(\'pause\')"><svg class="icon"><use href="#i-pause"/></svg> Pause scoped rules</button>' +
       '<button class="drawer-toggle clear" title="Drop the per-session tool scope Prismor derived from the prompt. Global and project policy still apply." onclick="drawerAction(\'clear\')">Clear scope</button>' +
       '<div class="drawer-status" id="drawerActionStatus"></div>';
   }
@@ -6833,7 +6833,7 @@ async function scopeSave() {
 async function drawerAction(action) {
   const sessId = _drawerSessId;
   const ws     = _drawerWs;
-  if (action === 'pause' && !(await askConfirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session. Nothing is blocked or flagged until you resume.'))) return;
+  if (action === 'pause' && !(await askConfirm('Pause the scoped rules for this session?\n\nPolicy and floor rules still block, and findings are still recorded.'))) return;
 
   // Disable all footer buttons immediately to prevent double-clicks
   document.querySelectorAll('#sessDrawerFooter button').forEach(b => { b.disabled = true; b.style.opacity = '0.5'; });
@@ -7433,7 +7433,7 @@ function renderSessionView(data){
     act.innerHTML = '<button class="sess-act-btn resume" onclick="sessViewAction(\'resume\')">Resume Prismor</button>'+
       '<button class="sess-act-btn clear" onclick="sessViewAction(\'clear\')">Clear scope</button>';
   } else {
-    act.innerHTML = '<button class="sess-act-btn pause" onclick="sessViewAction(\'pause\')">Pause this session</button>'+
+    act.innerHTML = '<button class="sess-act-btn pause" onclick="sessViewAction(\'pause\')">Pause scoped rules</button>'+
       '<button class="sess-act-btn clear" onclick="sessViewAction(\'clear\')">Clear scope</button>';
   }
 
@@ -7524,14 +7524,14 @@ function renderSessionContext(ctx){
 }
 async function sessViewAction(action){
   const sid = _sessionViewState.sessionId, ws = _sessionViewState.workspace;
-  if (action==='pause' && !(await askConfirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session until you resume.'))) return;
+  if (action==='pause' && !(await askConfirm('Pause the scoped rules for this session?\n\nPolicy and floor rules still block, and findings are still recorded.'))) return;
   if (action==='clear' && !(await askConfirm('Clear the scoped rules for this session?\n\nThe session falls back to the full default policy.'))) return;
   try {
     await apiFetch('/api/sessions/'+encodeURIComponent(sid)+'/control', {
       method:'PATCH', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({action, workspace: ws}),
     });
-    toast({pause:'Session paused: protection off', resume:'Session resumed', clear:'Scope cleared'}[action]||'✓ Done');
+    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action]||'✓ Done');
     openSessionView(sid, ws);
   } catch(e){ toast('✗ '+e.message, true); }
 }
@@ -9130,14 +9130,14 @@ function renderSessDetail(el, data, idx) {
   const a = (act, cls, label, tip) => '<button class="sess-act-btn ' + cls + '" title="' + safeAttr(tip) + '" onclick="sessAction(\'' +
     safeJsArg(el.dataset.sid || '') + '\',\'' + act + '\',\'' + safeJsArg(el.dataset.ws || '') + '\',' + idx + ')">' + label + '</button>';
   const acts = (scoped && scoped.paused
-      ? a('resume', 'resume', 'Resume protection', 'Prismor checks this session\'s actions again.')
-      : a('pause', 'pause', 'Pause protection', 'Stop checking this session until you resume. Nothing is blocked meanwhile.')) +
+      ? a('resume', 'resume', 'Resume scoped rules', 'Apply this session\'s scoped rules again.')
+      : a('pause', 'pause', 'Pause scoped rules', 'Suspend the rules derived from this session\'s prompts. Policy and floor rules still block, and findings are still recorded.')) +
     (scoped ? a('clear', 'clear', 'Clear scope', 'Drop the per-session limits Prismor derived from the prompt. Your normal policy still applies.') : '');
   el.innerHTML = scopedHtml + blocksHtml + '<div class="sess-detail-acts">' + acts + '</div>';
 }
 
 async function sessAction(sessId, action, workspace, idx) {
-  if (action === 'pause' && !(await askConfirm('Pause Prismor for this session?\n\nProtection is fully disabled for the session. Nothing is blocked or flagged until you resume.'))) return;
+  if (action === 'pause' && !(await askConfirm('Pause the scoped rules for this session?\n\nPolicy and floor rules still block, and findings are still recorded.'))) return;
   if (action === 'clear' && !(await askConfirm('Clear the scoped rules for this session?\n\nThe session falls back to the full default policy.'))) return;
   try {
     const ws = workspace || _serverWorkspace || '';
@@ -9157,7 +9157,7 @@ async function sessAction(sessId, action, workspace, idx) {
       const pill = document.getElementById('pill-' + idx);
       if (pill) pill.innerHTML = statusPill({blockCount:(data.recent_blocked||[]).length}, data.scoped);
     }
-    toast({pause:'Session paused: protection off', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
+    toast({pause:'Scoped rules paused for this session', resume:'Session resumed', clear:'Scope cleared'}[action] || '✓ Done');
   } catch(e) {
     toast('✗ ' + e.message, true);
   }
@@ -9345,7 +9345,7 @@ function renderRuntime(r) {
   if (!p) return;
   const until = r.paused_until ? 'Paused until ' + new Date(r.paused_until * 1000).toLocaleString() : 'Paused';
   p.innerHTML = !r.paused
-    ? '<button class="upgrade-btn" title="Pause Prismor on this machine, for every agent and session: nothing is blocked for 24 h; screening and telemetry keep running" onclick="togglePause(true)"><svg class="icon"><use href="#i-pause"/></svg> Pause all</button>'
+    ? '<button class="upgrade-btn" title="Pause Prismor on this machine, for every agent and session: only floor rules block for 24 h; screening and telemetry keep running" onclick="togglePause(true)"><svg class="icon"><use href="#i-pause"/></svg> Pause all</button>'
     : r.paused_by_org
       ? '<span class="upgrade-btn rt-paused" title="' + safeAttr(until) + '. Only an org admin can resume it.">Paused by org</span>'
       : '<button class="upgrade-btn rt-paused" title="' + safeAttr(until) + '. Click to resume." onclick="togglePause(false)"><span class="rt-dot off"></span>All paused · Resume</button>';
@@ -9354,7 +9354,7 @@ async function loadRuntime() {
   try { renderRuntime(await apiFetch('/api/runtime')); } catch(e) { console.error('[prismor] runtime:', e); }
 }
 async function togglePause(paused) {
-  if (paused && !(await askConfirm('Pause Prismor on this machine?\n\nNothing is blocked for 24 hours (or until you resume). Screening and telemetry keep running.'))) return;
+  if (paused && !(await askConfirm('Pause Prismor on this machine?\n\nOnly floor rules block for 24 hours (or until you resume). Screening and telemetry keep running.'))) return;
   try {
     renderRuntime(await apiFetch('/api/pause', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({paused})}));
     toast(paused ? 'Prismor paused for 24 h' : 'Prismor resumed');

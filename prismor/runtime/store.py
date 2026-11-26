@@ -4026,7 +4026,7 @@ def _session_scope_summary(scoped: Dict[str, Any]) -> str:
     if not scoped:
         return "No session scope. This session follows the base policy chain below."
     if scoped.get("paused"):
-        return "Prismor is paused for this session. No tool calls are blocked or flagged until resumed."
+        return "Scoped rules are paused for this session. Policy and floor rules still apply."
     parts: List[str] = []
     allowed = scoped.get("allowed_tools") or []
     denied = scoped.get("deny_tools") or []

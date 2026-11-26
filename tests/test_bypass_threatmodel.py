@@ -142,8 +142,18 @@ def _dispatch(tmp_path, command):
 
 def test_pause_keeps_floor_blocking(tmp_path, monkeypatch):
     from prismor.runtime import pause
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))  # the hook's home
     pause.set_paused(600, reason="test")
     assert pause.active_state() is not None
+    run = _dispatch(tmp_path, "rm -rf /")
+    assert run.returncode == 2
+    out = run.stdout + run.stderr
+    assert "a pause does not lift it" in str(out)
+
+
+def test_session_pause_keeps_floor_blocking(tmp_path):
+    from prismor.runtime.store import update_session_control
+    update_session_control(tmp_path, "s1", "pause")  # _dispatch's session id
     assert _dispatch(tmp_path, "rm -rf /").returncode == 2
 
 
@@ -199,3 +209,49 @@ def test_asserted_subject_off_device_surface_is_unchanged(monkeypatch):
     alice = Subject(user_id="alice", source="explicit")
     assert _apply_rule_exemptions(findings, ex, session_id="s", subject=alice,
                                   surface="eval-server") == []
+
+
+def test_hard_pause_lifts_floor_but_not_self_protection(tmp_path, monkeypatch):
+    from prismor.runtime import pause
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    pause.set_paused(600, reason="test", floor=True)
+    assert pause.lifts_floor(pause.active_state())
+    assert _dispatch(tmp_path, "rm -rf /").returncode == 0
+    run = _dispatch(tmp_path, f"rm -f {tmp_path}/home/pause.key")
+    assert run.returncode == 2
+    assert "protects Prismor itself" in run.stdout + run.stderr
+
+
+def test_forged_floor_flag_is_ignored(tmp_path, monkeypatch):
+    import json as _json
+    from prismor.runtime import pause
+    monkeypatch.setenv("PRISMOR_HOME", str(tmp_path / "home"))
+    pause.set_paused(600)
+    rec = _json.loads(pause.pause_path().read_text())
+    rec["floor"] = True  # added after signing
+    pause.pause_path().write_text(_json.dumps(rec))
+    assert pause.active_state() is None
+    assert _dispatch(tmp_path, "rm -rf /").returncode == 2
+
+
+def test_hard_pause_needs_terminal_and_password(tmp_path, monkeypatch):
+    from unittest import mock
+    from prismor.runtime import cli, unlock
+    with mock.patch.object(cli.sys.stdin, "isatty", return_value=False), \
+         mock.patch.object(unlock, "remaining_seconds", return_value=600):
+        assert "needs a terminal" in cli._pause_refusal("pause", tmp_path, floor=True)
+    with mock.patch.object(cli.sys.stdin, "isatty", return_value=True), \
+         mock.patch.object(unlock, "is_configured", return_value=False):
+        assert "set-password" in cli._pause_refusal("pause", tmp_path, floor=True)
+    with mock.patch.object(cli.sys.stdin, "isatty", return_value=True), \
+         mock.patch.object(unlock, "is_configured", return_value=True), \
+         mock.patch("getpass.getpass", return_value="x"), \
+         mock.patch.object(unlock, "verify", return_value=(False, "wrong password")):
+        assert cli._pause_refusal("pause", tmp_path, floor=True) == "wrong password"
+
+
+def test_org_pause_never_lifts_floor():
+    from prismor.runtime import pause
+    assert not pause.lifts_floor({"source": "org", "floor": True})
+    assert not pause.lifts_floor({"source": "local"})
+    assert not pause.lifts_floor(None)
