@@ -149,6 +149,33 @@ The built-in lists:
 
 `.env` and `~/.ssh` stay readable by default, because dev servers load `.env` and `git push` reads your SSH key. Add them to `hide` for agents that don't need them. A bare `prismor status`, `prismor check` or `prismor query` runs outside the sandbox, because those commands read and write `~/.prismor`. `prismor supplychain` runs inside it, because it starts package managers.
 
+## Set it for a team from the console
+
+![The console's Shell sandbox editor: sandbox on, enforce mode, ring 2, .env hidden, port 22 direct](sandbox/console-shell-sandbox.png)
+
+1. In the console, open **Policies**, open the policy that covers the devices, and open **Shell sandbox**.
+2. Set the mode, ring and paths. The change is staged until you publish.
+3. Enrolled devices pull the signed policy, usually within five minutes. No action is needed on the device.
+
+What a device does with it:
+
+| Where the agent runs | Result with `mode: enforce` |
+|---|---|
+| Claude Code, Gemini CLI or Grok on macOS or Linux | Shell commands run inside the sandbox |
+| Codex or Qwen Code with `PRISMOR_REWRITE_AUTO_APPROVE=1` | Shell commands run inside the sandbox |
+| Codex and Qwen Code without that variable, Copilot CLI, OpenCode, Crush, Goose, Continue, Antigravity, OpenHands | **Every shell command is blocked** |
+| Cursor, Windsurf, Kiro, Hermes and other hooked agents | **Commands run unconfined, with no message** |
+| Linux without a working `bwrap` | Shell commands are blocked |
+| Windows | Commands run unconfined |
+
+Before you publish:
+
+- The organization policy applies only to organization-managed workspaces. Personal repositories keep their local setting.
+- The organization's `settings.sandbox` block replaces the local block as a whole, including a person's own `hide`, `writable` and `outer` values. `prismor sandbox off` on the device does not override it.
+- Check who uses which agent. Start with a policy that covers a few Claude Code users on macOS.
+- `mode: observe` confines nothing and records no refusals, so it does not preview what enforce would refuse. Use `prismor sandbox try` for that.
+- The console does not show which devices are confined. On a device, `prismor sandbox status` does.
+
 ## With Cloak
 
 Claude Code runs PreToolUse hooks in parallel and keeps whichever rewrite finishes last, so the sandbox and the cloak hook can't both rewrite the same command. When the cloak hook is installed, it does both jobs, in this order:
@@ -169,6 +196,8 @@ Placeholders resolve, and output is scrubbed, outside the sandbox, where the vau
 
 On macOS, everything above is enforced by Seatbelt.
 
+Windows has no sandbox. Commands run unconfined there, and Prismor does not block them for that reason.
+
 On Linux, bubblewrap (`apt install bubblewrap`) enforces the same file and credential limits, with these differences:
 
 - **Network.** Ring 2 runs the command in its own network namespace with loopback only. A bridge carries the proxy into it, and each new host is screened as a Prismor `network` event, so it shows in the session trail. `direct_ports` has no effect.
@@ -181,7 +210,6 @@ On Linux, bubblewrap (`apt install bubblewrap`) enforces the same file and crede
 In enforce mode a shell command runs inside the sandbox or it does not run. When Prismor can't confine a command, it blocks the command and runs nothing. These are the cases:
 
 - The engine is missing or can't start (no `bwrap`, an AppArmor block, `sandbox-exec` fails).
-- The OS has no sandbox (Windows).
 - The agent already runs inside another sandbox, and you have not chosen to rely on it (see [Running inside an outer sandbox](#running-inside-an-outer-sandbox)).
 - The agent's hooks can't rewrite a command (see [Agents](#agents)).
 - With Cloak installed, the sandbox settings for the project just changed. One call is blocked, and the agent is told to run it again.
@@ -231,7 +259,7 @@ Limits:
 
 ## Agents
 
-The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On other agents, including Cursor, Windsurf, Kiro, Copilot CLI, OpenCode, OpenClaw, Hermes and OpenHands, an enforced sandbox blocks their shell commands, because it cannot wrap them. Cursor is blocked at `beforeShellExecution`, Windsurf at `pre_run_command`. Use `mode: observe` there, or run commands yourself through `prismor sandbox run -- <command>`.
+The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On Copilot CLI, OpenCode and the other agents that use Claude's `PreToolUse` event, an enforced sandbox blocks shell commands, because it cannot wrap them. On Cursor, Windsurf, Kiro and Hermes, the sandbox is not applied: commands run unconfined. Do not count on the sandbox there. To confine one command yourself, use `prismor sandbox run -- <command>`.
 
 ## Known limits
 
