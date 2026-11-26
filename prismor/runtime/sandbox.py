@@ -526,6 +526,64 @@ def _run_bwrap(command: str, root: Path, config: Dict[str, Any], engine: Any = N
                               egress=egress_decider(engine, _note) if engine is not None else None)
 
 
+# ── denials ────────────────────────────────────────────────────────────────
+#
+# The kernel refuses inside the command's own process, so the only place a
+# denial shows is the command's output. Read it there, after the call.
+# ponytail: text heuristic. A command that prints these lines for another reason
+# is reported too, and a program that swallows the error is missed.
+
+_NET_DENIAL = re.compile(r"\[prismor\] sandbox:? blocked (?:connection to )?\S+?:\d+")
+_FS_DENIAL = re.compile(
+    r": Operation not permitted\s*$|EPERM: operation not permitted|"
+    r"operation not permitted: \S|\[Errno 1\] Operation not permitted|Read-only file system\s*$")
+
+
+def denials(output: str) -> List[Tuple[str, str]]:
+    """``(kind, line)`` for each distinct line of ``output`` that shows a refusal."""
+    found: Dict[str, str] = {}
+    for line in output.splitlines():
+        kind = "network" if _NET_DENIAL.search(line) else "file" if _FS_DENIAL.search(line) else ""
+        if kind:
+            found.setdefault(line.strip()[:200], kind)
+    return [(kind, line) for line, kind in found.items()][:5]
+
+
+def denial_finding(event: Dict[str, Any], config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """A finding for a finished shell call the sandbox refused something to, else None."""
+    cfg = effective_config(config)
+    if (event.get("type") != "shell" or str(event.get("agent_event") or "").startswith("Pre")
+            or not enforcing(cfg) or not supported() or outer_trusted(cfg)
+            or is_exempt(str(event.get("command") or ""))):
+        return None
+    texts = [str(event.get(k) or "") for k in ("response", "stdout", "stderr")]
+    hits = denials("\n".join(dict.fromkeys(texts)))
+    if not hits:
+        return None
+    return {
+        "ruleId": "sandbox-denied", "category": "sandbox", "severity": "MEDIUM",
+        # The call is over: this records what the OS refused, it blocks nothing.
+        "action": "warn", "mode": "observe",
+        "title": "Sandbox refused " + " and ".join(sorted({kind for kind, _ in hits})) + " access",
+        "evidence": "\n".join(line for _, line in hits),
+    }
+
+
+def explain_denial(finding: Dict[str, Any]) -> str:
+    """What the agent is told, so it neither guesses nor retries blindly."""
+    title = str(finding.get("title") or "")
+    why = []
+    if "file" in title:
+        why.append("Commands may write only the project, temp dirs and package caches (plus "
+                   "settings.sandbox.writable); git hooks, agent config and credential stores are locked.")
+    if "network" in title:
+        why.append("Network goes through a proxy that allows only what settings.egress allows.")
+    return ("Prismor sandbox: the refused access in the output above is most likely the OS sandbox, "
+            "not a bug in the command or the machine. " + " ".join(why) + " Do not retry unchanged or work around it. "
+            "If the access is needed, tell the user what was refused; only they can change the policy "
+            "(see `prismor sandbox status`).")
+
+
 # ── hook rewrite ───────────────────────────────────────────────────────────
 
 def project_root(payload: Dict[str, Any], fallback: Path) -> Path:

@@ -840,6 +840,12 @@ def _result_text(value: Any) -> str:
         for candidate in (value, *(v for v in value.values() if isinstance(v, dict))):
             for key in ("content", "text", "stdout", "output"):
                 inner = candidate.get(key)
+                if key == "stdout" and isinstance(inner, str) and not inner.strip():
+                    # Quiet stdout, loud stderr (`touch x || true`): keep the
+                    # stderr as text, not one JSON-escaped line.
+                    err = candidate.get("stderr")
+                    if isinstance(err, str) and err.strip():
+                        return err
                 if isinstance(inner, str) and inner.strip():
                     extra = candidate.get("stderr") if key == "stdout" else None
                     return inner + ("\n" + extra if isinstance(extra, str) and extra else "")
