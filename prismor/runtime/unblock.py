@@ -113,6 +113,31 @@ def _rule_override_steps(rule_id: str, finding: Dict[str, Any], workspace: Optio
     return steps
 
 
+def _other_window_note(rule_id: str, finding: Dict[str, Any],
+                       unlock_workspace: Optional[Path]) -> List[str]:
+    """Say so when a window is open but scoped to a folder this call is not in.
+
+    Not for what no window lifts (its credential, the trail): there "unlock
+    this folder" would be a dead end.
+    """
+    if unlock_workspace is None:
+        return []
+    try:
+        from prismor.runtime import unlock as _unlock
+        if not _unlock.may_lift(rule_id, str(finding.get("evidence") or "")):
+            return []
+        grant = _unlock.active_state()
+        if not grant or _unlock.is_open(unlock_workspace):
+            return []
+    except Exception:
+        return []
+    return [
+        f"An unlock window is open, but it covers {grant.get('workspace')} and this call "
+        f"is in {unlock_workspace}. Agent: do not change folder to use it; tell the user. "
+        f"If they want this folder unlocked, they run  prismor unlock  from {unlock_workspace}.",
+    ]
+
+
 def _self_protection_steps(rule_id: str, workspace: Optional[Path]) -> List[str]:
     """Blocks on the rules Prismor uses to guard itself.
 
@@ -447,6 +472,7 @@ def unblock_steps(
     session_id: Optional[str] = None,
     org_managed: bool = False,
     enrolled: bool = False,
+    unlock_workspace: Optional[Path] = None,
 ) -> List[str]:
     """Ordered narrow-to-broad steps a human can take to clear this block."""
     rule_id = str(finding.get("ruleId") or "").strip()
@@ -454,7 +480,7 @@ def unblock_steps(
         return []
 
     if rule_id in _SELF_PROTECTION_RULE_IDS:
-        return _self_protection_steps(rule_id, workspace)
+        return _other_window_note(rule_id, finding, unlock_workspace) + _self_protection_steps(rule_id, workspace)
 
     if rule_id.startswith(("tag-rule:", "tool-contract:")) and org_managed:
         return [
@@ -490,6 +516,7 @@ def format_unblock(
     session_id: Optional[str] = None,
     org_managed: bool = False,
     enrolled: bool = False,
+    unlock_workspace: Optional[Path] = None,
 ) -> str:
     """Render the steps as a block of text, or "" when there is nothing to say."""
     from prismor.runtime import system_install as _si
@@ -510,6 +537,7 @@ def format_unblock(
         session_id=session_id,
         org_managed=org_managed,
         enrolled=enrolled,
+        unlock_workspace=unlock_workspace,
     )
     if not steps:
         return "\n".join(_review_lines(finding, session_id, enrolled)).lstrip("\n")
