@@ -376,10 +376,6 @@ def list_registered_workspaces() -> List[Path]:
 
 def infer_default_workspace(cwd: Path) -> Path:
     resolved = cwd.resolve()
-    # Standing inside the runtime package checkout (prismor/runtime): the
-    # workspace is the repo root two levels up.
-    if resolved.name == "runtime" and resolved.parent.name == "prismor":
-        return resolved.parent.parent
     # Run from a subdirectory, the workspace is the nearest ancestor that holds
     # a project policy (.prismor/policy.yaml) or a git checkout (.git): the
     # closest one wins. $HOME is never a workspace just because ~/.prismor

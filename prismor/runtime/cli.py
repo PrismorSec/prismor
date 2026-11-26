@@ -2020,11 +2020,18 @@ def main(argv: Optional[List[str]] = None) -> None:
         # to the repo the agent is actually running in (payload cwd → git root),
         # not to whichever directory `setup --scope global` happened to run
         # from. An explicit --workspace / PRISMOR_WORKSPACE still wins.
+        # An unlock window is scoped to a folder, so it must be read with the
+        # same resolver `prismor unlock` used to name it, not the git root.
+        _unlock_ws = workspace
         if not ws_value:
             _cwd = (payload.get("cwd") or payload.get("workspace")
                     or (payload.get("workspace_roots") or payload.get("workspacePaths") or [None])[0])
             if isinstance(_cwd, str) and _cwd:
                 workspace = _git_root_or_self(Path(_cwd))
+                try:
+                    _unlock_ws = infer_default_workspace(Path(_cwd))
+                except (OSError, RuntimeError, ValueError):
+                    _unlock_ws = workspace  # the narrower git-root scope
         register_workspace(workspace)
         # A sibling agent's hooks vanishing is only visible from a hook that
         # still runs. Rate-limited inside; never affects this call's verdict.
@@ -2560,8 +2567,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     blocking.get("evidence"), event.get("command"), event.get("path")))
                 from prismor.runtime import unlock as _unlock
                 if (_rid in _SELF_PROTECTION_RULE_IDS and _unlock.may_lift(_rid, _target)
-                        and _unlock.is_open(workspace)):
-                    _left = _unlock.remaining_seconds(workspace)
+                        and _unlock.is_open(_unlock_ws)):
+                    _left = _unlock.remaining_seconds(_unlock_ws)
                     sys.stderr.write(
                         f"[prismor] self-edit allowed: unlock window open "
                         f"({_left}s left, rule: {_rid})\n"
@@ -2708,6 +2715,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                     session_id=normalized["sessionId"],
                     org_managed=_scope.is_managed(workspace),
                     enrolled=_identity.is_enrolled(),
+                    unlock_workspace=_unlock_ws,
                 )
             except Exception:
                 pass  # best-effort — a block must never depend on its own help text
