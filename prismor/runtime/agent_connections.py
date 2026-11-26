@@ -87,10 +87,7 @@ class ConnectionPolicy:
         for aid, spec in specs:
             pol.names[aid] = str(spec.get("name") or aid)
             for alias in [aid, spec.get("name"), *(spec.get("aliases") or [])]:
-                owner = pol._claim(alias, aid)
-                if owner and owner != aid:
-                    sys.stderr.write(f"[prismor] agent_connections: {alias!r} names both {owner} and {aid}; "
-                                     f"it resolves to {owner}. Give {aid} a distinct name or alias.\n")
+                pol._claim(alias, aid)
             if spec.get("public_key"):
                 pol.keys[aid] = str(spec["public_key"])
         # ponytail: "crewai:Deploy Engineer" also answers to the bare name, so an
@@ -119,15 +116,14 @@ class ConnectionPolicy:
                 })
         return pol
 
-    def _claim(self, alias: Any, aid: str) -> Optional[str]:
-        """Register ``alias`` for ``aid``; the agent that holds it (first wins)."""
+    def _claim(self, alias: Any, aid: str) -> None:
+        """Register ``alias`` for ``aid``. First claim wins, silently: this runs
+        in every hook, where anything on stderr reads as a hook error."""
         key = norm(alias)
         if not alias or not key:  # "-" or "/" normalizes to nothing: it would match an unnamed sender
-            return None
-        owner = self._alias.setdefault(key, aid)
-        if owner != aid:
+            return
+        if self._alias.setdefault(key, aid) != aid:
             self._ambiguous.add(key)
-        return owner
 
     def ambiguous(self, name: Any) -> bool:
         """``name`` is claimed by more than one agent, so it can't say which."""
