@@ -3058,7 +3058,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         _sandbox_gap = None
         _sandbox_strict = False
         try:
-            if _hook_event == "PreToolUse" and event.get("type") == "shell" and _hook_claimed:
+            # Any native pre-shell event (Cursor beforeShellExecution, Windsurf
+            # pre_run_command, Kiro preToolUse), not only Claude's name for it.
+            # PermissionRequest repeats a call PreToolUse already handled.
+            from prismor.runtime.hooks import _is_pre_action
+            if (_is_pre_action(_hook_event) and _hook_event != "PermissionRequest"
+                    and event.get("type") == "shell" and _hook_claimed):
                 from prismor.runtime import sandbox as _sandbox
                 _sandbox_cfg = _sandbox.effective_config(getattr(_current_engine, "sandbox_config", {}))
                 # No OS sandbox on this platform (Windows): a config written

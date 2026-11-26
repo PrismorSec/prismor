@@ -1,6 +1,7 @@
 ## [Unreleased]
 
 ### Fixed
+- **Behavior change: an enforced sandbox now blocks shell commands on Cursor, Windsurf and Kiro CLI 2.x.** With `settings.sandbox.mode: enforce`, their shell commands ran unconfined with no message, because the sandbox only looked at events named `PreToolUse` (CWE-636). They are now blocked, as on other agents that cannot rewrite input. To keep the old behavior, set `mode: observe`. See [Prismor Sandbox](docs/sandbox.md#agents).
 - **Two agents with one name no longer print an `agent_connections` warning from hooks.** Claude Code showed it as the first line of a "SessionStart hook error". The first claim of a name still wins.
 
 ### Added
