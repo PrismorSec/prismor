@@ -331,10 +331,11 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
     the shell expands the body), any match overlapping an executable command
     substitution (``$(...)`` or ```...```) is live code, not inert text.
     ``bash <<EOF`` feeds the body to an interpreter and stays live, and so does
-    ``cat > x.py <<EOF ... EOF && python3 x.py``: the interpreter rule above
-    scans the whole command, so a body that is executed later in the same call
-    is never inert. A body that is written now and run in a later call is
-    staged-execution's job.
+    ``cat > x.py <<EOF ... EOF && python3 x.py``: an interpreter elsewhere in
+    the command keeps the body live unless the heredoc has a quoted delimiter
+    and writes a file that the rest of the command cannot execute. A ``for x in
+    "..." "..."`` word list is inert only when every body command is a passive
+    sink. A body written now and run in a later call is staged-execution's job.
     """
     if match_start < 0 or match_end > len(command):
         return False
@@ -363,6 +364,8 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
                 match_start < h.body_start + b and trimmed > h.body_start + a
                 for a, b in command_substitution_spans(body)
             ))
+        if h.body_start <= lead and trimmed <= h.body_end and _is_unexecuted_file_heredoc(command, h, hdocs, spans, bare):
+            return True
 
     for word in bare.replace(_SEPARATORS[0], " ").replace(_SEPARATORS[1], " ").replace(_SEPARATORS[2], " ").split():
         if word.rsplit("/", 1)[-1] in _INTERPRETERS:
@@ -407,6 +410,9 @@ def is_inert_match(command: str, match_start: int, match_end: int) -> bool:
             trimmed_end -= 1
         if not (match_start >= start and trimmed_end <= end + 1):
             continue
+        for_res = _for_loop_inert(command, bare, spans, start, end)
+        if for_res is not None:
+            return for_res
         seg_start = 0
         for k in range(start):
             if _is_separator(bare, k):
@@ -996,9 +1002,13 @@ def data_heredoc_spans(command: str) -> List[Tuple[int, int]]:
     a shell would do, and no shell reads these bodies. A rule that no longer
     matches once they are blanked matched only data. Callers apply this to
     shell-syntax rules only, as for :func:`is_inert_script_literal`."""
+    hdocs = heredocs(command)
     return [
-        (h.body_start, h.body_end) for h in heredocs(command)
-        if not h.expands and (_is_text_heredoc(command, h) or _python_data_body(command, h) is not None)
+        (h.body_start, h.body_end) for h in hdocs
+        if not h.expands and (
+            _is_text_heredoc(command, h) or _is_unexecuted_file_heredoc(command, h, hdocs)
+            or _python_data_body(command, h) is not None
+        )
     ]
 
 
@@ -1080,3 +1090,111 @@ def _is_text_heredoc(command: str, h: Heredoc) -> bool:
     outside = _blank(command, [(x.body_start, x.body_end) for x in heredocs(command)])
     # Named once (the redirect itself), and no glob that could pick it up.
     return outside.count(name) == 1 and not re.search(r"\*[^\s;&|]*" + re.escape(ext) + r"\b", outside, re.I)
+
+
+_INDIRECT_RUNNERS = frozenset({"eval", "exec", "source", ".", "xargs", "find"})
+_PY_RUNNERS = frozenset({"pytest", "py.test", "unittest", "py"})
+_FOR_LOOP_SINKS = frozenset({"echo", "printf", "jq", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc"})
+_FOR_HEADER_RE = re.compile(r"(?:^|[;&|\n])[ \t]*for[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+in(?=[ \t\\\n])")
+
+
+def _is_unexecuted_file_heredoc(
+    command: str, h: Heredoc, hdocs: Optional[List[Heredoc]] = None, spans=None, bare: Optional[str] = None
+) -> bool:
+    """True when a quoted-delimiter ``cat``/``tee`` heredoc writes a static
+    non-dotfile target that the rest of the command cannot execute (#596)."""
+    tokens = _opener_tokens(command, h)
+    target = _sink_target(tokens) if not h.expands and tokens and tokens[0].rsplit("/", 1)[-1] in _HEREDOC_SINKS else None
+    name = target.rsplit("/", 1)[-1] if target else ""
+    if not target or any(c in target for c in "$`*?[](){}") or not name or name.startswith("."):
+        return False
+    line_start = command.rfind("\n", 0, h.start) + 1
+    before_seg = re.split(r";|&&|\|\|", command[line_start:h.start])[-1]
+    after_seg = re.split(r";|&&|\|\|", command[h.op_end:h.body_start], maxsplit=1)[0]
+    if re.search(r"(?<![>|])\|(?!\|)", before_seg + after_seg):
+        return False
+    hdocs = heredocs(command) if hdocs is None else hdocs
+    bodies = [(x.body_start, x.body_end) for x in hdocs]
+    outside = _blank(command, bodies)
+    spans = quoted_spans(outside) if spans is None else spans
+    if any(a < h.start < b for a, b in command_substitution_spans(outside)) or any(not c for _, _, _, c in spans):
+        return False
+    bare = _blank(_outside_quotes(command, spans), bodies) if bare is None else bare
+    op_start, op_end = h.start - len(before_seg), h.op_end + len(after_seg)
+    rest_outside = outside[:op_start] + " " * (op_end - op_start) + outside[op_end:]
+    rest_bare = bare[:op_start] + " " * (op_end - op_start) + bare[op_end:]
+    if (any(p for s, e, p, _ in spans if not (op_start <= s and e <= op_end))
+            or "$" in rest_outside or any(c in rest_bare for c in "*?[")
+            or command_substitution_spans(rest_outside)):
+        return False
+    rest_dequoted = re.sub(r"['\"\\]", "", rest_outside)
+    stem, ext = (name.rsplit(".", 1)[0], "." + name.rsplit(".", 1)[1].lower()) if "." in name else (name, "")
+    for needle in (name, stem) if ext else (name,):
+        pat = r"(?<![A-Za-z0-9_.-])" + re.escape(needle) + r"(?![A-Za-z0-9_.-])"
+        if re.search(pat, rest_outside) or re.search(pat, rest_dequoted):
+            return False
+    rest_words = {w.rsplit("/", 1)[-1] for w in re.split(r"[\s;&|()]+", rest_bare) if w}
+    if rest_words & _INDIRECT_RUNNERS:
+        return False
+    return not (ext == ".py" and any(_PYTHON_BIN.match(w) or w in _PY_RUNNERS for w in rest_words))
+
+
+def _for_loop_inert(command: str, bare: str, spans, span_start: int, span_end: int) -> Optional[bool]:
+    """If ``(span_start, span_end)`` sits inside a ``for x in ...`` word list,
+    return True iff every command in the loop body is an inert sink (#596)."""
+    for m in _FOR_HEADER_RE.finditer(bare):
+        if span_start < m.end():
+            continue
+        k, header_end = m.end(), -1
+        while k < len(bare):
+            ch = bare[k]
+            if ch == ";" or (ch == "\n" and bare[k - 1:k] != "\\"):
+                header_end = k
+                break
+            if ch in "|&<>`()$" or (ch == "\\" and bare[k + 1:k + 2] != "\n"):
+                if k >= span_end:
+                    return False
+                break
+            k += 1
+        if header_end < 0 or span_end > header_end:
+            continue
+        do_m = re.match(r"[ \t;\n]*\bdo(?=[ \t;\n])", bare[header_end:])
+        if do_m is None:
+            return False
+        body_start = header_end + do_m.end()
+        done_m = re.search(r"(?:^|[ \t;\n])done(?=$|[ \t;&|\n>])", bare[body_start:])
+        if done_m is None:
+            return False
+        body_end, done_end = body_start + done_m.start(), body_start + done_m.end()
+        body_bare = bare[body_start:body_end]
+        tail = re.split(r";|&&|\|\||\n", bare[done_end:], maxsplit=1)[0]
+        if ("`" in bare[:done_end] or "$(" in bare[:done_end]
+                or any(c in body_bare for c in "()<") or re.search(r"(?<!\$)\{", body_bare)
+                or re.search(r"\b(?:for|while|until|if|case|function)\b", body_bare)
+                or any(p or not c for s, e, p, c in spans if s < body_end and e >= body_start)
+                or "|" in tail or "<" in tail or (">" in tail and not _redirects_to_text(tail, command))):
+            return False
+        cuts = [body_start, *(p for i in range(body_start, body_end)
+                              if _is_separator(bare, i) or bare[i] == "\n" for p in (i, i + 1)), body_end]
+        seen = False
+        for seg_s, seg_e in zip(cuts[0::2], cuts[1::2]):
+            raw_seg = command[seg_s:seg_e].strip()
+            if not raw_seg:
+                continue
+            seen = True
+            seg_bare = bare[seg_s:seg_e]
+            seg_tokens = seg_bare.split()
+            if (raw_seg[0] in _QUOTES or raw_seg[0] == "$" or not seg_tokens
+                    or (">" in seg_bare and not _redirects_to_text(seg_bare, command))):
+                return False
+            argv0 = seg_tokens[0].rsplit("/", 1)[-1]
+            if argv0 in ("prismor", "immunity"):
+                if not (len(seg_tokens) > 1 and seg_tokens[1] in _SCREEN_ONLY_SUBCOMMANDS):
+                    return False
+            elif argv0 == "printf":
+                if any(t.startswith("-v") for t in seg_tokens[1:]):
+                    return False
+            elif argv0 not in _FOR_LOOP_SINKS:
+                return False
+        return seen
+    return None
