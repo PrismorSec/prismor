@@ -2034,6 +2034,27 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception:
             pass
 
+        # Antigravity's hooks carry no tool output: record what the transcript
+        # gained since the last hook, before this call is judged. It already
+        # ran, so observe; PostInvocation and Stop exist only for this.
+        if args.agent == "antigravity":
+            try:
+                from prismor.runtime import replies as _replies
+                from prismor.runtime.hooks import payload_session_id
+                _sid = payload_session_id(args.agent, payload, workspace)
+                for _result in _replies.antigravity_results(payload, _sid):
+                    _row = _result["metadata"].pop("row")
+                    # Global + project installs fire together: one records.
+                    if _claim_hook_call({"tool_use_id": _row, "session_id": _sid}, args.agent):
+                        evaluate_tool_call(event=_result, workspace=workspace, agent=args.agent,
+                                           mode="observe", session_id=_sid, flush_at_exit=False)
+                    _replies.mark_seen(_sid, [_row])
+            except Exception as _result_exc:
+                sys.stderr.write(f"[prismor] tool output capture error: {_result_exc}\n")
+            if (args.event or payload.get("hookEventName")) in ("PostInvocation", "Stop"):
+                print("{}")  # no decision: the turn goes on, or ends, as it would
+                return
+
         # The model's reply for the turn (Claude/Codex Stop, Cursor
         # afterAgentResponse, Gemini AfterAgent, ...): recorded in observe mode
         # for the session view and never answered. Any decision or exit 2 here
@@ -4490,6 +4511,8 @@ def _add_hook_dispatch_parser(subparsers: Any) -> None:
     # left gemini and opencode out, so their hooks died in argparse with exit 2.
     hook_dispatch.add_argument("--agent", choices=_SUPPORTED_AGENTS, required=True)
     hook_dispatch.add_argument("--mode", choices=["observe", "enforce"], default="observe")
+    # For hooks whose payload may not name its event (Antigravity).
+    hook_dispatch.add_argument("--event", help="Hook event this command is registered under")
 
 
 def _hook_dispatch_parser() -> argparse.ArgumentParser:
@@ -7218,6 +7241,21 @@ def _print_status_overview(workspace: Path) -> None:
     print()
     print(f"  {_color('Workspace:', _GREEN)}   {ws_display}")
 
+    # A sandboxed shell can be denied Prismor's state folder. Everything below
+    # then reads as "missing", so say why before the reader believes it.
+    from prismor.runtime.store import prismor_home
+    state_dir = prismor_home()
+    unreadable = f"cannot read {state_dir} (sandboxed shell or file permissions)"
+    state_unreadable = False
+    try:
+        os.listdir(state_dir)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        state_unreadable = True
+        print(f"  {_color('Warning:', _YELLOW)}     {_color(unreadable, _YELLOW)}")
+        print("               Lines below may be wrong. Run prismor status in a normal terminal.")
+
     # Hooks + mode — at BOTH scopes. A global (~/.claude) hook screens this
     # workspace just as much as a project one; reporting "not installed" when
     # only the global hook exists sent people to install a second, project
@@ -7369,9 +7407,11 @@ def _print_status_overview(workspace: Path) -> None:
     _print_status_quota(engine)
 
     # Latest session
-    sessions = list_sessions(workspace, 1)
+    sessions = [] if state_unreadable else list_sessions(workspace, 1)
     print()
-    if not sessions:
+    if state_unreadable:
+        print(f"  {_color('Latest session:', _GREEN)}  {_color('unavailable: ' + unreadable, _DIM)}")
+    elif not sessions:
         _hint = _sessions_elsewhere_hint(workspace)
         print(f"  {_color('Latest session:', _GREEN)}  "
               f"{_color('none in this workspace' if _hint else 'none yet', _DIM)}")
@@ -7388,7 +7428,9 @@ def _print_status_overview(workspace: Path) -> None:
 
     # Next-step nudge — one action, picked by current state
     print()
-    if not agents_with_hooks:
+    if state_unreadable:
+        print(f"  {_color('Next:', _CYAN)} prismor status   (in a normal terminal)")
+    elif not agents_with_hooks:
         print(f"  {_color('Next:', _CYAN)} prismor setup   (or scripted: prismor setup --non-interactive --mode enforce --recommended)")
     elif mode == "observe":
         print(f"  {_color('Tip:', _DIM)}  observe mode logs only. Switch with:")

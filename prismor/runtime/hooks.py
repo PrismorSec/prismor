@@ -520,7 +520,7 @@ def hook_health(workspace: Path, *, self_test: bool = False) -> List[Dict[str, A
                         row.update(state="warn", detail="custom or portable launcher; runtime not verified")
                     continue
                 tail = argv[3:]
-                if len(tail) % 2 or any(tail[i] not in ("--agent", "--workspace", "--mode")
+                if len(tail) % 2 or any(tail[i] not in ("--agent", "--workspace", "--mode", "--event")
                                         or tail[i] in tail[:i] for i in range(0, len(tail), 2)):
                     row.update(state="warn", mode=None, detail="custom dispatcher arguments; runtime not verified")
                     continue
@@ -4297,8 +4297,10 @@ def _normalize_gemini(payload: Dict[str, Any], session_id: str, workspace: Path)
 # working directory is the hooks.json directory, so the workspace comes from
 # workspacePaths. Verified live against agy (Antigravity 2.19.1): a deny is
 # surfaced to the model as "tool call denied by pre-tool hook: <reason>".
-# PostToolUse carries no tool call (only stepIdx/error), so only PreToolUse
-# is registered.
+# PostToolUse carries no output, and its transcript row is not written until it
+# returns, so it is not registered: PostInvocation and Stop (flat handler lists,
+# answered with {}) read tool output from the transcript instead
+# (replies.antigravity_results).
 
 
 def _strip_antigravity(config: Dict[str, Any], marker: str) -> tuple[Dict[str, Any], bool]:
@@ -4332,16 +4334,24 @@ def _strip_antigravity(config: Dict[str, Any], marker: str) -> tuple[Dict[str, A
 
 
 def _merge_antigravity(config: Dict[str, Any], command: str) -> Dict[str, Any]:
-    """Register Prismor as the `prismor` named hook on every PreToolUse call."""
+    """Register Prismor as the `prismor` named hook: PreToolUse screens each
+    call, PostInvocation and Stop pick up tool output."""
+    def handler(cmd: str) -> Dict[str, Any]:
+        # Antigravity's default is 30s; a cold dispatcher plus a judge call can
+        # exceed that, and a timed-out hook does not block.
+        return {"type": "command", "command": cmd, "timeout": 60}
+
+    def named(event: str) -> str:
+        # The portable launcher is `sh -c '...'`: the flag goes inside it.
+        if command.endswith("'"):
+            return f"{command[:-1]} --event {event}'"
+        return f"{command} --event {event}"
+
     return {
         **config,
         "prismor": {
-            "PreToolUse": [{
-                "matcher": "*",
-                # Antigravity's default is 30s; a cold dispatcher plus a judge
-                # call can exceed that, and a timed-out hook does not block.
-                "hooks": [{"type": "command", "command": command, "timeout": 60}],
-            }],
+            "PreToolUse": [{"matcher": "*", "hooks": [handler(command)]}],
+            **{event: [handler(named(event))] for event in ("PostInvocation", "Stop")},
         },
     }
 
