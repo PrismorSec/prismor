@@ -97,6 +97,10 @@ _DASHBOARD_HTML = Path(__file__).with_name("dashboard.html")
 # dashboard on its loading screen with no network (initCharts threw first).
 _STATIC_DIR = Path(__file__).with_name("static")
 _STATIC_TYPES = {".js": "text/javascript; charset=utf-8", ".png": "image/png"}
+# Routes whose JSON carries raw event text (commands, URLs, prompts, results).
+_EVENT_TEXT_ROUTES = frozenset({
+    "/api/events", "/api/logs", "/api/logs/event", "/api/findings", "/api/approvals", "/api/sessions",
+})
 
 
 def _mirror_server_names(workspace: Path) -> set:
@@ -651,6 +655,12 @@ class PrismorRequestHandler(BaseHTTPRequestHandler):
             )
 
     def _send_json(self, data: Any, status: int = 200) -> None:
+        # Events are masked when written, but rows stored before a mask rule
+        # existed are not. Mask again on the way out of every route that serves
+        # raw event text.
+        if urlparse(self.path).path in _EVENT_TEXT_ROUTES:
+            from prismor.runtime.store import _recloak_event
+            data = _recloak_event(data)
         body = json.dumps(data, default=str).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
