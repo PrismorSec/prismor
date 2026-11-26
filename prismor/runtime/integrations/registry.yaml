@@ -247,12 +247,12 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: "crush.json", user: "~/.config/crush/crush.json" }
-    events: [PreToolUse]
+    events: [PreToolUse, PostToolUse]
     event_types: [shell, file_read, file_write, network, tool_result]
     blocking: exit-2
     normalizer: _normalize_crush
     sweep_dir: "~/.config/crush/"
-    notes: "Verified live (2026-07, crush v0.86.x): PreToolUse is the only hookable event (no PostToolUse/UserPromptSubmit hook surface exists despite the SDK's generic HookConfig type); a deny reason must come from stderr on exit 2, NOT a {\"decision\":\"block\"} stdout envelope (that shape is silently ignored — a different convention than several other agents in this table). Shell tool name is \"bash\"."
+    notes: "Verified live (2026-11, crush v0.102.0): PostToolUse carries the tool output in tool_response (added in v0.99; older builds ignore the entry); there is no prompt-submit event. Verified live (2026-07, crush v0.86.x): a deny reason must come from stderr on exit 2, NOT a {\"decision\":\"block\"} stdout envelope (that shape is silently ignored — a different convention than several other agents in this table). Shell tool name is \"bash\"."
     sources: ["https://github.com/charmbracelet/crush", "https://github.com/Ar9av/agent-manual/blob/main/tools/crush/README.md"]
     mirror:
       status: possible
@@ -265,12 +265,12 @@ agents:
     surface: hook-config
     status: shipped
     config_paths: { project: ".openhands/hooks.json" }
-    events: [PreToolUse, UserPromptSubmit]
+    events: [PreToolUse, PostToolUse, UserPromptSubmit]
     event_types: [prompt, shell, file_read, file_write, tool_result]
     blocking: exit-2
     normalizer: _normalize_openhands
     sweep_dir: "~/.openhands/"
-    notes: "Verified live (2026-07, openhands v1.21.0): PreToolUse fires and a non-zero exit genuinely blocks the tool call. Shell tool name is \"terminal\" (not \"execute_bash\"). Payload's event-name field is \"event_type\", NOT \"hook_event_name\" like the Claude/Codex-family agents — a real schema difference, not a typo. No documented global/user-level hooks.json path exists; a \"global\"-scope install falls back to ~/.openhands/hooks.json (matches where other OpenHands global state lives) but this is unverified."
+    notes: "Verified live (2026-07, openhands v1.21.0): PreToolUse fires and a non-zero exit genuinely blocks the tool call. PostToolUse carries the tool output in tool_response (verified live, 2026-11, CLI 1.16.0). Shell tool name is \"terminal\" (not \"execute_bash\"). Payload's event-name field is \"event_type\", NOT \"hook_event_name\" like the Claude/Codex-family agents — a real schema difference, not a typo. No documented global/user-level hooks.json path exists; a \"global\"-scope install falls back to ~/.openhands/hooks.json (matches where other OpenHands global state lives) but this is unverified."
     sources: ["https://docs.openhands.dev/", "https://github.com/Ar9av/agent-manual/blob/main/tools/openhands/README.md"]
     mirror:
       status: unsupported

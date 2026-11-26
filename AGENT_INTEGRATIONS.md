@@ -203,7 +203,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### Crush (Charmbracelet)
 
 - **Config:** `crush.json` (project root) or `~/.config/crush/crush.json` (user).
-- **Events hooked:** `PreToolUse` only. Verified live (2026-07, crush v0.86.x): Crush's own SDK exposes a generic `HookConfig` schema, but no `PostToolUse`/`UserPromptSubmit` hook is actually dispatched at runtime — only `PreToolUse` fires.
+- **Events hooked:** `PreToolUse`, `PostToolUse`. `PostToolUse` carries the tool output in `tool_response` (verified live 2026-11, crush v0.102.0, including a shell command that exited non-zero). It was added in v0.99; v0.86 and v0.98 ignore the entry and start normally. There is no prompt-submit event.
 - **Matcher:** an empty-string matcher (`""`) is used for full coverage — verified it fires for a non-bash tool, not just the shell tool.
 - **Blocking:** exit 2 blocks the tool call, with the reason read from **stderr only**. A `{"decision":"block","reason":"..."}` stdout envelope — the convention several other agents in this table use — was tested live and silently ignored; do not copy that pattern here.
 - **Tool-name taxonomy:** shell tool is `bash`. `view` reads a file; `write`/`edit`/`multiedit` write; `fetch`/`download`/`sourcegraph` are network.
@@ -213,7 +213,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### OpenHands
 
 - **Config:** `<repo>/.openhands/hooks.json` (project). No documented global path; a "global"-scope install falls back to `~/.openhands/hooks.json` (unverified — matches where OpenHands' other global state lives, but no official doc confirms a global hooks.json is ever read).
-- **Events hooked:** `PreToolUse`, `UserPromptSubmit`. Verified live (2026-07, openhands v1.21.0): a `PreToolUse` hook fires and a non-zero exit genuinely blocks the tool call (confirmed via the CLI's own `--headless` output).
+- **Events hooked:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`. Verified live (2026-07, openhands v1.21.0): a `PreToolUse` hook fires and a non-zero exit genuinely blocks the tool call (confirmed via the CLI's own `--headless` output). `PostToolUse` carries the observation in `tool_response` (verified live 2026-11, OpenHands CLI 1.16.0).
 - **Tool-name taxonomy:** shell tool is `terminal` — **not** `execute_bash`, which is the name used elsewhere in this codebase's own docs for other agents and is easy to copy by mistake.
 - **Payload shape note:** the event-name field in the hook's stdin JSON is `event_type`, not `hook_event_name` like the Claude/Codex-family agents — a real schema difference between OpenHands and most of this table, not a typo.
 - **Blocking:** exit 2 from the hook blocks the tool call; falls into the same fail-closed `else` branch as Cursor/Windsurf/Codex/Kiro.
@@ -242,7 +242,7 @@ Prismor integrates with Hermes at two layers, both Python plugins Hermes loads i
 ### Goose (Agentic AI Foundation, formerly Block)
 
 - **Config:** a scaffolded plugin directory following goose's Open Plugins spec — `<repo>/.agents/plugins/prismor/hooks/hooks.json` (project) or `~/.agents/plugins/prismor/hooks/hooks.json` (user). Goose auto-discovers any directory under `.../plugins/<name>/` containing `hooks/hooks.json`; unlike OpenClaw/Hermes there's no central `"plugins": [...]` list to register — a static `plugin.json` manifest is scaffolded alongside the hooks file as a one-time side effect.
-- **Events hooked:** `PreToolUse`, `UserPromptSubmit`.
+- **Events hooked:** `PreToolUse`, `UserPromptSubmit`. Tool output is **not** captured: goose v1.61.1 fires `PostToolUse` but its payload has no output (`HookContext.tool_output` is declared and never set; verified live 2026-11), so it is not registered.
 - **Tool-name taxonomy:** the built-in shell tool's real name is `shell` — verified live (2026-07, goose v1.44.0) that this is **not** `developer__shell`, which is what goose's own official documentation example currently shows. A matcher copied straight from goose's docs would silently never fire; `".*"` is used here instead.
 - **Payload shape note:** the event-name field is `event`, not `hook_event_name`.
 - **Blocking:** exit 2 blocks (stderr reason), OR a `{"decision":"block","reason":"..."}` stdout envelope — both confirmed live. This fits the generic fail-closed `else` branch; no special-case needed in `cli.py`.

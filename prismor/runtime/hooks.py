@@ -843,6 +843,12 @@ def _result_text(value: Any) -> str:
                 if isinstance(inner, str) and inner.strip():
                     extra = candidate.get("stderr") if key == "stdout" else None
                     return inner + ("\n" + extra if isinstance(extra, str) and extra else "")
+        # Content blocks (OpenHands observations, MCP results).
+        blocks = value.get("content")
+        if isinstance(blocks, list):
+            text = "\n".join(b["text"] for b in blocks if isinstance(b, dict) and isinstance(b.get("text"), str))
+            if text.strip():
+                return text
     try:
         return json.dumps(value)
     except (TypeError, ValueError):
@@ -2272,16 +2278,18 @@ def _merge_kiro(config: Dict[str, Any], command: str) -> Dict[str, Any]:
 
 def _merge_crush(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     # Crush's hooks config is a flat dict of event -> list of {name, matcher,
-    # command} entries (no nested "hooks" array like Claude/Codex). Verified
-    # live (2026-07): only PreToolUse is actually dispatched -- there is no
-    # PostToolUse/UserPromptSubmit hook surface in crush v0.86.x despite the
-    # SDK schema exposing a HookConfig type generically. Matcher "" matches
-    # every tool (verified: an empty-matcher rule fired for a non-bash tool).
+    # command} entries (no nested "hooks" array like Claude/Codex). Matcher ""
+    # matches every tool. PostToolUse (v0.99+) carries the tool's output in
+    # tool_response, verified live on v0.102.0, including a shell command that
+    # exited non-zero. v0.86 and v0.98 ignore the key and start normally (0.99+
+    # rejects unknown event names), so it needs no version gate. There is no
+    # prompt-submit event.
     hooks = dict(config.get("hooks", {}))
-    entries = list(hooks.get("PreToolUse", []))
-    if not any(e.get("command") == command for e in entries):
-        entries.append({"name": "prismor", "matcher": "", "command": command})
-    hooks["PreToolUse"] = entries
+    for event_name in ("PreToolUse", "PostToolUse"):
+        entries = list(hooks.get(event_name, []))
+        if not any(e.get("command") == command for e in entries):
+            entries.append({"name": "prismor", "matcher": "", "command": command})
+        hooks[event_name] = entries
     return {**config, "hooks": hooks}
 
 
@@ -2289,11 +2297,14 @@ def _merge_openhands(config: Dict[str, Any], command: str) -> Dict[str, Any]:
     # Same nested {matcher, hooks:[{type, command}]} shape as Claude/Codex.
     # Verified live (2026-07): PreToolUse fires and a non-zero exit blocks the
     # tool call. "*" matches every tool (docs: "*" | exact tool name | /regex/).
+    # PostToolUse carries the observation in tool_response (verified live,
+    # OpenHands CLI 1.16.0).
     hooks = dict(config.get("hooks", {}))
-    hooks["PreToolUse"] = _merge_claude_entries(
-        hooks.get("PreToolUse", []),
-        {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 60}]},
-    )
+    for event_name in ("PreToolUse", "PostToolUse"):
+        hooks[event_name] = _merge_claude_entries(
+            hooks.get(event_name, []),
+            {"matcher": "*", "hooks": [{"type": "command", "command": command, "timeout": 60}]},
+        )
     hooks["UserPromptSubmit"] = _merge_claude_entries(
         hooks.get("UserPromptSubmit", []),
         {"hooks": [{"type": "command", "command": command, "timeout": 60}]},
@@ -2354,6 +2365,9 @@ def _merge_goose(config: Dict[str, Any], command: str, plugin_dir: Path) -> Dict
     # matcher of "developer__shell" silently never fires. ".*" matches every
     # tool and is what's used here to avoid depending on that undocumented
     # exact name for coverage.
+    # PostToolUse is deliberately not registered: it fires, but its payload has
+    # no output (v1.61.1 declares HookContext.tool_output and never sets it;
+    # verified live), so it would only record each call a second time.
     plugin_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = plugin_dir / "plugin.json"
     if not manifest_path.exists():
