@@ -1,6 +1,6 @@
 """Prismor local session-security utility."""
 
-__version__ = "1.80.7"
+__version__ = "1.80.8"
 
 # Loaded on first use: every hook process imports this package, and the two
 # guard modules cost ~25ms there before any work starts.
