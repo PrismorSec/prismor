@@ -183,7 +183,7 @@ In enforce mode a shell command runs inside the sandbox or it does not run. When
 - The engine is missing or can't start (no `bwrap`, an AppArmor block, `sandbox-exec` fails).
 - The OS has no sandbox (Windows).
 - The agent already runs inside another sandbox, and you have not chosen to rely on it (see [Running inside an outer sandbox](#running-inside-an-outer-sandbox)).
-- The agent's hooks can't rewrite a command (Codex and Qwen Code without `PRISMOR_REWRITE_AUTO_APPROVE=1`, Copilot CLI, OpenCode).
+- The agent's hooks can't rewrite a command (see [Agents](#agents)).
 - With Cloak installed, the sandbox settings for the project just changed. One call is blocked, and the agent is told to run it again.
 
 The agent sees this message:
@@ -231,7 +231,7 @@ Limits:
 
 ## Agents
 
-The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On other agents, an enforced sandbox blocks their shell commands, because it cannot wrap them. Use `mode: observe` there, or run commands yourself through `prismor sandbox run -- <command>`.
+The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On other agents, including Cursor, Windsurf, Kiro, Copilot CLI, OpenCode, OpenClaw, Hermes and OpenHands, an enforced sandbox blocks their shell commands, because it cannot wrap them. Cursor is blocked at `beforeShellExecution`, Windsurf at `pre_run_command`. Use `mode: observe` there, or run commands yourself through `prismor sandbox run -- <command>`.
 
 ## Known limits
 
