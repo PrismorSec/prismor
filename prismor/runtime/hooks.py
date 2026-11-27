@@ -3236,6 +3236,10 @@ def _parse_mcp_tool(tool_name: str) -> Optional[Tuple[str, str]]:
     return server, tool
 
 
+_MCP_BLOCK_TYPES = frozenset({"text", "image", "audio", "resource", "resource_link"})
+_MCP_BLOCK_FRAMING = frozenset({"type", "mimeType", "annotations", "data"})
+
+
 def _extract_mcp_response_text(response: Any) -> str:
     """Flatten an MCP tool response into plain text for injection scanning.
 
@@ -3255,9 +3259,15 @@ def _extract_mcp_response_text(response: Any) -> str:
             text = node.get("text")
             if isinstance(text, str):
                 parts.append(text)
-            else:
-                for v in node.values():
-                    _walk(v)
+            # Keys beside `text` reach the model too (a structuredContent
+            # item `{"text": "hi", "note": "<injection>"}`): walk them all.
+            # Skip base64 payloads (image/audio `data`, resource `blob`) and a
+            # content block's own framing (`type`, `mimeType`, `annotations`).
+            block = node.get("type") in _MCP_BLOCK_TYPES
+            for k, v in node.items():
+                if k in ("text", "blob") or (block and k in _MCP_BLOCK_FRAMING):
+                    continue
+                _walk(v)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)
