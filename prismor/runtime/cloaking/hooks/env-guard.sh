@@ -37,12 +37,27 @@ if ! command -v jq >/dev/null 2>&1; then   # fail closed: without jq this hook c
   exit 0
 fi
 
+# shellcheck source=_ledger.sh
+source "$_HOOK_DIR/_ledger.sh"
+
 input="$(cat)"
 tool_name="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 case "$tool_name" in Read|Bash|Grep) ;; *) exit 0 ;; esac
 
 cwd="$(printf '%s' "$input" | jq -r '.cwd // empty')"
 [[ -n "$cwd" ]] || cwd="$PWD"
+
+# Deny and record it in the cloak ledger. $1 = reason shown to the agent,
+# $2 = the short form logged (paths, key and vault names; never a value).
+_deny() {
+  local name=""
+  [[ "$2" =~ @@SECRET:([^@]+)@@ ]] && name="${BASH_REMATCH[1]}"
+  prismor_cloak_event env_guard blocked "$(printf '%s' "$input" | jq -r '.session_id // empty')" \
+    "$name" "" "$tool_name" "$2"
+  jq -n --arg r "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+  exit 0
+}
 
 # ── env-style filename test (basename) ──────────────────────────────────────
 # Matches .env, .env.production, secrets.env, prod.env.bak, ...
@@ -82,9 +97,7 @@ _deny_report() {
   file="$(printf '%s' "$report" | jq -r '.files | keys[0]')"
   names="$(printf '%s' "$report" | jq -r --arg f "$file" '.files[$f] | join(", ")')"
   reason="Prismor cloaking: $how '$file', which holds $total value(s) not yet in the cloak vault ($names) — its contents would enter the model context unprotected. First run: prismor cloak add --env-file '$file' — this imports every entry as an @@SECRET:name@@ placeholder without exposing any value (only names and byte counts are printed). Then reference values by placeholder; if you only need to know whether a key exists, use a presence check like: grep -q '^KEY=' '$file'"
-  jq -n --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
-  exit 0
+  _deny "$reason" "$how '$file', which holds $total value(s) not in the cloak vault ($names)"
 }
 
 # $1 = human label for what was attempted; remaining args = existing env files.
@@ -179,23 +192,17 @@ report="$(printf '%s' "$cmd" | PYTHONPATH="$_PKG_ROOT${PYTHONPATH:+:$PYTHONPATH}
 unknown_env="$(printf '%s' "$report" | jq -r '.unknown // empty')"
 if [[ -n "$unknown_env" ]]; then
   reason="Prismor cloaking: this command reads '$unknown_env' from a directory that can't be resolved before it runs (a variable or command substitution). Prismor can't check whether that file holds secrets missing from the cloak vault, so it is blocked. Use the file's absolute path, or import it first: prismor cloak add --env-file <absolute path>"
-  jq -n --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
-  exit 0
+  _deny "$reason" "reads '$unknown_env' from a directory that can't be resolved"
 fi
 pub="$(printf '%s' "$report" | jq -r '.publish // empty')"
 if [[ -n "$pub" ]]; then
   reason="Prismor publish gate: $pub. Nothing was published. Remove the file or value from what ships (.dockerignore, .npmignore, .gitignore, or the file list), reference secrets by placeholder or environment variable, then retry."
-  jq -n --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
-  exit 0
+  _deny "$reason" "publish gate: $pub"
 fi
 flow="$(printf '%s' "$report" | jq -r '.vaulted_flow // empty')"
 if [[ -n "$flow" ]]; then
   reason="Prismor cloaking: this command sends the contents of '$flow' somewhere other than the tool output. Its values are in the cloak vault, but the redaction only covers what is printed back to you: piped, redirected, uploaded, committed, sourced or re-encoded, the real values would leave. Only plain viewers (cat, head, grep ...) may read it. Pass a value by placeholder instead, e.g. curl -H \"Authorization: Bearer @@SECRET:NAME@@\" ..."
-  jq -n --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
-  exit 0
+  _deny "$reason" "sends the vaulted env file '$flow' somewhere other than the tool output"
 fi
 _deny_report "this command reads" "$report"
 exit 0

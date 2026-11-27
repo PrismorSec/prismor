@@ -125,3 +125,66 @@ def test_malformed_and_unknown_lines_are_dropped(home):
     [rec] = ledger.drain()
     assert rec["name"] == "db_pass"
     assert ledger.to_finding(rec)["mode"] == "enforce"
+
+
+def test_env_guard_deny_is_queryable_and_holds_no_value(home, monkeypatch):
+    from prismor.runtime import query, runtime, store
+    from prismor.runtime.cloaking import installer
+
+    value = "pw-" + "Zq8" * 6
+    (home / "secrets" / "db_password").write_text(value)
+    repo = home / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "blog.md").write_text(f"title\n\nconnect with {value}\n")
+    (repo / ".env").write_text("OTHER_TOKEN=" + "x9" * 12 + "\n")
+
+    def call(cmd):
+        return {"session_id": "s9", "tool_name": "Bash", "cwd": str(repo), "tool_input": {"command": cmd}}
+
+    # `prismor check` runs the same hook but blocks nothing: nothing recorded.
+    settings = repo / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": f"bash {installer._ENV_GUARD}"}]}]}}))
+    assert installer.precheck("Bash", {"command": "cat .env"}, workspace=repo, cwd=str(repo))
+    assert _lines(home) == []
+
+    out = _run("env-guard.sh", call("git add blog.md"))
+    assert '"deny"' in out and "@@SECRET:db_password@@" in out and "'blog.md' line 3" in out
+    assert value not in out
+    assert '"deny"' in _run("env-guard.sh", call("cat .env"))
+    assert [(l["source"], l["action"], l["session_id"]) for l in _lines(home)] == [("env_guard", "blocked", "s9")] * 2
+    assert _lines(home)[0]["name"] == "db_password"
+    assert value not in (home / "cloak_events.jsonl").read_text()
+
+    # No sinks configured: the catches must still reach the local store.
+    runtime._dispatch_cloak_ledger(engine=None, workspace=repo, agent="claude",
+                                   session_id="later", subject=None)
+    db = store.initialize_database(repo)
+    rows = query.run_query("SELECT session_id, evidence FROM findings", db, workspace=repo)
+    text = json.dumps(rows, default=str)
+    assert len(rows) == 2 and "s9" in text
+    assert "publish gate" in text and "db_password" in text and "OTHER_TOKEN" in text
+    for f in Path(db).parent.glob(Path(db).name + "*"):
+        assert value.encode() not in f.read_bytes()
+    assert "x9" * 12 not in text
+
+
+def test_push_deny_names_entry_file_and_line(home):
+    from prismor.runtime.cloaking import publish_gate
+
+    value = "pw-" + "Zq8" * 6
+    (home / "secrets" / "db_password").write_text(value)
+    repo = home / "repo"
+    (repo / "posts").mkdir(parents=True)
+
+    def git(*a):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo,
+                       check=True, capture_output=True)
+    git("init", "-q")
+    (repo / "posts" / "a.md").write_text(f"one\n{value}\n")
+    git("add", "-A")
+    git("commit", "-qm", "post")
+    reason = publish_gate.check("git push origin main", str(repo), {value})
+    assert "@@SECRET:db_password@@ (in 'posts/a.md' line 2)" in reason and value not in reason
