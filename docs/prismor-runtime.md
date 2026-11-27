@@ -130,6 +130,12 @@ and `action: step_up` on the rule to require approval. `npm pack`, help and
 explicit dry runs stay quiet. In `npm publish --dry-run && npm publish`, the
 second command requires approval. The rule reads options from the command line.
 
+### Approval before uploading with Twine
+
+`twine-upload` reports `twine upload` and `python -m twine upload` by default.
+Set `mode: enforce` and `action: step_up` on this rule to require approval
+before uploading a Python distribution. `twine check` and help stay quiet.
+
 ### Custom guardrails for MCP tools
 
 Say you want a human to sign off before the agent merges a PR through the GitHub MCP, and you want the production database MCP off-limits entirely. Write a rule with the `mcp` event type and Prismor gates the call before it runs:

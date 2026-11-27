@@ -72,6 +72,14 @@ HITS = {
         "npm publish --dry-run=false",
         "npm publish # --help", "npm publish -- --dry-run",
     ],
+    "twine-upload": [
+        "twine upload dist/*",
+        ".venv/bin/python3 -m twine upload --repository testpypi dist/*.whl",
+        "python -m twine check dist/* && python -m twine upload dist/*",
+        "twine upload --help && twine upload dist/*",
+        "sh -c 'twine check dist/* && twine upload dist/*'",
+        "twine upload dist/* # --help",
+    ],
     "terraform-state-change": [
         "terraform apply -auto-approve",
         "terraform -chdir=infra destroy",
@@ -191,6 +199,12 @@ MISSES = {
         "npm pack # release later; npm publish",
         "npm publish --dry-run && npm pack", 'echo "npm publish"',
     ],
+    "twine-upload": [
+        "twine check dist/*", "python -m twine check dist/*",
+        "twine --help", "twine upload dist/* --help", "python -m twine upload -h",
+        'echo "twine upload dist/*"', "git commit -m 'release: build && twine upload dist/*'",
+        "printf '%s' 'example:\ntwine upload dist/*\n'",
+    ],
     "terraform-state-change": [
         "terraform plan -destroy",
         "terraform init",
@@ -269,8 +283,9 @@ class ChangeControlRules(unittest.TestCase):
     ("git-clean-force", "git clean -fdx", "git clean -ndx"),
     ("git-stash-delete", "git stash clear", "git stash list"),
     ("git-branch-force-delete", "git branch -D topic", "git branch -d topic"),
+    ("twine-upload", "python -m twine upload dist/*", "python -m twine check dist/*"),
 ])
-def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command, safe_command):
+def test_change_control_approval_is_opt_in(tmp_path, rule, command, safe_command):
     from prismor.runtime.runtime import evaluate_tool_call
 
     event = {"type": "shell", "agent_event": "PreToolUse", "command": command,
