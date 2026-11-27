@@ -146,6 +146,38 @@ def test_git_push_of_vaulted_value(repo):
     assert "cloak vault" in _gate("git push origin main", repo)
 
 
+def test_git_gate_judges_only_what_the_change_adds(repo):
+    def git(*a):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo, check=True, capture_output=True)
+    page = repo / "web" / "page.tsx"
+    page.parent.mkdir()
+    page.write_text(f"<p className='font-lora'>{_VALUE}</p>\n<p>x</p>\n")
+    assert "cloak vault" in _gate("git add -A", repo)          # new untracked file
+    git("add", "-A")
+    git("commit", "-qm", "already there")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+    page.write_text(f"<p>{_VALUE}</p>\n<p>y</p>\n")          # edit the line that holds it
+    assert _gate("git add web/page.tsx", repo) is None
+    assert _gate("git add page.tsx", repo / "web") is None     # from a subdirectory
+    git("commit", "-qam", "font")
+    assert _gate("git push origin main", repo) is None
+
+    page.write_text(f"<p>{_VALUE}</p>\n<p>{_VALUE}</p>\n")   # one more copy
+    assert "cloak vault" in _gate("git add page.tsx", repo / "web")
+    page.write_text("<p>gone</p>\n")                           # removing it
+    assert _gate("git add -A", repo) is None
+    git("commit", "-qam", "remove")
+    assert _gate("git push origin main", repo) is None
+
+    (repo / "t.py").write_text(f"{_VALUE}\n")                  # added then removed, unpushed
+    git("add", "t.py")
+    git("commit", "-qm", "leak")
+    git("rm", "-q", "t.py")
+    git("commit", "-qm", "unleak")
+    assert "cloak vault" in _gate("git push origin main", repo)
+
+
 def test_upload_of_archive_built_in_same_command(repo):
     assert "env file" in _gate("tar czf b.tgz -C . . && gh release upload v1 b.tgz", repo)
     assert _gate("tar czf b.tgz app.py && gh release upload v1 b.tgz", repo) is None
