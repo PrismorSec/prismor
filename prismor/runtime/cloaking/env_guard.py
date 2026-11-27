@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Set
 
+from prismor.runtime.cloaking.runtime import is_scrubbable_secret
 from prismor.runtime.cloaking.secrets_store import _parse_env_line, secrets_dir
 from prismor.runtime.winutil import decode_bytes
 
@@ -174,7 +175,32 @@ def local_text(command: str) -> str:
     # being written, not a file being read. Kept when any part of the command
     # could run it (`python3 - <<EOF` opening the file reads it for real).
     from prismor.runtime.egress import _network_text
-    return _network_text("".join(out))[0]
+    return _drop_line_comments(_network_text("".join(out))[0])
+
+
+# A whole-line comment with no shell operator in it. Only these are dropped:
+# an interactive zsh without `interactivecomments` runs `#` as a command, so a
+# trailing `cat # .env` really reads the file there, and `# x; cat .env` runs
+# cat. A line of plain words after `#` runs nothing in any shell.
+_LINE_COMMENT = re.compile(r"(?m)^[ \t]*#[^\n;&|<>$`()]*$")
+
+
+def _drop_line_comments(command: str) -> str:
+    """``command`` with its operator-free whole-line comments blanked. A `#`
+    line inside a quoted string or a heredoc body is data, and is kept."""
+    if "#" not in command:
+        return command
+    from prismor.runtime.shell_context import heredocs, quoted_spans
+    keep = [(h.body_start, h.body_end) for h in heredocs(command)]
+    flat = list(command)   # quotes are found with the bodies blanked: `# don't` in a body opens none
+    for a, b in keep:
+        flat[a:b] = " " * (b - a)
+    keep += [(s, e) for s, e, *_ in quoted_spans("".join(flat))]
+
+    def blank(m):
+        i = m.start() + m.group(0).index("#")
+        return m.group(0) if any(a <= i <= b for a, b in keep) else " " * len(m.group(0))
+    return _LINE_COMMENT.sub(blank, command)
 
 
 def local_text_main() -> None:
@@ -217,6 +243,40 @@ def _tokens(command: str):
         return tokens
     except ValueError:
         return None
+
+
+# Tools that skip what an exclusion argument names: `tar --exclude=.env`,
+# `rsync --exclude .env`, `git stash push -- . ':!.env'`. Only these: any other
+# program may read the file it is handed under that flag.
+_EXCLUDERS = {"git", "tar", "gtar", "bsdtar", "rsync", "grep", "egrep", "fgrep", "du", "diff"}
+_PATHSPEC_EXCLUDE = re.compile(r"^:(?:[!^]|\([^)]*\bexclude\b[^)]*\))")
+
+
+def _read_tokens(command: str):
+    """``_tokens`` without the exclusion arguments of ``_EXCLUDERS``, for the
+    question "which env files does this read or send?". The publish gate keeps
+    them: it hands them back to git (`git add --dry-run . ':!.env'`)."""
+    tokens = _tokens(command)
+    if tokens is None:
+        return None
+    out, name, skip = [], "", False
+    for t in tokens:
+        op = bool(t) and set(t) <= set(_PUNCT)
+        if t in _CMD_SEP:
+            name, skip = "", False
+        elif skip and not op:
+            skip = False
+            continue
+        elif not name and not op and not (t in _PREFIX_WORDS or _ASSIGN_RE.match(t)):
+            name = os.path.basename(t)
+        elif name in _EXCLUDERS:
+            if t == "--exclude":
+                skip = True
+                continue
+            if t.startswith("--exclude=") or (name == "git" and _PATHSPEC_EXCLUDE.match(t)):
+                continue
+        out.append(t)
+    return out
 
 
 def is_env_basename(path: str) -> bool:
@@ -512,7 +572,7 @@ def env_reads(command: str, cwd: str) -> List[str]:
     commands (`ls`, `stat`, `test -f`), presence checks (`grep -q`) and the
     ``prismor cloak`` ingestion path don't count; anything else that names an
     env file does, however the command name is spelled or quoted."""
-    tokens = _tokens(command)
+    tokens = _read_tokens(command)
     if tokens is None:   # unbalanced quotes: every word, against cwd
         out: List[str] = []
         for w in command.split():
@@ -630,7 +690,7 @@ def vaulted_flow(command: str, cwd: str, vaulted: List[str]) -> bool:
         bodies.append(command[h.body_start:h.body_end])
         pos = h.body_end
     shell.append(command[pos:])
-    tokens = _tokens("".join(shell))
+    tokens = _read_tokens("".join(shell))
     if tokens is None:
         return True
 
@@ -719,12 +779,12 @@ def bash_main() -> None:
     # Every env file the command names, even by a "metadata" command like
     # `git add`: once vaulted, only viewers may touch it.
     named: List[str] = list(reads)
-    for w in _tokens(command) or command.split():
+    for w in _read_tokens(command) or command.split():
         _word_hits(w, cwd, named, dynamic=False)
     for p in dict.fromkeys(named):
         if not p.startswith(UNKNOWN) and p not in files and not unprotected_entries(Path(p), vault):
             try:
-                holds = any(len(v) >= MIN_VALUE_LEN and v in decode_bytes(Path(p).read_bytes(), strict=True) for v in vault)
+                holds = any(is_scrubbable_secret(v) and v in decode_bytes(Path(p).read_bytes(), strict=True) for v in vault)
             except (OSError, UnicodeDecodeError):
                 holds = False
             if holds:   # an env file with no secrets in it is no one's concern

@@ -1220,6 +1220,15 @@ def main(argv: Optional[List[str]] = None) -> None:
 
         _align_check_with_hook(engine, findings, workspace, args.type)
         _paused = _pause_note()
+        # The cloak guards (env files, the publish gate, raw secrets) are hooks,
+        # not policy: run the installed ones too, or PASS here meant nothing.
+        _cloak = ""
+        if args.type in ("command", "read"):
+            from prismor.runtime.cloaking.installer import precheck as _cloak_precheck
+            _cloak = _cloak_precheck(
+                "Bash" if args.type == "command" else "Read",
+                {"command": args.value} if args.type == "command" else {"file_path": args.value},
+                workspace=Path(workspace), cwd=os.getcwd())
 
         if engine.project_policy_error and not engine.project_policy_fallback:
             # The project's rules are not loaded: PASS here would be a verdict
@@ -1234,17 +1243,22 @@ def main(argv: Optional[List[str]] = None) -> None:
                                     suggest=args.suggest_allowlist, input_value=args.value)
                 raise SystemExit(2)
 
-        if not findings:
+        if not findings and not _cloak:
             print(_color("PASS", _GREEN) + f"  {args.value}")
             if _paused:
                 print(_paused)
             return
 
-        _print_findings(findings, engine=engine,
-                        explain=args.explain, suggest=args.suggest_allowlist,
-                        input_value=args.value)
+        if findings:
+            _print_findings(findings, engine=engine,
+                            explain=args.explain, suggest=args.suggest_allowlist,
+                            input_value=args.value)
+        if _cloak:
+            print(_color("BLOCK", _RED) + f"  [cloaking] {_cloak}")
         if _paused:
-            print(_paused)
+            print(_paused + (" Cloaking still applies while paused." if _cloak else ""))
+        if _cloak:
+            raise SystemExit(2)
 
         # Exit 2 if a finding would actually block, 1 for warn-only, 0 for
         # log-only — keyed on the effective verdict, so a CI gate reflects what
@@ -7732,7 +7746,8 @@ def _warn_unscrubbable(name: str, value: str) -> None:
     if not is_scrubbable_secret(value):
         sys.stderr.write(
             f"warning: @@SECRET:{name}@@ is too short or simple to be scrubbed: Prismor will NOT mask "
-            "its raw value in tool output or block reads of it. Use 16+ characters, or 8+ with a "
+            "its raw value in tool output, block reads of it, or stop a push or upload that contains "
+            "it. Use 16+ characters, or 8+ with a "
             "digit, symbol or mixed case. A bare URL (scheme://host[:port]) is config, not a "
             "secret, and is never masked: register only the credential part.\n")
 

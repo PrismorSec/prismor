@@ -75,8 +75,11 @@ def _blobs(data: bytes, depth: int = 0) -> Iterable[Tuple[str, bytes]]:
 def scan_files(paths: Iterable[Path], vault: Set[str], label: str) -> Optional[str]:
     """Reason string for the first secret found in ``paths``, else None."""
     from prismor.runtime.cloaking.env_guard import MIN_VALUE_LEN, is_env_basename
+    from prismor.runtime.cloaking.runtime import is_scrubbable_secret
     pats = _patterns()
-    vals = [v for v in vault if len(v) >= MIN_VALUE_LEN]
+    # The scrubber's rule: `development`, `info`, `3000` from an imported .env
+    # are in every codebase, and matching them blocked every push.
+    vals = [v for v in vault if is_scrubbable_secret(v)]
     for i, p in enumerate(paths):
         if i >= _MAX_FILES:
             break

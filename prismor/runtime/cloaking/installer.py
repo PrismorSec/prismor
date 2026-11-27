@@ -379,6 +379,47 @@ def uninstall(*, workspace: Path, scope: str = "project") -> Dict[str, Any]:
     return {"configPath": str(path), "removed": removed_any}
 
 
+# The installed cloak hooks that only allow or deny. decloak is left out: it
+# rewrites and runs the call.
+_DENY_GUARDS = (_SECRET_GUARD.name, _READ_GUARD.name, _ENV_GUARD.name)
+
+
+def precheck(tool: str, tool_input: Dict[str, Any], *, workspace: Path, cwd: str) -> str:
+    """Deny reason of the first installed cloak guard that would block this
+    call, else "". For `prismor check`: policy (and pausing it) never reaches
+    these hooks, so the policy verdict alone said PASS for calls they block.
+    Runs the hook scripts themselves, so the verdict cannot drift from them."""
+    import re
+    import subprocess
+    payload = json.dumps({"tool_name": tool, "tool_input": tool_input, "cwd": cwd})
+    done: set = set()
+    for scope in ("project", "global"):
+        try:
+            entries = _read_json(_claude_settings_path(workspace, scope)).get("hooks", {}).get("PreToolUse", [])
+        except (OSError, ValueError, AttributeError):
+            continue
+        for entry in entries if isinstance(entries, list) else []:
+            try:
+                if not re.fullmatch(entry.get("matcher") or ".*", tool):
+                    continue
+            except (re.error, TypeError):
+                continue
+            for h in entry.get("hooks", []):
+                name = _managed_hook_name(h.get("command"))
+                if name not in _DENY_GUARDS or name in done:
+                    continue
+                done.add(name)
+                try:
+                    out = subprocess.run(["bash", str(_HOOKS_SUBDIR / name)], input=payload, capture_output=True,
+                                         text=True, timeout=60).stdout
+                    hso = json.loads(out)["hookSpecificOutput"] if out.strip() else {}
+                except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+                    continue   # no bash (or a hook crash): nothing to report, the hook itself decides at run time
+                if hso.get("permissionDecision") == "deny":
+                    return str(hso.get("permissionDecisionReason") or name)
+    return ""
+
+
 def status(*, workspace: Path, scope: str = "project") -> Dict[str, Any]:
     """Report installation state of cloaking hooks."""
     path = _claude_settings_path(workspace, scope)
