@@ -440,7 +440,11 @@ def _extract_mcp_servers(data: Dict[str, Any], agent: str) -> List[Dict[str, Any
     # Mapped onto the mcpServers field names (command list, env) the gateway
     # and discovery read; raw keeps the declaration as written.
     mcp = data.get("mcp")
+    # OpenCode 2.x nests them: {"mcp": {"timeout": ..., "servers": {...}}}.
     if agent == "opencode" and isinstance(mcp, dict):
+        nested = mcp.get("servers")
+        if isinstance(nested, dict) and "type" not in nested:
+            mcp = nested
         for name, cfg in mcp.items():
             if not isinstance(cfg, dict):
                 continue

@@ -48,10 +48,8 @@ import { pathToFileURL } from "node:url";
 const [pluginPath, scenarioJson] = process.argv.slice(2);
 const scenario = JSON.parse(scenarioJson);
 const mod = await import(pathToFileURL(pluginPath).href);
-const exportsList = Object.values(mod);
-const notFunctions = exportsList.filter((v) => typeof v !== "function").length;
-const hooks = await exportsList[0]({ directory: scenario.directory, worktree: scenario.directory });
-const out = { exports: exportsList.length, notFunctions, threw: null, output: scenario.output };
+const hooks = await mod.default.server({ directory: scenario.directory, worktree: scenario.directory });
+const out = { exports: Object.keys(mod), id: mod.default.id, threw: null, output: scenario.output };
 try {
   await hooks[scenario.hook](scenario.input, scenario.output);
 } catch (e) {
@@ -112,10 +110,10 @@ class TestPluginUnderOpenCodeCallShapes(unittest.TestCase):
     def _payload(self) -> dict:
         return json.loads(self.record.read_text())
 
-    def test_exports_exactly_one_plugin_function(self):
+    def test_exports_only_the_default_plugin_object(self):
         r = self._run(self._stub_plugin(), "tool.execute.before",
                       {"tool": "bash", "sessionID": "ses_1", "callID": "c1"}, {"args": {"command": "ls"}})
-        self.assertEqual((r["exports"], r["notFunctions"]), (1, 0))
+        self.assertEqual((r["exports"], r["id"]), (["default"], "prismor-project"))
 
     def test_before_sends_args_from_output_and_opencode_ids(self):
         self._run(self._stub_plugin(), "tool.execute.before",
@@ -525,3 +523,110 @@ class TestPluginLoadWarning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- OpenCode 2.x (shapes from anomalyco/opencode v2.4.2) --------------------
+
+# Drives setup(ctx) the way 2.x does: one event object per hook, tool args on
+# `input`, and a `result` the after hook may replace.
+_HARNESS_V2 = r"""
+import { pathToFileURL } from "node:url";
+const [pluginPath, hook, eventJson] = process.argv.slice(2);
+const mod = await import(pathToFileURL(pluginPath).href);
+const hooks = {};
+await mod.default.setup({ location: { directory: "/work/proj" },
+  tool: { hook: async (name, fn) => { hooks[name] = fn; } } });
+const event = JSON.parse(eventJson);
+let threw = null;
+try { await hooks[hook](event); } catch (e) { threw = String(e && e.message); }
+console.log(JSON.stringify({ threw, event }));
+"""
+
+
+@unittest.skipUnless(_NODE, "node not installed")
+class TestPluginUnderOpenCode2(unittest.TestCase):
+    setUp = TestPluginUnderOpenCodeCallShapes.setUp
+    tearDown = TestPluginUnderOpenCodeCallShapes.tearDown
+    _plugin = TestPluginUnderOpenCodeCallShapes._plugin
+    _stub_plugin = TestPluginUnderOpenCodeCallShapes._stub_plugin
+    _payload = TestPluginUnderOpenCodeCallShapes._payload
+
+    def _run(self, plugin: Path, hook: str, event: dict) -> dict:
+        (self.tmp / "v2.mjs").write_text(_HARNESS_V2)
+        proc = subprocess.run([_NODE, str(self.tmp / "v2.mjs"), str(plugin), hook, json.dumps(event)],
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    _EVENT = {"tool": "shell", "sessionID": "ses_1", "id": "call_1", "input": {"command": "ls"}}
+
+    def test_before_sends_input_and_ids(self):
+        r = self._run(self._stub_plugin(), "execute.before", self._EVENT)
+        self.assertIsNone(r["threw"])
+        p = self._payload()
+        self.assertEqual((p["hookEvent"], p["toolName"], p["toolInput"]), ("PreToolUse", "shell", {"command": "ls"}))
+        self.assertEqual((p["sessionId"], p["callId"], p["cwd"]), ("ses_1", "call_1", "/work/proj"))
+
+    def test_before_throws_on_deny(self):
+        r = self._run(self._stub_plugin(2, stderr="nope"), "execute.before", self._EVENT)
+        self.assertEqual(r["threw"], "nope")
+
+    def test_after_scans_the_content_and_appends_the_finding(self):
+        event = {**self._EVENT, "status": "completed",
+                 "result": {"output": {"x": 1}, "content": [{"type": "text", "text": "hello"}]}}
+        r = self._run(self._stub_plugin(2, stderr="leaked"), "execute.after", event)
+        self.assertIsNone(r["threw"])
+        self.assertEqual(self._payload()["result"], "hello")
+        self.assertEqual([c["text"] for c in r["event"]["result"]["content"]], ["hello", "[Prismor] leaked"])
+        self.assertEqual(r["event"]["result"]["output"], {"x": 1})
+
+    def test_after_leaves_a_clean_result_and_errors_alone(self):
+        event = {**self._EVENT, "status": "completed", "result": {"content": "hello"}}
+        self.assertEqual(self._run(self._stub_plugin(), "execute.after", event)["event"], event)
+        failed = {**self._EVENT, "status": "error", "error": {"message": "x"}}
+        self.assertEqual(self._run(self._stub_plugin(2, stderr="n"), "execute.after", failed)["event"], failed)
+
+
+@unittest.skipIf(os.name == "nt", "fake opencode is a shell script")
+class TestPluginLoadWarningOpenCode2(unittest.TestCase):
+    setUp = TestPluginLoadWarning.setUp
+    tearDown = TestPluginLoadWarning.tearDown
+    _warning = TestPluginLoadWarning._warning
+
+    def _fake(self, stderr: str):
+        script = self.bin / "opencode"
+        script.write_text(
+            "#!/bin/sh\n"
+            "if [ \"$1\" = --version ]; then echo 'opencode v2.4.2'; exit 0; fi\n"
+            "[ \"$1 $2 $3\" = 'debug agents --standalone' ] || exit 9\n"
+            f"cat >&2 <<'LOG'\n{stderr}\nLOG\n")
+        script.chmod(0o755)
+
+    def _loading(self) -> str:
+        p = self.plugin.resolve()
+        return f'level=INFO msg="loading plugin" id={p} entrypoint=file://{p}'
+
+    def test_loaded_plugin_has_no_warning(self):
+        self._fake(self._loading())
+        self.assertIsNone(self._warning())
+
+    def test_rejected_plugin_is_reported(self):
+        self._fake(self._loading() + f'\nlevel=WARN message="failed to load plugin" target={self.plugin.resolve()} '
+                   'ref=err_1 cause="Cause([Fail(PluginModule.LoadError: Plugin must export a default '
+                   'definition with an id and an effect or setup function. (cause: SchemaError(x"')
+        self.assertEqual(self._warning(), "OpenCode failed to load the Prismor plugin: Plugin must export a "
+                                          "default definition with an id and an effect or setup function.")
+
+    def test_plugin_never_loaded_is_reported(self):
+        self._fake('level=INFO msg="loading plugin" id=/x/other.js')
+        self.assertIn("does not load the Prismor plugin", self._warning())
+
+
+class TestOpenCode2McpConfig(unittest.TestCase):
+    def test_servers_nested_under_mcp_servers_are_found(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "opencode.json"
+            cfg.write_text(json.dumps({"mcp": {"timeout": {"startup": 5}, "servers": {
+                "files": {"type": "local", "command": ["x"]}}}}))
+            names = [e["name"] for e in scanner.parse_config(cfg, agent="opencode")]
+        self.assertEqual(names, ["files"])

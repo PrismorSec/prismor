@@ -1825,8 +1825,8 @@ function appendNote(output, note) {
   else if (Array.isArray(output.content)) output.content.push({ type: "text", text: note });
 }
 
-// OpenCode calls every exported function as a plugin, so export exactly one.
-export const PrismorPlugin = async ({ directory, worktree } = {}) => {
+// OpenCode 1.x (>= 1.3.4) calls server() and uses the hook map it returns.
+async function server({ directory, worktree } = {}) {
   const cwd = directory || worktree || process.cwd();
   const base = (input) => ({
     cwd,
@@ -1855,13 +1855,51 @@ export const PrismorPlugin = async ({ directory, worktree } = {}) => {
       else appendNote(output, contextOf(r.stdout));
     },
   };
-};
+}
+
+// OpenCode 2.x calls setup(ctx) instead. Its events carry {tool, sessionID, id,
+// input}, and execute.after a result whose `content` is what the model reads.
+async function setup(ctx) {
+  const cwd = ctx?.location?.directory || process.cwd();
+  const hooks = await server({ directory: cwd });
+  await ctx.tool.hook("execute.before", async (event) => {
+    await hooks["tool.execute.before"](
+      { tool: event.tool, sessionID: event.sessionID, callID: event.id },
+      { args: event.input },
+    );
+  });
+  await ctx.tool.hook("execute.after", async (event) => {
+    if (event.status !== "completed") return;
+    const { content } = event.result || {};
+    const parts = typeof content === "string" ? [{ type: "text", text: content }] : [...(content || [])];
+    const view = { content: parts };
+    const seen = parts.length;
+    await hooks["tool.execute.after"](
+      { tool: event.tool, sessionID: event.sessionID, callID: event.id, args: event.input },
+      view,
+    );
+    if (view.content.length > seen) event.result = { ...event.result, content: view.content };
+  });
+}
+
+// One default object satisfies both loaders. Keep it the only export: older
+// loaders treat every export as a plugin.
+export default { id: __PRISMOR_PLUGIN_ID_JSON__, server, setup };
 """
+
+
+def _opencode_plugin_id(path: Path) -> str:
+    # Global and project installs can both be present and in different modes, so
+    # they must not share an id that OpenCode could collapse into one plugin.
+    is_global = path == Path.home() / ".config" / "opencode" / "plugins" / _OPENCODE_PLUGIN_FILE
+    return "prismor" if is_global else "prismor-project"
 
 
 def _write_opencode_plugin(path: Path, command: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    js = _OPENCODE_PLUGIN_JS.replace("__PRISMOR_COMMAND_JSON__", json.dumps(command))
+    js = (_OPENCODE_PLUGIN_JS
+          .replace("__PRISMOR_PLUGIN_ID_JSON__", json.dumps(_opencode_plugin_id(path)))
+          .replace("__PRISMOR_COMMAND_JSON__", json.dumps(command)))
     path.write_text(js, encoding="utf-8")
 
 
@@ -2116,9 +2154,12 @@ def plugin_load_warning(agent: str, scope: str, workspace: Path, plugin: str = _
 
 def _opencode_plugin_load_warning(scope: str, workspace: Path) -> Optional[str]:
     """OpenCode only logs a plugin that fails to load; it never shows it. So
-    ask it: `opencode debug config` lists every plugin it discovered, and
+    ask it. 1.x: `opencode debug config` lists every plugin it discovered, and
     `debug agent build --print-logs` initialises them and logs
-    `failed to load plugin path=… error="…"` for one that breaks (1.19.2)."""
+    `failed to load plugin path=… error="…"` for one that breaks (1.19.2).
+    2.x: `debug agents --standalone --print-logs` initialises them and logs
+    `loading plugin id=…`, then `failed to load plugin target=…
+    cause="…"` for a broken one (2.4.2). --standalone leaves no server behind."""
     from urllib.parse import unquote, urlparse
     ours = _config_path("opencode", scope, workspace).resolve()
 
@@ -2135,6 +2176,28 @@ def _opencode_plugin_load_warning(scope: str, workspace: Path) -> Optional[str]:
             return path.resolve() == ours
         except (OSError, ValueError):
             return False
+
+    version = _run(["opencode", "--version"])
+    major = re.search(r"\bv?(\d+)\.\d+\.\d+", version.stdout if version else "")
+    if major and int(major.group(1)) >= 2:
+        # 2.x exits without waiting for plugin discovery, so silence can be a
+        # race on a first run: look twice before calling it not loaded.
+        for _ in range(2):
+            proc = _run(["opencode", "debug", "agents", "--standalone", "--print-logs", "--log-level", "info"])
+            if proc is None or proc.returncode != 0:
+                return None
+            seen = False
+            for line in proc.stderr.splitlines():
+                target = re.search(r'\b(?:target|id)=("[^"]*"|\S+)', line)
+                if "plugin" not in line or not target or not _is_ours(target.group(1).strip('"')):
+                    continue
+                if "failed to load plugin" in line:
+                    error = re.search(r'LoadError: (.+?)(?: \(cause|\)\]|"|$)', line)
+                    return f"OpenCode failed to load the Prismor plugin: {error.group(1) if error else line.strip()}"
+                seen = seen or "loading plugin" in line
+            if seen:
+                return None
+        return f"OpenCode does not load the Prismor plugin {ours} (opencode debug agents)."
 
     proc = _run(["opencode", "debug", "config"])
     if proc is None or "{" not in proc.stdout:
@@ -4023,7 +4086,7 @@ def _normalize_opencode(payload: Dict[str, Any], session_id: str,
 _OPENCODE_NATIVE_TOOLS = frozenset({
     "bash", "read", "write", "edit", "apply_patch", "glob", "grep", "webfetch",
     "websearch", "task", "todowrite", "skill", "question", "lsp", "invalid",
-    "plan_enter", "plan_exit", "execute",
+    "plan_enter", "plan_exit", "execute", "shell", "patch", "subagent",
 })
 
 

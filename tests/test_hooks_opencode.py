@@ -90,12 +90,12 @@ class TestOpenCodePluginModule(unittest.TestCase):
             Path.home() / ".config" / "opencode" / "plugins" / "prismor.js",
         )
 
-    def test_writes_esm_module_with_one_named_plugin_export(self):
+    def test_writes_esm_module_with_one_default_export_for_both_loaders(self):
         _write_opencode_plugin(self.path, _COMMAND)
         js = self.path.read_text()
-        # OpenCode calls every exported function as a plugin: exactly one, named.
-        self.assertEqual(js.count("export const "), 1)
-        self.assertIn("export const PrismorPlugin = async", js)
+        # 1.x reads default.server, 2.x requires default.{id, setup}.
+        self.assertEqual(js.count("\nexport "), 1)
+        self.assertIn('export default { id: "prismor-project", server, setup };', js)
         self.assertNotIn("module.exports", js)
         self.assertIn('"tool.execute.before"', js)
         self.assertIn('"tool.execute.after"', js)
