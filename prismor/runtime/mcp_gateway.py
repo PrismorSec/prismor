@@ -58,6 +58,8 @@ from prismor.runtime.stdio_lines import stdin_lines, write_line
 PROTOCOL_VERSION_FALLBACK = "2025-03-26"
 GATEWAY_AGENT = "mcp-gateway"
 REQUEST_TIMEOUT = 30.0
+#: Upper bound on an upstream's tools/list pages (a server paging forever).
+TOOLS_LIST_MAX_PAGES = 100
 CALL_TIMEOUT = 300.0
 #: How long an upstream may take to answer `initialize`. A cold `npx -y`
 #: install can take well over REQUEST_TIMEOUT; giving up that early left the
@@ -1255,6 +1257,34 @@ class Gateway:
         src += " " + " ".join(c.source for n, c in named.items() if n in src)
         return "args" not in src and "resource" not in src
 
+    @staticmethod
+    def _list_upstream_tools(up: Upstream) -> Dict[str, Any]:
+        """Every page of an upstream's ``tools/list``: a server that pages its
+        tools lost all but the first page. A failed first page raises; a later
+        one keeps the pages already read."""
+        tools: List[Any] = []
+        cursor: Optional[str] = None
+        seen: set = set()
+        for _ in range(TOOLS_LIST_MAX_PAGES):
+            try:
+                page = up.request("tools/list", {"cursor": cursor} if cursor else {},
+                                  timeout=REQUEST_TIMEOUT)
+            except UpstreamError as exc:
+                if cursor is None:
+                    raise
+                sys.stderr.write(f"[prismor-gateway] tools/list page failed for "
+                                 f"'{up.spec.name}', keeping {len(tools)} tools: {exc}\n")
+                break
+            tools.extend(page.get("tools") or [])
+            cursor = page.get("nextCursor")
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                break  # last page, or a server repeating a cursor
+            seen.add(cursor)
+        else:
+            sys.stderr.write(f"[prismor-gateway] '{up.spec.name}' has more than "
+                             f"{TOOLS_LIST_MAX_PAGES} tool pages; the rest are not listed\n")
+        return {"tools": tools}
+
     def _handle_tools_list(self, req_id: Any, params: Dict[str, Any], reply: bool = True) -> None:
         tools: List[Dict[str, Any]] = []
         routes: Dict[str, _Route] = {}
@@ -1284,7 +1314,7 @@ class Gateway:
                 result = cached[1]
             else:
                 try:
-                    result = up.request("tools/list", {}, timeout=REQUEST_TIMEOUT)
+                    result = self._list_upstream_tools(up)
                 except UpstreamError as exc:
                     sys.stderr.write(
                         f"[prismor-gateway] tools/list failed for '{up.spec.name}': {exc}\n")

@@ -1,6 +1,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **The MCP gateway scans every key of a tool result for prompt injection.** When a result object had a `text` key, the keys next to it were not scanned. An upstream could put an injected instruction in `structuredContent` next to `text` (`{"text": "hi", "note": "<injection>"}`), and it reached the model unscanned. All keys are now scanned. Base64 image, audio and blob data is skipped. The same scan text is used by MCP `PostToolUse` hooks.
+- **The MCP gateway lists every page of an upstream's tools.** It read only the first page of `tools/list` and ignored `nextCursor`, so tools on later pages were missing and could not be called. It now follows the cursor, up to 100 pages. It stops on a repeated cursor, and keeps the pages it has if a later page fails.
 - **Behavior change: an enforced sandbox now blocks shell commands on Cursor, Windsurf and Kiro CLI 2.x.** With `settings.sandbox.mode: enforce`, their shell commands ran unconfined with no message, because the sandbox only looked at events named `PreToolUse` (CWE-636). They are now blocked, as on other agents that cannot rewrite input. To keep the old behavior, set `mode: observe`. See [Prismor Sandbox](docs/sandbox.md#agents).
 - **Two agents with one name no longer print an `agent_connections` warning from hooks.** Claude Code showed it as the first line of a "SessionStart hook error". The first claim of a name still wins.
 
