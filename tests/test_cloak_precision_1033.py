@@ -103,3 +103,13 @@ def test_prismor_check_reports_cloak_denies(ws):
     assert r.returncode == 2 and "[cloaking]" in r.stdout, r.stdout + r.stderr
     r = check("ls")
     assert r.returncode == 0 and "[cloaking]" not in r.stdout, r.stdout + r.stderr
+
+    # Policy passes a push; only the publish gate sees the token in the commit.
+    git = lambda *a: subprocess.run(["git", "-c", "user.email=t@example.test", "-c", "user.name=t", *a],  # noqa: E731
+                                    cwd=ws, capture_output=True, check=True)
+    git("init", "-q")
+    (ws / "config.js").write_text(f"const t = '{TOKEN}';\n")
+    git("add", "config.js")
+    git("commit", "-qm", "x")
+    r = check("git push origin HEAD")
+    assert r.returncode == 2 and "publish gate" in r.stdout, r.stdout + r.stderr
