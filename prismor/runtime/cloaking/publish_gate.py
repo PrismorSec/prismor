@@ -8,6 +8,9 @@ publish command would ship and looks inside (archives too) for:
   * a value registered in the cloak vault,
   * a string matching a built-in or custom secret pattern.
 
+For ``git add`` and ``git push`` only what the change *adds* counts: a value
+already in the file must not block every later edit to it (or its removal).
+
 Called from env-guard.sh's Bash path through ``env_guard.bash_main``. Never
 raises: anything it cannot list is skipped (the policy rules still apply).
 """
@@ -22,7 +25,7 @@ import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Iterable, List, Optional, Set, Tuple
+from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 _MAX_FILES = 20000
 _MAX_BYTES = 5 * 1024 * 1024
@@ -72,14 +75,31 @@ def _blobs(data: bytes, depth: int = 0) -> Iterable[Tuple[str, bytes]]:
         return
 
 
-def scan_files(paths: Iterable[Path], vault: Set[str], label: str) -> Optional[str]:
-    """Reason string for the first secret found in ``paths``, else None."""
-    from prismor.runtime.cloaking.env_guard import MIN_VALUE_LEN, is_env_basename
+def _vault_needles(vault: Set[str]) -> List[str]:
     from prismor.runtime.cloaking.runtime import is_scrubbable_secret
-    pats = _patterns()
     # The scrubber's rule: `development`, `info`, `3000` from an imported .env
     # are in every codebase, and matching them blocked every push.
-    vals = [v for v in vault if is_scrubbable_secret(v)]
+    return [v for v in vault if is_scrubbable_secret(v)]
+
+
+def _secret_in(text: str, old: str, vals: List[str], pats: List[re.Pattern]) -> Optional[str]:
+    """What kind of secret ``text`` has more occurrences of than ``old``, else None."""
+    def added(s: str) -> bool:
+        return text.count(s) > old.count(s)
+    if any(v in text and added(v) for v in vals):
+        return "a value from the cloak vault"
+    if any(added(m.group(0)) for rx in pats for m in rx.finditer(text)):
+        return "a string that looks like a secret key"
+    return None
+
+
+def scan_files(paths: Iterable[Path], vault: Set[str], label: str,
+               baseline: Callable[[Path], bytes] = lambda p: b"") -> Optional[str]:
+    """Reason string for the first secret found in ``paths``, else None.
+    ``baseline`` gives a file's previous content; secrets already there pass."""
+    from prismor.runtime.cloaking.env_guard import MIN_VALUE_LEN, is_env_basename
+    pats = _patterns()
+    vals = _vault_needles(vault)
     for i, p in enumerate(paths):
         if i >= _MAX_FILES:
             break
@@ -89,18 +109,20 @@ def scan_files(paths: Iterable[Path], vault: Set[str], label: str) -> Optional[s
             data = p.read_bytes()
         except OSError:
             continue
+        before: Optional[dict] = None   # read only on a hit: it costs a `git show`
         for member, blob in _blobs(data):
             where = f"{p.name}{'!' + member if member else ''}"
             leaf = member.rsplit("/", 1)[-1] if member else p.name
             text = blob.decode("utf-8", "replace")
             if is_env_basename(leaf) and re.search(r"^\s*(?:export\s+)?[A-Za-z_][\w.]*\s*=\s*\S{%d,}" % MIN_VALUE_LEN, text, re.M):
                 return f"{label} would ship the env file '{where}'"
-            for v in vals:
-                if v in text:
-                    return f"{label} would ship a value from the cloak vault (in '{where}')"
-            for rx in pats:
-                if rx.search(text):
-                    return f"{label} would ship a string that looks like a secret key (in '{where}')"
+            kind = _secret_in(text, "", vals, pats)
+            if kind:
+                if before is None:
+                    before = {m: b.decode("utf-8", "replace") for m, b in _blobs(baseline(p))}
+                kind = _secret_in(text, before.get(member, ""), vals, pats)
+            if kind:
+                return f"{label} would ship {kind} (in '{where}')"
     return None
 
 
@@ -164,11 +186,29 @@ def _compose_contexts(base: Path, files: List[str]) -> List[Path]:
     return out
 
 
-def _git(cwd: Path, *args: str) -> str:
+def _git_bytes(cwd: Path, *args: str) -> bytes:
     try:
-        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=15).stdout
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True, timeout=15).stdout
     except Exception:  # noqa: BLE001
-        return ""
+        return b""
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return _git_bytes(cwd, *args).decode("utf-8", "replace")
+
+
+def _patch_sides(commit: str) -> Tuple[str, str]:
+    """(added lines, removed lines) of one commit's ``-U0`` patch."""
+    sides: dict = {"+": [], "-": []}
+    in_hunk = False
+    for line in commit.split("\n"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and line[:1] in sides:
+            sides[line[0]].append(line[1:])
+    return "\n".join(sides["+"]), "\n".join(sides["-"])
 
 
 def _positional(args: List[str], takes_value: Set[str]) -> List[str]:
@@ -263,18 +303,21 @@ def _check_one(name: str, a: List[str], base: Path, vault: Set[str], packed: Lis
     # git: what `add` would stage, what `push` would send
     if name == "git" and sub == "add":
         listed = _git(base, "add", "--dry-run", *a[1:])
-        files = [base / l.split("'", 2)[1] for l in listed.splitlines() if l.startswith("add '")]
-        return scan_files(files, vault, "`git add`")
+        # dry-run paths are relative to the repo root, not to cwd
+        top = Path(_git(base, "rev-parse", "--show-toplevel").strip() or base)
+        files = [top / l.split("'", 2)[1] for l in listed.splitlines() if l.startswith("add '")]
+        return scan_files(files, vault, "`git add`",
+                          lambda p: _git_bytes(top, "show", f":{p.relative_to(top).as_posix()}"))
     if name == "git" and sub == "push":
-        patch = _git(base, "log", "-p", "--format=", "HEAD", "--not", "--remotes")
+        # Per commit: one that adds a secret ships it even if a later one removes it.
+        log = _git(base, "log", "-p", "-U0", "--no-color", "--no-ext-diff", "--format=%x00",
+                   "HEAD", "--not", "--remotes")
         names = _git(base, "log", "--name-only", "--format=", "HEAD", "--not", "--remotes").split()
-        import tempfile
-        with tempfile.TemporaryDirectory() as d:
-            pf = Path(d) / "pushed.patch"
-            pf.write_text(patch, encoding="utf-8")
-            r = scan_files([pf], vault, "`git push`")
-        if r:
-            return r
+        vals, pats = _vault_needles(vault), _patterns()
+        for commit in log.split("\0"):
+            kind = _secret_in(*_patch_sides(commit), vals, pats)
+            if kind:
+                return f"`git push` would ship {kind} (in the commits being pushed)"
         from prismor.runtime.cloaking.env_guard import is_env_basename
         env = [n for n in names if is_env_basename(n)]
         return f"`git push` would publish the env file '{env[0]}'" if env else None
