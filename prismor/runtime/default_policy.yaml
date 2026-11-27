@@ -2785,6 +2785,33 @@ rules:
     guidance: "preview the release with npm publish --dry-run and confirm the package, version and registry."
     action: warn
 
+  - id: twine-upload
+    severity: HIGH
+    category: change_control
+    title: Uploads a Python distribution with Twine
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - |-
+        (?x-i:
+          # Match a command boundary outside quoted arguments and shell comments.
+          \A(?=.*\btwine\b)
+          # A single shell -c script has its own command boundaries.
+          (?:[ \t]*(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+(?:'(?=[^']*'\s*\Z)|"(?=[^"]*"\s*\Z)))?
+          (?:(?:[^\n;&|(`'"\\\#]|\\.|(?<=[^\s;&|()])\#|'[^']*'|"(?:[^"\\]|\\.)*")*
+             (?:[\n;&|(`]|(?<![^\s;&|()])\#[^\n]*\n))*[ \t]*
+          (?:(?:sudo|env|exec|command)[ \t]+|\w+=[^\s;&|]+[ \t]+)*
+          (?:(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:[^\s;&|'"]*/)?(?:twine|python(?:3(?:\.\d+)?)?[ \t]+-m[ \t]+twine)
+          (?:[ \t]+--no-color)*[ \t]+upload(?=[\s;&|()<>'"]|$)
+          # Help anywhere in this invocation stops the upload. After -- it is a filename.
+          (?!(?:[ \t]+(?!['"]?--['"]?(?=\s|$)|\#)
+                 (?:[^\s;&|()'"\\]|(?<=[<>])&|\\[^\n]|'[^'\n]*'|"(?:[^"\\\n]|\\[^\n])*")+)*
+             [ \t]+['"]?(?:-h|--help)['"]?(?=[\s;&|()<>'"]|$))
+        )
+    guidance: "check the distribution files and destination repository before uploading."
+    action: warn
+
   - id: terraform-state-change
     severity: HIGH
     category: change_control

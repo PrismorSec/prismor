@@ -179,6 +179,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "git-reset-hard",
     "git-stash-delete",
     "npm-publish",
+    "twine-upload",
     "pkg-install-from-url",
     "secret-exfiltration",
     "credential-aggregation",
