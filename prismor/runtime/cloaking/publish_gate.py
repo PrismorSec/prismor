@@ -18,14 +18,19 @@ import gzip
 import io
 import os
 import re
+import shutil
 import subprocess
 import tarfile
+import time
 import zipfile
 from pathlib import Path
 from typing import Iterable, List, Optional, Set, Tuple
 
 _MAX_FILES = 20000
 _MAX_BYTES = 5 * 1024 * 1024
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MAX_OCR_PIXELS = 32_000_000
+_OCR_SECONDS = 8
 _SKIP_DIRS = {".git", "node_modules", "target", "__pycache__", ".venv", "venv"}
 
 # Commands that cheaply could be publishing; env-guard.sh only calls Python when
@@ -213,6 +218,45 @@ def check(command: str, cwd: str, vault: Set[str]) -> Optional[str]:
     return None
 
 
+def _png_upload_reason(path: Path, vault: Set[str], deadline: float) -> Optional[str]:
+    """Return a reason to stop a direct PNG upload, without echoing recognized text."""
+    if not path.is_file():
+        return None
+    is_png = path.suffix.lower() == ".png"
+    try:
+        with path.open("rb") as src:
+            header = src.read(24)
+            if not header.startswith(_PNG_SIGNATURE):
+                return None
+            is_png = True
+            width = int.from_bytes(header[16:20], "big")
+            height = int.from_bytes(header[20:24], "big")
+            if width * height > _MAX_OCR_PIXELS:
+                return f"PNG '{path.name}' exceeds the local OCR limit of 32 megapixels"
+            data = header + src.read(_MAX_BYTES + 1 - len(header))
+    except OSError:
+        return f"cannot read PNG '{path.name}' for local OCR" if is_png else None
+    if len(data) > _MAX_BYTES:
+        return f"PNG '{path.name}' exceeds the local OCR limit of 5 MiB"
+
+    # Resolve the system installation independently of the agent's working directory.
+    binary = shutil.which("tesseract", path=os.pathsep.join(("/opt/homebrew/bin", "/usr/local/bin", os.defpath)))
+    if not binary:
+        return f"PNG '{path.name}' needs local OCR; install Tesseract with English language data and retry"
+    try:
+        result = subprocess.run(
+            [binary, "stdin", "stdout", "--psm", "11"], input=data, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env={"OMP_THREAD_LIMIT": "1"}, cwd=os.sep, check=True,
+            timeout=max(0, deadline - time.monotonic()),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return f"local OCR could not read PNG '{path.name}'; check Tesseract and retry"
+    text = result.stdout.decode("utf-8", "replace")
+    if any(value in text for value in vault):
+        return f"PNG '{path.name}' would ship a value from the cloak vault"
+    return None
+
+
 def _files(base: Path, names: Iterable[str]) -> List[Path]:
     out = []
     for n in names:
@@ -286,6 +330,7 @@ def _check_one(name: str, a: List[str], base: Path, vault: Set[str], packed: Lis
         upload_args = a[1:2]
     elif name == "gh" and a[:2] in (["release", "upload"], ["release", "create"]):
         upload_args = _positional(a[2:], {"-t", "--title", "-n", "--notes", "-F", "--notes-file", "--target", "-R", "--repo"})[1:]
+        upload_args = [asset.split("#", 1)[0] for asset in upload_args]  # gh's path#display-label syntax
     elif name == "gh" and a[:2] == ["gist", "create"]:
         upload_args = _positional(a[2:], {"-d", "--desc", "-f", "--filename"})
     elif name in ("aws", "gsutil") and sub in ("s3", "cp", "sync", "rsync") and \
@@ -305,12 +350,20 @@ def _check_one(name: str, a: List[str], base: Path, vault: Set[str], packed: Lis
                 v = x.split("=", 1)[1]
             if v is None:
                 continue
-            m = re.search(r"@([^;,\s]+)", v) if x not in ("-T", "--upload-file", "--post-file", "--body-file") and \
+            m = re.search(r"@([^;,]+)", v) if x not in ("-T", "--upload-file", "--post-file", "--body-file") and \
                 not x.startswith(("--post-file=", "--body-file=", "--upload-file=")) else None
             path = m.group(1) if m else (v if x in ("-T", "--upload-file", "--post-file", "--body-file") or "=" in x else None)
             if path and path != "-":
                 upload_args.append(path)
     if upload_args:
+        from prismor.runtime.cloaking.env_guard import MIN_VALUE_LEN
+        values = {v for v in vault if len(v) >= MIN_VALUE_LEN}
+        if values:
+            deadline = time.monotonic() + _OCR_SECONDS
+            for arg in upload_args:
+                reason = _png_upload_reason(base / os.path.expanduser(arg), values, deadline)
+                if reason:
+                    return reason
         files = _files(base, upload_args)
         missing = [x for x in upload_args if not (base / os.path.expanduser(x)).exists()]
         if missing and packed:   # built in this same command: check what went into it
