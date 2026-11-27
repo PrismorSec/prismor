@@ -163,10 +163,11 @@ What a device does with it:
 |---|---|
 | Claude Code, Gemini CLI or Grok on macOS or Linux | Shell commands run inside the sandbox |
 | Codex or Qwen Code with `PRISMOR_REWRITE_AUTO_APPROVE=1` | Shell commands run inside the sandbox |
-| Codex and Qwen Code without that variable, Copilot CLI, OpenCode, Crush, Goose, Continue, Antigravity, OpenHands | **Every shell command is blocked** |
-| Cursor, Windsurf, Kiro, Hermes and other hooked agents | **Commands run unconfined, with no message** |
+| Codex and Qwen Code without that variable, Copilot CLI, OpenCode, Crush, Goose, Continue, Antigravity, OpenHands, Cursor, Windsurf, Kiro, Hermes, OpenClaw | **Every shell command is blocked** |
 | Linux without a working `bwrap` | Shell commands are blocked |
 | Windows | Commands run unconfined |
+
+Prismor 1.80.7 and earlier does not block Cursor, Windsurf or Kiro CLI 2.x: their commands run unconfined, with no message. Upgrade those devices to 1.80.8 or later.
 
 Before you publish:
 
@@ -259,7 +260,7 @@ Limits:
 
 ## Agents
 
-The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On Copilot CLI, OpenCode and the other agents that use Claude's `PreToolUse` event, an enforced sandbox blocks shell commands, because it cannot wrap them. On Cursor, Windsurf, Kiro and Hermes, the sandbox is not applied: commands run unconfined. Do not count on the sandbox there. To confine one command yourself, use `prismor sandbox run -- <command>`.
+The hook rewrite works on agents whose PreToolUse hook can rewrite input: Claude Code, Gemini CLI and Grok. Codex and Qwen Code need `PRISMOR_REWRITE_AUTO_APPROVE=1`, because their rewrite also approves the call. On other agents, including Cursor, Windsurf, Kiro, Copilot CLI, OpenCode, OpenClaw, Hermes and OpenHands, an enforced sandbox blocks their shell commands, because it cannot wrap them. Cursor is blocked at `beforeShellExecution`, Windsurf at `pre_run_command`. Use `mode: observe` there, or run commands yourself through `prismor sandbox run -- <command>`.
 
 ## Known limits
 
