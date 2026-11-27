@@ -1573,12 +1573,11 @@ def _dispatch_refusals(
 def _dispatch_cloak_ledger(
     *, engine: PolicyEngine, workspace: Path, agent: str, session_id: str, subject: Subject,
 ) -> None:
-    """Ship what the bash cloak hooks caught since the last call
-    (cloaking/ledger.py). Each line is filed under the session the hook saw
-    and the time it happened; the vault name and pattern only, never a
-    value. Best-effort, and a stat() when nothing is pending."""
-    if not getattr(engine, "outputs", None):
-        return
+    """Store and ship what the bash cloak hooks caught since the last call
+    (cloaking/ledger.py). Catches go to the local findings table, so `prismor
+    query` shows them, and to any sinks, under the session the hook saw and
+    the time it happened; the vault name and pattern only, never a value.
+    Best-effort, and a stat() when nothing is pending."""
     try:
         from prismor.runtime.cloaking import ledger as _ledger
         records = _ledger.drain()
@@ -1586,6 +1585,17 @@ def _dispatch_cloak_ledger(
         return
     for rec in records:
         finding = _ledger.to_finding(rec)
+        sid = str(rec.get("session_id") or "") or session_id
+        # Only the guards that stop a call: routine output scrubs would raise
+        # every session's local risk score.
+        if rec["source"] in ("prompt", "prompt_file", "tool_input", "read", "env_guard"):
+            try:
+                persist_runtime_findings(workspace, sid, [dict(
+                    finding, id=f"{sid}:cloak-{uuid.uuid4().hex}",
+                    evidence=str(rec.get("reason") or rec.get("name") or ""),
+                )], -1)
+            except Exception as exc:
+                sys.stderr.write(f"[prismor] finding persistence error: {exc}\n")
         _dispatch_telemetry(
             engine=engine,
             findings=[finding],
@@ -1593,7 +1603,7 @@ def _dispatch_cloak_ledger(
                    "metadata": {"tool_name": finding.get("toolName") or "cloak"}},
             workspace=workspace, agent=agent,
             mode="enforce" if rec.get("action") == "blocked" else "observe",
-            session_id=str(rec.get("session_id") or "") or session_id,
+            session_id=sid,
             subject=subject,
         )
 

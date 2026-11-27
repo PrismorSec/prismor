@@ -7,11 +7,12 @@
 # finding, so the console can count what was caught and redacted.
 #
 # A line holds labels only: where the secret was seen, what was done, the
-# vault NAME (never the value), and the static pattern that matched.
+# vault NAME (never the value), the static pattern that matched, and a deny's
+# reason (paths, key and vault names).
 #
-#   prismor_cloak_event <source> <action> <session_id> [name] [pattern] [tool]
+#   prismor_cloak_event <source> <action> <session_id> [name] [pattern] [tool] [reason]
 #
-# source: prompt | prompt_file | tool_input | read | mcp_output | command | output
+# source: prompt | prompt_file | tool_input | read | env_guard | mcp_output | command | output
 # action: redacted | blocked | used
 #
 # Best-effort and silent: no jq, a full ledger or a write error never affects
@@ -33,10 +34,11 @@ prismor_cloak_event() {
   mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
   # One short line per append, so concurrent hooks do not interleave.
   jq -cn --arg source "$1" --arg action "$2" --arg session "${3:-}" \
-    --arg name "${4:-}" --arg pattern "${5:-}" --arg tool "${6:-}" \
+    --arg name "${4:-}" --arg pattern "${5:-}" --arg tool "${6:-}" --arg reason "${7:-}" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{ts: $ts, source: $source, action: $action, session_id: $session,
-      name: $name, pattern: ($pattern | .[0:200]), tool: $tool}' \
+      name: $name, pattern: ($pattern | .[0:200]), tool: $tool,
+      reason: ($reason | .[0:500])}' \
     >> "$file" 2>/dev/null || true
 }
 

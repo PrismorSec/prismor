@@ -14,6 +14,7 @@ fields.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -411,7 +412,9 @@ def precheck(tool: str, tool_input: Dict[str, Any], *, workspace: Path, cwd: str
                 done.add(name)
                 try:
                     out = subprocess.run(["bash", str(_HOOKS_SUBDIR / name)], input=payload, capture_output=True,
-                                         text=True, timeout=60).stdout
+                                         text=True, timeout=60,
+                                         # a dry run blocks nothing, so it records nothing
+                                         env={**os.environ, "PRISMOR_CLOAK_LEDGER": os.devnull}).stdout
                     hso = json.loads(out)["hookSpecificOutput"] if out.strip() else {}
                 except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
                     continue   # no bash (or a hook crash): nothing to report, the hook itself decides at run time

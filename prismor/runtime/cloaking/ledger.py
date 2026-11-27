@@ -8,7 +8,8 @@ often a secret was caught, redacted, blocked or used, per agent and session.
 
 A line carries labels only: the vault NAME (``auto_<hash>`` or the name the
 user registered), the static pattern that matched, the source and the action.
-The secret value is never written to the ledger.
+The secret value is never written to the ledger. A deny may add a ``reason``
+(paths, key and vault names); it stays in the local store and is not shipped.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ _SOURCES = {
     "prompt_file": ("cloak-prompt-file", "secret_exfiltration", "Prompt @-mention of a file holding a secret blocked"),
     "tool_input": ("cloak-tool-input", "secret_exfiltration", "Raw secret in tool call cloaked"),
     "read": ("cloak-read", "secret_access", "Read of a file holding a secret blocked"),
+    "env_guard": ("cloak-env-guard", "secret_access", "Env file read or publish holding a secret blocked"),
     "mcp_output": ("cloak-mcp-output", "secret_access", "MCP tool output scrubbed of a secret"),
     "output": ("cloak-output", "secret_access", "Command output scrubbed of a secret"),
     "command": ("cloak-command", "secret_access", "Placeholder resolved to its secret at execution"),

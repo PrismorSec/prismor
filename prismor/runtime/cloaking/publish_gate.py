@@ -82,15 +82,63 @@ def _vault_needles(vault: Set[str]) -> List[str]:
     return [v for v in vault if is_scrubbable_secret(v)]
 
 
-def _secret_in(text: str, old: str, vals: List[str], pats: List[re.Pattern]) -> Optional[str]:
-    """What kind of secret ``text`` has more occurrences of than ``old``, else None."""
+def _secret_in(text: str, old: str, vals: List[str], pats: List[re.Pattern]) -> Optional[Tuple[str, str]]:
+    """(what kind, the matched string) for a secret ``text`` has more
+    occurrences of than ``old``, else None. The string is only for locating it:
+    it must never reach a message."""
     def added(s: str) -> bool:
         return text.count(s) > old.count(s)
-    if any(v in text and added(v) for v in vals):
-        return "a value from the cloak vault"
-    if any(added(m.group(0)) for rx in pats for m in rx.finditer(text)):
-        return "a string that looks like a secret key"
+    for v in vals:
+        if v in text and added(v):
+            return "a value from the cloak vault" + _entry_name(v), v
+    for rx in pats:
+        for m in rx.finditer(text):
+            if added(m.group(0)):
+                return "a string that looks like a secret key", m.group(0)
     return None
+
+
+def _entry_name(value: str) -> str:
+    """``, @@SECRET:name@@`` of the vault entry holding ``value``, else ""."""
+    from prismor.runtime.cloaking.env_guard import decode_bytes, secrets_dir
+    try:
+        for f in sorted(secrets_dir().iterdir()):
+            try:
+                if f.is_file() and decode_bytes(f.read_bytes(), strict=True) == value:
+                    return f", @@SECRET:{f.name}@@"
+            except (OSError, UnicodeDecodeError):
+                continue
+    except OSError:
+        pass
+    return ""
+
+
+def _line_of(text: str, old: str, needle: str) -> int:
+    """1-based line of the first ``needle`` on a line ``old`` does not have."""
+    first = needle.split("\n", 1)[0]
+    had = set(old.split("\n"))
+    hits = [(n, line) for n, line in enumerate(text.split("\n"), 1) if first in line]
+    new = [n for n, line in hits if line not in had]
+    return new[0] if new else hits[0][0] if hits else 1
+
+
+def _commit_location(commit: str, needle: str) -> str:
+    """`` (in 'path' line N)`` of the first added line of a ``-U0`` patch holding ``needle``."""
+    first = needle.split("\n", 1)[0]
+    path, n, in_hunk = "", 0, False
+    for line in commit.split("\n"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif not in_hunk and line.startswith("+++ "):
+            path = re.sub(r"^b/", "", line[4:].rstrip("\t"))
+        elif line.startswith("@@"):
+            m = re.match(r"@@ \S+ \+(\d+)", line)
+            in_hunk, n = True, int(m.group(1)) if m else 0
+        elif in_hunk and line.startswith("+"):
+            if first in line:
+                return f" (in '{path}' line {n})"
+            n += 1
+    return ""
 
 
 def scan_files(paths: Iterable[Path], vault: Set[str], label: str,
@@ -116,13 +164,14 @@ def scan_files(paths: Iterable[Path], vault: Set[str], label: str,
             text = blob.decode("utf-8", "replace")
             if is_env_basename(leaf) and re.search(r"^\s*(?:export\s+)?[A-Za-z_][\w.]*\s*=\s*\S{%d,}" % MIN_VALUE_LEN, text, re.M):
                 return f"{label} would ship the env file '{where}'"
-            kind = _secret_in(text, "", vals, pats)
-            if kind:
-                if before is None:
-                    before = {m: b.decode("utf-8", "replace") for m, b in _blobs(baseline(p))}
-                kind = _secret_in(text, before.get(member, ""), vals, pats)
-            if kind:
-                return f"{label} would ship {kind} (in '{where}')"
+            if not _secret_in(text, "", vals, pats):
+                continue
+            if before is None:
+                before = {m: b.decode("utf-8", "replace") for m, b in _blobs(baseline(p))}
+            old = before.get(member, "")
+            hit = _secret_in(text, old, vals, pats)
+            if hit:
+                return f"{label} would ship {hit[0]} (in '{where}' line {_line_of(text, old, hit[1])})"
     return None
 
 
@@ -315,9 +364,10 @@ def _check_one(name: str, a: List[str], base: Path, vault: Set[str], packed: Lis
         names = _git(base, "log", "--name-only", "--format=", "HEAD", "--not", "--remotes").split()
         vals, pats = _vault_needles(vault), _patterns()
         for commit in log.split("\0"):
-            kind = _secret_in(*_patch_sides(commit), vals, pats)
-            if kind:
-                return f"`git push` would ship {kind} (in the commits being pushed)"
+            hit = _secret_in(*_patch_sides(commit), vals, pats)
+            if hit:
+                where = _commit_location(commit, hit[1]) or " (in the commits being pushed)"
+                return f"`git push` would ship {hit[0]}{where}"
         from prismor.runtime.cloaking.env_guard import is_env_basename
         env = [n for n in names if is_env_basename(n)]
         return f"`git push` would publish the env file '{env[0]}'" if env else None
