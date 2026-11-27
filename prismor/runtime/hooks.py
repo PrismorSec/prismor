@@ -3265,7 +3265,8 @@ def _extract_mcp_response_text(response: Any) -> str:
             # content block's own framing (`type`, `mimeType`, `annotations`).
             block = node.get("type") in _MCP_BLOCK_TYPES
             for k, v in node.items():
-                if k in ("text", "blob") or (block and k in _MCP_BLOCK_FRAMING):
+                if ((k == "text" and isinstance(text, str)) or k == "blob"
+                        or (block and k in _MCP_BLOCK_FRAMING)):
                     continue
                 _walk(v)
         elif isinstance(node, list):
