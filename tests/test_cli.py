@@ -91,6 +91,60 @@ class TestCliExitCodes(unittest.TestCase):
         self.assertIn("OS sandbox", r.stdout)
 
 
+class TestPauseCli(unittest.TestCase):
+    """Test exit codes and behavior of prismor pause --for."""
+
+    def _run_pause(self, *args, env=None):
+        try:
+            import pty
+            master, slave = pty.openpty()
+        except (ImportError, AttributeError):
+            self.skipTest("pty required for terminal test")
+        try:
+            return run_cli_env(*args, stdin=slave, env=env)
+        finally:
+            try:
+                os.close(slave)
+            except OSError:
+                pass
+            try:
+                os.close(master)
+            except OSError:
+                pass
+
+    def test_pause_invalid_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "PRISMOR_HOME": tmp}
+            r = self._run_pause("pause", "--for", "invalid", env=env)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Could not read duration", r.stdout)
+            self.assertFalse((Path(tmp) / "pause.json").exists())
+
+    def test_pause_zero_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "PRISMOR_HOME": tmp}
+            r = self._run_pause("pause", "--for", "0", env=env)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Duration must be positive", r.stdout)
+            self.assertFalse((Path(tmp) / "pause.json").exists())
+
+    def test_pause_negative_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "PRISMOR_HOME": tmp}
+            r = self._run_pause("pause", "--for=-5m", env=env)
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("Duration must be positive", r.stdout)
+            self.assertFalse((Path(tmp) / "pause.json").exists())
+
+    def test_pause_valid_duration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "PRISMOR_HOME": tmp}
+            r = self._run_pause("pause", "--for", "30m", env=env)
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("Prismor paused", r.stdout)
+            self.assertTrue((Path(tmp) / "pause.json").exists())
+
+
 class TestCliCommandConsolidation(unittest.TestCase):
     """info→status, dashboard/serve, and status --all consolidation."""
 
