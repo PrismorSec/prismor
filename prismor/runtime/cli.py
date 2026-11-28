@@ -4733,7 +4733,7 @@ def build_parser() -> argparse.ArgumentParser:
                               "blocked prompt never leaves). Default: in parallel with the model, "
                               "reply held until the verdict")
     _el_con.add_argument("--keep-backup-llm", dest="keep_backup_llm", action="store_true",
-                         help="Leave ElevenLabs' backup LLM on (turns it serves bypass Prismor)")
+                         help="Leave ElevenLabs' backup LLM on (turns it serves are not screened by Prismor)")
     _el_dis = _el_sub.add_parser("disconnect", help="Restore agents' original LLM settings")
     _el_dis.add_argument("agent_ids", nargs="*", help="ElevenLabs agent ids")
     _el_dis.add_argument("--all", action="store_true", help="Every agent prismor connected")
@@ -5252,7 +5252,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall_parser = subparsers.add_parser(
         "uninstall-hooks",
         help="Uninstall IDE hooks",
-        description="Remove Prismor runtime-monitor hooks for an agent. For --agent claude "
+        description="Uninstall Prismor runtime-monitor hooks for an agent. For --agent claude "
         "(or all), this also removes cloaking hooks installed by `prismor cloak install` — "
         "secrets are no longer protected at the tool boundary until you re-run "
         "`prismor cloak install`.",
@@ -5463,7 +5463,7 @@ def build_parser() -> argparse.ArgumentParser:
     pack_sub.add_parser("list", help="List installed packs")
     pack_update = pack_sub.add_parser("update", help="Re-resolve a pack's ref and show the rule-id diff before applying")
     pack_update.add_argument("name", nargs="?", help="Pack name (default: every pack)")
-    pack_update.add_argument("--yes", action="store_true", help="Apply without asking")
+    pack_update.add_argument("--yes", action="store_true", help="Apply without a confirmation prompt")
     pack_remove = pack_sub.add_parser("remove", help="Uninstall a pack")
     pack_remove.add_argument("name")
     pack_show = pack_sub.add_parser("show", help="Show a pack's lock entry and rules")
@@ -5743,18 +5743,18 @@ def build_parser() -> argparse.ArgumentParser:
     t_install.add_argument("--scope", choices=["project", "user", "global"], default="project",
                            help="Hook scope (default: project)")
     t_install.add_argument("--no-userprompt-guard", action="store_true",
-                           help="Skip the UserPromptSubmit soft-block hook (use a clipboard filter instead)")
+                           help="Don't install the UserPromptSubmit soft-block hook (use a clipboard filter instead)")
     t_install.add_argument("--no-secret-guard", action="store_true",
-                           help="Skip the PreToolUse detect-and-block hook for raw secrets in tool calls")
+                           help="Don't install the PreToolUse detect-and-block hook for raw secrets in tool calls")
     t_install.add_argument("--no-read-guard", action="store_true",
-                           help="Skip the PreToolUse hook that denies reading files containing a registered secret")
+                           help="Don't install the PreToolUse hook that denies reading files containing a registered secret")
     t_install.add_argument("--no-env-guard", action="store_true",
-                           help="Skip the PreToolUse hook that denies reading .env-style files whose entries "
+                           help="Don't install the PreToolUse hook that denies reading .env-style files whose entries "
                                 "are not yet imported into the vault (prismor cloak add --env-file)")
     t_install.add_argument("--sweep-on-stop", action="store_true",
                            help="Also wire a Stop-hook dry-run sweep for residue detection")
 
-    t_uninstall = cloak_sub.add_parser("uninstall", help="Remove secret-cloaking hooks")
+    t_uninstall = cloak_sub.add_parser("uninstall", help="Uninstall secret-cloaking hooks")
     t_uninstall.add_argument("--agent", choices=["claude", "hermes", "all"], default="claude",
                              help="Agent to remove cloaking for (default: claude)")
     t_uninstall.add_argument("--workspace", help="Workspace path")
@@ -5800,7 +5800,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     t_run = cloak_sub.add_parser(
         "run",
-        help="Run a command with @@SECRET:name@@ placeholders resolved and output scrubbed",
+        help="Run a command with @@SECRET:name@@ placeholders resolved, and scrub the values from what it prints",
     )
     t_run.add_argument("cloak_run_command", nargs=argparse.REMAINDER,
                        help="Command to execute; use `--` before the command")
