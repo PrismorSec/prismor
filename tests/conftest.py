@@ -27,7 +27,13 @@ passed on CI and failed on any enrolled developer laptop, and inside a run they
 leaked homes into each other — the shared sqlite ledger lives in $PRISMOR_HOME
 (``store.get_data_dir`` ignores its workspace argument), so a file's tests
 accumulated each other's rows. ``_isolated_prismor_home`` gives every test a
-fresh $HOME and $PRISMOR_HOME and restores the whole environment afterwards.
+fresh $PRISMOR_HOME and restores the whole environment afterwards.
+
+What it restores is not the developer's environment. ``pytest_configure`` swaps
+in a throwaway $HOME and drops every ``PRISMOR_*`` variable for the life of the
+process, because a thread can outlive its test: a Copilot Studio evaluation
+abandoned at its deadline read the restored real home and uploaded the test's
+events to the developer's own org.
 
 Modules that deliberately provision their own vault at import time (the cloaking
 tests build a $PRISMOR_HOME with registered secrets and hand ``os.environ``
@@ -57,9 +63,12 @@ resolve too. (PrismorSec/prismor#389)
 """
 from __future__ import annotations
 
+import atexit
 import inspect
 import os
+import shutil
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -70,23 +79,6 @@ import pytest
 if __name__ in sys.modules:
     sys.modules.setdefault("tests.conftest", sys.modules[__name__])
     sys.modules.setdefault("conftest", sys.modules[__name__])
-
-# Framework adapter imports
-# Env vars that OUTRANK $PRISMOR_HOME, cleared before any test runs.
-#
-# Most tests sandbox themselves by copying os.environ and pointing PRISMOR_HOME
-# at a tmpdir. That is not enough: secrets_dir() checks $PRISMOR_SECRETS_DIR
-# first and only falls back to $PRISMOR_HOME/secrets, so on a developer machine
-# that exports it -- `prismor setup` does -- the copied env still points at the
-# real vault, and `tests/test_cli.py::TestCloakEnvImport` writes its fixture
-# secrets straight into it, overwriting any real entry of the same name.
-#
-# CI never sees this because the var is unset there, so the test just fails
-# locally with a confusing FileNotFoundError while the damage is already done.
-# Clear it once, here, rather than in each of the ~10 tests that copy the env.
-for _escape_hatch in ("PRISMOR_SECRETS_DIR",):
-    os.environ.pop(_escape_hatch, None)
-
 
 _ADAPTERS = Path(__file__).resolve().parent.parent / "adapters"
 
@@ -126,8 +118,36 @@ _MODULE_ENV: Dict[str, Dict[str, Any]] = {}
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    _snapshot_real_agent_configs()  # needs the real $HOME, so goes first
+    _sandbox_process_env()
     _PRISTINE_ENV.update(_tracked_env(os.environ))
-    _snapshot_real_agent_configs()
+
+
+_SESSION_HOME = ""
+
+
+def _sandbox_process_env() -> None:
+    """Take the developer's identity and credentials out of the process.
+
+    Per-test isolation alone is not enough: it restores the launch environment
+    between tests, where import-time code, atexit hooks and background threads
+    can still read it. Every ``PRISMOR_*`` variable goes, since several outrank
+    $PRISMOR_HOME (``PRISMOR_AGENT_KEY``, ``PRISMOR_SECRETS_DIR``).
+    """
+    global _SESSION_HOME
+    if _SESSION_HOME:
+        return
+    _SESSION_HOME = tempfile.mkdtemp(prefix="prismor-test-home-")
+    # atexit runs after pool threads are joined, so stragglers still find it.
+    atexit.register(shutil.rmtree, _SESSION_HOME, ignore_errors=True)
+    for key in list(os.environ):
+        if key.startswith(_ENV_PREFIX) and key != "PRISMOR_NO_UPDATE_CHECK":
+            del os.environ[key]
+    for key in _ENV_EXTRA:
+        os.environ[key] = _SESSION_HOME
+    # An MDM-enrolled machine keeps its identity here, outside any $HOME.
+    from prismor.runtime import system_install
+    system_install.SYSTEM_DIR = Path(_SESSION_HOME) / "system"
 
 
 # The developer's own agent configs. A test that installs hooks at global scope
@@ -141,17 +161,23 @@ _REAL_AGENT_CONFIGS = (
     ".qwen/settings.json", ".copilot/hooks.json",
 )
 _REAL_CONFIG_SNAPSHOT: Dict[Path, Optional[bytes]] = {}
+_REAL_HOMES_VAR = "_PYTEST_REAL_HOMES"
 
 
 def _real_home_dirs() -> Set[Path]:
+    # xdist workers inherit the controller's sandboxed $HOME, so the real homes
+    # travel to them in a variable of their own.
+    if os.environ.get(_REAL_HOMES_VAR):
+        return {Path(h) for h in os.environ[_REAL_HOMES_VAR].split(os.pathsep)}
     homes = set()
-    for key in ("HOME", "USERPROFILE"):
+    for key in _ENV_EXTRA:
         if os.environ.get(key):
             homes.add(Path(os.environ[key]))
     try:
         homes.add(Path.home())
     except RuntimeError:
         pass
+    os.environ[_REAL_HOMES_VAR] = os.pathsep.join(map(str, homes))
     return homes
 
 
@@ -204,23 +230,8 @@ def pytest_make_collect_report(collector: pytest.Collector):
         _MODULE_ENV[collector.nodeid] = declared
 
 
-@pytest.fixture(scope="session")
-def _sandbox_home(tmp_path_factory) -> Any:
-    """One throwaway $HOME for the whole run, standing in for the developer's.
-
-    Session-scoped on purpose. A per-test $HOME would be more thorough, but
-    some modules freeze the home directory into a module-level constant at
-    import time (``corpus._HOME_RE`` compiles ``expanduser("~")`` once), and a
-    $HOME that moves underneath them makes their behaviour depend on which test
-    happened to import them first. $PRISMOR_HOME — which is what the runtime
-    actually reads, and where the shared sqlite ledger lives — is per test.
-    """
-    return tmp_path_factory.mktemp("home")
-
-
 @pytest.fixture(autouse=True)
-def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
-                           _sandbox_home) -> Any:
+def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory) -> Any:
     """Run every test against a fresh, not-enrolled $PRISMOR_HOME.
 
     The full environment is restored afterwards, so a test that sets a variable
@@ -232,11 +243,8 @@ def _isolated_prismor_home(request: pytest.FixtureRequest, tmp_path_factory,
     for key in _tracked_env(os.environ):
         if key not in _PRISTINE_ENV:
             del os.environ[key]
-    os.environ.update(_PRISTINE_ENV)
+    os.environ.update(_PRISTINE_ENV)  # includes the run-wide sandbox $HOME
 
-    os.environ["HOME"] = str(_sandbox_home)
-    if os.name == "nt":
-        os.environ["USERPROFILE"] = str(_sandbox_home)
     os.environ.pop("KUBECONFIG", None)  # the dev's kube context can't flip results
     os.environ["PRISMOR_HOME"] = str(tmp_path_factory.mktemp("prismor-home"))
 
