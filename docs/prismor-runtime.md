@@ -123,6 +123,13 @@ These rules inspect command text; they do not resolve Git aliases or read
 their scope. Approval uses the same surface support and fail-closed behavior
 described below.
 
+### Approval before publishing a Rust crate
+
+`cargo-publish` warns on explicit `cargo publish` commands. Set `mode: enforce`
+and `action: step_up` on the rule to require approval. In
+`cargo publish --dry-run && cargo publish`, only the second invocation triggers
+the rule. `cargo package` and help stay quiet.
+
 ### Approval before publishing an npm package
 
 `npm-publish` reports explicit publish commands by default. Set `mode: enforce`

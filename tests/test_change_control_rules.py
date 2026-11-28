@@ -13,6 +13,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from prismor.runtime.policy_engine import PolicyEngine
 
 HITS = {
+    "cargo-publish": [
+        "cargo publish", "cargo +stable publish -p my-crate --registry staging",
+        "cargo publish --dry-run && cargo publish",
+        "cargo publish # --dry-run",
+        'cargo publish --manifest-path "--dry-run example/Cargo.toml"',
+    ],
     "git-reset-hard": [
         "git reset --hard",
         "git reset --hard HEAD~3",
@@ -122,6 +128,12 @@ HITS = {
 }
 
 MISSES = {
+    "cargo-publish": [
+        "cargo publish -p my-crate --dry-run", "cargo publish --dry-run && cargo package",
+        "cargo publish>build.log --dry-run",
+        "cargo help publish", "cargo publish -h", "cargo package",
+        'echo "cargo publish"', "git commit -m 'release: cargo package && cargo publish'",
+    ],
     "git-reset-hard": [
         "git reset --soft HEAD~1", "git reset HEAD file.txt", "git reset --mixed",
         'git commit -m "never git reset --hard"', "git status", "git reset --hard-ish",
@@ -266,11 +278,12 @@ class ChangeControlRules(unittest.TestCase):
 
 
 @pytest.mark.parametrize("rule,command,safe_command", [
+    ("cargo-publish", "cargo publish --dry-run && cargo publish", "cargo publish --dry-run"),
     ("git-clean-force", "git clean -fdx", "git clean -ndx"),
     ("git-stash-delete", "git stash clear", "git stash list"),
     ("git-branch-force-delete", "git branch -D topic", "git branch -d topic"),
 ])
-def test_git_work_loss_approval_is_opt_in(tmp_path, rule, command, safe_command):
+def test_change_control_approval_is_opt_in(tmp_path, rule, command, safe_command):
     from prismor.runtime.runtime import evaluate_tool_call
 
     event = {"type": "shell", "agent_event": "PreToolUse", "command": command,
