@@ -2975,6 +2975,8 @@ class PolicyEngine:
                 _vault = ""
         if _vault:
             _hit_vault = None
+            _vault_evidence = None
+            _unwrap_failed = False
             if event_type in ("file_read", "file_write"):
                 _p = field_values.get("path", "")
                 if _p:
@@ -2987,8 +2989,17 @@ class PolicyEngine:
                 # location (~/, $HOME/, absolute); _vault matches a custom dir.
                 # Mentions under another user's (nonexistent) home are test
                 # fixtures, not this vault (#592).
-                if _cmd and _shell_vault_mentions(_cmd, _vault):
+                _spans = _shell_vault_mentions(_cmd, _vault) if _cmd else []
+                if _spans:
                     _hit_vault = _cmd
+                    # field_values joins several spellings of the command;
+                    # the wrapper check needs the one the agent sent.
+                    _raw_cmd = str(event.get("command") or "")
+                    _raw_spans = _shell_vault_mentions(_raw_cmd, _vault)
+                    _unwrap_failed = bool(_raw_spans) and _only_in_decloak_tail(_raw_cmd, _raw_spans)
+                    # Show the matched text, not the first 220 characters of a
+                    # long command the match may sit far beyond.
+                    _vault_evidence = _evidence_around(_cmd, *_spans[0])
             if _hit_vault is not None:
                 finding_id = f"prismor-vault-access-{index}"
                 prefixed_id = f"{session_id}:{finding_id}" if session_id else finding_id
@@ -2996,8 +3007,13 @@ class PolicyEngine:
                     "id": prefixed_id,
                     "severity": "CRITICAL",
                     "category": "secret_access",
-                    "title": "Access to Prismor plaintext secret vault",
-                    "evidence": _truncate(_hit_vault),
+                    # Same rule id and verdict either way (fail closed: a fake
+                    # wrapper hides nothing); only the explanation differs.
+                    "title": (_DECLOAK_UNWRAP_FAILED_TITLE if _unwrap_failed
+                              else "Access to Prismor plaintext secret vault"),
+                    **({"guidance": _DECLOAK_UNWRAP_FAILED_GUIDANCE} if _unwrap_failed else {}),
+                    "evidence": (_truncate(_hit_vault) if _unwrap_failed
+                                 else _vault_evidence or _truncate(_hit_vault)),
                     # This guard is code, not a regex, so the "pattern" is the
                     # vault path it looked for -- without it the dashboard can
                     # only say some rule objected to a 400-character command.
@@ -5019,6 +5035,39 @@ def _shell_vault_mentions(cmd: str, vault: str) -> List[Tuple[int, int]]:
             hits.append((i, i + len(vault)))
             i = cmd.find(vault, i + 1)
     return hits
+
+
+_DECLOAK_UNWRAP_FAILED_TITLE = "Prismor could not unwrap its own cloak wrapper"
+_DECLOAK_UNWRAP_FAILED_GUIDANCE = (
+    "Prismor's cloak hook wraps Bash calls in an output scrubber that names "
+    "the vault folder. This wrapper did not parse back, so Prismor could not "
+    "judge the command on its own and blocked it to be safe. Update Prismor; "
+    "if it persists, report this session id."
+)
+
+
+def _only_in_decloak_tail(cmd: str, spans: List[Tuple[int, int]]) -> bool:
+    """True when every vault mention sits in decloak.sh's scrubber tail.
+
+    unwrap_decloak runs before policy, so a command that still ends in that
+    tail is one it could not take apart (e.g. mangled quoting, #1041).
+    """
+    try:
+        from prismor.runtime.cloaking.runtime import _DECLOAK_TAIL_RE
+    except Exception:
+        return False
+    m = _DECLOAK_TAIL_RE.search(cmd)
+    return bool(m) and all(start >= m.start() for start, _ in spans)
+
+
+def _evidence_around(text: str, start: int, end: int, width: int = 220) -> str:
+    """``width`` characters of ``text`` centred on ``text[start:end]``."""
+    text = str(text)
+    if len(text) <= width:
+        return text.strip()
+    lo = max(0, min(start - (width - (end - start)) // 2, len(text) - width))
+    hi = lo + width
+    return ("..." if lo else "") + text[lo:hi] + ("..." if hi < len(text) else "")
 
 
 def _dequote_shell(cmd: str) -> Optional[str]:
