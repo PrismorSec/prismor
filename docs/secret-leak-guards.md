@@ -118,8 +118,8 @@ with values, a vaulted value, or a string that looks like a key.
 | `docker build`, `podman build`, `buildah bud` | the build context, minus `.dockerignore` |
 | `docker compose build`, `up`, `create`, `run` (and `docker-compose`) | the build context of every service with a `build:`, minus its `.dockerignore` |
 | `npm publish` / `pack` (and pnpm, yarn, bun), `cargo publish` | the files the package would contain |
-| `git add` | the files it would stage |
-| `git push` | the commits that are not on any remote yet |
+| `git add` | the files it would stage, compared with their staged copy |
+| `git push` | the lines each unpushed commit adds, compared with the lines it removes |
 | `gh release upload/create`, `gh gist create`, `twine upload`, `gem push` | the files named, and an archive built earlier in the same command |
 | `curl -F/-T/--data-binary @file`, `wget --post-file` | the file named |
 | `aws s3 cp` / `gsutil cp` with a public ACL | the file named |
@@ -129,6 +129,12 @@ Example message:
 ```
 `docker build` would ship the env file '.env'
 ```
+
+For `git add` and `git push`, only a new copy of a value counts. A value that
+is already in a file does not block an edit to that file, or its removal. A
+new file that holds the value, or one more copy of it, still blocks, and so
+does a commit that adds it even if a later commit removes it. An env file with
+values always blocks.
 
 To fix it, add the file to `.dockerignore` or `.gitignore`, remove the value
 from the file, or use a placeholder. `scp` and `rsync` to a host, and private

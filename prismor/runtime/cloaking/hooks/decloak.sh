@@ -127,6 +127,15 @@ if [[ "$have_secrets" -eq 0 && -z "$placeholders" ]]; then
   exit 0
 fi
 
+# Quote one word for the wrapper. Only ever call it as $(q ...): the locale
+# change stays in that subshell. Under a UTF-8 locale, macOS bash 3.2's
+# printf %q writes a multibyte character's lead byte raw and the rest as
+# octal (`—` -> raw 0xE2 then \200\224). jq then turns the lone byte into
+# U+FFFD, which mangles the command and stops unwrap_decloak from matching, so
+# prismor-vault-access judged the wrapper's vault path. In the C locale every
+# non-ASCII byte is octal-escaped and the word round-trips exactly.
+q() { LC_ALL=C; printf '%q' "$1"; }
+
 # Wrap: run the command in a brace group, merge stderr into stdout, pipe
 # through the scrubber, and re-raise the command's own exit status (not sed's)
 # so callers that branch on exit codes still behave correctly. Only the
@@ -135,7 +144,7 @@ fi
 if [[ -n "$placeholders" ]]; then
   # Placeholders present: hand the command over unresolved and let the child
   # resolve it, so the recorded string holds placeholders and not secrets.
-  runner="PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_CMD=$(printf '%q' "$cmd") bash $(printf '%q' "$RESOLVER")"
+  runner="PRISMOR_SECRETS_DIR=$(q "$SECRETS_DIR") PRISMOR_CLOAK_CMD=$(q "$cmd") bash $(q "$RESOLVER")"
 else
   # The command text rides in ONE %q-quoted word and runs through `eval`, so
   # nothing in it is parsed as the wrapper's own syntax: `true\n}\ncat f` used
@@ -143,9 +152,9 @@ else
   # tool shell's functions and aliases (a `bash -c` would lose them). The
   # appended newline absorbs a trailing backslash continuation; a comment-only
   # command evals to status 0; eval returns the command's own status.
-  runner="{ __prismor_cmd=$(printf '%q' "$cmd"); eval \"\$__prismor_cmd\"\$'\\n'; }"
+  runner="{ __prismor_cmd=$(q "$cmd"); eval \"\$__prismor_cmd\"\$'\\n'; }"
 fi
-wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(printf '%q' "$SECRETS_DIR") PRISMOR_CLOAK_SESSION=$(printf '%q' "$session_id") $(printf '%q' "$SCRUBBER"); exit \${PIPESTATUS[0]}"
+wrapped="$runner 2>&1 | PRISMOR_SECRETS_DIR=$(q "$SECRETS_DIR") PRISMOR_CLOAK_SESSION=$(q "$session_id") $(q "$SCRUBBER"); exit \${PIPESTATUS[0]}"
 
 new_input="$(printf '%s' "$input" | jq --arg c "$wrapped" '.tool_input | .command = $c')"
 jq -n --argjson ni "$new_input" \
