@@ -2748,6 +2748,34 @@ rules:
     guidance: "push to a feature branch (`git push -u origin HEAD:<branch>`) and open a pull request."
     action: warn
 
+  - id: cargo-publish
+    severity: HIGH
+    category: change_control
+    title: Publishes a Rust crate
+    event_types: [shell]
+    fields: [command]
+    patterns:
+      - |-
+        (?x-i:
+          \A(?=.*\bcargo\b)
+          # Find a command boundary outside shell arguments and comments.
+          (?:[ \t]*(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+(?:'(?=[^']*'\s*\Z)|"(?=[^"]*"\s*\Z)))?
+          (?:(?:[^\n;&|(`'"\\\#]|\\.|(?<=[^\s;&|()])\#|'[^']*'|"(?:[^"\\]|\\.)*")*
+             (?:[\n;&|(`]|(?<![^\s;&|()])\#[^\n]*\n))*[ \t]*
+          (?:(?:env|exec|command|sudo)[ \t]+|\w+=[^\s;&|]+[ \t]+)*
+          (?:(?:bash|sh|zsh)[ \t]+-[a-z]*c[ \t]+['"])?
+          (?:[^\s;&|'"]*/)?cargo(?:[ \t]+\+[\w.-]+)?
+          (?:[ \t]+(?:-[vq]+|--(?:verbose|quiet|locked|offline|frozen)|
+             (?:--(?:color|config)|-C|-Z)(?:=|[ \t]+)(?:[^\s;&|'"]+|'[^'\n]*'|"[^"\n]*")))*
+          [ \t]+publish(?=[\s;&|()<>'"]|$)
+          # Only standalone options in this invocation can make it a preview or show help.
+          (?!(?:[^\n;&|()'"\\\#]|(?<=[<>])&|(?<=[^\s;&|()])\#|\\[^\n]|'[^'\n]*'|"(?:[^"\\\n]|\\[^\n])*")*
+             [ \t](?P<cargo_quote>['"]?)(?:--dry-run|--help|-[vq]*h[vqh]*)(?P=cargo_quote)
+             (?=[\s;&|()<>]|$|['"](?:$|[ \t;&|)])))
+        )
+    guidance: "preview with cargo publish --dry-run and confirm the crate, version and registry."
+    action: warn
+
   - id: npm-publish
     severity: HIGH
     category: change_control

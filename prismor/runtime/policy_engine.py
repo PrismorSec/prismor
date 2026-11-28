@@ -173,6 +173,7 @@ _SHELL_SYNTAX_RULE_IDS = frozenset({
     "dos-resource-exhaustion",
     "remote-execution",
     "rce-canary",
+    "cargo-publish",
     "git-remote-hijack",
     "git-branch-force-delete",
     "git-clean-force",
