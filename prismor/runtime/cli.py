@@ -1869,6 +1869,17 @@ def main(argv: Optional[List[str]] = None) -> None:
         emit(session, as_json=args.json, formatter=format_session)
         return
 
+    if args.command == "explain":
+        from prismor.runtime.explain_event import explain, format_explain
+        ws = Path(args.workspace).resolve() if getattr(args, "workspace", None) else Path.cwd()
+        try:
+            info = explain(ws, args.session_id, args.event)
+        except LookupError as exc:
+            print(f"prismor explain: {exc}", file=sys.stderr)
+            raise SystemExit(1)
+        print(json.dumps(info, indent=2, default=str) if args.json else format_explain(info))
+        return
+
     if args.command == "traces":
         from prismor.runtime import traces
         raise SystemExit(traces.run(workspace, all_workspaces=args.global_view, limit=args.limit))
@@ -5179,6 +5190,13 @@ def build_parser() -> argparse.ArgumentParser:
     session_parser.add_argument("--changes", action="store_true", help="Files written, commands run, and a drafted PR description")
 
     # ── traces (terminal browser, prismor/runtime/traces.py) ───────────
+    explain_p = subparsers.add_parser(
+        "explain", help="Re-run a session's flagged events and show why each was blocked")
+    explain_p.add_argument("session_id", help="Session id (from the console or `prismor traces`)")
+    explain_p.add_argument("--event", type=int, help="Explain only this event index")
+    explain_p.add_argument("--json", action="store_true")
+    explain_p.add_argument("--workspace", help="Workspace path")
+
     traces_parser = subparsers.add_parser("traces", help="Browse sessions, their event timelines and findings in the terminal")
     traces_parser.add_argument("--workspace", help="Workspace path")
     traces_parser.add_argument("--global", dest="global_view", action="store_true", help="Sessions from every workspace")

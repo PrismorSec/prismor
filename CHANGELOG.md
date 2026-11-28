@@ -10,6 +10,8 @@
 - **Two agents with one name no longer print an `agent_connections` warning from hooks.** Claude Code showed it as the first line of a "SessionStart hook error". The first claim of a name still wins.
 
 ### Added
+- **`prismor explain <session>`.** It re-runs a session's flagged events from the local store and prints each step: the command as recorded, whether the cloak wrapper unwraps, the rules that match now and why, the matched text, and this machine's shell. Read-only. See [CLI reference](docs/cli-reference.md).
+- **The device status reports the hook shell.** `detail.shell` carries the bash version and the locale name (`LC_ALL`, `LC_CTYPE` or `LANG`) that hooks run under, so a shell-specific bug such as bash 3.2 with a UTF-8 locale (#1041) shows on the device page.
 - **Sandbox refusals are explained and recorded.** When a sandboxed command's output shows a refused file or network access, the agent is told the sandbox caused it, and the session gets a `sandbox-denied` warning. See [Prismor Sandbox](docs/sandbox.md#when-the-sandbox-refuses-something).
 - **Opt in to an outer sandbox.** `settings.sandbox.outer: trust` in the user or org policy runs shell commands that are already inside another sandbox (macOS) without Prismor's OS confinement, instead of blocking them. The default stays `refuse`, and a project policy cannot set the key. `prismor sandbox status` now says when it runs inside an outer sandbox. See [Prismor Sandbox](docs/sandbox.md).
 - **Crush and OpenHands tool output is now captured.** Both register a `PostToolUse` hook, so command output, file contents and fetched pages are recorded and scanned. Run `prismor install-hooks` (or `prismor setup`) again to pick it up. Goose still sends no output to hooks.

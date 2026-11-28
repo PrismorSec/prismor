@@ -22,6 +22,8 @@ raise into the hook path.
 """
 from __future__ import annotations
 
+import functools
+
 import atexit
 import json
 import sys
@@ -100,6 +102,9 @@ def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
             "prismor_version": __version__,
             "install": "system" if system_install.is_system_managed() else "user",
             "platform": platform.system().lower(),
+            # The shell hooks run under. bash 3.2 + a UTF-8 locale mangled
+            # cloaked commands (#1041); this makes that visible per device.
+            "shell": shell_info(),
             **({"agents": agents,
                 "unguarded": sorted(a for a, v in agents.items() if not v["covered"]),
                 "unsupported": _unsupported_agents()} if scan else {}),
@@ -108,6 +113,26 @@ def device_status_record(workspace: Optional[Path] = None) -> Dict[str, Any]:
             **({"mode": mode} if mode else {}),
         },
     }
+
+
+@functools.lru_cache(maxsize=1)
+def _bash_version() -> Optional[str]:
+    import subprocess
+    try:
+        out = subprocess.run(["bash", "-c", 'printf %s "$BASH_VERSION"'], capture_output=True,
+                             text=True, timeout=3).stdout.strip()
+    except Exception:
+        return None
+    return out[:40] or None
+
+
+def shell_info() -> Dict[str, Any]:
+    """bash version and the character locale this process (a hook) sees.
+
+    Only the locale name, never other environment values."""
+    import os
+    loc = next((os.environ[k] for k in ("LC_ALL", "LC_CTYPE", "LANG") if os.environ.get(k)), "")
+    return {"bash": _bash_version(), "locale": loc[:40] or "C (unset)"}
 
 
 def _hook_mode(agents: Dict[str, Any], workspace: Path) -> Optional[str]:
