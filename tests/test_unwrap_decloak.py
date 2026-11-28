@@ -67,3 +67,28 @@ def test_tail_matches_decloak_sh():
     names = re.findall(r"(PRISMOR_[A-Z_]+)=", line)
     assert names == ["PRISMOR_SECRETS_DIR", "PRISMOR_CLOAK_SESSION"], (
         "decloak.sh's scrubber tail changed; update _DECLOAK_TAIL_RE and this test")
+
+
+def test_non_ascii_command_round_trips_through_decloak_sh(tmp_path):
+    """An em dash in a cloaked Bash call used to trip prismor-vault-access.
+
+    Under a UTF-8 locale, macOS bash 3.2's printf %q wrote the lead byte raw
+    and jq turned it into U+FFFD, so the wrapper no longer unwrapped (and
+    eval ran a mangled command). Seen on a real session 2026-11-26.
+    """
+    import json, os, pathlib
+    from prismor.runtime import cloaking
+    sh = pathlib.Path(cloaking.__file__).parent / "hooks" / "decloak.sh"
+    vault = tmp_path / "secrets"
+    vault.mkdir()
+    (vault / "K").write_text("v")  # a non-empty vault makes decloak.sh wrap every call
+    out_file = tmp_path / "out.md"
+    cmd = f"echo '- note — café ✓' >> {out_file}"
+    env = dict(os.environ, PRISMOR_SECRETS_DIR=str(vault), LC_ALL="en_US.UTF-8", LANG="en_US.UTF-8")
+    hook_in = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": "s1"})
+    res = subprocess.run(["bash", str(sh)], input=hook_in, capture_output=True, text=True, env=env)
+    wrapped = json.loads(res.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
+    assert "�" not in wrapped
+    assert unwrap_decloak(wrapped) == cmd
+    subprocess.run(["bash", "-c", wrapped], env=env, capture_output=True)
+    assert out_file.read_text(encoding="utf-8") == "- note — café ✓\n"
