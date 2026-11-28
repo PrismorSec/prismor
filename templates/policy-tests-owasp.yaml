@@ -174,3 +174,27 @@ tests:
     type: command
     input: "npm install lodash"
     expect: pass
+
+  # ── CVE-2026-42074: OpenClaude Sandbox Escape ─────────────────────
+  - name: "CVE-2026-42074 — Bash with dangerouslyDisableSandbox=true must BLOCK"
+    type: tool
+    tool: Bash
+    args: {command: "ls ~/.ssh", dangerouslyDisableSandbox: true}
+    expect: block
+    expect_rule: ai-sandbox-escape
+
+  - name: "CVE-2026-42074 — Bash with dangerouslyDisableSandbox=false must PASS"
+    type: tool
+    tool: Bash
+    args: {command: "git status", dangerouslyDisableSandbox: false}
+    expect: pass
+
+  - name: "CVE-2026-42074 — grepping for the flag is NOT a security event"
+    type: command
+    input: 'grep -rn "dangerouslyDisableSandbox: true" src/'
+    expect: pass
+
+  - name: "CVE-2026-42074 — commit message naming the sandbox must PASS"
+    type: command
+    input: 'git commit -m "fix: retry tests without sandbox on macOS CI"'
+    expect: pass
